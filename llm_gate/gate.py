@@ -8,6 +8,7 @@ from llm_gate.discovery import fetch_models
 from llm_gate.router import select_best_model
 from llm_gate.logger import log_decision
 from llm_gate.headroom import check_headroom
+from llm_gate.neural import LearnedRouter
 
 
 TIER_MAP = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -29,6 +30,8 @@ class Gate:
         self.log_path = log_path
         self.log_full_task = log_full_task
         self.discovery_ttl = discovery_ttl
+        self.learned_router = LearnedRouter(log_path)
+
 
     def route(self, task: str, criticality: str = "medium", context: dict | None = None) -> RoutingDecision:
         """Route a task to the most effective LLM model based on criticality."""
@@ -37,8 +40,18 @@ class Gate:
         req_tier = TIER_MAP.get(criticality.lower(), 2)
 
         # 1. Escalate based on keywords
-        eff_tier, esc_reason = scan(task)
-        final_tier = min(req_tier, eff_tier) if eff_tier is not None else req_tier
+                # Execute Learned Routing Prediction
+        predicted_tier, learned_reason = self.learned_router.predict_optimal_model(task, req_tier, [])
+        if predicted_tier < req_tier:
+            req_tier = predicted_tier
+            esc_reason = learned_reason
+
+        # Fallback to strict heuristic scan
+        eff_tier, heuristic_reason = scan(task)
+        if eff_tier is not None and eff_tier < req_tier:
+            req_tier = eff_tier
+            esc_reason = heuristic_reason
+final_tier = min(req_tier, eff_tier) if eff_tier is not None else req_tier
         escalated = (eff_tier is not None and eff_tier < req_tier)
 
         # 2. Hard critical boundary

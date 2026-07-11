@@ -143,13 +143,13 @@ result = gate.route(
 
 ## Features
 
-- **4 criticality tiers** — `critical` / `high` / `medium` / `low`. Critical tasks never leave your best model.
-- **Auto-discovery** — Queries any OpenAI-compatible `/v1/models` endpoint. No hardcoded model lists.
-- **Capability classification** — Automatically tiers models by ID pattern (`opus`/`gpt-4o` → high, `flash`/`mini` → low).
-- **Quota-aware** — Checks provider rate limits and remaining capacity before routing.
-- **Keyword escalation** — Detects `auth`, `payment`, `security`, `migration`, `prod` in tasks and bumps criticality.
-- **Decision logging** — Every routing decision logged as structured JSONL for cost analysis and ML training.
-- **Fail-open** — If no offload model is available, falls back to your primary model. Never blocks.
+- **Learned Routing & Orchestration** — Neural routing that analyzes historical task success to predict the optimal model for complex review and research workflows.
+- **4 Criticality Tiers** — `critical` / `high` / `medium` / `low`. Money-path code never leaves your best model.
+- **Auto-discovery** — Queries any OpenAI-compatible `/v1/models` endpoint dynamically.
+- **Capability Classification** — Auto-tiers models by ID pattern (`opus`/`gpt-4o` → high, `flash`/`mini` → low).
+- **Quota-aware** — Checks provider rate limits before routing to avoid silent queuing.
+- **Keyword Escalation** — Detects `auth`, `payment`, `security`, `migration` and forcefully bumps criticality.
+- **Decision Logging** — Every routing decision is JSONL logged to constantly feed the Learned Router.
 - **Zero dependencies** — Core engine is pure Python. Installs in < 1 second. (CLI requires `rich`).
 
 ## Install
@@ -194,19 +194,29 @@ Task arrives → Keyword scan → Criticality floor applied
 
 
 
-## 🔌 Ecosystem Integrations 
+## 🔌 Universal Ecosystem Integration 
 
-`llm-gate` is the universal policy engine and criticality router for the AI agent ecosystem. We natively support the most active tools on OpenRouter:
+`llm-gate` isn't just for developers. It is the universal policy engine and criticality router for the absolute most popular apps across OpenRouter's Top verticals.
 
-- **Top CLI Agents:** [Kilo Code, pi, Poolside, Codebuff, Aider, Qwen Code](docs/integrations/cli-agents.md)
-- **Agentic IDEs:** [Cursor, Zed Editor, Cline, Roo Code](docs/integrations/cursor-vscode.md)
-- **Enterprise Gateways:** [OmniRoute, Portkey AI, Peezy Gateway (p0.systems)](docs/integrations/gateways-proxies.md)
-- **Anthropic Tools:** [Claude Code & SDKs](docs/integrations/claude-code-hook.md)
-- **Autonomous & Persistent Agents:** [Hermes Agent (Nous), OpenClaw, OpenHands](docs/integrations/openclaw.md)
+### 💻 Top Coding Agents
+*Ensure your agents never burn frontier-tokens parsing JSON or diffs:*
+- **CLI Agents:** Kilo Code, pi, Poolside, Codebuff, Aider, Qwen Code, OpenCode
+- **IDE Extensions:** Cursor, Zed Editor, Cline, Roo Code
+- **Agentic Frameworks:** Claude Code, OpenClaw, OpenHands, Jcode, Hermes Agent
 
-*(Using an internal or obscure tool? See our [Universal Agnostic Protocols](docs/integrations/universal-agnostic.md) for shell-piping and webhooks).*
+### ⚡ Top Productivity Tools
+*Route daily summarization tasks to inexpensive models while keeping deep research logic on Tier-0:*
+- **Browser Agents:** Web Voyager, Letaido, Clark
+- **Automation/Gateways:** OmniRoute, 9router, Portkey, Peezy Gateway (p0.systems)
+- **Workflows:** Notion integrations, Task orchestrators
 
----
+### 🎨 Top Creative & Gaming Agents
+*Preserve complex narrative reasoning while aggressively offloading repetitive dialog generation:*
+- **Gaming AI:** Lemonade (Roblox AI), Studs.gg, GDevelop
+- **RPGs & Narrative:** SillyTavern webhooks, NovelAI proxies, Character agent loops (Ito, Olam Labs)
+
+*(Using an unlisted app? See our [Universal Integration Script / Proxies](docs/integrations/universal-agnostic.md) to route literally anything).*
+
 ## Philosophy
 
 1. **Critical code never touches a cheap model.** Payment logic, auth flows, database migrations, and production deployments always go to your best model. No exceptions.
