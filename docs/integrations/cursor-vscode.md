@@ -1,6 +1,6 @@
-# IDE Integration (Cursor / Continue.dev / Cline)
+# IDE Integration (Cursor / Zed / Cline / Roo Code)
 
-To integrate `llm-gate` directly into your IDE (like Cursor, VS Code via Continue.dev, or Roo Code), you want the Fast-API microservice mode.
+To integrate `llm-gate` directly into your IDE (Cursor, Zed, Cline, or Roo Code), you want the Fast-API microservice mode.
 
 ### 1. Launch the Server
 Run the built-in FastAPI microservice:

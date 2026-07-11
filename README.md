@@ -193,17 +193,18 @@ Task arrives → Keyword scan → Criticality floor applied
 
 
 
+
 ## 🔌 Ecosystem Integrations 
 
-`llm-gate` is the universal policy engine and criticality router for the AI agent ecosystem. We natively support:
+`llm-gate` is the universal policy engine and criticality router for the AI agent ecosystem. We natively support the most active tools on OpenRouter:
 
-- **Enterprise Gateways:** Intelligent backend for [OmniRoute & 9router](docs/integrations/omniroute-9router.md), and [LiteLLM Custom Hooks](docs/integrations/litellm.md)
-- **Top CLI Agents:** [Aider](docs/integrations/aider.md), [Claude Code](docs/integrations/claude-code-hook.md), [Codex & Hermes](docs/integrations/codex-hermes.md)
-- **Agentic IDEs:** [Cursor / Continue.dev / Roo Code](docs/integrations/cursor-vscode.md)
-- **Autonomous Platforms:** [OpenHands (OpenDevin)](docs/integrations/openhands.md), [OpenClaw & NemoClaw](docs/integrations/openclaw.md)
-- **Specialized Tools:** [Antigravity (agy)](docs/integrations/antigravity.md), [OpenCode](docs/integrations/opencode.md), [Jcode](docs/integrations/jcode.md), [Mimo](docs/integrations/mimo.md)
-- **Developer SDKs:** [Anthropic SDK & Agent Frameworks](docs/integrations/anthropic-sdk.md)
-- **Unknown Tools:** [Universal Agnostic Protocols (Terse CLI & REST)](docs/integrations/universal-agnostic.md)
+- **Top CLI Agents:** [Kilo Code, pi, Poolside, Codebuff, Aider, Qwen Code](docs/integrations/cli-agents.md)
+- **Agentic IDEs:** [Cursor, Zed Editor, Cline, Roo Code](docs/integrations/cursor-vscode.md)
+- **Enterprise Gateways:** [OmniRoute, Portkey AI, Peezy Gateway (p0.systems)](docs/integrations/gateways-proxies.md)
+- **Anthropic Tools:** [Claude Code & SDKs](docs/integrations/claude-code-hook.md)
+- **Autonomous & Persistent Agents:** [Hermes Agent (Nous), OpenClaw, OpenHands](docs/integrations/openclaw.md)
+
+*(Using an internal or obscure tool? See our [Universal Agnostic Protocols](docs/integrations/universal-agnostic.md) for shell-piping and webhooks).*
 
 ---
 ## Philosophy
