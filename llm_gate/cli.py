@@ -182,13 +182,27 @@ def main() -> None:
     stats_p = subparsers.add_parser("stats", help="View routing analytics and cost savings dashboard")
     stats_p.add_argument("--log_path", default="llm-gate-decisions.jsonl", help="Path to decision log")
 
+    
+    # Command: ui
+    ui_p = subparsers.add_parser("ui", help="Launch the interactive Streamlit analytics dashboard")
+
     args = parser.parse_args()
 
     if args.command == "setup":
         cmd_setup()
     elif args.command == "route":
         cmd_route(args.task, args.criticality)
-    elif args.command == "stats":
+        elif args.command == "ui":
+        try:
+            import streamlit
+            import subprocess
+            from pathlib import Path
+            dash_path = Path(__file__).parent / "dashboard.py"
+            console.print("[bold green]Launching Streamlit Dashboard...[/bold green]")
+            subprocess.run(["streamlit", "run", str(dash_path)])
+        except ImportError:
+            console.print("[bold red]Missing UI dependencies.[/bold red] Install with: pip install llm-gate[ui]")
+elif args.command == "stats":
         cmd_stats(args.log_path)
     else:
         console.print(Panel.fit(

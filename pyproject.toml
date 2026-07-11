@@ -28,6 +28,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+ui = ["streamlit>=1.30", "plotly>=5.18", "pandas>=2.0"]
+ci = ["rich>=13.0.0", "pyyaml>=6.0.0"]
+all = ["streamlit", "plotly", "pandas", "rich", "pyyaml"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13"]
 
 [project.scripts]
