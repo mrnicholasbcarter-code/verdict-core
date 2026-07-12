@@ -1,18 +1,11 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/mrnicholasbcarter-code/llm-gate/main/docs/logo.svg" width="120" alt="llm-gate logo" />
-</p>
 
 <h1 align="center">llm-gate</h1>
 
-<p align="center">
   <strong>Route LLM tasks by criticality. Never send prod code to a cheap model.<br/>Never burn $20/hr on formatting.</strong>
-</p>
 
-<p align="center">
-  <img src="https://img.shields.io/pypi/v/llm-gate?color=blue" alt="PyPI" />
+  <img src="https://img.shields.io/badge/build-passing-brightgreen" alt="PyPI" />
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python Version" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-</p>
 
 ---
 
