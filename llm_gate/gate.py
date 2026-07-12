@@ -38,9 +38,10 @@ class Gate:
         start_t = time.time()
         
         req_tier = TIER_MAP.get(criticality.lower(), 2)
+        esc_reason = None
 
         # 1. Escalate based on keywords
-                # Execute Learned Routing Prediction
+        # Execute Learned Routing Prediction
         predicted_tier, learned_reason = self.learned_router.predict_optimal_model(task, req_tier, [])
         if predicted_tier < req_tier:
             req_tier = predicted_tier
@@ -51,7 +52,7 @@ class Gate:
         if eff_tier is not None and eff_tier < req_tier:
             req_tier = eff_tier
             esc_reason = heuristic_reason
-final_tier = min(req_tier, eff_tier) if eff_tier is not None else req_tier
+        final_tier = min(req_tier, eff_tier) if eff_tier is not None else req_tier
         escalated = (eff_tier is not None and eff_tier < req_tier)
 
         # 2. Hard critical boundary
