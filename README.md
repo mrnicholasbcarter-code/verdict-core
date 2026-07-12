@@ -29,7 +29,7 @@ providers:
     base_url: "https://api.groq.com/openai/v1"
     api_key_env: "GROQ_API_KEY"
 EOF
-pip install llm-gate[rich,pyyaml]
+pip install "llm-gate[ci] @ git+https://github.com/mrnicholasbcarter-code/llm-gate.git"
 ```
 
 ---
@@ -149,12 +149,12 @@ result = gate.route(
 
 Base install (engine only):
 ```bash
-pip install llm-gate
+pip install git+https://github.com/mrnicholasbcarter-code/llm-gate.git
 ```
 
 Full install (includes elite CLI dashboard):
 ```bash
-pip install llm-gate[cli]
+pip install "llm-gate[ci] @ git+https://github.com/mrnicholasbcarter-code/llm-gate.git"
 ```
 
 ## How Routing Works
