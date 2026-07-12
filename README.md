@@ -136,7 +136,7 @@ result = gate.route(
 
 ## Features
 
-- **Learned Routing & Orchestration** — Neural routing that analyzes historical task success to predict the optimal model for complex review and research workflows.
+- **Heuristic Criticality Classifier** — Heuristic criticality classifier with pluggable router interface. ML/neural router is a planned extension.
 - **4 Criticality Tiers** — `critical` / `high` / `medium` / `low`. Money-path code never leaves your best model.
 - **Auto-discovery** — Queries any OpenAI-compatible `/v1/models` endpoint dynamically.
 - **Capability Classification** — Auto-tiers models by ID pattern (`opus`/`gpt-4o` → high, `flash`/`mini` → low).

@@ -23,3 +23,7 @@ coverage.xml
 *.log
 .DS_Store
 Thumbs.db
+node_build.log
+build.log
+patch_*.py
+*.bak

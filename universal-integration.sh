@@ -12,7 +12,7 @@ if [ ! -w "$BIN_DIR" ]; then
 fi
 
 # 1. Install CLI Agent Wrappers
-CLI_AGENTS=("kilocode" "pi" "pool" "codebuff" "aider" "mimo" "opencode" "jcode" "agy" "codex")
+CLI_AGENTS=("kilocode" "pi" "pool" "codebuff" "aider" "mimo" "opencode" "jcode" "agy" "codex" "cowork" "agentsdk" "claude")
 
 echo "📦 Installing shell wrappers to $BIN_DIR..."
 
