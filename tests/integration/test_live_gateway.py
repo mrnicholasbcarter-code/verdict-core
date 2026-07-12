@@ -8,10 +8,10 @@ def test_live_gateway_integration():
     # Hit health endpoint natively
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    assert resp.json()["status"] == "healthy"
     
     # Hit parsing endpoint
-    resp = client.post("/route", json={"task": "Deploy production", "criticality": "critical"})
+    resp = client.post("/v1/route", json={"task": "Deploy production", "criticality": "critical"})
     assert resp.status_code == 200
     data = resp.json()
     assert "model" in data
@@ -19,5 +19,5 @@ def test_live_gateway_integration():
     assert "critical" in data["reason"]
 
     # Hit fallback
-    resp = client.post("/route", json={"task": "Format JSON", "criticality": "low"})
+    resp = client.post("/v1/route", json={"task": "Format JSON", "criticality": "low"})
     assert resp.status_code == 200
