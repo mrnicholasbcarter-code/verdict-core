@@ -9,17 +9,60 @@
 
 ---
 
-## ⚡ The Headless Quickstart (All OS)
+## ⚡ Installation
 
-Want to skip the interactive wizard and deploy `llm-gate` headless in CI/CD or directly to your server? Run this one-liner in your terminal (macOS, Linux, or WSL):
+There are three ways to install `llm-gate`:
+
+### 1. From PyPI (Recommended)
+```bash
+# Minimal install (CLI only)
+pip install llm-gate
+
+# Complete install (CLI + FastAPI Server + Streamlit UI)
+pip install "llm-gate[all,server]"
+```
+
+### 2. Cloned Repo (Local Script Execution)
+If you want to run `llm-gate` directly from source without installing globally:
+```bash
+git clone https://github.com/mrnicholasbcarter-code/llm-gate.git
+cd llm-gate
+# Install minimal runtime requirements
+pip install .
+# Run the application directly
+python -m llm_gate.cli --help
+```
+
+### 3. Developing in Repo
+For extending the routing logic, editing heuristics, or contributing:
+```bash
+git clone https://github.com/mrnicholasbcarter-code/llm-gate.git
+cd llm-gate
+# Install in editable mode with development flags and server dependencies
+pip install -e ".[dev,server,all]"
+
+# Formatting, linting, and strict type-checking:
+python -m ruff check .
+python -m ruff format .
+python -m mypy llm_gate --strict
+
+# Run the integration test suite:
+pytest tests/ -v
+```
+
+---
+
+## The Headless Quickstart (All OS)
+
+Want to skip the interactive wizard and deploy headless in CI/CD or directly to your server? Run this one-liner in your terminal:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/mrnicholasbcarter-code/llm-gate/main/quickstart.sh | bash
 ```
 
-**Or manually for Windows/AnyOS:**
+**Or manually:**
 ```bash
-mkdir -p ~/.llm-gate && cat << 'EOF' > ~/.llm-gate/llm-gate.yaml
+mkdir -p ~/.config/llm-gate && cat << 'EOF' > ~/.config/llm-gate/llm-gate.yaml
 primary_model: "anthropic/claude-3-opus-20240229"
 providers:
   anthropic:

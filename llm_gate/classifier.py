@@ -8,12 +8,39 @@ import re
 # Tier 3 = cheapest/fastest (only used for low-criticality)
 CAPABILITY_PATTERNS: dict[int, list[str]] = {
     0: [r"opus", r"gpt-5\.5", r"grok-4", r"o3-pro", r"o3(?!-mini)"],
-    1: [r"sonnet-4", r"gpt-5\.4", r"gpt-4o(?!-mini)", r"grok-3", r"claude-3\.5-sonnet",
-        r"deepseek-r1(?!.*distill)", r"qwen.*235b"],
-    2: [r"sonnet-3", r"gpt-4o-mini", r"haiku-3\.5", r"llama.*70b", r"qwen.*72b",
-        r"mistral-large", r"deepseek-v3", r"command-r-plus"],
-    3: [r"haiku", r"flash", r"mini", r"8b", r"7b", r"nano", r"lite", r"instant",
-        r"smol", r"tiny", r"phi-4", r"gemma.*2b"],
+    1: [
+        r"sonnet-4",
+        r"gpt-5\.4",
+        r"gpt-4o(?!-mini)",
+        r"grok-3",
+        r"claude-3\.5-sonnet",
+        r"deepseek-r1(?!.*distill)",
+        r"qwen.*235b",
+    ],
+    2: [
+        r"sonnet-3",
+        r"gpt-4o-mini",
+        r"haiku-3\.5",
+        r"llama.*70b",
+        r"qwen.*72b",
+        r"mistral-large",
+        r"deepseek-v3",
+        r"command-r-plus",
+    ],
+    3: [
+        r"haiku",
+        r"flash",
+        r"mini",
+        r"8b",
+        r"7b",
+        r"nano",
+        r"lite",
+        r"instant",
+        r"smol",
+        r"tiny",
+        r"phi-4",
+        r"gemma.*2b",
+    ],
 }
 
 

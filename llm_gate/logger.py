@@ -1,17 +1,19 @@
 """JSONL decision logging for cost analysis and ML training."""
-import json
+
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from llm_gate.models import RoutingDecision
+
 
 def log_decision(
     path: Path | str,
     task: str,
     req_tier: int,
     decision: RoutingDecision,
-    log_full_task: bool = False
+    log_full_task: bool = False,
 ) -> None:
     """Write a decision record to the JSONL log."""
     try:

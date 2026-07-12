@@ -1,16 +1,16 @@
-from __future__ import annotations
 """CLI entry point for llm-gate."""
+
 import argparse
 import json
 import os
 import sys
+from typing import Any
 
 import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
-from rich.text import Text
 
 from llm_gate.gate import Gate
 from llm_gate.models import ProviderConfig
@@ -35,6 +35,7 @@ def cmd_setup() -> None:
     _print_detection_banner()
     try:
         from llm_gate.provider_detection import detect_all_providers, format_detection_report
+
         result = detect_all_providers()
         console.print(format_detection_report(result, verbose=False))
     except Exception as e:
@@ -47,7 +48,7 @@ def cmd_setup() -> None:
         )
     )
 
-    config = {}
+    config: dict[str, Any] = {}
     config["primary_model"] = Prompt.ask(
         "[bold]Primary model[/bold] (Tier-0, never offloaded)",
         default="anthropic/claude-3-opus-20240229",
@@ -70,13 +71,20 @@ def cmd_setup() -> None:
     # Offer to use detected providers
     try:
         from llm_gate.provider_detection import detect_all_providers, generate_llm_gate_config
+
         result = detect_all_providers()
         suggested = generate_llm_gate_config(result)
         if suggested.get("providers"):
-            console.print("\n[bold cyan]Based on detection, you could use these providers:[/bold cyan]")
+            console.print(
+                "\n[bold cyan]Based on detection, you could use these providers:[/bold cyan]"
+            )
             for name, cfg in suggested["providers"].items():
                 console.print(f"  • {name}: {cfg.get('base_url', 'N/A')}")
-            if Prompt.ask("\nUse detected providers as starting point?", default="y").lower().startswith("y"):
+            if (
+                Prompt.ask("\nUse detected providers as starting point?", default="y")
+                .lower()
+                .startswith("y")
+            ):
                 config["providers"] = suggested["providers"]
                 config["primary_model"] = suggested.get("primary_model", config["primary_model"])
     except Exception:
@@ -245,7 +253,9 @@ def cmd_cost_report() -> None:
     console.print(table)
 
 
-def cmd_detect(verbose: bool = False, output_json: bool = False, output_config: bool = False) -> None:
+def cmd_detect(
+    verbose: bool = False, output_json: bool = False, output_config: bool = False
+) -> None:
     """Detect available LLM providers."""
     try:
         from llm_gate.provider_detection import (
@@ -253,15 +263,21 @@ def cmd_detect(verbose: bool = False, output_json: bool = False, output_config: 
             format_detection_report,
             generate_llm_gate_config,
         )
+
         result = detect_all_providers()
         if output_json:
-            print(json.dumps({
-                "local_servers": [p.__dict__ for p in result.local_servers],
-                "cli_providers": [p.__dict__ for p in result.cli_providers],
-                "centralized_routers": [p.__dict__ for p in result.centralized_routers],
-                "cloud_apis": [p.__dict__ for p in result.cloud_apis],
-                "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "local_servers": [p.__dict__ for p in result.local_servers],
+                        "cli_providers": [p.__dict__ for p in result.cli_providers],
+                        "centralized_routers": [p.__dict__ for p in result.centralized_routers],
+                        "cloud_apis": [p.__dict__ for p in result.cloud_apis],
+                        "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
+                    },
+                    indent=2,
+                )
+            )
         elif output_config:
             config = generate_llm_gate_config(result)
             print(yaml.dump(config, default_flow_style=False))
@@ -270,6 +286,7 @@ def cmd_detect(verbose: bool = False, output_json: bool = False, output_config: 
     except Exception as e:
         console.print(f"[bold red]Detection failed: {e}[/bold red]")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

@@ -13,14 +13,23 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, TypedDict
 
 import httpx
 import yaml
 
+class ServerInfo(TypedDict, total=False):
+    cli_name: str
+    repo: str
+    description: str
+    default_base_url: str
+    models_endpoint: str
+    detect_running: Callable[[], bool]
+    install_hint: str
+    github: str
 
 # Known local LLM servers and their default endpoints
-LOCAL_SERVERS = {
+LOCAL_SERVERS: dict[str, ServerInfo] = {
     "ollama": {
         "cli_name": "ollama",
         "default_base_url": "http://localhost:11434/v1",
@@ -67,7 +76,7 @@ LOCAL_SERVERS = {
 
 
 # Centralized routers / API aggregators
-CENTRALIZED_ROUTERS = {
+CENTRALIZED_ROUTERS: dict[str, ServerInfo] = {
     "9router": {
         "repo": "1jehuang/9router",
         "description": "Local multi-provider router with OpenAI-compatible API",
@@ -161,14 +170,15 @@ API_KEY_ENV_VARS = {
 def _check_port(port: int, host: str = "127.0.0.1") -> bool:
     """Check if a port is open on localhost."""
     import socket
+
     try:
         with socket.create_connection((host, port), timeout=0.5):
             return True
-    except (ConnectionRefusedError, socket.timeout, OSError):
+    except (TimeoutError, ConnectionRefusedError, OSError):
         return False
 
 
-def _which(cmd: str) -> Optional[str]:
+def _which(cmd: str) -> str | None:
     """Find executable in PATH."""
     return shutil.which(cmd)
 
@@ -190,16 +200,17 @@ def _run_command(cmd: list[str], timeout: float = 5.0) -> tuple[int, str, str]:
 @dataclass
 class DetectedProvider:
     """A detected LLM provider with metadata."""
+
     id: str
     name: str
     type: str  # "local_server", "cli_provider", "centralized_router", "cloud_api", "custom"
-    base_url: Optional[str] = None
+    base_url: str | None = None
     models: list[str] = field(default_factory=list)
-    api_key_env: Optional[str] = None
+    api_key_env: str | None = None
     api_key_configured: bool = False
     cli_available: bool = False
     server_running: bool = False
-    install_hint: Optional[str] = None
+    install_hint: str | None = None
     description: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -207,6 +218,7 @@ class DetectedProvider:
 @dataclass
 class DetectionResult:
     """Complete provider detection results."""
+
     local_servers: list[DetectedProvider] = field(default_factory=list)
     cli_providers: list[DetectedProvider] = field(default_factory=list)
     centralized_routers: list[DetectedProvider] = field(default_factory=list)
@@ -243,17 +255,20 @@ def detect_local_servers() -> list[DetectedProvider]:
             if server_running:
                 models = _fetch_models_from_server(base_url, info.get("models_endpoint", "/models"))
 
-            detected.append(DetectedProvider(
-                id=server_id,
-                name=server_id.title().replace("-", " "),
-                type="local_server",
-                base_url=base_url,
-                models=models,
-                cli_available=cli_available,
-                server_running=server_running,
-                description=f"Local {server_id} server" + (" (running)" if server_running else " (installed, not running)"),
-                metadata={"cli_name": info["cli_name"]},
-            ))
+            detected.append(
+                DetectedProvider(
+                    id=server_id,
+                    name=server_id.title().replace("-", " "),
+                    type="local_server",
+                    base_url=base_url,
+                    models=models,
+                    cli_available=cli_available,
+                    server_running=server_running,
+                    description=f"Local {server_id} server"
+                    + (" (running)" if server_running else " (installed, not running)"),
+                    metadata={"cli_name": info["cli_name"]},
+                )
+            )
 
     return detected
 
@@ -306,16 +321,23 @@ def detect_cli_providers() -> list[DetectedProvider]:
             # Check for auth in common config locations
             auth_configured = _check_provider_auth(provider_id)
 
-            detected.append(DetectedProvider(
-                id=provider_id,
-                name=provider_id.replace("-", " ").title(),
-                type="cli_provider",
-                cli_available=True,
-                api_key_env=env_vars[0] if env_vars else None,
-                api_key_configured=api_key_configured or auth_configured,
-                description=f"CLI: {cli_found}" + (" (auth configured)" if api_key_configured or auth_configured else " (no auth)"),
-                metadata={"cli_name": cli_found},
-            ))
+            detected.append(
+                DetectedProvider(
+                    id=provider_id,
+                    name=provider_id.replace("-", " ").title(),
+                    type="cli_provider",
+                    cli_available=True,
+                    api_key_env=env_vars[0] if env_vars else None,
+                    api_key_configured=api_key_configured or auth_configured,
+                    description=f"CLI: {cli_found}"
+                    + (
+                        " (auth configured)"
+                        if api_key_configured or auth_configured
+                        else " (no auth)"
+                    ),
+                    metadata={"cli_name": cli_found},
+                )
+            )
 
     return detected
 
@@ -357,18 +379,21 @@ def detect_centralized_routers() -> list[DetectedProvider]:
             if server_running:
                 models = _fetch_models_from_server(base_url, info.get("models_endpoint", "/models"))
 
-            detected.append(DetectedProvider(
-                id=router_id,
-                name=router_id.replace("-", " ").title(),
-                type="centralized_router",
-                base_url=base_url,
-                models=models,
-                cli_available=cli_available,
-                server_running=server_running,
-                install_hint=info.get("install_hint"),
-                description=info.get("description", "") + (" (running)" if server_running else " (installed)"),
-                metadata={"github": info.get("github")},
-            ))
+            detected.append(
+                DetectedProvider(
+                    id=router_id,
+                    name=router_id.replace("-", " ").title(),
+                    type="centralized_router",
+                    base_url=base_url,
+                    models=models,
+                    cli_available=cli_available,
+                    server_running=server_running,
+                    install_hint=info.get("install_hint"),
+                    description=info.get("description", "")
+                    + (" (running)" if server_running else " (installed)"),
+                    metadata={"github": info.get("github")},
+                )
+            )
 
     return detected
 
@@ -384,14 +409,16 @@ def detect_cloud_apis() -> list[DetectedProvider]:
         api_key_configured = any(os.getenv(v) for v in env_vars)
 
         if api_key_configured:
-            detected.append(DetectedProvider(
-                id=provider_id,
-                name=provider_id.replace("-", " ").title(),
-                type="cloud_api",
-                api_key_env=env_vars[0],
-                api_key_configured=True,
-                description=f"API key found in {next(v for v in env_vars if os.getenv(v))}",
-            ))
+            detected.append(
+                DetectedProvider(
+                    id=provider_id,
+                    name=provider_id.replace("-", " ").title(),
+                    type="cloud_api",
+                    api_key_env=env_vars[0],
+                    api_key_configured=True,
+                    description=f"API key found in {next(v for v in env_vars if os.getenv(v))}",
+                )
+            )
 
     return detected
 
@@ -405,18 +432,22 @@ def detect_custom_endpoints() -> list[DetectedProvider]:
     api_key = os.getenv("OPENAI_API_KEY")
 
     if base_url and not base_url.startswith("https://api.openai.com"):
-        models = _fetch_models_from_server(base_url, "/models") if _check_port_from_url(base_url) else []
-        detected.append(DetectedProvider(
-            id="custom",
-            name=f"Custom ({base_url})",
-            type="custom",
-            base_url=base_url,
-            models=models,
-            api_key_env="OPENAI_API_KEY",
-            api_key_configured=bool(api_key),
-            server_running=_check_port_from_url(base_url),
-            description=f"Custom OpenAI-compatible endpoint: {base_url}",
-        ))
+        models = (
+            _fetch_models_from_server(base_url, "/models") if _check_port_from_url(base_url) else []
+        )
+        detected.append(
+            DetectedProvider(
+                id="custom",
+                name=f"Custom ({base_url})",
+                type="custom",
+                base_url=base_url,
+                models=models,
+                api_key_env="OPENAI_API_KEY",
+                api_key_configured=bool(api_key),
+                server_running=_check_port_from_url(base_url),
+                description=f"Custom OpenAI-compatible endpoint: {base_url}",
+            )
+        )
 
     # Check llm-gate config
     config_path = Path.home() / ".config" / "llm-gate" / "llm-gate.yaml"
@@ -425,15 +456,17 @@ def detect_custom_endpoints() -> list[DetectedProvider]:
             with open(config_path) as f:
                 config = yaml.safe_load(f) or {}
             for name, provider in (config.get("providers") or {}).items():
-                detected.append(DetectedProvider(
-                    id=f"custom:{name}",
-                    name=name,
-                    type="custom",
-                    base_url=provider.get("base_url"),
-                    api_key_env=provider.get("api_key_env"),
-                    api_key_configured=bool(os.getenv(provider.get("api_key_env", ""))),
-                    description=f"From llm-gate config: {provider.get('base_url')}",
-                ))
+                detected.append(
+                    DetectedProvider(
+                        id=f"custom:{name}",
+                        name=name,
+                        type="custom",
+                        base_url=provider.get("base_url"),
+                        api_key_env=provider.get("api_key_env"),
+                        api_key_configured=bool(os.getenv(provider.get("api_key_env", ""))),
+                        description=f"From llm-gate config: {provider.get('base_url')}",
+                    )
+                )
         except Exception:
             pass
 
@@ -444,6 +477,7 @@ def _check_port_from_url(url: str) -> bool:
     """Extract host:port from URL and check if port is open."""
     try:
         from urllib.parse import urlparse
+
         parsed = urlparse(url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -524,11 +558,15 @@ def format_detection_report(result: DetectionResult, verbose: bool = False) -> s
     # Check for centralized router
     has_router = any(p.type == "centralized_router" and p.server_running for p in all_providers)
     has_local = any(p.type == "local_server" and p.server_running for p in all_providers)
-    has_cloud = any(p.type in ("cli_provider", "cloud_api") and p.api_key_configured for p in all_providers)
+    has_cloud = any(
+        p.type in ("cli_provider", "cloud_api") and p.api_key_configured for p in all_providers
+    )
 
     if not has_router and (has_local or has_cloud):
         lines.append("  • Install a centralized router (9router or omniroute) to unify")
-        lines.append("    all your local models + cloud APIs behind one OpenAI-compatible endpoint.")
+        lines.append(
+            "    all your local models + cloud APIs behind one OpenAI-compatible endpoint."
+        )
         lines.append("    This makes llm-gate actually useful for routing between tiers.")
         lines.append("")
         lines.append("    Quick start:")
@@ -538,7 +576,9 @@ def format_detection_report(result: DetectionResult, verbose: bool = False) -> s
     elif has_router:
         lines.append("  ✅ Centralized router detected — llm-gate can route between")
         lines.append("     local models and cloud providers intelligently.")
-        router = next(p for p in all_providers if p.type == "centralized_router" and p.server_running)
+        router = next(
+            p for p in all_providers if p.type == "centralized_router" and p.server_running
+        )
         lines.append(f"     Base URL: {router.base_url}")
         if router.models:
             lines.append(f"     Models: {', '.join(router.models[:5])}")
@@ -556,7 +596,7 @@ def format_detection_report(result: DetectionResult, verbose: bool = False) -> s
 
 def generate_llm_gate_config(result: DetectionResult) -> dict[str, Any]:
     """Generate suggested llm-gate.yaml config from detection results."""
-    config = {
+    config: dict[str, Any] = {
         "primary_model": "anthropic/claude-3-opus-20240229",
         "providers": {},
     }
@@ -587,8 +627,11 @@ def generate_llm_gate_config(result: DetectionResult) -> dict[str, Any]:
         return config
 
     # Fall back to cloud providers with auth
-    cloud = [p for p in result.all_providers()
-             if p.type in ("cli_provider", "cloud_api") and p.api_key_configured]
+    cloud = [
+        p
+        for p in result.all_providers()
+        if p.type in ("cli_provider", "cloud_api") and p.api_key_configured
+    ]
     if cloud:
         provider = cloud[0]
         if provider.id in ("openrouter", "openai"):
@@ -610,17 +653,24 @@ def generate_llm_gate_config(result: DetectionResult) -> dict[str, Any]:
 
 if __name__ == "__main__":
     import sys
+
     result = detect_all_providers()
     if len(sys.argv) > 1 and sys.argv[1] == "--json":
-        print(json.dumps({
-            "local_servers": [p.__dict__ for p in result.local_servers],
-            "cli_providers": [p.__dict__ for p in result.cli_providers],
-            "centralized_routers": [p.__dict__ for p in result.centralized_routers],
-            "cloud_apis": [p.__dict__ for p in result.cloud_apis],
-            "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "local_servers": [p.__dict__ for p in result.local_servers],
+                    "cli_providers": [p.__dict__ for p in result.cli_providers],
+                    "centralized_routers": [p.__dict__ for p in result.centralized_routers],
+                    "cloud_apis": [p.__dict__ for p in result.cloud_apis],
+                    "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
+                },
+                indent=2,
+            )
+        )
     elif len(sys.argv) > 1 and sys.argv[1] == "--config":
         import yaml
+
         config = generate_llm_gate_config(result)
         print(yaml.dump(config, default_flow_style=False))
     else:

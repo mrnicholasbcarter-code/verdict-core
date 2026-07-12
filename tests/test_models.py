@@ -1,14 +1,13 @@
 """Unit tests for data models."""
+
 import pytest
-from llm_gate.models import RoutingDecision, ProviderConfig
+
+from llm_gate.models import ProviderConfig, RoutingDecision
 
 
 class TestRoutingDecision:
     def test_creation(self):
-        dec = RoutingDecision(
-            model="test/model", provider="test", tier=2,
-            reason="unit test"
-        )
+        dec = RoutingDecision(model="test/model", provider="test", tier=2, reason="unit test")
         assert dec.model == "test/model"
         assert dec.tier == 2
 

@@ -1,10 +1,10 @@
 """Core routing algorithm prioritizing cost, tier, and capability."""
+
 from llm_gate.models import ModelInfo, ProviderConfig
 
+
 def select_best_model(
-    candidates: list[ModelInfo],
-    tier: int,
-    configs: dict[str, ProviderConfig]
+    candidates: list[ModelInfo], tier: int, configs: dict[str, ProviderConfig]
 ) -> tuple[ModelInfo | None, list[str]]:
     """Selects the cheapest adequate model out of candidates.
 
@@ -19,7 +19,7 @@ def select_best_model(
 
     # Highest capability_tier integer is cheapest
     valid.sort(key=lambda m: (-m.capability_tier, -configs[m.provider].priority, m.id))
-    
+
     chosen = valid[0]
     alts = [m.id for m in valid[1:5]]
     return chosen, alts

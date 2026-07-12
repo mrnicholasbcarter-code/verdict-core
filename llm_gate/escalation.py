@@ -8,7 +8,7 @@ the requested tier and all matching pattern tiers (i.e., escalation only bumps U
 from __future__ import annotations
 
 import re
-from typing import Sequence
+from collections.abc import Sequence
 
 from llm_gate.models import EscalationPattern
 
@@ -60,9 +60,10 @@ def scan(
     best_label: str | None = None
 
     for pat in patterns:
-        if re.search(pat.pattern, task, re.IGNORECASE):
-            if best_tier is None or pat.min_tier < best_tier:
-                best_tier = pat.min_tier
-                best_label = pat.label
+        if re.search(pat.pattern, task, re.IGNORECASE) and (
+            best_tier is None or pat.min_tier < best_tier
+        ):
+            best_tier = pat.min_tier
+            best_label = pat.label
 
     return best_tier, best_label

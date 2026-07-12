@@ -29,7 +29,7 @@ server = ["fastapi>=0.109.0", "uvicorn>=0.27.0"]
 ui = ["streamlit>=1.30", "plotly>=5.18", "pandas>=2.0"]
 ci = ["rich>=13.0.0", "pyyaml>=6.0"]
 all = ["streamlit", "plotly", "pandas", "rich", "pyyaml"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13", "vcrpy>=6.0.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13", "vcrpy>=6.0.0", "types-PyYAML"]
 
 [project.scripts]
 llm-gate = "llm_gate.cli:main"
@@ -59,6 +59,7 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

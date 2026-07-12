@@ -1,8 +1,10 @@
 """Unit tests for the Gate routing engine."""
-import pytest
-from unittest.mock import patch, MagicMock
-from llm_gate.gate import Gate, TIER_MAP
-from llm_gate.models import ProviderConfig, RoutingDecision, ModelInfo
+
+import contextlib
+from unittest.mock import MagicMock, patch
+
+from llm_gate.gate import TIER_MAP, Gate
+from llm_gate.models import ProviderConfig
 
 
 class TestTierMap:
@@ -114,7 +116,9 @@ class TestGateWithProviders:
     @patch("llm_gate.gate.log_decision")
     @patch("llm_gate.gate.fetch_models")
     @patch("llm_gate.gate.select_best_model")
-    def test_falls_back_when_no_candidate_matches(self, mock_select, mock_fetch, mock_log, mock_scan):
+    def test_falls_back_when_no_candidate_matches(
+        self, mock_select, mock_fetch, mock_log, mock_scan
+    ):
         mock_fetch.return_value = []
         mock_select.return_value = (None, [])
 
@@ -129,16 +133,18 @@ class TestGateWithProviders:
     @patch("urllib.request.urlopen")
     def test_fallback_on_429_http_error(self, mock_urlopen, mock_log, mock_scan):
         from urllib.error import HTTPError
+
         import llm_gate.discovery
+
         llm_gate.discovery._CACHE.clear()
-        
+
         mock_urlopen.side_effect = HTTPError("http://fake.api", 429, "Too Many Requests", {}, None)
-        
+
         providers = {"openrouter": ProviderConfig(base_url="https://fake.api/v1")}
         gate = Gate(primary_model="anthropic/claude-3-opus-20240229", providers=providers)
-        
+
         dec = gate.route("do something", criticality="low")
-        
+
         assert dec.model == "anthropic/claude-3-opus-20240229"
         assert dec.provider == "primary"
         assert "fallback" in dec.reason
@@ -148,16 +154,18 @@ class TestGateWithProviders:
     @patch("urllib.request.urlopen")
     def test_fallback_on_529_http_error(self, mock_urlopen, mock_log, mock_scan):
         from urllib.error import HTTPError
+
         import llm_gate.discovery
+
         llm_gate.discovery._CACHE.clear()
-        
+
         mock_urlopen.side_effect = HTTPError("http://fake.api", 529, "Overloaded", {}, None)
-        
+
         providers = {"openrouter": ProviderConfig(base_url="https://fake.api/v1")}
         gate = Gate(primary_model="anthropic/claude-3-opus-20240229", providers=providers)
-        
+
         dec = gate.route("do something", criticality="low")
-        
+
         assert dec.model == "anthropic/claude-3-opus-20240229"
         assert dec.provider == "primary"
         assert "fallback" in dec.reason
@@ -169,7 +177,9 @@ class TestGateWithProviders:
         """An explicit Anthropic 403 (forbidden / blocked API key) must not crash the
         gate: discovery fails closed and routing falls back to the primary model."""
         from urllib.error import HTTPError
+
         import llm_gate.discovery
+
         llm_gate.discovery._CACHE.clear()
 
         mock_urlopen.side_effect = HTTPError(
@@ -190,19 +200,21 @@ class TestGateWithProviders:
     @patch("llm_gate.gate.scan", return_value=(None, ""))
     @patch("llm_gate.gate.log_decision")
     @patch("urllib.request.urlopen")
-    def test_fallback_on_403_connection_error_from_anthropic(self, mock_urlopen, mock_log, mock_scan):
+    def test_fallback_on_403_connection_error_from_anthropic(
+        self, mock_urlopen, mock_log, mock_scan
+    ):
         """An Anthropic 403 surfaced as a connection-level error (e.g. proxy block)
         must also fall back to the primary model without raising."""
         import urllib.error
+
         import llm_gate.discovery
+
         llm_gate.discovery._CACHE.clear()
 
         # Some stacks wrap a 403 in a URLError/ConnectionError carrying the code.
         err = urllib.error.URLError("403 Forbidden")
-        try:
+        with contextlib.suppress(AttributeError):
             err.code = 403  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
         mock_urlopen.side_effect = err
 
         providers = {"anthropic": ProviderConfig(base_url="https://api.anthropic.com/v1")}

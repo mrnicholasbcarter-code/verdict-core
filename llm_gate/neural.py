@@ -33,7 +33,9 @@ class LearnedRouter:
         except Exception:
             pass
 
-    def predict_optimal_model(self, task: str, baseline_tier: int, candidates: list[str]) -> tuple[int, str]:
+    def predict_optimal_model(
+        self, task: str, baseline_tier: int, candidates: list[str]
+    ) -> tuple[int, str]:
         """
         Identifies the mathematically superior candidate within the justified tier.
         Returns (tier, reason) for the optimal model.
