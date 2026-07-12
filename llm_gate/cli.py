@@ -82,12 +82,7 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
             )
     else:
         # Failsafe default
-        gate = Gate(
-            primary_model="anthropic/claude-3-opus",
-            providers={
-                "public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")
-            }
-        )
+        gate = Gate() # Automatically loads config via Gate(None)
 
         if terse:
             dec = gate.route(task, criticality)
@@ -198,11 +193,11 @@ def main() -> None:
     args = parser.parse_args()
     
     if args.command == "setup":
-        run_setup()
+        cmd_setup()
     elif args.command == "route":
-        handle_route(args.task, args.criticality, getattr(args, "terse", False))
+        cmd_route(args.task, args.criticality, getattr(args, "terse", False))
     elif args.command == "stats":
-        handle_stats(args.log_path)
+        cmd_stats(args.log_path)
     elif args.command == "ui":
         from .dashboard import start_ui
         start_ui()
