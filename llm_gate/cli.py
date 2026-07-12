@@ -90,10 +90,11 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
         )
 
         if terse:
-        dec = gate.route(task, criticality)
-        print(dec.model)
-        return
-with console.status("[bold green]Evaluating network & heuristics...", spinner="dots"):
+            dec = gate.route(task, criticality)
+            print(dec.model)
+            return
+            
+        with console.status("[bold green]Evaluating network & heuristics...", spinner="dots"):
         dec = gate.route(task, criticality)
 
     # Format output panel
