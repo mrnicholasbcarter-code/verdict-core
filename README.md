@@ -103,6 +103,7 @@ The v0.2 product specification and acceptance matrix are normative:
 - [Product specification](docs/specs/PRODUCT_SPEC_V0.2.md)
 - [Release acceptance matrix](docs/specs/RELEASE_ACCEPTANCE.md)
 - [Routing policy](docs/specs/ROUTING_POLICY.md)
+- [Flagship readiness audit and staged lift plan](docs/specs/FLAGSHIP_20K_STAR_AUDIT_2026-07-13.md)
 
 Before calling the project production-ready, the implementation still needs local auth, SSRF-safe URL validation, filtered dispatch tied to live capability and headroom state, legal idempotent fallback, required Ruflo/RuVector intelligence, raw HTTP and SDK compatibility smoke tests, and a configured OmniRoute live test.
 
