@@ -12,6 +12,7 @@ except ImportError as exc:
         "FastAPI is required for the web server mode. Install with `pip install llm-gate[server]`"
     ) from exc
 
+from llm_gate.catalog import configured_catalog_filters, normalize_catalog
 from llm_gate.gate import Gate
 from llm_gate.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 
@@ -135,14 +136,20 @@ def _as_response(result: BufferedUpstreamResponse) -> Response:
 
 @app.get("/v1/models")
 async def list_models() -> Response:
-    """Pass through the configured upstream model catalog."""
+    """Return a locally filtered catalog with conservative availability metadata."""
     if proxy_instance is None:
         raise HTTPException(status_code=503, detail="Proxy not initialized")
     try:
         result = await proxy_instance.models()
     except Exception as exc:
         return _proxy_error(502, f"upstream model catalog unavailable: {exc}")
-    return _as_response(result)
+    allowlist, denylist = configured_catalog_filters(
+        os.getenv("LLMGATE_MODEL_ALLOWLIST"), os.getenv("LLMGATE_MODEL_DENYLIST")
+    )
+    filtered_body = normalize_catalog(result.body, allowlist=allowlist, denylist=denylist)
+    return Response(
+        content=filtered_body, status_code=result.status_code, headers=dict(result.headers)
+    )
 
 
 @app.post("/v1/chat/completions")

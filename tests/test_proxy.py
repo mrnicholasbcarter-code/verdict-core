@@ -42,7 +42,14 @@ class RecordingTransport(httpx.AsyncBaseTransport):
             return httpx.Response(
                 200,
                 headers={"content-type": "application/json", "x-upstream": "catalog"},
-                json={"object": "list", "data": [{"id": "selected-model"}]},
+                json={
+                    "object": "list",
+                    "data": [
+                        {"id": "selected-model"},
+                        {"id": "denied-model"},
+                        {"name": "invalid-row"},
+                    ],
+                },
             )
         response_body = b'{"id":"chatcmpl-test","choices":[],"usage":{"total_tokens":4}}'
         if self.stream:
@@ -155,6 +162,7 @@ def test_proxy_rejects_oversized_and_malformed_payloads(monkeypatch) -> None:
 def test_models_endpoint_forwards_upstream_catalog(monkeypatch) -> None:
     transport = RecordingTransport()
     _configure_test_app(monkeypatch, transport)
+    monkeypatch.setenv("LLMGATE_MODEL_DENYLIST", "denied-model")
 
     with TestClient(api.app) as client:
         readiness = client.get("/ready")
@@ -165,3 +173,9 @@ def test_models_endpoint_forwards_upstream_catalog(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.headers["x-upstream"] == "catalog"
     assert response.json()["data"][0]["id"] == "selected-model"
+    assert len(response.json()["data"]) == 1
+    assert response.json()["data"][0]["llm_gate"] == {
+        "eligible": True,
+        "availability_state": "unknown",
+        "capability_profile": {"tier": 2},
+    }
