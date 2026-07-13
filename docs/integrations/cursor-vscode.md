@@ -10,7 +10,7 @@ llm-gate serve --port 8000
 
 ### 2. Configure Your IDE
 
-Because `llm-gate` focuses purely on routing decisions (to avoid adding latency overhead to streaming tokens), the recommended IDE pattern is to pair it with an execution proxy like **LiteLLM**.
+`llm-gate` now has an alpha `POST /v1/chat/completions` proxy that preserves request fields and streamed bytes. For production IDE use, continue pairing it with LiteLLM or another execution proxy until local auth, live availability, retry/fallback, and compatibility gates pass.
 
 In your IDE AI configuration (e.g., `config.json` for Continue.dev):
 
@@ -27,4 +27,4 @@ In your IDE AI configuration (e.g., `config.json` for Continue.dev):
 }
 ```
 
-*(Note: Advanced proxying of the actual `chat/completions` byte-stream is actively being built for `v0.3.0` which will allow `llm-gate` to act as a 100% native drop-in replacement for OpenAI endpoints in your IDE.)*
+*(Note: the native proxy path is an alpha development slice, not yet a 100% production drop-in replacement. See the [release acceptance matrix](../specs/RELEASE_ACCEPTANCE.md) before using it with real credentials.)*

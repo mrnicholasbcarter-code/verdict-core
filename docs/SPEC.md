@@ -1,5 +1,10 @@
 # llm-gate — Technical Specification
-## v0.1.0 — July 2026
+## v0.1.0 — July 2026 (historical library profile)
+
+> This document describes the original library-only release. The current
+> framework-agnostic proxy target is specified in
+> [`docs/specs/PRODUCT_SPEC_V0.2.md`](specs/PRODUCT_SPEC_V0.2.md), with its
+> release gates in [`docs/specs/RELEASE_ACCEPTANCE.md`](specs/RELEASE_ACCEPTANCE.md).
 
 ---
 
@@ -445,15 +450,19 @@ llm-gate/
 
 ---
 
-## 11. Non-Goals (v0.1)
+## 11. Non-Goals (v0.1 historical profile)
 
 These are explicitly out of scope for the initial release:
 
-- **Prompt proxying.** llm-gate does NOT send prompts to models. It tells you WHICH model to use. You call the model yourself.
+- **Prompt proxying in v0.1.** The original library did not send prompts to models. The
+  current alpha has a separate OpenAI-compatible proxy slice; it is not yet a production
+  drop-in replacement and is governed by the v0.2 acceptance matrix.
 - **ML-based routing.** The default router is deterministic (tier + keywords). The decision log enables training an ML router, but that's a future module.
 - **Token counting.** No tokenizer dependency. Context window checks use the model's advertised limit if available.
 - **Response quality scoring.** The log records decisions, not outcomes. Quality scoring is the caller's responsibility.
-- **Streaming.** Routing is a single sync/async function call. No streaming involved.
+- **Streaming in v0.1.** The original library had no streaming path. The current alpha
+  transport passes arbitrary upstream byte chunks through, with broader compatibility gates
+  still open.
 
 ---
 
