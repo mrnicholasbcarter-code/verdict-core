@@ -10,7 +10,7 @@
 
 ## 1. Overview
 
-llm-gate is a zero-dependency Python library that routes LLM tasks to the most cost-effective model based on task criticality. It solves the problem of developers paying premium model prices for trivial work while sometimes under-serving critical code paths.
+llm-gate is a lightweight Python library that routes LLM tasks to an appropriate model based on task criticality. The original v0.1 profile kept core routing dependency-light and did not include the HTTP proxy layer.
 
 ### Core Invariant
 

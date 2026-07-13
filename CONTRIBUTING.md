@@ -28,7 +28,7 @@ pip install -e '.[dev,server]'
 
 ## Design Principles
 
-- **Zero dependencies.** The core library uses only the Python standard library.
+- **Layered dependencies.** Core routing remains lightweight; the HTTP proxy uses the declared `httpx` dependency and the FastAPI server is installed with the `server` extra.
 - **Safety first.** Deterministic policy and capability gates always apply. Managed adaptive
   intelligence is required for production readiness and cannot override hard safety gates.
 - **Explicit degradation.** A development-only degraded mode may be used when the managed
