@@ -291,6 +291,41 @@ def cmd_detect(
         sys.exit(1)
 
 
+def cmd_suggest(log_path: str = "llm-gate-decisions.jsonl") -> None:
+    """Run the SuggestionService to propose evidence-backed improvements."""
+    from rich.console import Console
+    from rich.panel import Panel
+
+    from llm_gate.suggestions import SuggestionService
+
+    console = Console()
+    svc = SuggestionService(log_path=log_path)
+
+    with console.status("[bold green]Mining telemetry for suggestions...", spinner="dots"):
+        suggestions = svc.generate_suggestions()
+
+    if not suggestions:
+        console.print("[yellow]No actionable suggestions found. Your routing is optimized![/yellow]")
+        return
+
+    console.print(Panel.fit("[bold blue]llm-gate Intelligence Suggestions[/bold blue]", border_style="blue"))
+
+    for s in suggestions:
+        category_color = {"performance": "cyan", "reliability": "red", "capacity": "yellow"}.get(s.category, "white")
+        output = f"""[bold {category_color}]{s.title} ({s.id})[/] 
+[dim]Category:[/] {s.category.title()}  |  [dim]Novelty:[/] {s.novelty}  |  [dim]Expires In:[/] {s.expiry}
+
+{s.description}
+
+[bold dim]Proposed Next Experiment:[/bold dim]
+[italic]{s.proposed_next_experiment}[/italic]
+
+[dim]Confidence:[/] {s.confidence * 100:.1f}%  |  [dim]Impact:[/] {s.expected_impact}
+[dim]Evidence Events (Top 3):[/] {', '.join(s.evidence_references) if s.evidence_references else 'None'}
+"""
+        console.print(output)
+        console.print("---")
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="llm-gate: Tier-based LLM Router")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -317,6 +352,9 @@ def main() -> None:
     detect_p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     detect_p.add_argument("--json", action="store_true", help="Output JSON")
     detect_p.add_argument("--config", action="store_true", help="Generate suggested llm-gate.yaml")
+
+    suggest_p = subparsers.add_parser("suggest", help="Review intelligence suggestions from past outcomes")
+    suggest_p.add_argument("--log_path", default="llm-gate-decisions.jsonl")
 
     args = parser.parse_args()
 
@@ -360,6 +398,8 @@ def main() -> None:
             sys.exit(1)
     elif args.command == "detect":
         cmd_detect(verbose=args.verbose, output_json=args.json, output_config=args.config)
+    elif args.command == "suggest":
+        cmd_suggest(args.log_path)
     else:
         parser.print_help()
 
