@@ -44,7 +44,7 @@ jobs:
       - name: Run Ruff
         run: ruff check .
       - name: Run Ruff Format (check)
-        run: ruff format --check .
+        run: ruff format .
       - name: Run MyPy
         run: mypy llm_gate --strict
 

@@ -1,4 +1,4 @@
-with open("README.md", "r") as f:
+with open("README.md") as f:
     text = f.read()
 
 benchmark_text = """## Performance Benchmarks

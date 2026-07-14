@@ -18,7 +18,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,server]"
       - name: Run Ruff linter
-        run: ruff check .
+        run: ruff check --fix .
       - name: Check formatting
         run: ruff format --check .
       - name: Run mypy

@@ -1,7 +1,8 @@
-import time
 import asyncio
-from llm_gate.gate import Gate
+import time
+
 from llm_gate.classifier import classify
+from llm_gate.gate import Gate
 
 
 async def run_benchmark():

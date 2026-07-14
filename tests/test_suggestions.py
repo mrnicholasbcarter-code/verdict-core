@@ -9,29 +9,41 @@ def test_generate_suggestions(tmp_path):
     # Generate some mock latency faults
     lines = []
     for i in range(12):
-        lines.append(json.dumps({
-            "task_hash": f"abc{i}",
-            "latency_ms": 3000,
-            "escalated": False,
-            "model_chosen": "slow-model"
-        }))
+        lines.append(
+            json.dumps(
+                {
+                    "task_hash": f"abc{i}",
+                    "latency_ms": 3000,
+                    "escalated": False,
+                    "model_chosen": "slow-model",
+                }
+            )
+        )
 
     for i in range(6):
-        lines.append(json.dumps({
-            "task_hash": f"def{i}",
-            "latency_ms": 100,
-            "escalated": True,
-            "effective_tier": 1,
-            "escalation_reason": "timeout"
-        }))
+        lines.append(
+            json.dumps(
+                {
+                    "task_hash": f"def{i}",
+                    "latency_ms": 100,
+                    "escalated": True,
+                    "effective_tier": 1,
+                    "escalation_reason": "timeout",
+                }
+            )
+        )
 
     for i in range(4):
-        lines.append(json.dumps({
-            "task_hash": f"ghi{i}",
-            "latency_ms": 100,
-            "escalated": False,
-            "headroom_pct": 0.10
-        }))
+        lines.append(
+            json.dumps(
+                {
+                    "task_hash": f"ghi{i}",
+                    "latency_ms": 100,
+                    "escalated": False,
+                    "headroom_pct": 0.10,
+                }
+            )
+        )
 
     log_file.write_text("\n".join(lines))
 
@@ -49,14 +61,20 @@ def test_generate_suggestions(tmp_path):
     suggestions2 = svc2.generate_suggestions()
     assert len(suggestions2) == 0
 
+
 def test_no_raw_prompts_leaked(tmp_path):
     log_file = tmp_path / "test_logs.jsonl"
     for i in range(12):
-        log_file.open("a").write(json.dumps({
-            "task_hash": f"abc{i}",
-            "task_preview": "This is a secret prompt!",
-            "latency_ms": 3000,
-        }) + "\n")
+        log_file.open("a").write(
+            json.dumps(
+                {
+                    "task_hash": f"abc{i}",
+                    "task_preview": "This is a secret prompt!",
+                    "latency_ms": 3000,
+                }
+            )
+            + "\n"
+        )
 
     svc = SuggestionService(log_path=str(log_file))
     suggestions = svc.generate_suggestions()

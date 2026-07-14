@@ -20,6 +20,7 @@ class Suggestion:
     proposed_next_experiment: str
     created_at: str
 
+
 class SuggestionService:
     def __init__(self, log_path: str = "llm-gate-decisions.jsonl"):
         self.log_path = Path(log_path)
@@ -39,20 +40,16 @@ class SuggestionService:
                         continue
                     try:
                         record = json.loads(line)
-                        if "latency_ms" in record:
-                            if record["latency_ms"] > 2500:
-                                latency_faults.append(record)
-                        if "effective_tier" in record:
-                            # Actually use 'escalated'
-                            if record.get("escalated", False):
-                                escalations.append(record)
-                        if "headroom_pct" in record:
-                            if record["headroom_pct"] < 0.15:
-                                headroom_failures.append(record)
+                        if "latency_ms" in record and record["latency_ms"] > 2500:
+                            latency_faults.append(record)
+                        if "effective_tier" in record and record.get("escalated", False):
+                            escalations.append(record)
+                        if "headroom_pct" in record and record["headroom_pct"] < 0.15:
+                            headroom_failures.append(record)
                     except json.JSONDecodeError:
                         continue
         except Exception:
-            pass # Failure is isolated from readiness
+            pass  # Failure is isolated from readiness
 
         suggestions = []
 
@@ -72,7 +69,7 @@ class SuggestionService:
                     novelty="first_occurrence",
                     expiry="7d",
                     proposed_next_experiment="Evaluate adding a lightweight T3 provider to the configuration.",
-                    created_at=datetime.now(timezone.utc).isoformat()
+                    created_at=datetime.now(timezone.utc).isoformat(),
                 )
             )
 
@@ -92,7 +89,7 @@ class SuggestionService:
                     novelty="first_occurrence",
                     expiry="14d",
                     proposed_next_experiment="Verify credentials of the failing provider or disable it proactively.",
-                    created_at=datetime.now(timezone.utc).isoformat()
+                    created_at=datetime.now(timezone.utc).isoformat(),
                 )
             )
 
@@ -111,7 +108,7 @@ class SuggestionService:
                     novelty="recent",
                     expiry="3d",
                     proposed_next_experiment="Investigate burst load or increase global rate limit buffering.",
-                    created_at=datetime.now(timezone.utc).isoformat()
+                    created_at=datetime.now(timezone.utc).isoformat(),
                 )
             )
 
