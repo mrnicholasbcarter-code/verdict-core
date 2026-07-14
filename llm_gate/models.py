@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,45 @@ class RoutingDecision:
 
     logged: bool = False
     """Was this decision written to the JSONL log?"""
+
+    decision: str = "selected"
+    """Decision outcome: selected, fallback, escalated, or denied."""
+
+    request_id: str = ""
+    """Stable request identifier for explainability and outcomes."""
+
+    policy_version: str = "policy-2026-07-13.1"
+    """Versioned policy bundle identifier."""
+
+    event_version: str = "1"
+    """Versioned routing decision event schema."""
+
+    task_class: str = "unknown"
+    """Normalized task class used by the deterministic policy floor."""
+
+    protected: bool = False
+    """Whether the request is protected and requires the hard floor."""
+
+    degraded_mode: bool = False
+    """Whether the request was evaluated in explicit degraded mode."""
+
+    managed_backend_status: str = "unknown"
+    """Managed intelligence readiness status."""
+
+    transport_outcome: str = "not_sent"
+    """Transport outcome for the dispatch path, distinct from quality."""
+
+    quality_outcome: str = "unknown"
+    """Validated quality outcome, which may arrive later than transport."""
+
+    quality_score: float | None = None
+    """Validated quality score when available."""
+
+    candidate_states: list[dict[str, Any]] = field(default_factory=list)
+    """Redacted candidate explainability records."""
+
+    safety_flags: list[str] = field(default_factory=list)
+    """Policy, privacy, or capability safety flags."""
 
 
 @dataclass
@@ -85,6 +125,15 @@ class ModelInfo:
 
     is_available: bool = True
     """Passed headroom check. False if quota exhausted."""
+
+    capabilities: frozenset[str] = field(default_factory=frozenset)
+    """Declared capability flags such as tools, vision, or structured output."""
+
+    availability_state: str = "ready"
+    """Normalized availability state: ready, degraded, unknown, or denied."""
+
+    quality_confidence: float | None = None
+    """Observed or inferred quality confidence for scoring."""
 
 
 @dataclass(frozen=True)

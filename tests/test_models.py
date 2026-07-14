@@ -21,6 +21,9 @@ class TestRoutingDecision:
         assert dec.escalated is False
         assert dec.logged is False
         assert dec.latency_ms == 0.0
+        assert dec.decision == "selected"
+        assert dec.transport_outcome == "not_sent"
+        assert dec.quality_outcome == "unknown"
 
 
 class TestProviderConfig:

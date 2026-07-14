@@ -20,7 +20,7 @@ def test_classifier_matches_known_tiers_and_defaults() -> None:
     assert classify("unknown/provider-model") == 2
 
 
-def test_select_best_model_prefers_cheapest_adequate_available_model() -> None:
+def test_select_best_model_prefers_highest_quality_eligible_model() -> None:
     candidates = [
         ModelInfo(id="primary", provider="frontier", capability_tier=0, is_available=True),
         ModelInfo(id="cheap-b", provider="cheap", capability_tier=3, is_available=True),
@@ -35,8 +35,8 @@ def test_select_best_model_prefers_cheapest_adequate_available_model() -> None:
     chosen, alternatives = select_best_model(candidates, tier=3, configs=configs)
 
     assert chosen is not None
-    assert chosen.id == "cheap-a"
-    assert alternatives == ["cheap-b", "primary"]
+    assert chosen.id == "primary"
+    assert alternatives == ["cheap-a", "cheap-b"]
 
 
 def test_select_best_model_fails_open_with_exhausted_candidates() -> None:

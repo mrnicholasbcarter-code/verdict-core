@@ -141,17 +141,18 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
     tier_colors = {0: "red", 1: "magenta", 2: "yellow", 3: "green"}
     t_color = tier_colors.get(dec.tier, "white")
 
-    escalated_badge = (
-        "[bold red]ESCALATED[/bold red]" if dec.escalated else "[dim]Standard Routing[/dim]"
-    )
-
     output = f"""[bold]Task:[/bold] {task[:100]}{"..." if len(task) > 100 else ""}
 
 [bold]Decision:[/bold]
   Model:     [bold {t_color}]{dec.model}[/bold {t_color}]
   Provider:  {dec.provider}
   Tier:      T{dec.tier}
-  Status:    {escalated_badge}
+  Outcome:   {dec.decision}
+  Managed:   {dec.managed_backend_status}
+  Transport: {dec.transport_outcome}
+  Quality:   {dec.quality_outcome}
+  Protected: {str(dec.protected).lower()}
+  Degraded:  {str(dec.degraded_mode).lower()}
   Latency:   [cyan]{dec.latency_ms:.1f}ms[/cyan]
 
 [bold dim]Reason:[/bold dim] [italic]{dec.reason}[/italic]
@@ -180,12 +181,18 @@ def cmd_stats(log_path: str = "llm-gate-decisions.jsonl") -> None:
         for line in f:
             try:
                 entry = json.loads(line)
-                d = entry.get("decision", {})
-                t = d.get("tier", 2)
+                decision = entry.get("decision")
+                if isinstance(decision, dict):
+                    t = decision.get("tier", 2)
+                    m = decision.get("model", "unknown")
+                    lat = decision.get("latency_ms", 0)
+                else:
+                    t = entry.get("effective_tier", entry.get("tier", 2))
+                    m = entry.get("model_chosen", entry.get("model", "unknown"))
+                    lat = entry.get("latency_ms", 0)
                 tiers[t] = tiers.get(t, 0) + 1
-                m = d.get("model", "unknown")
                 models[m] = models.get(m, 0) + 1
-                latencies.append(d.get("latency_ms", 0))
+                latencies.append(lat)
             except json.JSONDecodeError:
                 continue
 
@@ -234,9 +241,14 @@ def cmd_cost_report() -> None:
                 continue
             try:
                 data = json.loads(line)
-                total_requests += 1
-                if data.get("tier", 2) == 0:
+                decision = data.get("decision")
+                if isinstance(decision, dict):
+                    tier = decision.get("tier", 2)
+                else:
+                    tier = data.get("effective_tier", data.get("tier", 2))
+                if tier == 0:
                     t0_requests += 1
+                total_requests += 1
             except Exception:
                 pass
 

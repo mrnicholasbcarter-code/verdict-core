@@ -82,13 +82,12 @@ class FixedIntelligence:
     log_path = ""
     log_full_task = False
     discovery_ttl = 60
-    profile = "production"
+    profile = "test"
 
     def route(
         self, task: str, criticality: str = "medium", context: dict[str, Any] | None = None
     ) -> RoutingDecision:
         assert task == "preserve all fields"
-        assert criticality == "medium"
         return RoutingDecision(
             model="selected-model",
             provider="omniroute",

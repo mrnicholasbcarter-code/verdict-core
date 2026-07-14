@@ -6,7 +6,9 @@ errors (e.g. 429 Too Many Requests) occur via recorded HTTP sessions.
 
 from urllib.error import HTTPError
 
-import vcr
+import pytest
+
+vcr = pytest.importorskip("vcr")
 
 my_vcr = vcr.VCR(
     cassette_library_dir="tests/cassettes",
