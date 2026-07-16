@@ -6,26 +6,26 @@
 </p>
 
 <h1 align="center">llm-gate</h1>
-<p align="center"><b>Intelligent LLM routing. One line changes where your tokens go.</b></p>
+<p align="center"><b>Policy-safe, availability-aware LLM routing and workflow orchestration.</b></p>
 
 ---
 
-**llm-gate** is a Python library and local OpenAI-compatible proxy that routes LLM requests based on criticality, cost, and provider availability. It evaluates each request, selects the right model from your configured providers, and forwards standard `chat/completions` traffic through a transparent proxy, so you never accidentally send production code to a cheap model.
+**llm-gate** is a Python library and local OpenAI-compatible proxy that first understands what a task requires, then selects among models and workflows that are actually capable, healthy, policy-compliant, and usable now. It combines deterministic safety gates with live provider availability, bounded adaptive advice, verification, and explainable decisions. Criticality remains a safety input—not the routing algorithm.
 
 ```python
 from llm_gate import Gate
 
 gate = Gate()
-decision = gate.route("Rewrite the auth module", criticality="high")
+decision = gate.route("Rewrite the auth module", criticality="high")  # compatibility input
 print(decision.model)   # anthropic/claude-sonnet-4-20250514
-print(decision.reason)  # "High-criticality task routed to tier-0 primary model"
+print(decision.reason)  # includes requirements, eligibility, and verification evidence
 ```
 
 ## Why llm-gate?
 
 | Problem | llm-gate solution |
 |---|---|
-| Accidentally routing sensitive code to weak models | Criticality classifier with deterministic tier enforcement |
+| Accidentally routing sensitive code to weak models | Deterministic policy floor plus capability, privacy, and live-availability gates |
 | Manually switching API keys between providers | Auto-detection of local servers, CLI tools, API keys, and routers |
 | No visibility into routing decisions | JSONL decision logging, analytics CLI, and Streamlit dashboard |
 | Vendor lock-in | OpenAI-compatible proxy works with any client (Cursor, Aider, Claude Code, etc.) |
@@ -83,9 +83,9 @@ llm-gate route "Fix the SQL injection in user_auth.py" --criticality high
 ```
 ┌─ Routing Decision ─────────────────────────┐
 │ Model:    anthropic/claude-sonnet-4-20250514│
-│ Tier:     0 (primary)                       │
-│ Reason:   High-criticality security task    │
-│ Latency:  0.12ms                            │
+│ Status:   eligible                          │
+│ Reason:   Capability + health + quota fit   │
+│ Verify:   required                           │
 └─────────────────────────────────────────────┘
 ```
 
@@ -144,18 +144,19 @@ export OPENAI_BASE_URL=http://localhost:8000/v1
 ## How Routing Works
 
 ```
-Request → Classifier → Tier Assignment → Model Selection → Provider Dispatch
-              │              │                  │                │
-         Criticality    0=primary          Best available    Forward to
-         detection      1=capable          model in tier     upstream
-         (heuristic)    2=standard                           provider
-                        3=economy
+Request → Planner → TaskSpec → Hard Gates → Eligible Candidates → Adaptive Route
+                                      │                              │
+                              policy, privacy,              model/workflow choice
+                              capability, health,             among eligible options
+                              quota, budget, risk
+                                      │                              │
+                                      └────────→ Execute → Verify → Learn
 ```
 
-1. **Classification** evaluates the task text for security keywords, code complexity signals, and domain markers
-2. **Tier assignment** maps criticality to a tier (0 = never offload, 3 = cheapest available)
-3. **Model selection** picks the best available model within the tier from your configured providers
-4. **Escalation** promotes to a higher tier if the selected model lacks required capabilities
+1. **Planning** determines objective, effort, required capabilities, tools, workflow shape, risk, budget, and verification.
+2. **Hard gates** reject unsafe, incompatible, stale, unhealthy, locked-out, or quota-exhausted candidates.
+3. **Adaptive selection** ranks only eligible candidates using task fit, quality, cost, latency, reliability, and bounded learned evidence.
+4. **Execution and verification** run the selected model/workflow, validate outcomes, and record redacted evidence for future improvement.
 
 ## Configuration
 

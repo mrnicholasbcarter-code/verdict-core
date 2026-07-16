@@ -441,6 +441,7 @@ class OmniRouteAvailabilityAdapter:
         except Exception:
             runtime, errors = {}, ["runtime transport: malformed"]
         mapping = runtime if isinstance(runtime, Mapping) else {}
+        malformed_runtime = runtime is not None and not isinstance(runtime, Mapping)
         timed_out = any("timeout" in error for error in errors)
         states = []
         for model in catalog:
@@ -450,6 +451,18 @@ class OmniRouteAvailabilityAdapter:
                         model,
                         AvailabilityState.TIMEOUT,
                         ("runtime transport timeout",),
+                        None,
+                        "omniroute",
+                        None,
+                    )
+                )
+                continue
+            if malformed_runtime:
+                states.append(
+                    AvailabilityCandidate(
+                        model,
+                        AvailabilityState.MALFORMED,
+                        ("runtime payload is not an object",),
                         None,
                         "omniroute",
                         None,

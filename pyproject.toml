@@ -2,10 +2,13 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+artifacts = ["schemas/contracts.v1.json"]
+
 [project]
 name = "llm-gate"
 version = "0.1.0"
-description = "Route LLM tasks by criticality. Never send prod code to a cheap model."
+description = "Policy-safe, availability-aware routing and workflow orchestration for LLM tasks."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -34,7 +37,7 @@ server = ["fastapi>=0.109.0", "uvicorn>=0.27.0"]
 ui = ["streamlit>=1.30", "plotly>=5.18", "pandas>=2.0"]
 ci = []
 all = ["streamlit", "plotly", "pandas"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-cov>=4.1", "ruff>=0.8", "mypy>=1.13", "vcrpy>=6.0.0", "types-PyYAML"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-cov>=4.1", "ruff>=0.8", "mypy>=1.13", "vcrpy>=6.0.0", "types-PyYAML", "jsonschema>=4.23"]
 
 [project.scripts]
 llm-gate = "llm_gate.cli:main"
@@ -47,6 +50,8 @@ Issues = "https://github.com/mrnicholasbcarter-code/llm-gate/issues"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
 ignore = ["E501", "B008"]
 per-file-ignores = { "tests/*" = ["S101"] }
