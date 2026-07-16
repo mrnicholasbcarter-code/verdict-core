@@ -91,12 +91,20 @@ llm-gate route "Fix the SQL injection in user_auth.py" --criticality high
 
 ### Run as a Proxy Server
 
-Drop llm-gate in front of any OpenAI-compatible client:
+Production server startup requires a caller bearer token (or a Unix socket). Bind the public/container example explicitly and provide a token:
 
 ```bash
+export LLMGATE_AUTH_TOKEN='change-this-to-a-long-random-token'
+export LLMGATE_HOST=127.0.0.1
 export LLMGATE_UPSTREAM_BASE_URL=https://api.openai.com/v1
 export OPENAI_API_KEY=sk-...
-llm-gate serve --port 8000
+llm-gate serve --host 127.0.0.1 --port 8000
+```
+
+For an explicitly anonymous development server, use only loopback:
+
+```bash
+LLMGATE_ALLOW_ANONYMOUS=true llm-gate serve --host 127.0.0.1 --port 8000
 ```
 
 Then point your tools at `http://localhost:8000/v1`:

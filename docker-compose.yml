@@ -10,6 +10,8 @@ services:
     environment:
       - LLMGATE_DATA_DIR=/app/data
       - LLMGATE_MAX_PENDING_MIGRATIONS=0
+      - LLMGATE_HOST=0.0.0.0
+      - LLMGATE_AUTH_TOKEN=${LLMGATE_AUTH_TOKEN:?Set LLMGATE_AUTH_TOKEN before starting the container}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
       - gate_data:/app/data

@@ -52,7 +52,7 @@ def log_decision(
         }
 
         if log_full_task:
-            record["task_full"] = task
+            record["task_full"] = "[redacted]"
 
         with log_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")

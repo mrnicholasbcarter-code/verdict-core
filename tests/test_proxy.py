@@ -118,8 +118,9 @@ def _configure_test_app(monkeypatch, transport: RecordingTransport) -> None:
         "_build_proxy",
         lambda: UpstreamProxy(
             "http://upstream.test/v1", api_key="server-secret", transport=transport
-        ),
+        )
     )
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
     monkeypatch.setenv("LLMGATE_LOG_PATH", "")
 
 

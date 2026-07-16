@@ -64,6 +64,7 @@ class FakeIntelligence:
 def test_live_gateway_integration(monkeypatch):
     monkeypatch.setattr(api, "_build_intelligence", lambda: FakeIntelligence())
     monkeypatch.setattr(api, "_build_proxy", lambda: FakeProxy())
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
 
     with TestClient(api.app) as client:
         resp = client.get("/health")

@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from llm_gate.security import host_is_allowed, validate_upstream_url
+
 _HOP_BY_HOP_HEADERS = frozenset(
     {
         "connection",
@@ -54,17 +56,30 @@ class UpstreamProxy:
         api_key: str | None = None,
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        allow_private_hosts: set[str] | None = None,
     ) -> None:
-        normalized = base_url.strip().rstrip("/")
-        if not normalized:
+        if not base_url.strip():
             raise ValueError("upstream base URL must not be empty")
+        self.allow_private_hosts = allow_private_hosts or set()
+        normalized = validate_upstream_url(base_url, allow_private_hosts=self.allow_private_hosts)
         self.base_url = normalized
         self.api_key = api_key
         self.timeout = timeout
         self.transport = transport
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=self.transport, timeout=self.timeout)
+        return httpx.AsyncClient(
+            transport=self.transport, timeout=self.timeout, follow_redirects=False
+        )
+
+    def _validate_destination(self) -> None:
+        """Re-resolve DNS immediately before transport use to reduce rebinding risk."""
+        if self.transport is None:
+            from urllib.parse import urlsplit
+
+            host = urlsplit(self.base_url).hostname
+            if host:
+                host_is_allowed(host, self.allow_private_hosts)
 
     def _headers(self) -> dict[str, str]:
         headers = {"accept": "application/json"}
@@ -87,6 +102,7 @@ class UpstreamProxy:
         """Fetch the configured upstream model catalog without reshaping it."""
         client = self._client()
         try:
+            self._validate_destination()
             response = await client.get(self._url("models"), headers=self._headers())
             return BufferedUpstreamResponse(
                 status_code=response.status_code,
@@ -101,6 +117,7 @@ class UpstreamProxy:
     ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
         """Forward a chat request while preserving the upstream wire format."""
         client = self._client()
+        self._validate_destination()
         request = client.build_request(
             "POST",
             self._url("chat/completions"),

@@ -926,6 +926,7 @@ def main() -> None:
 
     serve_p = subparsers.add_parser("serve", help="Launch the FastAPI microservice")
     serve_p.add_argument("--port", type=int, default=8000)
+    serve_p.add_argument("--host", default=None, help="Bind address (anonymous mode must be loopback)")
 
     # New: detect command
     detect_p = subparsers.add_parser("detect", help="Detect available LLM providers")
@@ -976,7 +977,7 @@ def main() -> None:
         try:
             from llm_gate.api import start_server
 
-            start_server(args.port)
+            start_server(args.port, args.host)
         except ImportError:
             console.print("[bold red]❌ Server dependencies not found.[/bold red]")
             console.print("Please install the FastAPI server suite:")

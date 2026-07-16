@@ -2,7 +2,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
-from typing import Any
+from typing import Any, cast
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -18,6 +18,7 @@ from llm_gate.gate import Gate
 from llm_gate.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
 from llm_gate.models import ProviderConfig
 from llm_gate.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
+from llm_gate.security import bearer_matches, redact_text, validate_server_security
 
 # Singleton service instances
 intelligence_instance: IntelligenceService | None = None
@@ -26,6 +27,12 @@ proxy_instance: UpstreamProxy | None = None
 
 DEFAULT_UPSTREAM_BASE_URL = "http://127.0.0.1:20132/v1"
 DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024
+DEFAULT_ALLOWED_PRIVATE_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _allowed_private_hosts() -> set[str]:
+    configured = os.getenv("LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS", "")
+    return DEFAULT_ALLOWED_PRIVATE_HOSTS | {item.strip().lower() for item in configured.split(",") if item.strip()}
 
 
 def _build_proxy() -> UpstreamProxy:
@@ -35,7 +42,10 @@ def _build_proxy() -> UpstreamProxy:
     timeout_ms = int(os.getenv("LLMGATE_UPSTREAM_TIMEOUT_MS", "30000"))
     if timeout_ms <= 0:
         raise ValueError("LLMGATE_UPSTREAM_TIMEOUT_MS must be positive")
-    return UpstreamProxy(base_url, api_key=api_key, timeout=timeout_ms / 1000)
+    return UpstreamProxy(
+        base_url, api_key=api_key, timeout=timeout_ms / 1000,
+        allow_private_hosts=_allowed_private_hosts(),
+    )
 
 
 def _build_intelligence() -> IntelligenceService:
@@ -100,6 +110,26 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def caller_authentication(request: Request, call_next: Any) -> Response:
+    """Require server-owned bearer auth for every non-health API route."""
+    if request.url.path == "/health":
+        return cast(Response, await call_next(request))
+    token = os.getenv("LLMGATE_AUTH_TOKEN")
+    anonymous = os.getenv("LLMGATE_ALLOW_ANONYMOUS", "false").lower() in {"1", "true", "yes", "on"}
+    if anonymous and not token:
+        return cast(Response, await call_next(request))
+    if not token:
+        return _proxy_error(503, "server authentication is not configured")
+    authorization = request.headers.get("authorization", "")
+    scheme, _, supplied = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not supplied:
+        return JSONResponse(status_code=401, content={"error": {"message": "authentication required", "type": "authentication_error"}}, headers={"www-authenticate": "Bearer"})
+    if not bearer_matches(supplied, token):
+        return _proxy_error(403, "authentication failed")
+    return cast(Response, await call_next(request))
+
+
 class RouteRequest(BaseModel):
     task: str
     criticality: str = "medium"
@@ -160,12 +190,12 @@ async def ready() -> Response:
         "status": overall_status,
         "engine": "llm-gate",
         "intelligence": asdict(intel),
-        "upstream": proxy_instance.base_url,
+        "upstream": "[configured]",
     }
     if upstream is not None:
         content["upstream_status_code"] = upstream.status_code
     if upstream_error:
-        content["reason"] = upstream_error
+        content["reason"] = redact_text(upstream_error)
     elif intel.reason:
         content["reason"] = intel.reason
     return JSONResponse(status_code=status_code, content=content)
@@ -212,8 +242,8 @@ async def list_models() -> Response:
         raise HTTPException(status_code=503, detail="Proxy not initialized")
     try:
         result = await proxy_instance.models()
-    except Exception as exc:
-        return _proxy_error(502, f"upstream model catalog unavailable: {exc}")
+    except Exception:
+        return _proxy_error(502, "upstream model catalog unavailable")
     allowlist, denylist = configured_catalog_filters(
         os.getenv("LLMGATE_MODEL_ALLOWLIST"), os.getenv("LLMGATE_MODEL_DENYLIST")
     )
@@ -254,10 +284,10 @@ async def chat_completions(request: Request) -> Response:
 
     try:
         result = await proxy_instance.chat(forwarded)
-    except Exception as exc:
+    except Exception:
         return _proxy_error(
             502,
-            f"upstream request failed: {exc}",
+            "upstream request failed",
             extra={"decision": asdict(replace(decision, transport_outcome="upstream_error"))},
         )
 
@@ -298,8 +328,17 @@ async def route_task_alias(req: RouteRequest) -> dict[str, Any]:
     return {"error": "unexpected response"}
 
 
-def start_server(port: int = 8000, host: str = "0.0.0.0") -> None:  # nosec B104
-    """Boot the uvicorn server for the llm-gate microservice."""
+def start_server(port: int = 8000, host: str | None = None) -> None:
+    """Boot the uvicorn server with explicit production security defaults."""
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port)
+    configured_host: str = host if host is not None else cast(str, os.getenv("LLMGATE_HOST", "127.0.0.1"))
+    unix_socket = os.getenv("LLMGATE_UNIX_SOCKET") or None
+    allow_anonymous = os.getenv("LLMGATE_ALLOW_ANONYMOUS", "false").lower() in {"1", "true", "yes", "on"}
+    validate_server_security(host=configured_host, token=os.getenv("LLMGATE_AUTH_TOKEN") or None, allow_anonymous=allow_anonymous, unix_socket=unix_socket)
+    kwargs: dict[str, Any] = {"port": port}
+    if unix_socket:
+        kwargs["uds"] = unix_socket
+    else:
+        kwargs["host"] = configured_host
+    uvicorn.run(app, **kwargs)
