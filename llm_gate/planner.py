@@ -110,6 +110,77 @@ class StructuredPlanner:
         self._enforce_budget(result.task_spec, budget)
         return replace(result, metadata={**result.metadata, "planner_mode": mode})
 
+    def intake(
+        self,
+        objective: str,
+        *,
+        criticality: str = "unknown",
+        budget: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> PlanResult:
+        """Alias for the structured intake boundary."""
+        return self.plan(
+            objective,
+            criticality=criticality,
+            budget=budget,
+            context=context,
+        )
+
+    def select_workflow(self, task_spec: TaskSpec) -> WorkflowPlan:
+        """Return a policy-safe workflow for an already validated task."""
+        return self._deterministic(
+            {
+                "objective": task_spec.objective,
+                "criticality": task_spec.criticality,
+                "budget": task_spec.budget,
+                "context": task_spec.context or {},
+            }
+        ).workflow_plan
+
+    def estimate(self, objective: str, **kwargs: Any) -> dict[str, Any]:
+        """Expose deterministic effort/capability estimates without model routing."""
+        result = self.plan(objective, **kwargs)
+        return {
+            "effort": result.task_spec.effort,
+            "reasoning": result.task_spec.reasoning,
+            "workflow": result.workflow_plan.metadata.get("workflow"),
+            "verification": result.task_spec.verification,
+        }
+
+    def validate(self, result: PlanResult) -> PlanResult:
+        """Re-validate a plan and ensure it still cannot weaken policy floors."""
+        return self._sanitize_proposal(
+            {
+                "objective": result.task_spec.objective,
+                "criticality": result.task_spec.criticality,
+                "budget": result.task_spec.budget,
+                "context": result.task_spec.context or {},
+            },
+            {
+                "task_spec": result.task_spec.to_dict(),
+                "workflow_plan": result.workflow_plan.to_dict(),
+            },
+        )
+
+    @staticmethod
+    def capability_requirements(task_spec: TaskSpec) -> dict[str, Any]:
+        """Describe required capabilities for a dispatcher, not a model choice."""
+        return {
+            "reasoning": task_spec.reasoning,
+            "tools": sorted(task_spec.required_tools),
+            "required_capabilities": sorted(task_spec.required_capabilities),
+            "effort": task_spec.estimated_effort,
+            "verification": task_spec.verification,
+            "production_impact": task_spec.production_impact,
+        }
+    def estimate_requirements(self, task_spec: TaskSpec) -> dict[str, Any]:
+        """Compatibility alias for capability and effort estimation."""
+        return self.capability_requirements(task_spec)
+
+    def route(self, objective: str, **kwargs: Any) -> PlanResult:
+        """Compatibility alias; routing remains separate from model selection."""
+        return self.plan(objective, **kwargs)
+
     def replan(self, result: PlanResult, failure: str, *, attempt: int) -> PlanResult:
         if attempt < 1 or attempt > self.policy.max_replans:
             raise PlanRejected("replan limit exceeded")
@@ -129,8 +200,24 @@ class StructuredPlanner:
         return replace(
             result,
             workflow_plan=replace(workflow, metadata=metadata),
-            metadata={**result.metadata, "replan_reason": failure_class.value},
+            metadata={
+                **result.metadata,
+                "replan_reason": failure_class.value,
+                "replan_attempt": attempt,
+            },
         )
+
+    def fallback_for(self, result: PlanResult, failure: str, *, attempt: int = 1) -> PlanResult:
+        """Return a bounded, policy-preserving fallback after a classified failure."""
+        return self.replan(result, failure, attempt=attempt)
+
+    @staticmethod
+    def classify_failure_class(message: str) -> FailureClass:
+        """Compatibility alias for failure classification."""
+        return StructuredPlanner.classify_failure(message)
+
+    def can_replan(self, attempt: int) -> bool:
+        return 0 <= attempt <= self.policy.max_replans
 
     @staticmethod
     def classify_failure(message: str) -> FailureClass:
@@ -149,11 +236,14 @@ class StructuredPlanner:
             return FailureClass.PLAN_FAILURE
         return FailureClass.UNKNOWN
 
-    def _deterministic(self, request: dict[str, Any]) -> PlanResult:
+    def _deterministic(self, request: dict[str, object]) -> PlanResult:
         objective = str(request["objective"])
         lower = objective.lower()
         criticality = str(request["criticality"])
-        protected = criticality in {"critical", "high"} or any(
+        context = request.get("context")
+        context_text = " ".join(str(value) for value in (context.values() if isinstance(context, dict) else ())).lower()
+        combined = f"{lower} {context_text}"
+
             keyword in lower for keyword in self.policy.protected_keywords
         )
         steps: list[dict[str, Any]]
@@ -165,20 +255,20 @@ class StructuredPlanner:
             kind = WorkflowKind.SEQUENTIAL
             steps = [{"action": "specialist"}, {"action": "synthesis"}]
             effort = "high"
-        elif any(word in lower for word in ("research", "investigate")) and any(
-            word in lower for word in ("implement", "build", "write", "code")
-        ):
+        if any(word in combined for word in ("research", "investigate")) and any(
+            word in combined for word in ("implement", "build", "write", "code")
+
             kind = WorkflowKind.RESEARCH_IMPLEMENT
             steps = [
                 {"action": "research", "verification": "sources"},
                 {"action": "implement", "verification": "tests"},
             ]
             effort = "high"
-        elif any(word in lower for word in ("review", "audit")):
+        elif any(word in combined for word in ("review", "audit")):
             kind = WorkflowKind.IMPLEMENT_REVIEW
             steps = [{"action": "review"}, {"action": "verify"}]
             effort = "medium"
-        elif any(word in lower for word in ("test", "fix", "implement", "build")):
+        elif any(word in combined for word in ("test", "fix", "implement", "build")):
             kind = WorkflowKind.IMPLEMENT_TEST
             steps = [{"action": "implement"}, {"action": "verify"}]
             effort = "medium"
@@ -217,6 +307,10 @@ class StructuredPlanner:
             production_impact=any(word in lower for word in ("production", "deploy")),
             destructive_operation=any(word in lower for word in ("delete", "destroy", "drop")),
             degraded_mode_policy="deny" if protected else "allow_with_penalty",
+            required_tools=tuple(
+                str(tool)
+                for tool in (request.get("context", {}).get("required_tools", []) if isinstance(request.get("context"), dict) else [])
+            ),
             verification=verification.to_dict(),
         )
         workflow = WorkflowPlan(
