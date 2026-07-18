@@ -247,7 +247,7 @@ Poll the explicit expected set until terminal. The example below is the current
 ```bash
 set -euo pipefail
 
-expected=(CI Lint CodeQL)
+expected=(CI Lint "CodeQL Analysis")
 expected_json="$(
   printf '%s\n' "${expected[@]}" |
     jq -R . |
