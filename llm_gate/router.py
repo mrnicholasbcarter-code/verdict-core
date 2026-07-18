@@ -17,7 +17,7 @@ def select_best_model(
         for model in candidates
         if model.capability_tier <= tier
         and model.is_available
-        and model.availability_state in {"eligible", "ready", "degraded"}
+        and model.availability_state in {"eligible", "ready"}
     ]
     if not valid:
         return None, [m.id for m in candidates]

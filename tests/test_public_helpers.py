@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from llm_gate.classifier import classify
 from llm_gate.headroom import check_headroom
 from llm_gate.models import ModelInfo, ProviderConfig
@@ -47,6 +49,46 @@ def test_select_best_model_fails_open_with_exhausted_candidates() -> None:
 
     assert chosen is None
     assert exhausted == ["offline"]
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "unknown",
+        "stale",
+        "degraded",
+        "denied",
+        "rate_limited",
+        "quota_exhausted",
+        "future_untrusted_state",
+    ],
+)
+def test_select_best_model_filters_runtime_state_before_quality_ranking(state: str) -> None:
+    candidates = [
+        ModelInfo(
+            id="ineligible-high-score",
+            provider="provider",
+            capability_tier=0,
+            is_available=True,
+            availability_state=state,
+            quality_confidence=1.0,
+        ),
+        ModelInfo(
+            id="eligible-lower-score",
+            provider="provider",
+            capability_tier=1,
+            is_available=True,
+            availability_state="ready",
+            quality_confidence=0.5,
+        ),
+    ]
+    configs = {"provider": ProviderConfig(base_url="https://provider.example")}
+
+    chosen, alternatives = select_best_model(candidates, tier=3, configs=configs)
+
+    assert chosen is not None
+    assert chosen.id == "eligible-lower-score"
+    assert alternatives == []
 
 
 def test_headroom_fails_open_without_endpoint() -> None:
