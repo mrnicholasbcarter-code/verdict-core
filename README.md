@@ -1,6 +1,6 @@
 # llm-gate
 
-<p align="center"><b>Policy-safe, availability-aware LLM routing and workflow orchestration.</b></p>
+<p align="center"><b>Alpha policy and availability primitives for explainable LLM routing.</b></p>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/mrnicholasbcarter-code/llm-gate/ci.yml?style=flat-square&label=CI)](https://github.com/mrnicholasbcarter-code/llm-gate/actions)
 [![PyPI](https://img.shields.io/pypi/v/llm-gate?style=flat-square)](https://pypi.org/project/llm-gate/)
@@ -12,24 +12,35 @@ candidate set. Adaptive intelligence is advisory: it may rank eligible
 candidates, but it cannot bypass a hard gate.
 
 > **Status:** The deterministic contracts and availability adapter are usable
-> now. The proxy and managed intelligence integration remain alpha slices. This
-> repository does not claim production readiness, provider uptime, or a
-> particular routing latency.
+> now. End-to-end workflow orchestration, live OmniRoute health/quota
+> integration, legal retry/fallback, and managed intelligence remain unfinished
+> release gates. The proxy is alpha. This repository does not claim production
+> readiness, provider uptime, or a particular routing latency.
 
-## OmniRoute documented transport adapter contract
+## OmniRoute availability adapter boundary
 
-`OmniRouteAvailabilityAdapter` only relies on documented JSON-like transport
-operations. Supported operation names are:
+`OmniRouteAvailabilityAdapter` defines local JSON-like protocol aliases. These
+names are `llm-gate` adapter operations, not a claim that OmniRoute exposes
+same-named functions:
 
-- catalog fetch: `catalog()` or `list_models()`
-- runtime fetch: `runtime()` or `get_runtime()`
-- optional capability discovery: `discover_capabilities()`
+- catalog input: `catalog()` or `list_models()`;
+- optional pre-fetched runtime input: `runtime()` or `get_runtime()`;
+- optional pre-fetched capability input: `discover_capabilities()`.
+
+A concrete integration may map OmniRoute's documented OpenAI-compatible
+`GET /v1/models` response to the catalog input. This repository has not yet
+identified a documented OmniRoute source for complete live health, quota,
+price, or capability evidence. Those signals therefore remain `unknown` unless
+an integration supplies explicit, versioned evidence from a documented
+API/CLI/MCP/A2A surface. See the
+[memory source index](docs/operations/MEMORY_SOURCE_INDEX.md) for the pinned
+documentation observations and trust labels.
 
 Use `StaticOmniRouteTransport` for fixtures, `CallableOmniRouteTransport` to
-adapt API/CLI/MCP/A2A callables, or `MappingOmniRouteTransport` to adapt a
-mapping of pre-fetched operation payloads. Capability discovery is allowlisted:
-only the supported operation names above are honored, and unknown advertised
-operations are ignored rather than trusted.
+adapt explicit callables, or `MappingOmniRouteTransport` to adapt a mapping of
+pre-fetched operation payloads. Capability discovery is allowlisted: only the
+local operation aliases above are honored, and unknown advertised operations
+are ignored rather than trusted.
 
 Transport failures are surfaced as typed adapter errors
 (`OmniRouteTransportUnsupported`, `OmniRouteTransportTimeout`,
@@ -188,7 +199,11 @@ certification.
 ```
 
 The CI workflow also runs package, security, and install smoke checks. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
+[CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance. Maintainers
+continuing the cross-repository release effort should use the
+[portfolio continuation runbook](docs/operations/PORTFOLIO_CONTINUATION_RUNBOOK.md),
+[ecosystem product vision](docs/operations/ECOSYSTEM_PRODUCT_VISION.md), and
+[memory source index](docs/operations/MEMORY_SOURCE_INDEX.md).
 
 ## Security, privacy, retention, and supply-chain posture
 
