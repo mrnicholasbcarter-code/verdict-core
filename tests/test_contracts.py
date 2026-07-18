@@ -7,11 +7,15 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from llm_gate.contracts import (
+    AvailabilitySnapshot,
     ContractValidationError,
     RoutingDecisionContract,
     RuntimeCandidate,
     TaskSpec,
+    WorkflowPlan,
     contract_from_dict,
+    contract_from_legacy_dict,
+    redact_contract_secrets,
 )
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -80,6 +84,91 @@ def test_existing_routing_decision_remains_importable() -> None:
         {"selected_route": {"runtime_id": "x"}, "policy_floor": "protected"}
     )
     assert decision.selected_route["runtime_id"] == "x"
+
+
+def test_nested_contracts_round_trip_to_objects_and_dicts() -> None:
+    workflow = WorkflowPlan.from_dict(
+        {
+            "steps": [{"id": "plan", "action": "implement"}],
+            "verification": {"checks": ["pytest -q"], "on_failure": "deny"},
+        }
+    )
+    snapshot = AvailabilitySnapshot.from_dict(
+        {
+            "observed_at": "2026-07-16T12:00:00Z",
+            "candidates": [
+                {
+                    "runtime_id": "demo/frontier-tools",
+                    "catalog_present": True,
+                    "live_eligible": True,
+                    "availability": "healthy",
+                    "signals": {"catalog": {"source": "fixture"}},
+                }
+            ],
+        }
+    )
+
+    verification = workflow.verification
+    assert not isinstance(verification, dict)
+    assert verification.on_failure == "deny"
+    assert workflow.to_dict()["verification"] == {"checks": ["pytest -q"], "on_failure": "deny", "schema_version": "1"}
+    assert isinstance(snapshot.candidates[0], RuntimeCandidate)
+    assert snapshot.to_dict()["candidates"][0]["runtime_id"] == "demo/frontier-tools"
+
+
+def test_legacy_task_contract_migrates_to_task_spec() -> None:
+    migrated = contract_from_legacy_dict(
+        "task_spec",
+        {
+            "task": "Ship the contracts migration",
+            "criticality": "high",
+            "context": {"repo": "llm-gate"},
+            "custom_hint": "preserve under metadata",
+        },
+    )
+
+    assert isinstance(migrated, TaskSpec)
+    assert migrated.objective == "Ship the contracts migration"
+    assert migrated.criticality == "high"
+    assert migrated.context == {"repo": "llm-gate"}
+    assert migrated.metadata["legacy"] == {"custom_hint": "preserve under metadata"}
+
+
+def test_legacy_routing_decision_migrates_tier_and_alternatives() -> None:
+    migrated = contract_from_legacy_dict(
+        "routing_decision",
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4",
+            "tier": 1,
+            "reason": "protected route",
+            "alternatives": ["openai/gpt-4o"],
+            "request_id": "req-123",
+        },
+    )
+
+    assert isinstance(migrated, RoutingDecisionContract)
+    assert migrated.selected_route["runtime_id"] == "anthropic/claude-sonnet-4"
+    assert migrated.policy_floor == "protected"
+    assert migrated.exclusions == [{"model": "openai/gpt-4o", "reason": "legacy alternative"}]
+    assert migrated.request_id == "req-123"
+
+
+def test_redaction_scrubs_contract_dicts_without_rejecting_them() -> None:
+    payload = {
+        "metadata": {"api_key": "provider-secret"},
+        "context": {
+            "url": "https://user:password@example.com/path?api_key=provider-secret",
+            "authorization": "Bearer caller-secret",
+        },
+    }
+
+    redacted = redact_contract_secrets(payload)
+
+    assert redacted["metadata"]["api_key"] == "[redacted]"
+    assert redacted["context"]["authorization"] == "[redacted]"
+    assert "provider-secret" not in redacted["context"]["url"]
+    assert "password" not in redacted["context"]["url"]
 
 
 def test_invalid_fixture_is_rejected_by_python_contract() -> None:

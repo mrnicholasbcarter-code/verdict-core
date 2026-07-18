@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import MISSING, Field, asdict, dataclass, field, fields
-from typing import Any, ClassVar, TypeVar, cast
+from dataclasses import MISSING, Field, dataclass, field, fields
+from types import UnionType
+from typing import Any, ClassVar, TypeVar, cast, get_args, get_origin, get_type_hints
+
+from llm_gate.security import redact_text
 
 
 class ContractValidationError(ValueError):
@@ -39,10 +42,19 @@ class Contract:
         ]
         if missing:
             raise ContractValidationError(f"missing required field(s): {', '.join(missing)}")
-        return cls(**payload)
+        type_hints = get_type_hints(cls)
+        coerced = {
+            item.name: _coerce_field_value(type_hints.get(item.name, item.type), payload[item.name])
+            for item in declared_fields
+            if item.name in payload
+        }
+        return cls(**coerced)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(cast(Any, self))
+        return {
+            item.name: _serialize_value(getattr(self, item.name))
+            for item in fields(cast(Any, self))
+        }
 
 
 @dataclass(frozen=True)
@@ -52,6 +64,10 @@ class CapabilityRequirement(Contract):
     minimum_level: str | None = None
     reason: str | None = None
     schema_version: str = "1"
+
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> CapabilityRequirement:
+        return cls.from_dict({**payload, **overrides})
 
 
 @dataclass(frozen=True)
@@ -82,6 +98,26 @@ class TaskSpec(Contract):
     metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: str = "1"
 
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> TaskSpec:
+        if not isinstance(payload, dict):
+            raise ContractValidationError("legacy contract must be a JSON object")
+        legacy = dict(payload)
+        objective = legacy.pop("task", legacy.pop("objective", None))
+        if objective is None:
+            raise ContractValidationError("legacy task contract requires 'task' or 'objective'")
+        metadata = legacy.pop("metadata", {})
+        mapped = {
+            "objective": objective,
+            "task_type": legacy.pop("task_type", "unknown"),
+            "criticality": legacy.pop("criticality", "unknown"),
+            "context": legacy.pop("context", None),
+            "metadata": metadata,
+        }
+        if legacy:
+            mapped["metadata"] = {**dict(metadata), "legacy": legacy}
+        return cls.from_dict({**mapped, **overrides})
+
 
 @dataclass(frozen=True)
 class RuntimeCandidate(Contract):
@@ -96,6 +132,32 @@ class RuntimeCandidate(Contract):
     model_version: str | None = None
     schema_version: str = "1"
 
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> RuntimeCandidate:
+        if not isinstance(payload, dict):
+            raise ContractValidationError("legacy contract must be a JSON object")
+        legacy = dict(payload)
+        provider = legacy.pop("provider", None)
+        model = legacy.pop("model", None)
+        runtime_id = legacy.pop("runtime_id", None) or _runtime_id(provider, model)
+        if runtime_id is None:
+            raise ContractValidationError("legacy runtime candidate requires runtime_id or provider/model")
+        signals = legacy.pop("signals", {})
+        mapped = {
+            "runtime_id": runtime_id,
+            "catalog_present": bool(legacy.pop("catalog_present", model is not None)),
+            "live_eligible": bool(legacy.pop("live_eligible", True)),
+            "availability": legacy.pop("availability", "unknown"),
+            "signals": signals,
+            "capabilities": legacy.pop("capabilities", []),
+            "provider": provider,
+            "model": model,
+            "model_version": legacy.pop("model_version", None),
+        }
+        if legacy:
+            mapped["signals"] = {**dict(signals), "legacy": legacy}
+        return cls.from_dict({**mapped, **overrides})
+
 
 @dataclass(frozen=True)
 class AvailabilitySnapshot(Contract):
@@ -108,12 +170,40 @@ class AvailabilitySnapshot(Contract):
     expires_at: str | None = None
     schema_version: str = "1"
 
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> AvailabilitySnapshot:
+        if not isinstance(payload, dict):
+            raise ContractValidationError("legacy contract must be a JSON object")
+        legacy = dict(payload)
+        signals = legacy.pop("signals", {})
+        mapped = {
+            "observed_at": legacy.pop("observed_at", "unknown"),
+            "state": legacy.pop("state", "unknown"),
+            "signals": signals,
+            "candidates": [
+                RuntimeCandidate.from_legacy(item)
+                if isinstance(item, dict)
+                else item
+                for item in legacy.pop("candidates", [])
+            ],
+            "source": legacy.pop("source", "legacy"),
+            "ttl_seconds": legacy.pop("ttl_seconds", 60),
+            "expires_at": legacy.pop("expires_at", None),
+        }
+        if legacy:
+            mapped["signals"] = {**dict(signals), "legacy": legacy}
+        return cls.from_dict({**mapped, **overrides})
+
 
 @dataclass(frozen=True)
 class VerificationPlan(Contract):
     checks: list[Any] = field(default_factory=list)
     on_failure: str = "deny"
     schema_version: str = "1"
+
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> VerificationPlan:
+        return cls.from_dict({**payload, **overrides})
 
 
 @dataclass(frozen=True)
@@ -127,6 +217,26 @@ class WorkflowPlan(Contract):
     policy_version: str = "1"
     metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: str = "1"
+
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> WorkflowPlan:
+        if not isinstance(payload, dict):
+            raise ContractValidationError("legacy contract must be a JSON object")
+        legacy = dict(payload)
+        metadata = legacy.pop("metadata", {})
+        mapped = {
+            "steps": legacy.pop("steps", []),
+            "plan_id": legacy.pop("plan_id", None),
+            "verification": legacy.pop("verification_plan", legacy.pop("verification", {})),
+            "verification_plan_id": legacy.pop("verification_plan_id", None),
+            "fallback_allowed": legacy.pop("fallback_allowed", False),
+            "fallback_plan": legacy.pop("fallback_plan", []),
+            "policy_version": str(legacy.pop("policy_version", "1")),
+            "metadata": metadata,
+        }
+        if legacy:
+            mapped["metadata"] = {**dict(metadata), "legacy": legacy}
+        return cls.from_dict({**mapped, **overrides})
 
 
 @dataclass(frozen=True)
@@ -145,6 +255,50 @@ class RoutingDecisionContract(Contract):
     policy_version: str = "1"
     schema_version: str = "1"
 
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> RoutingDecisionContract:
+        if not isinstance(payload, dict):
+            raise ContractValidationError("legacy contract must be a JSON object")
+        legacy = dict(payload)
+        provider = legacy.pop("provider", None)
+        model = legacy.pop("model", None)
+        runtime_id = legacy.pop("runtime_id", None) or _runtime_id(provider, model)
+        alternatives = legacy.pop("alternatives", [])
+        adaptive_influence = legacy.pop("adaptive_influence", {})
+        mapped = {
+            "selected_route": _compact_dict(
+                {
+                    "runtime_id": runtime_id,
+                    "provider": provider,
+                    "model": model,
+                    "headroom_pct": legacy.pop("headroom_pct", None),
+                    "latency_ms": legacy.pop("latency_ms", None),
+                    "decision": legacy.pop("decision", None),
+                    "escalated": legacy.pop("escalated", None),
+                    "escalation_reason": legacy.pop("escalation_reason", None),
+                    "logged": legacy.pop("logged", None),
+                    "task_class": legacy.pop("task_class", None),
+                }
+            ),
+            "task_spec": legacy.pop("task_spec", {}),
+            "candidate_snapshot": legacy.pop("candidate_snapshot", None),
+            "exclusions": [
+                item if isinstance(item, dict) else {"model": str(item), "reason": "legacy alternative"}
+                for item in alternatives
+            ],
+            "policy_floor": legacy.pop("policy_floor", _policy_floor_from_tier(legacy.pop("tier", None))),
+            "planner_mode": legacy.pop("planner_mode", "legacy-routing-decision"),
+            "explanation": legacy.pop("reason", ""),
+            "adaptive_influence": adaptive_influence,
+            "fallback_plan": legacy.pop("fallback_plan", []),
+            "correlation_id": legacy.pop("correlation_id", None),
+            "request_id": legacy.pop("request_id", None),
+            "policy_version": str(legacy.pop("policy_version", "1")),
+        }
+        if legacy:
+            mapped["adaptive_influence"] = {**dict(adaptive_influence), "legacy": legacy}
+        return cls.from_dict({**mapped, **overrides})
+
 
 RoutingDecision = RoutingDecisionContract
 
@@ -155,6 +309,10 @@ class FallbackAttempt(Contract):
     reason: str
     legal: bool = True
     schema_version: str = "1"
+
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> FallbackAttempt:
+        return cls.from_dict({**payload, **overrides})
 
 
 @dataclass(frozen=True)
@@ -176,6 +334,33 @@ class OutcomeEvent(Contract):
     details: dict[str, Any] | None = None
     schema_version: str = "1"
 
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> OutcomeEvent:
+        if not isinstance(payload, dict):
+            raise ContractValidationError("legacy contract must be a JSON object")
+        legacy = dict(payload)
+        details = legacy.pop("details", None)
+        mapped = {
+            "event_id": legacy.pop("event_id", None),
+            "event_type": legacy.pop("event_type", None),
+            "correlation_id": legacy.pop("correlation_id", None),
+            "outcome": legacy.pop("outcome", None),
+            "occurred_at": legacy.pop("occurred_at", None),
+            "request_id": legacy.pop("request_id", None),
+            "verification": legacy.pop("verification", {}),
+            "quality": legacy.pop("quality", {}),
+            "latency_ms": legacy.pop("latency_ms", None),
+            "cost": legacy.pop("cost", {}),
+            "retries": legacy.pop("retries", 0),
+            "fallbacks": legacy.pop("fallbacks", []),
+            "provider_version": legacy.pop("provider_version", None),
+            "model_version": legacy.pop("model_version", None),
+            "details": details,
+        }
+        if legacy:
+            mapped["details"] = {**dict(details or {}), "legacy": legacy}
+        return cls.from_dict({**mapped, **overrides})
+
 
 @dataclass(frozen=True)
 class LearningEvent(Contract):
@@ -188,6 +373,10 @@ class LearningEvent(Contract):
     metadata: dict[str, Any] = field(default_factory=dict)
     request_id: str | None = None
     schema_version: str = "1"
+
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> LearningEvent:
+        return cls.from_dict({**payload, **overrides})
 
 
 _CONTRACTS: dict[str, type[Contract]] = {
@@ -225,6 +414,39 @@ def contract_from_dict(name: str, payload: dict[str, Any]) -> Contract:
         raise ContractValidationError(f"unknown contract: {name}") from exc
 
 
+def contract_from_legacy_dict(name: str, payload: dict[str, Any]) -> Contract:
+    try:
+        contract_cls = cast(Any, _CONTRACTS[name])
+    except KeyError as exc:
+        raise ContractValidationError(f"unknown contract: {name}") from exc
+    return cast(Contract, contract_cls.from_legacy(payload))
+
+
+def redact_contract_secrets(value: Any) -> Any:
+    if isinstance(value, Contract):
+        return redact_contract_secrets(value.to_dict())
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, child in value.items():
+            normalized = key.lower().replace("-", "_")
+            if (
+                normalized in _SECRET_NAMES
+                or normalized.endswith("_token")
+                or normalized.endswith("_secret")
+            ):
+                redacted[key] = "[redacted]"
+            else:
+                redacted[key] = redact_contract_secrets(child)
+        return redacted
+    if isinstance(value, list):
+        return [redact_contract_secrets(child) for child in value]
+    if isinstance(value, tuple):
+        return [redact_contract_secrets(child) for child in value]
+    if isinstance(value, str):
+        return redact_text(value)
+    return value
+
+
 def _version_field(cls: type[Contract], declared_fields: tuple[Field[Any], ...]) -> Field[Any] | None:
     for item in declared_fields:
         if item.name == "schema_version":
@@ -260,3 +482,66 @@ def _reject_secrets(value: Any) -> None:
     elif isinstance(value, (list, tuple)):
         for child in value:
             _reject_secrets(child)
+
+
+def _serialize_value(value: Any) -> Any:
+    if isinstance(value, Contract):
+        return value.to_dict()
+    if isinstance(value, list):
+        return [_serialize_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_serialize_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _serialize_value(child) for key, child in value.items()}
+    return value
+
+
+def _coerce_field_value(annotation: Any, value: Any) -> Any:
+    if value is None:
+        return None
+    if _is_contract_type(annotation) and isinstance(value, dict):
+        return annotation.from_dict(value)
+    origin = get_origin(annotation)
+    if origin in (list, tuple):
+        args = get_args(annotation)
+        item_type = args[0] if args else Any
+        return [_coerce_field_value(item_type, item) for item in value]
+    if origin is dict:
+        value_type = get_args(annotation)[1] if len(get_args(annotation)) > 1 else Any
+        return {key: _coerce_field_value(value_type, child) for key, child in value.items()}
+    if origin in (_union_origin(), UnionType):
+        for option in get_args(annotation):
+            if option is type(None):
+                continue
+            if _is_contract_type(option) and isinstance(value, dict):
+                return option.from_dict(value)
+        return value
+    return value
+
+
+def _is_contract_type(annotation: Any) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, Contract)
+
+
+def _union_origin() -> Any:
+    try:
+        from typing import Union
+
+        return Union
+    except ImportError:  # pragma: no cover
+        return None
+
+
+def _policy_floor_from_tier(tier: Any) -> str:
+    mapping = {0: "isolated", 1: "protected", 2: "standard", 3: "best_effort"}
+    return mapping.get(tier, "none")
+
+
+def _runtime_id(provider: Any, model: Any) -> str | None:
+    if provider and model:
+        return f"{provider}/{model}"
+    return None
+
+
+def _compact_dict(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: child for key, child in value.items() if child is not None}
