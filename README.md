@@ -170,6 +170,14 @@ certification.
 The CI workflow also runs package, security, and install smoke checks. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
+## Security, privacy, retention, and supply-chain posture
+
+Review [SECURITY.md](SECURITY.md) for vulnerability reporting, proxy security
+controls, upstream URL restrictions, and data-handling defaults. Review
+[docs/SECURITY_ASSURANCE.md](docs/SECURITY_ASSURANCE.md) for the published
+threat model, privacy posture, retention responsibilities, and current
+supply-chain evidence.
+
 ## Architecture
 
 - `llm_gate/contracts.py` — strict versioned JSON-compatible contracts

@@ -20,6 +20,7 @@ class TestCLIHelp:
         assert "route" in result.stdout
         assert "setup" in result.stdout
         assert "stats" in result.stdout
+        assert "benchmark" in result.stdout
 
 
 class TestCLIRoute:

@@ -1,0 +1,96 @@
+{
+  "policy_version": "policy-2026-07-13.1",
+  "settings": {
+    "warmup_iterations": 5,
+    "contract_iterations": 25,
+    "dispatcher_iterations": 25,
+    "routing_iterations": 10,
+    "criticality": "medium"
+  },
+  "contracts": {
+    "task_spec": {
+      "objective": "Prepare a compatibility routing decision for a documentation update.",
+      "task_type": "documentation",
+      "effort": "medium",
+      "reasoning": "low",
+      "required_capabilities": ["summarization"],
+      "context_requirements": {"repo": true},
+      "tool_requirements": {"shell": false},
+      "schema_version": "1"
+    },
+    "routing_decision_contract": {
+      "selected_route": {
+        "runtime_id": "primary/anthropic/claude-3-opus-20240229",
+        "provider": "primary",
+        "model": "anthropic/claude-3-opus-20240229"
+      },
+      "task_spec": {
+        "objective": "Prepare a compatibility routing decision for a documentation update.",
+        "task_type": "documentation",
+        "effort": "medium",
+        "reasoning": "low",
+        "schema_version": "1"
+      },
+      "candidate_snapshot": "fixture-availability-v1",
+      "exclusions": [
+        {
+          "runtime_id": "cheap/flash",
+          "reason": "policy floor"
+        }
+      ],
+      "policy_floor": "medium",
+      "planner_mode": "default",
+      "explanation": "checked-in benchmark fixture",
+      "adaptive_influence": {},
+      "fallback_plan": [],
+      "policy_version": "policy-2026-07-13.1",
+      "schema_version": "1"
+    }
+  },
+  "availability_snapshot": {
+    "observed_at": "2026-07-16T12:00:00+00:00",
+    "state": "ready",
+    "ttl_seconds": 60,
+    "candidates": [
+      {
+        "runtime_id": "primary/anthropic/claude-3-opus-20240229",
+        "catalog_present": true,
+        "live_eligible": true,
+        "availability": "ready",
+        "signals": {"cost_usd": {"value": 15.0}},
+        "capabilities": ["verification", "summarization"],
+        "provider": "primary",
+        "model": "anthropic/claude-3-opus-20240229",
+        "schema_version": "1"
+      },
+      {
+        "runtime_id": "cheap/google/gemini-1.5-flash",
+        "catalog_present": true,
+        "live_eligible": true,
+        "availability": "ready",
+        "signals": {"cost_usd": {"value": 0.35}},
+        "capabilities": ["summarization"],
+        "provider": "cheap",
+        "model": "google/gemini-1.5-flash",
+        "schema_version": "1"
+      },
+      {
+        "runtime_id": "quota/openai/gpt-4o-mini",
+        "catalog_present": true,
+        "live_eligible": false,
+        "availability": "quota_exhausted",
+        "signals": {"cost_usd": {"value": 0.6}},
+        "capabilities": ["summarization"],
+        "provider": "quota",
+        "model": "openai/gpt-4o-mini",
+        "schema_version": "1"
+      }
+    ],
+    "schema_version": "1"
+  },
+  "routing_prompts": [
+    "summarize the release notes for operators",
+    "classify this maintenance chore by urgency",
+    "prepare a concise changelog entry for a docs fix"
+  ]
+}

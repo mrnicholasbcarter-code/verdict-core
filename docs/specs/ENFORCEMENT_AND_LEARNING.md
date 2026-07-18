@@ -72,6 +72,8 @@ The adapter MUST NOT read `ruvector.db`, Ruflo databases, OmniRoute SQLite stora
 }
 ```
 
+For training and offline inspection, the core also emits a versioned privacy-safe `task_workflow_outcome_episode` record. The episode stores only redacted summaries and stable fingerprints for task intent, workflow shape, and execution outcome. It MUST NOT persist raw prompts, credential material, or full context blobs by default. Instead it records fields such as task fingerprint and redacted preview, task class/privacy/risk, context key names, workflow step counts and verification checks, selected route metadata, retry/fallback counts, and redacted outcome details.
+
 ### 6. Learning safety
 
 - No raw prompt or completion is sent to learning sinks by default.

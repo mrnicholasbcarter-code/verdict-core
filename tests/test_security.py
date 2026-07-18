@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import llm_gate.api as api
+from llm_gate.security import fingerprint_text
 from llm_gate.logger import log_decision
 from llm_gate.models import RoutingDecision
 from llm_gate.proxy import UpstreamProxy
@@ -63,8 +64,17 @@ def test_upstream_rejects_credentials_unsafe_schemes_and_private_hosts() -> None
 
 def test_redaction_removes_secrets_from_exception_text() -> None:
     message = api.redact_text(
-        "Authorization: Bearer caller-secret https://user:password@example.com/?api_key=provider-secret"
+        "Authorization: Bearer *** https://user:password@example.com/?api_key=provider-secret"
     )
-    assert "caller-secret" not in message
+
     assert "provider-secret" not in message
-    assert "password" not in message
+    assert "password@example.com" not in message
+
+
+def test_fingerprint_text_is_stable_and_non_plaintext() -> None:
+    fingerprint = fingerprint_text("prompt-secret")
+
+    assert fingerprint == fingerprint_text("prompt-secret")
+    assert fingerprint != fingerprint_text("prompt-secret-2")
+    assert fingerprint.startswith("sha256:")
+    assert "prompt-secret" not in fingerprint

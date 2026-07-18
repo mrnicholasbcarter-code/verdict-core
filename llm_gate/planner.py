@@ -255,7 +255,7 @@ class StructuredPlanner:
             kind = WorkflowKind.SEQUENTIAL
             steps = [{"action": "specialist"}, {"action": "synthesis"}]
             effort = "high"
-        if any(word in combined for word in ("research", "investigate")) and any(
+        elif any(word in combined for word in ("research", "investigate")) and any(
             word in combined for word in ("implement", "build", "write", "code")
         ):
             kind = WorkflowKind.RESEARCH_IMPLEMENT
@@ -307,10 +307,6 @@ class StructuredPlanner:
             production_impact=any(word in lower for word in ("production", "deploy")),
             destructive_operation=any(word in lower for word in ("delete", "destroy", "drop")),
             degraded_mode_policy="deny" if protected else "allow_with_penalty",
-            required_tools=tuple(
-                str(tool)
-                for tool in (request.get("context", {}).get("required_tools", []) if isinstance(request.get("context"), dict) else [])
-            ),
             verification=verification.to_dict(),
         )
         workflow = WorkflowPlan(

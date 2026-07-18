@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -13,6 +14,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
+from llm_gate.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from llm_gate.gate import Gate
 from llm_gate.models import ProviderConfig
 
@@ -537,6 +539,27 @@ def cmd_stats(log_path: str = "llm-gate-decisions.jsonl") -> None:
         console.print(f"  {mod}: [bold yellow]{count}[/bold yellow] calls")
 
 
+def cmd_benchmark(
+    fixture: str,
+    output_json: str | None = None,
+    *,
+    allow_live_provider: bool = False,
+    live_provider: str | None = None,
+) -> None:
+    """Run the reproducible local benchmark harness and optionally persist JSON."""
+    report = run_reproducible_benchmarks(
+        fixture,
+        allow_live_provider=allow_live_provider,
+        live_provider=live_provider,
+    )
+    console.print(format_benchmark_report(report), end="")
+
+    if output_json:
+        output_path = Path(output_json)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+
+
 def cmd_cost_report() -> None:
     """Calculates and prints the estimated token usage execution cost from historic routing decisions."""
     import json
@@ -922,6 +945,14 @@ def main() -> None:
     stats_p = subparsers.add_parser("stats", help="View routing analytics")
     stats_p.add_argument("--log_path", default="llm-gate-decisions.jsonl")
 
+    benchmark_p = subparsers.add_parser(
+        "benchmark", help="Run the reproducible local benchmark harness"
+    )
+    benchmark_p.add_argument("--fixture", default="benchmarks/fixtures/reproducible.json")
+    benchmark_p.add_argument("--output-json", default=None)
+    benchmark_p.add_argument("--allow-live-provider", action="store_true")
+    benchmark_p.add_argument("--live-provider", default=None)
+
     subparsers.add_parser("ui", help="Launch the Streamlit analytics dashboard")
 
     serve_p = subparsers.add_parser("serve", help="Launch the FastAPI microservice")
@@ -953,6 +984,13 @@ def main() -> None:
         cmd_route(args.task, args.criticality, args.terse)
     elif args.command == "stats":
         cmd_stats(args.log_path)
+    elif args.command == "benchmark":
+        cmd_benchmark(
+            args.fixture,
+            args.output_json,
+            allow_live_provider=args.allow_live_provider,
+            live_provider=args.live_provider,
+        )
     elif args.command == "ui":
         try:
             # Resolve the path dynamically without executing the file

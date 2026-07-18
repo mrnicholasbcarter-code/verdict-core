@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import MISSING, Field, dataclass, field, fields
 from types import UnionType
 from typing import Any, ClassVar, TypeVar, cast, get_args, get_origin, get_type_hints
 
-from llm_gate.security import redact_text
+from llm_gate.security import fingerprint_text, redact_text
 
 
 class ContractValidationError(ValueError):
@@ -335,6 +336,16 @@ class OutcomeEvent(Contract):
     schema_version: str = "1"
 
     @classmethod
+    def from_dict(cls: type[T], payload: dict[str, Any]) -> T:
+        """Accept diagnostic details only after deterministic secret redaction."""
+        if not isinstance(payload, dict):
+            raise ContractValidationError("contract must be a JSON object")
+        normalized = dict(payload)
+        if "details" in normalized:
+            normalized["details"] = redact_contract_secrets(normalized["details"])
+        return cast(T, super().from_dict(normalized))
+
+    @classmethod
     def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> OutcomeEvent:
         if not isinstance(payload, dict):
             raise ContractValidationError("legacy contract must be a JSON object")
@@ -360,6 +371,214 @@ class OutcomeEvent(Contract):
         if legacy:
             mapped["details"] = {**dict(details or {}), "legacy": legacy}
         return cls.from_dict({**mapped, **overrides})
+
+
+@dataclass(frozen=True)
+class TaskEpisode(Contract):
+    task_fingerprint: str
+    objective_preview: str
+    task_type: str = "unknown"
+    privacy: str = "unknown"
+    risk: str = "unknown"
+    required_capabilities: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    approvals_count: int = 0
+    context_keys: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    schema_version: str = "1"
+
+    @classmethod
+    def from_task_spec(cls, task_spec: TaskSpec | dict[str, Any]) -> TaskEpisode:
+        task = task_spec if isinstance(task_spec, TaskSpec) else TaskSpec.from_dict(task_spec)
+        fingerprint_payload = {
+            "objective": task.objective,
+            "task_type": task.task_type,
+            "required_capabilities": task.required_capabilities,
+            "tools": task.tools,
+            "privacy": task.privacy,
+            "risk": task.risk,
+            "approvals": task.approvals,
+            "parallelism": task.parallelism,
+            "workflow": task.workflow,
+            "verification": task.verification,
+        }
+        return cls(
+            task_fingerprint=_fingerprint_payload(fingerprint_payload),
+            objective_preview=_privacy_safe_preview(task.objective),
+            task_type=task.task_type,
+            privacy=task.privacy,
+            risk=task.risk,
+            required_capabilities=list(task.required_capabilities),
+            tools=list(task.tools),
+            approvals_count=len(task.approvals),
+            context_keys=sorted((task.context or {}).keys()),
+            metadata=cast(dict[str, Any], redact_contract_secrets(task.metadata)),
+        )
+
+
+@dataclass(frozen=True)
+class WorkflowEpisode(Contract):
+    workflow_fingerprint: str
+    plan_id: str | None = None
+    step_count: int = 0
+    fallback_allowed: bool = False
+    fallback_step_count: int = 0
+    verification_checks: list[str] = field(default_factory=list)
+    verification_plan_id: str | None = None
+    policy_version: str = "1"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    schema_version: str = "1"
+
+    @classmethod
+    def from_workflow_plan(cls, workflow_plan: WorkflowPlan | dict[str, Any]) -> WorkflowEpisode:
+        workflow = workflow_plan if isinstance(workflow_plan, WorkflowPlan) else WorkflowPlan.from_dict(workflow_plan)
+        verification = workflow.verification
+        verification_checks = []
+        if isinstance(verification, VerificationPlan):
+            verification_checks = [str(check) for check in verification.checks]
+        elif isinstance(verification, dict):
+            verification_checks = [str(check) for check in verification.get("checks", [])]
+        fingerprint_payload = {
+            "steps": workflow.steps,
+            "verification": _serialize_value(verification),
+            "fallback_allowed": workflow.fallback_allowed,
+            "fallback_plan": workflow.fallback_plan,
+            "policy_version": workflow.policy_version,
+        }
+        return cls(
+            workflow_fingerprint=_fingerprint_payload(fingerprint_payload),
+            plan_id=workflow.plan_id,
+            step_count=len(workflow.steps),
+            fallback_allowed=workflow.fallback_allowed,
+            fallback_step_count=len(workflow.fallback_plan),
+            verification_checks=verification_checks,
+            verification_plan_id=workflow.verification_plan_id,
+            policy_version=workflow.policy_version,
+            metadata=cast(dict[str, Any], redact_contract_secrets(workflow.metadata)),
+        )
+
+
+@dataclass(frozen=True)
+class OutcomeEpisode(Contract):
+    outcome_fingerprint: str
+    event_type: str | None = None
+    outcome: str | None = None
+    occurred_at: str | None = None
+    request_id: str | None = None
+    correlation_id: str | None = None
+    decision: str | None = None
+    policy_floor: str | None = None
+    selected_route: dict[str, Any] = field(default_factory=dict)
+    verification: dict[str, Any] = field(default_factory=dict)
+    quality: dict[str, Any] = field(default_factory=dict)
+    latency_ms: float | None = None
+    cost: dict[str, Any] = field(default_factory=dict)
+    retries: int = 0
+    fallback_count: int = 0
+    provider_version: str | None = None
+    model_version: str | None = None
+    details: dict[str, Any] | None = None
+    schema_version: str = "1"
+
+    @classmethod
+    def from_outcome_event(
+        cls,
+        outcome_event: OutcomeEvent | dict[str, Any],
+        *,
+        routing_decision: RoutingDecisionContract | dict[str, Any] | None = None,
+    ) -> OutcomeEpisode:
+        outcome = outcome_event if isinstance(outcome_event, OutcomeEvent) else OutcomeEvent.from_dict(outcome_event)
+        decision = None
+        policy_floor = None
+        selected_route: dict[str, Any] = {}
+        if routing_decision is not None:
+            route = (
+                routing_decision
+                if isinstance(routing_decision, RoutingDecisionContract)
+                else RoutingDecisionContract.from_dict(routing_decision)
+            )
+            decision = route.selected_route.get("decision") or route.planner_mode
+            policy_floor = route.policy_floor
+            selected_route = cast(dict[str, Any], redact_contract_secrets(route.selected_route))
+        verification = cast(dict[str, Any], redact_contract_secrets(outcome.verification))
+        quality = cast(dict[str, Any], redact_contract_secrets(outcome.quality))
+        cost = cast(dict[str, Any], redact_contract_secrets(outcome.cost))
+        details = cast(dict[str, Any] | None, redact_contract_secrets(outcome.details))
+        fingerprint_payload = {
+            "event_type": outcome.event_type,
+            "outcome": outcome.outcome,
+            "verification": verification,
+            "quality": quality,
+            "latency_ms": outcome.latency_ms,
+            "cost": cost,
+            "retries": outcome.retries,
+            "fallbacks": outcome.fallbacks,
+            "selected_route": selected_route,
+            "details": details,
+        }
+        return cls(
+            outcome_fingerprint=_fingerprint_payload(fingerprint_payload),
+            event_type=outcome.event_type,
+            outcome=outcome.outcome,
+            occurred_at=outcome.occurred_at,
+            request_id=outcome.request_id,
+            correlation_id=outcome.correlation_id,
+            decision=decision,
+            policy_floor=policy_floor,
+            selected_route=selected_route,
+            verification=verification,
+            quality=quality,
+            latency_ms=outcome.latency_ms,
+            cost=cost,
+            retries=outcome.retries,
+            fallback_count=len(outcome.fallbacks),
+            provider_version=outcome.provider_version,
+            model_version=outcome.model_version,
+            details=details,
+        )
+
+
+@dataclass(frozen=True)
+class TaskWorkflowOutcomeEpisode(Contract):
+    episode_id: str | None = None
+    request_id: str | None = None
+    correlation_id: str | None = None
+    policy_version: str = "1"
+    task: TaskEpisode | dict[str, Any] = field(default_factory=dict)
+    workflow: WorkflowEpisode | dict[str, Any] = field(default_factory=dict)
+    outcome: OutcomeEpisode | dict[str, Any] = field(default_factory=dict)
+    schema_version: str = "1"
+
+    @classmethod
+    def from_contracts(
+        cls,
+        *,
+        task_spec: TaskSpec | dict[str, Any],
+        workflow_plan: WorkflowPlan | dict[str, Any],
+        outcome_event: OutcomeEvent | dict[str, Any],
+        routing_decision: RoutingDecisionContract | dict[str, Any] | None = None,
+        episode_id: str | None = None,
+    ) -> TaskWorkflowOutcomeEpisode:
+        task_episode = TaskEpisode.from_task_spec(task_spec)
+        workflow_episode = WorkflowEpisode.from_workflow_plan(workflow_plan)
+        outcome_episode = OutcomeEpisode.from_outcome_event(
+            outcome_event,
+            routing_decision=routing_decision,
+        )
+        route = (
+            routing_decision
+            if isinstance(routing_decision, RoutingDecisionContract) or routing_decision is None
+            else RoutingDecisionContract.from_dict(routing_decision)
+        )
+        return cls(
+            episode_id=episode_id,
+            request_id=outcome_episode.request_id or (route.request_id if route is not None else None),
+            correlation_id=outcome_episode.correlation_id or (route.correlation_id if route is not None else None),
+            policy_version=(route.policy_version if route is not None else workflow_episode.policy_version),
+            task=task_episode,
+            workflow=workflow_episode,
+            outcome=outcome_episode,
+        )
 
 
 @dataclass(frozen=True)
@@ -399,6 +618,14 @@ _CONTRACTS: dict[str, type[Contract]] = {
         "FallbackAttempt": FallbackAttempt,
         "verification_plan": VerificationPlan,
         "VerificationPlan": VerificationPlan,
+        "task_episode": TaskEpisode,
+        "TaskEpisode": TaskEpisode,
+        "workflow_episode": WorkflowEpisode,
+        "WorkflowEpisode": WorkflowEpisode,
+        "outcome_episode": OutcomeEpisode,
+        "OutcomeEpisode": OutcomeEpisode,
+        "task_workflow_outcome_episode": TaskWorkflowOutcomeEpisode,
+        "TaskWorkflowOutcomeEpisode": TaskWorkflowOutcomeEpisode,
         "outcome_event": OutcomeEvent,
         "OutcomeEvent": OutcomeEvent,
         "learning_event": LearningEvent,
@@ -433,6 +660,8 @@ def redact_contract_secrets(value: Any) -> Any:
                 normalized in _SECRET_NAMES
                 or normalized.endswith("_token")
                 or normalized.endswith("_secret")
+                or normalized.endswith("_password")
+                or normalized.endswith("_api_key")
             ):
                 redacted[key] = "[redacted]"
             else:
@@ -445,6 +674,16 @@ def redact_contract_secrets(value: Any) -> Any:
     if isinstance(value, str):
         return redact_text(value)
     return value
+
+
+def _privacy_safe_preview(value: object) -> str:
+    text = str(value)
+    return f"[redacted:{fingerprint_text(text, length=12)} len={len(text)}]"
+
+
+def _fingerprint_payload(value: Any) -> str:
+    canonical = json.dumps(_serialize_value(value), sort_keys=True, separators=(",", ":"))
+    return fingerprint_text(canonical)
 
 
 def _version_field(cls: type[Contract], declared_fields: tuple[Field[Any], ...]) -> Field[Any] | None:
@@ -476,8 +715,12 @@ def _reject_secrets(value: Any) -> None:
                 normalized in _SECRET_NAMES
                 or normalized.endswith("_token")
                 or normalized.endswith("_secret")
+                or normalized.endswith("_password")
+                or normalized.endswith("_api_key")
             ):
-                raise ContractValidationError(f"secret-bearing field rejected: {key}")
+                # A previously redacted diagnostic payload is safe to deserialize.
+                if child != "[redacted]":
+                    raise ContractValidationError(f"secret-bearing field rejected: {key}")
             _reject_secrets(child)
     elif isinstance(value, (list, tuple)):
         for child in value:

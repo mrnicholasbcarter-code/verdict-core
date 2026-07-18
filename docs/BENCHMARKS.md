@@ -46,17 +46,46 @@ region, request shape, and sampling date.
 
 ## Baseline command
 
-The existing smoke benchmark is a local routing exercise:
+The reproducible baseline benchmark is a local routing exercise driven by a
+checked-in fixture:
+
+```bash
+.venv/bin/python benchmarks/run_reproducible.py
+```
+
+The legacy entry point still proxies to the same harness:
 
 ```bash
 .venv/bin/python benchmarks/test_throughput.py
 ```
 
 It is not a production performance benchmark and does not measure a provider.
-For a new result, capture the output with:
+The default mode records only local contract, dispatcher, and compatibility
+routing costs. For a new result, capture the output with:
 
 ```bash
-.venv/bin/python benchmarks/test_throughput.py | tee benchmark-results/<commit>.txt
+.venv/bin/python benchmarks/run_reproducible.py \
+  --output-json benchmark-results/<commit>.json \
+  | tee benchmark-results/<commit>.txt
+```
+
+The fixture lives at `benchmarks/fixtures/reproducible.json` and the report
+stores its SHA-256 digest so reruns can prove they used the same checked-in
+inputs.
+
+If you truly need a live provider measurement, label it explicitly and opt in so
+it cannot be confused with the reproducible local baseline:
+
+```bash
+.venv/bin/python benchmarks/run_reproducible.py \
+  --allow-live-provider \
+  --live-provider openai/gpt-4o
+```
+
+or via the CLI:
+
+```bash
+llm-gate benchmark --output-json benchmark-results/<commit>.json
 ```
 
 Before publishing, add the environment manifest and fixture/policy versions to

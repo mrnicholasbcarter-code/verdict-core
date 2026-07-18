@@ -127,6 +127,15 @@ def test_cmd_detect_exits_nonzero_on_detection_failure(monkeypatch: pytest.Monke
     assert exc.value.code == 1
 
 
+def test_cmd_benchmark_rejects_live_provider_without_explicit_opt_in() -> None:
+    with pytest.raises(ValueError, match="explicitly enabled"):
+        cli.cmd_benchmark(
+            "benchmarks/fixtures/reproducible.json",
+            allow_live_provider=False,
+            live_provider="openai/gpt-4o",
+        )
+
+
 def test_main_dispatches_help_route_stats_detect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -152,6 +161,36 @@ def test_main_dispatches_help_route_stats_detect(
     monkeypatch.setattr(cli.sys, "argv", ["llm-gate", "detect", "--json"])
     cli.main()
     assert '"local_servers"' in capsys.readouterr().out
+
+
+def test_cmd_benchmark_writes_json_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_path = tmp_path / "benchmark-report.json"
+
+    cli.cmd_benchmark("benchmarks/fixtures/reproducible.json", str(output_path))
+
+    out = capsys.readouterr().out
+    assert "mode: local-reproducible" in out
+    payload = json.loads(output_path.read_text())
+    assert payload["fixture_path"] == "benchmarks/fixtures/reproducible.json"
+    assert payload["live_provider"] is None
+
+
+def test_main_dispatches_benchmark_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_path = tmp_path / "benchmark.json"
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        ["llm-gate", "benchmark", "--output-json", str(output_path)],
+    )
+
+    cli.main()
+
+    assert "compatibility_routing" in capsys.readouterr().out
+    assert output_path.exists()
 
 
 def test_cmd_setup_auto_and_sync_mock(

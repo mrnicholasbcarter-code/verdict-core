@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
 import re
@@ -29,6 +30,14 @@ def redact_text(value: object) -> str:
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(r"\1[redacted]", text)
     return text
+
+
+def fingerprint_text(value: object, *, length: int = 32) -> str:
+    """Return a stable sha256 fingerprint for privacy-safe logging and learning."""
+    digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+    if length > 0:
+        digest = digest[:length]
+    return f"sha256:{digest}"
 
 
 def _truthy(value: str | None) -> bool:
@@ -114,4 +123,12 @@ def bearer_matches(provided: str | None, expected: str) -> bool:
     return hmac.compare_digest(provided, expected)
 
 
-__all__ = ["ServerSecurity", "bearer_matches", "host_is_allowed", "redact_text", "validate_server_security", "validate_upstream_url"]
+__all__ = [
+    "ServerSecurity",
+    "bearer_matches",
+    "fingerprint_text",
+    "host_is_allowed",
+    "redact_text",
+    "validate_server_security",
+    "validate_upstream_url",
+]

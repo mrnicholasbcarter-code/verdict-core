@@ -85,6 +85,10 @@ Request bodies are bounded by `LLMGATE_MAX_REQUEST_BYTES`, and upstream calls
 have a timeout. Upstream providers may retain request data under their own
 terms; configure provider-side retention separately.
 
+For the published threat model, privacy posture, retention responsibilities, and
+supply-chain evidence snapshot, see
+[`docs/SECURITY_ASSURANCE.md`](docs/SECURITY_ASSURANCE.md).
+
 Run the security checks with:
 
 ```bash
