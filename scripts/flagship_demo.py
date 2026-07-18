@@ -1,8 +1,17 @@
 """Credential-free, deterministic TaskSpec and eligibility walkthrough.
 
-Run from the repository root with ``python scripts/flagship_demo.py``.  The
+Run from the repository root with ``python scripts/flagship_demo.py``. The
 fixture uses only in-memory catalog/runtime observations; it never calls a
 provider, reads credentials, or writes a decision log.
+
+For a clean-environment smoke check, install the project into a fresh virtual
+environment and run this file from the repository root, or invoke it by absolute
+path after installing the wheel. The output remains deterministic because the
+fixture does not depend on ambient credentials, network access, or mutable local
+state.
+
+When running directly from a source checkout without installing the package, set
+``PYTHONPATH=.`` first.
 """
 
 from __future__ import annotations

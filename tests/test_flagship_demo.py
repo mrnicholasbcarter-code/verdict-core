@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -34,3 +35,17 @@ def test_cli_output_is_reproducible_without_network_or_credentials() -> None:
     assert first.stdout == second.stdout
     payload = json.loads(first.stdout)
     assert payload["decision"]["planner_mode"] == "deterministic_fixture"
+
+
+def test_cli_output_ignores_provider_environment_variables() -> None:
+    command = [sys.executable, "scripts/flagship_demo.py"]
+    baseline = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
+    env = {
+        **os.environ,
+        "OPENAI_API_KEY": "sk-demo-openai",
+        "ANTHROPIC_API_KEY": "sk-demo-anthropic",
+        "LLMGATE_UPSTREAM_API_KEY": "sk-demo-upstream",
+    }
+    with_env = subprocess.run(command, cwd=ROOT, env=env, check=True, capture_output=True, text=True)
+
+    assert baseline.stdout == with_env.stdout

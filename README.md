@@ -16,6 +16,37 @@ candidates, but it cannot bypass a hard gate.
 > repository does not claim production readiness, provider uptime, or a
 > particular routing latency.
 
+## Five-minute clean-environment quickstart
+
+The fastest clean-room proof is the deterministic flagship demo. It requires no
+credentials, makes no network calls, and produces stable JSON output.
+
+From a fresh checkout:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+python scripts/flagship_demo.py
+python -m pytest -q tests/test_flagship_demo.py
+```
+
+For a packaging-style smoke check in an isolated environment, build a wheel and
+install that artifact instead of using an editable checkout:
+
+```bash
+python -m pip install build
+python -m build
+python -m venv /tmp/llm-gate-smoke
+source /tmp/llm-gate-smoke/bin/activate
+pip install dist/llm_gate-*.whl
+python -m llm_gate.cli --help
+python /path/to/llm-gate/scripts/flagship_demo.py
+```
+
+See [the reproducible demo guide](docs/DEMO.md) for the clean-environment
+verification flow, expected behavior, and current limitations.
+
 ## See the decision, without credentials
 
 The flagship walkthrough is deterministic and makes no network calls:
@@ -27,7 +58,7 @@ python scripts/flagship_demo.py
 It constructs a `TaskSpec`, evaluates four in-memory runtime observations,
 selects one eligible candidate, and reports why the other three were excluded
 (missing capability, exhausted quota, and unknown health). The output is stable
-across runs. See [the reproducible demo guide](docs/DEMO.md).
+across runs.
 
 ## Install and use the library
 

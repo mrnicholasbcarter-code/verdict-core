@@ -4,15 +4,39 @@ The public demo is intentionally a mock scenario, not a provider integration.
 It proves the contract and explainability slice without credentials, network
 access, a running gateway, or a mutable local decision log.
 
-## Run it
+## Clean-environment quickstart
+
+### Editable-install path
 
 From the repository root:
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 python scripts/flagship_demo.py
+pytest -q tests/test_flagship_demo.py
 ```
 
-For a clean-room check, unset provider variables first if desired:
+### Wheel smoke path
+
+This path verifies that the packaged artifact imports cleanly in a fresh
+environment, without assuming an existing editable checkout is active:
+
+```bash
+python -m pip install build
+python -m build
+python -m venv /tmp/llm-gate-smoke
+source /tmp/llm-gate-smoke/bin/activate
+pip install dist/llm_gate-*.whl
+python -m llm_gate.cli --help
+python /absolute/path/to/llm-gate/scripts/flagship_demo.py
+```
+
+### Optional clean-room env scrub
+
+Unset provider variables first if you want explicit evidence that the demo does
+not depend on them:
 
 ```bash
 env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u LLMGATE_UPSTREAM_API_KEY \
@@ -53,3 +77,13 @@ The test also checks that the selected route and all exclusion reasons remain
 stable. This is evidence for the deterministic contract/eligibility slice; it
 is not evidence of provider quality, end-to-end model execution, or production
 readiness.
+
+## Current limitations
+
+- This demo is a deterministic fixture, not a live provider or gateway call.
+- It is valid evidence for contract shape, candidate exclusion reasons, and
+  reproducibility only.
+- It is not evidence of OmniRoute quota truth, upstream health fidelity,
+  end-to-end proxy compatibility, or production readiness.
+- The repository's broader release acceptance items still call for separate mock
+  upstream, CLI/client smoke, and filtered OmniRoute verification coverage.
