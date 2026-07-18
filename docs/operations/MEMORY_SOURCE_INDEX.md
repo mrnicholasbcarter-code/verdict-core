@@ -160,7 +160,9 @@ metadata field until an explicit lifecycle test documents stronger behavior.
 | `ecosystem-ruvector-retrieval-v1` | `upstream-documented`, `proposal` | Release `ruvector-core-v2.3.0`, commit `d811d42`; local adapter remains planned | Optional retrieval/graph boundary and evidence requirements |
 | `portfolio-resume-checkpoint-v1` | `verified-evidence`, `local-observation` | Git/GitHub values rechecked at retain time | Exact SHAs, CI runs, blockers, issue, and next atomic task |
 
-Example metadata for the Hermes card:
+The installed plugin's retain path uses string-valued metadata. Keep structured
+classification in tags or encode it as a comma-delimited string rather than
+sending nested arrays or booleans. Example metadata for the Hermes card:
 
 ```json
 {
@@ -168,12 +170,10 @@ Example metadata for the Hermes card:
   "reviewed_at": "2026-07-18",
   "source_path": "docs/operations/MEMORY_SOURCE_INDEX.md",
   "source_version": "hermes-agent v2026.7.7.2 @ 9de9c25",
-  "source_urls": [
-    "https://hermes-agent.nousresearch.com/docs/user-guide/configuration",
-    "https://github.com/NousResearch/hermes-agent/tree/9de9c25f620ff7f1ce0fd5457d596052d5159596"
-  ],
-  "trust": ["upstream-documented"],
-  "secret_free": true
+  "source_url_primary": "https://hermes-agent.nousresearch.com/docs/user-guide/configuration",
+  "source_url_context": "https://github.com/NousResearch/hermes-agent/tree/9de9c25f620ff7f1ce0fd5457d596052d5159596",
+  "trust": "upstream-documented",
+  "secret_free": "true"
 }
 ```
 
