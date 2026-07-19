@@ -1269,6 +1269,105 @@ class OmniRouteAvailabilityAdapter:
     check = evaluate
 
 
+class ProbeEnrichedAdapter:
+    """Adapter that adds bounded live probes on top of catalog/runtime truth.
+
+    This is the issue #57 root-cause wiring: the existing
+    :class:`OmniRouteAvailabilityAdapter` only consults catalog + runtime
+    metadata, never proving a model is actually usable.  This adapter reuses the
+    already-built, already-tested :class:`~llm_gate.probes.ProbeRunner` and
+    merges single-token probe observations into the same candidate states the
+    router consumes.  No new transport code is introduced: the probe uses the
+    documented ``openai_probe_transport`` (POST /v1/chat/completions), separate
+    from the GET-only catalog/runtime transport.
+
+    Probing is opt-in via ``enabled`` so the development/default profile stays
+    pure catalog/runtime (per ENFORCEMENT_AND_LEARNING: probing is a
+    production-profile concern).  When disabled the adapter is a thin pass-through
+    to the wrapped adapter.
+    """
+
+    def __init__(
+        self,
+        base: OmniRouteAvailabilityAdapter,
+        *,
+        probe_transport: Any | None = None,
+        enabled: bool = False,
+        policy: Any | None = None,
+        registry: Any | None = None,
+        max_probed: int = 16,
+        clock: Any = None,
+    ) -> None:
+        self.base = base
+        self.probe_transport = probe_transport
+        self.enabled = enabled
+        # Lazy import: probes.py imports ``RuntimeObservation`` from this module
+        # at load time, so importing it at the top would create a circular dep.
+        self._runner = None
+        if enabled:
+            from llm_gate.probes import ProbeRunner
+
+            self._runner = ProbeRunner(policy=policy, registry=registry)
+        self.max_probed = max_probed
+        self.clock = clock
+
+    def evaluate(
+        self,
+        requirements: CandidateRequirements = CandidateRequirements(),
+        *,
+        now: datetime | None = None,
+    ) -> AvailabilityReport:
+        report = self.base.evaluate(requirements, now=now)
+        if not self.enabled or self._runner is None or self.probe_transport is None:
+            return report
+        # Bound the probe fan-out to the most relevant candidates to keep the
+        # one-token probe cheap and within ProbePolicy.max_models_per_run.
+        model_ids = [c.model.id for c in report.candidates][: self.max_probed]
+        if not model_ids:
+            return report
+        observations = self._runner.run(model_ids, self.probe_transport, now=now)
+        probe_by_id: dict[str, RuntimeObservation] = {}
+        for obs in observations:
+            try:
+                probe_by_id[obs.model_id] = obs.as_runtime_observation()
+            except Exception:
+                # A malformed probe result must never poison the report.
+                continue
+        if not probe_by_id:
+            return report
+        current = _now(now or (self.clock() if self.clock else None))
+        merged = [
+            self._merge_probe(candidate, probe_by_id, current) for candidate in report.candidates
+        ]
+        eligible = select_capable_candidates(merged, requirements)
+        return AvailabilityReport(
+            tuple(merged),
+            tuple(eligible),
+            report.source,
+            report.freshness_seconds,
+            report.errors,
+        )
+
+    @staticmethod
+    def _merge_probe(
+        candidate: AvailabilityCandidate,
+        probe_by_id: dict[str, RuntimeObservation],
+        now: datetime,
+    ) -> AvailabilityCandidate:
+        probe = probe_by_id.get(candidate.model.id)
+        if probe is None:
+            return candidate
+        # Probe truth is authoritative when it contradicts catalog/runtime.
+        probe_candidate = normalize_observation(candidate.model, probe, now=now)
+        if probe_candidate.state is AvailabilityState.MALFORMED:
+            # Keep the catalog/runtime verdict rather than degrading on a probe
+            # metadata glitch.
+            return candidate
+        return probe_candidate
+
+    check = evaluate
+
+
 def adapter_from_transport(
     transport: OmniRouteTransport, **kwargs: Any
 ) -> OmniRouteAvailabilityAdapter:

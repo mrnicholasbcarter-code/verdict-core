@@ -16,9 +16,10 @@ except ImportError as exc:
 from llm_gate.availability import OmniRouteAvailabilityAdapter
 from llm_gate.availability_cache import AvailabilityCache
 from llm_gate.catalog import configured_catalog_filters, normalize_catalog
+from llm_gate.eligibility import EligibilityGate
 from llm_gate.gate import Gate
 from llm_gate.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
-from llm_gate.models import ProviderConfig
+from llm_gate.models import ModelInfo, ProviderConfig
 from llm_gate.omniroute import OmniRouteHTTPTransport
 from llm_gate.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from llm_gate.security import bearer_matches, redact_text, validate_server_security
@@ -28,12 +29,13 @@ intelligence_instance: IntelligenceService | None = None
 gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
 availability_cache_instance: AvailabilityCache | None = None
+eligibility_gate_instance: EligibilityGate | None = None
 
 DEFAULT_AVAILABILITY_TTL_SECONDS = 60
 DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
 
 
-def _build_availability_cache() -> AvailabilityCache | None:
+def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | None:
     """Build the bounded availability cache backed by the native OmniRoute transport.
 
     Returns ``None`` when no OmniRoute endpoint is configured, so the server
@@ -62,12 +64,36 @@ def _build_availability_cache() -> AvailabilityCache | None:
         )
     except Exception:
         return None
-    adapter = OmniRouteAvailabilityAdapter(transport)
-    return AvailabilityCache(
-        source=adapter.evaluate,
+    adapter: OmniRouteAvailabilityAdapter = OmniRouteAvailabilityAdapter(transport)
+    # Issue #57 root cause: enrich the adapter with bounded live probes when the
+    # production availability profile is enabled.  Reuses ProbeRunner + the
+    # documented openai_probe_transport; disabled by default (development).
+    probe_base_url = os.getenv("LLMGATE_PROBE_BASE_URL")
+    probe_enabled = os.getenv("LLMGATE_AVAILABILITY_PROFILE", "development").lower() == "production"
+    if probe_enabled and probe_base_url:
+        from llm_gate.availability import ProbeEnrichedAdapter
+        from llm_gate.probes import openai_probe_transport
+
+        probe_transport = openai_probe_transport(
+            probe_base_url,
+            api_key=os.getenv("LLMGATE_PROBE_API_KEY") or api_key,
+        )
+        enriched: Any = ProbeEnrichedAdapter(adapter, probe_transport=probe_transport, enabled=True)
+    else:
+        enriched = adapter
+    cache = AvailabilityCache(
+        source=enriched.evaluate,
         ttl_seconds=DEFAULT_AVAILABILITY_TTL_SECONDS,
         stale_window_seconds=DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS,
     )
+    from llm_gate.eligibility import EligibilityGate
+
+    gate = EligibilityGate(
+        cache.get,
+        protected_fail_closed=True,
+        allow_unverified_in_dev=True,
+    )
+    return cache, gate
 
 
 DEFAULT_UPSTREAM_BASE_URL = "http://127.0.0.1:20132/v1"
@@ -145,13 +171,21 @@ async def lifespan(app: FastAPI) -> Any:
         intelligence_service=intelligence_instance,
     )
     proxy_instance = _build_proxy()
-    global availability_cache_instance
-    availability_cache_instance = _build_availability_cache()
+    global availability_cache_instance, eligibility_gate_instance
+    built = _build_availability_cache()
+    availability_cache_instance, eligibility_gate_instance = (
+        built if built is not None else (None, None)
+    )
+    # Issue #57: feed the eligibility gate into the IntelligenceService so the
+    # live routing path filters before ranking (single source of truth).
+    if eligibility_gate_instance is not None:
+        intelligence_instance.eligibility_gate = eligibility_gate_instance
     yield
     intelligence_instance = None
     gate_instance = None
     proxy_instance = None
     availability_cache_instance = None
+    eligibility_gate_instance = None
 
 
 app = FastAPI(
@@ -295,15 +329,17 @@ def _headers_for_body(result: BufferedUpstreamResponse) -> dict[str, str]:
 
 @app.get("/v1/route/explain")
 async def route_explain(model_id: str | None = None) -> Response:
-    """Explain availability freshness and source for one or all cached models.
+    """Explain availability freshness and eligibility for one or all cached models.
 
-    Implements the issue #56 explain contract: surfaces observed_at, expires_at,
-    age, source, confidence, candidate/eligible counts, and cache refresh/error
-    state (``cache_state``, ``stale``, ``refreshing``, ``refresh_error``).
+    Implements the issue #56 / #73 explain contract: surfaces observed_at,
+    expires_at, age, source, confidence, candidate/eligible counts, per-candidate
+    exclusion reasons (#73), and cache refresh/error state (``cache_state``,
+    ``stale``, ``refreshing``, ``refresh_error``).
 
     Without ``model_id`` the response reports the cache scope (policy version and
-    configured model keys). With ``model_id`` it returns the per-model freshness
-    explain record, refreshing on first access.
+    configured model keys) plus the gate's pre-ranking eligible/exclusion sets
+    when available. With ``model_id`` it returns the per-model freshness explain
+    record, refreshing on first access.
     """
     if availability_cache_instance is None:
         return _proxy_error(
@@ -311,14 +347,43 @@ async def route_explain(model_id: str | None = None) -> Response:
             "availability cache not configured (set OMNIROUTE_BASE_URL to enable)",
         )
     if model_id is None or model_id == "":
-        return JSONResponse(
-            content={
-                "policy_version": availability_cache_instance.policy_version,
-                "cached_models": sorted(availability_cache_instance.keys()),
-                "cache_state": "configured",
-            }
-        )
+        base: dict[str, Any] = {
+            "policy_version": availability_cache_instance.policy_version,
+            "cached_models": sorted(availability_cache_instance.keys()),
+            "cache_state": "configured",
+        }
+        # Issue #73: surface the gate's complete pre-ranking eligible set and
+        # exclusions from the same authority the router uses.
+        if eligibility_gate_instance is not None:
+            gate_eval = eligibility_gate_instance.evaluate(
+                [
+                    ModelInfo(
+                        id=mid,
+                        provider=mid.split("/", 1)[0] if "/" in mid else "unknown",
+                        capability_tier=2,
+                    )
+                    for mid in base["cached_models"]
+                ],
+                dev_mode=True,
+            )
+            base["eligible_set"] = [m.id for m in gate_eval.eligible]
+            base["exclusions"] = [r.to_dict() for r in gate_eval.exclusions]
+        return JSONResponse(content=base)
     record = availability_cache_instance.explain(model_id)
+    if eligibility_gate_instance is not None:
+        gate_eval = eligibility_gate_instance.evaluate(
+            [
+                ModelInfo(
+                    id=model_id,
+                    provider=model_id.split("/", 1)[0] if "/" in model_id else "unknown",
+                    capability_tier=2,
+                )
+            ],
+            dev_mode=True,
+        )
+        if gate_eval.records:
+            record["eligibility"] = gate_eval.records[0].to_dict()
+            record["eligible"] = gate_eval.records[0].admitted
     return JSONResponse(content=record)
 
 

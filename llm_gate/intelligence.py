@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from llm_gate.discovery import fetch_models
+from llm_gate.eligibility import EligibilityGate
 from llm_gate.escalation import scan
 from llm_gate.logger import log_decision
 from llm_gate.models import ProviderConfig, RoutingDecision
@@ -41,6 +42,7 @@ class IntelligenceService:
         frontier_allowlist: tuple[str, ...] | None = None,
         allow_client_model_override: bool = False,
         planner: StructuredPlanner | None = None,
+        eligibility_gate: EligibilityGate | None = None,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -54,6 +56,9 @@ class IntelligenceService:
         self.frontier_allowlist = frontier_allowlist
         self.allow_client_model_override = allow_client_model_override
         self.planner = planner or StructuredPlanner()
+        # Issue #57: single-source-of-truth eligibility gate consulted before
+        # any ranking.  When None, routing falls back to catalog truth only.
+        self.eligibility_gate = eligibility_gate
         self.managed_backend_status = self._probe_managed_backend()
         self._policy_version = "policy-2026-07-13.1"
 
@@ -145,7 +150,27 @@ class IntelligenceService:
         for name, cfg in self.providers.items():
             candidates.extend(fetch_models(name, cfg, self.discovery_ttl))
 
+        # Issue #57: filter candidates by live eligibility BEFORE any ranking.
+        # The gate is the single source of truth shared with the explain
+        # endpoint, so no downstream ranker can reintroduce an excluded model.
+        eligibility = None
+        if self.eligibility_gate is not None:
+            eligibility = self.eligibility_gate.evaluate(
+                candidates,
+                protected=(final_tier == 0),
+                dev_mode=(self.profile == "development"),
+            )
+            candidates = eligibility.eligible
+
         best_model, _ = select_best_model(candidates, final_tier, self.providers)
+
+        eligibility_record: dict[str, Any] = {}
+        if eligibility is not None:
+            eligibility_record = eligibility.to_dict()
+            excluded = [r for r in eligibility.records if not r.admitted]
+            if excluded and final_tier == 0:
+                # Protected work: some candidates were excluded by live truth.
+                eligibility_record["protected_fail_closed"] = True
 
         if final_tier == 0 or not best_model:
             dec = RoutingDecision(
@@ -164,6 +189,12 @@ class IntelligenceService:
                 decision="fallback" if best_model is None else "selected",
                 transport_outcome="not_sent",
                 quality_outcome="unknown",
+                candidate_states=eligibility_record.get("records", []),
+                safety_flags=(
+                    ["eligibility_exclusions_applied"]
+                    if eligibility_record.get("protected_fail_closed")
+                    else []
+                ),
             )
         else:
             dec = RoutingDecision(
@@ -180,6 +211,12 @@ class IntelligenceService:
                 decision="selected",
                 transport_outcome="not_sent",
                 quality_outcome="unknown",
+                candidate_states=eligibility_record.get("records", []),
+                safety_flags=(
+                    ["eligibility_exclusions_applied"]
+                    if eligibility_record.get("protected_fail_closed")
+                    else []
+                ),
             )
 
         elapsed = (time.time() - start_t) * 1000
