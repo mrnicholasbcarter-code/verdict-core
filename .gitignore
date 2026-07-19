@@ -36,3 +36,6 @@ patch_*.py
 .coverage
 coverage.xml
 *.jsonl
+
+# code-review-graph
+.code-review-graph/
