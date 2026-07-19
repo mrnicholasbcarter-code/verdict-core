@@ -18,6 +18,12 @@ from llm_gate.availability import (
     StaticOmniRouteTransport,
     discover_transport_capabilities,
 )
+from llm_gate.availability_cache import (
+    AvailabilityCache,
+    CacheKey,
+    build_cache_report,
+    explain_freshness,
+)
 from llm_gate.benchmarking import (
     DEFAULT_FIXTURE_PATH,
     format_benchmark_report,
@@ -77,10 +83,12 @@ __all__ = [
     "DEFAULT_FIXTURE_PATH",
     "PROBE_PROMPT",
     "AssignmentExplanation",
+    "AvailabilityCache",
     "AvailabilityCandidate",
     "AvailabilityReport",
     "AvailabilitySnapshot",
     "AvailabilityState",
+    "CacheKey",
     "CallableOmniRouteTransport",
     "CandidateRequirements",
     "CapabilityRequirement",
@@ -132,7 +140,9 @@ __all__ = [
     "WorkflowKind",
     "WorkflowPlan",
     "WorkflowSelector",
+    "build_cache_report",
     "discover_transport_capabilities",
+    "explain_freshness",
     "format_benchmark_report",
     "load_benchmark_fixture",
     "openai_probe_transport",

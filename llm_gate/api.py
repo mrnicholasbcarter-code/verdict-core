@@ -13,10 +13,13 @@ except ImportError as exc:
         "FastAPI is required for the web server mode. Install with `pip install llm-gate[server]`"
     ) from exc
 
+from llm_gate.availability import OmniRouteAvailabilityAdapter
+from llm_gate.availability_cache import AvailabilityCache
 from llm_gate.catalog import configured_catalog_filters, normalize_catalog
 from llm_gate.gate import Gate
 from llm_gate.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
 from llm_gate.models import ProviderConfig
+from llm_gate.omniroute import OmniRouteHTTPTransport
 from llm_gate.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from llm_gate.security import bearer_matches, redact_text, validate_server_security
 
@@ -24,6 +27,47 @@ from llm_gate.security import bearer_matches, redact_text, validate_server_secur
 intelligence_instance: IntelligenceService | None = None
 gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
+availability_cache_instance: AvailabilityCache | None = None
+
+DEFAULT_AVAILABILITY_TTL_SECONDS = 60
+DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
+
+
+def _build_availability_cache() -> AvailabilityCache | None:
+    """Build the bounded availability cache backed by the native OmniRoute transport.
+
+    Returns ``None`` when no OmniRoute endpoint is configured, so the server
+    still boots without availability explainability.  The transport is
+    loopback-only and credential-safe; a misconfigured base URL fails closed
+    to ``None`` rather than crashing startup.
+    """
+    base_url = os.getenv("OMNIROUTE_BASE_URL") or os.getenv("LLMGATE_UPSTREAM_BASE_URL")
+    if not base_url or base_url.strip().lower() in {"", "none"}:
+        return None
+    api_key = os.getenv("OMNIROUTE_API_KEY")
+    management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
+    usage_api_key_id = os.getenv("OMNIROUTE_USAGE_API_KEY_ID")
+    allow_private = _allowed_private_hosts() | {
+        item.strip().lower()
+        for item in os.getenv("OMNIROUTE_ALLOW_PRIVATE_HOSTS", "").split(",")
+        if item.strip()
+    }
+    try:
+        transport = OmniRouteHTTPTransport(
+            base_url,
+            api_key=api_key,
+            management_token=management_token,
+            usage_api_key_id=usage_api_key_id,
+            allow_private_hosts=allow_private,
+        )
+    except Exception:
+        return None
+    adapter = OmniRouteAvailabilityAdapter(transport)
+    return AvailabilityCache(
+        source=adapter.evaluate,
+        ttl_seconds=DEFAULT_AVAILABILITY_TTL_SECONDS,
+        stale_window_seconds=DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS,
+    )
 
 DEFAULT_UPSTREAM_BASE_URL = "http://127.0.0.1:20132/v1"
 DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024
@@ -100,10 +144,13 @@ async def lifespan(app: FastAPI) -> Any:
         intelligence_service=intelligence_instance,
     )
     proxy_instance = _build_proxy()
+    global availability_cache_instance
+    availability_cache_instance = _build_availability_cache()
     yield
     intelligence_instance = None
     gate_instance = None
     proxy_instance = None
+    availability_cache_instance = None
 
 
 app = FastAPI(
@@ -243,6 +290,35 @@ def _headers_for_body(result: BufferedUpstreamResponse) -> dict[str, str]:
     headers = dict(result.headers)
     headers.pop("content-length", None)
     return headers
+
+
+@app.get("/v1/route/explain")
+async def route_explain(model_id: str | None = None) -> Response:
+    """Explain availability freshness and source for one or all cached models.
+
+    Implements the issue #56 explain contract: surfaces observed_at, expires_at,
+    age, source, confidence, candidate/eligible counts, and cache refresh/error
+    state (``cache_state``, ``stale``, ``refreshing``, ``refresh_error``).
+
+    Without ``model_id`` the response reports the cache scope (policy version and
+    configured model keys). With ``model_id`` it returns the per-model freshness
+    explain record, refreshing on first access.
+    """
+    if availability_cache_instance is None:
+        return _proxy_error(
+            503,
+            "availability cache not configured (set OMNIROUTE_BASE_URL to enable)",
+        )
+    if model_id is None or model_id == "":
+        return JSONResponse(
+            content={
+                "policy_version": availability_cache_instance.policy_version,
+                "cached_models": sorted(availability_cache_instance.keys()),
+                "cache_state": "configured",
+            }
+        )
+    record = availability_cache_instance.explain(model_id)
+    return JSONResponse(content=record)
 
 
 @app.get("/v1/models")
