@@ -644,6 +644,71 @@ def cmd_detect(
         sys.exit(1)
 
 
+def cmd_probe(
+    models: list[str],
+    base_url: str = "http://localhost:20128/v1",
+    timeout: float = 20.0,
+    output_json: bool = False,
+) -> None:
+    """Run a real one-token liveness probe against each model through a router.
+
+    Sends the fixed, no-user-data probe payload (max_tokens=1) so a model can be
+    confirmed live before it is assigned real work (e.g. a subagent).
+    """
+    import time
+
+    from llm_gate.probes import ProbePolicy, openai_probe_transport
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    policy = ProbePolicy(timeout_seconds=timeout)
+    transport = openai_probe_transport(base_url, api_key=api_key)
+
+    results: list[dict[str, Any]] = []
+    for model_id in models:
+        payload = policy.payload(model_id)
+        started = time.monotonic()
+        entry: dict[str, Any] = {"model": model_id}
+        try:
+            response = transport(model_id, payload, timeout)
+            latency_ms = (time.monotonic() - started) * 1000.0
+            status_code = response.get("status_code")
+            body = response.get("body") or {}
+            usage = body.get("usage") if isinstance(body, dict) else None
+            entry.update(
+                {
+                    "ok": bool(status_code and 200 <= int(status_code) < 300),
+                    "http_status": status_code,
+                    "latency_ms": round(latency_ms, 1),
+                    "usage": usage,
+                }
+            )
+        except Exception as exc:
+            entry.update({"ok": False, "error": type(exc).__name__, "detail": str(exc)[:200]})
+        results.append(entry)
+
+    if output_json:
+        print(json.dumps(results, indent=2))
+        return
+
+    table = Table(title=f"llm-gate probe  ({base_url})")
+    table.add_column("Model", style="cyan")
+    table.add_column("Status")
+    table.add_column("HTTP")
+    table.add_column("Latency (ms)")
+    for entry in results:
+        ok = entry.get("ok")
+        status = "[green]LIVE[/green]" if ok else f"[red]DOWN[/red] {entry.get('error', '')}"
+        table.add_row(
+            str(entry["model"]),
+            status,
+            str(entry.get("http_status", "-")),
+            str(entry.get("latency_ms", "-")),
+        )
+    console.print(table)
+    if not all(e.get("ok") for e in results):
+        sys.exit(1)
+
+
 def cmd_suggest(log_path: str = "llm-gate-decisions.jsonl") -> None:
     """Run the SuggestionService to propose evidence-backed improvements."""
     from rich.console import Console
@@ -967,6 +1032,17 @@ def main() -> None:
     detect_p.add_argument("--json", action="store_true", help="Output JSON")
     detect_p.add_argument("--config", action="store_true", help="Generate suggested llm-gate.yaml")
 
+    # New: probe command (1-token liveness test before assigning work)
+    probe_p = subparsers.add_parser("probe", help="Run a 1-token liveness probe against models")
+    probe_p.add_argument("models", nargs="+", help="Model IDs to probe (e.g. openrouter/tencent/hy3:free)")
+    probe_p.add_argument(
+        "--base-url",
+        default="http://localhost:20128/v1",
+        help="OpenAI-compatible base URL (default: local OmniRoute)",
+    )
+    probe_p.add_argument("--timeout", type=float, default=20.0, help="Per-probe timeout seconds")
+    probe_p.add_argument("--json", action="store_true", help="Output JSON")
+
     suggest_p = subparsers.add_parser(
         "suggest", help="Review intelligence suggestions from past outcomes"
     )
@@ -1025,6 +1101,8 @@ def main() -> None:
                 '  [bold cyan]pipx install "llm-gate[all] @ git+https://github.com/mrnicholasbcarter-code/llm-gate.git" --force[/bold cyan]'
             )
             sys.exit(1)
+    elif args.command == "probe":
+        cmd_probe(args.models, base_url=args.base_url, timeout=args.timeout, output_json=args.json)
     elif args.command == "detect":
         cmd_detect(verbose=args.verbose, output_json=args.json, output_config=args.config)
     elif args.command == "suggest":

@@ -429,3 +429,40 @@ def test_cmd_check_invalid_config(
         cli.cmd_check()
     assert exc.value.code == 1
     assert "Literal API key detected inside host URL for provider" in capsys.readouterr().out
+
+
+def test_cmd_probe_reports_live_model(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cmd_probe should report a live model when the transport returns 2xx."""
+
+    def fake_transport_factory(base_url, api_key=None, opener=None):  # type: ignore[no-untyped-def]
+        def transport(model_id, payload, timeout):  # type: ignore[no-untyped-def]
+            assert payload["max_tokens"] == 1
+            return {"status_code": 200, "body": {"usage": {"total_tokens": 3}}}
+
+        return transport
+
+    monkeypatch.setattr("llm_gate.probes.openai_probe_transport", fake_transport_factory)
+    cli.cmd_probe(["some/model:free"], base_url="http://localhost:20128/v1", output_json=True)
+    out = json.loads(capsys.readouterr().out)
+    assert out[0]["ok"] is True
+    assert out[0]["http_status"] == 200
+
+
+def test_cmd_probe_flags_down_model(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cmd_probe should flag a model whose transport raises."""
+
+    def fake_transport_factory(base_url, api_key=None, opener=None):  # type: ignore[no-untyped-def]
+        def transport(model_id, payload, timeout):  # type: ignore[no-untyped-def]
+            raise TimeoutError("boom")
+
+        return transport
+
+    monkeypatch.setattr("llm_gate.probes.openai_probe_transport", fake_transport_factory)
+    with pytest.raises(SystemExit):
+        cli.cmd_probe(["down/model"], output_json=False)
+    err_out = capsys.readouterr().out
+    assert "DOWN" in err_out
