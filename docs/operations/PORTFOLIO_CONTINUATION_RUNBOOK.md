@@ -405,7 +405,7 @@ stale and is never live availability authority.
 
 | Repository | Revision | Local proof | Exact-SHA remote proof |
 |---|---|---|---|
-| `llm-gate` | `336a79c1a0a06106440b4c09d7ff845f94bb483a` | Ruff and strict mypy clean; 265 tests passed; Bandit and package checks passed | CI `29656461784`, Lint `29656461782`, CodeQL `29656461798` succeeded |
+| `llm-gate` | `1d51c6617c6832cf91dbea2505ca253586299b7c` | Ruff and strict mypy clean; 313 tests passed; Bandit and package checks passed | CI `29671816216`, Lint `29671816245`, CodeQL Analysis `29671816218` succeeded |
 | `llm-gate-node` | `c154c8f36a2922d580afe34bde16ff1c92cc4ac8` | Clean install/package evidence captured | Clean Install CI `29652350472`, Lint `29652350448`, CodeQL `29652350443` succeeded |
 
 Earlier verified `llm-gate` slices:
@@ -417,11 +417,20 @@ Earlier verified `llm-gate` slices:
 - `842adb8` — fail-closed contradictory runtime evidence
 - `6999fd9` — product vision, source index, and Hindsight metadata contract
 - `336a79c` — planned token/cost/latency capacity admission
+- `3153f0e` — portfolio resume checkpoint advance
+- `0628e07` — credential-safe OmniRoute transport (issue 54)
+- `146956a` — parser-independent nested-JSON limit enforcement (issue 54)
+- `1d51c66` — availability cache, stale-while-revalidate, `/v1/route/explain` (issue 56, PR 71)
 
 Issue 55 is closed with independent approval and exact-SHA workflow evidence.
-Issue 54 is the next P0 slice: finish the documented, credential-safe
-OmniRoute catalog/runtime transport seams and capability discovery. Issue 56
-then adds bounded cache/stale-while-revalidate behavior and explain freshness.
+Issue 54 (credential-safe OmniRoute catalog/runtime transport seams) is
+complete and integrated. Issue 56 (bounded cache, stale-while-revalidate, and
+explain freshness) is complete and merged via PR 71. The next P0 slice is
+issue 57: integrate availability eligibility filtering before adaptive ranking
+in every route path, with the fail-closed invariant. Follow-on integration
+tickets 72 (wire `AvailabilityCache` into the router/dispatcher eligibility
+gate) and 73 (surface the pre-ranking eligible set and exclusions in
+`/v1/route/explain`) were opened to carry the remaining #57 work.
 
 ## Known operational pitfalls
 
@@ -469,9 +478,14 @@ then adds bounded cache/stale-while-revalidate behavior and explain freshness.
    table and inspect new issues/PRs.
 2. Confirm OmniRoute health, run the one-token direct probe, and run the exact
    Codex CLI canary for any delegated model.
-3. Create an isolated worktree for issue 54.
-4. Implement only documented OmniRoute catalog/runtime transports and
-   capability discovery with strict endpoint, timeout, response-size, secret
-   redaction, and typed-error boundaries.
+3. Create an isolated worktree for issue 57.
+4. Wire normalized live availability (the issue 56 `AvailabilityCache`) into the
+   Python router, dispatcher, API, and proxy decision paths so candidate
+   eligibility filtering happens before any adaptive or cost ranking; preserve
+   exclusions and the availability snapshot in `RoutingDecision`; and add
+   invariant tests that no ranker, Ruflo plan, or RuVector result can
+   reintroduce an excluded candidate, with protected work failing closed when
+   runtime truth is absent. Tickets 72 and 73 carry the router/dispatcher gate
+   and the explain pre-ranking eligible-set surface.
 5. Re-run all local gates, integrate onto current main, push, watch the exact
    SHA, update issue/Project evidence, and retain the next sanitized checkpoint.
