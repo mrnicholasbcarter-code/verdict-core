@@ -1337,8 +1337,7 @@ class ProbeEnrichedAdapter:
             return report
         current = _now(now or (self.clock() if self.clock else None))
         merged = [
-            self._merge_probe(candidate, probe_by_id, current)
-            for candidate in report.candidates
+            self._merge_probe(candidate, probe_by_id, current) for candidate in report.candidates
         ]
         eligible = select_capable_candidates(merged, requirements)
         return AvailabilityReport(

@@ -78,9 +78,7 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
             probe_base_url,
             api_key=os.getenv("LLMGATE_PROBE_API_KEY") or api_key,
         )
-        enriched: Any = ProbeEnrichedAdapter(
-            adapter, probe_transport=probe_transport, enabled=True
-        )
+        enriched: Any = ProbeEnrichedAdapter(adapter, probe_transport=probe_transport, enabled=True)
     else:
         enriched = adapter
     cache = AvailabilityCache(
@@ -175,7 +173,9 @@ async def lifespan(app: FastAPI) -> Any:
     proxy_instance = _build_proxy()
     global availability_cache_instance, eligibility_gate_instance
     built = _build_availability_cache()
-    availability_cache_instance, eligibility_gate_instance = built if built is not None else (None, None)
+    availability_cache_instance, eligibility_gate_instance = (
+        built if built is not None else (None, None)
+    )
     # Issue #57: feed the eligibility gate into the IntelligenceService so the
     # live routing path filters before ranking (single source of truth).
     if eligibility_gate_instance is not None:
@@ -367,9 +367,7 @@ async def route_explain(model_id: str | None = None) -> Response:
                 dev_mode=True,
             )
             base["eligible_set"] = [m.id for m in gate_eval.eligible]
-            base["exclusions"] = [
-                r.to_dict() for r in gate_eval.exclusions
-            ]
+            base["exclusions"] = [r.to_dict() for r in gate_eval.exclusions]
         return JSONResponse(content=base)
     record = availability_cache_instance.explain(model_id)
     if eligibility_gate_instance is not None:

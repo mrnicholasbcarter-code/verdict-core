@@ -61,7 +61,9 @@ class EligibilityRecord:
             "model_id": self.model_id,
             "provider": self.provider,
             "admitted": self.admitted,
-            "verdict": self.verdict.value if isinstance(self.verdict, EligibilityVerdict) else self.verdict,
+            "verdict": self.verdict.value
+            if isinstance(self.verdict, EligibilityVerdict)
+            else self.verdict,
             "state": self.state,
             "source": self.source,
             "reason": self.reason,
@@ -96,7 +98,10 @@ def _state_for(report: AvailabilityReport | None, model_id: str) -> tuple[str, s
     if report is None:
         return ("unknown", "cache")
     for candidate in report.candidates:
-        if candidate.model.id == model_id or candidate.model.id.split("/", 1)[-1] == model_id.split("/", 1)[-1]:
+        if (
+            candidate.model.id == model_id
+            or candidate.model.id.split("/", 1)[-1] == model_id.split("/", 1)[-1]
+        ):
             return (candidate.state.value, candidate.source)
     # Candidate absent from the report entirely -> treat as unknown (fail-closed
     # for protected work; the router may still admit unverified in dev mode).
@@ -149,9 +154,7 @@ class EligibilityGate:
                 result.admitted.append(model)
         return result
 
-    def _judge(
-        self, model: ModelInfo, *, protected: bool, dev_mode: bool
-    ) -> EligibilityRecord:
+    def _judge(self, model: ModelInfo, *, protected: bool, dev_mode: bool) -> EligibilityRecord:
         model_id = model.id
         provider = model.provider or "unknown"
         if self.availability_source is None:

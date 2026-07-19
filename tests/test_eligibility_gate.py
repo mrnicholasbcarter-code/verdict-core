@@ -33,7 +33,9 @@ def _candidate(model_id: str, state: str, tier: int = 2) -> AvailabilityCandidat
 def _report(*states: tuple[str, str]) -> AvailabilityReport:
     """Build a report keyed by (model_id, availability_state)."""
     candidates = [_candidate(mid, st) for mid, st in states]
-    eligible = [c for c in candidates if c.state in {AvailabilityState.ELIGIBLE, AvailabilityState.READY}]
+    eligible = [
+        c for c in candidates if c.state in {AvailabilityState.ELIGIBLE, AvailabilityState.READY}
+    ]
     return AvailabilityReport(tuple(candidates), tuple(eligible), "cache", 60)
 
 
@@ -137,6 +139,7 @@ def test_intelligence_route_filters_before_ranking(monkeypatch: Any) -> None:
             ModelInfo(id="b/2", provider="b", capability_tier=0),
         ],
     )
+
     # Stub the planner so "write a test" is not auto-escalated to critical
     # effort (which would force final_tier=0 and route to primary by design).
     class _TaskSpec:
@@ -191,7 +194,9 @@ def test_explain_per_model_carries_eligibility(monkeypatch: Any) -> None:
     monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "test-token")
 
     with TestClient(api.app) as client:
-        resp = client.get("/v1/route/explain?model_id=a/1", headers={"Authorization": "Bearer test-token"})
+        resp = client.get(
+            "/v1/route/explain?model_id=a/1", headers={"Authorization": "Bearer test-token"}
+        )
     assert resp.status_code == 200
     body = resp.json()
     assert body["eligibility"]["model_id"] == "a/1"
