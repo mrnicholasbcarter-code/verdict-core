@@ -39,3 +39,12 @@ coverage.xml
 
 # code-review-graph
 .code-review-graph/
+
+# Local agent/tooling scaffolding (not part of the published project)
+.agents/
+.claude/
+.claude-flow/
+.hermes/
+.swarm/
+CLAUDE.md
+skills-lock.json
