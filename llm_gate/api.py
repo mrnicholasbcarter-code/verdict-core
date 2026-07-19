@@ -69,6 +69,7 @@ def _build_availability_cache() -> AvailabilityCache | None:
         stale_window_seconds=DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS,
     )
 
+
 DEFAULT_UPSTREAM_BASE_URL = "http://127.0.0.1:20132/v1"
 DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_ALLOWED_PRIVATE_HOSTS = {"127.0.0.1", "::1", "localhost"}

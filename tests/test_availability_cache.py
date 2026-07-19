@@ -75,9 +75,7 @@ def test_source_must_be_callable() -> None:
 def test_ttl_returns_cached_report_without_refresh() -> None:
     clock = FakeClock(NOW)
     source = FakeSource(_report())
-    cache = AvailabilityCache(
-        source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30
-    )
+    cache = AvailabilityCache(source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30)
 
     first = cache.get("prov/a")
     second = cache.get("prov/a")
@@ -88,9 +86,7 @@ def test_ttl_returns_cached_report_without_refresh() -> None:
 def test_stale_window_serves_stale_then_triggers_single_refresh() -> None:
     clock = FakeClock(NOW)
     source = FakeSource(_report())
-    cache = AvailabilityCache(
-        source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30
-    )
+    cache = AvailabilityCache(source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30)
     cache.get("prov/a")  # warms the cache (call 1)
 
     clock.advance(75)  # inside stale window: 60 < age 75 <= 90
@@ -103,9 +99,7 @@ def test_stale_window_serves_stale_then_triggers_single_refresh() -> None:
 def test_past_stale_window_refreshes_synchronously() -> None:
     clock = FakeClock(NOW)
     source = FakeSource(_report())
-    cache = AvailabilityCache(
-        source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30
-    )
+    cache = AvailabilityCache(source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30)
     cache.get("prov/a")
     clock.advance(120)  # past the stale window entirely
 
@@ -116,9 +110,7 @@ def test_past_stale_window_refreshes_synchronously() -> None:
 def test_refresh_failure_returns_explicit_unknown_not_stale() -> None:
     clock = FakeClock(NOW)
     good = FakeSource(_report())
-    cache = AvailabilityCache(
-        source=good, clock=clock, ttl_seconds=60, stale_window_seconds=30
-    )
+    cache = AvailabilityCache(source=good, clock=clock, ttl_seconds=60, stale_window_seconds=30)
     cache.get("prov/a")  # warm with a good report
     clock.advance(120)  # expired
 
@@ -133,9 +125,7 @@ def test_refresh_failure_returns_explicit_unknown_not_stale() -> None:
 def test_invalidation_drops_entry() -> None:
     clock = FakeClock(NOW)
     source = FakeSource(_report())
-    cache = AvailabilityCache(
-        source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30
-    )
+    cache = AvailabilityCache(source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30)
     cache.get("prov/a")
     cache.invalidate("prov/a")
     cache.get("prov/a")
@@ -145,9 +135,7 @@ def test_invalidation_drops_entry() -> None:
 def test_isolation_across_providers_is_strong() -> None:
     clock = FakeClock(NOW)
     source = FakeSource(_report())
-    cache = AvailabilityCache(
-        source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30
-    )
+    cache = AvailabilityCache(source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30)
     cache.get("prov/a")
     cache.get("prov-b/x")  # different provider -> distinct key
     assert source.calls == 2
@@ -159,9 +147,7 @@ def test_concurrent_get_does_not_deadlock_reentrant_lock() -> None:
 
     clock = FakeClock(NOW)
     source = FakeSource(_report())
-    cache = AvailabilityCache(
-        source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30
-    )
+    cache = AvailabilityCache(source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30)
 
     # get() holds the lock and may call _refresh_locked() (nested acquire).
     # A plain Lock would deadlock here; RLock must not.

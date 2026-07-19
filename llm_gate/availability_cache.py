@@ -37,9 +37,7 @@ class CacheKey:
     policy_version: str = "policy-2026-07-13.1"
 
     @classmethod
-    def for_candidate(
-        cls, model_id: str, policy_version: str | None = None
-    ) -> CacheKey:
+    def for_candidate(cls, model_id: str, policy_version: str | None = None) -> CacheKey:
         provider = model_id.split("/", 1)[0] if "/" in model_id else "unknown"
         return cls(
             provider=provider,
@@ -252,9 +250,7 @@ class AvailabilityCache:
             # Another thread is refreshing; return stale if present, else unknown.
             if entry.report is not None:
                 return entry.report
-            return self._unknown_report(
-                str(entry.refresh_error or "refresh in flight")
-            )
+            return self._unknown_report(str(entry.refresh_error or "refresh in flight"))
         if entry is not None:
             entry.refreshing = True
             entry.last_refresh_attempt = now
@@ -271,9 +267,7 @@ class AvailabilityCache:
         self._store(key, report, now)
         return report
 
-    def _store(
-        self, key: CacheKey, report: AvailabilityReport, now: datetime
-    ) -> None:
+    def _store(self, key: CacheKey, report: AvailabilityReport, now: datetime) -> None:
         if key in self._entries:
             self._entries[key] = replace(
                 self._entries[key],
@@ -289,9 +283,7 @@ class AvailabilityCache:
                     key=lambda k: self._entries[k].stored_at,
                 )
                 del self._entries[oldest]
-            self._entries[key] = _Entry(
-                report=report, stored_at=now, ttl_seconds=self.ttl_seconds
-            )
+            self._entries[key] = _Entry(report=report, stored_at=now, ttl_seconds=self.ttl_seconds)
 
     def _unknown_report(self, detail: str) -> AvailabilityReport:
         return AvailabilityReport((), (), "cache", None, (f"availability cache: {detail}",))
@@ -328,17 +320,11 @@ def explain_freshness(
     current = _now(now)
     observed = current
     if report.candidates:
-        ages = [
-            c.freshness_seconds
-            for c in report.candidates
-            if c.freshness_seconds is not None
-        ]
+        ages = [c.freshness_seconds for c in report.candidates if c.freshness_seconds is not None]
         if ages:
             observed = current - timedelta(seconds=max(ages))
     expires = observed + timedelta(
-        seconds=(
-            report.freshness_seconds if report.freshness_seconds is not None else 0
-        )
+        seconds=(report.freshness_seconds if report.freshness_seconds is not None else 0)
     )
     age = (current - observed).total_seconds()
     confidence = _confidence_for(report)
@@ -347,9 +333,7 @@ def explain_freshness(
         "policy_version": policy_version,
         "confidence": confidence,
         "observed_at": observed.isoformat(),
-        "expires_at": (
-            expires.isoformat() if report.freshness_seconds is not None else None
-        ),
+        "expires_at": (expires.isoformat() if report.freshness_seconds is not None else None),
         "age_seconds": round(age, 3),
         "freshness_seconds": report.freshness_seconds,
         "refreshing": refreshing,
