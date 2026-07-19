@@ -533,6 +533,20 @@ def test_hostile_json_is_a_sanitized_typed_failure(body: bytes) -> None:
         transport.catalog()
 
 
+def test_json_nesting_limit_is_explicit_and_parser_independent() -> None:
+    def transport_for(depth: int) -> OmniRouteHTTPTransport:
+        body = b"[" * depth + b"0" + b"]" * depth
+        return OmniRouteHTTPTransport(
+            "https://router.example.test",
+            allow_private_hosts=MOCK_ALLOWLIST,
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, content=body)),
+        )
+
+    assert transport_for(64).catalog()
+    with pytest.raises(OmniRouteTransportMalformed, match="nesting"):
+        transport_for(65).catalog()
+
+
 def test_failure_exception_graph_does_not_retain_credentials_or_body() -> None:
     timeout_secret = "Authorization: Bearer timeout-secret"
 

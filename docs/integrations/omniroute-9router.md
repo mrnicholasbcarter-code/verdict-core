@@ -61,8 +61,9 @@ parameter's legacy name. Plain HTTP is accepted only with a loopback IP literal,
 which supports an explicitly allowed local service without a DNS-rebinding or
 cleartext remote-credential path. Remote deployments must use HTTPS and a
 separately reviewed access boundary.
-Redirects and encoded responses are rejected, the timeout is bounded, and raw
-responses default to a 1 MiB limit.
+Redirects and encoded responses are rejected, the timeout is bounded, raw
+responses default to a 1 MiB limit, and parsed JSON has a fixed 64-container
+nesting limit across supported Python versions.
 
 `api_key` is sent only to `/v1/models`. `management_token` is separate and is
 sent only to configured runtime reads. A deployment with OmniRoute API-key

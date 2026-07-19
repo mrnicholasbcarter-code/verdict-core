@@ -31,6 +31,7 @@ _RUNTIME_SOURCE_PATHS = {
 _MANAGEMENT_SOURCES = frozenset({"rate_limits", "model_cooldowns", "budget", "token_limits"})
 _USAGE_SCOPED_SOURCES = frozenset({"budget", "token_limits"})
 _DEFAULT_RUNTIME_SOURCES = frozenset({"health"})
+_MAX_JSON_CONTAINER_DEPTH = 64
 
 
 class OmniRouteHTTPTransport:
@@ -256,7 +257,23 @@ class OmniRouteHTTPTransport:
             raise OmniRouteTransportMalformed(operation, "invalid JSON") from None
         if not isinstance(payload, (dict, list)):
             raise OmniRouteTransportMalformed(operation, "JSON payload must be an object or array")
+        if not _json_depth_is_bounded(payload):
+            raise OmniRouteTransportMalformed(operation, "JSON nesting limit exceeded")
         return payload
+
+
+def _json_depth_is_bounded(payload: dict[str, Any] | list[Any]) -> bool:
+    """Apply one parser-independent nesting limit to untrusted JSON."""
+    stack: list[tuple[dict[str, Any] | list[Any], int]] = [(payload, 1)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > _MAX_JSON_CONTAINER_DEPTH:
+            return False
+        children = value.values() if isinstance(value, dict) else value
+        for child in children:
+            if isinstance(child, (dict, list)):
+                stack.append((child, depth + 1))
+    return True
 
 
 def _utc(value: datetime) -> datetime:
