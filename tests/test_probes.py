@@ -20,7 +20,7 @@ from verdict.probes import (
     openai_probe_transport,
 )
 
-MODEL = ModelInfo(id="runtime/model", provider="runtime", capability_tier=2)
+MODEL = ModelInfo(id="runtime/model", provider="runtime", model="model", capability_tier=2)
 
 
 def ok_transport(calls):
@@ -338,7 +338,7 @@ def test_probe_round_trip_preserves_truthful_availability_state(
     )
 
     state = normalize_observation(
-        ModelInfo(id="runtime/model", provider="runtime", capability_tier=2),
+        ModelInfo(id="runtime/model", provider="runtime", model="model", capability_tier=2),
         probe.as_runtime_observation(),
         now=observed_at,
     )
