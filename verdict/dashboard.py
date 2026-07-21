@@ -1,5 +1,5 @@
 import json
-import os
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -11,22 +11,22 @@ st.set_page_config(page_title="verdict Analytics", page_icon="⚙️", layout="w
 st.title("⚙️ verdict Analytics & Savings")
 st.markdown("Live routing dashboard for evaluating heuristic fallbacks and quota headroom.")
 
-log_path = st.text_input("Path to JSONL Log:", value="verdict-decisions.jsonl")
+log_path = Path(st.text_input("Path to JSONL Log:", value="verdict-decisions.jsonl"))
 
-if not os.path.exists(log_path):
+if not log_path.is_file():
     st.warning(f"Log file not found at {log_path}. Run some tasks first!")
     st.stop()
 
 
 # Parse Data
 @st.cache_data(ttl=5)  # type: ignore[untyped-decorator]
-def load_data(path: str) -> pd.DataFrame:
+def load_data(path: str | Path) -> pd.DataFrame:
     records = []
-    import os
+    log_file = Path(path)
 
-    if not os.path.exists(path):
+    if not log_file.is_file():
         return pd.DataFrame()
-    with open(path) as f:
+    with log_file.open(encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 records.append(json.loads(line))
