@@ -164,10 +164,6 @@ async def lifespan(app: FastAPI) -> Any:
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,
         providers=intelligence_instance.providers,
-        log_path=intelligence_instance.log_path,
-        log_full_task=intelligence_instance.log_full_task,
-        discovery_ttl=intelligence_instance.discovery_ttl,
-        profile=intelligence_instance.profile,
         intelligence_service=intelligence_instance,
     )
     proxy_instance = _build_proxy()

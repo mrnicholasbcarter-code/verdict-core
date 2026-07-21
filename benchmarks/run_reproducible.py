@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from llm_gate.benchmarking import (
+from verdict.benchmarking import (
     DEFAULT_FIXTURE_PATH,
     format_benchmark_report,
     run_reproducible_benchmarks,

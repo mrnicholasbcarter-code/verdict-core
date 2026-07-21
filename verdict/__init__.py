@@ -78,6 +78,15 @@ from verdict.probes import (
     ProbeRunner,
     openai_probe_transport,
 )
+from verdict.workers import (
+    OmniRouteWorkerClient,
+    WorkerError,
+    WorkerModel,
+    WorkerPool,
+    WorkerRequest,
+    WorkerResult,
+    WorkerUnavailable,
+)
 
 __all__ = [
     "DEFAULT_FIXTURE_PATH",
@@ -112,6 +121,7 @@ __all__ = [
     "OmniRouteTransportTimeout",
     "OmniRouteTransportUnauthorized",
     "OmniRouteTransportUnsupported",
+    "OmniRouteWorkerClient",
     "OutcomeEpisode",
     "OutcomeEvent",
     "PlanRejected",
@@ -136,6 +146,12 @@ __all__ = [
     "TaskSpec",
     "TaskWorkflowOutcomeEpisode",
     "VerificationPlan",
+    "WorkerError",
+    "WorkerModel",
+    "WorkerPool",
+    "WorkerRequest",
+    "WorkerResult",
+    "WorkerUnavailable",
     "WorkflowEpisode",
     "WorkflowKind",
     "WorkflowPlan",

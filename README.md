@@ -161,7 +161,8 @@ omniroute_base_url = "http://localhost:20128"  # Optional
 
 ## OmniRoute Integration
 
-Verdict integrates natively with **OmniRoute** (`http://localhost:20128/v1`) for:
+Verdict integrates natively with **OmniRoute** (`http://localhost:20128/v1`) as
+its provider boundary for:
 - **3,318+ models** across **250+ providers**
 - **107+ free tiers** — no API keys needed
 - Auto-fallback, RTK compression (15–95% token savings)
@@ -175,6 +176,41 @@ docker run -d -p 20128:20128 omnibus/omniroute
 export OMNIROUTE_BASE_URL=http://localhost:20128
 verdict serve
 ```
+
+### Runtime discovery and MCP
+
+Verdict uses OmniRoute's OpenAI-compatible catalog for model identity, while
+availability decisions remain separate: catalog presence does not mean a
+provider is healthy, reachable, within quota, or eligible. When the deployment
+exposes authenticated management APIs, the availability adapter can discover
+documented runtime signals such as provider catalogs, MCP status/tools, and
+quota summaries. Optional endpoints include:
+
+```text
+GET /v1/models
+GET /api/models/catalog
+GET /api/mcp/status
+GET /api/mcp/tools
+GET /api/free-tier/summary
+GET /api/quota/pools/{pool_id}/usage
+```
+
+Management and MCP access normally require the OmniRoute bearer token. A
+missing token, `401`, timeout, malformed response, or unavailable optional
+endpoint is recorded as unknown/stale—not as healthy. Protected work therefore
+fails closed when fresh runtime truth is absent. Verdict never reads
+OmniRoute's private database and never copies provider credentials into model
+selection. See [the worker/discovery guide](docs/guides/omniroute-workers.md)
+and [the routing policy](docs/specs/ROUTING_POLICY.md) for the full contract.
+
+## Autonomous development workflow
+
+The repository's development contract is documented in
+[Autonomous development](docs/guides/autonomous-development.md). It requires
+documentation lookup and sanitized RAG ingestion before design, Code Review
+Graph context and impact analysis before implementation/review, ticket-backed
+work packages, OmniRoute-aware worker selection, layered verification, and
+exact-head CI/PR follow-through through merge.
 
 ---
 
@@ -195,7 +231,7 @@ verdict-core/
 │   ├── planner.py          # Task decomposition
 │   ├── cli.py              # Cobra-style CLI
 │   └── ...
-├── tests/                   # 321 tests passing
+├── tests/                   # 320 tests passing
 ├── scripts/                 # flagship_demo.py, verify_release_artifacts.py
 ├── benchmarks/              # Reproducible benchmarks
 └── docs/                    # Architecture, guides, API reference
@@ -207,7 +243,7 @@ verdict-core/
 
 | Repo | Purpose | Status |
 |------|---------|--------|
-| `verdict-core` | Python control plane (flagship) | ✅ 321 tests |
+| `verdict-core` | Python control plane (flagship) | ✅ 320 tests |
 | `verdict-node` | Express/Next.js middleware | ✅ 139 tests |
 | `verdict-cockpit` | Next.js dashboard | 🚧 |
 | `verdict-risk` | Risk engine | 🚧 |
@@ -227,8 +263,8 @@ pipx install verdict-core --editable
 pytest -v
 
 # Lint + typecheck
-ruff check .
-mypy --strict verdict/
+uv run --extra dev --extra dashboard --extra server ruff check .
+uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 
 # Run flagship demo
 python scripts/flagship_demo.py

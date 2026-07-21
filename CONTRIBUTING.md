@@ -1,22 +1,27 @@
-# Contributing to verdict
+# Contributing to Verdict
 
 Thanks for your interest. Here's how to contribute.
 
 ## Setup
 
 ```bash
-git clone https://github.com/mrnicholasbcarter-code/verdict.git
-cd verdict
+git clone https://github.com/mrnicholasbcarter-code/verdict-core.git
+cd verdict-core
 python -m venv .venv && source .venv/bin/activate
-pip install -e '.[dev,server]'
+pip install -e '.[dev,server,dashboard]'
 ```
+
+Read [the autonomous-development contract](docs/guides/autonomous-development.md)
+for documentation/RAG preflight, Code Review Graph review, ticket ownership,
+OmniRoute worker routing, and PR/CI lifecycle requirements.
 
 ## Running Tests
 
 ```bash
 .venv/bin/python -m pytest
 .venv/bin/python -m ruff check .
-.venv/bin/python -m mypy llm_gate --strict
+.venv/bin/python -m ruff format --check .
+.venv/bin/python -m mypy verdict --strict
 ```
 
 ## Pull Requests
@@ -40,7 +45,7 @@ pip install -e '.[dev,server]'
 - Ruff for linting and formatting.
 - Type hints on all public APIs.
 - Docstrings on all public functions and classes.
-- Tests live in `tests/` and mirror the `llm_gate/` structure.
+- Tests live in `tests/` and mirror the `verdict/` structure.
 
 ## License
 

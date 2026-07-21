@@ -20,7 +20,9 @@ from verdict.models import ModelInfo
 from verdict.planner import StructuredPlanner
 
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)
-MODEL = ModelInfo(id="p/model", provider="p", model="model", capability_tier=1, capabilities=["tools"])
+MODEL = ModelInfo(
+    id="p/model", provider="p", model="model", capability_tier=1, capabilities=["tools"]
+)
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,9 @@
 # Enforcement & Learning Policy
 
 **Status:** Active
-**Authority:** Governs how llm-gate enforces routing decisions and how the learning loop closes.
+**Authority:** Governs how Verdict enforces routing decisions and how the
+learning loop closes. The former LLM-gate name is retained only for legacy
+compatibility.
 **Related ADR:** `ADR-ORCHESTRATOR-ROUTING.md`
 **Related Policy:** `ROUTING_POLICY.md`
 
@@ -76,7 +78,7 @@ The neural/SONA loop improves **orchestrator selection decisions**, not the gate
 
 ---
 
-## 3. Coupling Rules (What llm-gate May/Not Touch)
+## 3. Coupling Rules (What Verdict May/Not Touch)
 
 | Category | Allowed | Forbidden |
 |----------|---------|-----------|

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🛑 llm-gate Uninstaller"
+echo "🛑 Verdict Uninstaller"
 
 PURGE_CONFIG=false
 PURGE_LOGS=false
@@ -16,8 +16,8 @@ while [[ "$#" -gt 0 ]]; do
             echo "Usage: curl -sSL https://.../uninstall.sh | bash -s -- [options]"
             echo "Options:"
             echo "  --purge-all     Remove everything (package, configs, logs)"
-            echo "  --purge-config  Remove the config directory (llm-gate.yaml)"
-            echo "  --purge-logs    Remove all llm-gate-decisions.jsonl files"
+            echo "  --purge-config  Remove the config directory (config.yaml)"
+            echo "  --purge-logs    Remove all verdict-decisions.jsonl files"
             exit 0
             ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
@@ -26,13 +26,13 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 echo "📦 Removing Python package..."
-if command -v pipx &> /dev/null && pipx list | grep -q llm-gate; then
-    pipx uninstall llm-gate
+if command -v pipx &> /dev/null && pipx list | grep -q verdict-core; then
+    pipx uninstall verdict-core
 elif command -v pip &> /dev/null; then
-    pip uninstall -y llm-gate || true
+    pip uninstall -y verdict-core || true
 fi
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/llm-gate"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/verdict"
 
 if [ "$PURGE_CONFIG" = true ]; then
     echo "🗑️ Removing configurations at $CONFIG_DIR..."
@@ -44,10 +44,10 @@ fi
 if [ "$PURGE_LOGS" = true ]; then
     echo "🗑️ Removing routing logs..."
     # Naive search for logs in common locations
-    rm -f ./llm-gate-decisions.jsonl
-    rm -f $HOME/llm-gate-decisions.jsonl
+    rm -f ./verdict-decisions.jsonl
+    rm -f "$HOME/verdict-decisions.jsonl"
 else
     echo "ℹ️ Kept routing logs intact (use --purge-logs to remove)"
 fi
 
-echo "✅ llm-gate successfully uninstalled."
+echo "✅ Verdict successfully uninstalled."

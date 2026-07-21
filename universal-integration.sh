@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🚀 llm-gate Universal Integration Installer"
-echo "This script globally links llm-gate into your preferred AI tools."
+echo "🚀 Verdict Universal Integration Installer"
+echo "This script globally links Verdict into your preferred AI tools."
 
 BIN_DIR="/usr/local/bin"
 if [ ! -w "$BIN_DIR" ]; then
@@ -20,11 +20,11 @@ for AGENT in "${CLI_AGENTS[@]}"; do
     WRAPPER_PATH="$BIN_DIR/${AGENT}-routed"
     cat << SCRIPT > "$WRAPPER_PATH"
 #!/usr/bin/env bash
-# Auto-generated llm-gate router for $AGENT
-TARGET=\$(llm-gate route "\$*" --terse 2>/dev/null)
+# Auto-generated Verdict router for $AGENT
+TARGET=\$(verdict route "\$*" --terse 2>/dev/null)
 
 if [ -z "\$TARGET" ]; then
-    echo "[llm-gate] Routing failed, falling back to unrouted $AGENT..."
+    echo "[Verdict] Routing failed, falling back to unrouted $AGENT..."
     exec $AGENT "\$@"
 fi
 
@@ -40,7 +40,7 @@ SCRIPT
 done
 
 # 2. IDE Configuration Injection (Cursor, VS Code, Roo Code, Cline)
-echo "💻 Injecting llm-gate microservice into IDE configs..."
+echo "💻 Injecting Verdict microservice into IDE configs..."
 
 # VS Code / Continue.dev
 CONTINUE_CONFIG="$HOME/.continue/config.json"
@@ -51,7 +51,7 @@ if [ -f "$CONTINUE_CONFIG" ]; then
     # Recommended approach: Inform user to start HTTP server
     echo "  ✔ Found Continue.dev config at $CONTINUE_CONFIG (Backup created)"
     # A robust jq edit would go here natively, but for the script we'll append a message
-    echo "    -> Please ensure 'llm-gate serve' is running on port 8000 to accept Continue.dev traffic."
+    echo "    -> Please ensure 'verdict serve' is running on port 8000 to accept Continue.dev traffic."
 fi
 
 # Cursor
@@ -71,4 +71,4 @@ fi
 echo ""
 echo "✅ Universal installation complete!"
 echo "To use routed agents, just run the command with '-routed' (e.g., 'pi-routed build me an app')"
-echo "To route IDE traffic, run 'llm-gate serve --port 8000' in the background."
+echo "To route IDE traffic, run 'verdict serve --port 8000' in the background."

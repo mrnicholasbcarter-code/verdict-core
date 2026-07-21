@@ -16,10 +16,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,server]"
+          python -m pip install -e ".[dev,server,dashboard]"
       - name: Run Ruff linter
-        run: ruff check --fix .
+        run: ruff check .
       - name: Check formatting
         run: ruff format --check .
       - name: Run mypy
-        run: mypy llm_gate --strict
+        run: mypy verdict --strict

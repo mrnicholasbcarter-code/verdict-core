@@ -66,7 +66,7 @@ curl -X POST http://localhost:8000/v1/route \
 ## Running Tests
 
 ```bash
-# All tests (321 tests)
+# All tests (320 tests at the time of writing; run the command for the current count)
 pytest -v
 
 # Specific test file
@@ -76,11 +76,11 @@ pytest tests/test_availability_cache.py -v
 pytest --cov=verdict --cov-report=html
 
 # Type checking
-mypy --strict verdict/
+uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 
 # Linting
-ruff check .
-ruff format --check .
+uv run --extra dev --extra dashboard --extra server ruff check .
+uv run --extra dev --extra dashboard --extra server ruff format --check .
 ```
 
 ---
@@ -113,7 +113,7 @@ npm run dev  # http://localhost:3000
 
 ```bash
 VERDICT_DEBUG=1 verdict route "test"
-export LLMGATE_LOG_PATH=./verdict-debug.jsonl
+export VERDICT_LOG_PATH=./verdict-debug.jsonl
 verdict serve
 ```
 
@@ -129,7 +129,7 @@ cat verdict-decisions.jsonl | jq .
 
 1. Create feature branch: `git checkout -b feat/your-feature`
 2. Make changes with tests
-3. Run full test suite: `pytest && mypy --strict verdict/ && ruff check .`
+3. Run full test suite: `pytest && mypy verdict --strict && ruff check .`
 4. Submit PR
 
 ---

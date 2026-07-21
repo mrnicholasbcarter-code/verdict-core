@@ -44,9 +44,7 @@ class TestCLIRoute:
         assert "claude-3-opus-20240229" in result.stdout
 
     def test_route_verbose_exits_zero(self):
-        result = subprocess.run(
-            ["verdict", "route", "test prompt"], capture_output=True, text=True
-        )
+        result = subprocess.run(["verdict", "route", "test prompt"], capture_output=True, text=True)
         assert result.returncode == 0
 
     def test_route_critical_returns_primary(self):

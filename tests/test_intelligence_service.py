@@ -59,7 +59,10 @@ def test_redaction_before_ruflo_call(monkeypatch: pytest.MonkeyPatch) -> None:
         discovery_ttl=60,
     )
     import asyncio
-    decision = asyncio.run(svc.route("Here is a task with a private_key=sk-1234567890", criticality="medium"))
+
+    decision = asyncio.run(
+        svc.route("Here is a task with a private_key=sk-1234567890", criticality="medium")
+    )
 
     # Must have fallen back efficiently
     assert decision.model == "anthropic/claude-3-opus"

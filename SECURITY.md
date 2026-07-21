@@ -85,14 +85,14 @@ Request bodies are bounded by `LLMGATE_MAX_REQUEST_BYTES`, and upstream calls
 have a timeout. Upstream providers may retain request data under their own
 terms; configure provider-side retention separately.
 
-For the published threat model, privacy posture, retention responsibilities, and
-supply-chain evidence snapshot, see
-[`docs/SECURITY_ASSURANCE.md`](docs/SECURITY_ASSURANCE.md).
+The historical threat-model, privacy, retention, and supply-chain snapshot is
+retained in [`docs/archive/SECURITY_ASSURANCE.md`](docs/archive/SECURITY_ASSURANCE.md).
+Do not treat that archived snapshot as a current production certification.
 
 Run the security checks with:
 
 ```bash
 .venv/bin/pytest -q tests/test_security.py
-.venv/bin/ruff check llm_gate tests
-.venv/bin/bandit -q -r llm_gate
+.venv/bin/ruff check verdict tests
+.venv/bin/bandit -q -r verdict
 ```

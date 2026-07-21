@@ -41,7 +41,7 @@ def install_and_smoke_test(artifact: Path) -> None:
             [
                 str(python),
                 "-c",
-                "import llm_gate; from llm_gate import LLMRouter; print(LLMRouter.__name__)",
+                "import verdict; from verdict import Gate; print(verdict.__version__, Gate.__name__)",
             ]
         )
 

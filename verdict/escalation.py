@@ -1,60 +1,69 @@
-"""Escalation patterns and scanning."""
+"""Keyword escalation scanner.
+
+Scans task text for patterns that indicate higher-than-requested criticality.
+Patterns are matched case-insensitively. The effective tier is the MINIMUM of
+the requested tier and all matching pattern tiers (i.e., escalation only bumps UP).
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+import re
+from collections.abc import Sequence
 
+from verdict.models import EscalationPattern
 
-@dataclass
-class EscalationPattern:
-    """Pattern that triggers escalation."""
-    keywords: list[str]
-    min_tier: int
-    label: str
-
-
+# fmt: off
 DEFAULT_PATTERNS: list[EscalationPattern] = [
+    # T0 — critical, never offload
     EscalationPattern(
-        keywords=["deploy", "production", "release", "prod", "live"],
-        min_tier=0,  # critical
-        label="production deployment",
+        pattern=r"(payment|billing|charge|refund|stripe|invoice|subscription)",
+        min_tier=0, label="money-path",
     ),
     EscalationPattern(
-        keywords=["security", "auth", "password", "secret", "token", "key"],
-        min_tier=0,  # critical
-        label="security sensitive",
+        pattern=r"(live.?order|place.?order|execute.?trade|real.?money|production.?deploy)",
+        min_tier=0, label="live-execution",
+    ),
+    # T1 — high capability required
+    EscalationPattern(
+        pattern=r"(auth|login|token|session|password|jwt|oauth|credential|secret)",
+        min_tier=1, label="auth-security",
     ),
     EscalationPattern(
-        keywords=["database", "migration", "schema", "migrate"],
-        min_tier=1,  # high
-        label="database changes",
+        pattern=r"(migrat|schema|alter.?table|foreign.?key|index|constraint)",
+        min_tier=1, label="data-migration",
     ),
     EscalationPattern(
-        keywords=["payment", "billing", "transaction", "charge"],
-        min_tier=0,  # critical
-        label="financial transaction",
+        pattern=r"(security|vulnerab|injection|xss|csrf|sanitiz|escap)",
+        min_tier=1, label="security",
     ),
     EscalationPattern(
-        keywords=["refactor", "rewrite", "architecture", "migrate"],
-        min_tier=1,  # high
-        label="major refactor",
+        pattern=r"(architect|system.?design|infrastructure|scaling|distributed)",
+        min_tier=1, label="architecture",
     ),
 ]
+# fmt: on
 
 
-def scan(text: str, patterns: list[EscalationPattern] | None = None) -> tuple[int, str] | None:
-    """Scan text for escalation triggers.
-    
-    Returns (min_tier, label) if any pattern matches, else None.
+def scan(
+    task: str,
+    patterns: Sequence[EscalationPattern] | None = None,
+) -> tuple[int | None, str | None]:
+    """Scan task text for escalation patterns.
+
+    Returns ``(min_tier, label)`` for the highest-priority match, or
+    ``(None, None)`` if no pattern matches.
     """
-    patterns = patterns or DEFAULT_PATTERNS
-    text_lower = text.lower()
-    
-    best_match: tuple[int, str] | None = None
-    for pattern in patterns:
-        if any(kw in text_lower for kw in pattern.keywords):
-            if best_match is None or pattern.min_tier < best_match[0]:
-                best_match = (pattern.min_tier, pattern.label)
-    
-    return best_match
+    if patterns is None:
+        patterns = DEFAULT_PATTERNS
+
+    best_tier: int | None = None
+    best_label: str | None = None
+
+    for pat in patterns:
+        if re.search(pat.pattern, task, re.IGNORECASE) and (
+            best_tier is None or pat.min_tier < best_tier
+        ):
+            best_tier = pat.min_tier
+            best_label = pat.label
+
+    return best_tier, best_label

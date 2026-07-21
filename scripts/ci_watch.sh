@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generic CI watcher for llm-gate pull requests.
+# Generic CI watcher for Verdict pull requests.
 #
 # Polls a PR's check rollup. If the "Lint" workflow's lint job FAILED, it
 # auto-heals with ruff format/check --fix + mypy, commits, and pushes. For any
@@ -43,9 +43,9 @@ echo "PR $PR failing checks:"; echo "$FAILURES"
 
 if echo "$FAILURES" | grep -q "^Lint :: lint$"; then
   echo "Lint failure detected -> auto-healing"
-  .venv/bin/ruff format . || true
-  .venv/bin/ruff check --fix . || true
-  .venv/bin/mypy llm_gate || true
+  .venv/bin/ruff format --check . || true
+  .venv/bin/ruff check . || true
+  .venv/bin/mypy verdict --strict || true
   if [ "$(git rev-parse HEAD)" = "$BEFORE" ] && [ -z "$(git status --porcelain)" ]; then
     echo "no local changes produced by auto-heal; leaving as-is"; exit 1
   fi
