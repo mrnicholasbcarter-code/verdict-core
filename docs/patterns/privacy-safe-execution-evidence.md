@@ -1,7 +1,7 @@
 # Pattern: Privacy-Safe Execution Evidence
 
 **Status:** adopted for issue #53
-**Related ADR:** `docs/architecture/ADR-EVIDENCE-LEDGER.md`
+**Related ADR:** [`ADR-001`](../architecture/ADR-EVIDENCE-LEDGER.md)
 **Source patterns:** Ruflo ADR-103, ADR-131, ADR-144, ADR-171, and ADR-176
 
 ## Intent
@@ -15,7 +15,8 @@ claims.
 ```text
 decision snapshot
   -> execution_started
-  -> transport terminal event (exactly one)
+  -> append-only transport lifecycle events
+  -> exactly one terminal event
   -> explain envelope selected by opaque server ID
 ```
 
@@ -63,4 +64,3 @@ resource-close assertions, authorization-scope tests, and a replay receipt
 containing the code SHA and contract version. Positive learning labels must be
 admitted only from independently verified outcomes, following the provenance
 rule in Ruflo ADR-171.
-

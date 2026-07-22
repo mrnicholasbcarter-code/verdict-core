@@ -204,7 +204,7 @@ Record exact exit status and any pre-existing findings separately from new findi
 
 - [ ] **Step 3: Run ADR review against accepted decisions**
 
-Check the diff against `docs/architecture/ADR-ORCHESTRATOR-ROUTING.md`, `docs/architecture/ADR-EVIDENCE-LEDGER.md`, and the referenced Ruflo provenance/safety patterns. Any violation must be fixed or documented as a deliberate superseding decision.
+Check the diff against `docs/architecture/ADR-ORCHESTRATOR-ROUTING.md`, `docs/architecture/ADR-001-evidence-ledger.md`, and the referenced Ruflo provenance/safety patterns. Any violation must be fixed or documented as a deliberate superseding decision.
 
 - [ ] **Step 4: Request independent review**
 

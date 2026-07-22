@@ -1,0 +1,96 @@
+[
+  {
+    "name": "buffered-success",
+    "features": {
+      "stream": false,
+      "tools": false,
+      "parallel_tool_calls": false,
+      "response_format": null,
+      "vision": false,
+      "tool_count": 0,
+      "tool_names": []
+    },
+    "event": {
+      "event_id": "evt-buffered-success",
+      "event_type": "chat_completion_buffered",
+      "outcome": "success",
+      "occurred_at": "2026-07-22T00:00:01Z",
+      "status_code": 200,
+      "streaming_phase": null,
+      "retries": 0,
+      "fallbacks": []
+    }
+  },
+  {
+    "name": "streaming-tools-json",
+    "features": {
+      "stream": true,
+      "tools": true,
+      "parallel_tool_calls": true,
+      "response_format": "json_schema",
+      "vision": false,
+      "tool_count": 1,
+      "tool_names": ["lookup"]
+    },
+    "event": {
+      "event_id": "evt-streaming-tools",
+      "event_type": "chat_completion_streamed",
+      "outcome": "success",
+      "occurred_at": "2026-07-22T00:00:02Z",
+      "status_code": 200,
+      "streaming_phase": "completed",
+      "retries": 0,
+      "fallbacks": []
+    }
+  },
+  {
+    "name": "stream-abort",
+    "features": {
+      "stream": true,
+      "tools": false,
+      "parallel_tool_calls": false,
+      "response_format": null,
+      "vision": false,
+      "tool_count": 0,
+      "tool_names": []
+    },
+    "event": {
+      "event_id": "evt-stream-abort",
+      "event_type": "chat_completion_stream_aborted",
+      "outcome": "cancelled",
+      "occurred_at": "2026-07-22T00:00:03Z",
+      "status_code": 200,
+      "streaming_phase": "aborted",
+      "retries": 0,
+      "fallbacks": [],
+      "abort_observed": true
+    }
+  },
+  {
+    "name": "retry-fallback",
+    "features": {
+      "stream": false,
+      "tools": false,
+      "parallel_tool_calls": false,
+      "response_format": null,
+      "vision": false,
+      "tool_count": 0,
+      "tool_names": []
+    },
+    "event": {
+      "event_id": "evt-retry-fallback",
+      "event_type": "chat_completion_buffered",
+      "outcome": "success",
+      "occurred_at": "2026-07-22T00:00:04Z",
+      "status_code": 200,
+      "streaming_phase": null,
+      "retries": 1,
+      "fallbacks": [
+        {
+          "runtime_id": "backup/model",
+          "reason": "primary timeout"
+        }
+      ]
+    }
+  }
+]

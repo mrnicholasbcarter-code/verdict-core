@@ -3,7 +3,7 @@
 **Status:** Approved for implementation
 **Issue:** #53
 **Date:** 2026-07-22
-**Related ADR:** `docs/architecture/ADR-EVIDENCE-LEDGER.md`
+**Related ADR:** [`ADR-001`](../../architecture/ADR-EVIDENCE-LEDGER.md)
 
 ## Goal
 
@@ -57,8 +57,10 @@ receipts.
 
 Caller request and correlation IDs are metadata, never storage keys. Each
 execution receives an opaque server-generated evidence ID. The evidence lookup
-scope is derived from the authenticated principal/deployment boundary and is
-checked for every lookup. Reused caller IDs are allowed but ambiguous selectors
+scope is derived from the authenticated deployment boundary and is checked for
+every lookup. In this slice the boundary is the configured
+bearer-authenticated deployment (`server-auth`); a caller cannot select the
+scope, and tenant-level isolation is explicitly out of scope. Reused caller IDs are allowed but ambiguous selectors
 must return a conflict directing the caller to the opaque evidence ID.
 
 Verdict-local controls are removed before an upstream request is sent.
@@ -110,4 +112,3 @@ The implementation must include deterministic tests for:
 - model quality ranking, tier redesign, or the broader autonomous-delivery
   controller;
 - CLI implementation beyond documenting the follow-up command contract.
-

@@ -1,5 +1,7 @@
 # ADR: Orchestrator-Driven Routing Architecture
 
+**Amended by:** [ADR-001 — Versioned, Privacy-Safe Execution Evidence](ADR-EVIDENCE-LEDGER.md)
+
 **Status:** Accepted
 **Date:** 2026-07-21
 **Supersedes:** `docs/specs/ROUTING_POLICY.md`, `docs/specs/ENFORCEMENT_AND_LEARNING.md` (partial)

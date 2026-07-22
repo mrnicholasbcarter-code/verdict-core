@@ -85,3 +85,16 @@ def test_live_gateway_integration(monkeypatch):
         data = resp.json()
         assert data["model"] == "primary-model"
         assert data["decision"] == "fallback"
+
+
+def test_route_alias_preserves_response_status_and_shape(monkeypatch):
+    monkeypatch.setattr(api, "_build_intelligence", lambda: FakeIntelligence())
+    monkeypatch.setattr(api, "_build_proxy", lambda: FakeProxy())
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/route", json={"task": "Deploy production", "criticality": "critical"}
+        )
+    assert response.status_code == 503
+    assert response.json()["decision"] == "denied"

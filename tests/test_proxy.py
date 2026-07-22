@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, ClassVar
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect
 
 import verdict.api as api
 from verdict.intelligence import ReadinessReport
@@ -21,6 +24,40 @@ class ChunkedSSE(httpx.AsyncByteStream):
     async def __aiter__(self):
         for chunk in self.chunks:
             yield chunk
+
+
+class CloseCountingStream:
+    def __init__(
+        self,
+        chunks: list[bytes],
+        error: BaseException | None = None,
+        cleanup_error: BaseException | None = None,
+    ) -> None:
+        self._chunks = list(chunks)
+        self._error = error
+        self._cleanup_error = cleanup_error
+        self.close_count = 0
+
+    def __aiter__(self) -> CloseCountingStream:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._error is not None and not self._chunks:
+            error, self._error = self._error, None
+            raise error
+        try:
+            chunk = self._chunks.pop(0)
+        except IndexError as exc:
+            raise StopAsyncIteration from exc
+        if self._error is not None and chunk == b"second":
+            error, self._error = self._error, None
+            raise error
+        return chunk
+
+    async def aclose(self) -> None:
+        self.close_count += 1
+        if self._cleanup_error is not None:
+            raise self._cleanup_error
 
 
 class RecordingTransport(httpx.AsyncBaseTransport):
@@ -151,6 +188,390 @@ def test_proxy_preserves_unknown_request_fields_and_uses_server_auth(monkeypatch
     assert forwarded["headers"]["authorization"] == "Bearer server-secret"
     assert forwarded["body"] == {**payload, "model": "selected-model"}
     assert json.loads(response.content)["usage"]["total_tokens"] == 4
+
+
+def test_buffered_response_exposes_correlated_redacted_evidence(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "preserve all fields api_key=sk-never-returned",
+            }
+        ],
+        "stream": False,
+        "response_format": {"type": "json_object"},
+        "correlation_id": "workflow-proxy-1",
+    }
+
+    with TestClient(api.app) as client:
+        monkeypatch.setattr(api, "_task_text", lambda payload: "preserve all fields")
+        response = client.post("/v1/chat/completions", json=payload)
+        explain = client.get(
+            "/v1/route/explain?request_id=request-1",
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-verdict-correlation-id"] == "workflow-proxy-1"
+    assert response.headers["x-verdict-evidence-request-id"] == "request-1"
+    evidence = explain.json()
+    assert evidence["routing_decision"]["request_id"] == "request-1"
+    assert evidence["routing_decision"]["correlation_id"] == "workflow-proxy-1"
+    assert evidence["outcome_event"]["outcome"] == "success"
+    rendered = json.dumps(evidence)
+    assert "sk-never-returned" not in rendered
+    assert "private api_key" not in rendered
+
+
+def test_route_response_keeps_legacy_body_and_tags_availability_explain(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+
+    class ExplainCache:
+        policy_version = "policy-test"
+
+        def keys(self):
+            return ["selected-model"]
+
+        def explain(self, model_id):
+            return {"model_id": model_id, "cache_state": "fresh"}
+
+    monkeypatch.setattr(api, "_build_availability_cache", lambda: (ExplainCache(), None))
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/route", json={"task": "preserve all fields", "request_id": "route-request"}
+        )
+        availability = client.get("/v1/route/explain?model_id=selected-model")
+
+    assert response.status_code == 200
+    assert "evidence" not in response.json()
+    assert response.headers["x-verdict-evidence-id"]
+    assert availability.status_code == 200
+    assert availability.json()["kind"] == "availability_explain"
+
+
+def test_evidence_explain_is_tagged_and_has_ordered_events(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "preserve all fields"}]},
+        )
+        evidence = client.get(
+            "/v1/route/explain?evidence_id=" + response.headers["x-verdict-evidence-id"]
+        )
+
+    assert evidence.status_code == 200
+    payload = evidence.json()
+    assert payload["kind"] == "execution_evidence"
+    assert payload["envelope_version"] == "1"
+    assert [event["event_type"] for event in payload["events"]] == [
+        "execution_started",
+        "chat_completion_buffered",
+    ]
+
+
+def test_verdict_local_identifiers_are_not_forwarded(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "request_id": "local-request",
+                "correlation_id": "local-correlation",
+                "criticality": "high",
+            },
+        )
+    assert response.status_code == 200
+    assert "request_id" not in transport.requests[0]["body"]
+    assert "correlation_id" not in transport.requests[0]["body"]
+    assert "criticality" not in transport.requests[0]["body"]
+
+
+def test_duplicate_request_ids_remain_independently_finalized(monkeypatch) -> None:
+    first_transport = RecordingTransport()
+    _configure_test_app(monkeypatch, first_transport)
+    with TestClient(api.app) as client:
+        first = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "request_id": "same",
+            },
+        )
+        second = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "request_id": "same",
+                "correlation_id": "second",
+            },
+        )
+        first_evidence = client.get(
+            "/v1/route/explain?evidence_id=" + first.headers["x-verdict-evidence-id"]
+        ).json()
+        second_evidence = client.get(
+            "/v1/route/explain?evidence_id=" + second.headers["x-verdict-evidence-id"]
+        ).json()
+    assert first.status_code == second.status_code == 200
+    assert first_evidence["outcome_event"]["outcome"] == "success"
+    assert second_evidence["routing_decision"]["correlation_id"] == "second"
+    assert first.headers["x-verdict-evidence-id"] != second.headers["x-verdict-evidence-id"]
+    assert first_evidence["evidence_id"] != second_evidence["evidence_id"]
+
+
+def test_duplicate_request_id_selector_is_rejected_as_ambiguous(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "preserve all fields"}]},
+        )
+        client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "request_id": "request-1",
+            },
+        )
+        response = client.get("/v1/route/explain?request_id=request-1")
+    assert response.status_code == 409
+    assert "evidence_id" in response.json()["error"]["message"]
+
+
+def test_evidence_id_disambiguates_reused_request_id(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        first = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "request_id": "same",
+                "correlation_id": "first",
+            },
+        )
+        second = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "request_id": "same",
+                "correlation_id": "second",
+            },
+        )
+        first_evidence = client.get("/v1/route/explain?correlation_id=first").json()
+        selected = client.get(
+            "/v1/route/explain?evidence_id=" + first_evidence["evidence_id"]
+        ).json()
+    assert first.status_code == second.status_code == 200
+    assert selected["routing_decision"]["correlation_id"] == "first"
+
+
+def test_evidence_lookup_does_not_trust_anonymous_scope_header(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "correlation_id": "anonymous-scope",
+            },
+        )
+        evidence_id = response.headers["x-verdict-evidence-id"]
+        lookup = client.get(
+            "/v1/route/explain?evidence_id=" + evidence_id,
+            headers={"x-verdict-scope": "forged-tenant"},
+        )
+    assert lookup.status_code == 200
+
+
+def test_explain_rejects_ambiguous_selector(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.get("/v1/route/explain?model_id=selected-model&request_id=missing")
+    assert response.status_code == 400
+
+
+def test_streaming_evidence_is_finalized_after_consumption(monkeypatch) -> None:
+    transport = RecordingTransport(stream=True)
+    _configure_test_app(monkeypatch, transport)
+
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "stream": True,
+                "correlation_id": "workflow-stream-1",
+            },
+        )
+        evidence = client.get("/v1/route/explain?correlation_id=workflow-stream-1").json()
+
+    assert response.status_code == 200
+    assert evidence["outcome_event"]["event_type"] == "chat_completion_streamed"
+    assert evidence["outcome_event"]["details"]["streaming_phase"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_stream_adapter_explicit_close_finalizes_once_and_closes_upstream() -> None:
+    upstream = CloseCountingStream([b"first", b"second"])
+    events: list[dict[str, Any]] = []
+
+    def factory(
+        event_type: str,
+        outcome: str,
+        phase: str,
+        cleanup_error: str | None,
+        error_class: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "event_type": event_type,
+            "outcome": outcome,
+            "phase": phase,
+            "cleanup_error": cleanup_error,
+            "error_class": error_class,
+        }
+
+    adapter = api._EvidenceStreamAdapter(upstream, on_terminal=events.append, event_factory=factory)
+    assert await adapter.__anext__() == b"first"
+    await adapter.aclose()
+    await adapter.aclose()
+
+    assert upstream.close_count == 1
+    assert events == [
+        {
+            "event_type": "chat_completion_stream_aborted",
+            "outcome": "cancelled",
+            "phase": "aborted",
+            "cleanup_error": None,
+            "error_class": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_adapter_iterator_error_closes_upstream_and_preserves_error() -> None:
+    upstream = CloseCountingStream([b"first", b"second"], error=RuntimeError("upstream failed"))
+    events: list[dict[str, Any]] = []
+    adapter = api._EvidenceStreamAdapter(
+        upstream,
+        on_terminal=events.append,
+        event_factory=lambda event_type, outcome, phase, cleanup_error, error_class: {
+            "event_type": event_type,
+            "outcome": outcome,
+            "phase": phase,
+            "cleanup_error": cleanup_error,
+            "error_class": error_class,
+        },
+    )
+
+    assert await adapter.__anext__() == b"first"
+    with pytest.raises(RuntimeError, match="upstream failed"):
+        await adapter.__anext__()
+
+    assert upstream.close_count == 1
+    assert events[0]["event_type"] == "chat_completion_stream_error"
+    assert events[0]["error_class"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_stream_adapter_cancellation_closes_upstream_once() -> None:
+    upstream = CloseCountingStream([], error=asyncio.CancelledError())
+    events: list[dict[str, Any]] = []
+    adapter = api._EvidenceStreamAdapter(
+        upstream,
+        on_terminal=events.append,
+        event_factory=lambda event_type, outcome, phase, cleanup_error, error_class: {
+            "event_type": event_type,
+            "outcome": outcome,
+            "phase": phase,
+            "cleanup_error": cleanup_error,
+            "error_class": error_class,
+        },
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.__anext__()
+    await adapter.aclose()
+
+    assert upstream.close_count == 1
+    assert events[0]["event_type"] == "chat_completion_stream_aborted"
+    assert events[0]["outcome"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_stream_adapter_cleanup_error_does_not_mask_iterator_error() -> None:
+    upstream = CloseCountingStream(
+        [b"first", b"second"],
+        error=RuntimeError("upstream failed"),
+        cleanup_error=OSError("close failed"),
+    )
+    events: list[dict[str, Any]] = []
+    adapter = api._EvidenceStreamAdapter(
+        upstream,
+        on_terminal=events.append,
+        event_factory=lambda event_type, outcome, phase, cleanup_error, error_class: {
+            "event_type": event_type,
+            "outcome": outcome,
+            "phase": phase,
+            "cleanup_error": cleanup_error,
+            "error_class": error_class,
+        },
+    )
+
+    assert await adapter.__anext__() == b"first"
+    with pytest.raises(RuntimeError, match="upstream failed"):
+        await adapter.__anext__()
+
+    assert upstream.close_count == 1
+    assert events == [
+        {
+            "event_type": "chat_completion_stream_error",
+            "outcome": "error",
+            "phase": "error",
+            "cleanup_error": "OSError",
+            "error_class": "RuntimeError",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_response_closes_unconsumed_body_after_disconnect() -> None:
+    upstream = CloseCountingStream([b"first"])
+    events: list[dict[str, Any]] = []
+    adapter = api._EvidenceStreamAdapter(
+        upstream,
+        on_terminal=events.append,
+        event_factory=lambda event_type, outcome, phase, cleanup_error, error_class: {
+            "event_type": event_type,
+            "outcome": outcome,
+            "phase": phase,
+            "cleanup_error": cleanup_error,
+            "error_class": error_class,
+        },
+    )
+    response = api._EvidenceStreamingResponse(adapter, status_code=200)
+
+    async def send(message: dict[str, Any]) -> None:
+        if message["type"] == "http.response.body" and message.get("body"):
+            raise OSError("client disconnected")
+
+    with pytest.raises(ClientDisconnect):
+        await response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            lambda: None,
+            send,
+        )
+
+    assert upstream.close_count == 1
+    assert events[0]["event_type"] == "chat_completion_stream_aborted"
 
 
 def test_proxy_streaming_preserves_arbitrary_upstream_chunk_boundaries(monkeypatch) -> None:

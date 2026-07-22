@@ -54,6 +54,14 @@ from verdict.dispatcher import (
     DispatchResult,
     SwarmDispatcher,
 )
+from verdict.evidence import (
+    AmbiguousEvidenceSelectorError,
+    EvidenceStore,
+    ExplainEvidence,
+    build_outcome_event,
+    build_routing_decision_contract,
+    request_features,
+)
 from verdict.gate import Gate
 from verdict.intelligence import IntelligenceService, ReadinessReport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
@@ -91,6 +99,7 @@ from verdict.workers import (
 __all__ = [
     "DEFAULT_FIXTURE_PATH",
     "PROBE_PROMPT",
+    "AmbiguousEvidenceSelectorError",
     "AssignmentExplanation",
     "AvailabilityCache",
     "AvailabilityCandidate",
@@ -105,6 +114,8 @@ __all__ = [
     "DispatchPolicy",
     "DispatchResult",
     "Dispatcher",
+    "EvidenceStore",
+    "ExplainEvidence",
     "FailureClass",
     "FallbackAttempt",
     "Gate",
@@ -157,11 +168,14 @@ __all__ = [
     "WorkflowPlan",
     "WorkflowSelector",
     "build_cache_report",
+    "build_outcome_event",
+    "build_routing_decision_contract",
     "discover_transport_capabilities",
     "explain_freshness",
     "format_benchmark_report",
     "load_benchmark_fixture",
     "openai_probe_transport",
+    "request_features",
     "run_reproducible_benchmarks",
 ]
 
