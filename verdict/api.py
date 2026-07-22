@@ -1,7 +1,12 @@
+from __future__ import annotations
+
+import asyncio
 import json
 import os
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, replace
+from time import monotonic
 from typing import Any, cast
 
 try:
@@ -16,7 +21,16 @@ except ImportError as exc:
 from verdict.availability import OmniRouteAvailabilityAdapter
 from verdict.availability_cache import AvailabilityCache
 from verdict.catalog import configured_catalog_filters, normalize_catalog
+from verdict.contracts import redact_contract_secrets
 from verdict.eligibility import EligibilityGate
+from verdict.evidence import (
+    AmbiguousEvidenceSelectorError,
+    EvidenceStore,
+    ExplainEvidence,
+    build_outcome_event,
+    build_routing_decision_contract,
+    request_features,
+)
 from verdict.gate import Gate
 from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
 from verdict.models import ModelInfo, ProviderConfig
@@ -24,12 +38,115 @@ from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from verdict.security import bearer_matches, redact_text, validate_server_security
 
+
+class _EvidenceStreamAdapter:
+    """Own stream iteration, terminalization, and upstream cleanup."""
+
+    def __init__(
+        self, upstream: AsyncIterator[bytes], *, on_terminal: Any, event_factory: Any
+    ) -> None:
+        self._upstream = upstream
+        self._on_terminal = on_terminal
+        self._event_factory = event_factory
+        self._terminal = False
+        self._closed = False
+        self._cleanup_task: asyncio.Task[Any] | None = None
+        self._cleanup_error: str | None = None
+
+    def __aiter__(self) -> _EvidenceStreamAdapter:
+        return self
+
+    async def __anext__(self) -> bytes:
+        try:
+            return await self._upstream.__anext__()
+        except StopAsyncIteration:
+            cleanup_error = await self._cleanup()
+            self._finish("chat_completion_streamed", "success", "completed", cleanup_error)
+            raise
+        except asyncio.CancelledError:
+            cleanup_error = await self._cleanup()
+            self._finish("chat_completion_stream_aborted", "cancelled", "aborted", cleanup_error)
+            raise
+        except Exception as exc:
+            cleanup_error = await self._cleanup()
+            self._finish(
+                "chat_completion_stream_error",
+                "error",
+                "error",
+                cleanup_error,
+                error_class=type(exc).__name__,
+            )
+            raise
+
+    async def aclose(self) -> None:
+        cleanup_error = await self._cleanup()
+        self._finish("chat_completion_stream_aborted", "cancelled", "aborted", cleanup_error)
+
+    async def _cleanup(self) -> str | None:
+        if self._closed:
+            if self._cleanup_task is not None:
+                with suppress(BaseException):
+                    await asyncio.shield(self._cleanup_task)
+            return self._cleanup_error
+        self._closed = True
+        close = getattr(self._upstream, "aclose", None)
+        if not callable(close):
+            return None
+        self._cleanup_task = asyncio.create_task(close())
+        try:
+            await asyncio.shield(self._cleanup_task)
+        except BaseException as exc:
+            self._cleanup_error = type(exc).__name__
+            if not self._cleanup_task.done():
+                self._cleanup_task.cancel()
+            with suppress(BaseException):
+                await asyncio.shield(self._cleanup_task)
+        return self._cleanup_error
+
+    def _finish(
+        self,
+        event_type: str,
+        outcome: str,
+        phase: str,
+        cleanup_error: str | None,
+        *,
+        error_class: str | None = None,
+    ) -> None:
+        if self._terminal:
+            return
+        self._terminal = True
+        self._on_terminal(
+            self._event_factory(
+                event_type,
+                outcome,
+                phase,
+                cleanup_error,
+                error_class,
+            )
+        )
+
+
+class _EvidenceStreamingResponse(StreamingResponse):
+    """Close the evidence-owned iterator even when ASGI send fails."""
+
+    def __init__(self, content: _EvidenceStreamAdapter, **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._evidence_stream = content
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._evidence_stream.aclose()
+
+
 # Singleton service instances
 intelligence_instance: IntelligenceService | None = None
 gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
 availability_cache_instance: AvailabilityCache | None = None
 eligibility_gate_instance: EligibilityGate | None = None
+evidence_store_instance: EvidenceStore | None = None
 
 DEFAULT_AVAILABILITY_TTL_SECONDS = 60
 DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
@@ -159,7 +276,7 @@ def _build_intelligence() -> IntelligenceService:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
-    global intelligence_instance, gate_instance, proxy_instance
+    global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
     intelligence_instance = _build_intelligence()
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,
@@ -172,6 +289,9 @@ async def lifespan(app: FastAPI) -> Any:
     availability_cache_instance, eligibility_gate_instance = (
         built if built is not None else (None, None)
     )
+    evidence_store_instance = EvidenceStore(
+        max_entries=max(1, int(os.getenv("VERDICT_EVIDENCE_MAX_ENTRIES", "256")))
+    )
     # Issue #57: feed the eligibility gate into the IntelligenceService so the
     # live routing path filters before ranking (single source of truth).
     if eligibility_gate_instance is not None:
@@ -182,6 +302,7 @@ async def lifespan(app: FastAPI) -> Any:
     proxy_instance = None
     availability_cache_instance = None
     eligibility_gate_instance = None
+    evidence_store_instance = None
 
 
 app = FastAPI(
@@ -230,6 +351,7 @@ class RouteRequest(BaseModel):
     vision_required: bool = False
     streaming_required: bool = False
     request_id: str | None = None
+    correlation_id: str | None = None
 
 
 async def _route_with_intelligence(
@@ -243,11 +365,41 @@ async def _route_with_intelligence(
 
 
 @app.post("/v1/route")
-async def route_task(req: RouteRequest) -> Response:
+async def route_task(request: Request, req: RouteRequest) -> Response:
     context = req.model_dump() if hasattr(req, "model_dump") else req.dict()
     decision = await _route_with_intelligence(req.task, req.criticality, context=context)
+    route_evidence, evidence_key = _start_evidence(
+        decision,
+        task=req.task,
+        criticality=req.criticality,
+        features={
+            "stream": req.streaming_required,
+            "tools": req.tools_required,
+            "response_format": "structured" if req.structured_output_required else None,
+            "vision": req.vision_required,
+            "tool_count": 0,
+            "tool_names": [],
+        },
+        request_id=req.request_id,
+        correlation_id=req.correlation_id,
+        scope=_evidence_scope(request),
+    )
+    outcome = build_outcome_event(
+        route_evidence.routing_decision,
+        event_type="route_decision_recorded",
+        outcome="denied" if decision.decision == "denied" else "success",
+        features={"route_only": True},
+    )
+    route_evidence = _finish_evidence(route_evidence, outcome, evidence_key)
     status_code = 200 if decision.decision != "denied" else 503
-    return JSONResponse(content=asdict(decision), status_code=status_code)
+    headers: dict[str, str] = {}
+    if route_evidence.evidence_id:
+        headers["x-verdict-evidence-id"] = route_evidence.evidence_id
+    headers["x-verdict-evidence-request-id"] = route_evidence.routing_decision.request_id or ""
+    headers["x-verdict-correlation-id"] = route_evidence.routing_decision.correlation_id or ""
+    return JSONResponse(
+        content=_safe_decision_dict(decision), status_code=status_code, headers=headers
+    )
 
 
 @app.get("/health")
@@ -290,12 +442,22 @@ async def ready() -> Response:
 
 
 def _proxy_error(
-    status_code: int, message: str, *, extra: dict[str, Any] | None = None
+    status_code: int,
+    message: str,
+    *,
+    extra: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     payload: dict[str, Any] = {"error": {"message": message, "type": "invalid_request_error"}}
     if extra:
         payload.update(extra)
-    return JSONResponse(status_code=status_code, content=payload)
+    return JSONResponse(status_code=status_code, content=payload, headers=headers)
+
+
+def _safe_decision_dict(decision: Any) -> dict[str, Any]:
+    """Serialize legacy compatibility data without exposing diagnostic secrets."""
+
+    return cast(dict[str, Any], redact_contract_secrets(asdict(decision)))
 
 
 def _task_text(payload: dict[str, Any]) -> str:
@@ -323,8 +485,36 @@ def _headers_for_body(result: BufferedUpstreamResponse) -> dict[str, str]:
     return headers
 
 
+def _evidence_scope(request: Request) -> str:
+    """Bind evidence lookup to the authenticated deployment principal."""
+
+    if os.getenv("LLMGATE_AUTH_TOKEN"):
+        return "server-auth"
+    # Anonymous mode intentionally has one explicit, non-authoritative scope;
+    # a caller-controlled header must never create an authorization boundary.
+    return "anonymous"
+
+
+def _evidence_headers(evidence: ExplainEvidence) -> dict[str, str]:
+    """Expose correlation metadata without putting evidence on legacy bodies."""
+
+    headers = {
+        "x-verdict-evidence-request-id": evidence.routing_decision.request_id or "",
+        "x-verdict-correlation-id": evidence.routing_decision.correlation_id or "",
+    }
+    if evidence.evidence_id:
+        headers["x-verdict-evidence-id"] = evidence.evidence_id
+    return headers
+
+
 @app.get("/v1/route/explain")
-async def route_explain(model_id: str | None = None) -> Response:
+async def route_explain(
+    request: Request,
+    model_id: str | None = None,
+    evidence_id: str | None = None,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+) -> Response:
     """Explain availability freshness and eligibility for one or all cached models.
 
     Implements the issue #56 / #73 explain contract: surfaces observed_at,
@@ -337,6 +527,31 @@ async def route_explain(model_id: str | None = None) -> Response:
     when available. With ``model_id`` it returns the per-model freshness explain
     record, refreshing on first access.
     """
+    # Evidence lookup is independent of live availability. This lets an
+    # operator inspect the immutable decision-time record even after a cache
+    # expires or OmniRoute is temporarily unavailable.
+    if sum(value is not None for value in (model_id, evidence_id, request_id, correlation_id)) > 1:
+        return _proxy_error(400, "provide exactly one explain query selector")
+    if evidence_id or request_id or correlation_id:
+        try:
+            evidence = (
+                evidence_store_instance.find(
+                    evidence_id=evidence_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    scope=_evidence_scope(request),
+                )
+                if evidence_store_instance is not None
+                else None
+            )
+        except AmbiguousEvidenceSelectorError:
+            return _proxy_error(409, "evidence selector is ambiguous; use evidence_id")
+        if evidence_store_instance is None:
+            return _proxy_error(503, "execution evidence is unavailable")
+        if evidence is None:
+            return _proxy_error(404, "routing evidence not found")
+        return JSONResponse(content=evidence.to_dict())
+
     if availability_cache_instance is None:
         return _proxy_error(
             503,
@@ -344,6 +559,7 @@ async def route_explain(model_id: str | None = None) -> Response:
         )
     if model_id is None or model_id == "":
         base: dict[str, Any] = {
+            "kind": "availability_explain",
             "policy_version": availability_cache_instance.policy_version,
             "cached_models": sorted(availability_cache_instance.keys()),
             "cache_state": "configured",
@@ -365,7 +581,10 @@ async def route_explain(model_id: str | None = None) -> Response:
             base["eligible_set"] = [m.id for m in gate_eval.eligible]
             base["exclusions"] = [r.to_dict() for r in gate_eval.exclusions]
         return JSONResponse(content=base)
+    if model_id is None:
+        return _proxy_error(400, "model_id must not be null")
     record = availability_cache_instance.explain(model_id)
+    record["kind"] = "availability_explain"
     if eligibility_gate_instance is not None:
         gate_eval = eligibility_gate_instance.evaluate(
             [
@@ -421,26 +640,92 @@ async def chat_completions(request: Request) -> Response:
         return _proxy_error(400, "request body must be a JSON object")
 
     task = _task_text(payload)
+    features = request_features(payload)
+    correlation_id = request.headers.get("x-verdict-correlation-id")
+    if not correlation_id and isinstance(payload.get("correlation_id"), str):
+        correlation_id = cast(str, payload["correlation_id"])
     decision = await intelligence_instance.route(
         task, criticality=payload.get("criticality", "medium"), context=payload
     )
+    criticality = payload.get("criticality", "medium")
+    if not isinstance(criticality, str):
+        criticality = "unknown"
+    route_evidence, evidence_key = _start_evidence(
+        decision,
+        task=task,
+        criticality=criticality,
+        features=features,
+        request_id=request.headers.get("x-verdict-request-id")
+        or (payload.get("request_id") if isinstance(payload.get("request_id"), str) else None),
+        correlation_id=correlation_id,
+        scope=_evidence_scope(request),
+    )
+    decision = replace(
+        decision,
+        request_id=route_evidence.routing_decision.request_id or decision.request_id,
+    )
     if decision.decision == "denied":
-        return _proxy_error(503, decision.reason, extra={"decision": asdict(decision)})
+        outcome = build_outcome_event(
+            route_evidence.routing_decision,
+            event_type="chat_completion_denied",
+            outcome="denied",
+            features=features,
+        )
+        evidence = _finish_evidence(route_evidence, outcome, evidence_key)
+        return _proxy_error(
+            503,
+            decision.reason,
+            extra={"decision": _safe_decision_dict(decision)},
+            headers=_evidence_headers(evidence),
+        )
 
     forwarded = dict(payload)
+    # Verdict-local controls must never be forwarded to an upstream provider.
+    for local_field in ("request_id", "correlation_id", "criticality"):
+        forwarded.pop(local_field, None)
     forwarded["model"] = decision.model
 
+    started_at = monotonic()
     try:
         result = await proxy_instance.chat(forwarded)
-    except Exception:
+    except asyncio.CancelledError:
+        outcome = build_outcome_event(
+            route_evidence.routing_decision,
+            event_type="chat_completion_cancelled",
+            outcome="cancelled",
+            features=features,
+            abort_observed=True,
+            latency_ms=(monotonic() - started_at) * 1000,
+        )
+        _finish_evidence(route_evidence, outcome, evidence_key)
+        raise
+    except Exception as exc:
+        evidence = _finish_evidence(
+            route_evidence,
+            build_outcome_event(
+                route_evidence.routing_decision,
+                event_type="chat_completion_error",
+                outcome="error",
+                features=features,
+                error_class=type(exc).__name__,
+                latency_ms=(monotonic() - started_at) * 1000,
+            ),
+            evidence_key,
+        )
         return _proxy_error(
             502,
             "upstream request failed",
-            extra={"decision": asdict(replace(decision, transport_outcome="upstream_error"))},
+            extra={
+                "decision": _safe_decision_dict(
+                    replace(decision, transport_outcome="upstream_error")
+                ),
+            },
+            headers=_evidence_headers(evidence),
         )
 
     transport_outcome = "success" if result.status_code < 400 else "upstream_error"
     decision_record = replace(decision, transport_outcome=transport_outcome)
+    response_outcome = "success" if result.status_code < 400 else "error"
     response_headers = dict(result.headers)
     response_headers["x-verdict-model"] = decision_record.model
     response_headers["x-verdict-tier"] = str(decision_record.tier)
@@ -449,16 +734,71 @@ async def chat_completions(request: Request) -> Response:
     response_headers["x-verdict-transport-outcome"] = decision_record.transport_outcome
     response_headers["x-verdict-quality-outcome"] = decision_record.quality_outcome
     response_headers["x-verdict-degraded-mode"] = str(decision_record.degraded_mode).lower()
+    response_headers.update(_evidence_headers(route_evidence))
 
     if isinstance(result, BufferedUpstreamResponse):
+        evidence = _finish_evidence(
+            route_evidence,
+            build_outcome_event(
+                route_evidence.routing_decision,
+                event_type="chat_completion_buffered",
+                outcome=response_outcome,
+                status_code=result.status_code,
+                features=features,
+                latency_ms=(monotonic() - started_at) * 1000,
+            ),
+            evidence_key,
+        )
+        if result.status_code >= 400:
+            return Response(
+                content=result.body,
+                status_code=result.status_code,
+                headers=response_headers,
+            )
         return Response(
             content=result.body,
             status_code=result.status_code,
             headers=response_headers,
         )
     if isinstance(result, StreamedUpstreamResponse):
-        return StreamingResponse(
+
+        def finalize_stream(event: Any) -> None:
+            _finish_evidence(route_evidence, event, evidence_key)
+
+        def stream_event(
+            event_type: str,
+            outcome: str,
+            phase: str,
+            cleanup_error: str | None,
+            error_class: str | None,
+        ) -> Any:
+            details: dict[str, Any] = {
+                "cleanup_status": "error" if cleanup_error else "closed",
+                "cleanup_attempted": True,
+            }
+            if cleanup_error:
+                details["cleanup_error_class"] = cleanup_error
+            return build_outcome_event(
+                route_evidence.routing_decision,
+                event_type=event_type,
+                outcome=outcome,
+                status_code=result.status_code,
+                features=features,
+                streaming_phase=phase,
+                abort_observed=phase != "completed",
+                error_class=error_class,
+                latency_ms=(monotonic() - started_at) * 1000,
+                details=details,
+            )
+
+        evidence_stream = _EvidenceStreamAdapter(
             result.body,
+            on_terminal=finalize_stream,
+            event_factory=stream_event,
+        )
+
+        return _EvidenceStreamingResponse(
+            evidence_stream,
             status_code=result.status_code,
             headers=response_headers,
             media_type=None,
@@ -466,14 +806,62 @@ async def chat_completions(request: Request) -> Response:
     raise TypeError(f"unsupported upstream response: {type(result)!r}")
 
 
+def _start_evidence(
+    decision: Any,
+    *,
+    task: str,
+    criticality: str,
+    features: dict[str, Any],
+    request_id: str | None = None,
+    correlation_id: str | None = None,
+    scope: str,
+) -> tuple[ExplainEvidence, str | None]:
+    """Create and retain immutable decision evidence before upstream I/O."""
+
+    routing = build_routing_decision_contract(
+        decision,
+        task=task,
+        criticality=criticality,
+        features=features,
+        request_id=request_id,
+        correlation_id=correlation_id,
+    )
+    started = build_outcome_event(
+        routing,
+        event_type="execution_started",
+        outcome="unknown",
+        features=features,
+        streaming_phase="started" if features.get("stream") else None,
+    )
+    evidence = ExplainEvidence(routing, started)
+    evidence_key = None
+    if evidence_store_instance is not None:
+        evidence_key = evidence_store_instance.put(evidence, scope=scope)
+        stored = evidence_store_instance.find(evidence_id=evidence_key, scope=scope)
+        if stored is not None:
+            evidence = stored
+    return evidence, evidence_key
+
+
+def _finish_evidence(
+    evidence: ExplainEvidence, event: Any, evidence_key: str | None = None
+) -> ExplainEvidence:
+    """Append a lifecycle event while retaining the decision-time snapshot."""
+
+    events = evidence.events or (evidence.outcome_event,)
+    updated = ExplainEvidence(evidence.routing_decision, event, events=(*events, event))
+    if evidence_store_instance is not None and evidence_key is not None:
+        stored = evidence_store_instance.update_outcome(evidence_key, event)
+        if stored is not None:
+            return stored
+    return updated
+
+
 @app.post("/route")
-async def route_task_alias(req: RouteRequest) -> dict[str, Any]:
+async def route_task_alias(request: Request, req: RouteRequest) -> Response:
     """Convenience alias matching the integration test client path."""
-    response = await route_task(req)
-    if isinstance(response, JSONResponse):
-        body: bytes = bytes(response.body)
-        return dict(json.loads(body.decode("utf-8")))
-    return {"error": "unexpected response"}
+    response = await route_task(request, req)
+    return response
 
 
 def start_server(port: int = 8000, host: str | None = None) -> None:
