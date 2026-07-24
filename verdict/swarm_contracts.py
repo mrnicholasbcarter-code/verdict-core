@@ -359,6 +359,4 @@ def build_swarm_task_envelope(
 
 def create_task_attempt(task_id: str, attempt: int = 1) -> SwarmTaskAttempt:
     """Factory for creating task attempts."""
-    return SwarmTaskAttempt(
-        task_id=task_id,
-    )
+    return SwarmTaskAttempt(task_id=task_id)

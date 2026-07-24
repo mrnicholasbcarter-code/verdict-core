@@ -171,10 +171,7 @@ class TestRufloHarness:
 
     def test_evidence_bundle_generated(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            config = RufloHarnessConfig(
-                output_dir=Path(tmpdir) / "evidence",
-                produce_evidence=True,
-            )
+            config = RufloHarnessConfig(output_dir=Path(tmpdir) / "evidence", produce_evidence=True)
             harness = RufloHarness(config)
             result = harness.run_scenario(ScenarioType.HAPPY_PATH)
 
@@ -201,10 +198,7 @@ class TestIntegrationSuite:
     """Tests for the integration suite runner."""
 
     def test_run_integration_suite(self):
-        config = RufloHarnessConfig(
-            output_dir=Path("evidence/test_suite"),
-            produce_evidence=True,
-        )
+        config = RufloHarnessConfig(output_dir=Path("evidence/test_suite"), produce_evidence=True)
         results, summary = run_integration_suite(config)
 
         assert len(results) == len(ScenarioType)
@@ -226,10 +220,7 @@ class TestEvidenceBundle:
 
     def test_evidence_bundle_structure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            config = RufloHarnessConfig(
-                output_dir=Path(tmpdir) / "evidence",
-                produce_evidence=True,
-            )
+            config = RufloHarnessConfig(output_dir=Path(tmpdir) / "evidence", produce_evidence=True)
             harness = RufloHarness(config)
             result = harness.run_scenario(ScenarioType.HAPPY_PATH)
 

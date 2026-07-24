@@ -55,9 +55,7 @@ class TestSwarmTelemetrySink:
             sink = SwarmTelemetrySink(path)
 
             event = SwarmTelemetryEvent(
-                correlation_id="corr-1",
-                event_type="task_assigned",
-                task_id="task-1",
+                correlation_id="corr-1", event_type="task_assigned", task_id="task-1"
             )
             sink.emit(event)
 

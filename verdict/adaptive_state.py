@@ -122,9 +122,7 @@ class AdaptiveStateManager:
         )
 
         snapshot = Snapshot(
-            manifest=manifest,
-            config=self.ranker.config,
-            history=self.ranker._history.copy(),
+            manifest=manifest, config=self.ranker.config, history=self.ranker._history.copy()
         )
 
         # Save to disk
@@ -194,8 +192,7 @@ class AdaptiveStateManager:
     def _enforce_retention(self) -> None:
         """Enforce max snapshots and time-based retention."""
         snapshots = sorted(
-            self.storage_dir.glob("snapshot_*.json"),
-            key=lambda p: p.stat().st_mtime,
+            self.storage_dir.glob("snapshot_*.json"), key=lambda p: p.stat().st_mtime
         )
 
         # Remove excess snapshots
@@ -316,8 +313,7 @@ class AdaptiveStateManager:
 
 
 def build_adaptive_state_manager(
-    ranker: AdaptiveRanker,
-    storage_dir: str | Path = "./.verdict/adaptive_state",
+    ranker: AdaptiveRanker, storage_dir: str | Path = "./.verdict/adaptive_state"
 ) -> AdaptiveStateManager:
     """Factory function for adaptive state manager."""
     return AdaptiveStateManager(ranker, storage_dir)

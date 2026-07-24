@@ -16,18 +16,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from verdict.contracts import AvailabilitySnapshot, RuntimeCandidate
-from verdict.dispatcher import (
-    DispatchPolicy,
-    DispatchResult,
-)
-from verdict.dispatcher import (
-    SwarmDispatcher as BaseSwarmDispatcher,
-)
+from verdict.dispatcher import DispatchPolicy, DispatchResult
+from verdict.dispatcher import SwarmDispatcher as BaseSwarmDispatcher
 from verdict.models import ModelInfo
 from verdict.router import select_best_model
-from verdict.swarm_contracts import (
-    SwarmTaskEnvelope,
-)
+from verdict.swarm_contracts import SwarmTaskEnvelope
 
 
 @dataclass
@@ -143,9 +136,7 @@ class SwarmDispatcher:
         return None
 
     def _filter_by_envelope(
-        self,
-        candidates: list[RuntimeCandidate],
-        envelope: Any,
+        self, candidates: list[RuntimeCandidate], envelope: Any
     ) -> list[RuntimeCandidate]:
         """Filter candidates by swarm envelope eligibility rules."""
         filtered = []
@@ -234,11 +225,7 @@ class SwarmDispatcher:
                 )
                 model_infos.append(model_info)
 
-            best_model, _ = select_best_model(
-                candidates=model_infos,
-                tier=0,
-                configs={},
-            )
+            best_model, _ = select_best_model(candidates=model_infos, tier=0, configs={})
 
             # Find the matching RuntimeCandidate
             selected = None
@@ -456,8 +443,7 @@ class SwarmDispatchPolicy:
 
 
 def create_swarm_dispatcher(
-    envelope: SwarmTaskEnvelope,
-    fan_out_limiter: FanOutLimiter | None = None,
+    envelope: SwarmTaskEnvelope, fan_out_limiter: FanOutLimiter | None = None
 ) -> SwarmDispatcher:
     """Factory for creating a swarm dispatcher with envelope and fan-out config."""
     policy = SwarmDispatchPolicy(envelope=envelope)
@@ -465,9 +451,7 @@ def create_swarm_dispatcher(
 
 
 def dispatch_swarm_task(
-    envelope: Any,
-    snapshot: AvailabilitySnapshot,
-    now: datetime | None = None,
+    envelope: Any, snapshot: AvailabilitySnapshot, now: datetime | None = None
 ) -> Any:
     """
     High-level function to dispatch a swarm task.

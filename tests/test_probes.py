@@ -30,11 +30,7 @@ def ok_transport(calls):
             "status_code": 200,
             "body": {
                 "choices": [{"message": {"role": "assistant", "content": "OK"}}],
-                "usage": {
-                    "prompt_tokens": 2,
-                    "completion_tokens": 1,
-                    "total_tokens": 3,
-                },
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
             },
         }
 
@@ -42,11 +38,7 @@ def ok_transport(calls):
 
 
 def assert_probe_excluded(result: ProbeObservation, expected: AvailabilityState) -> None:
-    state = normalize_observation(
-        MODEL,
-        result.as_runtime_observation(),
-        now=result.observed_at,
-    )
+    state = normalize_observation(MODEL, result.as_runtime_observation(), now=result.observed_at)
 
     assert state.state is expected
     assert select_capable_candidates([state], CandidateRequirements(allow_degraded=True)) == []
@@ -71,9 +63,7 @@ def test_one_token_payload_and_usage_marks_ready():
     assert calls[0][1]["max_tokens"] == 1
     assert calls[0][1]["tools"] == []
     state = normalize_observation(
-        MODEL,
-        result[0].as_runtime_observation(),
-        now=result[0].observed_at,
+        MODEL, result[0].as_runtime_observation(), now=result[0].observed_at
     )
     assert state.state is AvailabilityState.ELIGIBLE
 
@@ -81,8 +71,7 @@ def test_one_token_payload_and_usage_marks_ready():
 def test_bound_is_enforced_and_ids_remain_opaque():
     calls = []
     result = ProbeRunner(ProbePolicy(max_models_per_run=2)).run(
-        ["catalog-id-1", "opaque/value.2", "third-runtime-id"],
-        ok_transport(calls),
+        ["catalog-id-1", "opaque/value.2", "third-runtime-id"], ok_transport(calls)
     )
     assert [item.model_id for item in result] == ["catalog-id-1", "opaque/value.2"]
     assert len(calls) == 2
@@ -94,11 +83,7 @@ def test_zero_usage_is_not_ready():
             "status_code": 200,
             "body": {
                 "choices": [{"message": {"role": "assistant", "content": "OK"}}],
-                "usage": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                },
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             },
         }
 
@@ -107,11 +92,7 @@ def test_zero_usage_is_not_ready():
     assert result.availability_state == "degraded"
     assert result.usage_available is False
     assert_serialized_probe_state(result, AvailabilityState.DEGRADED)
-    state = normalize_observation(
-        MODEL,
-        result.as_runtime_observation(),
-        now=result.observed_at,
-    )
+    state = normalize_observation(MODEL, result.as_runtime_observation(), now=result.observed_at)
     assert select_capable_candidates([state], CandidateRequirements(allow_degraded=True)) == [state]
 
 
@@ -121,11 +102,7 @@ def test_empty_completion_is_not_ready():
             "status_code": 200,
             "body": {
                 "choices": [{"message": {"role": "assistant", "content": ""}}],
-                "usage": {
-                    "prompt_tokens": 2,
-                    "completion_tokens": 1,
-                    "total_tokens": 3,
-                },
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
             },
         }
 
@@ -151,11 +128,7 @@ def test_non_assistant_message_is_not_ready():
             "status_code": 200,
             "body": {
                 "choices": [{"message": {"role": "user", "content": "OK"}}],
-                "usage": {
-                    "prompt_tokens": 2,
-                    "completion_tokens": 1,
-                    "total_tokens": 3,
-                },
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
             },
         }
 
@@ -171,11 +144,7 @@ def test_malformed_http_status_is_not_ready():
             "status_code": "200",
             "body": {
                 "choices": [{"message": {"role": "assistant", "content": "OK"}}],
-                "usage": {
-                    "prompt_tokens": 2,
-                    "completion_tokens": 1,
-                    "total_tokens": 3,
-                },
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
             },
         }
 
@@ -187,33 +156,17 @@ def test_malformed_http_status_is_not_ready():
 
 def test_openai_transport_preserves_http_error_classification():
     def opener(request, timeout):
-        raise urllib.error.HTTPError(
-            request.full_url,
-            429,
-            "Too Many Requests",
-            hdrs=None,
-            fp=None,
-        )
+        raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", hdrs=None, fp=None)
 
     transport = openai_probe_transport("http://127.0.0.1:20128/v1", opener=opener)
 
     with pytest.raises(urllib.error.HTTPError):
-        transport(
-            "runtime/model",
-            ProbePolicy().payload("runtime/model"),
-            0.1,
-        )
+        transport("runtime/model", ProbePolicy().payload("runtime/model"), 0.1)
 
 
 def test_runner_records_http_error_status_from_openai_transport():
     def opener(request, timeout):
-        raise urllib.error.HTTPError(
-            request.full_url,
-            429,
-            "Too Many Requests",
-            hdrs=None,
-            fp=None,
-        )
+        raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", hdrs=None, fp=None)
 
     transport = openai_probe_transport("http://127.0.0.1:20128/v1", opener=opener)
     result = ProbeRunner().run(["runtime/model"], transport)[0]
@@ -286,10 +239,7 @@ def test_timeout_that_triggers_quarantine_round_trips_as_denied() -> None:
 
     result = ProbeRunner(
         ProbePolicy(
-            timeout_seconds=0.03,
-            cooldown_seconds=0,
-            failure_threshold=1,
-            quarantine_seconds=60,
+            timeout_seconds=0.03, cooldown_seconds=0, failure_threshold=1, quarantine_seconds=60
         )
     ).run(["runtime/model"], slow)[0]
 
@@ -349,9 +299,7 @@ def test_probe_round_trip_preserves_truthful_availability_state(
 def test_injected_observation_time_controls_next_probe_time():
     observed_at = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
     result = ProbeRunner(ProbePolicy(cooldown_seconds=30)).run(
-        ["runtime/model"],
-        ok_transport([]),
-        now=observed_at,
+        ["runtime/model"], ok_transport([]), now=observed_at
     )[0]
 
     assert result.next_probe_at is not None

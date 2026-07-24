@@ -36,11 +36,7 @@ class EligibilityVerdict(str, Enum):
 
 # States that admit a candidate into the pre-ranking eligible set.
 _ADMITTED_STATES = frozenset(
-    {
-        AvailabilityState.ELIGIBLE,
-        AvailabilityState.READY,
-        AvailabilityState.DEGRADED,
-    }
+    {AvailabilityState.ELIGIBLE, AvailabilityState.READY, AvailabilityState.DEGRADED}
 )
 
 

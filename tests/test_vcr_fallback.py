@@ -11,9 +11,7 @@ import pytest
 vcr = pytest.importorskip("vcr")
 
 my_vcr = vcr.VCR(
-    cassette_library_dir="tests/cassettes",
-    record_mode="once",
-    match_on=["uri", "method"],
+    cassette_library_dir="tests/cassettes", record_mode="once", match_on=["uri", "method"]
 )
 
 

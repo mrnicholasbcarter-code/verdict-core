@@ -19,9 +19,7 @@ def main() -> None:
         help="Path to checked-in benchmark fixture JSON",
     )
     parser.add_argument(
-        "--output-json",
-        default=None,
-        help="Optional path to write the full JSON report",
+        "--output-json", default=None, help="Optional path to write the full JSON report"
     )
     parser.add_argument(
         "--allow-live-provider",
@@ -36,9 +34,7 @@ def main() -> None:
     args = parser.parse_args()
 
     report = run_reproducible_benchmarks(
-        args.fixture,
-        allow_live_provider=args.allow_live_provider,
-        live_provider=args.live_provider,
+        args.fixture, allow_live_provider=args.allow_live_provider, live_provider=args.live_provider
     )
     print(format_benchmark_report(report), end="")
 

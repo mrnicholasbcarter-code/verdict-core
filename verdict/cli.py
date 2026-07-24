@@ -164,8 +164,7 @@ def cmd_setup() -> None:
         console.print("\n[bold cyan]Auto-detection found active providers![/bold cyan]")
         try:
             should_auto = Prompt.ask(
-                "Would you like to auto-configure Verdict using a detected provider?",
-                default="y",
+                "Would you like to auto-configure Verdict using a detected provider?", default="y"
             )
             if should_auto.lower().startswith("y"):
                 use_auto = True
@@ -379,10 +378,7 @@ def cmd_setup() -> None:
                 return
 
         console.print(
-            Panel.fit(
-                "[bold blue]Verdict Manual Configuration[/bold blue]",
-                border_style="blue",
-            )
+            Panel.fit("[bold blue]Verdict Manual Configuration[/bold blue]", border_style="blue")
         )
         try:
             config["primary_model"] = Prompt.ask(
@@ -433,10 +429,7 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
         with open(config_path) as f:
             raw = yaml.safe_load(f) or {}
         providers = {
-            k: ProviderConfig(
-                base_url=v.get("base_url", ""),
-                api_key_env=v.get("api_key_env"),
-            )
+            k: ProviderConfig(base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env"))
             for k, v in (raw.get("providers") or {}).items()
         }
         gate = Gate(
@@ -548,9 +541,7 @@ def cmd_benchmark(
 ) -> None:
     """Run the reproducible local benchmark harness and optionally persist JSON."""
     report = run_reproducible_benchmarks(
-        fixture,
-        allow_live_provider=allow_live_provider,
-        live_provider=live_provider,
+        fixture, allow_live_provider=allow_live_provider, live_provider=live_provider
     )
     console.print(format_benchmark_report(report), end="")
 

@@ -680,8 +680,7 @@ class TaskWorkflowOutcomeEpisode(Contract):
         task_episode = TaskEpisode.from_task_spec(task_spec)
         workflow_episode = WorkflowEpisode.from_workflow_plan(workflow_plan)
         outcome_episode = OutcomeEpisode.from_outcome_event(
-            outcome_event,
-            routing_decision=routing_decision,
+            outcome_event, routing_decision=routing_decision
         )
         route = (
             routing_decision

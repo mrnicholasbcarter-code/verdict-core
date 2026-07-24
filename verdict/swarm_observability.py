@@ -247,8 +247,7 @@ class SwarmBaseline:
                 "sequential": self.sequential.cost_per_verified_task,
                 "swarm": self.swarm.cost_per_verified_task,
                 "change_pct": pct_change(
-                    self.sequential.cost_per_verified_task,
-                    self.swarm.cost_per_verified_task,
+                    self.sequential.cost_per_verified_task, self.swarm.cost_per_verified_task
                 ),
             },
             "budget_utilization": {
@@ -451,11 +450,7 @@ def create_explain_endpoint() -> dict[str, Any]:
         "endpoint": "/v1/swarm/explain",
         "method": "POST",
         "description": "Explain why a candidate was assigned or excluded for a task",
-        "request": {
-            "task_id": "string",
-            "candidate_id": "string",
-            "context": "object (optional)",
-        },
+        "request": {"task_id": "string", "candidate_id": "string", "context": "object (optional)"},
         "response": {
             "task_id": "string",
             "candidate_id": "string",

@@ -142,9 +142,7 @@ class UpstreamProxy:
             try:
                 buffered_body = await response.aread()
                 return BufferedUpstreamResponse(
-                    status_code=response.status_code,
-                    headers=response_headers,
-                    body=buffered_body,
+                    status_code=response.status_code, headers=response_headers, body=buffered_body
                 )
             finally:
                 await response.aclose()
@@ -159,7 +157,5 @@ class UpstreamProxy:
                 await client.aclose()
 
         return StreamedUpstreamResponse(
-            status_code=response.status_code,
-            headers=response_headers,
-            body=stream_body(),
+            status_code=response.status_code, headers=response_headers, body=stream_body()
         )

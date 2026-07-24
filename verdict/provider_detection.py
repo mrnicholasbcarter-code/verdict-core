@@ -189,12 +189,7 @@ def _which(cmd: str) -> str | None:
 def _run_command(cmd: list[str], timeout: float = 5.0) -> tuple[int, str, str]:
     """Run command and return (returncode, stdout, stderr)."""
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return result.returncode, result.stdout, result.stderr
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         return -1, "", str(e)
@@ -620,19 +615,13 @@ def format_detection_report(result: DetectionResult, verbose: bool = False) -> s
 
 def generate_verdict_config(result: DetectionResult) -> dict[str, Any]:
     """Generate suggested verdict.yaml config from detection results."""
-    config: dict[str, Any] = {
-        "primary_model": "anthropic/claude-3-opus-20240229",
-        "providers": {},
-    }
+    config: dict[str, Any] = {"primary_model": "anthropic/claude-3-opus-20240229", "providers": {}}
 
     # Prioritize centralized routers
     routers = [p for p in result.centralized_routers if p.server_running]
     if routers:
         router = routers[0]
-        config["providers"][router.id] = {
-            "base_url": router.base_url,
-            "api_key_env": None,
-        }
+        config["providers"][router.id] = {"base_url": router.base_url, "api_key_env": None}
         # Use router's models as primary
         if router.models:
             config["primary_model"] = router.models[0]
@@ -642,10 +631,7 @@ def generate_verdict_config(result: DetectionResult) -> dict[str, Any]:
     local = [p for p in result.local_servers if p.server_running]
     if local:
         server = local[0]
-        config["providers"][server.id] = {
-            "base_url": server.base_url,
-            "api_key_env": None,
-        }
+        config["providers"][server.id] = {"base_url": server.base_url, "api_key_env": None}
         if server.models:
             config["primary_model"] = server.models[0]
         return config

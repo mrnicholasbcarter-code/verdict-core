@@ -22,12 +22,7 @@ _RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429})
 _AUTO_MODEL_ALIASES = {
     "auto": ("auto/best-coding", "auto/best-reasoning", "auto/best-free", "auto/fast"),
     "coding": ("auto/best-coding", "auto/coding:free", "auto/best-free", "auto/fast"),
-    "reasoning": (
-        "auto/best-reasoning",
-        "auto/reasoning:free",
-        "auto/best-free",
-        "auto/fast",
-    ),
+    "reasoning": ("auto/best-reasoning", "auto/reasoning:free", "auto/best-free", "auto/fast"),
     "fast": ("auto/best-fast", "auto/fast", "auto/best-free"),
     "free": ("auto/best-free", "auto/coding:free", "auto/reasoning:free", "auto/fast"),
 }

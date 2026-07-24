@@ -13,17 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from verdict.adaptive_ranker import (
-    AdaptiveRanker,
-    AdaptiveRankerConfig,
-    CanaryPolicy,
-    RankerMode,
-)
-from verdict.eligibility import (
-    EligibilityRecord,
-    EligibilityResult,
-    EligibilityVerdict,
-)
+from verdict.adaptive_ranker import AdaptiveRanker, AdaptiveRankerConfig, CanaryPolicy, RankerMode
+from verdict.eligibility import EligibilityRecord, EligibilityResult, EligibilityVerdict
 from verdict.models import ModelInfo
 
 
@@ -31,12 +22,7 @@ def _fake_model(
     model_id: str, provider: str = "test", tier: int = 1, caps: list[str] | None = None
 ) -> ModelInfo:
     """Create a test model with required fields."""
-    return ModelInfo(
-        id=model_id,
-        provider=provider,
-        capability_tier=tier,
-        capabilities=caps or [],
-    )
+    return ModelInfo(id=model_id, provider=provider, capability_tier=tier, capabilities=caps or [])
 
 
 def _eligibility_result(models: list[ModelInfo], states: list[str]) -> EligibilityResult:
@@ -213,9 +199,7 @@ def test_tie_stability_deterministic_ordering():
 def test_rollback_switch_works():
     """AC: Rollback switch works to disable canary."""
     config = AdaptiveRankerConfig(
-        mode=RankerMode.SHADOW_ADAPTIVE,
-        canary_policy=CanaryPolicy.VERSIONED,
-        rollback_enabled=True,
+        mode=RankerMode.SHADOW_ADAPTIVE, canary_policy=CanaryPolicy.VERSIONED, rollback_enabled=True
     )
     ranker = AdaptiveRanker(config)
 

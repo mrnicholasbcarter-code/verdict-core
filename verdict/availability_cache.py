@@ -40,9 +40,7 @@ class CacheKey:
     def for_candidate(cls, model_id: str, policy_version: str | None = None) -> CacheKey:
         provider = model_id.split("/", 1)[0] if "/" in model_id else "unknown"
         return cls(
-            provider=provider,
-            model=model_id,
-            policy_version=policy_version or cls.policy_version,
+            provider=provider, model=model_id, policy_version=policy_version or cls.policy_version
         )
 
 
@@ -270,18 +268,12 @@ class AvailabilityCache:
     def _store(self, key: CacheKey, report: AvailabilityReport, now: datetime) -> None:
         if key in self._entries:
             self._entries[key] = replace(
-                self._entries[key],
-                report=report,
-                stored_at=now,
-                refresh_error=None,
+                self._entries[key], report=report, stored_at=now, refresh_error=None
             )
         else:
             if len(self._entries) >= self.max_entries:
                 # Evict the oldest stored entry (bounded memory).
-                oldest = min(
-                    self._entries,
-                    key=lambda k: self._entries[k].stored_at,
-                )
+                oldest = min(self._entries, key=lambda k: self._entries[k].stored_at)
                 del self._entries[oldest]
             self._entries[key] = _Entry(report=report, stored_at=now, ttl_seconds=self.ttl_seconds)
 
@@ -344,10 +336,7 @@ def explain_freshness(
     }
 
 
-def build_cache_report(
-    cache: AvailabilityCache,
-    model_ids: list[str],
-) -> dict[str, Any]:
+def build_cache_report(cache: AvailabilityCache, model_ids: list[str]) -> dict[str, Any]:
     """Evaluate the cache for several models and attach a freshness explain block."""
     per_model: dict[str, Any] = {}
     for model_id in model_ids:

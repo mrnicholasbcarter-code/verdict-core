@@ -78,10 +78,7 @@ class StructuredPlanner:
     """Produce validated task/workflow contracts without selecting a model."""
 
     def __init__(
-        self,
-        planner: PlannerCallable | None = None,
-        *,
-        policy: PlannerPolicy | None = None,
+        self, planner: PlannerCallable | None = None, *, policy: PlannerPolicy | None = None
     ) -> None:
         self.planner = planner
         self.policy = policy or PlannerPolicy()
@@ -127,12 +124,7 @@ class StructuredPlanner:
         context: dict[str, Any] | None = None,
     ) -> PlanResult:
         """Alias for the structured intake boundary."""
-        return self.plan(
-            objective,
-            criticality=criticality,
-            budget=budget,
-            context=context,
-        )
+        return self.plan(objective, criticality=criticality, budget=budget, context=context)
 
     def select_workflow(self, task_spec: TaskSpec) -> WorkflowPlan:
         """Return a policy-safe workflow for an already validated task."""
@@ -428,8 +420,7 @@ class StructuredPlanner:
     def _enforce_budget(self, task: TaskSpec, budget: dict[str, Any] | None) -> None:
         try:
             estimated = _finite_non_negative_number(
-                task.budget.get("estimated_usd", task.budget.get("max_usd", 0)),
-                "estimated budget",
+                task.budget.get("estimated_usd", task.budget.get("max_usd", 0)), "estimated budget"
             )
             requested = (
                 None
@@ -460,8 +451,7 @@ class StructuredPlanner:
                 proposed_budget.get("estimated_usd", 0), "estimated_usd"
             )
             proposed_latency = _finite_non_negative_integer(
-                proposed_budget.get("estimated_latency_ms", 0),
-                "estimated_latency_ms",
+                proposed_budget.get("estimated_latency_ms", 0), "estimated_latency_ms"
             )
         except (OverflowError, TypeError, ValueError) as exc:
             raise PlanRejected("planner estimate must be finite and non-negative") from exc

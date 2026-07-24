@@ -145,10 +145,7 @@ class TestSwarmTaskAttempt:
     def test_attempt_mark_completed_failure(self):
         """Failed completion marks state correctly."""
         attempt = SwarmTaskAttempt(task_id="task-123")
-        completed = attempt.mark_completed(
-            result="failure",
-            reason="failed",
-        )
+        completed = attempt.mark_completed(result="failure", reason="failed")
         assert completed.state == "failed"
         assert completed.result == "failure"
 
@@ -191,8 +188,7 @@ class TestFactoryFunctions:
     def test_build_envelope_factory(self):
         """Factory creates valid envelope."""
         envelope = build_swarm_task_envelope(
-            objective="Test task",
-            allowed_paths=["/home/nick/dev/project"],
+            objective="Test task", allowed_paths=["/home/nick/dev/project"]
         )
         assert envelope.objective == "Test task"
         assert envelope.allowed_paths == ["/home/nick/dev/project"]

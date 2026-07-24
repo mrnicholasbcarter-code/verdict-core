@@ -80,9 +80,7 @@ class CandidateRequirements:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self,
-            "required",
-            frozenset(canonical_capability(value) for value in self.required),
+            self, "required", frozenset(canonical_capability(value) for value in self.required)
         )
         budget = self.budget_remaining
         if budget is not None and (not _is_finite_number(budget) or budget < 0):
@@ -563,12 +561,7 @@ _KNOWN_CIRCUIT_STATES = frozenset({"closed", "half_open", "open", "tripped"})
 
 
 def _observation_is_well_formed(obs: RuntimeObservation) -> bool:
-    numeric_values = (
-        obs.quota_remaining_pct,
-        obs.headroom_pct,
-        obs.budget_remaining,
-        obs.cost,
-    )
+    numeric_values = (obs.quota_remaining_pct, obs.headroom_pct, obs.budget_remaining, obs.cost)
     return (
         type(obs.ttl_seconds) is int
         and obs.ttl_seconds > 0
@@ -850,12 +843,7 @@ def normalize_observation(
                 age,
             )
         return AvailabilityCandidate(
-            model,
-            AvailabilityState.DENIED,
-            ("runtime marked ineligible",),
-            quota,
-            obs.source,
-            age,
+            model, AvailabilityState.DENIED, ("runtime marked ineligible",), quota, obs.source, age
         )
     probe_state = _probe_state(obs)
     if probe_state is not None:
@@ -864,14 +852,7 @@ def normalize_observation(
             capacity_denial = intrinsic_capacity_denial()
             if capacity_denial is not None:
                 return capacity_denial
-        return AvailabilityCandidate(
-            model,
-            state,
-            (reason,),
-            quota,
-            obs.source,
-            age,
-        )
+        return AvailabilityCandidate(model, state, (reason,), quota, obs.source, age)
     contradictory = obs.health in {"unhealthy", "down", "offline"} and obs.eligible is True
     if contradictory:
         return AvailabilityCandidate(
@@ -1186,12 +1167,7 @@ class OmniRouteAvailabilityAdapter:
             if runtime_failure_state is not None:
                 states.append(
                     AvailabilityCandidate(
-                        model,
-                        runtime_failure_state,
-                        (errors[0],),
-                        None,
-                        "omniroute",
-                        None,
+                        model, runtime_failure_state, (errors[0],), None, "omniroute", None
                     )
                 )
                 continue
@@ -1341,18 +1317,12 @@ class ProbeEnrichedAdapter:
         ]
         eligible = select_capable_candidates(merged, requirements)
         return AvailabilityReport(
-            tuple(merged),
-            tuple(eligible),
-            report.source,
-            report.freshness_seconds,
-            report.errors,
+            tuple(merged), tuple(eligible), report.source, report.freshness_seconds, report.errors
         )
 
     @staticmethod
     def _merge_probe(
-        candidate: AvailabilityCandidate,
-        probe_by_id: dict[str, RuntimeObservation],
-        now: datetime,
+        candidate: AvailabilityCandidate, probe_by_id: dict[str, RuntimeObservation], now: datetime
     ) -> AvailabilityCandidate:
         probe = probe_by_id.get(candidate.model.id)
         if probe is None:

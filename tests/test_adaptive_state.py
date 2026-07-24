@@ -17,10 +17,7 @@ import time
 import pytest
 
 from verdict.adaptive_ranker import AdaptiveRanker, AdaptiveRankerConfig, CanaryPolicy, RankerMode
-from verdict.adaptive_state import (
-    BenchmarkResult,
-    build_adaptive_state_manager,
-)
+from verdict.adaptive_state import BenchmarkResult, build_adaptive_state_manager
 from verdict.eligibility import EligibilityRecord, EligibilityResult, EligibilityVerdict
 from verdict.models import ModelInfo
 
@@ -129,10 +126,7 @@ def test_benchmark_fixtures_committed():
     ranker = AdaptiveRanker(AdaptiveRankerConfig(mode=RankerMode.STATIC))
     manager = build_adaptive_state_manager(ranker)
 
-    test_cases = [
-        ("code task", "openai/gpt-4o"),
-        ("chat task", "anthropic/claude-3.5-sonnet"),
-    ]
+    test_cases = [("code task", "openai/gpt-4o"), ("chat task", "anthropic/claude-3.5-sonnet")]
 
     results = manager.run_benchmark(test_cases)
 
@@ -148,9 +142,7 @@ def test_benchmark_fixtures_committed():
 def test_no_adaptive_feature_production_ready_without_evidence():
     """AC: No adaptive feature is called production-ready without measured evidence."""
     config = AdaptiveRankerConfig(
-        mode=RankerMode.SHADOW_ADAPTIVE,
-        canary_policy=CanaryPolicy.VERSIONED,
-        rollback_enabled=True,
+        mode=RankerMode.SHADOW_ADAPTIVE, canary_policy=CanaryPolicy.VERSIONED, rollback_enabled=True
     )
     ranker = AdaptiveRanker(config)
 

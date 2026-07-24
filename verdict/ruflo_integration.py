@@ -105,9 +105,7 @@ class RufloHarness:
         started_at = datetime.now(timezone.utc).isoformat()
 
         result = ScenarioResult(
-            scenario_type=scenario_type,
-            status=TaskStatus.RUNNING,
-            started_at=started_at,
+            scenario_type=scenario_type, status=TaskStatus.RUNNING, started_at=started_at
         )
 
         self.current_scenario = result
@@ -184,11 +182,7 @@ class RufloHarness:
         for name, _action, expected in steps:
             result.steps_completed.append(name)
             result.verification_results.append(
-                {
-                    "check": name,
-                    "outcome": "pass",
-                    "message": expected,
-                }
+                {"check": name, "outcome": "pass", "message": expected}
             )
 
     def _run_approval_required(self, result: ScenarioResult) -> None:
@@ -216,11 +210,7 @@ class RufloHarness:
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _run_pause_resume(self, result: ScenarioResult) -> None:
@@ -238,20 +228,11 @@ class RufloHarness:
             result.steps_completed.append(name)
             if action in ("pause", "resume"):
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "action": action,
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "action": action, "message": expected}
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _run_cancellation(self, result: ScenarioResult) -> None:
@@ -268,19 +249,11 @@ class RufloHarness:
             if action == "cancel":
                 result.status = TaskStatus.CANCELLED
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "cancelled",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "cancelled", "message": expected}
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _run_timeout(self, result: ScenarioResult) -> None:
@@ -296,19 +269,11 @@ class RufloHarness:
             if name == "timeout":
                 result.status = TaskStatus.TIMED_OUT
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "timeout",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "timeout", "message": expected}
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _run_partial_failure(self, result: ScenarioResult) -> None:
@@ -326,11 +291,7 @@ class RufloHarness:
             result.steps_completed.append(name)
             if action == "retry":
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "retry",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "retry", "message": expected}
                 )
             elif "fail" in name:
                 result.steps_failed.append(name)
@@ -344,11 +305,7 @@ class RufloHarness:
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _run_retry(self, result: ScenarioResult) -> None:
@@ -377,19 +334,11 @@ class RufloHarness:
                 )
             elif "backoff" in name:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "backoff",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "backoff", "message": expected}
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _run_verification_failure(self, result: ScenarioResult) -> None:
@@ -418,11 +367,7 @@ class RufloHarness:
                 )
             elif action == "approve":
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "approved",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "approved", "message": expected}
                 )
             elif "fail" in expected.lower():
                 result.steps_failed.append(name)
@@ -436,11 +381,7 @@ class RufloHarness:
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _run_replan_exhaustion(self, result: ScenarioResult) -> None:
@@ -495,11 +436,7 @@ class RufloHarness:
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _run_rufl_o_unavailable(self, result: ScenarioResult) -> None:
@@ -523,11 +460,7 @@ class RufloHarness:
                 )
             else:
                 result.verification_results.append(
-                    {
-                        "check": name,
-                        "outcome": "pass",
-                        "message": expected,
-                    }
+                    {"check": name, "outcome": "pass", "message": expected}
                 )
 
     def _generate_evidence_bundle(self, result: ScenarioResult) -> dict[str, Any]:
@@ -607,10 +540,7 @@ def run_integration_suite(
 if __name__ == "__main__":
     import sys
 
-    config = RufloHarnessConfig(
-        output_dir=Path("evidence/integration"),
-        produce_evidence=True,
-    )
+    config = RufloHarnessConfig(output_dir=Path("evidence/integration"), produce_evidence=True)
 
     results, summary = run_integration_suite(config)
     print(summary)

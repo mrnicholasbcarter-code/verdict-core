@@ -46,10 +46,7 @@ class TestVerificationCommandExecution:
     def test_successful_command_execution(self):
         """A passing command returns passed=True with stdout captured."""
         result = run_verification_command(
-            VerificationCommand(
-                command="echo 'tests passed'",
-                description="Simple echo test",
-            )
+            VerificationCommand(command="echo 'tests passed'", description="Simple echo test")
         )
         assert result.passed is True
         assert "tests passed" in result.stdout
@@ -58,10 +55,7 @@ class TestVerificationCommandExecution:
     def test_failed_command_execution(self):
         """A failing command returns passed=False with stderr captured."""
         result = run_verification_command(
-            VerificationCommand(
-                command="exit 1",
-                description="Failing command",
-            )
+            VerificationCommand(command="exit 1", description="Failing command")
         )
         assert result.passed is False
         assert result.exit_code == 1
@@ -70,9 +64,7 @@ class TestVerificationCommandExecution:
         """A command exceeding timeout is marked as failed."""
         result = run_verification_command(
             VerificationCommand(
-                command="sleep 10",
-                description="Long running command",
-                timeout_seconds=1,
+                command="sleep 10", description="Long running command", timeout_seconds=1
             )
         )
         assert result.passed is False
@@ -81,14 +73,10 @@ class TestVerificationCommandExecution:
     def test_required_vs_optional_commands(self):
         """Required commands affect overall outcome differently than optional."""
         required_fail = VerificationCommand(
-            command="exit 1",
-            description="Required failure",
-            required=True,
+            command="exit 1", description="Required failure", required=True
         )
         optional_fail = VerificationCommand(
-            command="exit 1",
-            description="Optional failure",
-            required=False,
+            command="exit 1", description="Optional failure", required=False
         )
 
         req_result = run_verification_command(required_fail)
@@ -196,9 +184,7 @@ class TestSwarmVerifierIntegration:
         """All passing commands produce ACCEPTED outcome."""
         # Use a command that will pass
         commands = [
-            VerificationCommand(
-                command="echo 'success'", description="Echo success", required=True
-            ),
+            VerificationCommand(command="echo 'success'", description="Echo success", required=True)
         ]
         verifier.commands = commands
 
@@ -216,7 +202,7 @@ class TestSwarmVerifierIntegration:
     def test_failed_required_command_blocks(self, verifier):
         """Failed required command produces BLOCKED outcome."""
         commands = [
-            VerificationCommand(command="exit 1", description="Required failure", required=True),
+            VerificationCommand(command="exit 1", description="Required failure", required=True)
         ]
         verifier.commands = commands
 
@@ -233,7 +219,7 @@ class TestSwarmVerifierIntegration:
     def test_failed_optional_command_rejects(self, verifier):
         """Failed optional command produces REJECTED outcome."""
         commands = [
-            VerificationCommand(command="exit 1", description="Optional failure", required=False),
+            VerificationCommand(command="exit 1", description="Optional failure", required=False)
         ]
         verifier.commands = commands
 
@@ -252,7 +238,7 @@ class TestSwarmVerifierIntegration:
         commands = [
             VerificationCommand(
                 command="echo 'artifact content'", description="Produce artifact", required=True
-            ),
+            )
         ]
         verifier.commands = commands
 
@@ -275,7 +261,7 @@ class TestSwarmVerifierIntegration:
         commands = [
             VerificationCommand(
                 command="echo 'immutable'", description="Test immutability", required=True
-            ),
+            )
         ]
         verifier.commands = commands
 
@@ -301,7 +287,7 @@ class TestSwarmVerifierIntegration:
         commands = [
             VerificationCommand(
                 command="echo 'API_KEY=sk-test123'", description="Test redaction", required=True
-            ),
+            )
         ]
         verifier.commands = commands
 
@@ -325,7 +311,7 @@ class TestSwarmVerifierIntegration:
     def test_verification_report_includes_timing(self, verifier):
         """Report includes start/complete timestamps and duration."""
         commands = [
-            VerificationCommand(command="sleep 0.1", description="Timing test", required=True),
+            VerificationCommand(command="sleep 0.1", description="Timing test", required=True)
         ]
         verifier.commands = commands
 
@@ -350,7 +336,7 @@ class TestVerificationOutcomes:
         verifier = SwarmVerifier(
             artifact_store=temp_artifact_store,
             commands=[
-                VerificationCommand(command="echo success", description="Pass", required=True),
+                VerificationCommand(command="echo success", description="Pass", required=True)
             ],
         )
 
@@ -364,9 +350,7 @@ class TestVerificationOutcomes:
         """BLOCKED outcome prevents merge."""
         verifier = SwarmVerifier(
             artifact_store=temp_artifact_store,
-            commands=[
-                VerificationCommand(command="exit 1", description="Fail", required=True),
-            ],
+            commands=[VerificationCommand(command="exit 1", description="Fail", required=True)],
         )
 
         report = verifier.verify("task-1", "attempt-1", "model", "runtime")
@@ -379,9 +363,7 @@ class TestVerificationOutcomes:
         """REJECTED outcome prevents merge."""
         verifier = SwarmVerifier(
             artifact_store=temp_artifact_store,
-            commands=[
-                VerificationCommand(command="exit 1", description="Fail", required=False),
-            ],
+            commands=[VerificationCommand(command="exit 1", description="Fail", required=False)],
         )
 
         report = verifier.verify("task-1", "attempt-1", "model", "runtime")
@@ -395,7 +377,7 @@ class TestVerificationOutcomes:
         verifier = SwarmVerifier(
             artifact_store=temp_artifact_store,
             commands=[
-                VerificationCommand(command="echo success", description="Pass", required=True),
+                VerificationCommand(command="echo success", description="Pass", required=True)
             ],
         )
 
@@ -426,7 +408,7 @@ class TestVerificationOutcomes:
         verifier = SwarmVerifier(
             artifact_store=temp_artifact_store,
             commands=[
-                VerificationCommand(command="echo success", description="Pass", required=True),
+                VerificationCommand(command="echo success", description="Pass", required=True)
             ],
         )
 
@@ -459,7 +441,7 @@ class TestMaliciousClaims:
         verifier = SwarmVerifier(
             artifact_store=temp_artifact_store,
             commands=[
-                VerificationCommand(command="exit 1", description="Will fail", required=True),
+                VerificationCommand(command="exit 1", description="Will fail", required=True)
             ],
         )
 
@@ -475,7 +457,7 @@ class TestMaliciousClaims:
             commands=[
                 VerificationCommand(
                     command="echo 'produce output'", description="Produce output", required=True
-                ),
+                )
             ],
         )
 
@@ -498,7 +480,7 @@ class TestProtectedPathApproval:
         verifier = SwarmVerifier(
             artifact_store=temp_artifact_store,
             commands=[
-                VerificationCommand(command="echo success", description="Pass", required=True),
+                VerificationCommand(command="echo success", description="Pass", required=True)
             ],
         )
 

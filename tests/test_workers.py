@@ -8,12 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from verdict.workers import (
-    OmniRouteWorkerClient,
-    WorkerPool,
-    WorkerRequest,
-    WorkerUnavailable,
-)
+from verdict.workers import OmniRouteWorkerClient, WorkerPool, WorkerRequest, WorkerUnavailable
 
 
 def _transport(
@@ -76,13 +71,7 @@ async def test_worker_fails_over_to_another_live_model_on_transient_error() -> N
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/models"):
             return httpx.Response(
-                200,
-                json={
-                    "data": [
-                        {"id": "auto/best-free"},
-                        {"id": "provider/fallback:free"},
-                    ]
-                },
+                200, json={"data": [{"id": "auto/best-free"}, {"id": "provider/fallback:free"}]}
             )
         payload = json.loads((await request.aread()).decode())
         selected.append(payload["model"])

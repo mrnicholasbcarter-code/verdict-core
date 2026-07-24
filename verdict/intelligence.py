@@ -191,9 +191,7 @@ class IntelligenceService:
         eligibility = None
         if self.eligibility_gate is not None:
             eligibility = self.eligibility_gate.evaluate(
-                candidates,
-                protected=(final_tier == 0),
-                dev_mode=(self.profile == "development"),
+                candidates, protected=(final_tier == 0), dev_mode=(self.profile == "development")
             )
             candidates = eligibility.eligible
 

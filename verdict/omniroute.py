@@ -125,11 +125,7 @@ class OmniRouteHTTPTransport:
 
     def catalog(self) -> Any:
         """Return the OpenAI-compatible catalog from ``GET /v1/models``."""
-        return self._get_json(
-            operation="catalog",
-            path="/v1/models",
-            token=self.api_key,
-        )
+        return self._get_json(operation="catalog", path="/v1/models", token=self.api_key)
 
     def runtime(self) -> dict[str, dict[str, Any]]:
         """Return minimized candidate observations from configured read sources."""
@@ -188,15 +184,10 @@ class OmniRouteHTTPTransport:
             self._validate_destination()
             with (
                 httpx.Client(
-                    transport=self.transport,
-                    timeout=self.timeout,
-                    follow_redirects=False,
+                    transport=self.transport, timeout=self.timeout, follow_redirects=False
                 ) as client,
                 client.stream(
-                    "GET",
-                    f"{self.base_url}{path}",
-                    headers=headers,
-                    params=params,
+                    "GET", f"{self.base_url}{path}", headers=headers, params=params
                 ) as response,
             ):
                 if response.status_code in {401, 403}:
@@ -335,12 +326,7 @@ def _merge_observation(
         if value is None:
             continue
         if (
-            field
-            in {
-                "quota_remaining_pct",
-                "budget_remaining",
-                "token_headroom",
-            }
+            field in {"quota_remaining_pct", "budget_remaining", "token_headroom"}
             and field in target
         ):
             target[field] = min(target[field], value)
@@ -452,9 +438,7 @@ def _merge_rate_limits(
 
 
 def _apply_headroom(
-    observations: dict[str, dict[str, Any]],
-    record: Mapping[str, Any],
-    base: Mapping[str, Any],
+    observations: dict[str, dict[str, Any]], record: Mapping[str, Any], base: Mapping[str, Any]
 ) -> None:
     key = record.get("model") or record.get("provider")
     if not isinstance(key, str):
@@ -503,8 +487,7 @@ def _apply_lockout(
     else:
         return
     until = record.get(
-        "lockoutUntil",
-        record.get("cooldownUntil", record.get("expiresAt", record.get("until"))),
+        "lockoutUntil", record.get("cooldownUntil", record.get("expiresAt", record.get("until")))
     )
     remaining_ms = _integer(record.get("remainingMs"))
     if remaining_ms is not None:
@@ -518,9 +501,7 @@ def _apply_lockout(
 
 
 def _merge_budget(
-    observations: dict[str, dict[str, Any]],
-    payload: Any,
-    base: Mapping[str, Any],
+    observations: dict[str, dict[str, Any]], payload: Any, base: Mapping[str, Any]
 ) -> None:
     if not isinstance(payload, Mapping):
         return
@@ -535,20 +516,12 @@ def _merge_budget(
         return
     if not allowed:
         _merge_observation(
-            observations,
-            "default",
-            {"budget_remaining": 0.0, "eligible": False},
-            base,
+            observations, "default", {"budget_remaining": 0.0, "eligible": False}, base
         )
         return
     remaining = _number(budget_check.get("remaining"))
     if remaining is not None:
-        _merge_observation(
-            observations,
-            "default",
-            {"budget_remaining": remaining},
-            base,
-        )
+        _merge_observation(observations, "default", {"budget_remaining": remaining}, base)
 
 
 def _merge_token_limits(
@@ -567,10 +540,7 @@ def _merge_token_limits(
         if record_id is not None and record_id != usage_api_key_id:
             continue
         remaining = _integer(
-            record.get(
-                "remaining",
-                record.get("tokensRemaining", record.get("tokenHeadroom")),
-            )
+            record.get("remaining", record.get("tokensRemaining", record.get("tokenHeadroom")))
         )
         if remaining is None:
             continue
@@ -583,9 +553,7 @@ def _merge_token_limits(
         _merge_observation(observations, key, update, base)
 
 
-def _inherit_runtime_defaults(
-    observations: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
+def _inherit_runtime_defaults(observations: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     default = observations.get("default", {})
     result: dict[str, dict[str, Any]] = {"default": dict(default)}
     for key, observation in observations.items():

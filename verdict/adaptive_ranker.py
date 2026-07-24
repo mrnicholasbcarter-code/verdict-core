@@ -23,10 +23,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from verdict.eligibility import (
-    EligibilityRecord,
-    EligibilityResult,
-)
+from verdict.eligibility import EligibilityRecord, EligibilityResult
 from verdict.models import ModelInfo
 
 
@@ -137,9 +134,7 @@ class AdaptiveRanker:
         return [c.model for c in sorted(candidates, key=score)]
 
     def _semantic_rank(
-        self,
-        candidates: tuple[RankingCandidate, ...],
-        task_spec: Any,
+        self, candidates: tuple[RankingCandidate, ...], task_spec: Any
     ) -> list[ModelInfo]:
         """Semantic ranking using RuVector/SONA embeddings (advisory only)."""
         # For now, fall back to static with capability matching bonus
@@ -160,9 +155,7 @@ class AdaptiveRanker:
         return sorted(base, key=lambda m: semantic_boost(m), reverse=True)
 
     def _adaptive_rank(
-        self,
-        candidates: tuple[RankingCandidate, ...],
-        task_spec: Any,
+        self, candidates: tuple[RankingCandidate, ...], task_spec: Any
     ) -> list[ModelInfo]:
         """
         Shadow adaptive ranking using learned patterns.
@@ -192,11 +185,7 @@ class AdaptiveRanker:
 
         return baseline  # Shadow: always return baseline for live path
 
-    def rank(
-        self,
-        eligibility_result: EligibilityResult,
-        task_spec: Any,
-    ) -> RankerOutput:
+    def rank(self, eligibility_result: EligibilityResult, task_spec: Any) -> RankerOutput:
         """
         Rank the pre-filtered eligible candidates.
 
@@ -261,12 +250,7 @@ class AdaptiveRanker:
         )
 
     def record_outcome(
-        self,
-        task_spec: Any,
-        selected_model: str,
-        success: bool,
-        latency_ms: float,
-        cost_usd: float,
+        self, task_spec: Any, selected_model: str, success: bool, latency_ms: float, cost_usd: float
     ) -> None:
         """Record outcome for learning (SONA/ReasoningBank)."""
         self._history.append(
@@ -302,9 +286,7 @@ class AdaptiveRanker:
 
 
 def build_adaptive_ranker(
-    config: AdaptiveRankerConfig | None = None,
-    *,
-    ruvector_db_path: str | None = None,
+    config: AdaptiveRankerConfig | None = None, *, ruvector_db_path: str | None = None
 ) -> AdaptiveRanker:
     """Factory function for adaptive ranker."""
     return AdaptiveRanker(config=config, ruvector_db_path=ruvector_db_path)

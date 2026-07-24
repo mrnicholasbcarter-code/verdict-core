@@ -37,11 +37,7 @@ def test_reproducible_benchmark_report_is_deterministic_in_structure(tmp_path: P
     assert (
         benchmark_names_a
         == benchmark_names_b
-        == [
-            "contract_roundtrip",
-            "dispatcher_eligibility",
-            "compatibility_routing",
-        ]
+        == ["contract_roundtrip", "dispatcher_eligibility", "compatibility_routing"]
     )
 
     output_path = tmp_path / "report.json"

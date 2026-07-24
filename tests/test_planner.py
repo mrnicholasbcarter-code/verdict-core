@@ -86,8 +86,7 @@ def test_deterministic_planner_reserves_tokens_with_an_explicit_basis() -> None:
 def test_planner_compiles_capacity_estimates_into_availability_requirements() -> None:
     planner = StructuredPlanner()
     task = planner.plan(
-        "Research the API and implement it with tests",
-        budget={"max_usd": 8.0},
+        "Research the API and implement it with tests", budget={"max_usd": 8.0}
     ).task_spec
 
     requirements = planner.availability_requirements(task)
@@ -236,11 +235,7 @@ def test_failure_classification_and_bounded_replanning() -> None:
     assert planner.classify_failure("permission denied by tool") is FailureClass.PERMISSION_DENIAL
     assert planner.classify_failure("pytest failed") is FailureClass.TEST_FAILURE
 
-    result = planner.replan(
-        planner.plan("Implement a feature"),
-        "provider timeout",
-        attempt=1,
-    )
+    result = planner.replan(planner.plan("Implement a feature"), "provider timeout", attempt=1)
     assert result.workflow_plan.metadata["replan_reason"] == FailureClass.PROVIDER_FAILURE.value
     with pytest.raises(PlanRejected, match="replan"):
         planner.replan(result, "provider timeout", attempt=2)
