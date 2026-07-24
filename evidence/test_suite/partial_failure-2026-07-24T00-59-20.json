@@ -1,0 +1,58 @@
+{
+  "adapter_version": "0.1.0",
+  "commit": "abc123def456",
+  "completed_at": "2026-07-24T00:59:20.055314+00:00",
+  "duration_ms": 1,
+  "error": null,
+  "generated_at": "2026-07-24T00:59:20.055331+00:00",
+  "policy_version": "1.0",
+  "replan_attempts": 0,
+  "scenario": "partial_failure",
+  "schema_version": "1.0",
+  "started_at": "2026-07-24T00:59:20.054218+00:00",
+  "status": "completed",
+  "steps_completed": [
+    "init",
+    "execute_step1",
+    "execute_step2_fail",
+    "retry_step2",
+    "execute_step2_retry",
+    "verify"
+  ],
+  "steps_failed": [
+    "execute_step2_fail"
+  ],
+  "verification_results": [
+    {
+      "check": "init",
+      "message": "Task initialized",
+      "outcome": "pass"
+    },
+    {
+      "check": "execute_step1",
+      "message": "Step 1 completed",
+      "outcome": "pass"
+    },
+    {
+      "check": "execute_step2_fail",
+      "classification": "tool",
+      "message": "Step 2 failed",
+      "outcome": "fail"
+    },
+    {
+      "check": "retry_step2",
+      "message": "Step 2 retried",
+      "outcome": "retry"
+    },
+    {
+      "check": "execute_step2_retry",
+      "message": "Step 2 succeeded on retry",
+      "outcome": "pass"
+    },
+    {
+      "check": "verify",
+      "message": "All gates passed",
+      "outcome": "pass"
+    }
+  ]
+}

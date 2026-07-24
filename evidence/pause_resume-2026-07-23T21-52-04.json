@@ -1,0 +1,57 @@
+{
+  "adapter_version": "0.1.0",
+  "commit": "abc123def456",
+  "completed_at": "2026-07-23T21:52:04.665305+00:00",
+  "duration_ms": 1,
+  "error": null,
+  "generated_at": "2026-07-23T21:52:04.665317+00:00",
+  "policy_version": "1.0",
+  "replan_attempts": 0,
+  "scenario": "pause_resume",
+  "schema_version": "1.0",
+  "started_at": "2026-07-23T21:52:04.664222+00:00",
+  "status": "completed",
+  "steps_completed": [
+    "init",
+    "execute_step1",
+    "pause",
+    "resume",
+    "execute_step2",
+    "verify"
+  ],
+  "steps_failed": [],
+  "verification_results": [
+    {
+      "check": "init",
+      "message": "Task initialized",
+      "outcome": "pass"
+    },
+    {
+      "check": "execute_step1",
+      "message": "Step 1 completed",
+      "outcome": "pass"
+    },
+    {
+      "action": "pause",
+      "check": "pause",
+      "message": "Task paused",
+      "outcome": "pass"
+    },
+    {
+      "action": "resume",
+      "check": "resume",
+      "message": "Task resumed",
+      "outcome": "pass"
+    },
+    {
+      "check": "execute_step2",
+      "message": "Step 2 completed",
+      "outcome": "pass"
+    },
+    {
+      "check": "verify",
+      "message": "All gates passed",
+      "outcome": "pass"
+    }
+  ]
+}

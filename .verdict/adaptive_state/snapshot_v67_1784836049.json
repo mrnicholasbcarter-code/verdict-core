@@ -1,0 +1,36 @@
+{
+  "manifest": {
+    "version": "v67",
+    "timestamp": 1784836049.210997,
+    "config_hash": "226fb5a3540b647c",
+    "history_checksum": "4aa50f9f55ef9275",
+    "dropped_trajectories": 0,
+    "total_entries": 1,
+    "metadata": {
+      "quality": "good"
+    }
+  },
+  "config": {
+    "mode": "shadow_adaptive",
+    "canary_policy": "versioned",
+    "canary_version": "1.0.0",
+    "rollback_enabled": true,
+    "semantic_weight": 0.7,
+    "adaptive_weight": 0.3,
+    "max_history_size": 1000
+  },
+  "history": [
+    {
+      "timestamp": 1784836049.2107153,
+      "task_hash": "e3b0c44298fc1c14",
+      "candidates": [
+        "a/1"
+      ],
+      "baseline_ranking": [
+        "a/1"
+      ],
+      "mode": "shadow_adaptive"
+    }
+  ],
+  "checksum": "52c30f0ffb32ed7cf986da78b5b550b66e0bf80415ca7772befe979137c43f92"
+}

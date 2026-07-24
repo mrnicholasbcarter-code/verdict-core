@@ -1,0 +1,65 @@
+{
+  "adapter_version": "0.1.0",
+  "commit": "abc123def456",
+  "completed_at": "2026-07-23T22:03:23.418325+00:00",
+  "duration_ms": 1,
+  "error": null,
+  "generated_at": "2026-07-23T22:03:23.418338+00:00",
+  "policy_version": "1.0",
+  "replan_attempts": 1,
+  "scenario": "verification_failure",
+  "schema_version": "1.0",
+  "started_at": "2026-07-23T22:03:23.417232+00:00",
+  "status": "completed",
+  "steps_completed": [
+    "init",
+    "execute",
+    "verify_fail",
+    "replan_1",
+    "replan_1_approved",
+    "execute_replan",
+    "verify_replan"
+  ],
+  "steps_failed": [
+    "verify_fail"
+  ],
+  "verification_results": [
+    {
+      "check": "init",
+      "message": "Task initialized",
+      "outcome": "pass"
+    },
+    {
+      "check": "execute",
+      "message": "Work completed",
+      "outcome": "pass"
+    },
+    {
+      "check": "verify_fail",
+      "classification": "test",
+      "message": "Verification gate failed",
+      "outcome": "fail"
+    },
+    {
+      "attempt": 1,
+      "check": "replan_1",
+      "message": "Replan 1 proposed",
+      "outcome": "replan"
+    },
+    {
+      "check": "replan_1_approved",
+      "message": "Replan 1 approved",
+      "outcome": "approved"
+    },
+    {
+      "check": "execute_replan",
+      "message": "Replanned work completed",
+      "outcome": "pass"
+    },
+    {
+      "check": "verify_replan",
+      "message": "Verification passed on replan",
+      "outcome": "pass"
+    }
+  ]
+}

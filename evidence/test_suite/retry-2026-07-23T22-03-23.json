@@ -1,0 +1,66 @@
+{
+  "adapter_version": "0.1.0",
+  "commit": "abc123def456",
+  "completed_at": "2026-07-23T22:03:23.437286+00:00",
+  "duration_ms": 1,
+  "error": null,
+  "generated_at": "2026-07-23T22:03:23.437308+00:00",
+  "policy_version": "1.0",
+  "replan_attempts": 0,
+  "scenario": "retry",
+  "schema_version": "1.0",
+  "started_at": "2026-07-23T22:03:23.436174+00:00",
+  "status": "completed",
+  "steps_completed": [
+    "init",
+    "attempt_1",
+    "backoff_1",
+    "attempt_2",
+    "backoff_2",
+    "attempt_3",
+    "verify"
+  ],
+  "steps_failed": [
+    "attempt_1",
+    "attempt_2"
+  ],
+  "verification_results": [
+    {
+      "check": "init",
+      "message": "Task initialized",
+      "outcome": "pass"
+    },
+    {
+      "check": "attempt_1",
+      "classification": "provider",
+      "message": "Attempt 1 failed",
+      "outcome": "fail"
+    },
+    {
+      "check": "backoff_1",
+      "message": "Backoff 1s",
+      "outcome": "backoff"
+    },
+    {
+      "check": "attempt_2",
+      "classification": "provider",
+      "message": "Attempt 2 failed",
+      "outcome": "fail"
+    },
+    {
+      "check": "backoff_2",
+      "message": "Backoff 2s",
+      "outcome": "backoff"
+    },
+    {
+      "check": "attempt_3",
+      "message": "Attempt 3 succeeded",
+      "outcome": "pass"
+    },
+    {
+      "check": "verify",
+      "message": "All gates passed",
+      "outcome": "pass"
+    }
+  ]
+}

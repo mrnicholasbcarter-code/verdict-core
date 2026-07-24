@@ -1,0 +1,22 @@
+{
+  "manifest": {
+    "version": "v24",
+    "timestamp": 1784823370.7536204,
+    "config_hash": "8c6a34e14f6aafcc",
+    "history_checksum": "4f53cda18c2baa0c",
+    "dropped_trajectories": 2,
+    "total_entries": 0,
+    "metadata": {}
+  },
+  "config": {
+    "mode": "shadow_adaptive",
+    "canary_policy": "disabled",
+    "canary_version": "1.0.0",
+    "rollback_enabled": true,
+    "semantic_weight": 0.7,
+    "adaptive_weight": 0.3,
+    "max_history_size": 1000
+  },
+  "history": [],
+  "checksum": "0fd703c378c0e088d7dfd37d9a4299ed123a07141f1fb21b4a46a34aa04aa1eb"
+}

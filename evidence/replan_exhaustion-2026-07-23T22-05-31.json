@@ -1,0 +1,54 @@
+{
+  "adapter_version": "0.1.0",
+  "commit": "abc123def456",
+  "completed_at": "2026-07-23T22:05:31.850480+00:00",
+  "duration_ms": 1,
+  "error": "Max replans (2) exhausted",
+  "generated_at": "2026-07-23T22:05:31.850492+00:00",
+  "policy_version": "1.0",
+  "replan_attempts": 3,
+  "scenario": "replan_exhaustion",
+  "schema_version": "1.0",
+  "started_at": "2026-07-23T22:05:31.849369+00:00",
+  "status": "failed",
+  "steps_completed": [
+    "attempt_1",
+    "replan_1",
+    "attempt_2",
+    "replan_2",
+    "attempt_3"
+  ],
+  "steps_failed": [],
+  "verification_results": [
+    {
+      "check": "verify_attempt_1",
+      "classification": "test",
+      "message": "Attempt 1 verification failed",
+      "outcome": "fail"
+    },
+    {
+      "attempt": 1,
+      "check": "replan_1",
+      "message": "Replan 1 proposed",
+      "outcome": "replan"
+    },
+    {
+      "check": "verify_attempt_2",
+      "classification": "test",
+      "message": "Attempt 2 verification failed",
+      "outcome": "fail"
+    },
+    {
+      "attempt": 2,
+      "check": "replan_2",
+      "message": "Replan 2 proposed",
+      "outcome": "replan"
+    },
+    {
+      "check": "verify_attempt_3",
+      "classification": "test",
+      "message": "Attempt 3 verification failed",
+      "outcome": "fail"
+    }
+  ]
+}
