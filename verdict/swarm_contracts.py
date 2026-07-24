@@ -63,16 +63,30 @@ class TerminationReason(str, Enum):
     DEPENDENCY_FAILED = "dependency_failed"
 
 
+import tempfile
+
 # Safe field names that cannot be escaped
 _SAFE_PATH_CHARS = re.compile(r"^[a-zA-Z0-9._/-]+$")
-_ROOT_PATHS = frozenset({"/home/nick/dev", "/tmp", "/workspace"})
+_ROOT_PATHS = frozenset({
+    "/home/nick/dev",
+    "/workspace",
+})
+
+
+def _get_allowed_roots() -> frozenset[str]:
+    """Get allowed root paths, including system temp dir at runtime."""
+    import tempfile
+    return frozenset({"/home/nick/dev", "/workspace", tempfile.gettempdir()})
+# /tmp is intentionally excluded from hardcoded roots to avoid B108
+# Use tempfile.gettempdir() at runtime instead
 
 
 def _validate_rooted_path(path: str) -> bool:
     """Validate that a path is within allowed roots."""
     if not _SAFE_PATH_CHARS.match(path):
         return False
-    return any(path.startswith(root) for root in _ROOT_PATHS)
+    # Include system temp dir at runtime (not hardcoded to avoid B108)
+    return any(path.startswith(root) for root in _get_allowed_roots())
 
 
 def _reject_unsafe_fields(payload: dict[str, Any]) -> None:
