@@ -222,6 +222,8 @@ const runtimeCandidateSchema = z.object({
   provider: nullableString.default(null),
   model: nullableString.default(null),
   model_version: nullableString.default(null),
+  context_window: z.number().int().nonnegative().nullable().default(null),
+  max_output_tokens: z.number().int().nonnegative().nullable().default(null),
   schema_version: schemaVersion.default("1"),
 }).strict();
 
