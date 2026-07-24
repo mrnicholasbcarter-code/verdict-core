@@ -35,12 +35,7 @@ def test_stale_observation_becomes_unknown() -> None:
 
 
 def test_runtime_states_distinguish_quota_cooldown_and_auth() -> None:
-    base = dict(
-        observed_at=NOW,
-        ttl_seconds=60,
-        source="fixture",
-        health="healthy",
-    )
+    base = dict(observed_at=NOW, ttl_seconds=60, source="fixture", health="healthy")
     assert (
         normalize_observation(
             ModelInfo(id="a", provider="p", capability_tier=2),
@@ -132,37 +127,24 @@ def test_stale_unknown_selection_and_explanation_use_the_same_gate() -> None:
 
     assert select_capable_candidates([state], requirements) == []
     assert explain_candidates([state], requirements) == [
-        {
-            "model": "p/model",
-            "state": "unknown",
-            "rejected": True,
-            "reason": "stale observation",
-        }
+        {"model": "p/model", "state": "unknown", "rejected": True, "reason": "stale observation"}
     ]
 
 
 def test_unknown_opt_in_never_overrides_missing_or_contradictory_evidence() -> None:
     model = ModelInfo(id="p/model", provider="p", capability_tier=1)
     missing_time = normalize_observation(
-        model,
-        RuntimeObservation(source="fixture", health="healthy", eligible=True),
-        now=NOW,
+        model, RuntimeObservation(source="fixture", health="healthy", eligible=True), now=NOW
     )
     contradictory = normalize_observation(
         model,
-        RuntimeObservation(
-            observed_at=NOW,
-            source="fixture",
-            health="healthy",
-            eligible=False,
-        ),
+        RuntimeObservation(observed_at=NOW, source="fixture", health="healthy", eligible=False),
         now=NOW,
     )
 
     assert (
         select_capable_candidates(
-            [missing_time, contradictory],
-            CandidateRequirements(unknown_is_eligible=True),
+            [missing_time, contradictory], CandidateRequirements(unknown_is_eligible=True)
         )
         == []
     )
@@ -188,16 +170,7 @@ def test_invalid_candidate_capacity_requirements_are_rejected(requirements) -> N
 
 def test_new_capacity_fields_preserve_legacy_positional_flags() -> None:
     requirements = CandidateRequirements(
-        frozenset(),
-        False,
-        frozenset(),
-        frozenset(),
-        frozenset(),
-        frozenset(),
-        1.0,
-        2,
-        True,
-        True,
+        frozenset(), False, frozenset(), frozenset(), frozenset(), frozenset(), 1.0, 2, True, True
     )
 
     assert requirements.unknown_is_eligible is True
@@ -207,15 +180,7 @@ def test_new_capacity_fields_preserve_legacy_positional_flags() -> None:
 
 
 def test_token_headroom_preserves_runtime_observation_positional_fields() -> None:
-    observation = RuntimeObservation(
-        NOW,
-        60,
-        "fixture",
-        "healthy",
-        None,
-        None,
-        1.0,
-    )
+    observation = RuntimeObservation(NOW, 60, "fixture", "healthy", None, None, 1.0)
 
     assert observation.budget_remaining == 1.0
     assert observation.token_headroom is None
@@ -223,11 +188,7 @@ def test_token_headroom_preserves_runtime_observation_positional_fields() -> Non
 
 @pytest.mark.parametrize(
     ("required_alias", "canonical"),
-    [
-        ("function_calling", "tools"),
-        ("tool-calling", "tools"),
-        ("json", "structured_output"),
-    ],
+    [("function_calling", "tools"), ("tool-calling", "tools"), ("json", "structured_output")],
 )
 def test_direct_requirements_canonicalize_legacy_capability_aliases(
     required_alias, canonical
@@ -235,10 +196,7 @@ def test_direct_requirements_canonicalize_legacy_capability_aliases(
     requirements = CandidateRequirements(required=frozenset({required_alias}))
     state = normalize_observation(
         ModelInfo(
-            id="p/model",
-            provider="p",
-            capability_tier=1,
-            capabilities=frozenset({canonical}),
+            id="p/model", provider="p", capability_tier=1, capabilities=frozenset({canonical})
         ),
         RuntimeObservation(observed_at=NOW, health="healthy"),
         now=NOW,
@@ -251,21 +209,12 @@ def test_direct_requirements_canonicalize_legacy_capability_aliases(
 def test_allowed_degraded_explanation_preserves_runtime_state() -> None:
     state = normalize_observation(
         ModelInfo(id="p/model", provider="p", capability_tier=1),
-        RuntimeObservation(
-            observed_at=NOW,
-            source="fixture",
-            health="degraded",
-        ),
+        RuntimeObservation(observed_at=NOW, source="fixture", health="degraded"),
         now=NOW,
     )
     requirements = CandidateRequirements(allow_degraded=True)
 
     assert select_capable_candidates([state], requirements) == [state]
     assert explain_candidates([state], requirements) == [
-        {
-            "model": "p/model",
-            "state": "degraded",
-            "rejected": False,
-            "reason": "health degraded",
-        }
+        {"model": "p/model", "state": "degraded", "rejected": False, "reason": "health degraded"}
     ]

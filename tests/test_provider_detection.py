@@ -142,9 +142,7 @@ def test_detect_cli_providers_with_env_and_config_auth(
 
     monkeypatch.setattr(pd, "PROVIDER_CLIS", {"anthropic": ["claude"], "openai": ["openai"]})
     monkeypatch.setattr(
-        pd,
-        "API_KEY_ENV_VARS",
-        {"anthropic": ["ANTHROPIC_API_KEY"], "openai": ["OPENAI_API_KEY"]},
+        pd, "API_KEY_ENV_VARS", {"anthropic": ["ANTHROPIC_API_KEY"], "openai": ["OPENAI_API_KEY"]}
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(pd, "_which", lambda cmd: f"/usr/bin/{cmd}")
@@ -192,9 +190,7 @@ def test_detect_centralized_routers(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_detect_cloud_apis_skips_cli_providers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pd, "PROVIDER_CLIS", {"openai": ["openai"]})
     monkeypatch.setattr(
-        pd,
-        "API_KEY_ENV_VARS",
-        {"openai": ["OPENAI_API_KEY"], "bedrock": ["AWS_ACCESS_KEY_ID"]},
+        pd, "API_KEY_ENV_VARS", {"openai": ["OPENAI_API_KEY"], "bedrock": ["AWS_ACCESS_KEY_ID"]}
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "aws-test")
@@ -307,10 +303,7 @@ def test_format_detection_report_recommends_router_when_only_cloud_or_local() ->
     result = DetectionResult(
         cloud_apis=[
             DetectedProvider(
-                id="bedrock",
-                name="Bedrock",
-                type="cloud_api",
-                api_key_configured=True,
+                id="bedrock", name="Bedrock", type="cloud_api", api_key_configured=True
             )
         ]
     )
@@ -358,10 +351,7 @@ def test_generate_config_prefers_router_local_then_cloud() -> None:
         DetectionResult(
             cli_providers=[
                 DetectedProvider(
-                    id="anthropic",
-                    name="Anthropic",
-                    type="cli_provider",
-                    api_key_configured=True,
+                    id="anthropic", name="Anthropic", type="cli_provider", api_key_configured=True
                 )
             ]
         )
@@ -372,10 +362,7 @@ def test_generate_config_prefers_router_local_then_cloud() -> None:
         DetectionResult(
             cli_providers=[
                 DetectedProvider(
-                    id="openai",
-                    name="OpenAI",
-                    type="cli_provider",
-                    api_key_configured=True,
+                    id="openai", name="OpenAI", type="cli_provider", api_key_configured=True
                 )
             ]
         )
@@ -383,7 +370,4 @@ def test_generate_config_prefers_router_local_then_cloud() -> None:
     assert openrouter_config["providers"]["openrouter"]["api_key_env"] == "OPENROUTER_API_KEY"
 
     empty_config = pd.generate_verdict_config(DetectionResult())
-    assert empty_config == {
-        "primary_model": "anthropic/claude-3-opus-20240229",
-        "providers": {},
-    }
+    assert empty_config == {"primary_model": "anthropic/claude-3-opus-20240229", "providers": {}}

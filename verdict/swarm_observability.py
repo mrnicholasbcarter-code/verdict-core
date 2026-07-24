@@ -23,6 +23,7 @@ from typing import Any
 @dataclass(frozen=True)
 class SwarmTelemetryEvent:
     """Single telemetry event emitted as JSONL."""
+
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     correlation_id: str = ""
@@ -58,6 +59,7 @@ class SwarmTelemetrySink:
     def _redact(self, line: str) -> str:
         """Redact sensitive content from JSONL line."""
         import re
+
         patterns = [
             (re.compile(r"sk-[\w-]{20,}", re.I), "[REDACTED:openai_key]"),
             (re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,}", re.I), "[REDACTED:github_token]"),
@@ -76,6 +78,7 @@ class SwarmTelemetrySink:
 @dataclass(frozen=True)
 class ExplainReason:
     """Reason for a routing/assignment decision."""
+
     reason_type: str  # eligible, excluded, budget_exceeded, capability_mismatch, protected_path
     description: str
     details: dict[str, Any] = field(default_factory=dict)
@@ -108,19 +111,26 @@ def explain_assignment(
         "cost_analysis": {
             "candidate_cost_usd": candidate_cost_usd,
             "budget_usd": budget_usd,
-            "within_budget": candidate_cost_usd is None or budget_usd is None or candidate_cost_usd <= budget_usd,
-        } if candidate_cost_usd is not None or budget_usd is not None else None,
+            "within_budget": candidate_cost_usd is None
+            or budget_usd is None
+            or candidate_cost_usd <= budget_usd,
+        }
+        if candidate_cost_usd is not None or budget_usd is not None
+        else None,
         "capability_analysis": {
             "required": required_capabilities or [],
             "candidate_has": candidate_capabilities or [],
             "missing": list(set(required_capabilities or []) - set(candidate_capabilities or [])),
-        } if required_capabilities or candidate_capabilities else None,
+        }
+        if required_capabilities or candidate_capabilities
+        else None,
     }
 
 
 @dataclass
 class CompletionMetrics:
     """Aggregated completion metrics for a swarm run."""
+
     run_id: str
     started_at: str
     completed_at: str | None = None
@@ -199,6 +209,7 @@ def generate_baseline_report(metrics: CompletionMetrics) -> str:
 @dataclass
 class SwarmBaseline:
     """Baseline comparison between sequential and swarm execution."""
+
     run_id: str
     fixture_name: str
     sequential: CompletionMetrics
@@ -206,9 +217,10 @@ class SwarmBaseline:
 
     def comparison(self) -> dict[str, Any]:
         """Generate comparison dict."""
+
         def pct_change(old: float, new: float) -> float:
             if old == 0:
-                return float('inf') if new > 0 else 0.0
+                return float("inf") if new > 0 else 0.0
             return (new - old) / old
 
         return {
@@ -235,8 +247,7 @@ class SwarmBaseline:
                 "sequential": self.sequential.cost_per_verified_task,
                 "swarm": self.swarm.cost_per_verified_task,
                 "change_pct": pct_change(
-                    self.sequential.cost_per_verified_task,
-                    self.swarm.cost_per_verified_task,
+                    self.sequential.cost_per_verified_task, self.swarm.cost_per_verified_task
                 ),
             },
             "budget_utilization": {
@@ -285,6 +296,7 @@ def generate_baseline_comparison(baseline: SwarmBaseline) -> str:
 @dataclass
 class SwarmMetricsCollector:
     """Collects metrics during a swarm run."""
+
     run_id: str
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _task_states: dict[str, list[str]] = field(default_factory=dict)  # task_id -> list of states
@@ -315,14 +327,16 @@ class SwarmMetricsCollector:
     ) -> None:
         """Record a verification result."""
         with self._lock:
-            self._verifications.append({
-                "task_id": task_id,
-                "attempt_id": attempt_id,
-                "passed": passed,
-                "latency_ms": latency_ms,
-                "retry_count": retry_count,
-                "cost_usd": cost_usd,
-            })
+            self._verifications.append(
+                {
+                    "task_id": task_id,
+                    "attempt_id": attempt_id,
+                    "passed": passed,
+                    "latency_ms": latency_ms,
+                    "retry_count": retry_count,
+                    "cost_usd": cost_usd,
+                }
+            )
 
     def record_model_call(self, fallback: bool = False) -> None:
         """Record a model call (for fallback rate tracking)."""
@@ -337,11 +351,22 @@ class SwarmMetricsCollector:
     def compute_metrics(self) -> CompletionMetrics:
         """Compute aggregated metrics from collected data."""
         with self._lock:
-            completed_tasks = [t for t, states in self._task_states.items() if "completed" in states]
-            assigned_tasks = [t for t, states in self._task_states.items() if any(s in states for s in ("assigned", "started", "completed"))]
+            completed_tasks = [
+                t for t, states in self._task_states.items() if "completed" in states
+            ]
+            assigned_tasks = [
+                t
+                for t, states in self._task_states.items()
+                if any(s in states for s in ("assigned", "started", "completed"))
+            ]
 
             if not completed_tasks:
-                return CompletionMetrics(run_id=self.run_id, started_at=datetime.fromtimestamp(self._start_time, tz=timezone.utc).isoformat())
+                return CompletionMetrics(
+                    run_id=self.run_id,
+                    started_at=datetime.fromtimestamp(
+                        self._start_time, tz=timezone.utc
+                    ).isoformat(),
+                )
 
             # Compute latency percentiles
             latencies = [v["latency_ms"] for v in self._verifications if v["passed"]]
@@ -355,7 +380,9 @@ class SwarmMetricsCollector:
             avg_retry = total_retries / total_verifications if total_verifications else 0.0
 
             # First pass rate
-            first_pass = sum(1 for v in self._verifications if v["passed"] and v["retry_count"] == 0)
+            first_pass = sum(
+                1 for v in self._verifications if v["passed"] and v["retry_count"] == 0
+            )
             rework = total_verifications - first_pass
             first_pass_rate = first_pass / total_verifications if total_verifications else 0.0
             rework_rate = rework / total_verifications if total_verifications else 0.0
@@ -375,8 +402,12 @@ class SwarmMetricsCollector:
             q95 = queue_waits[int(len(queue_waits) * 0.95)] if queue_waits else 0.0
 
             # Concurrency utilization
-            max_concurrent = max(len([t for t, ts in self._task_timings.items() if "started" in ts]), 1)
-            concurrency_util = len(completed_tasks) / (max_concurrent * 2) if max_concurrent else 0.0
+            max_concurrent = max(
+                len([t for t, ts in self._task_timings.items() if "started" in ts]), 1
+            )
+            concurrency_util = (
+                len(completed_tasks) / (max_concurrent * 2) if max_concurrent else 0.0
+            )
 
             completed_at = datetime.now(timezone.utc).isoformat()
 
@@ -419,11 +450,7 @@ def create_explain_endpoint() -> dict[str, Any]:
         "endpoint": "/v1/swarm/explain",
         "method": "POST",
         "description": "Explain why a candidate was assigned or excluded for a task",
-        "request": {
-            "task_id": "string",
-            "candidate_id": "string",
-            "context": "object (optional)",
-        },
+        "request": {"task_id": "string", "candidate_id": "string", "context": "object (optional)"},
         "response": {
             "task_id": "string",
             "candidate_id": "string",

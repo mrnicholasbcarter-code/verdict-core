@@ -1,0 +1,37 @@
+{
+  "adapter_version": "0.1.0",
+  "commit": "abc123def456",
+  "completed_at": "2026-07-24T01:20:10.220260+00:00",
+  "duration_ms": 1,
+  "error": null,
+  "generated_at": "2026-07-24T01:20:10.220272+00:00",
+  "policy_version": "1.0",
+  "replan_attempts": 0,
+  "scenario": "timeout",
+  "schema_version": "1.0",
+  "started_at": "2026-07-24T01:20:10.219182+00:00",
+  "status": "timed_out",
+  "steps_completed": [
+    "init",
+    "execute_long",
+    "timeout"
+  ],
+  "steps_failed": [],
+  "verification_results": [
+    {
+      "check": "init",
+      "message": "Task initialized",
+      "outcome": "pass"
+    },
+    {
+      "check": "execute_long",
+      "message": "Long-running step started",
+      "outcome": "pass"
+    },
+    {
+      "check": "timeout",
+      "message": "Timeout exceeded",
+      "outcome": "timeout"
+    }
+  ]
+}

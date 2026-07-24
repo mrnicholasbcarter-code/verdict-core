@@ -85,11 +85,7 @@ def test_decision_evidence_is_schema_valid_redacted_and_snapshot_based() -> None
     assert "private-result" not in rendered
     assert payload["candidate_snapshot"]["captured_at"] == "2026-07-22T00:00:00Z"
     assert payload["exclusions"] == [
-        {
-            "model": "backup/model",
-            "reason": "health unknown",
-            "verdict": "runtime_truth_absent",
-        }
+        {"model": "backup/model", "reason": "health unknown", "verdict": "runtime_truth_absent"}
     ]
     assert set(payload["candidate_snapshot"]["records"][0]) <= {
         "model_id",
@@ -228,8 +224,7 @@ def test_evidence_store_terminal_outcome_is_idempotent() -> None:
     store = EvidenceStore()
     key = store.put(
         ExplainEvidence(
-            routing,
-            build_outcome_event(routing, event_type="start", outcome="unknown"),
+            routing, build_outcome_event(routing, event_type="start", outcome="unknown")
         ),
         scope="default",
     )

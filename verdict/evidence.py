@@ -28,12 +28,7 @@ from verdict.models import RoutingDecision
 from verdict.security import fingerprint_text, redact_text
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_TIER_TO_POLICY_FLOOR = {
-    0: "isolated",
-    1: "protected",
-    2: "standard",
-    3: "best_effort",
-}
+_TIER_TO_POLICY_FLOOR = {0: "isolated", 1: "protected", 2: "standard", 3: "best_effort"}
 _TERMINAL_OUTCOMES = frozenset(
     {"cancelled", "denied", "error", "failure", "partial", "skipped", "success", "timeout"}
 )
@@ -142,11 +137,7 @@ def request_features(payload: dict[str, Any]) -> dict[str, Any]:
     return feature_payload
 
 
-def _task_spec_for_request(
-    task: str,
-    criticality: str,
-    features: dict[str, Any],
-) -> TaskSpec:
+def _task_spec_for_request(task: str, criticality: str, features: dict[str, Any]) -> TaskSpec:
     """Build a valid TaskSpec whose objective is a fingerprinted preview."""
 
     required: list[str] = []

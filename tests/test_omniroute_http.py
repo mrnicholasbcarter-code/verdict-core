@@ -32,13 +32,7 @@ def test_http_transport_fetches_exact_catalog_and_health_operations() -> None:
             return httpx.Response(
                 200,
                 json={
-                    "data": [
-                        {
-                            "id": "p/model",
-                            "provider": "p",
-                            "capabilities": ["tool-calling"],
-                        }
-                    ]
+                    "data": [{"id": "p/model", "provider": "p", "capabilities": ["tool-calling"]}]
                 },
             )
         if request.url.path == "/api/monitoring/health":
@@ -63,14 +57,10 @@ def test_http_transport_fetches_exact_catalog_and_health_operations() -> None:
         clock=lambda: NOW,
     )
     report = OmniRouteAvailabilityAdapter(transport).evaluate(
-        CandidateRequirements(required=frozenset({"tools"})),
-        now=NOW,
+        CandidateRequirements(required=frozenset({"tools"})), now=NOW
     )
 
-    assert requests == [
-        ("/v1/models", "Bearer catalog-secret"),
-        ("/api/monitoring/health", None),
-    ]
+    assert requests == [("/v1/models", "Bearer catalog-secret"), ("/api/monitoring/health", None)]
     assert report.candidates[0].state is AvailabilityState.READY
     assert [candidate.model.id for candidate in report.eligible] == ["p/model"]
 
@@ -168,13 +158,7 @@ def test_management_sources_are_allowlisted_and_minimize_runtime_records() -> No
         "https://router.example.test/v1",
         management_token="management-secret",
         usage_api_key_id="key-1",
-        runtime_sources={
-            "health",
-            "rate_limits",
-            "model_cooldowns",
-            "budget",
-            "token_limits",
-        },
+        runtime_sources={"health", "rate_limits", "model_cooldowns", "budget", "token_limits"},
         allow_private_hosts=MOCK_ALLOWLIST,
         transport=httpx.MockTransport(handler),
         clock=lambda: NOW,
@@ -201,18 +185,14 @@ def test_management_sources_are_allowlisted_and_minimize_runtime_records() -> No
 
 @pytest.mark.parametrize(
     ("status_code", "expected"),
-    [
-        (401, OmniRouteTransportUnauthorized),
-        (403, OmniRouteTransportUnauthorized),
-    ],
+    [(401, OmniRouteTransportUnauthorized), (403, OmniRouteTransportUnauthorized)],
 )
 def test_http_transport_unauthorized_body_is_typed_and_redacted(
     status_code: int, expected: type[Exception]
 ) -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            status_code,
-            json={"error": "Authorization: Bearer upstream-secret token=secret-value"},
+            status_code, json={"error": "Authorization: Bearer upstream-secret token=secret-value"}
         )
 
     transport = OmniRouteHTTPTransport(
@@ -276,19 +256,9 @@ def test_http_transport_timeout_and_oversized_payload_are_typed() -> None:
         {"base_url": "file:///tmp/router"},
         {"base_url": "https://user:secret@example.test"},
         {"base_url": "http://127.0.0.1:20128"},
-        {
-            "base_url": "http://localhost:20128",
-            "allow_private_hosts": {"localhost"},
-        },
-        {
-            "base_url": "https://example.test/admin",
-            "allow_private_hosts": {"example.test"},
-        },
-        {
-            "base_url": "https://example.test",
-            "timeout": 0,
-            "allow_private_hosts": {"example.test"},
-        },
+        {"base_url": "http://localhost:20128", "allow_private_hosts": {"localhost"}},
+        {"base_url": "https://example.test/admin", "allow_private_hosts": {"example.test"}},
+        {"base_url": "https://example.test", "timeout": 0, "allow_private_hosts": {"example.test"}},
         {
             "base_url": "https://example.test",
             "timeout": True,
@@ -355,8 +325,7 @@ def test_system_health_does_not_mark_unobserved_models_ready() -> None:
         if request.url.path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": "p/model", "owned_by": "p"}]})
         return httpx.Response(
-            200,
-            json={"status": "healthy", "providerHealth": {}, "timestamp": NOW.isoformat()},
+            200, json={"status": "healthy", "providerHealth": {}, "timestamp": NOW.isoformat()}
         )
 
     report = OmniRouteAvailabilityAdapter(
@@ -384,11 +353,7 @@ def test_budget_without_an_active_limit_remains_unknown() -> None:
                 200,
                 json={
                     "activeLimitUsd": 0,
-                    "budgetCheck": {
-                        "allowed": True,
-                        "remaining": 0,
-                        "activeLimitUsd": 0,
-                    },
+                    "budgetCheck": {"allowed": True, "remaining": 0, "activeLimitUsd": 0},
                 },
             )
         ),
@@ -399,11 +364,7 @@ def test_budget_without_an_active_limit_remains_unknown() -> None:
 
 @pytest.mark.parametrize(
     ("allowed", "expected"),
-    [
-        (False, {"budget_remaining": 0.0, "eligible": False}),
-        ("false", {}),
-        (None, {}),
-    ],
+    [(False, {"budget_remaining": 0.0, "eligible": False}), ("false", {}), (None, {})],
 )
 def test_budget_denial_dominates_and_malformed_allowed_is_ignored(
     allowed: object, expected: dict[str, object]
@@ -417,10 +378,7 @@ def test_budget_denial_dominates_and_malformed_allowed_is_ignored(
         transport=httpx.MockTransport(
             lambda _: httpx.Response(
                 200,
-                json={
-                    "activeLimitUsd": 10,
-                    "budgetCheck": {"allowed": allowed, "remaining": 2.5},
-                },
+                json={"activeLimitUsd": 10, "budgetCheck": {"allowed": allowed, "remaining": 2.5}},
             )
         ),
     )
@@ -439,11 +397,7 @@ def test_alias_catalog_rows_cannot_bypass_canonical_model_lockout() -> None:
                 200,
                 json={
                     "data": [
-                        {
-                            "id": "cc/claude-opus",
-                            "owned_by": "claude-code",
-                            "root": "claude-opus",
-                        },
+                        {"id": "cc/claude-opus", "owned_by": "claude-code", "root": "claude-opus"},
                         {
                             "id": "claude-code/claude-opus",
                             "owned_by": "claude-code",
@@ -464,11 +418,7 @@ def test_alias_catalog_rows_cannot_bypass_canonical_model_lockout() -> None:
             200,
             json={
                 "items": [
-                    {
-                        "provider": "claude-code",
-                        "model": "claude-opus",
-                        "remainingMs": 60_000,
-                    }
+                    {"provider": "claude-code", "model": "claude-opus", "remainingMs": 60_000}
                 ]
             },
         )
@@ -500,9 +450,7 @@ def test_http_transport_rejects_redirects_and_encoded_responses() -> None:
     def compressed_handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["accept-encoding"] == "identity"
         return httpx.Response(
-            200,
-            headers={"content-encoding": "gzip"},
-            content=gzip.compress(b'{"data":[]}'),
+            200, headers={"content-encoding": "gzip"}, content=gzip.compress(b'{"data":[]}')
         )
 
     encoded = OmniRouteHTTPTransport(
@@ -515,11 +463,7 @@ def test_http_transport_rejects_redirects_and_encoded_responses() -> None:
 
 
 @pytest.mark.parametrize(
-    "body",
-    [
-        b"[" * 2_000 + b"0" + b"]" * 2_000,
-        b'{"value":' + b"9" * 5_000 + b"}",
-    ],
+    "body", [b"[" * 2_000 + b"0" + b"]" * 2_000, b'{"value":' + b"9" * 5_000 + b"}"]
 )
 def test_hostile_json_is_a_sanitized_typed_failure(body: bytes) -> None:
     transport = OmniRouteHTTPTransport(
@@ -577,9 +521,7 @@ def test_failure_exception_graph_does_not_retain_credentials_or_body() -> None:
         allow_private_hosts=MOCK_ALLOWLIST,
         transport=httpx.MockTransport(
             lambda _: httpx.Response(
-                200,
-                headers={"content-length": content_length_secret},
-                content=b'{"data":[]}',
+                200, headers={"content-length": content_length_secret}, content=b'{"data":[]}'
             )
         ),
     )

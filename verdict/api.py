@@ -116,13 +116,7 @@ class _EvidenceStreamAdapter:
             return
         self._terminal = True
         self._on_terminal(
-            self._event_factory(
-                event_type,
-                outcome,
-                phase,
-                cleanup_error,
-                error_class,
-            )
+            self._event_factory(event_type, outcome, phase, cleanup_error, error_class)
         )
 
 
@@ -192,8 +186,7 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
         from verdict.probes import openai_probe_transport
 
         probe_transport = openai_probe_transport(
-            probe_base_url,
-            api_key=os.getenv("LLMGATE_PROBE_API_KEY") or api_key,
+            probe_base_url, api_key=os.getenv("LLMGATE_PROBE_API_KEY") or api_key
         )
         enriched: Any = ProbeEnrichedAdapter(adapter, probe_transport=probe_transport, enabled=True)
     else:
@@ -205,11 +198,7 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
     )
     from verdict.eligibility import EligibilityGate
 
-    gate = EligibilityGate(
-        cache.get,
-        protected_fail_closed=True,
-        allow_unverified_in_dev=True,
-    )
+    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
     return cache, gate
 
 
@@ -246,12 +235,7 @@ def _build_intelligence() -> IntelligenceService:
     timeout_ms = int(os.getenv("LLMGATE_INTELLIGENCE_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS)))
     allow_client_model_override = os.getenv(
         "LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE", "false"
-    ).lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    ).lower() in {"1", "true", "yes", "on"}
     frontier_allowlist_raw = os.getenv("LLMGATE_FRONTIER_ALLOWLIST")
     frontier_allowlist = (
         tuple(item.strip() for item in frontier_allowlist_raw.split(",") if item.strip())
@@ -355,9 +339,7 @@ class RouteRequest(BaseModel):
 
 
 async def _route_with_intelligence(
-    task: str,
-    criticality: str,
-    context: dict[str, Any] | None = None,
+    task: str, criticality: str, context: dict[str, Any] | None = None
 ) -> Any:
     if intelligence_instance is None:
         raise HTTPException(status_code=503, detail="Intelligence service not initialized")
@@ -554,8 +536,7 @@ async def route_explain(
 
     if availability_cache_instance is None:
         return _proxy_error(
-            503,
-            "availability cache not configured (set OMNIROUTE_BASE_URL to enable)",
+            503, "availability cache not configured (set OMNIROUTE_BASE_URL to enable)"
         )
     if model_id is None or model_id == "":
         base: dict[str, Any] = {
@@ -616,9 +597,7 @@ async def list_models() -> Response:
     )
     filtered_body = normalize_catalog(result.body, allowlist=allowlist, denylist=denylist)
     return Response(
-        content=filtered_body,
-        status_code=result.status_code,
-        headers=_headers_for_body(result),
+        content=filtered_body, status_code=result.status_code, headers=_headers_for_body(result)
     )
 
 
@@ -661,8 +640,7 @@ async def chat_completions(request: Request) -> Response:
         scope=_evidence_scope(request),
     )
     decision = replace(
-        decision,
-        request_id=route_evidence.routing_decision.request_id or decision.request_id,
+        decision, request_id=route_evidence.routing_decision.request_id or decision.request_id
     )
     if decision.decision == "denied":
         outcome = build_outcome_event(
@@ -718,7 +696,7 @@ async def chat_completions(request: Request) -> Response:
             extra={
                 "decision": _safe_decision_dict(
                     replace(decision, transport_outcome="upstream_error")
-                ),
+                )
             },
             headers=_evidence_headers(evidence),
         )
@@ -751,14 +729,10 @@ async def chat_completions(request: Request) -> Response:
         )
         if result.status_code >= 400:
             return Response(
-                content=result.body,
-                status_code=result.status_code,
-                headers=response_headers,
+                content=result.body, status_code=result.status_code, headers=response_headers
             )
         return Response(
-            content=result.body,
-            status_code=result.status_code,
-            headers=response_headers,
+            content=result.body, status_code=result.status_code, headers=response_headers
         )
     if isinstance(result, StreamedUpstreamResponse):
 
@@ -792,9 +766,7 @@ async def chat_completions(request: Request) -> Response:
             )
 
         evidence_stream = _EvidenceStreamAdapter(
-            result.body,
-            on_terminal=finalize_stream,
-            event_factory=stream_event,
+            result.body, on_terminal=finalize_stream, event_factory=stream_event
         )
 
         return _EvidenceStreamingResponse(

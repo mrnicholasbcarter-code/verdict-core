@@ -155,11 +155,7 @@ class ProbeRunner:
         self.registry = registry or ProbeRegistry()
 
     def run(
-        self,
-        model_ids: Sequence[str],
-        transport: ProbeTransport,
-        *,
-        now: datetime | None = None,
+        self, model_ids: Sequence[str], transport: ProbeTransport, *, now: datetime | None = None
     ) -> list[ProbeObservation]:
         """Probe at most ``max_models_per_run`` unique IDs in input order.
 
@@ -234,12 +230,7 @@ class ProbeRunner:
         return response, (time.monotonic() - started) * 1000
 
     def _skipped(
-        self,
-        model_id: str,
-        observed_at: datetime,
-        now_mono: float,
-        state: _ProbeState,
-        reason: str,
+        self, model_id: str, observed_at: datetime, now_mono: float, state: _ProbeState, reason: str
     ) -> ProbeObservation:
         quarantined = reason == "quarantined"
         until = state.quarantine_until if quarantined else state.next_probe_at
@@ -492,10 +483,7 @@ def _datetime_from_mono(target: float, reference: datetime, current_mono: float)
 
 
 def openai_probe_transport(
-    base_url: str,
-    *,
-    api_key: str | None = None,
-    opener: Any = urllib.request.urlopen,
+    base_url: str, *, api_key: str | None = None, opener: Any = urllib.request.urlopen
 ) -> ProbeTransport:
     """Create a small stdlib OpenAI-compatible transport.
 

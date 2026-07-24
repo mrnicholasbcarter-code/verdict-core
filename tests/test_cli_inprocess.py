@@ -148,9 +148,7 @@ def test_main_dispatches_help_route_stats_detect(
     assert "anthropic/claude-3-opus-20240229" in capsys.readouterr().out
 
     monkeypatch.setattr(
-        cli.sys,
-        "argv",
-        ["verdict", "stats", "--log_path", str(tmp_path / "missing.jsonl")],
+        cli.sys, "argv", ["verdict", "stats", "--log_path", str(tmp_path / "missing.jsonl")]
     )
     cli.main()
     assert "No log file found" in capsys.readouterr().out
@@ -182,9 +180,7 @@ def test_main_dispatches_benchmark_command(
 ) -> None:
     output_path = tmp_path / "benchmark.json"
     monkeypatch.setattr(
-        cli.sys,
-        "argv",
-        ["verdict", "benchmark", "--output-json", str(output_path)],
+        cli.sys, "argv", ["verdict", "benchmark", "--output-json", str(output_path)]
     )
 
     cli.main()
@@ -286,13 +282,7 @@ def test_cmd_doctor_all_healthy(
     # Mock omniroute API helper - healthy, no duplicates
     def mock_api_request(method, path, body=None):
         if method == "GET" and path == "/api/provider-nodes":
-            return [
-                {
-                    "id": "node1",
-                    "name": "Ollama",
-                    "baseUrl": "http://127.0.0.1:11434/v1",
-                }
-            ]
+            return [{"id": "node1", "name": "Ollama", "baseUrl": "http://127.0.0.1:11434/v1"}]
         return None
 
     monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
@@ -338,16 +328,8 @@ def test_cmd_doctor_issues_and_duplicates(
     def mock_api_request(method, path, body=None):
         if method == "GET" and path == "/api/provider-nodes":
             return [
-                {
-                    "id": "node1",
-                    "name": "Ollama1",
-                    "baseUrl": "http://127.0.0.1:11434/v1",
-                },
-                {
-                    "id": "node2",
-                    "name": "Ollama2",
-                    "baseUrl": "http://127.0.0.1:11434/v1",
-                },
+                {"id": "node1", "name": "Ollama1", "baseUrl": "http://127.0.0.1:11434/v1"},
+                {"id": "node2", "name": "Ollama2", "baseUrl": "http://127.0.0.1:11434/v1"},
             ]
         elif method == "DELETE" and path.startswith("/api/provider-nodes/"):
             deleted_nodes.append(path.split("/")[-1])

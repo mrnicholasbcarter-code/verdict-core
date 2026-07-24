@@ -69,6 +69,11 @@ per-file-ignores = { "tests/*" = ["S101"] }
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+skip-magic-trailing-comma = true
+exclude = [
+    "docs/**/*.md",
+    "exports/*.md",
+]
 
 [tool.mypy]
 python_version = "3.10"

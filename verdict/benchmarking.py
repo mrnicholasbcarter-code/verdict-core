@@ -140,11 +140,7 @@ def _gate_case(fixture: dict[str, Any]) -> BenchmarkCase:
 
 
 def _build_local_cases(fixture: dict[str, Any]) -> tuple[BenchmarkCase, ...]:
-    return (
-        _contract_roundtrip_case(fixture),
-        _dispatcher_case(fixture),
-        _gate_case(fixture),
-    )
+    return (_contract_roundtrip_case(fixture), _dispatcher_case(fixture), _gate_case(fixture))
 
 
 def _run_case(case: BenchmarkCase) -> dict[str, Any]:

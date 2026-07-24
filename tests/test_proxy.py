@@ -176,9 +176,7 @@ def test_proxy_preserves_unknown_request_fields_and_uses_server_auth(monkeypatch
 
     with TestClient(api.app) as client:
         response = client.post(
-            "/v1/chat/completions",
-            json=payload,
-            headers={"authorization": "Bearer client-secret"},
+            "/v1/chat/completions", json=payload, headers={"authorization": "Bearer client-secret"}
         )
 
     assert response.status_code == 200
@@ -194,12 +192,7 @@ def test_buffered_response_exposes_correlated_redacted_evidence(monkeypatch) -> 
     transport = RecordingTransport()
     _configure_test_app(monkeypatch, transport)
     payload = {
-        "messages": [
-            {
-                "role": "user",
-                "content": "preserve all fields api_key=sk-never-returned",
-            }
-        ],
+        "messages": [{"role": "user", "content": "preserve all fields api_key=sk-never-returned"}],
         "stream": False,
         "response_format": {"type": "json_object"},
         "correlation_id": "workflow-proxy-1",
@@ -208,9 +201,7 @@ def test_buffered_response_exposes_correlated_redacted_evidence(monkeypatch) -> 
     with TestClient(api.app) as client:
         monkeypatch.setattr(api, "_task_text", lambda payload: "preserve all fields")
         response = client.post("/v1/chat/completions", json=payload)
-        explain = client.get(
-            "/v1/route/explain?request_id=request-1",
-        )
+        explain = client.get("/v1/route/explain?request_id=request-1")
 
     assert response.status_code == 200
     assert response.headers["x-verdict-correlation-id"] == "workflow-proxy-1"
@@ -564,11 +555,7 @@ async def test_streaming_response_closes_unconsumed_body_after_disconnect() -> N
             raise OSError("client disconnected")
 
     with pytest.raises(ClientDisconnect):
-        await response(
-            {"type": "http", "asgi": {"spec_version": "2.4"}},
-            lambda: None,
-            send,
-        )
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, lambda: None, send)
 
     assert upstream.close_count == 1
     assert events[0]["event_type"] == "chat_completion_stream_aborted"

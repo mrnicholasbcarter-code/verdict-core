@@ -80,9 +80,7 @@ class TestVerificationResult:
 
     def test_pass_result(self):
         result = VerificationResult(
-            check_name="test-check",
-            outcome=VerificationOutcome.PASS,
-            message="All good",
+            check_name="test-check", outcome=VerificationOutcome.PASS, message="All good"
         )
         assert result.outcome == VerificationOutcome.PASS
         assert result.classification is None
@@ -106,10 +104,7 @@ class TestVerificationGateContext:
     """Tests for VerificationGateContext."""
 
     def test_default_context(self):
-        context = VerificationGateContext(
-            task_id="task-1",
-            attempt_id="attempt-1",
-        )
+        context = VerificationGateContext(task_id="task-1", attempt_id="attempt-1")
         assert context.task_id == "task-1"
         assert context.attempt_id == "attempt-1"
         assert context.max_replans == 3
@@ -188,9 +183,7 @@ class TestRunVerificationGates:
         context = VerificationGateContext(
             task_id="task-1",
             attempt_id="attempt-1",
-            verification_gates=[
-                VerificationGate(name="no-command-gate"),
-            ],
+            verification_gates=[VerificationGate(name="no-command-gate")],
         )
         all_passed, results = run_verification_gates(context)
 
@@ -204,7 +197,7 @@ class TestRunVerificationGates:
             task_id="task-1",
             attempt_id="attempt-1",
             verification_gates=[
-                VerificationGate(name="evidence-gate", command="sleep 0.01 && echo test output"),
+                VerificationGate(name="evidence-gate", command="sleep 0.01 && echo test output")
             ],
         )
         all_passed, results = run_verification_gates(context)
@@ -258,11 +251,7 @@ class TestProposeReplan:
         )
 
         new_plan = {"steps": ["step1", "step2", "step3"]}
-        record = propose_replan(
-            context,
-            ReplanReason.VERIFICATION_FAILED,
-            new_plan,
-        )
+        record = propose_replan(context, ReplanReason.VERIFICATION_FAILED, new_plan)
 
         assert record.attempt == 1
         assert record.reason == ReplanReason.VERIFICATION_FAILED
@@ -275,10 +264,7 @@ class TestProposeReplan:
 
     def test_replan_budget_increase_rejected(self):
         context = VerificationGateContext(
-            task_id="task-1",
-            attempt_id="attempt-1",
-            budget_usd=100.0,
-            current_plan_hash="abc123",
+            task_id="task-1", attempt_id="attempt-1", budget_usd=100.0, current_plan_hash="abc123"
         )
 
         new_plan = {"steps": ["step1"]}
@@ -292,10 +278,7 @@ class TestProposeReplan:
 
     def test_replan_concurrency_increase_rejected(self):
         context = VerificationGateContext(
-            task_id="task-1",
-            attempt_id="attempt-1",
-            max_concurrency=5,
-            current_plan_hash="abc123",
+            task_id="task-1", attempt_id="attempt-1", max_concurrency=5, current_plan_hash="abc123"
         )
 
         new_plan = {"steps": ["step1"]}
@@ -326,10 +309,7 @@ class TestProposeReplan:
 
     def test_replan_risk_floor_decrease_rejected(self):
         context = VerificationGateContext(
-            task_id="task-1",
-            attempt_id="attempt-1",
-            risk_floor=0.5,
-            current_plan_hash="abc123",
+            task_id="task-1", attempt_id="attempt-1", risk_floor=0.5, current_plan_hash="abc123"
         )
 
         new_plan = {"steps": ["step1"]}
@@ -347,9 +327,7 @@ class TestApproveReplan:
 
     def test_approve_replan(self):
         record = ReplanRecord(
-            replan_id="replan-1",
-            attempt=1,
-            reason=ReplanReason.VERIFICATION_FAILED,
+            replan_id="replan-1", attempt=1, reason=ReplanReason.VERIFICATION_FAILED
         )
         assert record.approved is False
 
@@ -365,11 +343,13 @@ class TestCompletionEvidence:
     def test_evidence_bundle(self):
         results = [
             VerificationResult(check_name="gate1", outcome=VerificationOutcome.PASS),
-            VerificationResult(check_name="gate2", outcome=VerificationOutcome.FAIL, classification=FailureClassification.TEST),
+            VerificationResult(
+                check_name="gate2",
+                outcome=VerificationOutcome.FAIL,
+                classification=FailureClassification.TEST,
+            ),
         ]
-        replans = [
-            ReplanRecord(replan_id="r1", attempt=1, reason=ReplanReason.VERIFICATION_FAILED),
-        ]
+        replans = [ReplanRecord(replan_id="r1", attempt=1, reason=ReplanReason.VERIFICATION_FAILED)]
 
         evidence = completion_evidence(
             task_id="task-1",

@@ -1,0 +1,59 @@
+{
+  "adapter_version": "0.1.0",
+  "commit": "abc123def456",
+  "completed_at": "2026-07-24T01:29:10.262691+00:00",
+  "duration_ms": 1,
+  "error": null,
+  "generated_at": "2026-07-24T01:29:10.262703+00:00",
+  "policy_version": "1.0",
+  "replan_attempts": 0,
+  "scenario": "approval_required",
+  "schema_version": "1.0",
+  "started_at": "2026-07-24T01:29:10.261610+00:00",
+  "status": "completed",
+  "steps_completed": [
+    "init",
+    "plan",
+    "request_approval",
+    "approval_granted",
+    "execute",
+    "verify"
+  ],
+  "steps_failed": [],
+  "verification_results": [
+    {
+      "check": "init",
+      "message": "Task initialized",
+      "outcome": "pass"
+    },
+    {
+      "check": "plan",
+      "message": "Plan touches protected path",
+      "outcome": "pass"
+    },
+    {
+      "approval_granted": true,
+      "check": "request_approval",
+      "message": "Approval requested",
+      "outcome": "pass",
+      "requires_approval": true
+    },
+    {
+      "approval_granted": true,
+      "check": "approval_granted",
+      "message": "Approval granted by admin",
+      "outcome": "pass",
+      "requires_approval": true
+    },
+    {
+      "check": "execute",
+      "message": "Protected action executed",
+      "outcome": "pass"
+    },
+    {
+      "check": "verify",
+      "message": "All gates passed",
+      "outcome": "pass"
+    }
+  ]
+}

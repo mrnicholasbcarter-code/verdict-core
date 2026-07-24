@@ -1,0 +1,43 @@
+{
+  "adapter_version": "0.1.0",
+  "commit": "abc123def456",
+  "completed_at": "2026-07-24T01:20:10.219030+00:00",
+  "duration_ms": 1,
+  "error": null,
+  "generated_at": "2026-07-24T01:20:10.219043+00:00",
+  "policy_version": "1.0",
+  "replan_attempts": 0,
+  "scenario": "cancellation",
+  "schema_version": "1.0",
+  "started_at": "2026-07-24T01:20:10.217945+00:00",
+  "status": "cancelled",
+  "steps_completed": [
+    "init",
+    "execute_step1",
+    "cancel",
+    "cleanup"
+  ],
+  "steps_failed": [],
+  "verification_results": [
+    {
+      "check": "init",
+      "message": "Task initialized",
+      "outcome": "pass"
+    },
+    {
+      "check": "execute_step1",
+      "message": "Step 1 started",
+      "outcome": "pass"
+    },
+    {
+      "check": "cancel",
+      "message": "Cancellation requested",
+      "outcome": "cancelled"
+    },
+    {
+      "check": "cleanup",
+      "message": "Cleanup completed",
+      "outcome": "pass"
+    }
+  ]
+}

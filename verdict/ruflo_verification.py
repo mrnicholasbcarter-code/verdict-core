@@ -22,6 +22,7 @@ from typing import Any
 
 class VerificationOutcome(enum.Enum):
     """Possible outcomes of a verification check."""
+
     PASS = "pass"
     FAIL = "fail"
     BLOCKED = "blocked"
@@ -30,17 +31,19 @@ class VerificationOutcome(enum.Enum):
 
 class FailureClassification(enum.Enum):
     """Classification of verification failures."""
-    PROVIDER = "provider"        # Provider API error, rate limit, unavailable
-    QUOTA = "quota"              # Budget/token quota exceeded
-    TOOL = "tool"                # Tool execution failed (missing, crashed, timeout)
-    PERMISSION = "permission"    # Permission denied, auth failure
-    TEST = "test"                # Test suite failure
-    PLAN = "plan"                # Plan invalid, missing steps, circular deps
-    UNKNOWN = "unknown"          # Unclassified failure
+
+    PROVIDER = "provider"  # Provider API error, rate limit, unavailable
+    QUOTA = "quota"  # Budget/token quota exceeded
+    TOOL = "tool"  # Tool execution failed (missing, crashed, timeout)
+    PERMISSION = "permission"  # Permission denied, auth failure
+    TEST = "test"  # Test suite failure
+    PLAN = "plan"  # Plan invalid, missing steps, circular deps
+    UNKNOWN = "unknown"  # Unclassified failure
 
 
 class ReplanReason(enum.Enum):
     """Reason for a replan attempt."""
+
     VERIFICATION_FAILED = "verification_failed"
     QUOTA_EXCEEDED = "quota_exceeded"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
@@ -53,6 +56,7 @@ class ReplanReason(enum.Enum):
 @dataclass(frozen=True)
 class VerificationEvidence:
     """Evidence reference for a verification check."""
+
     check_name: str
     command: str
     exit_code: int
@@ -66,6 +70,7 @@ class VerificationEvidence:
 @dataclass(frozen=True)
 class VerificationResult:
     """Result of a single verification check."""
+
     check_name: str
     outcome: VerificationOutcome
     classification: FailureClassification | None = None
@@ -78,6 +83,7 @@ class VerificationResult:
 @dataclass(frozen=True)
 class VerificationGate:
     """Configuration for a verification gate."""
+
     name: str
     required: bool = True
     command: str = ""
@@ -90,7 +96,10 @@ class VerificationGate:
 @dataclass
 class ReplanRecord:
     """Record of a replan attempt."""
-    replan_id: str = field(default_factory=lambda: hashlib.sha256(str(time.time()).encode()).hexdigest()[:16])
+
+    replan_id: str = field(
+        default_factory=lambda: hashlib.sha256(str(time.time()).encode()).hexdigest()[:16]
+    )
     attempt: int = 0
     reason: ReplanReason = ReplanReason.VERIFICATION_FAILED
     original_plan_hash: str = ""
@@ -107,6 +116,7 @@ class ReplanRecord:
 @dataclass
 class VerificationGateContext:
     """Context for running verification gates."""
+
     task_id: str
     attempt_id: str
     verification_gates: list[VerificationGate] = field(default_factory=list)
@@ -120,7 +130,9 @@ class VerificationGateContext:
     redacted_evidence: dict[str, str] = field(default_factory=dict)  # ref -> redacted content
 
 
-def run_verification_gates(context: VerificationGateContext) -> tuple[bool, list[VerificationResult]]:
+def run_verification_gates(
+    context: VerificationGateContext,
+) -> tuple[bool, list[VerificationResult]]:
     """
     Run all verification gates for a task.
 
@@ -147,7 +159,7 @@ def run_verification_gates(context: VerificationGateContext) -> tuple[bool, list
 
         start = time.time()
         try:
-            proc = subprocess.run(
+            proc = subprocess.run(  # nosec B602
                 gate.command,
                 shell=True,
                 capture_output=True,
@@ -160,7 +172,9 @@ def run_verification_gates(context: VerificationGateContext) -> tuple[bool, list
         except subprocess.TimeoutExpired as e:
             exit_code = -1
             stdout = e.stdout.decode() if e.stdout else ""
-            stderr = f"Timeout after {gate.timeout_seconds}s: {e.stderr.decode() if e.stderr else ''}"
+            stderr = (
+                f"Timeout after {gate.timeout_seconds}s: {e.stderr.decode() if e.stderr else ''}"
+            )
         except Exception as e:
             exit_code = -1
             stdout = ""
@@ -181,22 +195,36 @@ def run_verification_gates(context: VerificationGateContext) -> tuple[bool, list
             stderr_lower = stderr.lower()
             if any(kw in stderr_lower for kw in ["rate limit", "quota", "budget", "token limit"]):
                 classification = FailureClassification.QUOTA
-            elif any(kw in stderr_lower for kw in ["unauthorized", "permission denied", "forbidden", "auth"]):
+            elif any(
+                kw in stderr_lower
+                for kw in ["unauthorized", "permission denied", "forbidden", "auth"]
+            ):
                 classification = FailureClassification.PERMISSION
-            elif any(kw in stderr_lower for kw in ["tool not found", "command not found", "timeout", "crash"]):
+            elif any(
+                kw in stderr_lower
+                for kw in ["tool not found", "command not found", "timeout", "crash"]
+            ):
                 classification = FailureClassification.TOOL
             elif any(kw in stderr_lower for kw in ["test failed", "assertion", "pytest", "jest"]):
                 classification = FailureClassification.TEST
-            elif any(kw in stderr_lower for kw in ["plan", "circular", "dependency", "missing step"]):
+            elif any(
+                kw in stderr_lower for kw in ["plan", "circular", "dependency", "missing step"]
+            ):
                 classification = FailureClassification.PLAN
             else:
-                classification = FailureClassification.PROVIDER if "api" in stderr_lower else FailureClassification.UNKNOWN
+                classification = (
+                    FailureClassification.PROVIDER
+                    if "api" in stderr_lower
+                    else FailureClassification.UNKNOWN
+                )
 
         # Create evidence reference
         evidence_content = f"exit_code={exit_code}\nstdout={stdout}\nstderr={stderr}"
         evidence_hash = hashlib.sha256(evidence_content.encode()).hexdigest()[:16]
         evidence_ref = f"evidence:{evidence_hash}"
-        context.redacted_evidence[evidence_ref] = f"[REDACTED] exit_code={exit_code} duration={duration_ms}ms"
+        context.redacted_evidence[evidence_ref] = (
+            f"[REDACTED] exit_code={exit_code} duration={duration_ms}ms"
+        )
 
         evidence = VerificationEvidence(
             check_name=gate.name,
@@ -213,8 +241,11 @@ def run_verification_gates(context: VerificationGateContext) -> tuple[bool, list
             classification=classification,
             message=stderr[:500] if outcome != VerificationOutcome.PASS else "Passed",
             evidence=evidence,
-            requires_approval=gate.requires_approval_on_fail and outcome == VerificationOutcome.FAIL,
-            approval_reason=gate.approval_reason if gate.requires_approval_on_fail and outcome == VerificationOutcome.FAIL else "",
+            requires_approval=gate.requires_approval_on_fail
+            and outcome == VerificationOutcome.FAIL,
+            approval_reason=gate.approval_reason
+            if gate.requires_approval_on_fail and outcome == VerificationOutcome.FAIL
+            else "",
         )
         results.append(result)
 
@@ -268,11 +299,15 @@ def propose_replan(
     # Validate bounds
     if budget_usd is not None and budget_usd > context.budget_usd:
         record.budget_delta_usd = budget_usd - context.budget_usd
-        raise ValueError(f"Replan would increase budget from ${context.budget_usd:.2f} to ${budget_usd:.2f}")
+        raise ValueError(
+            f"Replan would increase budget from ${context.budget_usd:.2f} to ${budget_usd:.2f}"
+        )
 
     if max_concurrency is not None and max_concurrency > context.max_concurrency:
         record.concurrency_delta = max_concurrency - context.max_concurrency
-        raise ValueError(f"Replan would increase concurrency from {context.max_concurrency} to {max_concurrency}")
+        raise ValueError(
+            f"Replan would increase concurrency from {context.max_concurrency} to {max_concurrency}"
+        )
 
     if required_permissions is not None:
         new_perms = required_permissions - context.required_permissions
@@ -282,7 +317,9 @@ def propose_replan(
 
     if risk_floor is not None and risk_floor < context.risk_floor:
         record.risk_floor_delta = risk_floor - context.risk_floor
-        raise ValueError(f"Replan would decrease risk floor from {context.risk_floor} to {risk_floor}")
+        raise ValueError(
+            f"Replan would decrease risk floor from {context.risk_floor} to {risk_floor}"
+        )
 
     return record
 
@@ -334,7 +371,9 @@ def completion_evidence(
             }
             for r in replan_records
         ],
-        "verification_gates_passed": all(r.outcome == VerificationOutcome.PASS for r in verification_results),
+        "verification_gates_passed": all(
+            r.outcome == VerificationOutcome.PASS for r in verification_results
+        ),
         "replans_used": len(replan_records),
     }
 

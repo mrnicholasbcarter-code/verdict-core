@@ -15,10 +15,7 @@ def _model_set(value: str | None) -> frozenset[str]:
 
 
 def normalize_catalog(
-    body: bytes,
-    *,
-    allowlist: frozenset[str] = frozenset(),
-    denylist: frozenset[str] = frozenset(),
+    body: bytes, *, allowlist: frozenset[str] = frozenset(), denylist: frozenset[str] = frozenset()
 ) -> bytes:
     """Return a filtered catalog with conservative availability metadata.
 

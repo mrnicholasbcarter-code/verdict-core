@@ -82,9 +82,7 @@ def test_contradictory_and_malformed_observations_are_unknown_or_malformed():
 
 def test_missing_observation_time_never_becomes_ready() -> None:
     state = normalize_observation(
-        MODEL,
-        RuntimeObservation(source="fixture", health="healthy", eligible=True),
-        now=NOW,
+        MODEL, RuntimeObservation(source="fixture", health="healthy", eligible=True), now=NOW
     )
 
     assert state.state is AvailabilityState.UNKNOWN
@@ -111,8 +109,7 @@ def test_missing_observation_time_never_becomes_ready() -> None:
 def test_malformed_runtime_scalars_fail_closed_without_raising(runtime) -> None:
     report = OmniRouteAvailabilityAdapter(
         StaticOmniRouteTransport(
-            {"data": [{"id": "p/model", "provider": "p"}]},
-            {"p/model": runtime},
+            {"data": [{"id": "p/model", "provider": "p"}]}, {"p/model": runtime}
         )
     ).evaluate(now=NOW)
 
@@ -152,11 +149,7 @@ def test_catalog_uses_openai_owned_by_and_context_length_fields():
     models = normalize_catalog(
         {
             "data": [
-                {
-                    "id": "bare-model-id",
-                    "owned_by": "omniroute-provider",
-                    "context_length": 131_072,
-                }
+                {"id": "bare-model-id", "owned_by": "omniroute-provider", "context_length": 131_072}
             ]
         }
     )
@@ -250,12 +243,7 @@ def test_stale_runtime_is_hard_filtered_but_explicit_unknown_policy_is_opt_in():
 def test_degraded_candidate_marked_ineligible_is_never_selectable() -> None:
     state = normalize_observation(
         MODEL,
-        RuntimeObservation(
-            observed_at=NOW,
-            source="fixture",
-            health="degraded",
-            eligible=False,
-        ),
+        RuntimeObservation(observed_at=NOW, source="fixture", health="degraded", eligible=False),
         now=NOW,
     )
 
@@ -332,15 +320,7 @@ def test_contradictory_quota_and_headroom_uses_conservative_minimum() -> None:
     assert state.state is AvailabilityState.QUOTA_EXHAUSTED
 
 
-@pytest.mark.parametrize(
-    ("quota", "headroom"),
-    [
-        (101, 50),
-        (50, 101),
-        (-1, 50),
-        (50, -1),
-    ],
-)
+@pytest.mark.parametrize(("quota", "headroom"), [(101, 50), (50, 101), (-1, 50), (50, -1)])
 def test_each_quota_and_headroom_signal_must_be_in_range(quota, headroom) -> None:
     state = normalize_observation(
         MODEL,
@@ -362,11 +342,7 @@ def test_each_quota_and_headroom_signal_must_be_in_range(quota, headroom) -> Non
     [
         (
             RuntimeObservation(
-                observed_at=NOW,
-                source="fixture",
-                health="healthy",
-                cost=2,
-                budget_remaining=1,
+                observed_at=NOW, source="fixture", health="healthy", cost=2, budget_remaining=1
             ),
             "budget headroom exceeded",
         ),
@@ -432,15 +408,7 @@ def test_planner_and_catalog_share_canonical_tool_capability() -> None:
     requirements = planner.availability_requirements(task)
     report = OmniRouteAvailabilityAdapter(
         StaticOmniRouteTransport(
-            {
-                "data": [
-                    {
-                        "id": "p/model",
-                        "provider": "p",
-                        "capabilities": ["tool-calling"],
-                    }
-                ]
-            },
+            {"data": [{"id": "p/model", "provider": "p", "capabilities": ["tool-calling"]}]},
             {
                 "p/model": {
                     "observed_at": NOW.isoformat(),
@@ -499,21 +467,9 @@ def test_estimated_cost_cannot_mask_a_higher_runtime_cost() -> None:
     report = OmniRouteAvailabilityAdapter(
         StaticOmniRouteTransport(
             {"data": [{"id": "p/model", "provider": "p"}]},
-            {
-                "p/model": {
-                    "observed_at": NOW.isoformat(),
-                    "health": "healthy",
-                    "cost": 2.0,
-                }
-            },
+            {"p/model": {"observed_at": NOW.isoformat(), "health": "healthy", "cost": 2.0}},
         )
-    ).evaluate(
-        CandidateRequirements(
-            budget_remaining=1.0,
-            estimated_cost=0.5,
-        ),
-        now=NOW,
-    )
+    ).evaluate(CandidateRequirements(budget_remaining=1.0, estimated_cost=0.5), now=NOW)
 
     assert report.eligible == ()
     assert report.candidates[0].state is AvailabilityState.POLICY_DENIED
@@ -530,8 +486,7 @@ def test_missing_estimated_request_headroom_requires_degraded_opt_in() -> None:
 
     default = adapter.evaluate(CandidateRequirements(estimated_tokens=100), now=NOW)
     opted_in = adapter.evaluate(
-        CandidateRequirements(estimated_tokens=100, allow_degraded=True),
-        now=NOW,
+        CandidateRequirements(estimated_tokens=100, allow_degraded=True), now=NOW
     )
 
     assert default.candidates[0].state is AvailabilityState.DEGRADED
@@ -575,10 +530,7 @@ def test_invalid_runtime_token_headroom_is_malformed(token_headroom) -> None:
     state = normalize_observation(
         MODEL,
         RuntimeObservation(
-            observed_at=NOW,
-            source="fixture",
-            health="healthy",
-            token_headroom=token_headroom,
+            observed_at=NOW, source="fixture", health="healthy", token_headroom=token_headroom
         ),
         now=NOW,
     )
@@ -590,23 +542,10 @@ def test_invalid_runtime_token_headroom_is_malformed(token_headroom) -> None:
     "observation",
     [
         RuntimeObservation(
-            observed_at=NOW,
-            source="fixture",
-            health="healthy",
-            budget_remaining=-1,
+            observed_at=NOW, source="fixture", health="healthy", budget_remaining=-1
         ),
-        RuntimeObservation(
-            observed_at=NOW,
-            source="fixture",
-            health="healthy",
-            cost=-1,
-        ),
-        RuntimeObservation(
-            observed_at=NOW,
-            source="fixture",
-            health="healthy",
-            cost=10**400,
-        ),
+        RuntimeObservation(observed_at=NOW, source="fixture", health="healthy", cost=-1),
+        RuntimeObservation(observed_at=NOW, source="fixture", health="healthy", cost=10**400),
     ],
 )
 def test_negative_runtime_capacity_evidence_is_malformed(observation) -> None:
@@ -619,11 +558,7 @@ def test_direct_observation_is_case_normalized_and_malformed_raw_is_isolated() -
     normalized = normalize_observation(
         MODEL,
         RuntimeObservation(
-            observed_at=NOW,
-            source="fixture",
-            health="Healthy",
-            auth="Authorized",
-            circuit="Closed",
+            observed_at=NOW, source="fixture", health="Healthy", auth="Authorized", circuit="Closed"
         ),
         now=NOW,
     )
@@ -660,10 +595,7 @@ def test_direct_malformed_error_and_probe_metadata_fail_closed() -> None:
             source="verdict:probe",
             health="healthy",
             eligible=True,
-            raw={
-                "probe_status": "not-a-real-status",
-                "probe_availability_state": "ready",
-            },
+            raw={"probe_status": "not-a-real-status", "probe_availability_state": "ready"},
         ),
         now=NOW,
     )
@@ -680,10 +612,7 @@ def test_unhashable_probe_metadata_is_failure_isolated() -> None:
             source="verdict:probe",
             health="healthy",
             eligible=True,
-            raw={
-                "probe_status": "ready",
-                "probe_availability_state": [],
-            },
+            raw={"probe_status": "ready", "probe_availability_state": []},
         ),
         now=NOW,
     )
@@ -700,11 +629,7 @@ def test_unhashable_probe_metadata_is_failure_isolated() -> None:
             "usage_available": False,
             "http_status": 200,
         },
-        {
-            "probe_status": "ready",
-            "probe_availability_state": "ready",
-            "usage_available": True,
-        },
+        {"probe_status": "ready", "probe_availability_state": "ready", "usage_available": True},
         {
             "probe_status": "ready",
             "probe_availability_state": "ready",
@@ -769,12 +694,7 @@ def test_contradictory_ready_probe_metadata_is_malformed(raw) -> None:
 def test_contradictory_degraded_probe_metadata_is_malformed(raw) -> None:
     state = normalize_observation(
         MODEL,
-        RuntimeObservation(
-            observed_at=NOW,
-            source="verdict:probe",
-            health="degraded",
-            raw=raw,
-        ),
+        RuntimeObservation(observed_at=NOW, source="verdict:probe", health="degraded", raw=raw),
         now=NOW,
     )
 
@@ -861,11 +781,7 @@ def test_untrusted_runtime_error_fields_never_leak(observation) -> None:
     [
         (
             RuntimeObservation(
-                observed_at=NOW,
-                source="fixture",
-                health="unavailable",
-                cost=2,
-                budget_remaining=1,
+                observed_at=NOW, source="fixture", health="unavailable", cost=2, budget_remaining=1
             ),
             AvailabilityState.UNAVAILABLE,
         ),

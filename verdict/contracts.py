@@ -219,6 +219,8 @@ class RuntimeCandidate(Contract):
     provider: str | None = None
     model: str | None = None
     model_version: str | None = None
+    context_window: int | None = None
+    max_output_tokens: int | None = None
     schema_version: str = "1"
 
     @classmethod
@@ -244,6 +246,8 @@ class RuntimeCandidate(Contract):
             "provider": provider,
             "model": model,
             "model_version": legacy.pop("model_version", None),
+            "context_window": legacy.pop("context_window", None),
+            "max_output_tokens": legacy.pop("max_output_tokens", None),
         }
         if legacy:
             mapped["signals"] = {**dict(signals), "legacy": legacy}
@@ -676,8 +680,7 @@ class TaskWorkflowOutcomeEpisode(Contract):
         task_episode = TaskEpisode.from_task_spec(task_spec)
         workflow_episode = WorkflowEpisode.from_workflow_plan(workflow_plan)
         outcome_episode = OutcomeEpisode.from_outcome_event(
-            outcome_event,
-            routing_decision=routing_decision,
+            outcome_event, routing_decision=routing_decision
         )
         route = (
             routing_decision

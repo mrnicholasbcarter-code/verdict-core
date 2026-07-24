@@ -7,6 +7,7 @@ These tests prove the AC:
 - Bounded fan-out and backpressure
 - Integration with existing dispatcher
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -20,9 +21,7 @@ from verdict.swarm_contracts import (
     TerminationReason,
     build_swarm_task_envelope,
 )
-from verdict.swarm_dispatcher import (
-    dispatch_swarm_task,
-)
+from verdict.swarm_dispatcher import dispatch_swarm_task
 
 
 class TestSwarmDispatcherIntegration:
@@ -40,7 +39,9 @@ class TestSwarmDispatcherIntegration:
             capabilities=list(kwargs.pop("capabilities", [])),
         )
 
-    def _snapshot(self, *candidates: RuntimeCandidate, state: str = "ready", ttl_seconds: int = 60) -> AvailabilitySnapshot:
+    def _snapshot(
+        self, *candidates: RuntimeCandidate, state: str = "ready", ttl_seconds: int = 60
+    ) -> AvailabilitySnapshot:
         return AvailabilitySnapshot(
             observed_at=self.NOW.isoformat(),
             state=state,
@@ -118,9 +119,13 @@ class TestSwarmDispatcherIntegration:
         )
 
         # Has required + optional
-        full = self._candidate("full-stack", cost=0.1, capabilities=["coding", "testing", "documentation"])
+        full = self._candidate(
+            "full-stack", cost=0.1, capabilities=["coding", "testing", "documentation"]
+        )
         # Has required only
-        required_only = self._candidate("coder-tester", cost=0.08, capabilities=["coding", "testing"])
+        required_only = self._candidate(
+            "coder-tester", cost=0.08, capabilities=["coding", "testing"]
+        )
         # Missing required
         missing_req = self._candidate("doc-only", cost=0.02, capabilities=["documentation"])
 
@@ -133,10 +138,7 @@ class TestSwarmDispatcherIntegration:
 
     def test_bounded_fan_out_max_parallelism(self):
         """Fan-out respects max_parallelism from envelope."""
-        envelope = build_swarm_task_envelope(
-            objective="Parallel task",
-            max_parallelism=2,
-        )
+        envelope = build_swarm_task_envelope(objective="Parallel task", max_parallelism=2)
 
         # Many eligible candidates
         candidates = [self._candidate(f"worker-{i}", cost=0.05) for i in range(5)]
@@ -169,9 +171,7 @@ class TestSwarmTaskLifecycle:
 
     def test_attempt_creation_and_completion(self):
         """Task attempt lifecycle: created -> running -> completed."""
-        from verdict.swarm_contracts import (
-            create_task_attempt,
-        )
+        from verdict.swarm_contracts import create_task_attempt
 
         attempt = create_task_attempt("task-123")
         assert attempt.task_id == "task-123"

@@ -45,8 +45,7 @@ DEFAULT_PATTERNS: list[EscalationPattern] = [
 
 
 def scan(
-    task: str,
-    patterns: Sequence[EscalationPattern] | None = None,
+    task: str, patterns: Sequence[EscalationPattern] | None = None
 ) -> tuple[int | None, str | None]:
     """Scan task text for escalation patterns.
 

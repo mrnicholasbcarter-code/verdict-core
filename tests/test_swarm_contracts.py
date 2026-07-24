@@ -69,34 +69,27 @@ class TestSwarmTaskEnvelope:
     def test_envelope_rejects_unsafe_path(self):
         """Paths with path traversal are rejected."""
         with pytest.raises(Exception) as exc:
-            SwarmTaskEnvelope(
-                objective="valid task",
-                allowed_paths=["/home/nick/../../etc/passwd"]
-            )
+            SwarmTaskEnvelope(objective="valid task", allowed_paths=["/home/nick/../../etc/passwd"])
         assert "escapes allowed roots" in str(exc.value)
 
     def test_envelope_accepts_valid_rooted_paths(self):
         """Paths within allowed roots are accepted."""
         envelope = SwarmTaskEnvelope(
-            objective="valid task",
-            allowed_paths=["/home/nick/dev/project", "/tmp/work"]
+            objective="valid task", allowed_paths=["/home/nick/dev/project", "/tmp/work"]
         )
         assert len(envelope.allowed_paths) == 2
 
     def test_envelope_rejects_invalid_stop_conditions(self):
         """Unknown stop conditions are rejected."""
         with pytest.raises(Exception) as exc:
-            SwarmTaskEnvelope(
-                objective="valid task",
-                stop_conditions=["invalid_condition"]
-            )
+            SwarmTaskEnvelope(objective="valid task", stop_conditions=["invalid_condition"])
         assert "invalid stop_condition" in str(exc.value)
 
     def test_envelope_accepts_valid_stop_conditions(self):
         """Valid stop conditions are accepted."""
         envelope = SwarmTaskEnvelope(
             objective="valid task",
-            stop_conditions=["objective_achieved", "timeout", "budget_exceeded"]
+            stop_conditions=["objective_achieved", "timeout", "budget_exceeded"],
         )
         assert "objective_achieved" in envelope.stop_conditions
 
@@ -142,9 +135,7 @@ class TestSwarmTaskAttempt:
         """Successful completion marks state correctly."""
         attempt = SwarmTaskAttempt(task_id="task-123")
         completed = attempt.mark_completed(
-            result="success",
-            reason="completed",
-            output_refs=["artifact-1"]
+            result="success", reason="completed", output_refs=["artifact-1"]
         )
         assert completed.state == "completed"
         assert completed.result == "success"
@@ -154,10 +145,7 @@ class TestSwarmTaskAttempt:
     def test_attempt_mark_completed_failure(self):
         """Failed completion marks state correctly."""
         attempt = SwarmTaskAttempt(task_id="task-123")
-        completed = attempt.mark_completed(
-            result="failure",
-            reason="failed",
-        )
+        completed = attempt.mark_completed(result="failure", reason="failed")
         assert completed.state == "failed"
         assert completed.result == "failure"
 
@@ -171,7 +159,7 @@ class TestSwarmTaskEvent:
             task_id="task-123",
             attempt_id="attempt-456",
             event_type="started",
-            payload={"agent": "coder-1"}
+            payload={"agent": "coder-1"},
         )
         assert event.task_id == "task-123"
         assert event.event_type == "started"
@@ -188,7 +176,7 @@ class TestSwarmTaskVerification:
             attempt_id="attempt-456",
             passed=True,
             checks={"lint": True, "tests": True},
-            details={"lint_output": "clean"}
+            details={"lint_output": "clean"},
         )
         assert verification.passed is True
         assert verification.checks["lint"] is True
@@ -200,8 +188,7 @@ class TestFactoryFunctions:
     def test_build_envelope_factory(self):
         """Factory creates valid envelope."""
         envelope = build_swarm_task_envelope(
-            objective="Test task",
-            allowed_paths=["/home/nick/dev/project"],
+            objective="Test task", allowed_paths=["/home/nick/dev/project"]
         )
         assert envelope.objective == "Test task"
         assert envelope.allowed_paths == ["/home/nick/dev/project"]
