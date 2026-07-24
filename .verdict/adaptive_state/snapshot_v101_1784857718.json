@@ -1,7 +1,7 @@
 {
   "manifest": {
-    "version": "v100",
-    "timestamp": 1784842326.117428,
+    "version": "v101",
+    "timestamp": 1784857718.3520925,
     "config_hash": "a7d22bba2ec75804",
     "history_checksum": "4f53cda18c2baa0c",
     "dropped_trajectories": 0,
@@ -18,5 +18,5 @@
     "max_history_size": 1000
   },
   "history": [],
-  "checksum": "e18f5bf8b2c456c927bcb4a12ba800f85227df81bad8ca0e1cf8daecfdf4fdf8"
+  "checksum": "4fed4eac7d98adb22ac7f985d308bfd744811135f535cd18f218afb05b85d04e"
 }
