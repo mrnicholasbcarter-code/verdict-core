@@ -311,6 +311,20 @@
       "null"
      ]
     },
+    "context_window":{
+     "type":[
+      "integer",
+      "null"
+     ],
+     "minimum":0
+    },
+    "max_output_tokens":{
+     "type":[
+      "integer",
+      "null"
+     ],
+     "minimum":0
+    },
     "schema_version":{
      "const":"1"
     }
@@ -333,7 +347,8 @@
      "type":"object"
     },
     "candidates":{
-     "type":"array"
+     "type":"array",
+     "items": {"$ref": "#/$defs/runtime_candidate"}
     },
     "source":{
      "type":"string"
