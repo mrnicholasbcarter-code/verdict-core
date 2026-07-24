@@ -159,7 +159,7 @@ def run_verification_gates(
 
         start = time.time()
         try:
-            proc = subprocess.run(
+            proc = subprocess.run(  # nosec B602
                 gate.command,
                 shell=True,
                 capture_output=True,

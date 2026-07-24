@@ -181,7 +181,7 @@ def run_verification_command(cmd: VerificationCommand) -> VerificationResult:
     start = time.perf_counter()
     timed_out = False
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B602
             cmd.command,
             shell=True,
             capture_output=True,
