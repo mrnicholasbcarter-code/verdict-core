@@ -7,6 +7,7 @@ These tests prove the AC:
 - Bounded fan-out and backpressure
 - Integration with existing dispatcher
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -40,7 +41,9 @@ class TestSwarmDispatcherIntegration:
             capabilities=list(kwargs.pop("capabilities", [])),
         )
 
-    def _snapshot(self, *candidates: RuntimeCandidate, state: str = "ready", ttl_seconds: int = 60) -> AvailabilitySnapshot:
+    def _snapshot(
+        self, *candidates: RuntimeCandidate, state: str = "ready", ttl_seconds: int = 60
+    ) -> AvailabilitySnapshot:
         return AvailabilitySnapshot(
             observed_at=self.NOW.isoformat(),
             state=state,
@@ -118,9 +121,13 @@ class TestSwarmDispatcherIntegration:
         )
 
         # Has required + optional
-        full = self._candidate("full-stack", cost=0.1, capabilities=["coding", "testing", "documentation"])
+        full = self._candidate(
+            "full-stack", cost=0.1, capabilities=["coding", "testing", "documentation"]
+        )
         # Has required only
-        required_only = self._candidate("coder-tester", cost=0.08, capabilities=["coding", "testing"])
+        required_only = self._candidate(
+            "coder-tester", cost=0.08, capabilities=["coding", "testing"]
+        )
         # Missing required
         missing_req = self._candidate("doc-only", cost=0.02, capabilities=["documentation"])
 

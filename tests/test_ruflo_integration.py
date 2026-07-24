@@ -60,10 +60,10 @@ class TestRufloHarness:
         assert harness.current_scenario is None
 
     def test_harness_creates_output_dir(self):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                config = RufloHarnessConfig(output_dir=Path(tmpdir) / "test_evidence")
-                _ = RufloHarness(config)
-                assert (Path(tmpdir) / "test_evidence").exists()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = RufloHarnessConfig(output_dir=Path(tmpdir) / "test_evidence")
+            _ = RufloHarness(config)
+            assert (Path(tmpdir) / "test_evidence").exists()
 
     def test_run_happy_path(self):
         harness = RufloHarness()

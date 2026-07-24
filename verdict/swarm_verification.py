@@ -25,6 +25,7 @@ from typing import Any
 
 class VerificationOutcome(str, Enum):
     """Outcome of verification stage."""
+
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     BLOCKED = "blocked"
@@ -33,6 +34,7 @@ class VerificationOutcome(str, Enum):
 
 class ArtifactType(str, Enum):
     """Types of artifacts produced by swarm tasks."""
+
     PATCH = "patch"
     TEST_OUTPUT = "test_output"
     DIFF_STATS = "diff_stats"
@@ -46,6 +48,7 @@ class ArtifactType(str, Enum):
 @dataclass(frozen=True)
 class ArtifactRef:
     """Content-addressed reference to an artifact."""
+
     content_hash: str  # SHA256 of content
     artifact_type: ArtifactType
     size_bytes: int
@@ -53,7 +56,9 @@ class ArtifactRef:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_content(cls, content: bytes, artifact_type: ArtifactType, **metadata: Any) -> ArtifactRef:
+    def from_content(
+        cls, content: bytes, artifact_type: ArtifactType, **metadata: Any
+    ) -> ArtifactRef:
         """Create artifact reference from raw content."""
         content_hash = hashlib.sha256(content).hexdigest()
         return cls(
@@ -71,6 +76,7 @@ class ArtifactRef:
 @dataclass(frozen=True)
 class VerificationCommand:
     """A verification command to execute."""
+
     command: str
     description: str
     timeout_seconds: int = 60
@@ -82,6 +88,7 @@ class VerificationCommand:
 @dataclass(frozen=True)
 class VerificationResult:
     """Result of a single verification command."""
+
     command: VerificationCommand
     exit_code: int
     stdout: str
@@ -95,6 +102,7 @@ class VerificationResult:
 @dataclass(frozen=True)
 class VerificationReport:
     """Complete verification report for a swarm task attempt."""
+
     task_id: str
     attempt_id: str
     model_id: str
@@ -129,24 +137,26 @@ _REDACTION_PATTERNS = [
 ]
 
 # Protected paths requiring approval
-_PROTECTED_PATHS = frozenset({
-    ".github/workflows/",
-    "docker/",
-    "k8s/",
-    "terraform/",
-    "helm/",
-    "scripts/deploy",
-    "scripts/migrate",
-    "requirements.txt",
-    "pyproject.toml",
-    "package.json",
-    "Cargo.toml",
-    "go.mod",
-    ".env",
-    ".env.*",
-    "secrets/",
-    "credentials/",
-})
+_PROTECTED_PATHS = frozenset(
+    {
+        ".github/workflows/",
+        "docker/",
+        "k8s/",
+        "terraform/",
+        "helm/",
+        "scripts/deploy",
+        "scripts/migrate",
+        "requirements.txt",
+        "pyproject.toml",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        ".env",
+        ".env.*",
+        "secrets/",
+        "credentials/",
+    }
+)
 
 
 def redact_sensitive(content: str, log: list[str] | None = None) -> str:

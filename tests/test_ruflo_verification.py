@@ -365,7 +365,11 @@ class TestCompletionEvidence:
     def test_evidence_bundle(self):
         results = [
             VerificationResult(check_name="gate1", outcome=VerificationOutcome.PASS),
-            VerificationResult(check_name="gate2", outcome=VerificationOutcome.FAIL, classification=FailureClassification.TEST),
+            VerificationResult(
+                check_name="gate2",
+                outcome=VerificationOutcome.FAIL,
+                classification=FailureClassification.TEST,
+            ),
         ]
         replans = [
             ReplanRecord(replan_id="r1", attempt=1, reason=ReplanReason.VERIFICATION_FAILED),

@@ -2,6 +2,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class HivemindRAG:
     """Local-first hybrid retrieval memory system."""
 

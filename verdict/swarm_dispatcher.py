@@ -38,6 +38,7 @@ class FanOutLimiter:
     Implements token bucket for concurrency control and
     queue depth monitoring for backpressure.
     """
+
     max_concurrent: int = 1
     max_queue_depth: int = 100
     backpressure_timeout: float = 30.0  # seconds
@@ -81,12 +82,16 @@ class FanOutLimiter:
 
     def is_backpressured(self) -> bool:
         """Check if system is under backpressure."""
-        return self._active_count >= self.max_concurrent or len(self._queue) >= self.max_queue_depth * 0.8
+        return (
+            self._active_count >= self.max_concurrent
+            or len(self._queue) >= self.max_queue_depth * 0.8
+        )
 
 
 @dataclass
 class IterationState:
     """Tracks state of a lower-tier iteration loop."""
+
     attempt: int = 0
     max_attempts: int = 3
     last_result: DispatchResult | None = None
@@ -185,14 +190,14 @@ class SwarmDispatcher:
         # Check fan-out availability
         if not self.fan_out.try_acquire() and self.fan_out.is_backpressured():
             return DispatchResult(
-                    selected=None,
-                    explanations=(),
-                    eligible=(),
-                    dry_run=True,
-                    reason="backpressure: fan-out limit reached",
-                    estimated_cost=0.0,
-                    escalation_depth=0,
-                )
+                selected=None,
+                explanations=(),
+                eligible=(),
+                dry_run=True,
+                reason="backpressure: fan-out limit reached",
+                estimated_cost=0.0,
+                escalation_depth=0,
+            )
             # Could await enqueue here for async version
 
         try:
@@ -382,6 +387,7 @@ class SwarmDispatchPolicy:
 
     Adds budget, capability, and stop-condition awareness to base dispatcher.
     """
+
     # Base policy
     base_policy: DispatchPolicy = field(default_factory=DispatchPolicy)
 
@@ -398,12 +404,23 @@ class SwarmDispatchPolicy:
             # Derive policy from envelope if not explicitly set
             if self.base_policy.max_budget is None and self.envelope.budget is not None:
                 object.__setattr__(self.base_policy, "max_budget", self.envelope.budget.max_usd)
-            if self.base_policy.required_capabilities is None and self.envelope.required_capabilities:
-                object.__setattr__(self.base_policy, "required_capabilities", frozenset(self.envelope.required_capabilities))
+            if (
+                self.base_policy.required_capabilities is None
+                and self.envelope.required_capabilities
+            ):
+                object.__setattr__(
+                    self.base_policy,
+                    "required_capabilities",
+                    frozenset(self.envelope.required_capabilities),
+                )
             if self.base_policy.max_concurrency == 1 and self.envelope.max_parallelism:
-                object.__setattr__(self.base_policy, "max_concurrency", self.envelope.max_parallelism)
+                object.__setattr__(
+                    self.base_policy, "max_concurrency", self.envelope.max_parallelism
+                )
             if self.base_policy.timeout_seconds == 30.0 and self.envelope.timeout_ms:
-                object.__setattr__(self.base_policy, "timeout_seconds", self.envelope.timeout_ms / 1000.0)
+                object.__setattr__(
+                    self.base_policy, "timeout_seconds", self.envelope.timeout_ms / 1000.0
+                )
 
     @property
     def required_capabilities(self) -> frozenset[str]:

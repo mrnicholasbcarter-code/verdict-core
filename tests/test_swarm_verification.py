@@ -45,30 +45,36 @@ class TestVerificationCommandExecution:
 
     def test_successful_command_execution(self):
         """A passing command returns passed=True with stdout captured."""
-        result = run_verification_command(VerificationCommand(
-            command="echo 'tests passed'",
-            description="Simple echo test",
-        ))
+        result = run_verification_command(
+            VerificationCommand(
+                command="echo 'tests passed'",
+                description="Simple echo test",
+            )
+        )
         assert result.passed is True
         assert "tests passed" in result.stdout
         assert result.exit_code == 0
 
     def test_failed_command_execution(self):
         """A failing command returns passed=False with stderr captured."""
-        result = run_verification_command(VerificationCommand(
-            command="exit 1",
-            description="Failing command",
-        ))
+        result = run_verification_command(
+            VerificationCommand(
+                command="exit 1",
+                description="Failing command",
+            )
+        )
         assert result.passed is False
         assert result.exit_code == 1
 
     def test_command_timeout(self):
         """A command exceeding timeout is marked as failed."""
-        result = run_verification_command(VerificationCommand(
-            command="sleep 10",
-            description="Long running command",
-            timeout_seconds=1,
-        ))
+        result = run_verification_command(
+            VerificationCommand(
+                command="sleep 10",
+                description="Long running command",
+                timeout_seconds=1,
+            )
+        )
         assert result.passed is False
         assert result.timed_out is True
 
@@ -137,18 +143,20 @@ class TestSensitiveRedaction:
     """Tests for sensitive data redaction before persistence."""
 
     def test_api_key_redaction(self):
-            """API keys in output are redacted."""
-            from verdict.swarm_verification import redact_sensitive
-            log = []
-            output = "API_KEY=sk-test123abcdefghijklmnopqrstuvwxyz"
-            redacted = redact_sensitive(output, log)
-            assert "sk-test123abcdefghijklmnopqrstuvwxyz" not in redacted
-            assert "[REDACTED:openai_key]" in redacted
-            assert any("openai_key" in r.lower() or "api_key" in r.lower() for r in log)
+        """API keys in output are redacted."""
+        from verdict.swarm_verification import redact_sensitive
+
+        log = []
+        output = "API_KEY=sk-test123abcdefghijklmnopqrstuvwxyz"
+        redacted = redact_sensitive(output, log)
+        assert "sk-test123abcdefghijklmnopqrstuvwxyz" not in redacted
+        assert "[REDACTED:openai_key]" in redacted
+        assert any("openai_key" in r.lower() or "api_key" in r.lower() for r in log)
 
     def test_password_redaction(self, temp_artifact_store):
         """Passwords in output are redacted."""
         from verdict.swarm_verification import redact_sensitive
+
         log = []
         output = "password=secret123"
         redacted = redact_sensitive(output, log)
@@ -156,14 +164,20 @@ class TestSensitiveRedaction:
         assert "[REDACTED:password]" in redacted
 
     def test_token_redaction(self):
-            """Bearer tokens are redacted."""
-            from verdict.swarm_verification import redact_sensitive
-            log = []
-            output = "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-            redacted = redact_sensitive(output, log)
-            assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c" not in redacted
-            assert "[REDACTED:bearer_token]" in redacted
-            assert any("bearer_token" in r.lower() or "authorization" in r.lower() for r in log)
+        """Bearer tokens are redacted."""
+        from verdict.swarm_verification import redact_sensitive
+
+        log = []
+        output = "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        redacted = redact_sensitive(output, log)
+        assert (
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+            not in redacted
+        )
+        assert "[REDACTED:bearer_token]" in redacted
+        assert any("bearer_token" in r.lower() or "authorization" in r.lower() for r in log)
+
+
 class TestSwarmVerifierIntegration:
     """Integration tests for the full SwarmVerifier."""
 
@@ -174,13 +188,17 @@ class TestSwarmVerifierIntegration:
 
     @pytest.fixture
     def verifier(self, temp_artifact_store):
-        return SwarmVerifier(artifact_store=temp_artifact_store, commands=DEFAULT_VERIFICATION_COMMANDS)
+        return SwarmVerifier(
+            artifact_store=temp_artifact_store, commands=DEFAULT_VERIFICATION_COMMANDS
+        )
 
     def test_successful_verification_passes(self, verifier):
         """All passing commands produce ACCEPTED outcome."""
         # Use a command that will pass
         commands = [
-            VerificationCommand(command="echo 'success'", description="Echo success", required=True),
+            VerificationCommand(
+                command="echo 'success'", description="Echo success", required=True
+            ),
         ]
         verifier.commands = commands
 
@@ -232,7 +250,9 @@ class TestSwarmVerifierIntegration:
     def test_artifacts_created_and_stored(self, verifier, temp_artifact_store):
         """Artifacts are created and stored at content-addressed paths."""
         commands = [
-            VerificationCommand(command="echo 'artifact content'", description="Produce artifact", required=True),
+            VerificationCommand(
+                command="echo 'artifact content'", description="Produce artifact", required=True
+            ),
         ]
         verifier.commands = commands
 
@@ -253,7 +273,9 @@ class TestSwarmVerifierIntegration:
     def test_artifact_immutability(self, verifier, temp_artifact_store):
         """Stored artifacts cannot be modified without detection."""
         commands = [
-            VerificationCommand(command="echo 'immutable'", description="Test immutability", required=True),
+            VerificationCommand(
+                command="echo 'immutable'", description="Test immutability", required=True
+            ),
         ]
         verifier.commands = commands
 
@@ -270,13 +292,16 @@ class TestSwarmVerifierIntegration:
             content = path.read_bytes()
             # Re-hash content
             import hashlib
+
             computed_hash = hashlib.sha256(content).hexdigest()
             assert computed_hash == artifact.content_hash
 
     def test_redaction_log_includes_findings(self, verifier):
         """Redaction log captures what was redacted."""
         commands = [
-            VerificationCommand(command="echo 'API_KEY=sk-test123'", description="Test redaction", required=True),
+            VerificationCommand(
+                command="echo 'API_KEY=sk-test123'", description="Test redaction", required=True
+            ),
         ]
         verifier.commands = commands
 
@@ -322,9 +347,12 @@ class TestVerificationOutcomes:
 
     def test_accepted_allows_merge(self, temp_artifact_store):
         """ACCEPTED outcome allows merge."""
-        verifier = SwarmVerifier(artifact_store=temp_artifact_store, commands=[
-            VerificationCommand(command="echo success", description="Pass", required=True),
-        ])
+        verifier = SwarmVerifier(
+            artifact_store=temp_artifact_store,
+            commands=[
+                VerificationCommand(command="echo success", description="Pass", required=True),
+            ],
+        )
 
         report = verifier.verify("task-1", "attempt-1", "model", "runtime")
         can_merge, _reason = verifier.can_merge(report)
@@ -334,9 +362,12 @@ class TestVerificationOutcomes:
 
     def test_blocked_prevents_merge(self, temp_artifact_store):
         """BLOCKED outcome prevents merge."""
-        verifier = SwarmVerifier(artifact_store=temp_artifact_store, commands=[
-            VerificationCommand(command="exit 1", description="Fail", required=True),
-        ])
+        verifier = SwarmVerifier(
+            artifact_store=temp_artifact_store,
+            commands=[
+                VerificationCommand(command="exit 1", description="Fail", required=True),
+            ],
+        )
 
         report = verifier.verify("task-1", "attempt-1", "model", "runtime")
         can_merge, _reason = verifier.can_merge(report)
@@ -346,9 +377,12 @@ class TestVerificationOutcomes:
 
     def test_rejected_prevents_merge(self, temp_artifact_store):
         """REJECTED outcome prevents merge."""
-        verifier = SwarmVerifier(artifact_store=temp_artifact_store, commands=[
-            VerificationCommand(command="exit 1", description="Fail", required=False),
-        ])
+        verifier = SwarmVerifier(
+            artifact_store=temp_artifact_store,
+            commands=[
+                VerificationCommand(command="exit 1", description="Fail", required=False),
+            ],
+        )
 
         report = verifier.verify("task-1", "attempt-1", "model", "runtime")
         can_merge, _reason = verifier.can_merge(report)
@@ -358,9 +392,12 @@ class TestVerificationOutcomes:
 
     def test_needs_review_prevents_merge_without_approvals(self, temp_artifact_store):
         """NEEDS_REVIEW prevents merge when approvals pending."""
-        verifier = SwarmVerifier(artifact_store=temp_artifact_store, commands=[
-            VerificationCommand(command="echo success", description="Pass", required=True),
-        ])
+        verifier = SwarmVerifier(
+            artifact_store=temp_artifact_store,
+            commands=[
+                VerificationCommand(command="echo success", description="Pass", required=True),
+            ],
+        )
 
         # Manually create a report with pending approvals
         report = VerificationReport(
@@ -386,9 +423,12 @@ class TestVerificationOutcomes:
 
     def test_needs_review_allows_merge_with_approvals(self, temp_artifact_store):
         """NEEDS_REVIEW allows merge when all approvals granted."""
-        verifier = SwarmVerifier(artifact_store=temp_artifact_store, commands=[
-            VerificationCommand(command="echo success", description="Pass", required=True),
-        ])
+        verifier = SwarmVerifier(
+            artifact_store=temp_artifact_store,
+            commands=[
+                VerificationCommand(command="echo success", description="Pass", required=True),
+            ],
+        )
 
         report = VerificationReport(
             task_id="task-1",
@@ -416,9 +456,12 @@ class TestMaliciousClaims:
 
     def test_cannot_claim_success_without_passing_commands(self, temp_artifact_store):
         """Worker cannot claim success if commands failed."""
-        verifier = SwarmVerifier(artifact_store=temp_artifact_store, commands=[
-            VerificationCommand(command="exit 1", description="Will fail", required=True),
-        ])
+        verifier = SwarmVerifier(
+            artifact_store=temp_artifact_store,
+            commands=[
+                VerificationCommand(command="exit 1", description="Will fail", required=True),
+            ],
+        )
 
         report = verifier.verify("task-1", "attempt-1", "model", "runtime")
 
@@ -427,9 +470,14 @@ class TestMaliciousClaims:
 
     def test_missing_artifacts_detected(self, temp_artifact_store):
         """Missing artifacts are detected."""
-        verifier = SwarmVerifier(artifact_store=temp_artifact_store, commands=[
-            VerificationCommand(command="echo 'produce output'", description="Produce output", required=True),
-        ])
+        verifier = SwarmVerifier(
+            artifact_store=temp_artifact_store,
+            commands=[
+                VerificationCommand(
+                    command="echo 'produce output'", description="Produce output", required=True
+                ),
+            ],
+        )
 
         report = verifier.verify("task-1", "attempt-1", "model", "runtime")
 
@@ -447,9 +495,12 @@ class TestProtectedPathApproval:
 
     def test_approval_workflow_integration(self, temp_artifact_store):
         """Full workflow: verification -> needs_review -> approvals -> merge."""
-        verifier = SwarmVerifier(artifact_store=temp_artifact_store, commands=[
-            VerificationCommand(command="echo success", description="Pass", required=True),
-        ])
+        verifier = SwarmVerifier(
+            artifact_store=temp_artifact_store,
+            commands=[
+                VerificationCommand(command="echo success", description="Pass", required=True),
+            ],
+        )
 
         # Initial verification
         report = verifier.verify("task-1", "attempt-1", "model", "runtime")

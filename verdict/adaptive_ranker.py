@@ -33,8 +33,8 @@ from verdict.models import ModelInfo
 class RankerMode(str, Enum):
     """Ranker operational mode."""
 
-    STATIC = "static"          # No learning, deterministic baseline
-    SEMANTIC = "semantic"      # Advisory semantic ranking (RuVector/SONA)
+    STATIC = "static"  # No learning, deterministic baseline
+    SEMANTIC = "semantic"  # Advisory semantic ranking (RuVector/SONA)
     SHADOW_ADAPTIVE = "shadow_adaptive"  # Observe-only adaptive (this slice)
 
 
@@ -42,12 +42,13 @@ class CanaryPolicy(str, Enum):
     """Canary activation policy."""
 
     DISABLED = "disabled"
-    VERSIONED = "versioned"     # Requires explicit version + rollback switch
+    VERSIONED = "versioned"  # Requires explicit version + rollback switch
 
 
 @dataclass(frozen=True)
 class RankingCandidate:
     """A candidate model that passed eligibility gate."""
+
     model: ModelInfo
     eligibility_record: EligibilityRecord
 
@@ -55,6 +56,7 @@ class RankingCandidate:
 @dataclass(frozen=True)
 class RankerInput:
     """Input to the adaptive ranker (eligibility-filtered only)."""
+
     candidates: tuple[RankingCandidate, ...]
     task_spec: Any
     eligibility_snapshot: EligibilityResult
@@ -64,6 +66,7 @@ class RankerInput:
 @dataclass(frozen=True)
 class RankerOutput:
     """Ranker output with evidence binding."""
+
     ranked: list[ModelInfo]
     scores: dict[str, float]
     reasoning: dict[str, str]
@@ -78,6 +81,7 @@ class RankerOutput:
 @dataclass
 class AdaptiveRankerConfig:
     """Configuration for adaptive ranker."""
+
     mode: RankerMode = RankerMode.SHADOW_ADAPTIVE
     canary_policy: CanaryPolicy = CanaryPolicy.DISABLED
     canary_version: str = "1.0.0"
@@ -123,11 +127,13 @@ class AdaptiveRanker:
 
     def _static_rank(self, candidates: tuple[RankingCandidate, ...]) -> list[ModelInfo]:
         """Deterministic static baseline: quality tier -> capability match -> name."""
+
         def score(c: RankingCandidate) -> tuple[int, int, str]:
             m = c.model
             tier_score = -getattr(m, "capability_tier", 99)  # lower tier = higher quality
             caps = len(getattr(m, "capabilities", []))
             return (tier_score, -caps, m.id)
+
         return [c.model for c in sorted(candidates, key=score)]
 
     def _semantic_rank(
@@ -141,7 +147,9 @@ class AdaptiveRanker:
         base = self._static_rank(candidates)
 
         # Boost candidates with relevant capabilities for the task
-        task_text = str(getattr(task_spec, "prompt", "")) + str(getattr(task_spec, "capabilities", []))
+        task_text = str(getattr(task_spec, "prompt", "")) + str(
+            getattr(task_spec, "capabilities", [])
+        )
         task_lower = task_text.lower()
 
         def semantic_boost(m: ModelInfo) -> float:
@@ -168,17 +176,19 @@ class AdaptiveRanker:
         # Apply learned patterns from history (SONA/RuVector)
         # For now, log the decision for future learning
         task_text = str(getattr(task_spec, "prompt", ""))
-        self._history.append({
-            "timestamp": time.time(),
-            "task_hash": hashlib.sha256(task_text.encode()).hexdigest()[:16],
-            "candidates": [c.model.id for c in candidates],
-            "baseline_ranking": [m.id for m in baseline],
-            "mode": "shadow_adaptive",
-        })
+        self._history.append(
+            {
+                "timestamp": time.time(),
+                "task_hash": hashlib.sha256(task_text.encode()).hexdigest()[:16],
+                "candidates": [c.model.id for c in candidates],
+                "baseline_ranking": [m.id for m in baseline],
+                "mode": "shadow_adaptive",
+            }
+        )
 
         # Trim history
         if len(self._history) > self.config.max_history_size:
-            self._history = self._history[-self.config.max_history_size:]
+            self._history = self._history[-self.config.max_history_size :]
 
         return baseline  # Shadow: always return baseline for live path
 
@@ -229,12 +239,13 @@ class AdaptiveRanker:
 
         # Build scores and reasoning
         scores = {m.id: 1.0 - i * 0.1 for i, m in enumerate(ranked)}
-        reasoning = {m.id: f"Rank {i+1} via {self.config.mode.value}" for i, m in enumerate(ranked)}
+        reasoning = {
+            m.id: f"Rank {i + 1} via {self.config.mode.value}" for i, m in enumerate(ranked)
+        }
 
         # Canary check
         canary_active = (
-            self.config.canary_policy == CanaryPolicy.VERSIONED
-            and self.config.rollback_enabled
+            self.config.canary_policy == CanaryPolicy.VERSIONED and self.config.rollback_enabled
         )
 
         return RankerOutput(
@@ -258,15 +269,17 @@ class AdaptiveRanker:
         cost_usd: float,
     ) -> None:
         """Record outcome for learning (SONA/ReasoningBank)."""
-        self._history.append({
-            "timestamp": time.time(),
-            "task_hash": hashlib.sha256(str(task_spec).encode()).hexdigest()[:16],
-            "selected_model": selected_model,
-            "success": success,
-            "latency_ms": latency_ms,
-            "cost_usd": cost_usd,
-            "mode": "outcome",
-        })
+        self._history.append(
+            {
+                "timestamp": time.time(),
+                "task_hash": hashlib.sha256(str(task_spec).encode()).hexdigest()[:16],
+                "selected_model": selected_model,
+                "success": success,
+                "latency_ms": latency_ms,
+                "cost_usd": cost_usd,
+                "mode": "outcome",
+            }
+        )
 
     def get_canary_status(self) -> dict[str, Any]:
         """Get canary status for rollback decision."""

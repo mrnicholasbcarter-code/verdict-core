@@ -37,14 +37,16 @@ def _mock_eligibility(model_ids: list[str]) -> EligibilityResult:
             capabilities=[],
         )
         admitted.append(m)
-        records.append(EligibilityRecord(
-            model_id=mid,
-            provider=m.provider,
-            admitted=True,
-            verdict=EligibilityVerdict.ELIGIBLE,
-            state="eligible",
-            source="test",
-        ))
+        records.append(
+            EligibilityRecord(
+                model_id=mid,
+                provider=m.provider,
+                admitted=True,
+                verdict=EligibilityVerdict.ELIGIBLE,
+                state="eligible",
+                source="test",
+            )
+        )
     return EligibilityResult(admitted=admitted, records=records)
 
 
@@ -79,11 +81,13 @@ def test_snapshot_restored_reproduces_ranking():
 
 def test_rollback_disables_bad_snapshot_without_deleting_evidence():
     """AC: Rollback disables a bad snapshot without deleting evidence."""
-    ranker = AdaptiveRanker(AdaptiveRankerConfig(
-        mode=RankerMode.SHADOW_ADAPTIVE,
-        canary_policy=CanaryPolicy.VERSIONED,
-        rollback_enabled=True,
-    ))
+    ranker = AdaptiveRanker(
+        AdaptiveRankerConfig(
+            mode=RankerMode.SHADOW_ADAPTIVE,
+            canary_policy=CanaryPolicy.VERSIONED,
+            rollback_enabled=True,
+        )
+    )
     manager = build_adaptive_state_manager(ranker)
 
     # Create good snapshot

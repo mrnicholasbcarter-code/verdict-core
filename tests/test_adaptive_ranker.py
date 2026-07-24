@@ -27,7 +27,9 @@ from verdict.eligibility import (
 from verdict.models import ModelInfo
 
 
-def _fake_model(model_id: str, provider: str = "test", tier: int = 1, caps: list[str] | None = None) -> ModelInfo:
+def _fake_model(
+    model_id: str, provider: str = "test", tier: int = 1, caps: list[str] | None = None
+) -> ModelInfo:
     """Create a test model with required fields."""
     return ModelInfo(
         id=model_id,
@@ -43,15 +45,19 @@ def _eligibility_result(models: list[ModelInfo], states: list[str]) -> Eligibili
     admitted = []
     for m, s in zip(models, states, strict=True):
         admitted_flag = s in ("eligible", "ready", "degraded")
-        records.append(EligibilityRecord(
-            model_id=m.id,
-            provider=m.provider,
-            admitted=admitted_flag,
-            verdict=EligibilityVerdict.ELIGIBLE if admitted_flag else EligibilityVerdict.NOT_LIVE_ELIGIBLE,
-            state=s,
-            source="test",
-            reason="test",
-        ))
+        records.append(
+            EligibilityRecord(
+                model_id=m.id,
+                provider=m.provider,
+                admitted=admitted_flag,
+                verdict=EligibilityVerdict.ELIGIBLE
+                if admitted_flag
+                else EligibilityVerdict.NOT_LIVE_ELIGIBLE,
+                state=s,
+                source="test",
+                reason="test",
+            )
+        )
         if admitted_flag:
             admitted.append(m)
     result = EligibilityResult(admitted=admitted, records=records)
@@ -92,7 +98,9 @@ def test_shadow_results_never_change_live_selection():
     models = [_fake_model("a/1"), _fake_model("b/2")]
     eligibility = _eligibility_result(models, ["eligible", "eligible"])
 
-    config = AdaptiveRankerConfig(mode=RankerMode.SHADOW_ADAPTIVE, canary_policy=CanaryPolicy.DISABLED)
+    config = AdaptiveRankerConfig(
+        mode=RankerMode.SHADOW_ADAPTIVE, canary_policy=CanaryPolicy.DISABLED
+    )
     ranker = AdaptiveRanker(config)
     output = ranker.rank(eligibility, task_spec="test")
 
@@ -118,10 +126,7 @@ def test_canary_activation_requires_versioned_policy_and_rollback():
     assert status["rollback_enabled"] is True
 
     # With canary active, shadow should be False
-    output = ranker.rank(
-        _eligibility_result([_fake_model("a/1")], ["eligible"]),
-        task_spec="test"
-    )
+    output = ranker.rank(_eligibility_result([_fake_model("a/1")], ["eligible"]), task_spec="test")
     # Note: in current implementation, canary_active = (canary_policy == VERSIONED and rollback_enabled)
     # So with VERSIONED + rollback_enabled, shadow = False
     # This is the expected behavior for canary activation
@@ -136,13 +141,15 @@ def test_poisoned_evidence_cannot_alter_ranking():
     ranker = AdaptiveRanker(AdaptiveRankerConfig(mode=RankerMode.SHADOW_ADAPTIVE))
 
     # Inject poisoned history
-    ranker._history.append({
-        "timestamp": 0,
-        "task_hash": "poisoned",
-        "candidates": ["a/1", "b/2"],
-        "baseline_ranking": ["b/2", "a/1"],  # Reversed
-        "mode": "shadow_adaptive",
-    })
+    ranker._history.append(
+        {
+            "timestamp": 0,
+            "task_hash": "poisoned",
+            "candidates": ["a/1", "b/2"],
+            "baseline_ranking": ["b/2", "a/1"],  # Reversed
+            "mode": "shadow_adaptive",
+        }
+    )
 
     output = ranker.rank(_eligibility_result(models, ["eligible", "eligible"]), task_spec="test")
     ranked_ids = [m.id for m in output.ranked]
@@ -157,17 +164,21 @@ def test_stale_evidence_handled_gracefully():
     models = [_fake_model("a/1")]
     eligibility = _eligibility_result(models, ["eligible"])
 
-    ranker = AdaptiveRanker(AdaptiveRankerConfig(mode=RankerMode.SHADOW_ADAPTIVE, max_history_size=2))
+    ranker = AdaptiveRanker(
+        AdaptiveRankerConfig(mode=RankerMode.SHADOW_ADAPTIVE, max_history_size=2)
+    )
 
     # Add stale entries beyond max_history_size
     for i in range(5):
-        ranker._history.append({
-            "timestamp": i,
-            "task_hash": f"stale_{i}",
-            "candidates": ["a/1"],
-            "baseline_ranking": ["a/1"],
-            "mode": "shadow_adaptive",
-        })
+        ranker._history.append(
+            {
+                "timestamp": i,
+                "task_hash": f"stale_{i}",
+                "candidates": ["a/1"],
+                "baseline_ranking": ["a/1"],
+                "mode": "shadow_adaptive",
+            }
+        )
 
     output = ranker.rank(eligibility, task_spec="test")
     assert output.ranked == [models[0]]  # Still works
@@ -240,7 +251,9 @@ def test_semantic_rank_mode_respects_eligibility():
 
     config = AdaptiveRankerConfig(mode=RankerMode.SEMANTIC)
     ranker = AdaptiveRanker(config)
-    output = ranker.rank(eligibility, task_spec=type("Spec", (), {"prompt": "code", "capabilities": ["coding"]})())
+    output = ranker.rank(
+        eligibility, task_spec=type("Spec", (), {"prompt": "code", "capabilities": ["coding"]})()
+    )
 
     ranked_ids = [m.id for m in output.ranked]
     assert "b/2" not in ranked_ids  # Denied candidate excluded

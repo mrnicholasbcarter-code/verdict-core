@@ -153,60 +153,61 @@ class TestSwarmMetricsCollector:
         assert metrics.avg_retry_count == 0.5  # Average of (0+1)/2 = 0.5
 
     def test_latency_percentiles(self):
-            """Collector computes latency percentiles."""
-            collector = SwarmMetricsCollector(run_id="run-1")
+        """Collector computes latency percentiles."""
+        collector = SwarmMetricsCollector(run_id="run-1")
 
-            collector.record_task_event("task-1", "planned")
-            collector.record_task_event("task-1", "assigned")
-            collector.record_task_event("task-1", "completed")
+        collector.record_task_event("task-1", "planned")
+        collector.record_task_event("task-1", "assigned")
+        collector.record_task_event("task-1", "completed")
 
-            for latency in [100, 200, 300, 400, 500]:
-                collector.record_verification(
-                    task_id=f"task-{latency}",
-                    attempt_id="attempt-1",
-                    passed=True,
-                    latency_ms=float(latency),
-                    retry_count=0,
-                    cost_usd=0.01,
-                )
+        for latency in [100, 200, 300, 400, 500]:
+            collector.record_verification(
+                task_id=f"task-{latency}",
+                attempt_id="attempt-1",
+                passed=True,
+                latency_ms=float(latency),
+                retry_count=0,
+                cost_usd=0.01,
+            )
 
-            metrics = collector.compute_metrics()
+        metrics = collector.compute_metrics()
 
-            assert metrics.p50_latency_ms == 300.0  # median
-            assert metrics.p95_latency_ms == 500.0
+        assert metrics.p50_latency_ms == 300.0  # median
+        assert metrics.p95_latency_ms == 500.0
+
     def test_cost_metrics(self):
-            """Collector tracks cost metrics."""
-            collector = SwarmMetricsCollector(run_id="run-1")
+        """Collector tracks cost metrics."""
+        collector = SwarmMetricsCollector(run_id="run-1")
 
-            collector.record_task_event("task-1", "planned")
-            collector.record_task_event("task-1", "assigned")
-            collector.record_task_event("task-1", "completed")
+        collector.record_task_event("task-1", "planned")
+        collector.record_task_event("task-1", "assigned")
+        collector.record_task_event("task-1", "completed")
 
-            collector.record_verification(
-                task_id="task-1",
-                attempt_id="attempt-1",
-                passed=True,
-                latency_ms=100.0,
-                retry_count=0,
-                cost_usd=0.05,
-            )
-            collector.record_task_event("task-2", "planned")
-            collector.record_task_event("task-2", "assigned")
-            collector.record_task_event("task-2", "completed")
+        collector.record_verification(
+            task_id="task-1",
+            attempt_id="attempt-1",
+            passed=True,
+            latency_ms=100.0,
+            retry_count=0,
+            cost_usd=0.05,
+        )
+        collector.record_task_event("task-2", "planned")
+        collector.record_task_event("task-2", "assigned")
+        collector.record_task_event("task-2", "completed")
 
-            collector.record_verification(
-                task_id="task-2",
-                attempt_id="attempt-1",
-                passed=True,
-                latency_ms=100.0,
-                retry_count=0,
-                cost_usd=0.10,
-            )
+        collector.record_verification(
+            task_id="task-2",
+            attempt_id="attempt-1",
+            passed=True,
+            latency_ms=100.0,
+            retry_count=0,
+            cost_usd=0.10,
+        )
 
-            metrics = collector.compute_metrics()
+        metrics = collector.compute_metrics()
 
-            # Use approximate equality for floating point
-            assert abs(metrics.cost_per_verified_task - 0.075) < 0.001
+        # Use approximate equality for floating point
+        assert abs(metrics.cost_per_verified_task - 0.075) < 0.001
 
     def test_fallback_rate(self):
         """Collector tracks model fallback rate."""

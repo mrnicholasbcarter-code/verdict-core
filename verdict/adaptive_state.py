@@ -23,6 +23,7 @@ from verdict.adaptive_ranker import AdaptiveRanker, AdaptiveRankerConfig, Ranker
 @dataclass(frozen=True)
 class SnapshotManifest:
     """Manifest describing a state snapshot."""
+
     version: str
     timestamp: float
     config_hash: str
@@ -35,6 +36,7 @@ class SnapshotManifest:
 @dataclass(frozen=True)
 class Snapshot:
     """Complete adaptive state snapshot."""
+
     manifest: SnapshotManifest
     config: AdaptiveRankerConfig
     history: list[dict[str, Any]]
@@ -60,6 +62,7 @@ class Snapshot:
 @dataclass(frozen=True)
 class BenchmarkResult:
     """Results from a benchmark run."""
+
     mode: RankerMode
     task_count: int
     p50_latency_ms: float
@@ -99,7 +102,9 @@ class AdaptiveStateManager:
 
     def _compute_history_checksum(self) -> str:
         """Compute checksum of current history."""
-        return hashlib.sha256(json.dumps(self.ranker._history, sort_keys=True).encode()).hexdigest()[:16]
+        return hashlib.sha256(
+            json.dumps(self.ranker._history, sort_keys=True).encode()
+        ).hexdigest()[:16]
 
     def create_snapshot(self, metadata: dict[str, Any] | None = None) -> Snapshot:
         """Create a versioned snapshot of current state."""
@@ -123,14 +128,20 @@ class AdaptiveStateManager:
         )
 
         # Save to disk
-        snapshot_path = self.storage_dir / f"snapshot_{manifest.version}_{manifest.timestamp:.0f}.json"
+        snapshot_path = (
+            self.storage_dir / f"snapshot_{manifest.version}_{manifest.timestamp:.0f}.json"
+        )
         with open(snapshot_path, "w") as f:
-            json.dump({
-                "manifest": asdict(snapshot.manifest),
-                "config": asdict(snapshot.config),
-                "history": snapshot.history,
-                "checksum": snapshot._checksum,
-            }, f, indent=2)
+            json.dump(
+                {
+                    "manifest": asdict(snapshot.manifest),
+                    "config": asdict(snapshot.config),
+                    "history": snapshot.history,
+                    "checksum": snapshot._checksum,
+                },
+                f,
+                indent=2,
+            )
 
         # Enforce retention
         self._enforce_retention()
@@ -255,14 +266,18 @@ class AdaptiveStateManager:
                     )
                     eligibility = EligibilityResult(
                         admitted=[expected],
-                        records=[EligibilityRecord(
-                            model_id=expected_model,
-                            provider=expected_model.split("/")[0] if "/" in expected_model else "test",
-                            admitted=True,
-                            verdict=EligibilityVerdict.ELIGIBLE,
-                            state="eligible",
-                            source="benchmark",
-                        )]
+                        records=[
+                            EligibilityRecord(
+                                model_id=expected_model,
+                                provider=expected_model.split("/")[0]
+                                if "/" in expected_model
+                                else "test",
+                                admitted=True,
+                                verdict=EligibilityVerdict.ELIGIBLE,
+                                state="eligible",
+                                source="benchmark",
+                            )
+                        ],
                     )
 
                     output = ranker.rank(eligibility, task_spec=task)
