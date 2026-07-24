@@ -14,6 +14,7 @@ This module defines versioned contracts for lower-tier swarm tasks:
 from __future__ import annotations
 
 import re
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -63,8 +64,6 @@ class TerminationReason(str, Enum):
     DEPENDENCY_FAILED = "dependency_failed"
 
 
-import tempfile
-
 # Safe field names that cannot be escaped
 _SAFE_PATH_CHARS = re.compile(r"^[a-zA-Z0-9._/-]+$")
 _ROOT_PATHS = frozenset({
@@ -75,7 +74,6 @@ _ROOT_PATHS = frozenset({
 
 def _get_allowed_roots() -> frozenset[str]:
     """Get allowed root paths, including system temp dir at runtime."""
-    import tempfile
     return frozenset({"/home/nick/dev", "/workspace", tempfile.gettempdir()})
 # /tmp is intentionally excluded from hardcoded roots to avoid B108
 # Use tempfile.gettempdir() at runtime instead
