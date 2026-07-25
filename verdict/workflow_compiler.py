@@ -76,14 +76,10 @@ class WorkflowCompiler:
         is_valid = len(errors) == 0
 
         return CompiledWorkflow(
-            workflow_plan=workflow_plan,
-            is_valid=is_valid,
-            validation_errors=errors,
+            workflow_plan=workflow_plan, is_valid=is_valid, validation_errors=errors
         )
 
-    def validate_workflow_step_against_manifest(
-        self, step: dict[str, Any]
-    ) -> list[str]:
+    def validate_workflow_step_against_manifest(self, step: dict[str, Any]) -> list[str]:
         """
         Validate a single workflow step against the adapter's capability manifest.
 

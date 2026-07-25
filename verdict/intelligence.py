@@ -122,10 +122,7 @@ class IntelligenceService:
         def _get_version(cmd: str) -> str:
             try:
                 result = subprocess.run(
-                    [cmd, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=0.5,
+                    [cmd, "--version"], capture_output=True, text=True, timeout=0.5
                 )
                 if result.returncode == 0:
                     # Take first line of output
@@ -152,13 +149,14 @@ class IntelligenceService:
             degraded_mode=degraded,
             policy_version=self._policy_version,
             reason="ready" if not degraded else "managed intelligence unavailable",
-            adapter_versions={
-                "ruflo": ruflo_version,
-                "ruvector": ruvector_version,
-            },
+            adapter_versions={"ruflo": ruflo_version, "ruvector": ruvector_version},
         )
+
     async def route(
-        self, task: str | dict[str, Any], criticality: str = "medium", context: dict[str, Any] | None = None
+        self,
+        task: str | dict[str, Any],
+        criticality: str = "medium",
+        context: dict[str, Any] | None = None,
     ) -> RoutingDecision:
         start_t = time.time()
 
@@ -195,7 +193,9 @@ class IntelligenceService:
         # safety floor, not as a model selector: identical task semantics have
         # identical selection requirements unless a protected floor applies.
         try:
-            task_spec = self.planner.plan(task_str, context=context, criticality=criticality).task_spec
+            task_spec = self.planner.plan(
+                task_str, context=context, criticality=criticality
+            ).task_spec
             task_tier = {"low": 3, "medium": 2, "high": 1}.get(task_spec.effort, 2)
         except Exception:
             task_tier = 2
@@ -324,9 +324,4 @@ class IntelligenceService:
                 "error": "timeout",
             }
         except Exception as e:
-            return {
-                "stdout": "",
-                "stderr": str(e),
-                "returncode": -2,
-                "error": str(e),
-            }
+            return {"stdout": "", "stderr": str(e), "returncode": -2, "error": str(e)}
