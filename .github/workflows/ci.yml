@@ -15,12 +15,18 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - name: Install Node dependencies
-        run: npm ci
+      - name: Install Node dependencies (contracts)
+        run: cd contracts && npm ci
       - name: Build TypeScript contracts
-        run: npm run build
+        run: cd contracts && npm run build
       - name: Run TypeScript contract fixtures
-        run: npm test
+        run: cd contracts && npm test
+      - name: Install Node dependencies (client-sdk)
+        run: cd verdict/client-sdk && npm ci
+      - name: Build TypeScript client SDK
+        run: cd verdict/client-sdk && npm run build
+      - name: Run TypeScript client SDK tests
+        run: cd verdict/client-sdk && npm test
 
   test:
     runs-on: ubuntu-latest
