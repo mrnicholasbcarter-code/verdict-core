@@ -87,7 +87,13 @@ strict = true
 # The Streamlit dashboard is an optional UI with third-party packages that do
 # not ship compatible strict stubs. Core routing remains strictly checked;
 # dashboard installation and import are covered by the complete install smoke.
-exclude = ["^verdict/dashboard\\.py$"]
+exclude = [
+    "verdict.dashboard",
+    "verdict.intelligence_adapter",
+    "verdict.availability_cache",
+    "verdict.subagent_models",
+    "verdict.subagent_resolver",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

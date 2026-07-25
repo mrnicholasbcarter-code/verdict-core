@@ -11,15 +11,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from verdict.ruflo_adapter import (
-    RufloAdapter,
-)
+from verdict.contracts import TaskSpec
+from verdict.ruflo_adapter import RufloAdapter
 from verdict.workflow_compiler import CompiledWorkflow, WorkflowCompiler
 
 
 @dataclass
 class LifecycleConfig:
     """Configuration for the LifecycleController."""
+
     # Verification gate settings
     run_verification_on_submit: bool = False
     run_verification_on_complete: bool = True
@@ -36,6 +36,7 @@ class LifecycleConfig:
 @dataclass
 class WorkflowHandle:
     """Handle to a managed workflow."""
+
     workflow_id: str
     task_id: str
     submit_response: Any
@@ -71,11 +72,7 @@ class LifecycleController:
         self._workflows: dict[str, WorkflowHandle] = {}
 
     def submit_workflow(
-        self,
-        workflow_plan: Any,
-        task_spec: dict[str, Any],
-        *,
-        idempotency_key: str | None = None,
+        self, workflow_plan: Any, task_spec: TaskSpec, *, idempotency_key: str | None = None
     ) -> WorkflowHandle:
         """
         Submit a workflow for execution.
@@ -98,15 +95,11 @@ class LifecycleController:
         # Compile and validate the workflow
         compiled: CompiledWorkflow = self.compiler.compile(workflow_plan)
         if not compiled.is_valid:
-            raise ValueError(
-                f"Workflow validation failed: {', '.join(compiled.validation_errors)}"
-            )
+            raise ValueError(f"Workflow validation failed: {', '.join(compiled.validation_errors)}")
 
         # Submit to Ruflo
-        submit_response: any = self.adapter.submit(
-            task_spec=task_spec,
-            workflow_plan=workflow_plan,
-            idempotency_key=idempotency_key,
+        submit_response: Any = self.adapter.submit(
+            task_spec=task_spec, workflow_plan=workflow_plan, idempotency_key=idempotency_key
         )
 
         # Create handle
@@ -138,38 +131,25 @@ class LifecycleController:
         if not handle:
             return None
 
-        status_response: any = self.adapter.status(
-            task_id=handle.task_id,
-            workflow_id=workflow_id,
-        )
+        status_response: Any = self.adapter.status(task_id=handle.task_id, workflow_id=workflow_id)
         handle.last_status = status_response
 
         # If the workflow is complete, fetch the result
-        if getattr(status_response, 'status', None) in (
-            "completed",
-            "failed",
-            "cancelled",
-            "rejected",
-            "timed_out",
-        ) and not handle.result:
-            result: any = self.adapter.result(
-                task_id=handle.task_id,
-                workflow_id=workflow_id,
-            )
+        if (
+            getattr(status_response, "status", None)
+            in ("completed", "failed", "cancelled", "rejected", "timed_out")
+            and not handle.result
+        ):
+            result: Any = self.adapter.result(task_id=handle.task_id, workflow_id=workflow_id)
             handle.result = result
 
             # Optionally run verification on completion
             if self.config.run_verification_on_complete:
-                self._run_verification_hooks(
-                    workflow_plan=handle.workflow_plan,
-                    stage="complete",
-                )
+                self._run_verification_hooks(workflow_plan=handle.workflow_plan, stage="complete")
 
         return status_response
 
-    def wait_for_completion(
-        self, workflow_id: str, timeout: float = 300.0
-    ) -> Any | None:
+    def wait_for_completion(self, workflow_id: str, timeout: float = 300.0) -> Any | None:
         """
         Wait for a workflow to complete, polling for status.
 
@@ -185,7 +165,7 @@ class LifecycleController:
             status = self.status(workflow_id)
             if not status:
                 return None
-            if getattr(status, 'status', None) in (
+            if getattr(status, "status", None) in (
                 "completed",
                 "failed",
                 "cancelled",
@@ -206,37 +186,31 @@ class LifecycleController:
         handle = self._workflows.get(workflow_id)
         if not handle:
             return False
-        response: any = self.adapter.pause(
-            task_id=handle.task_id, workflow_id=workflow_id
-        )
-        return getattr(response, 'success', False)
+        response: Any = self.adapter.pause(task_id=handle.task_id, workflow_id=workflow_id)
+        return getattr(response, "success", False)
 
     def resume(self, workflow_id: str) -> bool:
         """Resume a paused workflow."""
         handle = self._workflows.get(workflow_id)
         if not handle:
             return False
-        response: any = self.adapter.resume(
-            task_id=handle.task_id, workflow_id=workflow_id
-        )
-        return getattr(response, 'success', False)
+        response: Any = self.adapter.resume(task_id=handle.task_id, workflow_id=workflow_id)
+        return getattr(response, "success", False)
 
     def cancel(self, workflow_id: str, reason: str = "") -> bool:
         """Cancel a workflow."""
         handle = self._workflows.get(workflow_id)
         if not handle:
             return False
-        response: any = self.adapter.cancel(
+        response: Any = self.adapter.cancel(
             task_id=handle.task_id, workflow_id=workflow_id, reason=reason
         )
-        if getattr(response, 'success', False):
+        if getattr(response, "success", False):
             # Remove from active tracking? Or keep for history.
             pass
-        return getattr(response, 'success', False)
+        return getattr(response, "success", False)
 
-    def _run_verification_hooks(
-        self, workflow_plan: Any, stage: str
-    ) -> list[Any]:
+    def _run_verification_hooks(self, workflow_plan: Any, stage: str) -> list[Any]:
         """
         Run the configured verification gates for a workflow at a given stage.
 
@@ -245,8 +219,8 @@ class LifecycleController:
         results: list[Any] = []
 
         # 1. Run verification gates from the workflow plan (if enabled)
-        if self.config.use_workflow_plan_verification and hasattr(workflow_plan, 'verification'):
-            verification = getattr(workflow_plan, 'verification', None)
+        if self.config.use_workflow_plan_verification and hasattr(workflow_plan, "verification"):
+            verification = getattr(workflow_plan, "verification", None)
             if verification:
                 # If it's a dict, we might need to convert it to a VerificationPlan
                 # For simplicity, we treat it as a VerificationPlan-like object.
@@ -265,7 +239,7 @@ class LifecycleController:
         # 2. Run any extra verification gates configured in the LifecycleConfig
         for gate in self.config.extra_verification_gates:
             # Each gate should have an evaluate method that returns a result
-            if hasattr(gate, 'evaluate'):
+            if hasattr(gate, "evaluate"):
                 try:
                     result = gate.evaluate(workflow_plan=workflow_plan, stage=stage)
                     results.append(result)
