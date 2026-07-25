@@ -74,8 +74,8 @@ class TestSwarmTaskEnvelope:
 
     def test_envelope_accepts_valid_rooted_paths(self):
         """Paths within allowed roots are accepted."""
-        import tempfile
         import os
+        import tempfile
         temp_dir = tempfile.gettempdir()
         envelope = SwarmTaskEnvelope(
             objective="valid task", allowed_paths=["/home/nick/dev/project", os.path.join(temp_dir, "work")]
@@ -212,8 +212,8 @@ class TestPathValidation:
     def test_validate_rooted_path_accepts_allowed(self):
         """Paths within allowed roots are accepted."""
         assert _validate_rooted_path("/home/nick/dev/project")
-        import tempfile
         import os
+        import tempfile
         temp_dir = tempfile.gettempdir()
         assert _validate_rooted_path(os.path.join(temp_dir, "work"))
         assert _validate_rooted_path("/workspace/data")

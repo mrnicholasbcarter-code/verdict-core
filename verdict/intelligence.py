@@ -1,8 +1,7 @@
-import time
 import subprocess
-import json
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Union
+from typing import Any
 
 from verdict.discovery import fetch_models
 from verdict.eligibility import EligibilityGate
@@ -159,7 +158,7 @@ class IntelligenceService:
             },
         )
     async def route(
-        self, task: Union[str, Dict[str, Any]], criticality: str = "medium", context: dict[str, Any] | None = None
+        self, task: str | dict[str, Any], criticality: str = "medium", context: dict[str, Any] | None = None
     ) -> RoutingDecision:
         start_t = time.time()
 
