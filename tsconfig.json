@@ -11,5 +11,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["contracts/**/*.ts", "tests/typescript/**/*.ts"]
+  "include": ["contracts/**/*.ts", "tests/typescript/**/*.ts", "verdict/ts-client/**/*.ts"]
 }

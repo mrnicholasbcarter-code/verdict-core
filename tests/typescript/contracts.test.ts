@@ -9,7 +9,7 @@ import {
   parseLegacyContract,
   redactContractSecrets,
   serializeContract,
-} from "../../contracts/index.ts";
+} from "../../contracts/src/index.ts";
 
 type TaskContract = import("../../contracts/index.ts").TaskSpec;
 type RoutingContract = import("../../contracts/index.ts").RoutingDecision;

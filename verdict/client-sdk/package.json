@@ -1,0 +1,58 @@
+{
+  "name": "verdict-client",
+  "version": "0.1.0",
+  "description": "TypeScript HTTP client for Verdict Core REST API",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "examples/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "verify:package": "npm run build && node scripts/verify-package.mjs"
+  },
+  "peerDependencies": {
+    "verdict-core-contracts": "file:../../contracts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "~5.6.0",
+    "verdict-core-contracts": "file:../../contracts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/verdict/verdict-core.git"
+  },
+  "homepage": "https://github.com/verdict/verdict-core#readme",
+  "bugs": {
+    "url": "https://github.com/verdict/verdict-core/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "verdict",
+    "llm",
+    "routing",
+    "client",
+    "typescript"
+  ]
+}
