@@ -11,8 +11,8 @@ import {
   serializeContract,
 } from "../../contracts/src/index.ts";
 
-type TaskContract = import("../../contracts/index.ts").TaskSpec;
-type RoutingContract = import("../../contracts/index.ts").RoutingDecision;
+type TaskContract = import("../../contracts/src/index.ts").TaskSpec;
+type RoutingContract = import("../../contracts/src/index.ts").RoutingDecision;
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
