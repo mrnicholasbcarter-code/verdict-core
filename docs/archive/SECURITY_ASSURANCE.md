@@ -62,16 +62,17 @@ This repository currently assumes:
 - upstream providers enforce their own account, storage, and retention policies outside this repository;
 - development-mode degraded behavior is not treated as production-ready.
 
-### 1.4 Primary threats and current mitigations
+### 1.4 Primary threats, mitigations, tests, and residual risk
 
-| Threat | Why it matters | Current mitigation evidence |
-|---|---|---|
-| Sensitive work routed to the wrong model/provider | Could violate privacy, policy, or capability expectations | README states deterministic policy, privacy, budget, and availability gates run before ranking; release acceptance requires adaptive suggestions to be unable to bypass denial, privacy, capability, or protected-task gates. |
-| Prompt or credential leakage through logs | Logs are often copied into bug reports, CI artifacts, or benchmarks | `SECURITY.md` states decision logs omit provider credentials, full prompts, completions, and full task text by default; `ENFORCEMENT_AND_LEARNING.md` requires privacy-safe outcome records with redacted summaries and no raw prompts by default. |
-| SSRF or caller-selected upstream exfiltration | A malicious caller could force requests to internal hosts or attacker infrastructure | `SECURITY.md` documents URL validation, hostname requirements, rejection of userinfo/query/fragment, private-host blocking by default, fresh DNS resolution checks, and disabled redirects. |
-| Unauthorized local proxy use | A local or network-adjacent caller could send requests through operator credentials | `SECURITY.md` documents startup requirements for bearer auth or Unix socket unless explicit loopback-only anonymous development mode is enabled. |
-| Request-size or timeout exhaustion | Large bodies or hanging upstreams can affect availability | `SECURITY.md` documents bounded request size via `LLMGATE_MAX_REQUEST_BYTES` and upstream timeouts. |
-| Supply-chain compromise through dependencies or CI changes | Compromised packages or automation could alter runtime behavior or leak secrets | CI includes Bandit, pip-audit, and CodeQL; dependencies are declared in `pyproject.toml`; release claims remain alpha and evidence-based rather than implying hardening not yet proven. |
+| Threat | Why it matters | Current mitigation evidence | Test coverage | Residual risk |
+|---|---|---|---|---|
+| Sensitive work routed to the wrong model/provider | Could violate privacy, policy, or capability expectations | README states deterministic policy, privacy, budget, and availability gates run before ranking; release acceptance requires adaptive suggestions to be unable to bypass denial, privacy, capability, or protected-task gates | `tests/test_eligibility_gate.py`, `tests/test_availability_adapter.py` | Operator must configure gates correctly; adaptive ranker is advisory only |
+| Prompt or credential leakage through logs | Logs are often copied into bug reports, CI artifacts, or benchmarks | `SECURITY.md` states decision logs omit provider credentials, full prompts, completions, and full task text by default; `ENFORCEMENT_AND_LEARNING.md` requires privacy-safe outcome records with redacted summaries and no raw prompts by default | `tests/test_security.py::test_decision_logging_never_writes_full_prompt`, `tests/test_security.py::test_redaction_removes_secrets_from_exception_text` | Operator can enable `log_full_task` which bypasses redaction; provider-side retention is outside project control |
+| SSRF or caller-selected upstream exfiltration | A malicious caller could force requests to internal hosts or attacker infrastructure | `SECURITY.md` documents URL validation, hostname requirements, rejection of userinfo/query/fragment, private-host blocking by default, fresh DNS resolution checks, and disabled redirects | `tests/test_security.py::test_upstream_rejects_credentials_unsafe_schemes_and_private_hosts` | Operators can override with `LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS`; must be used carefully |
+| Unauthorized local proxy use | A local or network-adjacent caller could send requests through operator credentials | `SECURITY.md` documents startup requirements for bearer auth or Unix socket unless explicit loopback-only anonymous development mode is enabled | `tests/test_security.py::test_proxy_requires_bearer_token_by_default`, `tests/test_security.py::test_anonymous_mode_is_loopback_only_and_explicit` | If operator uses weak tokens or runs on shared host without isolation |
+| Request-size or timeout exhaustion | Large bodies or hanging upstreams can affect availability | `SECURITY.md` documents bounded request size via `LLMGATE_MAX_REQUEST_BYTES` and upstream timeouts | Implicit via `UpstreamProxy` validation and `httpx` timeout config | Operator must tune bounds for their workload |
+| Supply-chain compromise through dependencies or CI changes | Compromised packages or automation could alter runtime behavior or leak secrets | CI includes Bandit, pip-audit, and CodeQL; dependencies are declared in `pyproject.toml`; release claims remain alpha and evidence-based rather than implying hardening not yet proven | CI workflow runs on every push/PR; `.github/workflows/ci.yml` and `.github/workflows/codeql.yml` | Transitive dependency vulnerabilities can exist between scans; no SBOM or signed provenance yet |
+| Private data in RuVector/SONA memory | Adaptive learning could retain sensitive prompt data | `ENFORCEMENT_AND_LEARNING.md` defines privacy-safe episodes with redacted previews, stable fingerprints, and summary metadata only; raw prompts/completions/credentials not persisted by default | `tests/test_security.py::test_fingerprint_text_is_stable_and_non_plaintext` | Operator can configure learning to persist more; no hosted RuVector service exists |
 
 ### 1.5 Threats explicitly not solved by this repository alone
 
@@ -140,7 +141,7 @@ Runtime and development dependencies are declared in [`pyproject.toml`](../pypro
 
 The repository currently publishes automated supply-chain and static-analysis evidence in GitHub Actions:
 
-- **Bandit** runs against `llm_gate` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+- **Bandit** runs against `verdict` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 - **pip-audit** runs in the same workflow to inspect installed dependency vulnerabilities.
 - **CodeQL** runs on push, pull request, and a weekly schedule in [`.github/workflows/codeql.yml`](../.github/workflows/codeql.yml).
 - standard test, lint, and strict mypy checks run alongside security checks, reducing the chance that packaging or refactors silently break security-sensitive paths.
@@ -164,7 +165,17 @@ The current evidence set is useful but incomplete. As of this slice, the reposit
 
 These are gaps, not hidden features.
 
-## 5. How to verify the published evidence
+## 5. No private OmniRoute/RuVector storage access required
+
+The `verdict` codebase does **not** require access to any private OmniRoute or RuVector storage systems:
+
+- **OmniRoute**: The `OmniRouteHTTPTransport` class in `verdict/omniroute.py` is a credential-safe HTTP client that fetches availability and catalog data from a remote OmniRoute server via documented REST endpoints (`/v1/models`, `/api/monitoring/health`, `/api/rate-limits`, `/api/resilience/model-cooldowns`, `/api/usage/budget`, `/api/usage/token-limits`). It uses standard HTTP authentication (Bearer tokens) and does not require database access, direct storage access, or proprietary protocols.
+
+- **RuVector/SONA**: The adaptive ranker's semantic mode (`AdaptiveRankingMode.SEMANTIC` in `verdict/adaptive_ranker.py`) is advisory-only and currently a stub (`# Full RuVector/SONA integration is a follow-up`). When implemented, it would use embeddings from a remote RuVector service via HTTP API, not direct storage access.
+
+This design ensures operators can evaluate and deploy `verdict` without needing access to proprietary storage infrastructure.
+
+## 6. How to verify the published evidence
 
 From a clean project environment:
 
@@ -173,8 +184,8 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev,server]'
 .venv/bin/python -m pytest -q tests/test_security.py
-.venv/bin/python -m ruff check llm_gate tests
-.venv/bin/python -m bandit -q -r llm_gate
+.venv/bin/python -m ruff check verdict tests
+.venv/bin/python -m bandit -q -r verdict
 ```
 
 To review the CI configuration directly, inspect:
@@ -185,17 +196,19 @@ To review the CI configuration directly, inspect:
 - `SECURITY.md`
 - `docs/specs/RELEASE_ACCEPTANCE.md`
 
-## 6. Reviewer checklist
+## 7. Reviewer checklist
 
 A reviewer validating this slice should be able to answer yes to the following:
 
-- Is there a published threat model with assets, boundaries, assumptions, and key threats?
-- Are privacy defaults and limitations described without claiming certification?
-- Is retention responsibility clearly assigned to operators and upstream providers where appropriate?
-- Is there public evidence of supply-chain scanning or analysis in CI?
-- Are missing artifacts, such as SBOM/provenance attestations, disclosed as gaps rather than implied complete?
+- [ ] Is there a published threat model with assets, boundaries, assumptions, and key threats?
+- [ ] Does the threat model map each threat to mitigations, test coverage, and residual risk?
+- [ ] Are privacy defaults and limitations described without claiming certification?
+- [ ] Is retention responsibility clearly assigned to operators and upstream providers where appropriate?
+- [ ] Is there public evidence of supply-chain scanning or analysis in CI?
+- [ ] Are missing artifacts, such as SBOM/provenance attestations, disclosed as gaps rather than implied complete?
+- [ ] Is it documented that no private OmniRoute/RuVector storage access is required?
 
-## 7. Change policy
+## 8. Change policy
 
 Update this document whenever any of the following changes:
 
