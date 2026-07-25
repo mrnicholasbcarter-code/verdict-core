@@ -18,6 +18,23 @@ from typing import Any, Protocol
 from verdict.models import ModelInfo
 
 
+def _map_to_accepted_state(state: AvailabilityState) -> AvailabilityState:
+    """Map internal availability states to the accepted set for external consistency.
+
+    Accepted states: eligible, degraded, unknown, unavailable, unauthorized,
+    quota_exhausted, rate_limited, capability_mismatch.
+    """
+    _mapping = {
+        AvailabilityState.DENIED: AvailabilityState.UNAVAILABLE,
+        AvailabilityState.LOCKED_OUT: AvailabilityState.RATE_LIMITED,
+        AvailabilityState.CIRCUIT_OPEN: AvailabilityState.UNAVAILABLE,
+        AvailabilityState.TIMEOUT: AvailabilityState.UNKNOWN,
+        AvailabilityState.MALFORMED: AvailabilityState.UNKNOWN,
+        AvailabilityState.POLICY_DENIED: AvailabilityState.UNAVAILABLE,
+    }
+    return _mapping.get(state, state)
+
+
 def _is_finite_number(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
