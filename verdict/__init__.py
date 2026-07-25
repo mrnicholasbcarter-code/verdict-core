@@ -86,6 +86,14 @@ from verdict.probes import (
     ProbeRunner,
     openai_probe_transport,
 )
+from verdict.subagent_models import (
+    SUBAGENT_ROLE_REQUIREMENTS,
+    SubagentModelSelector,
+    get_subagent_selector,
+    select_model_for_role,
+    select_models_for_parallel_roles,
+)
+from verdict.subagent_resolver import resolve_subagent_model
 from verdict.workers import (
     OmniRouteWorkerClient,
     WorkerError,
@@ -99,6 +107,7 @@ from verdict.workers import (
 __all__ = [
     "DEFAULT_FIXTURE_PATH",
     "PROBE_PROMPT",
+    "SUBAGENT_ROLE_REQUIREMENTS",
     "AmbiguousEvidenceSelectorError",
     "AssignmentExplanation",
     "AvailabilityCache",
@@ -152,6 +161,7 @@ __all__ = [
     "RuntimeObservation",
     "StaticOmniRouteTransport",
     "StructuredPlanner",
+    "SubagentModelSelector",
     "SwarmDispatcher",
     "TaskEpisode",
     "TaskSpec",
@@ -173,10 +183,14 @@ __all__ = [
     "discover_transport_capabilities",
     "explain_freshness",
     "format_benchmark_report",
+    "get_subagent_selector",
     "load_benchmark_fixture",
     "openai_probe_transport",
     "request_features",
+    "resolve_subagent_model",
     "run_reproducible_benchmarks",
+    "select_model_for_role",
+    "select_models_for_parallel_roles",
 ]
 
 __version__ = "0.1.0"

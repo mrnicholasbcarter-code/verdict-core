@@ -17,12 +17,12 @@ from __future__ import annotations
 import enum
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any
 
-from verdict.contracts import Contract, ContractValidationError, TaskSpec, VerificationPlan, WorkflowPlan
-
+from verdict.contracts import TaskSpec, WorkflowPlan
 
 RUFLO_ADAPTER_PROTOCOL_VERSION = "rufl-adapter/v1"
 SUPPORTED_PROTOCOL_VERSIONS = ["rufl-adapter/v1"]
@@ -37,8 +37,9 @@ def negotiate_protocol_version(requested: str) -> str:
 
 class RufloAdapterError(Exception):
     """Base exception for Ruflo adapter errors."""
+
     category: str = "rufl_adapter_error"
-    
+
     def __init__(self, message: str, *, details: dict[str, Any] | None = None):
         super().__init__(message)
         self.message = message
@@ -47,85 +48,92 @@ class RufloAdapterError(Exception):
 
 class RufloUnavailableError(RufloAdapterError):
     """Ruflo backend unavailable or unreachable."""
+
     category = "rufl_unavailable"
 
 
 class RufloProtocolError(RufloAdapterError):
     """Protocol violation - invalid request/response format."""
+
     category = "rufl_protocol_error"
 
 
 class RufloCapacityError(RufloAdapterError):
     """Capacity constraints exceeded (budget, concurrency, quotas)."""
+
     category = "rufl_capacity_exceeded"
 
 
 class RufloApprovalError(RufloAdapterError):
     """Approval workflow failures."""
+
     category = "rufl_approval_error"
 
 
 class RufloCancellationError(RufloAdapterError):
     """Task cancellation failures."""
+
     category = "rufl_cancellation_error"
 
 
 class RufloVerificationError(RufloAdapterError):
     """Verification gate failures."""
+
     category = "rufl_verification_error"
 
 
 class RufloTimeoutError(RufloAdapterError):
     """Operation timeout."""
+
     category = "rufl_timeout"
 
 
 class RufloValidationError(RufloAdapterError):
     """Input validation failures."""
+
     category = "rufl_validation_error"
 
 
 @dataclass(frozen=True)
 class RufloAdapterConfig:
     """Configuration for Ruflo adapter boundary."""
-    
+
     # Contract version
     protocol_version: str = RUFLO_ADAPTER_PROTOCOL_VERSION
-    
+
     # Timeouts (milliseconds)
     submit_timeout_ms: int = 5000
     status_timeout_ms: int = 2000
     control_timeout_ms: int = 3000  # pause/resume/cancel/approve
     result_timeout_ms: int = 10000
-    
+
     # Retry policy
     max_submit_retries: int = 2
     retry_backoff_base_ms: int = 500
     retry_backoff_max_ms: int = 5000
-    
+
     # Capability manifest
-    required_capabilities: list[str] = field(default_factory=lambda: [
-        "task_submission",
-        "status_query", 
-        "pause_resume",
-        "cancellation",
-        "approval_workflow",
-        "result_retrieval",
-        "verification_gates",
-    ])
-    optional_capabilities: list[str] = field(default_factory=lambda: [
-        "replan",
-        "partial_results",
-        "streaming_updates",
-        "cost_tracking",
-    ])
-    
+    required_capabilities: list[str] = field(
+        default_factory=lambda: [
+            "task_submission",
+            "status_query",
+            "pause_resume",
+            "cancellation",
+            "approval_workflow",
+            "result_retrieval",
+            "verification_gates",
+        ]
+    )
+    optional_capabilities: list[str] = field(
+        default_factory=lambda: ["replan", "partial_results", "streaming_updates", "cost_tracking"]
+    )
+
     # Trust boundaries
     trust_protected_work: bool = True  # Verdict never authorizes protected work without Ruflo
     require_verification_for_protected: bool = True
     max_concurrent_tasks: int = 10
     default_budget_usd: float = 50.0
-    
+
     # Fake adapter mode (for testing)
     fake_mode: bool = False
     fake_latency_ms: int = 10
@@ -134,6 +142,7 @@ class RufloAdapterConfig:
 
 class TaskStatus(enum.Enum):
     """Task lifecycle states in Ruflo orchestration."""
+
     PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
@@ -149,6 +158,7 @@ class TaskStatus(enum.Enum):
 
 class TaskAction(enum.Enum):
     """Control actions that can be sent to Ruflo."""
+
     SUBMIT = "submit"
     PAUSE = "pause"
     RESUME = "resume"
@@ -161,29 +171,29 @@ class TaskAction(enum.Enum):
 @dataclass(frozen=True)
 class CapabilityManifest:
     """Declarative capability requirements for a task/workflow."""
-    
+
     required: list[str] = field(default_factory=list)
     optional: list[str] = field(default_factory=list)
     forbidden: list[str] = field(default_factory=list)
     minimum_versions: dict[str, str] = field(default_factory=dict)
-    
+
     def __post_init__(self) -> None:
         # Validate no overlap between required/forbidden
         overlap = set(self.required) & set(self.forbidden)
         if overlap:
             raise ValueError(f"Capabilities cannot be both required and forbidden: {overlap}")
-    
+
     def requires(self, capability: str) -> bool:
         return capability in self.required
-    
+
     def permits(self, capability: str) -> bool:
         return capability not in self.forbidden
-    
+
     def satisfies(self, available: list[str]) -> bool:
         """Check if available capabilities satisfy requirements."""
         available_set = set(available)
         return all(req in available_set for req in self.required)
-    
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "required": self.required,
@@ -191,7 +201,7 @@ class CapabilityManifest:
             "forbidden": self.forbidden,
             "minimum_versions": self.minimum_versions,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CapabilityManifest:
         return cls(
@@ -205,7 +215,7 @@ class CapabilityManifest:
 @dataclass(frozen=True)
 class RufloSubmitRequest:
     """Request to submit a task/workflow to Ruflo."""
-    
+
     task_spec: dict[str, Any]  # TaskSpec.to_dict()
     workflow_plan: dict[str, Any] | None = None  # WorkflowPlan.to_dict()
     capability_manifest: CapabilityManifest | None = None
@@ -215,12 +225,14 @@ class RufloSubmitRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
     contract_version: str = RUFLO_ADAPTER_PROTOCOL_VERSION
     submitted_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_spec": self.task_spec,
             "workflow_plan": self.workflow_plan,
-            "capability_manifest": self.capability_manifest.to_dict() if self.capability_manifest else None,
+            "capability_manifest": self.capability_manifest.to_dict()
+            if self.capability_manifest
+            else None,
             "budget_usd": self.budget_usd,
             "priority": self.priority,
             "idempotency_key": self.idempotency_key,
@@ -228,7 +240,7 @@ class RufloSubmitRequest:
             "contract_version": self.contract_version,
             "submitted_at": self.submitted_at,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RufloSubmitRequest:
         manifest = data.get("capability_manifest")
@@ -250,7 +262,7 @@ class RufloSubmitRequest:
 @dataclass(frozen=True)
 class RufloSubmitResponse:
     """Response from task submission."""
-    
+
     task_id: str
     workflow_id: str | None = None
     status: TaskStatus = TaskStatus.PENDING
@@ -259,7 +271,7 @@ class RufloSubmitResponse:
     estimated_start_at: str | None = None
     contract_version: str = RUFLO_ADAPTER_PROTOCOL_VERSION
     submitted_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
@@ -271,7 +283,7 @@ class RufloSubmitResponse:
             "contract_version": self.contract_version,
             "submitted_at": self.submitted_at,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RufloSubmitResponse:
         return cls(
@@ -289,7 +301,7 @@ class RufloSubmitResponse:
 @dataclass(frozen=True)
 class RufloStatusRequest:
     """Request for task/workflow status."""
-    
+
     task_id: str
     workflow_id: str | None = None
     include_history: bool = False
@@ -301,7 +313,7 @@ class RufloStatusRequest:
 @dataclass(frozen=True)
 class RufloStatusResponse:
     """Response from status query."""
-    
+
     task_id: str
     workflow_id: str | None = None
     status: TaskStatus = TaskStatus.PENDING
@@ -319,7 +331,7 @@ class RufloStatusResponse:
     last_update_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     error: str | None = None
     contract_version: str = RUFLO_ADAPTER_PROTOCOL_VERSION
-    
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
@@ -340,7 +352,7 @@ class RufloStatusResponse:
             "error": self.error,
             "contract_version": self.contract_version,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RufloStatusResponse:
         return cls(
@@ -367,7 +379,7 @@ class RufloStatusResponse:
 @dataclass(frozen=True)
 class RufloControlRequest:
     """Control request (pause/resume/cancel/approve/reject/replan)."""
-    
+
     task_id: str
     action: TaskAction
     workflow_id: str | None = None
@@ -382,7 +394,7 @@ class RufloControlRequest:
 @dataclass(frozen=True)
 class RufloControlResponse:
     """Response from control action."""
-    
+
     task_id: str
     action: TaskAction
     success: bool
@@ -391,7 +403,7 @@ class RufloControlResponse:
     reason: str = ""
     contract_version: str = RUFLO_ADAPTER_PROTOCOL_VERSION
     executed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
@@ -403,7 +415,7 @@ class RufloControlResponse:
             "contract_version": self.contract_version,
             "executed_at": self.executed_at,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RufloControlResponse:
         return cls(
@@ -421,7 +433,7 @@ class RufloControlResponse:
 @dataclass(frozen=True)
 class RufloResult:
     """Final result of a completed task/workflow."""
-    
+
     task_id: str
     workflow_id: str | None = None
     status: TaskStatus = TaskStatus.COMPLETED
@@ -438,7 +450,7 @@ class RufloResult:
     error: str | None = None
     replan_count: int = 0
     contract_version: str = RUFLO_ADAPTER_PROTOCOL_VERSION
-    
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
@@ -458,7 +470,7 @@ class RufloResult:
             "replan_count": self.replan_count,
             "contract_version": self.contract_version,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RufloResult:
         return cls(
@@ -484,17 +496,17 @@ class RufloResult:
 class RufloAdapter:
     """
     Ruflo Adapter Boundary - Protocol interface for Ruflo orchestration.
-    
+
     This is the contract boundary between Verdict and Ruflo. All communication
     goes through typed request/response envelopes with strict validation.
-    
+
     Trust Boundaries:
     - Verdict NEVER authorizes protected work without Ruflo confirmation
     - Ruflo is the SOLE authority on task lifecycle state
     - Capability manifest is enforced on both sides
     - All operations are idempotent via idempotency keys
     """
-    
+
     def __init__(
         self,
         config: RufloAdapterConfig | None = None,
@@ -503,15 +515,14 @@ class RufloAdapter:
         self.config = config or RufloAdapterConfig()
         self._transport = transport
         self._capability_manifest = CapabilityManifest(
-            required=self.config.required_capabilities,
-            optional=self.config.optional_capabilities,
+            required=self.config.required_capabilities, optional=self.config.optional_capabilities
         )
         self._fake_state: dict[str, Any] = {}  # For fake adapter mode
-    
+
     @property
     def capability_manifest(self) -> CapabilityManifest:
         return self._capability_manifest
-    
+
     def submit(
         self,
         task_spec: TaskSpec,
@@ -523,7 +534,7 @@ class RufloAdapter:
         metadata: dict[str, Any] | None = None,
     ) -> RufloSubmitResponse:
         """Submit a task/workflow to Ruflo for execution."""
-        
+
         # Build request
         request = RufloSubmitRequest(
             task_spec=task_spec.to_dict(),
@@ -534,28 +545,27 @@ class RufloAdapter:
             idempotency_key=idempotency_key or str(uuid.uuid4()),
             metadata=metadata or {},
         )
-        
+
         # Validate capability manifest
-        if capability_manifest and not capability_manifest.satisfies(self._capability_manifest.required):
+        if capability_manifest and not capability_manifest.satisfies(
+            self._capability_manifest.required
+        ):
             missing = set(capability_manifest.required) - set(self._capability_manifest.required)
             raise RufloValidationError(
                 f"Capability manifest requires unavailable capabilities: {missing}",
-                details={"missing": list(missing), "available": self._capability_manifest.required}
+                details={"missing": list(missing), "available": self._capability_manifest.required},
             )
-        
+
         # Execute via transport or fake
         if self.config.fake_mode or self._transport is None:
             return self._fake_submit(request)
-        
+
         try:
-            response_data = self._transport({
-                "method": "submit",
-                "params": request.to_dict(),
-            })
+            response_data = self._transport({"method": "submit", "params": request.to_dict()})
             return RufloSubmitResponse.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Submit failed: {e}") from e
-    
+
     def status(
         self,
         task_id: str,
@@ -564,50 +574,57 @@ class RufloAdapter:
         include_verification: bool = False,
     ) -> RufloStatusResponse:
         """Query task/workflow status from Ruflo."""
-        
+
         request = RufloStatusRequest(
             task_id=task_id,
             workflow_id=workflow_id,
             include_history=include_history,
             include_verification=include_verification,
         )
-        
+
         if self.config.fake_mode or self._transport is None:
             return self._fake_status(request)
-        
+
         try:
-            response_data = self._transport({
-                "method": "status",
-                "params": request.__dict__,
-            })
+            response_data = self._transport({"method": "status", "params": request.__dict__})
             return RufloStatusResponse.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Status query failed: {e}") from e
-    
-    def pause(self, task_id: str, workflow_id: str | None = None, reason: str = "") -> RufloControlResponse:
+
+    def pause(
+        self, task_id: str, workflow_id: str | None = None, reason: str = ""
+    ) -> RufloControlResponse:
         """Pause a running task."""
         return self._control(TaskAction.PAUSE, task_id, workflow_id, reason)
-    
-    def resume(self, task_id: str, workflow_id: str | None = None, reason: str = "") -> RufloControlResponse:
+
+    def resume(
+        self, task_id: str, workflow_id: str | None = None, reason: str = ""
+    ) -> RufloControlResponse:
         """Resume a paused task."""
         return self._control(TaskAction.RESUME, task_id, workflow_id, reason)
-    
-    def cancel(self, task_id: str, workflow_id: str | None = None, reason: str = "") -> RufloControlResponse:
+
+    def cancel(
+        self, task_id: str, workflow_id: str | None = None, reason: str = ""
+    ) -> RufloControlResponse:
         """Cancel a task."""
         return self._control(TaskAction.CANCEL, task_id, workflow_id, reason)
-    
-    def approve(self, task_id: str, workflow_id: str | None = None, approver: str = "", reason: str = "") -> RufloControlResponse:
+
+    def approve(
+        self, task_id: str, workflow_id: str | None = None, approver: str = "", reason: str = ""
+    ) -> RufloControlResponse:
         """Approve a task waiting for approval (protected work)."""
         if not approver:
             raise RufloApprovalError("Approver identity required for approval")
         return self._control(TaskAction.APPROVE, task_id, workflow_id, reason, approver)
-    
-    def reject(self, task_id: str, workflow_id: str | None = None, approver: str = "", reason: str = "") -> RufloControlResponse:
+
+    def reject(
+        self, task_id: str, workflow_id: str | None = None, approver: str = "", reason: str = ""
+    ) -> RufloControlResponse:
         """Reject a task waiting for approval."""
         if not approver:
             raise RufloApprovalError("Approver identity required for rejection")
         return self._control(TaskAction.REJECT, task_id, workflow_id, reason, approver)
-    
+
     def replan(
         self,
         task_id: str,
@@ -616,23 +633,24 @@ class RufloAdapter:
         reason: str = "",
     ) -> RufloControlResponse:
         """Request a replan with new specification."""
-        return self._control(TaskAction.REPLAN, task_id, workflow_id, reason, replan_spec=replan_spec)
-    
+        return self._control(
+            TaskAction.REPLAN, task_id, workflow_id, reason, replan_spec=replan_spec
+        )
+
     def result(self, task_id: str, workflow_id: str | None = None) -> RufloResult:
         """Get final result of a completed task."""
-        
+
         if self.config.fake_mode or self._transport is None:
             return self._fake_result(task_id, workflow_id)
-        
+
         try:
-            response_data = self._transport({
-                "method": "result",
-                "params": {"task_id": task_id, "workflow_id": workflow_id},
-            })
+            response_data = self._transport(
+                {"method": "result", "params": {"task_id": task_id, "workflow_id": workflow_id}}
+            )
             return RufloResult.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Result retrieval failed: {e}") from e
-    
+
     def health_check(self) -> dict[str, Any]:
         """Health check endpoint for adapter."""
         return {
@@ -648,26 +666,26 @@ class RufloAdapter:
                 "require_verification_for_protected": self.config.require_verification_for_protected,
             },
         }
-    
+
     def validate_capability_manifest(self, manifest: CapabilityManifest) -> tuple[bool, list[str]]:
         """Validate a capability manifest against adapter capabilities."""
         issues = []
         available = set(self._capability_manifest.required + self._capability_manifest.optional)
-        
+
         for req in manifest.required:
             if req not in available:
                 issues.append(f"Required capability not available: {req}")
-        
+
         for req in manifest.optional:
             if req not in available:
                 issues.append(f"Optional capability not available: {req}")
-        
+
         for forbidden in manifest.forbidden:
             if forbidden in available:
                 issues.append(f"Forbidden capability is available: {forbidden}")
-        
+
         return len(issues) == 0, issues
-    
+
     def _control(
         self,
         action: TaskAction,
@@ -678,7 +696,7 @@ class RufloAdapter:
         replan_spec: dict[str, Any] | None = None,
     ) -> RufloControlResponse:
         """Execute a control action."""
-        
+
         request = RufloControlRequest(
             task_id=task_id,
             action=action,
@@ -687,32 +705,33 @@ class RufloAdapter:
             approver=approver,
             replan_spec=replan_spec,
         )
-        
+
         if self.config.fake_mode or self._transport is None:
             return self._fake_control(request)
-        
+
         try:
-            response_data = self._transport({
-                "method": "control",
-                "params": request.__dict__,
-            })
+            response_data = self._transport({"method": "control", "params": request.__dict__})
             return RufloControlResponse.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Control action {action.value} failed: {e}") from e
-    
+
     # ===== Fake Adapter Implementation (Deterministic Testing) =====
-    
+
     def _fake_submit(self, request: RufloSubmitRequest) -> RufloSubmitResponse:
         """Fake submit for testing - simulates acceptance and queuing."""
         task_id = f"fake-task-{uuid.uuid4().hex[:8]}"
         workflow_id = f"fake-workflow-{uuid.uuid4().hex[:8]}" if request.workflow_plan else None
-        
+
         # Simulate latency
         if self.config.fake_latency_ms > 0:
             time.sleep(self.config.fake_latency_ms / 1000.0)
-        
+
         # Store in fake state
-        steps = [s.get("action", "unknown") for s in request.workflow_plan.get("steps", [])] if request.workflow_plan else []
+        steps = (
+            [s.get("action", "unknown") for s in request.workflow_plan.get("steps", [])]
+            if request.workflow_plan
+            else []
+        )
         self._fake_state[task_id] = {
             "task_id": task_id,
             "workflow_id": workflow_id,
@@ -732,7 +751,7 @@ class RufloAdapter:
             "replan_count": 0,
             "status_check_count": 0,  # Track status checks for controlled progression
         }
-        
+
         return RufloSubmitResponse(
             task_id=task_id,
             workflow_id=workflow_id,
@@ -741,7 +760,7 @@ class RufloAdapter:
             reason="Accepted for execution",
             estimated_start_at=datetime.now(timezone.utc).isoformat(),
         )
-    
+
     def _fake_status(self, request: RufloStatusRequest) -> RufloStatusResponse:
         """Fake status query with controlled progression."""
         task_data = self._fake_state.get(request.task_id)
@@ -752,11 +771,11 @@ class RufloAdapter:
                 status=TaskStatus.REJECTED,
                 error="Task not found",
             )
-        
+
         # Increment status check counter
         task_data["status_check_count"] = task_data.get("status_check_count", 0) + 1
         check_count = task_data["status_check_count"]
-        
+
         # Simulate progress for queued/running tasks
         status = task_data["status"]
         if status in (TaskStatus.QUEUED, TaskStatus.RUNNING):
@@ -767,7 +786,9 @@ class RufloAdapter:
             elif status == TaskStatus.QUEUED and check_count == 2:
                 task_data["status"] = TaskStatus.RUNNING
                 task_data["started_at"] = datetime.now(timezone.utc).isoformat()
-                task_data["current_step"] = task_data["steps_pending"][0] if task_data["steps_pending"] else "execution"
+                task_data["current_step"] = (
+                    task_data["steps_pending"][0] if task_data["steps_pending"] else "execution"
+                )
             # Third check: 25% progress
             elif status == TaskStatus.RUNNING and check_count == 3:
                 task_data["progress_pct"] = 25.0
@@ -783,7 +804,7 @@ class RufloAdapter:
                 task_data["steps_pending"] = []
                 task_data["verification_results"] = [{"check": "tests", "outcome": "pass"}]
                 task_data["progress_pct"] = 100.0
-        
+
         return RufloStatusResponse(
             task_id=task_data["task_id"],
             workflow_id=task_data["workflow_id"],
@@ -800,7 +821,7 @@ class RufloAdapter:
             verification_results=task_data["verification_results"],
             error=task_data["error"],
         )
-    
+
     def _fake_control(self, request: RufloControlRequest) -> RufloControlResponse:
         """Fake control action."""
         task_data = self._fake_state.get(request.task_id)
@@ -813,9 +834,9 @@ class RufloAdapter:
                 new_status=TaskStatus.REJECTED,
                 reason="Task not found",
             )
-        
+
         previous_status = task_data["status"]
-        
+
         if request.action == TaskAction.PAUSE:
             if previous_status == TaskStatus.RUNNING:
                 task_data["status"] = TaskStatus.PAUSED
@@ -824,7 +845,7 @@ class RufloAdapter:
             else:
                 success = False
                 new_status = previous_status
-        
+
         elif request.action == TaskAction.RESUME:
             if previous_status == TaskStatus.PAUSED:
                 task_data["status"] = TaskStatus.RUNNING
@@ -833,9 +854,14 @@ class RufloAdapter:
             else:
                 success = False
                 new_status = previous_status
-        
+
         elif request.action == TaskAction.CANCEL:
-            if previous_status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.PAUSED):
+            if previous_status in (
+                TaskStatus.PENDING,
+                TaskStatus.QUEUED,
+                TaskStatus.RUNNING,
+                TaskStatus.PAUSED,
+            ):
                 task_data["status"] = TaskStatus.CANCELLED
                 task_data["completed_at"] = datetime.now(timezone.utc).isoformat()
                 task_data["error"] = request.reason or "Cancelled by user"
@@ -844,7 +870,7 @@ class RufloAdapter:
             else:
                 success = False
                 new_status = previous_status
-        
+
         elif request.action == TaskAction.APPROVE:
             if previous_status == TaskStatus.WAITING_APPROVAL:
                 task_data["status"] = TaskStatus.RUNNING
@@ -853,7 +879,7 @@ class RufloAdapter:
             else:
                 success = False
                 new_status = previous_status
-        
+
         elif request.action == TaskAction.REJECT:
             if previous_status == TaskStatus.WAITING_APPROVAL:
                 task_data["status"] = TaskStatus.REJECTED
@@ -864,7 +890,7 @@ class RufloAdapter:
             else:
                 success = False
                 new_status = previous_status
-        
+
         elif request.action == TaskAction.REPLAN:
             if previous_status in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.REJECTED):
                 task_data["status"] = TaskStatus.QUEUED
@@ -881,11 +907,11 @@ class RufloAdapter:
             else:
                 success = False
                 new_status = previous_status
-        
+
         else:
             success = False
             new_status = previous_status
-        
+
         return RufloControlResponse(
             task_id=request.task_id,
             action=request.action,
@@ -894,7 +920,7 @@ class RufloAdapter:
             new_status=new_status,
             reason="" if success else f"Cannot {request.action.value} from {previous_status.value}",
         )
-    
+
     def _fake_result(self, task_id: str, workflow_id: str | None = None) -> RufloResult:
         """Fake result retrieval."""
         task_data = self._fake_state.get(task_id)
@@ -906,11 +932,16 @@ class RufloAdapter:
                 outcome="failure",
                 error="Task not found",
             )
-        
+
         # Ensure task is completed
-        while task_data["status"] not in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.REJECTED):
+        while task_data["status"] not in (
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+            TaskStatus.REJECTED,
+        ):
             self._fake_status(RufloStatusRequest(task_id=task_id))
-        
+
         return RufloResult(
             task_id=task_data["task_id"],
             workflow_id=task_data["workflow_id"],
@@ -939,9 +970,7 @@ def build_ruflo_adapter(
 
 
 def build_fake_ruflo_adapter(
-    fake_latency_ms: int = 10,
-    fake_failure_rate: float = 0.0,
-    **config_kwargs: Any,
+    fake_latency_ms: int = 10, fake_failure_rate: float = 0.0, **config_kwargs: Any
 ) -> RufloAdapter:
     """Factory for creating a fake Ruflo adapter for testing."""
     config = RufloAdapterConfig(
@@ -956,28 +985,28 @@ def build_fake_ruflo_adapter(
 __all__ = [
     "RUFLO_ADAPTER_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",
-    "negotiate_protocol_version",
+    "CapabilityManifest",
+    "RufloAdapter",
+    "RufloAdapterConfig",
     "RufloAdapterError",
-    "RufloUnavailableError",
-    "RufloProtocolError",
-    "RufloCapacityError",
     "RufloApprovalError",
     "RufloCancellationError",
-    "RufloVerificationError",
-    "RufloTimeoutError",
-    "RufloValidationError",
-    "RufloAdapterConfig",
-    "TaskStatus",
-    "TaskAction",
-    "CapabilityManifest",
-    "RufloSubmitRequest",
-    "RufloSubmitResponse",
-    "RufloStatusRequest",
-    "RufloStatusResponse",
+    "RufloCapacityError",
     "RufloControlRequest",
     "RufloControlResponse",
+    "RufloProtocolError",
     "RufloResult",
-    "RufloAdapter",
-    "build_ruflo_adapter",
+    "RufloStatusRequest",
+    "RufloStatusResponse",
+    "RufloSubmitRequest",
+    "RufloSubmitResponse",
+    "RufloTimeoutError",
+    "RufloUnavailableError",
+    "RufloValidationError",
+    "RufloVerificationError",
+    "TaskAction",
+    "TaskStatus",
     "build_fake_ruflo_adapter",
+    "build_ruflo_adapter",
+    "negotiate_protocol_version",
 ]

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
 
-from verdict.availability import AvailabilityReport, _now
+from verdict.availability import AvailabilityReport, CandidateRequirements, _now
 
 
 @dataclass(frozen=True)
@@ -148,6 +148,16 @@ class AvailabilityCache:
                     return entry.report
             # Expired or missing: must refresh synchronously.
             return self._refresh_locked(key, now)
+
+    def get_requirements(self, requirements: CandidateRequirements) -> AvailabilityReport:
+        """Get availability report for given requirements, bypassing per-model cache.
+
+        This bypasses the per-model cache and calls the source directly with
+        the given CandidateRequirements. Use this for role-based selection where
+        you need the full candidate set with runtime state, not a single model's
+        cached report.
+        """
+        return self.source(requirements)
 
     def explain(self, model_id: str) -> dict[str, Any]:
         """Return a freshness-aware explain record for ``model_id``.

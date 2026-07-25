@@ -74,10 +74,16 @@ class TestSwarmTaskEnvelope:
 
     def test_envelope_accepts_valid_rooted_paths(self):
         """Paths within allowed roots are accepted."""
+        import tempfile
+        import os
+        temp_dir = tempfile.gettempdir()
         envelope = SwarmTaskEnvelope(
-            objective="valid task", allowed_paths=["/home/nick/dev/project", "/tmp/work"]
+            objective="valid task", allowed_paths=["/home/nick/dev/project", os.path.join(temp_dir, "work")]
         )
         assert len(envelope.allowed_paths) == 2
+        # Ensure the temp path is normalized
+        assert envelope.allowed_paths[0] == "/home/nick/dev/project"
+        assert envelope.allowed_paths[1] == os.path.join(temp_dir, "work")
 
     def test_envelope_rejects_invalid_stop_conditions(self):
         """Unknown stop conditions are rejected."""
@@ -206,7 +212,10 @@ class TestPathValidation:
     def test_validate_rooted_path_accepts_allowed(self):
         """Paths within allowed roots are accepted."""
         assert _validate_rooted_path("/home/nick/dev/project")
-        assert _validate_rooted_path("/tmp/work")
+        import tempfile
+        import os
+        temp_dir = tempfile.gettempdir()
+        assert _validate_rooted_path(os.path.join(temp_dir, "work"))
         assert _validate_rooted_path("/workspace/data")
 
     def test_validate_rooted_path_rejects_escapes(self):

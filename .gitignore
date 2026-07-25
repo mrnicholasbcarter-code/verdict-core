@@ -52,3 +52,4 @@ CLAUDE.md
 skills-lock.json
 
 .env.memory
+.verdict/adaptive_state/

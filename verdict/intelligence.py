@@ -1,6 +1,8 @@
 import time
+import subprocess
+import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict, Union
 
 from verdict.discovery import fetch_models
 from verdict.eligibility import EligibilityGate
@@ -118,6 +120,25 @@ class IntelligenceService:
             return "unavailable"
 
     def readiness(self) -> ReadinessReport:
+        def _get_version(cmd: str) -> str:
+            try:
+                result = subprocess.run(
+                    [cmd, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=0.5,
+                )
+                if result.returncode == 0:
+                    # Take first line of output
+                    return result.stdout.splitlines()[0].strip() if result.stdout else "unknown"
+                else:
+                    return "unknown"
+            except Exception:
+                return "unknown"
+
+        ruflo_version = _get_version(self.ruflo_command)
+        ruvector_version = _get_version(self.ruvector_command)
+
         status = (
             "ready"
             if self.profile != "production" or self.managed_backend_status != "unavailable"
@@ -132,16 +153,30 @@ class IntelligenceService:
             degraded_mode=degraded,
             policy_version=self._policy_version,
             reason="ready" if not degraded else "managed intelligence unavailable",
-            adapter_versions={},
+            adapter_versions={
+                "ruflo": ruflo_version,
+                "ruvector": ruvector_version,
+            },
         )
-
     async def route(
-        self, task: str, criticality: str = "medium", context: dict[str, Any] | None = None
+        self, task: Union[str, Dict[str, Any]], criticality: str = "medium", context: dict[str, Any] | None = None
     ) -> RoutingDecision:
         start_t = time.time()
 
+        # Handle envelope input
+        if isinstance(task, dict):
+            # Extract fields from envelope
+            task_str = task.get("task", "")
+            # Allow overriding criticality and context from envelope
+            if "criticality" in task:
+                criticality = task["criticality"]
+            if "context" in task:
+                context = task["context"]
+        else:
+            task_str = task
+
         # Hard deterministic floor logic here.
-        redacted_task = self._redact(task)
+        redacted_task = self._redact(task_str)
         # Attempt an async call or subprocess with timeout to Ruflo
         try:
             import subprocess
@@ -155,20 +190,20 @@ class IntelligenceService:
             pass
 
         # Fallback to strict heuristic scan
-        eff_tier, heuristic_reason = scan(task)
+        eff_tier, heuristic_reason = scan(task_str)
 
         # Planning estimates task capability needs. Criticality is retained as a
         # safety floor, not as a model selector: identical task semantics have
         # identical selection requirements unless a protected floor applies.
         try:
-            task_spec = self.planner.plan(task, context=context, criticality=criticality).task_spec
+            task_spec = self.planner.plan(task_str, context=context, criticality=criticality).task_spec
             task_tier = {"low": 3, "medium": 2, "high": 1}.get(task_spec.effort, 2)
         except Exception:
             task_tier = 2
 
         # Convert criticality string to required tier max
-        tier_map = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        req_tier = tier_map.get(criticality.lower(), 2)
+        tide_map = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        req_tier = tide_map.get(criticality.lower(), 2)
 
         esc_reason: str = ""
         escalated = False
@@ -257,6 +292,42 @@ class IntelligenceService:
             **{**dec.__dict__, "latency_ms": elapsed, "logged": bool(self.log_path)}
         )
         if self.log_path:
-            log_decision(self.log_path, task, req_tier, dec, self.log_full_task)
+            log_decision(self.log_path, task_str, req_tier, dec, self.log_full_task)
 
         return dec
+
+    def execute_argv(self, argv: list[str]) -> dict[str, Any]:
+        """Execute an argument vector via subprocess and return structured output.
+
+        Args:
+            argv: List of command and arguments to execute.
+
+        Returns:
+            Dictionary with keys: stdout, stderr, returncode.
+        """
+        try:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=5.0,  # reasonable default timeout
+            )
+            return {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        except subprocess.TimeoutExpired as e:
+            return {
+                "stdout": e.stdout or "",
+                "stderr": e.stderr or "",
+                "returncode": -1,
+                "error": "timeout",
+            }
+        except Exception as e:
+            return {
+                "stdout": "",
+                "stderr": str(e),
+                "returncode": -2,
+                "error": str(e),
+            }

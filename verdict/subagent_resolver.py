@@ -20,15 +20,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from typing import Any
 
-from verdict.subagent_models import (
-    SubagentModelSelector,
-    get_subagent_selector,
-    select_model_for_role,
-)
+from verdict.subagent_models import select_model_for_role
 
 
 def resolve_subagent_model(
@@ -41,26 +36,23 @@ def resolve_subagent_model(
 ) -> dict[str, Any] | None:
     """
     Resolve a subagent role to a concrete model ID.
-    
+
     Args:
-        role: One of "scout", "worker", "reviewer", "oracle", "planner", 
+        role: One of "scout", "worker", "reviewer", "oracle", "planner",
               "researcher", "context-builder", "delegate"
         protected: If True, fail-closed when OmniRoute unavailable
         dev_mode: If True, allow unverified candidates when not protected
         diversity_from: Model IDs to exclude for diversity
         json_output: If True, return JSON dict with model info
-        
+
     Returns:
         Dict with model info or None if no eligible model
     """
     try:
         model = select_model_for_role(
-            role,
-            protected=protected,
-            dev_mode=dev_mode,
-            diversity_from=diversity_from,
+            role, protected=protected, dev_mode=dev_mode, diversity_from=diversity_from
         )
-        
+
         if model is None:
             result = {"error": f"No eligible model for role: {role}", "role": role}
         else:
@@ -74,12 +66,12 @@ def resolve_subagent_model(
                 "protected": protected,
                 "dev_mode": dev_mode,
             }
-        
+
         if json_output:
             print(json.dumps(result, indent=2))
-        
+
         return result
-        
+
     except Exception as e:
         result = {"error": str(e), "role": role}
         if json_output:
@@ -98,16 +90,23 @@ Examples:
   %(prog)s --role worker
   %(prog)s --role reviewer --diversity-from worker
   %(prog)s --role oracle --protected --json
-        """
+        """,
     )
     parser.add_argument("--role", required=True, help="Subagent role to resolve")
     parser.add_argument("--protected", action="store_true", help="Fail-closed for protected work")
-    parser.add_argument("--no-dev-mode", dest="dev_mode", action="store_false", help="Disable dev mode (strict eligibility)")
-    parser.add_argument("--diversity-from", action="append", default=[], help="Model IDs to exclude for diversity")
+    parser.add_argument(
+        "--no-dev-mode",
+        dest="dev_mode",
+        action="store_false",
+        help="Disable dev mode (strict eligibility)",
+    )
+    parser.add_argument(
+        "--diversity-from", action="append", default=[], help="Model IDs to exclude for diversity"
+    )
     parser.add_argument("--json", action="store_true", help="Output JSON to stdout")
-    
+
     args = parser.parse_args()
-    
+
     result = resolve_subagent_model(
         role=args.role,
         protected=args.protected,
@@ -115,15 +114,15 @@ Examples:
         diversity_from=args.diversity_from or None,
         json_output=args.json,
     )
-    
+
     if result and "error" in result:
         if not args.json:
             print(f"Error: {result['error']}", file=sys.stderr)
         return 1
-    
+
     if not args.json and result:
         print(f"Resolved: {result['model_id']} ({result['provider']})")
-    
+
     return 0
 
 
