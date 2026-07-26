@@ -1,5 +1,5 @@
 {
-  "name": "verdict-core-contracts",
+  "name": "@verdict/contracts",
   "version": "0.1.0",
   "description": "Canonical Zod schemas and TypeScript types for Verdict v1 contracts",
   "license": "MIT",
@@ -14,12 +14,11 @@
   },
   "files": [
     "dist",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
@@ -33,6 +32,7 @@
     "prettier": "^3.3.0",
     "tsx": "^4.19.0",
     "typescript": "~5.6.0",
+    "vitest": "^4.1.10",
     "zod": "^3.23.0"
   },
   "engines": {
@@ -48,7 +48,8 @@
     "url": "https://github.com/verdict/verdict-core/issues"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "keywords": [
     "verdict",

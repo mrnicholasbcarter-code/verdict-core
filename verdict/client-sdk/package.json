@@ -20,19 +20,19 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
     "verify:package": "npm run build && node scripts/verify-package.mjs"
   },
   "peerDependencies": {
-    "verdict-core-contracts": "file:../../contracts"
+    "@verdict/contracts": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
+    "@verdict/contracts": "^0.1.0",
     "typescript": "~5.6.0",
-    "verdict-core-contracts": "file:../../contracts"
+    "vitest": "^1.6.1"
   },
   "engines": {
     "node": ">=18"
