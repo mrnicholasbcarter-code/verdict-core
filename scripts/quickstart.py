@@ -4,11 +4,11 @@ Clean-environment quickstart for Verdict.
 Creates a temporary venv and tests the full stack.
 Run: python scripts/quickstart.py
 """
-import sys
 import subprocess
+import sys
 import tempfile
-import shutil
 from pathlib import Path
+
 
 def run(cmd, cwd=None, check=True, env=None):
     """Run command and return result."""
@@ -20,19 +20,20 @@ def run(cmd, cwd=None, check=True, env=None):
         sys.exit(1)
     return result
 
+
 def main():
     print("🚀 Verdict Quickstart - Clean Environment Test")
     print("=" * 50)
-    
+
     repo_root = Path(__file__).parent.parent
     print(f"📁 Repo root: {repo_root}")
-    
+
     # Create temporary venv
     with tempfile.TemporaryDirectory() as tmpdir:
         venv_path = Path(tmpdir) / "venv"
         print(f"\n📦 Creating virtual environment at {venv_path}...")
         run(f"{sys.executable} -m venv {venv_path}")
-        
+
         # Determine pip/python paths
         if sys.platform == "win32":
             pip = venv_path / "Scripts" / "pip.exe"
@@ -40,21 +41,22 @@ def main():
         else:
             pip = venv_path / "bin" / "pip"
             python = venv_path / "bin" / "python"
-        
+
         # Step 1: Install in development mode with server extras
         print("\n📦 Installing verdict-core in development mode with server extras...")
         run(f"{pip} install -e {repo_root}[server] --quiet")
-        
+
         # Step 2: Run flagship demo (credential-free)
         print("\n🎯 Running flagship demo (no credentials required)...")
         result = run(f"{python} scripts/flagship_demo.py", cwd=repo_root, check=False)
-        
+
         if result.returncode == 0:
             print("✅ Flagship demo completed successfully!")
             import json
+
             try:
                 demo_output = json.loads(result.stdout.strip())
-                print(f"\n📋 Demo Results:")
+                print("\n📋 Demo Results:")
                 print(f"  Task: {demo_output['task_spec']['objective']}")
                 print(f"  Required capabilities: {demo_output['requirements']['required']}")
                 print(f"  Eligible candidates: {demo_output['eligible']}")
@@ -98,21 +100,21 @@ print(json.dumps(resp.json(), indent=2))
 """
         test_result = run(f'{python} -c "{test_script}"', cwd=repo_root)
         print(f"✅ Route test status: {test_result.stdout.split(chr(10))[0]}")
-        
+
         # Step 4: Verify CLI works
         print("\n💻 Testing CLI...")
-        cli_result = run(f"{python} -m verdict --help", cwd=repo_root)
+        run(f"{python} -m verdict --help", cwd=repo_root)
         print("✅ CLI help works")
-        
+
         # Step 5: Run a subset of tests
         print("\n🧪 Running core test suite...")
-        test_result = run(f"{python} -m pytest tests/test_contracts.py tests/test_models.py -v --tb=short 2>&1 | tail -20", 
+        test_result = run(f"{python} -m pytest tests/test_contracts.py tests/test_models.py -v --tb=short 2>&1 | tail -20",
                          cwd=repo_root, check=False)
         if test_result.returncode == 0:
             print("✅ Core tests pass")
         else:
             print("⚠️  Some tests had issues (check output)")
-    
+
     print("\n" + "=" * 50)
     print("🎉 QUICKSTART PASSED - All systems operational!")
     print("=" * 50)
@@ -121,6 +123,7 @@ print(json.dumps(resp.json(), indent=2))
     print("  - Try: python -m verdict route --help")
     print("  - Start API: python -m verdict serve")
     print("  - Explore: python scripts/flagship_demo.py")
+
 
 if __name__ == "__main__":
     main()
