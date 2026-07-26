@@ -51,7 +51,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: ./verdict-node/package-lock.json
+          cache-dependency-path: verdict-node/package-lock.json
 
       - name: Install dependencies
         run: cd verdict-node && npm ci --prefer-offline
@@ -62,4 +62,5 @@ jobs:
       - name: Run OSV scanner
         uses: google/osv-scanner@v1
         with:
-          args: --recursive verdict-node --skip-git
+          args: |
+            --recursive verdict-node
