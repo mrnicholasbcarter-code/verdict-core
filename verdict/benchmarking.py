@@ -75,8 +75,8 @@ def load_benchmark_fixture(path: str | os.PathLike[str] = DEFAULT_FIXTURE_PATH) 
     fixture_path = Path(path)
     # If path is relative and doesn't exist, try relative to package root
     if not fixture_path.is_absolute() and not fixture_path.exists():
-        _PACKAGE_ROOT = Path(__file__).parent.parent
-        fixture_path = _PACKAGE_ROOT / path
+        _package_root = Path(__file__).parent.parent
+        fixture_path = _package_root / path
     return cast(dict[str, Any], json.loads(fixture_path.read_text()))
 
 
