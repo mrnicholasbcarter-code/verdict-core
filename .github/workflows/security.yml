@@ -26,8 +26,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra dashboard --extra server
 
-      - name: Install pip-audit
-        run: uv pip install pip-audit
+      - name: Install pip-audit and bandit
+        run: uv pip install pip-audit bandit
 
       - name: Run pip-audit
         run: uv run pip-audit --local
