@@ -26,11 +26,11 @@
     "verify:package": "npm run build && node scripts/verify-package.mjs"
   },
   "peerDependencies": {
-    "@verdict/contracts": "^0.1.0"
+    "@bodanglin/verdict-contracts": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@verdict/contracts": "^0.1.0",
+    "@bodanglin/verdict-contracts": "^0.1.0",
     "typescript": "~5.6.0",
     "vitest": "^1.6.1"
   },

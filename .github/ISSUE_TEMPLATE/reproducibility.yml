@@ -1,0 +1,80 @@
+name: Reproducibility Report
+description: Report a reproducibility issue with evidence
+title: "[REPRO] "
+labels: ["reproducibility", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a reproducibility issue! Please provide the exact steps and evidence.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Please provide your environment details:
+        - OS/Version
+        - Python version
+        - Verdict version (pip show verdict-core)
+        - Node version (if applicable)
+        - Key dependencies
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps to reproduce the issue
+      placeholder: |
+        1. Run command X
+        2. Observe behavior Y
+        3. Expected behavior Z
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happens?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: |
+        Please attach or describe evidence:
+        - Error messages
+        - Log output
+        - Screenshots
+        - JSON output from commands
+        - Benchmark results
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical (blocks all use)
+        - High (blocks major feature)
+        - Medium (workaround exists)
+        - Low (minor inconvenience)
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have provided a minimal reproducible example
+          required: true
+        - label: I have checked if this is a known issue
+          required: true
+        - label: This is not a configuration/usage error
+          required: true

@@ -1,0 +1,41 @@
+name: Question
+description: Ask a question about using or contributing to Verdict
+title: "[QUESTION] "
+labels: ["question", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about Verdict? We're happy to help!
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Related Area
+      options:
+        - Installation/Setup
+        - Configuration
+        - Routing Logic
+        - API Usage
+        - CLI Commands
+        - Contracts/Types
+        - Deployment
+        - Integration
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have checked the documentation
+          required: true
+        - label: I have searched existing issues
+          required: true

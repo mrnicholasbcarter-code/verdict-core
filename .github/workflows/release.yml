@@ -1,4 +1,4 @@
-name: Release
+name: "Release"
 
 on:
   push:
@@ -22,28 +22,67 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+
       - name: Install uv
         uses: astral-sh/setup-uv@v3
 
-      - name: Install dependencies
+      - name: Install dependencies (Python)
         run: uv sync --extra dev --extra dashboard --extra server
 
-      - name: Run tests
-        run: uv run pytest tests/ -x --ignore=tests/test_vcr_fallback.py -q
+      - name: Install dependencies (Node)
+        run: npm ci --workspaces
 
-      - name: Build package
+      - name: Run Python tests
+        run: uv run pytest tests/ --ignore=tests/test_vcr_fallback.py -x -q
+
+      - name: Run TypeScript tests
+        run: npm test --workspaces
+
+      - name: Build Python package
         run: uv build
 
-      - name: Check package
+      - name: Check Python package
         run: uv run twine check dist/*
+
+      - name: Build TypeScript packages
+        run: npm run build --workspaces
+
+      - name: Verify npm packages
+        run: |
+          cd contracts && npm pack --dry-run
+          cd ../verdict/client-sdk && npm pack --dry-run
+          cd ../../verdict-node && npm pack --dry-run
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
+      - name: Publish to npm
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cd contracts && npm publish --access public --provenance
+          cd ../verdict/client-sdk && npm publish --access public --provenance
+          cd ../../verdict-node && npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
         with:
-          files: dist/*
           generate_release_notes: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            contracts/*.tgz
+            verdict/client-sdk/*.tgz
+            verdict-node/*.tgz

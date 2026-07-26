@@ -165,13 +165,14 @@ def test_cmd_benchmark_writes_json_report(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     output_path = tmp_path / "benchmark-report.json"
+    fixture_path = Path(__file__).parent.parent / "benchmarks" / "fixtures" / "reproducible.json"
 
-    cli.cmd_benchmark("benchmarks/fixtures/reproducible.json", str(output_path))
+    cli.cmd_benchmark(str(fixture_path), str(output_path))
 
     out = capsys.readouterr().out
     assert "mode: local-reproducible" in out
     payload = json.loads(output_path.read_text())
-    assert payload["fixture_path"] == "benchmarks/fixtures/reproducible.json"
+    assert payload["fixture_path"] == str(fixture_path)
     assert payload["live_provider"] is None
 
 

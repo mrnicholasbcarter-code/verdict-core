@@ -1,0 +1,51 @@
+name: Documentation Feedback
+description: Report issues or suggestions for documentation
+title: "[DOCS] "
+labels: ["documentation", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve our documentation!
+  - type: dropdown
+    id: doc_type
+    attributes:
+      label: Documentation Type
+      options:
+        - README / Getting Started
+        - API Reference
+        - Architecture / Design
+        - CLI Reference
+        - Configuration
+        - Examples / Tutorials
+        - Migration Guide
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: Issue Description
+      description: What's wrong or missing?
+      placeholder: |
+        The documentation for X is unclear/missing/wrong because...
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: How should this be improved?
+      placeholder: |
+        Suggest adding/clarifying X...
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have checked if this is already documented
+          required: true
+        - label: This is not a code bug (use bug report for that)
+          required: true

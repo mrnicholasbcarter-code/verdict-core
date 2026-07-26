@@ -3,11 +3,11 @@ import type {
   RoutingDecision,
   AvailabilitySnapshot,
   RuntimeCandidate,
-} from '@verdict/contracts';
+} from '@bodanglin/verdict-contracts';
 import {
   parseContract,
   ContractValidationError as ContractsContractValidationError,
-} from '@verdict/contracts';
+} from '@bodanglin/verdict-contracts';
 import {
   VerdictAPIError,
   BadRequestError,
