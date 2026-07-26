@@ -1,74 +1,54 @@
 name: Feature Request
-description: Suggest an idea for this project
-title: "[Feature]: "
+description: Suggest a new feature or enhancement
+title: "[FEATURE] "
 labels: ["enhancement", "triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to suggest a new feature!
+        Thanks for suggesting a feature! Please provide details below.
   - type: textarea
     id: problem
     attributes:
       label: Problem Statement
-      description: A clear and concise description of what problem this feature would solve.
-      placeholder: I'm always frustrated when...
+      description: What problem does this feature solve?
     validations:
       required: true
   - type: textarea
     id: solution
     attributes:
       label: Proposed Solution
-      description: A clear and concise description of what you want to happen.
-      placeholder: It would be great if...
+      description: Describe your ideal solution
     validations:
       required: true
   - type: textarea
     id: alternatives
     attributes:
       label: Alternatives Considered
-      description: A clear and concise description of any alternative solutions or features you've considered.
-      placeholder: I've also considered...
-    validations:
-      required: false
+      description: Other approaches you've considered
   - type: dropdown
     id: component
     attributes:
-      label: Component
-      description: Which component would this feature affect?
+      label: Target Component
       options:
-        - Core Routing (gate.py)
-        - Model Discovery (discovery.py)
-        - Classifier (classifier.py)
-        - CLI (cli.py)
-        - API Server (api.py)
-        - Dashboard (dashboard.py)
-        - Neural Router (neural.py)
-        - Escalation (escalation.py)
-        - Headroom (headroom.py)
-        - Logger (logger.py)
-        - Models (models.py)
-        - Router (router.py)
-        - Tests
+        - Core routing (gate, availability, eligibility)
+        - API server (FastAPI)
+        - CLI
+        - Contracts
+        - Intelligence/RuVector
+        - Swarm/Dispatcher
         - Documentation
         - CI/CD
-        - Other
     validations:
       required: true
-  - type: textarea
-    id: additional-context
-    attributes:
-      label: Additional Context
-      description: Add any other context or screenshots about the feature request here.
-      placeholder: Any additional information, mockups, or references...
-    validations:
-      required: false
   - type: checkboxes
-    id: terms
+    id: checklist
     attributes:
       label: Checklist
       options:
-        - label: I have searched for existing feature requests
+        - label: This aligns with Verdict's policy-gated architecture
           required: true
-        - label: I have provided a clear problem statement and proposed solution
+        - label: This maintains deterministic safety floors
           required: true
+        - label: I am willing to implement or help test
+          required: false

@@ -24,7 +24,9 @@ from verdict.contracts import AvailabilitySnapshot, RoutingDecisionContract, Tas
 from verdict.dispatcher import SwarmDispatcher
 from verdict.gate import Gate
 
-DEFAULT_FIXTURE_PATH = Path("benchmarks/fixtures/reproducible.json")
+# Use absolute path to ensure it works from any working directory
+_PACKAGE_ROOT = Path(__file__).parent.parent
+DEFAULT_FIXTURE_PATH = _PACKAGE_ROOT / "benchmarks" / "fixtures" / "reproducible.json"
 REPORT_SCHEMA_VERSION = "1"
 
 
@@ -71,6 +73,10 @@ def _summarize(samples_ns: Sequence[int]) -> dict[str, int | float | str]:
 
 def load_benchmark_fixture(path: str | os.PathLike[str] = DEFAULT_FIXTURE_PATH) -> dict[str, Any]:
     fixture_path = Path(path)
+    # If path is relative and doesn't exist, try relative to package root
+    if not fixture_path.is_absolute() and not fixture_path.exists():
+        _PACKAGE_ROOT = Path(__file__).parent.parent
+        fixture_path = _PACKAGE_ROOT / path
     return cast(dict[str, Any], json.loads(fixture_path.read_text()))
 
 

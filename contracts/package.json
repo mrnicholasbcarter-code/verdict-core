@@ -47,7 +47,9 @@
     "url": "https://github.com/mrnicholasbcarter-code/verdict-core/issues"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
   },
   "keywords": [
     "verdict",

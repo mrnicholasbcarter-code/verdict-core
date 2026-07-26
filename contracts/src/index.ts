@@ -328,6 +328,10 @@ const outcomeEventSchema = z
     model_version: nullableString.default(null),
     details: jsonObject.nullable().default(null),
     schema_version: schemaVersion.default('1'),
+    // Extended fields for evidence tracking
+    status_code: z.number().int().optional(),
+    streaming_phase: z.string().nullable().optional(),
+    abort_observed: z.boolean().optional(),
   })
   .strict();
 
