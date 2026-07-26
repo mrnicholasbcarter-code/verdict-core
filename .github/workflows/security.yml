@@ -38,7 +38,7 @@ jobs:
       - name: Run OSV scanner
         uses: google/osv-scanner@v1
         with:
-          args: --recursive . --ignore-dev --ignore-dev --ignore-dev
+          args: --recursive . --ignore-dev
 
   node-security:
     runs-on: ubuntu-latest
