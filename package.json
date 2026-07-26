@@ -5,14 +5,12 @@
   "description": "Verdict Core - Availability-aware LLM routing platform",
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit",
-    "test": "tsx --test tests/typescript/contracts.test.ts"
+    "build": "tsc --noEmit"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "tsx": "^4.20.3",
-    "typescript": "^5.9.2"
+    "tsx": "^4.20.3"
   },
   "workspaces": [
     "contracts",
