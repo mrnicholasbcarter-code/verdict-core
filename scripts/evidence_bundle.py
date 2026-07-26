@@ -2,6 +2,7 @@
 """
 Collect and bundle evidence for release.
 """
+
 import json
 import os
 import subprocess
@@ -29,11 +30,15 @@ def collect_evidence() -> dict[str, Any]:
             if f.endswith((".json", ".md", ".txt", ".log", ".xml")):
                 path = Path(root) / f
                 rel_path = path.relative_to(EVIDENCE_DIR)
-                evidence["artifacts"].append({
-                    "path": str(rel_path),
-                    "size": path.stat().st_size,
-                    "modified": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
-                })
+                evidence["artifacts"].append(
+                    {
+                        "path": str(rel_path),
+                        "size": path.stat().st_size,
+                        "modified": datetime.fromtimestamp(
+                            path.stat().st_mtime, timezone.utc
+                        ).isoformat(),
+                    }
+                )
 
     return evidence
 

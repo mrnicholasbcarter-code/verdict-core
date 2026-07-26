@@ -4,6 +4,7 @@ Clean-environment quickstart for Verdict.
 Creates a temporary venv and tests the full stack.
 Run: python scripts/quickstart.py
 """
+
 import subprocess
 import sys
 import tempfile
@@ -61,14 +62,16 @@ def main():
                 print(f"  Required capabilities: {demo_output['requirements']['required']}")
                 print(f"  Eligible candidates: {demo_output['eligible']}")
                 print(f"  Selected route: {demo_output['decision']['selected_route']}")
-                print(f"  Exclusions: {len(demo_output['decision']['exclusions'])} candidates rejected")
+                print(
+                    f"  Exclusions: {len(demo_output['decision']['exclusions'])} candidates rejected"
+                )
             except json.JSONDecodeError:
                 print(f"  Output: {result.stdout[:200]}...")
 
             # Print exclusions with correct field names
             print("\n📋 Exclusions:")
-            for excl in demo_output['decision']['exclusions']:
-                model_key = 'model'  # Demo uses 'model' field
+            for excl in demo_output["decision"]["exclusions"]:
+                model_key = "model"  # Demo uses 'model' field
                 print(f"    - {excl.get(model_key, 'unknown')}: {excl.get('reason', 'no reason')}")
         else:
             print(f"❌ Demo failed with exit code {result.returncode}")
@@ -108,8 +111,11 @@ print(json.dumps(resp.json(), indent=2))
 
         # Step 5: Run a subset of tests
         print("\n🧪 Running core test suite...")
-        test_result = run(f"{python} -m pytest tests/test_contracts.py tests/test_models.py -v --tb=short 2>&1 | tail -20",
-                         cwd=repo_root, check=False)
+        test_result = run(
+            f"{python} -m pytest tests/test_contracts.py tests/test_models.py -v --tb=short 2>&1 | tail -20",
+            cwd=repo_root,
+            check=False,
+        )
         if test_result.returncode == 0:
             print("✅ Core tests pass")
         else:

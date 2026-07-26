@@ -55,10 +55,30 @@ class BenchmarkResult:
 
 # Deterministic fixture data for reproducible benchmarks
 FIXTURE_MODELS = {
-    "gpt-4o": {"tier": "frontier", "cost_per_1k_in": 0.005, "cost_per_1k_out": 0.015, "capabilities": {"tools", "structured_output"}},
-    "gpt-4o-mini": {"tier": "mid", "cost_per_1k_in": 0.00015, "cost_per_1k_out": 0.0006, "capabilities": {"tools", "structured_output"}},
-    "claude-3-5-sonnet": {"tier": "frontier", "cost_per_1k_in": 0.003, "cost_per_1k_out": 0.015, "capabilities": {"tools", "structured_output"}},
-    "claude-3-haiku": {"tier": "mid", "cost_per_1k_in": 0.00025, "cost_per_1k_out": 0.00125, "capabilities": {"tools", "structured_output"}},
+    "gpt-4o": {
+        "tier": "frontier",
+        "cost_per_1k_in": 0.005,
+        "cost_per_1k_out": 0.015,
+        "capabilities": {"tools", "structured_output"},
+    },
+    "gpt-4o-mini": {
+        "tier": "mid",
+        "cost_per_1k_in": 0.00015,
+        "cost_per_1k_out": 0.0006,
+        "capabilities": {"tools", "structured_output"},
+    },
+    "claude-3-5-sonnet": {
+        "tier": "frontier",
+        "cost_per_1k_in": 0.003,
+        "cost_per_1k_out": 0.015,
+        "capabilities": {"tools", "structured_output"},
+    },
+    "claude-3-haiku": {
+        "tier": "mid",
+        "cost_per_1k_in": 0.00025,
+        "cost_per_1k_out": 0.00125,
+        "capabilities": {"tools", "structured_output"},
+    },
 }
 
 WORKLOAD_FIXTURES = {
@@ -87,11 +107,13 @@ def deterministic_hash(*args) -> int:
     """Deterministic hash for reproducible randomness."""
     h = 0
     for arg in args:
-        h = (h * 31 + hash(str(arg))) & 0x7fffffff
+        h = (h * 31 + hash(str(arg))) & 0x7FFFFFFF
     return h
 
 
-def simulate_request(config: BenchmarkConfig, model: str, iteration: int, use_verdict: bool) -> RequestResult:
+def simulate_request(
+    config: BenchmarkConfig, model: str, iteration: int, use_verdict: bool
+) -> RequestResult:
     """Simulate a single request with deterministic behavior."""
     model_info = FIXTURE_MODELS[model]
     workload_info = WORKLOAD_FIXTURES[config.workload]
@@ -109,8 +131,10 @@ def simulate_request(config: BenchmarkConfig, model: str, iteration: int, use_ve
     latency_ms = base_latency * latency_variance
 
     # Cost calculation
-    cost = (tokens_in / 1000 * model_info["cost_per_1k_in"] +
-            tokens_out / 1000 * model_info["cost_per_1k_out"])
+    cost = (
+        tokens_in / 1000 * model_info["cost_per_1k_in"]
+        + tokens_out / 1000 * model_info["cost_per_1k_out"]
+    )
 
     # Deterministic success/failure (99% success for frontier, 98% for mid)
     success_rate = 0.99 if model_info["tier"] == "frontier" else 0.98
@@ -127,7 +151,7 @@ def simulate_request(config: BenchmarkConfig, model: str, iteration: int, use_ve
         tokens_out=tokens_out,
         cost_usd=round(cost, 6),
         model_used=model,
-        error=error
+        error=error,
     )
 
 
@@ -170,7 +194,13 @@ def run_workload(config: BenchmarkConfig, models: list[str], use_verdict: bool) 
         "cost": {
             "mean_usd": round(statistics.mean(costs), 6),
             "total_usd": round(sum(costs), 6),
-            "per_1k_tokens_usd": round(statistics.mean(costs) / (statistics.mean([r.tokens_in + r.tokens_out for r in successful]) / 1000), 6) if successful else 0,
+            "per_1k_tokens_usd": round(
+                statistics.mean(costs)
+                / (statistics.mean([r.tokens_in + r.tokens_out for r in successful]) / 1000),
+                6,
+            )
+            if successful
+            else 0,
         },
         "tokens": {
             "mean_in": round(statistics.mean([r.tokens_in for r in successful]), 1),
@@ -198,7 +228,9 @@ def main():
 
     random.seed(args.seed)
 
-    print(f"🔬 Running benchmark: {args.workload} ({config.iterations} iterations, seed={config.seed})")
+    print(
+        f"🔬 Running benchmark: {args.workload} ({config.iterations} iterations, seed={config.seed})"
+    )
 
     # Fixed assignment: always use most expensive capable model
     if args.workload == "coding":
@@ -225,10 +257,20 @@ def main():
     comparison = {}
     if "latency" in fixed_result and "latency" in verdict_result:
         comparison = {
-            "latency_p50_diff_ms": round(verdict_result["latency"]["p50"] - fixed_result["latency"]["p50"], 2),
-            "latency_p95_diff_ms": round(verdict_result["latency"]["p95"] - fixed_result["latency"]["p95"], 2),
-            "cost_savings_pct": round((1 - verdict_result["cost"]["mean_usd"] / fixed_result["cost"]["mean_usd"]) * 100, 1) if fixed_result["cost"]["mean_usd"] > 0 else 0,
-            "success_rate_diff": round(verdict_result["success_rate"] - fixed_result["success_rate"], 4),
+            "latency_p50_diff_ms": round(
+                verdict_result["latency"]["p50"] - fixed_result["latency"]["p50"], 2
+            ),
+            "latency_p95_diff_ms": round(
+                verdict_result["latency"]["p95"] - fixed_result["latency"]["p95"], 2
+            ),
+            "cost_savings_pct": round(
+                (1 - verdict_result["cost"]["mean_usd"] / fixed_result["cost"]["mean_usd"]) * 100, 1
+            )
+            if fixed_result["cost"]["mean_usd"] > 0
+            else 0,
+            "success_rate_diff": round(
+                verdict_result["success_rate"] - fixed_result["success_rate"], 4
+            ),
         }
 
     result = BenchmarkResult(
@@ -250,7 +292,7 @@ def main():
     json_output = json.dumps(asdict(result), indent=2, default=enum_serializer)
 
     if args.output:
-        with open(args.output, 'w') as f:
+        with open(args.output, "w") as f:
             f.write(json_output)
         print(f"✅ Results written to {args.output}")
     else:
@@ -258,8 +300,12 @@ def main():
 
     # Print summary
     print("\n📊 SUMMARY")
-    print(f"  Fixed Assignment:  {fixed_result['success_rate']*100:.1f}% success, ${fixed_result['cost']['mean_usd']:.6f}/req, p95={fixed_result['latency']['p95']:.0f}ms")
-    print(f"  Verdict Routing:  {verdict_result['success_rate']*100:.1f}% success, ${verdict_result['cost']['mean_usd']:.6f}/req, p95={verdict_result['latency']['p95']:.0f}ms")
+    print(
+        f"  Fixed Assignment:  {fixed_result['success_rate'] * 100:.1f}% success, ${fixed_result['cost']['mean_usd']:.6f}/req, p95={fixed_result['latency']['p95']:.0f}ms"
+    )
+    print(
+        f"  Verdict Routing:  {verdict_result['success_rate'] * 100:.1f}% success, ${verdict_result['cost']['mean_usd']:.6f}/req, p95={verdict_result['latency']['p95']:.0f}ms"
+    )
     if comparison:
         print(f"  Cost Savings: {comparison['cost_savings_pct']:.1f}%")
         print(f"  Latency Delta (p95): {comparison['latency_p95_diff_ms']:.0f}ms")
