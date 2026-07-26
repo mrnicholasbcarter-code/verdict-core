@@ -1,0 +1,57 @@
+name: Publish @verdict/contracts to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.1.0)'
+        required: false
+        type: string
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: Install dependencies
+        run: npm ci --workspaces
+      - name: Build TypeScript contracts
+        run: cd contracts && npm run build
+      - name: Run TypeScript contract tests
+        run: cd contracts && npm test
+      - name: Verify package contents
+        run: cd contracts && npm pack --dry-run
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: contracts-package
+          path: contracts/dist/
+
+  publish-to-npm:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - name: Download package artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: contracts-package
+          path: contracts/dist/
+      - name: Publish to npm
+        run: cd contracts && npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

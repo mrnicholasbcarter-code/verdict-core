@@ -1,0 +1,62 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday 6 AM
+  workflow_dispatch:
+
+jobs:
+  python-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        
+      - name: Install dependencies
+        run: uv sync --extra dev --extra dashboard --extra server
+        
+      - name: Run pip-audit
+        run: uv run pip-audit
+        
+      - name: Run bandit
+        run: uv run bandit -r verdict -ll
+        
+      - name: Run OSV scanner
+        uses: google/osv-scanner@v1
+        with:
+          scan-args: --recursive .
+
+  node-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            ../verdict-node/package-lock.json
+            
+      - name: Install dependencies
+        run: cd ../verdict-node && npm ci
+        
+      - name: Run npm audit
+        run: cd ../verdict-node && npm audit --audit-level=moderate
+        
+      - name: Run OSV scanner
+        uses: google/osv-scanner@v1
+        with:
+          scan-args: --recursive ../verdict-node

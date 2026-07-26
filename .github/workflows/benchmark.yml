@@ -1,0 +1,69 @@
+name: Benchmark
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        
+      - name: Install dependencies
+        run: uv sync --extra dev --extra dashboard --extra server
+        
+      - name: Run coding benchmark
+        run: uv run python scripts/benchmark.py --workload coding --iterations 50 --warmup 10 --output benchmark-coding.json
+        
+      - name: Run reasoning benchmark
+        run: uv run python scripts/benchmark.py --workload reasoning --iterations 50 --warmup 10 --output benchmark-reasoning.json
+        
+      - name: Run chat benchmark
+        run: uv run python scripts/benchmark.py --workload chat --iterations 50 --warmup 10 --output benchmark-chat.json
+        
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-*.json
+          
+      - name: Comment benchmark results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const files = ['benchmark-coding.json', 'benchmark-reasoning.json', 'benchmark-chat.json'];
+            let comment = '## 📊 Benchmark Results\n\n';
+            
+            for (const file of files) {
+              if (fs.existsSync(file)) {
+                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                const comparison = data.comparison || {};
+                comment += `### ${data.workload}\n`;
+                comment += `| Metric | Fixed | Verdict | Delta |\n`;
+                comment += `|--------|-------|---------|-------|\n`;
+                comment += `| Success Rate | ${(data.fixed_assignment.success_rate*100).toFixed(1)}% | ${(data.verdict_routing.success_rate*100).toFixed(1)}% | ${((data.verdict_routing.success_rate - data.fixed_assignment.success_rate)*100).toFixed(1)}% |\n`;
+                comment += `| Cost/req | $${data.fixed_assignment.cost.mean_usd.toFixed(6)} | $${data.verdict_routing.cost.mean_usd.toFixed(6)} | ${comparison.cost_savings_pct?.toFixed(1)}% |\n`;
+                comment += `| p95 Latency | ${data.fixed_assignment.latency.p95.toFixed(0)}ms | ${data.verdict_routing.latency.p95.toFixed(0)}ms | ${comparison.latency_p95_diff_ms?.toFixed(0)}ms |\n\n`;
+              }
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
