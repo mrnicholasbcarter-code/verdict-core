@@ -30,7 +30,7 @@ jobs:
         run: uv pip install pip-audit
 
       - name: Run pip-audit
-        run: uv run pip-audit
+        run: uv run pip-audit --local
         
       - name: Run bandit
         run: uv run bandit -r verdict -ll
