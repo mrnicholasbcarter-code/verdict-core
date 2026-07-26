@@ -41,22 +41,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
           cache: npm
-          cache-dependency-path: |
-            ../verdict-node/package-lock.json
-            
+          cache-dependency-path: verdict-node/package-lock.json
+
       - name: Install dependencies
-        run: cd ../verdict-node && npm ci
-        
+        run: cd verdict-node && npm ci
+
       - name: Run npm audit
-        run: cd ../verdict-node && npm audit --audit-level=moderate
-        
+        run: cd verdict-node && npm audit --audit-level=moderate
+
       - name: Run OSV scanner
         uses: google/osv-scanner@v1
         with:
-          scan-args: --recursive ../verdict-node
+          scan-args: --recursive verdict-node
