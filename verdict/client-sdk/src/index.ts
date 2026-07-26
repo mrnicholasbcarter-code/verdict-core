@@ -3,11 +3,11 @@ import type {
   RoutingDecision,
   AvailabilitySnapshot,
   RuntimeCandidate,
-} from 'verdict-core-contracts';
+} from '@verdict/contracts';
 import {
   parseContract,
   ContractValidationError as ContractsContractValidationError,
-} from 'verdict-core-contracts';
+} from '@verdict/contracts';
 import {
   VerdictAPIError,
   BadRequestError,
