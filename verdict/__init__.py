@@ -86,7 +86,7 @@ from verdict.memory_adapters import (
     export_manifest,
     import_manifest,
 )
-from verdict.memory_plane import MemoryPlane, MemoryRecord
+from verdict.memory_plane import MemoryPlane, MemoryRecord, MemorySearchResult
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.planner import (
@@ -172,6 +172,7 @@ __all__ = [
     "MappingOmniRouteTransport",
     "MemoryPlane",
     "MemoryRecord",
+    "MemorySearchResult",
     "ModelInfo",
     "OmniRouteAvailabilityAdapter",
     "OmniRouteHTTPTransport",

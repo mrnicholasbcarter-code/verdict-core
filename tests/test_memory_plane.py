@@ -1,3 +1,5 @@
+import pytest
+
 from verdict.memory_plane import MemoryPlane, MemoryRecord
 
 
@@ -33,3 +35,93 @@ def test_memory_plane_health_is_non_sensitive(tmp_path):
             "expired": 0,
             "semantic": "unavailable",
         }
+
+
+def test_memory_plane_is_restart_safe_and_preserves_history(tmp_path):
+    path = tmp_path / "memory.db"
+    first = MemoryPlane(path)
+    stored = first.put(
+        MemoryRecord(
+            "r1",
+            "docs",
+            "guide",
+            "first version",
+            "git",
+            provenance={"commit": "abc"},
+            confidence=0.8,
+        )
+    )
+    first.close()
+
+    second = MemoryPlane(path)
+    replacement = second.put(MemoryRecord("r2", "docs", "guide", "second version", "git"))
+    assert replacement.supersedes == stored.record_id
+    assert second.get("docs", "guide").content == "second version"
+    assert [item.record_id for item in second.history("docs", "guide")] == ["r1", "r2"]
+    assert second.history("docs", "guide")[0].status == "superseded"
+    assert second.history("docs", "guide")[0].content_hash
+    second.close()
+
+
+def test_memory_plane_never_accepts_caller_authority_as_verified(tmp_path):
+    with MemoryPlane(tmp_path / "memory.db") as plane:
+        stored = plane.put(
+            MemoryRecord(
+                "r1",
+                "decisions",
+                "route",
+                "advisory",
+                "caller",
+                authority="system",
+                authority_verified=True,
+            )
+        )
+
+    assert stored.authority == "system"
+    assert stored.authority_verified is False
+
+
+def test_memory_plane_export_import_and_namespace_listing_are_deterministic(tmp_path):
+    path = tmp_path / "memory.db"
+    with MemoryPlane(path) as plane:
+        plane.put(MemoryRecord("b", "zeta", "b", "shared words", "local", scope="repo"))
+        plane.put(MemoryRecord("a", "alpha", "a", "shared words", "local", scope="repo"))
+        exported = plane.export_records(scope="repo")
+        assert [item["namespace"] for item in exported] == ["alpha", "zeta"]
+        assert plane.list_namespaces(scope="repo") == ["alpha", "zeta"]
+        assert [item.record.record_id for item in plane.search_ranked("shared", scope="repo")] == [
+            "a",
+            "b",
+        ]
+
+    with MemoryPlane(tmp_path / "copy.db") as copy:
+        written, duplicates = copy.import_records(exported)
+        assert (written, duplicates) == (2, 0)
+        assert copy.import_records(exported) == (0, 2)
+        assert copy.get("alpha", "a", scope="repo").content == "shared words"
+
+
+def test_memory_plane_concurrent_readers_are_scope_safe(tmp_path):
+    path = tmp_path / "memory.db"
+    with MemoryPlane(path) as writer:
+        writer.put(MemoryRecord("r1", "docs", "guide", "private text", "local", scope="repo"))
+
+    first = MemoryPlane(path)
+    second = MemoryPlane(path)
+    try:
+        assert first.get("docs", "guide", scope="repo").content == "private text"
+        assert second.search("private", scope="other") == []
+        assert second.status(scope="repo")["records"] == 1
+    finally:
+        first.close()
+        second.close()
+
+
+def test_memory_plane_rejects_invalid_confidence_and_content_hash(tmp_path):
+    with MemoryPlane(tmp_path / "memory.db") as plane:
+        with pytest.raises(ValueError, match="confidence"):
+            plane.put(MemoryRecord("bad", "docs", "bad", "content", "local", confidence=2))
+        with pytest.raises(ValueError, match="content_hash"):
+            plane.put(
+                MemoryRecord("bad-hash", "docs", "bad", "content", "local", content_hash="invalid")
+            )
