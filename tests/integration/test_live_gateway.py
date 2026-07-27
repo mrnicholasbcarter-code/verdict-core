@@ -70,6 +70,9 @@ def test_live_gateway_integration(monkeypatch):
         resp = client.get("/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "healthy"
+        assert resp.json()["scope"] == "liveness"
+        assert resp.json()["dependencies_checked"] is False
+        assert resp.json()["ready_endpoint"] == "/ready"
 
         resp = client.post(
             "/v1/route", json={"task": "Deploy production", "criticality": "critical"}

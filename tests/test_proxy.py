@@ -627,3 +627,20 @@ def test_models_endpoint_forwards_upstream_catalog(monkeypatch) -> None:
             "model_family": "unknown",
         },
     }
+
+
+def test_health_is_liveness_only_and_does_not_claim_readiness(monkeypatch) -> None:
+    """Health stays useful during dependency outages without false assurance."""
+    _configure_test_app(monkeypatch, RecordingTransport())
+
+    with TestClient(api.app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "healthy",
+        "engine": "verdict",
+        "scope": "liveness",
+        "dependencies_checked": False,
+        "ready_endpoint": "/ready",
+    }

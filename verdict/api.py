@@ -32,10 +32,7 @@ from verdict.evidence import (
     request_features,
 )
 from verdict.gate import Gate
-from verdict.guidance_control_plane import (
-    GuidanceControlPlane,
-    initialize_guidance_control_plane,
-)
+from verdict.guidance_control_plane import GuidanceControlPlane, initialize_guidance_control_plane
 from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.omniroute import OmniRouteHTTPTransport
@@ -265,7 +262,12 @@ def _build_intelligence() -> IntelligenceService:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
-    global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance, guidance_plane_instance
+    global \
+        intelligence_instance, \
+        gate_instance, \
+        proxy_instance, \
+        evidence_store_instance, \
+        guidance_plane_instance
     intelligence_instance = _build_intelligence()
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,
@@ -393,8 +395,21 @@ async def route_task(request: Request, req: RouteRequest) -> Response:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "healthy", "engine": "verdict"}
+async def health() -> dict[str, Any]:
+    """Liveness only; never imply that managed dependencies are ready.
+
+    ``/health`` is intentionally process-local so load balancers can distinguish
+    a live server from a server whose configured upstream or intelligence
+    backends are unavailable.  Callers that need dependency truth must use
+    ``/ready``.
+    """
+    return {
+        "status": "healthy",
+        "engine": "verdict",
+        "scope": "liveness",
+        "dependencies_checked": False,
+        "ready_endpoint": "/ready",
+    }
 
 
 @app.get("/v1/guidance/status")
@@ -407,7 +422,7 @@ async def guidance_status() -> dict[str, Any]:
         "policy_bundle_version": guidance_plane_instance._policy_bundle_hash,
         "policy_bundle_loaded_at": guidance_plane_instance._policy_bundle_loaded_at,
         "proof_chain_entries": len(guidance_plane_instance._proof_chain),
-        "engine": "verdict"
+        "engine": "verdict",
     }
 
 
@@ -467,8 +482,9 @@ async def execute_guidance_pipeline(request: Request, payload: dict[str, Any]) -
         headers={
             "x-verdict-guidance-task-id": task_spec.task_id,
             "x-verdict-guidance-status": result.get("status", "unknown"),
-            "x-verdict-guidance-policy-version": guidance_plane_instance._policy_bundle_hash or "unknown"
-        }
+            "x-verdict-guidance-policy-version": guidance_plane_instance._policy_bundle_hash
+            or "unknown",
+        },
     )
 
 
@@ -479,11 +495,13 @@ async def get_proof_chain(limit: int = 100) -> Response:
         raise HTTPException(status_code=503, detail="Guidance control plane not initialized")
 
     chain = guidance_plane_instance.get_proof_chain(limit=limit)
-    return JSONResponse(content={
-        "entries": [entry.__dict__ for entry in chain],
-        "total": len(chain),
-        "policy_bundle_version": guidance_plane_instance._policy_bundle_hash
-    })
+    return JSONResponse(
+        content={
+            "entries": [entry.__dict__ for entry in chain],
+            "total": len(chain),
+            "policy_bundle_version": guidance_plane_instance._policy_bundle_hash,
+        }
+    )
 
 
 @app.get("/v1/guidance/policy")
@@ -492,11 +510,13 @@ async def get_policy_bundle() -> Response:
     if guidance_plane_instance is None:
         raise HTTPException(status_code=503, detail="Guidance control plane not initialized")
 
-    return JSONResponse(content={
-        "policy_bundle": guidance_plane_instance._policy_bundle,
-        "version": guidance_plane_instance._policy_bundle_hash,
-        "loaded_at": guidance_plane_instance._policy_bundle_loaded_at
-    })
+    return JSONResponse(
+        content={
+            "policy_bundle": guidance_plane_instance._policy_bundle,
+            "version": guidance_plane_instance._policy_bundle_hash,
+            "loaded_at": guidance_plane_instance._policy_bundle_loaded_at,
+        }
+    )
 
 
 def _proxy_error(
