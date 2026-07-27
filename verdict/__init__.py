@@ -72,8 +72,22 @@ from verdict.guidance import (
     GuidanceUnavailableError,
 )
 from verdict.intelligence import IntelligenceService, ReadinessReport
-from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
+from verdict.memory_adapters import (
+    ADAPTER_PROTOCOL_VERSION,
+    MANIFEST_VERSION,
+    AdapterDescriptor,
+    AdapterRegistry,
+    AdapterResolution,
+    AdapterUnavailableError,
+    ImportPolicy,
+    ManifestError,
+    ManifestReport,
+    content_hash,
+    export_manifest,
+    import_manifest,
+)
 from verdict.memory_plane import MemoryPlane, MemoryRecord
+from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.planner import (
     FailureClass,
@@ -114,9 +128,15 @@ from verdict.workers import (
 )
 
 __all__ = [
+    "ADAPTER_PROTOCOL_VERSION",
     "DEFAULT_FIXTURE_PATH",
+    "MANIFEST_VERSION",
     "PROBE_PROMPT",
     "SUBAGENT_ROLE_REQUIREMENTS",
+    "AdapterDescriptor",
+    "AdapterRegistry",
+    "AdapterResolution",
+    "AdapterUnavailableError",
     "AmbiguousEvidenceSelectorError",
     "AssignmentExplanation",
     "AvailabilityCache",
@@ -143,9 +163,12 @@ __all__ = [
     "GuidanceRule",
     "GuidanceStatus",
     "GuidanceUnavailableError",
+    "ImportPolicy",
     "IntakePlanner",
     "IntelligenceService",
     "LearningEvent",
+    "ManifestError",
+    "ManifestReport",
     "MappingOmniRouteTransport",
     "MemoryPlane",
     "MemoryRecord",
@@ -197,10 +220,13 @@ __all__ = [
     "build_cache_report",
     "build_outcome_event",
     "build_routing_decision_contract",
+    "content_hash",
     "discover_transport_capabilities",
     "explain_freshness",
+    "export_manifest",
     "format_benchmark_report",
     "get_subagent_selector",
+    "import_manifest",
     "load_benchmark_fixture",
     "openai_probe_transport",
     "request_features",
