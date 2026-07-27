@@ -53,3 +53,22 @@ skills-lock.json
 
 .env.memory
 .verdict/adaptive_state/
+.verdict/generated/
+
+# Generated evidence artifacts (timestamped runs) - stable fixtures in evidence/fixtures/ remain tracked
+evidence/approval_required-*.json
+evidence/cancellation-*.json
+evidence/happy_path-*.json
+evidence/partial_failure-*.json
+evidence/pause_resume-*.json
+evidence/quota_denial-*.json
+evidence/replan_exhaustion-*.json
+evidence/retry-*.json
+evidence/ruflO_unavailable-*.json
+evidence/timeout-*.json
+evidence/verification_failure-*.json
+evidence/integration/*.json
+evidence/test_suite/*.json
+
+# Evidence bundle directory
+evidence_bundle/
