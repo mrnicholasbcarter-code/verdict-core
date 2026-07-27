@@ -25,8 +25,11 @@ def test_memory_plane_replaces_fts_and_expires(tmp_path):
 def test_memory_plane_health_is_non_sensitive(tmp_path):
     with MemoryPlane(tmp_path / "memory.db") as plane:
         assert plane.health() == {
+            "state": "ready",
             "backend": "sqlite",
-            "schema_version": 1,
+            "schema_version": 2,
+            "scope": "default",
             "records": 0,
-            "fts": True,
+            "expired": 0,
+            "semantic": "unavailable",
         }
