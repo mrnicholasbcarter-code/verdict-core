@@ -30,6 +30,15 @@ from verdict.benchmarking import (
     load_benchmark_fixture,
     run_reproducible_benchmarks,
 )
+from verdict.capability_passports import (
+    CAPABILITY_PASSPORT_SCHEMA_VERSION,
+    CapabilityDecision,
+    CapabilityEvidence,
+    CapabilityPassport,
+    CapabilityPassportError,
+    CapabilityStatus,
+    RouteIdentity,
+)
 from verdict.contracts import (
     AvailabilitySnapshot,
     CapabilityRequirement,
@@ -72,12 +81,10 @@ from verdict.guidance_control_plane import (
     ToolCall,
     initialize_guidance_control_plane,
 )
-from verdict.guidance_control_plane import (
-    TaskSpec as GuidanceTaskSpec,
-)
+from verdict.guidance_control_plane import TaskSpec as GuidanceTaskSpec
 from verdict.intelligence import IntelligenceService, ReadinessReport
-from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.memory_plane import MemoryPlane, MemoryRecord
+from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.planner import (
     FailureClass,
@@ -118,6 +125,7 @@ from verdict.workers import (
 )
 
 __all__ = [
+    "CAPABILITY_PASSPORT_SCHEMA_VERSION",
     "DEFAULT_FIXTURE_PATH",
     "PROBE_PROMPT",
     "SUBAGENT_ROLE_REQUIREMENTS",
@@ -131,7 +139,12 @@ __all__ = [
     "CacheKey",
     "CallableOmniRouteTransport",
     "CandidateRequirements",
+    "CapabilityDecision",
+    "CapabilityEvidence",
+    "CapabilityPassport",
+    "CapabilityPassportError",
     "CapabilityRequirement",
+    "CapabilityStatus",
     "ContractValidationError",
     "DispatchPolicy",
     "DispatchResult",
@@ -176,6 +189,7 @@ __all__ = [
     "ProofChainEntry",
     "ProviderConfig",
     "ReadinessReport",
+    "RouteIdentity",
     "RoutingDecision",
     "RoutingDecisionContract",
     "RuntimeCandidate",
