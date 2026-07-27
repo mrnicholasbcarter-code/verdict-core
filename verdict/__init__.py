@@ -72,6 +72,39 @@ from verdict.guidance import (
     GuidanceUnavailableError,
 )
 from verdict.intelligence import IntelligenceService, ReadinessReport
+from verdict.memory_adapters import (
+    ADAPTER_PROTOCOL_VERSION,
+    MANIFEST_VERSION,
+    AdapterDescriptor,
+    AdapterRegistry,
+    AdapterResolution,
+    AdapterUnavailableError,
+    ImportPolicy,
+    ManifestError,
+    ManifestReport,
+    content_hash,
+    export_manifest,
+    import_manifest,
+)
+from verdict.memory_document_adapter import (
+    DEFAULT_CHUNK_SIZE,
+    DOCUMENT_ADAPTER_VERSION,
+    DocumentIngestionPolicy,
+    DocumentIngestionReport,
+    DocumentIngestionResult,
+    DocumentIngestor,
+    DocumentIssue,
+)
+from verdict.memory_plane import MemoryPlane, MemoryRecord, MemorySearchResult
+from verdict.memory_session_adapter import (
+    SessionAdapter,
+    SessionImportPolicy,
+    SessionImportReport,
+    SessionImportResult,
+    import_session,
+    normalize_session_record,
+    session_record_to_memory_record,
+)
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.planner import (
@@ -113,9 +146,17 @@ from verdict.workers import (
 )
 
 __all__ = [
+    "ADAPTER_PROTOCOL_VERSION",
+    "DEFAULT_CHUNK_SIZE",
     "DEFAULT_FIXTURE_PATH",
+    "DOCUMENT_ADAPTER_VERSION",
+    "MANIFEST_VERSION",
     "PROBE_PROMPT",
     "SUBAGENT_ROLE_REQUIREMENTS",
+    "AdapterDescriptor",
+    "AdapterRegistry",
+    "AdapterResolution",
+    "AdapterUnavailableError",
     "AmbiguousEvidenceSelectorError",
     "AssignmentExplanation",
     "AvailabilityCache",
@@ -131,6 +172,11 @@ __all__ = [
     "DispatchPolicy",
     "DispatchResult",
     "Dispatcher",
+    "DocumentIngestionPolicy",
+    "DocumentIngestionReport",
+    "DocumentIngestionResult",
+    "DocumentIngestor",
+    "DocumentIssue",
     "EvidenceStore",
     "ExplainEvidence",
     "FailureClass",
@@ -142,10 +188,16 @@ __all__ = [
     "GuidanceRule",
     "GuidanceStatus",
     "GuidanceUnavailableError",
+    "ImportPolicy",
     "IntakePlanner",
     "IntelligenceService",
     "LearningEvent",
+    "ManifestError",
+    "ManifestReport",
     "MappingOmniRouteTransport",
+    "MemoryPlane",
+    "MemoryRecord",
+    "MemorySearchResult",
     "ModelInfo",
     "OmniRouteAvailabilityAdapter",
     "OmniRouteHTTPTransport",
@@ -173,6 +225,10 @@ __all__ = [
     "RoutingDecisionContract",
     "RuntimeCandidate",
     "RuntimeObservation",
+    "SessionAdapter",
+    "SessionImportPolicy",
+    "SessionImportReport",
+    "SessionImportResult",
     "StaticOmniRouteTransport",
     "StructuredPlanner",
     "SubagentModelSelector",
@@ -194,17 +250,23 @@ __all__ = [
     "build_cache_report",
     "build_outcome_event",
     "build_routing_decision_contract",
+    "content_hash",
     "discover_transport_capabilities",
     "explain_freshness",
+    "export_manifest",
     "format_benchmark_report",
     "get_subagent_selector",
+    "import_manifest",
+    "import_session",
     "load_benchmark_fixture",
+    "normalize_session_record",
     "openai_probe_transport",
     "request_features",
     "resolve_subagent_model",
     "run_reproducible_benchmarks",
     "select_model_for_role",
     "select_models_for_parallel_roles",
+    "session_record_to_memory_record",
 ]
 
 __version__ = "0.1.0"
