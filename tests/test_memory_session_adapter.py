@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from verdict.memory_plane import MemoryPlane
 from verdict.memory_session_adapter import SessionAdapter, SessionImportPolicy, import_session
 
 
@@ -136,3 +137,15 @@ def test_invalid_utf8_is_reported_without_aborting_other_lines(tmp_path: Path) -
     assert result.report.status == "partial"
     assert result.report.records_accepted == 1
     assert "UTF-8" in result.report.errors[0]
+
+
+def test_session_records_convert_to_memory_plane_records(tmp_path: Path) -> None:
+    source = tmp_path / "session.jsonl"
+    write_jsonl(source, [{"schema_version": 1, "role": "assistant", "content": "durable"}])
+    result = import_session(source, project="p", session_id="s")
+    record = result.memory_records[0]
+
+    with MemoryPlane(tmp_path / "memory.db") as plane:
+        stored = plane.put(record)
+        assert stored.content == "durable"
+        assert plane.get(record.namespace, record.key, scope=record.scope) == stored

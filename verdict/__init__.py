@@ -86,6 +86,15 @@ from verdict.memory_adapters import (
     export_manifest,
     import_manifest,
 )
+from verdict.memory_document_adapter import (
+    DEFAULT_CHUNK_SIZE,
+    DOCUMENT_ADAPTER_VERSION,
+    DocumentIngestionPolicy,
+    DocumentIngestionReport,
+    DocumentIngestionResult,
+    DocumentIngestor,
+    DocumentIssue,
+)
 from verdict.memory_plane import MemoryPlane, MemoryRecord, MemorySearchResult
 from verdict.memory_session_adapter import (
     SessionAdapter,
@@ -94,6 +103,7 @@ from verdict.memory_session_adapter import (
     SessionImportResult,
     import_session,
     normalize_session_record,
+    session_record_to_memory_record,
 )
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
@@ -137,7 +147,9 @@ from verdict.workers import (
 
 __all__ = [
     "ADAPTER_PROTOCOL_VERSION",
+    "DEFAULT_CHUNK_SIZE",
     "DEFAULT_FIXTURE_PATH",
+    "DOCUMENT_ADAPTER_VERSION",
     "MANIFEST_VERSION",
     "PROBE_PROMPT",
     "SUBAGENT_ROLE_REQUIREMENTS",
@@ -160,6 +172,11 @@ __all__ = [
     "DispatchPolicy",
     "DispatchResult",
     "Dispatcher",
+    "DocumentIngestionPolicy",
+    "DocumentIngestionReport",
+    "DocumentIngestionResult",
+    "DocumentIngestor",
+    "DocumentIssue",
     "EvidenceStore",
     "ExplainEvidence",
     "FailureClass",
@@ -249,6 +266,7 @@ __all__ = [
     "run_reproducible_benchmarks",
     "select_model_for_role",
     "select_models_for_parallel_roles",
+    "session_record_to_memory_record",
 ]
 
 __version__ = "0.1.0"

@@ -46,9 +46,13 @@ The initial implementation is process-safe and restart-safe for one explicit
 SQLite path. It does not silently discover or merge cwd-local Ruflo,
 AgentDB, RuVector, OpenViking, Codex, Claude, or Pi stores. Importers are
 separate, versioned adapters and begin with dry-run manifests before commit.
-Cross-tool session/document adapters, canonical MasterDocsRAG ingestion,
-receipts, and runtime daemon ownership remain follow-up slices (#117, #127,
-#129, and #130).
+The provider-neutral document and JSONL session adapters in #130 accept only
+explicit caller paths, apply bounded reads and symlink/path policy, redact by
+default, and emit deterministic manifests. Session records expose an explicit
+conversion to the canonical `MemoryRecord` shape; adapters do not write to the
+plane automatically. Canonical MasterDocsRAG ingestion, provider-specific
+connectors, receipts, semantic indexing, and runtime daemon ownership remain
+follow-up slices (#117, #121, #127, #129).
 
 ## Consequences
 

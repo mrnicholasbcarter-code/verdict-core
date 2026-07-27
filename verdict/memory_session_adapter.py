@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from verdict.memory_plane import MemoryRecord
+
 SESSION_ADAPTER_PROTOCOL_VERSION = "1"
 SESSION_SCHEMA_VERSION = "1"
 SESSION_FORMAT = "jsonl"
@@ -129,7 +131,12 @@ class SessionImportResult:
 
     @property
     def manifest_hash(self) -> str:
-        return hashlib.sha256(self.manifest_json.encode("utf-8")).hexdigest()
+        return _manifest_hash(self.manifest)
+
+    @property
+    def memory_records(self) -> tuple[MemoryRecord, ...]:
+        """Return records converted to the durable MemoryPlane contract."""
+        return tuple(session_record_to_memory_record(record) for record in self.records)
 
 
 class SessionAdapter:
@@ -289,6 +296,50 @@ def normalize_session_record(
         return None
 
 
+def session_record_to_memory_record(record: Mapping[str, Any]) -> MemoryRecord:
+    """Convert one normalized session record to a strict durable record.
+
+    Provider-specific fields remain in metadata while the durable store sees
+    only the canonical :class:`MemoryRecord` shape.
+    """
+    required = ("record_id", "namespace", "key", "content", "content_hash")
+    if any(key not in record for key in required):
+        raise ValueError("normalized session record is missing canonical fields")
+    metadata = dict(record.get("metadata") or {})
+    for key in (
+        "project",
+        "session_id",
+        "sequence",
+        "record_type",
+        "role",
+        "event_type",
+        "tool_name",
+    ):
+        if key in record:
+            metadata.setdefault(key, record[key])
+    return MemoryRecord(
+        record_id=str(record["record_id"]),
+        namespace=str(record["namespace"]),
+        key=str(record["key"]),
+        content=str(record["content"]),
+        source=str(record.get("source", "session-jsonl")),
+        trust=str(record.get("trust", "local-observation")),
+        scope=str(record.get("scope", record["namespace"])),
+        metadata=metadata,
+        created_at=float(record.get("created_at", 0.0)),
+        expires_at=record.get("expires_at"),
+        supersedes=record.get("supersedes"),
+        authority=str(record.get("authority", "unverified")),
+        authority_verified=False,
+        confidence=float(record.get("confidence", 1.0)),
+        sensitivity=str(record.get("sensitivity", "standard")),
+        provenance=dict(record.get("provenance") or {}),
+        updated_at=float(record.get("updated_at", 0.0)),
+        content_hash=str(record["content_hash"]),
+        status="active",
+    )
+
+
 def import_session(
     source: str | Path,
     *,
@@ -342,7 +393,6 @@ def _normalize_record(
     raw_content_text = (
         _canonical_json(raw_content) if not isinstance(raw_content, str) else raw_content
     )
-    content_hash = hashlib.sha256(raw_content_text.encode("utf-8")).hexdigest()
     safe_content: Any
     changed = 0
     if canonical_role == "user" and not policy.include_raw_prompts:
@@ -353,6 +403,11 @@ def _normalize_record(
             raw_content, key=content_key or "content", redact_credentials=policy.redact_credentials
         )
         changed += content_changed
+    if not isinstance(safe_content, str):
+        safe_content = _canonical_json(safe_content)
+    if not safe_content:
+        safe_content = "[empty]"
+    content_hash = hashlib.sha256(safe_content.encode("utf-8")).hexdigest()
     metadata: dict[str, Any] = {
         "project": project,
         "session_id": session_id,
@@ -390,6 +445,7 @@ def _normalize_record(
         "schema_version": SESSION_SCHEMA_VERSION,
         "record_id": record_id,
         "namespace": namespace,
+        "key": f"{session_id}:line-{line_number:08d}",
         "project": project,
         "session_id": session_id,
         "sequence": line_number,
@@ -397,8 +453,30 @@ def _normalize_record(
         "role": canonical_role,
         "event_type": raw_type or record_type,
         "content": safe_content,
+        "source": "session-jsonl",
+        "trust": "local-observation",
+        "scope": namespace,
+        "created_at": float(line_number),
+        "updated_at": float(line_number),
+        "expires_at": None,
+        "supersedes": None,
+        "authority": "unverified",
+        "authority_verified": False,
+        "confidence": 1.0,
+        "sensitivity": "standard",
+        "provenance": {
+            "source": "session-jsonl",
+            "adapter": SessionAdapter.adapter_id,
+            "adapter_protocol_version": SESSION_ADAPTER_PROTOCOL_VERSION,
+            "source_line": line_number,
+            "project": project,
+            "session_id": session_id,
+            "input_schema_version": input_version,
+            "raw_content_hash": hashlib.sha256(raw_content_text.encode("utf-8")).hexdigest(),
+        },
         "content_hash": content_hash,
         "metadata": metadata,
+        "status": "active",
     }
     if tool_name is not None:
         record["tool_name"] = metadata["tool_name"]
@@ -419,10 +497,13 @@ def _build_manifest(
         "namespace": namespace,
         "records": ordered,
     }
-    manifest["manifest_hash"] = hashlib.sha256(
-        _canonical_json(manifest).encode("utf-8")
-    ).hexdigest()
+    manifest["manifest_hash"] = _manifest_hash(manifest)
     return manifest
+
+
+def _manifest_hash(manifest: Mapping[str, Any]) -> str:
+    payload = {key: value for key, value in manifest.items() if key != "manifest_hash"}
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _redact_value(value: Any, *, key: str, redact_credentials: bool) -> tuple[Any, int]:
@@ -545,4 +626,5 @@ __all__ = [
     "import_session",
     "import_session_jsonl",
     "normalize_session_record",
+    "session_record_to_memory_record",
 ]
