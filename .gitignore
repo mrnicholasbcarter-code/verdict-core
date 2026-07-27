@@ -55,6 +55,12 @@ skills-lock.json
 .verdict/adaptive_state/
 .verdict/generated/
 
+# Ruflo/RuVector are user-global; never create repository-local runtime state.
+.ruvector/
+.swarm/
+agentdb.rvf*
+memory-*.json
+
 # Generated evidence artifacts (timestamped runs) - stable fixtures in evidence/fixtures/ remain tracked
 evidence/approval_required-*.json
 evidence/cancellation-*.json
