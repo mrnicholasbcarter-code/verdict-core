@@ -57,7 +57,8 @@ configuration boundary. The boundary is host-neutral and has these rules:
 | `VERDICT_GUIDANCE_PATH` | unset | Absolute or repository-relative constitution path |
 | `VERDICT_GUIDANCE_LOCAL_PATH` | unset | Optional local overlay path |
 | `VERDICT_GUIDANCE_INIT_TIMEOUT_MS` | `1000` | Maximum enabled initialization time |
-| `VERDICT_GUIDANCE_MAX_PROOF_ENTRIES` | `10000` | Bounded in-process proof entries |
+| `VERDICT_GUIDANCE_MAX_BYTES` | `131072` | Maximum size of each guidance document |
+| `VERDICT_GUIDANCE_MAX_RULES` | `1000` | Maximum parsed rules across the documents |
 
 The default constitution filename is `GUIDANCE.md`; if it is absent while
 guidance is enabled, the service remains available and reports degraded
@@ -69,19 +70,15 @@ through an API request.
 ```json
 {
   "schema_version": "1",
-  "task": {
-    "goal": "bounded task description",
-    "affected_files": [],
-    "risk_level": "medium",
-    "protected_work": false
-  }
+  "task": {"goal": "bounded task description", "protected_work": false}
 }
 ```
 
-The response includes `schema_version`, `status`, `task_id`, and a bounded
-result. Unsupported schema versions are rejected with a client error. An
-enabled but degraded control plane returns a service-unavailable response
-with an actionable status rather than silently executing without guidance.
+The response includes `schema_version`, `decision`, `authorization`, the
+normalized task, bounded matched-rule metadata, and the policy version.
+Unsupported schema versions are rejected with a client error. An enabled but
+degraded control plane returns a service-unavailable response with an
+actionable status rather than silently executing without guidance.
 
 ## Verification plan
 

@@ -118,3 +118,86 @@ def test_api_keeps_guidance_disabled_by_default(monkeypatch: pytest.MonkeyPatch)
     assert list(path for path in openapi["paths"] if path == "/v1/guidance/execute") == [
         "/v1/guidance/execute"
     ]
+
+
+def test_api_does_not_initialize_guidance_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VERDICT_GUIDANCE_ENABLED", raising=False)
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+
+    async def unexpected_initializer(config: GuidanceConfig) -> GuidanceControlPlane:
+        raise AssertionError("disabled startup must not initialize guidance")
+
+    monkeypatch.setattr(GuidanceControlPlane, "initialize", unexpected_initializer)
+    with TestClient(api.app) as client:
+        assert client.get("/v1/guidance/status").json()["status"] == "disabled"
+
+
+def test_api_executes_enabled_guidance_with_versioned_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "GUIDANCE.md").write_text(
+        "# Project guidance\n- [deny] deploy production\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERDICT_GUIDANCE_ENABLED", "1")
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+
+    with TestClient(api.app) as client:
+        status = client.get("/v1/guidance/status")
+        response = client.post(
+            "/v1/guidance/execute",
+            json={"schema_version": "1", "task": {"goal": "deploy production"}},
+        )
+
+    assert status.json()["status"] == "ready"
+    assert response.status_code == 200
+    assert response.json()["decision"] == "deny"
+    assert response.json()["authorization"] == "unchanged"
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "reason"),
+    [
+        ("GUIDANCE.md", None, "guidance_file_missing"),
+        ("GUIDANCE.md", b"# Guidance\n\xff", "guidance_file_invalid_utf8"),
+    ],
+)
+def test_api_reports_enabled_guidance_failures_as_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: bytes | None,
+    reason: str,
+) -> None:
+    if contents is not None:
+        (tmp_path / filename).write_bytes(contents)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERDICT_GUIDANCE_ENABLED", "1")
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+
+    with TestClient(api.app) as client:
+        status = client.get("/v1/guidance/status")
+        response = client.post(
+            "/v1/guidance/execute", json={"schema_version": "1", "task": {"goal": "test"}}
+        )
+
+    assert status.json()["status"] == "degraded"
+    assert status.json()["reason"] == reason
+    assert response.status_code == 503
+
+
+def test_api_rejects_unsupported_guidance_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "GUIDANCE.md").write_text("# Guidance\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERDICT_GUIDANCE_ENABLED", "1")
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/guidance/execute", json={"schema_version": "2", "task": {"goal": "test"}}
+        )
+
+    assert response.status_code == 400
+    assert "unsupported guidance schema_version" in response.json()["error"]["message"]

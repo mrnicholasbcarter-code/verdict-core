@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 GuidanceState = Literal["disabled", "ready", "degraded"]
 GuidanceDecision = Literal["allow", "approval_required", "deny"]
@@ -96,6 +96,14 @@ class GuidanceControlPlane:
         self._rules: tuple[GuidanceRule, ...] = ()
 
     @classmethod
+    def disabled(cls, config: GuidanceConfig) -> GuidanceControlPlane:
+        """Create the inert default-off boundary without reading guidance."""
+
+        return cls(
+            config, GuidanceStatus(state="disabled", enabled=False, reason="feature_disabled")
+        )
+
+    @classmethod
     def degraded(cls, config: GuidanceConfig, reason: str) -> GuidanceControlPlane:
         """Create an explicitly enabled, safely degraded control plane."""
 
@@ -107,9 +115,7 @@ class GuidanceControlPlane:
 
         started = monotonic()
         if not config.enabled:
-            return cls(
-                config, GuidanceStatus(state="disabled", enabled=False, reason="feature_disabled")
-            )
+            return cls.disabled(config)
 
         try:
             rules, policy_version = await asyncio.wait_for(
@@ -257,9 +263,12 @@ def _load_rules(config: GuidanceConfig) -> tuple[list[GuidanceRule], str]:
             marker = re.match(r"^\[(deny|approval|allow)\]\s*", rule_content, re.IGNORECASE)
             if marker:
                 marker_value = marker.group(1).lower()
-                decision = {"deny": "deny", "approval": "approval_required", "allow": "allow"}[
-                    marker_value
-                ]  # type: ignore[index]
+                decision = cast(
+                    GuidanceDecision,
+                    {"deny": "deny", "approval": "approval_required", "allow": "allow"}[
+                        marker_value
+                    ],
+                )
                 rule_content = rule_content[marker.end() :].strip()
             digest = hashlib.sha256(f"{source}:{rule_content}".encode()).hexdigest()[:16]
             rules.append(GuidanceRule(digest, rule_content, source, decision))

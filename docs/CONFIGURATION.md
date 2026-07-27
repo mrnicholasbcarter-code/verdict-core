@@ -89,6 +89,35 @@ auto_open = true
 | `LLMGATE_AVAILABILITY_TTL_SECONDS` | `availability.ttl_seconds` | `60` |
 | `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | `availability.stale_window_seconds` | `30` |
 
+### Optional platform-neutral guidance
+
+Guidance is an experimental, host-neutral boundary. It is disabled by
+default, does not read `AGENTS.md`, `CLAUDE.md`, or other host instruction
+files, and has no Ruflo, RuVector, Codex, Claude Code, Pi, or provider CLI
+runtime dependency. Enable it explicitly for a process with:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `VERDICT_GUIDANCE_ENABLED` | `0` | Opt into guidance initialization |
+| `VERDICT_GUIDANCE_PATH` | `GUIDANCE.md` | Repository-relative guidance file |
+| `VERDICT_GUIDANCE_LOCAL_PATH` | unset | Optional repository-relative local overlay |
+| `VERDICT_GUIDANCE_INIT_TIMEOUT_MS` | `1000` | Initialization timeout |
+| `VERDICT_GUIDANCE_MAX_BYTES` | `131072` | Maximum bytes per guidance file |
+| `VERDICT_GUIDANCE_MAX_RULES` | `1000` | Maximum parsed rules |
+
+Both configured paths must remain inside the process repository root. The
+status endpoint is `GET /v1/guidance/status`; the only execution contract is
+the versioned `POST /v1/guidance/execute` envelope:
+
+```json
+{"schema_version":"1","task":{"goal":"review a change","protected_work":true}}
+```
+
+Guidance can return `allow`, `approval_required`, or `deny`, but the response
+always reports `authorization: "unchanged"`; it cannot grant permissions or
+bypass Verdict’s existing gates. Missing, malformed, or timed-out opt-in
+guidance is reported as degraded and does not crash normal API startup.
+
 ---
 
 ## Example: Production Config

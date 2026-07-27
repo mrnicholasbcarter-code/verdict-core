@@ -6,6 +6,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, replace
+from pathlib import Path
 from time import monotonic
 from typing import Any, cast
 
@@ -32,6 +33,12 @@ from verdict.evidence import (
     request_features,
 )
 from verdict.gate import Gate
+from verdict.guidance import (
+    GuidanceConfig,
+    GuidanceConfigurationError,
+    GuidanceControlPlane,
+    GuidanceUnavailableError,
+)
 from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.omniroute import OmniRouteHTTPTransport
@@ -141,6 +148,7 @@ proxy_instance: UpstreamProxy | None = None
 availability_cache_instance: AvailabilityCache | None = None
 eligibility_gate_instance: EligibilityGate | None = None
 evidence_store_instance: EvidenceStore | None = None
+guidance_plane_instance: GuidanceControlPlane | None = None
 
 DEFAULT_AVAILABILITY_TTL_SECONDS = 60
 DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
@@ -261,6 +269,7 @@ def _build_intelligence() -> IntelligenceService:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
     global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
+    global guidance_plane_instance
     intelligence_instance = _build_intelligence()
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,
@@ -276,6 +285,22 @@ async def lifespan(app: FastAPI) -> Any:
     evidence_store_instance = EvidenceStore(
         max_entries=max(1, int(os.getenv("VERDICT_EVIDENCE_MAX_ENTRIES", "256")))
     )
+    # Guidance is opt-in and host-neutral. Keep normal routing startup
+    # independent of project instruction files and optional agent tooling.
+    try:
+        guidance_config = GuidanceConfig.from_environment()
+    except GuidanceConfigurationError as exc:
+        # Invalid opt-in configuration must be visible as degraded guidance,
+        # while leaving the normal routing service available.
+        guidance_config = GuidanceConfig(
+            enabled=True, repo_root=Path.cwd(), guidance_path=Path.cwd() / "GUIDANCE.md"
+        )
+        guidance_plane_instance = GuidanceControlPlane.degraded(guidance_config, str(exc))
+    else:
+        if not guidance_config.enabled:
+            guidance_plane_instance = GuidanceControlPlane.disabled(guidance_config)
+        else:
+            guidance_plane_instance = await GuidanceControlPlane.initialize(guidance_config)
     # Issue #57: feed the eligibility gate into the IntelligenceService so the
     # live routing path filters before ranking (single source of truth).
     if eligibility_gate_instance is not None:
@@ -287,6 +312,7 @@ async def lifespan(app: FastAPI) -> Any:
     availability_cache_instance = None
     eligibility_gate_instance = None
     evidence_store_instance = None
+    guidance_plane_instance = None
 
 
 app = FastAPI(
@@ -389,6 +415,22 @@ async def health() -> dict[str, str]:
     return {"status": "healthy", "engine": "verdict"}
 
 
+@app.get("/v1/guidance/status")
+async def guidance_status() -> dict[str, Any]:
+    """Return opt-in guidance status without exposing policy contents."""
+
+    if guidance_plane_instance is None:
+        return {"status": "disabled", "enabled": False, "engine": "verdict"}
+    return {
+        "status": guidance_plane_instance.status.state,
+        "enabled": guidance_plane_instance.status.enabled,
+        "reason": guidance_plane_instance.status.reason,
+        "policy_version": guidance_plane_instance.status.policy_version,
+        "initialization_ms": guidance_plane_instance.status.initialization_ms,
+        "engine": "verdict",
+    }
+
+
 @app.get("/ready")
 async def ready() -> Response:
     """Report process readiness and verify that the configured upstream responds."""
@@ -421,6 +463,36 @@ async def ready() -> Response:
     elif intel.reason:
         content["reason"] = intel.reason
     return JSONResponse(status_code=status_code, content=content)
+
+
+class GuidanceTaskRequest(BaseModel):
+    schema_version: str
+    task: dict[str, Any]
+
+
+@app.post("/v1/guidance/execute")
+async def execute_guidance(request: Request, payload: GuidanceTaskRequest) -> Response:
+    """Evaluate one versioned, platform-neutral guidance request."""
+
+    del request
+    if guidance_plane_instance is None or not guidance_plane_instance.status.enabled:
+        return _proxy_error(404, "guidance is disabled")
+    if payload.schema_version != "1":
+        return _proxy_error(400, "unsupported guidance schema_version")
+    if guidance_plane_instance.status.state != "ready":
+        return _proxy_error(
+            503,
+            "guidance is degraded",
+            extra={"guidance_status": guidance_plane_instance.status.reason},
+        )
+    goal = payload.task.get("goal")
+    if not isinstance(goal, str) or not goal.strip():
+        return _proxy_error(422, "task.goal must be a non-empty string")
+    try:
+        result = guidance_plane_instance.evaluate(payload.task)
+    except GuidanceUnavailableError as exc:
+        return _proxy_error(503, str(exc))
+    return JSONResponse(content=result)
 
 
 def _proxy_error(
