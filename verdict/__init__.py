@@ -30,6 +30,15 @@ from verdict.benchmarking import (
     load_benchmark_fixture,
     run_reproducible_benchmarks,
 )
+from verdict.capability_passports import (
+    CAPABILITY_PASSPORT_SCHEMA_VERSION,
+    CapabilityDecision,
+    CapabilityEvidence,
+    CapabilityPassport,
+    CapabilityPassportError,
+    CapabilityStatus,
+    RouteIdentity,
+)
 from verdict.contracts import (
     AvailabilitySnapshot,
     CapabilityRequirement,
@@ -147,6 +156,7 @@ from verdict.workers import (
 
 __all__ = [
     "ADAPTER_PROTOCOL_VERSION",
+    "CAPABILITY_PASSPORT_SCHEMA_VERSION",
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_FIXTURE_PATH",
     "DOCUMENT_ADAPTER_VERSION",
@@ -167,7 +177,12 @@ __all__ = [
     "CacheKey",
     "CallableOmniRouteTransport",
     "CandidateRequirements",
+    "CapabilityDecision",
+    "CapabilityEvidence",
+    "CapabilityPassport",
+    "CapabilityPassportError",
     "CapabilityRequirement",
+    "CapabilityStatus",
     "ContractValidationError",
     "DispatchPolicy",
     "DispatchResult",
@@ -221,6 +236,7 @@ __all__ = [
     "ProbeRunner",
     "ProviderConfig",
     "ReadinessReport",
+    "RouteIdentity",
     "RoutingDecision",
     "RoutingDecisionContract",
     "RuntimeCandidate",
