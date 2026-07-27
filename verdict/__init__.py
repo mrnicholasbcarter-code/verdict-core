@@ -77,6 +77,7 @@ from verdict.guidance_control_plane import (
 )
 from verdict.intelligence import IntelligenceService, ReadinessReport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
+from verdict.memory_plane import MemoryPlane, MemoryRecord
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.planner import (
     FailureClass,
@@ -149,6 +150,8 @@ __all__ = [
     "IntelligenceService",
     "LearningEvent",
     "MappingOmniRouteTransport",
+    "MemoryPlane",
+    "MemoryRecord",
     "ModelInfo",
     "OmniRouteAvailabilityAdapter",
     "OmniRouteHTTPTransport",
