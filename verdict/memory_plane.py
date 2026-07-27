@@ -225,8 +225,8 @@ class MemoryPlane:
             clauses.append("m.namespace=?")
             params.append(namespace)
         params.extend([match, min(limit, 100)])
-        query = (
-            "SELECT m.*, bm25(memory_fts) AS rank_score FROM memory_fts f "
+        query = (  # nosec B608: clauses are fixed internal predicates; values are bound below.
+            "SELECT m.*, bm25(memory_fts) AS rank_score FROM memory_fts f "  # nosec B608
             "JOIN memories m ON m.record_id=f.record_id WHERE "
             + " AND ".join(clauses)
             + " AND memory_fts MATCH ? ORDER BY rank_score ASC, m.created_at DESC, "

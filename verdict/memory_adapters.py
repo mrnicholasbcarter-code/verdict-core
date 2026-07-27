@@ -377,7 +377,7 @@ def _safe_path(value: str | os.PathLike[str], policy: ImportPolicy, *, for_write
     if not raw.is_absolute():
         raise ManifestError("manifest path must be absolute")
     if candidate_is_tmp_root(raw) or Path(tempfile.gettempdir()) in policy.allowed_roots:
-        raise ManifestError("/tmp is not an allowed manifest root")
+        raise ManifestError(f"{tempfile.gettempdir()} is not an allowed manifest root")
     if raw.exists() and raw.is_symlink() and not policy.allow_symlinks:
         raise ManifestError("symlink paths are not allowed")
     candidate = raw.resolve(strict=False)
