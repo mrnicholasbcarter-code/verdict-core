@@ -3,7 +3,9 @@ from verdict.memory_plane import MemoryPlane, MemoryRecord
 
 def test_memory_plane_put_get_search_and_scope(tmp_path):
     with MemoryPlane(tmp_path / "memory.db") as plane:
-        stored = plane.put(MemoryRecord("r1", "docs", "guide", "Local-first RAG", "git", scope="repo"))
+        stored = plane.put(
+            MemoryRecord("r1", "docs", "guide", "Local-first RAG", "git", scope="repo")
+        )
         assert stored.created_at > 0
         assert plane.get("docs", "guide", scope="repo").content == "Local-first RAG"
         assert plane.search("local RAG", scope="repo")[0].record_id == "r1"
@@ -22,4 +24,9 @@ def test_memory_plane_replaces_fts_and_expires(tmp_path):
 
 def test_memory_plane_health_is_non_sensitive(tmp_path):
     with MemoryPlane(tmp_path / "memory.db") as plane:
-        assert plane.health() == {"backend": "sqlite", "schema_version": 1, "records": 0, "fts": True}
+        assert plane.health() == {
+            "backend": "sqlite",
+            "schema_version": 1,
+            "records": 0,
+            "fts": True,
+        }

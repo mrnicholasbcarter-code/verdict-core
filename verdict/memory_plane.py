@@ -116,18 +116,34 @@ class MemoryPlane:
                   created_at=excluded.created_at, expires_at=excluded.expires_at,
                   supersedes=excluded.supersedes""",
                 (
-                    normalized.record_id, normalized.namespace, normalized.key,
-                    normalized.content, normalized.source, normalized.trust, normalized.scope,
+                    normalized.record_id,
+                    normalized.namespace,
+                    normalized.key,
+                    normalized.content,
+                    normalized.source,
+                    normalized.trust,
+                    normalized.scope,
                     json.dumps(normalized.metadata, sort_keys=True, separators=(",", ":")),
-                    normalized.created_at, normalized.expires_at, normalized.supersedes,
+                    normalized.created_at,
+                    normalized.expires_at,
+                    normalized.supersedes,
                 ),
             )
             if previous:
-                self._db.execute("DELETE FROM memory_fts WHERE record_id=?", (previous["record_id"],))
+                self._db.execute(
+                    "DELETE FROM memory_fts WHERE record_id=?", (previous["record_id"],)
+                )
             self._db.execute(
                 "INSERT INTO memory_fts(record_id, namespace, key, content, source, trust, scope) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (normalized.record_id, normalized.namespace, normalized.key, normalized.content,
-                 normalized.source, normalized.trust, normalized.scope),
+                (
+                    normalized.record_id,
+                    normalized.namespace,
+                    normalized.key,
+                    normalized.content,
+                    normalized.source,
+                    normalized.trust,
+                    normalized.scope,
+                ),
             )
             self._db.execute("COMMIT")
         except Exception:
@@ -137,13 +153,16 @@ class MemoryPlane:
 
     def get(self, namespace: str, key: str, *, scope: str = "default") -> MemoryRecord | None:
         row = self._db.execute(
-            "SELECT * FROM memories WHERE namespace=? AND scope=? AND key=?", (namespace, scope, key)
+            "SELECT * FROM memories WHERE namespace=? AND scope=? AND key=?",
+            (namespace, scope, key),
         ).fetchone()
         if row is None or (row["expires_at"] is not None and row["expires_at"] <= time.time()):
             return None
         return self._from_row(row)
 
-    def search(self, query: str, *, namespace: str | None = None, scope: str = "default", limit: int = 10) -> list[MemoryRecord]:
+    def search(
+        self, query: str, *, namespace: str | None = None, scope: str = "default", limit: int = 10
+    ) -> list[MemoryRecord]:
         """Search lexical evidence; expired or cross-scope records never leak."""
         if not query.strip() or limit <= 0:
             return []
@@ -156,7 +175,7 @@ class MemoryPlane:
         params.extend([match, min(limit, 100)])
         rows = self._db.execute(
             f"""SELECT m.* FROM memory_fts f JOIN memories m ON m.record_id=f.record_id
-                WHERE {' AND '.join(clauses)} AND memory_fts MATCH ?
+                WHERE {" AND ".join(clauses)} AND memory_fts MATCH ?
                 ORDER BY bm25(memory_fts), m.created_at DESC LIMIT ?""",
             params,
         ).fetchall()
@@ -164,7 +183,8 @@ class MemoryPlane:
 
     def delete(self, namespace: str, key: str, *, scope: str = "default") -> bool:
         row = self._db.execute(
-            "SELECT record_id FROM memories WHERE namespace=? AND scope=? AND key=?", (namespace, scope, key)
+            "SELECT record_id FROM memories WHERE namespace=? AND scope=? AND key=?",
+            (namespace, scope, key),
         ).fetchone()
         if row is None:
             return False
@@ -175,16 +195,25 @@ class MemoryPlane:
     def health(self) -> dict[str, Any]:
         """Return non-sensitive local health metadata."""
         count = self._db.execute("SELECT count(*) FROM memories").fetchone()[0]
-        version = self._db.execute("SELECT value FROM memory_meta WHERE key='schema_version'").fetchone()[0]
+        version = self._db.execute(
+            "SELECT value FROM memory_meta WHERE key='schema_version'"
+        ).fetchone()[0]
         return {"backend": "sqlite", "schema_version": int(version), "records": count, "fts": True}
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> MemoryRecord:
         return MemoryRecord(
-            record_id=row["record_id"], namespace=row["namespace"], key=row["key"],
-            content=row["content"], source=row["source"], trust=row["trust"], scope=row["scope"],
-            metadata=json.loads(row["metadata_json"]), created_at=row["created_at"],
-            expires_at=row["expires_at"], supersedes=row["supersedes"],
+            record_id=row["record_id"],
+            namespace=row["namespace"],
+            key=row["key"],
+            content=row["content"],
+            source=row["source"],
+            trust=row["trust"],
+            scope=row["scope"],
+            metadata=json.loads(row["metadata_json"]),
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+            supersedes=row["supersedes"],
         )
 
 
