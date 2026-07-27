@@ -63,6 +63,14 @@ from verdict.evidence import (
     request_features,
 )
 from verdict.gate import Gate
+from verdict.guidance import (
+    GuidanceConfig,
+    GuidanceConfigurationError,
+    GuidanceControlPlane,
+    GuidanceRule,
+    GuidanceStatus,
+    GuidanceUnavailableError,
+)
 from verdict.intelligence import IntelligenceService, ReadinessReport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
@@ -128,6 +136,12 @@ __all__ = [
     "FailureClass",
     "FallbackAttempt",
     "Gate",
+    "GuidanceConfig",
+    "GuidanceConfigurationError",
+    "GuidanceControlPlane",
+    "GuidanceRule",
+    "GuidanceStatus",
+    "GuidanceUnavailableError",
     "IntakePlanner",
     "IntelligenceService",
     "LearningEvent",
