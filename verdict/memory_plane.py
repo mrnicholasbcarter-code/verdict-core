@@ -225,12 +225,14 @@ class MemoryPlane:
             clauses.append("m.namespace=?")
             params.append(namespace)
         params.extend([match, min(limit, 100)])
-        rows = self._db.execute(
-            f"SELECT m.*, bm25(memory_fts) AS rank_score FROM memory_fts f "
-            f"JOIN memories m ON m.record_id=f.record_id WHERE {' AND '.join(clauses)} "
-            "AND memory_fts MATCH ? ORDER BY rank_score ASC, m.created_at DESC, m.record_id ASC LIMIT ?",
-            params,
-        ).fetchall()
+        query = (
+            "SELECT m.*, bm25(memory_fts) AS rank_score FROM memory_fts f "
+            "JOIN memories m ON m.record_id=f.record_id WHERE "
+            + " AND ".join(clauses)
+            + " AND memory_fts MATCH ? ORDER BY rank_score ASC, m.created_at DESC, "
+            "m.record_id ASC LIMIT ?"
+        )
+        rows = self._db.execute(query, params).fetchall()
         return [
             MemorySearchResult(self._from_row(row), float(row["rank_score"]), index + 1)
             for index, row in enumerate(rows)

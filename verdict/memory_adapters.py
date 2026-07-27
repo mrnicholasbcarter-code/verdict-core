@@ -376,7 +376,7 @@ def _safe_path(value: str | os.PathLike[str], policy: ImportPolicy, *, for_write
     raw = Path(value).expanduser()
     if not raw.is_absolute():
         raise ManifestError("manifest path must be absolute")
-    if candidate_is_tmp_root(raw) or Path("/tmp") in policy.allowed_roots:
+    if candidate_is_tmp_root(raw) or Path(tempfile.gettempdir()) in policy.allowed_roots:
         raise ManifestError("/tmp is not an allowed manifest root")
     if raw.exists() and raw.is_symlink() and not policy.allow_symlinks:
         raise ManifestError("symlink paths are not allowed")
@@ -414,7 +414,7 @@ def _safe_label(value: str) -> str:
 
 def candidate_is_tmp_root(path: Path) -> bool:
     """Reject the conventional shared root, not explicitly allowlisted children."""
-    return path == Path("/tmp")
+    return path == Path(tempfile.gettempdir())
 
 
 def _validate_identifier(value: str, field_name: str) -> str:
