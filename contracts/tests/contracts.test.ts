@@ -188,10 +188,10 @@ describe("Contract Validation", () => {
         },
       };
 
-      const redacted = redactContractSecrets(data);
-      expect((redacted as Record<string, unknown>).api_key).toBe("[redacted]");
-      expect((redacted as Record<string, unknown>).password).toBe("[redacted]");
-      expect((redacted as Record<string, unknown>).normal_field).toBe("value");
+      const redacted = redactContractSecrets(data) as Record<string, unknown>;
+      expect(redacted.api_key).toBe("[redacted]");
+      expect(redacted.password).toBe("[redacted]");
+      expect(redacted.normal_field).toBe("value");
       expect((redacted.nested as Record<string, unknown>).authorization).toBe("[redacted]");
       expect((redacted.nested as Record<string, unknown>).public_data).toBe("visible");
     });

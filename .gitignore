@@ -72,3 +72,17 @@ evidence/test_suite/*.json
 
 # Evidence bundle directory
 evidence_bundle/
+
+# Codex local configuration
+.codex/
+
+# Claude Flow runtime data
+.claude-flow/data/
+.claude-flow/logs/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+CLAUDE.local.md

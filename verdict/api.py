@@ -32,6 +32,10 @@ from verdict.evidence import (
     request_features,
 )
 from verdict.gate import Gate
+from verdict.guidance_control_plane import (
+    GuidanceControlPlane,
+    initialize_guidance_control_plane,
+)
 from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.omniroute import OmniRouteHTTPTransport
@@ -141,6 +145,7 @@ proxy_instance: UpstreamProxy | None = None
 availability_cache_instance: AvailabilityCache | None = None
 eligibility_gate_instance: EligibilityGate | None = None
 evidence_store_instance: EvidenceStore | None = None
+guidance_plane_instance: GuidanceControlPlane | None = None
 
 DEFAULT_AVAILABILITY_TTL_SECONDS = 60
 DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
@@ -260,7 +265,7 @@ def _build_intelligence() -> IntelligenceService:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
-    global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
+    global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance, guidance_plane_instance
     intelligence_instance = _build_intelligence()
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,
@@ -276,6 +281,8 @@ async def lifespan(app: FastAPI) -> Any:
     evidence_store_instance = EvidenceStore(
         max_entries=max(1, int(os.getenv("VERDICT_EVIDENCE_MAX_ENTRIES", "256")))
     )
+    # Initialize Guidance Control Plane
+    guidance_plane_instance = await initialize_guidance_control_plane()
     # Issue #57: feed the eligibility gate into the IntelligenceService so the
     # live routing path filters before ranking (single source of truth).
     if eligibility_gate_instance is not None:
@@ -287,6 +294,7 @@ async def lifespan(app: FastAPI) -> Any:
     availability_cache_instance = None
     eligibility_gate_instance = None
     evidence_store_instance = None
+    guidance_plane_instance = None
 
 
 app = FastAPI(
@@ -389,6 +397,20 @@ async def health() -> dict[str, str]:
     return {"status": "healthy", "engine": "verdict"}
 
 
+@app.get("/v1/guidance/status")
+async def guidance_status() -> dict[str, Any]:
+    """Get Guidance Control Plane status."""
+    if guidance_plane_instance is None:
+        return {"status": "not_initialized", "engine": "verdict"}
+    return {
+        "status": "initialized",
+        "policy_bundle_version": guidance_plane_instance._policy_bundle_hash,
+        "policy_bundle_loaded_at": guidance_plane_instance._policy_bundle_loaded_at,
+        "proof_chain_entries": len(guidance_plane_instance._proof_chain),
+        "engine": "verdict"
+    }
+
+
 @app.get("/ready")
 async def ready() -> Response:
     """Report process readiness and verify that the configured upstream responds."""
@@ -421,6 +443,60 @@ async def ready() -> Response:
     elif intel.reason:
         content["reason"] = intel.reason
     return JSONResponse(status_code=status_code, content=content)
+
+
+@app.post("/v1/guidance/execute")
+async def execute_guidance_pipeline(request: Request, payload: dict[str, Any]) -> Response:
+    """
+    Execute the full guidance control plane pipeline.
+
+    This is the main entry point for task execution through the guidance layer.
+    Pipeline: Normalize TaskSpec -> Retrieve Guidance -> Guidance Gates -> Verdict -> Tool Gateway -> Ruflo -> Workers -> OmniRoute -> Execution -> Verification -> Proof Chain -> Learning
+    """
+    if guidance_plane_instance is None:
+        raise HTTPException(status_code=503, detail="Guidance control plane not initialized")
+
+    # Normalize input to task spec
+    task_spec = guidance_plane_instance.normalize_task_spec(payload)
+
+    # Execute the full pipeline
+    result = await guidance_plane_instance.execute_pipeline(task_spec)
+
+    return JSONResponse(
+        content=result,
+        headers={
+            "x-verdict-guidance-task-id": task_spec.task_id,
+            "x-verdict-guidance-status": result.get("status", "unknown"),
+            "x-verdict-guidance-policy-version": guidance_plane_instance._policy_bundle_hash or "unknown"
+        }
+    )
+
+
+@app.get("/v1/guidance/proof-chain")
+async def get_proof_chain(limit: int = 100) -> Response:
+    """Get the proof chain for audit."""
+    if guidance_plane_instance is None:
+        raise HTTPException(status_code=503, detail="Guidance control plane not initialized")
+
+    chain = guidance_plane_instance.get_proof_chain(limit=limit)
+    return JSONResponse(content={
+        "entries": [entry.__dict__ for entry in chain],
+        "total": len(chain),
+        "policy_bundle_version": guidance_plane_instance._policy_bundle_hash
+    })
+
+
+@app.get("/v1/guidance/policy")
+async def get_policy_bundle() -> Response:
+    """Get the current policy bundle."""
+    if guidance_plane_instance is None:
+        raise HTTPException(status_code=503, detail="Guidance control plane not initialized")
+
+    return JSONResponse(content={
+        "policy_bundle": guidance_plane_instance._policy_bundle,
+        "version": guidance_plane_instance._policy_bundle_hash,
+        "loaded_at": guidance_plane_instance._policy_bundle_loaded_at
+    })
 
 
 def _proxy_error(

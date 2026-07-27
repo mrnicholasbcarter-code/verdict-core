@@ -63,6 +63,18 @@ from verdict.evidence import (
     request_features,
 )
 from verdict.gate import Gate
+from verdict.guidance_control_plane import (
+    GateDecision,
+    GuidanceConfig,
+    GuidanceControlPlane,
+    GuidanceShard,
+    ProofChainEntry,
+    ToolCall,
+    initialize_guidance_control_plane,
+)
+from verdict.guidance_control_plane import (
+    TaskSpec as GuidanceTaskSpec,
+)
 from verdict.intelligence import IntelligenceService, ReadinessReport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
@@ -128,6 +140,11 @@ __all__ = [
     "FailureClass",
     "FallbackAttempt",
     "Gate",
+    "GateDecision",
+    "GuidanceConfig",
+    "GuidanceControlPlane",
+    "GuidanceShard",
+    "GuidanceTaskSpec",
     "IntakePlanner",
     "IntelligenceService",
     "LearningEvent",
@@ -153,6 +170,7 @@ __all__ = [
     "ProbePolicy",
     "ProbeRegistry",
     "ProbeRunner",
+    "ProofChainEntry",
     "ProviderConfig",
     "ReadinessReport",
     "RoutingDecision",
@@ -166,6 +184,7 @@ __all__ = [
     "TaskEpisode",
     "TaskSpec",
     "TaskWorkflowOutcomeEpisode",
+    "ToolCall",
     "VerificationPlan",
     "WorkerError",
     "WorkerModel",
@@ -184,6 +203,7 @@ __all__ = [
     "explain_freshness",
     "format_benchmark_report",
     "get_subagent_selector",
+    "initialize_guidance_control_plane",
     "load_benchmark_fixture",
     "openai_probe_transport",
     "request_features",
