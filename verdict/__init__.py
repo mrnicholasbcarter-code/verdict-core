@@ -87,6 +87,14 @@ from verdict.memory_adapters import (
     import_manifest,
 )
 from verdict.memory_plane import MemoryPlane, MemoryRecord, MemorySearchResult
+from verdict.memory_session_adapter import (
+    SessionAdapter,
+    SessionImportPolicy,
+    SessionImportReport,
+    SessionImportResult,
+    import_session,
+    normalize_session_record,
+)
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.planner import (
@@ -200,6 +208,10 @@ __all__ = [
     "RoutingDecisionContract",
     "RuntimeCandidate",
     "RuntimeObservation",
+    "SessionAdapter",
+    "SessionImportPolicy",
+    "SessionImportReport",
+    "SessionImportResult",
     "StaticOmniRouteTransport",
     "StructuredPlanner",
     "SubagentModelSelector",
@@ -228,7 +240,9 @@ __all__ = [
     "format_benchmark_report",
     "get_subagent_selector",
     "import_manifest",
+    "import_session",
     "load_benchmark_fixture",
+    "normalize_session_record",
     "openai_probe_transport",
     "request_features",
     "resolve_subagent_model",
