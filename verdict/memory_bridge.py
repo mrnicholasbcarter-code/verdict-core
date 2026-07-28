@@ -143,7 +143,10 @@ def configure_memory_bridge(
     """Configure memory bridge, update MCP servers, and sync existing sessions into MemoryPlane."""
     home = (home_dir or Path.home()).resolve()
     root = (cwd or Path.cwd()).resolve()
-    mem_plane = plane or MemoryPlane(root / ".verdict" / "memory.db")
+    from verdict.documentation_preflight import shared_memory_path
+
+    shared_db = shared_memory_path(home)
+    mem_plane = plane or MemoryPlane(shared_db)
     session_adapter = SessionAdapter()
 
     configured: list[str] = []
@@ -201,12 +204,7 @@ def configure_memory_bridge(
             pi_cfg = pi_dir / "memory_bridge.json"
             pi_cfg.write_text(
                 json.dumps(
-                    {
-                        "enabled": True,
-                        "memory_plane": str(root / ".verdict" / "memory.db"),
-                        "auto_sync": True,
-                    },
-                    indent=2,
+                    {"enabled": True, "memory_plane": str(shared_db), "auto_sync": True}, indent=2
                 ),
                 encoding="utf-8",
             )
@@ -220,7 +218,7 @@ def configure_memory_bridge(
                 json.dumps(
                     {
                         "backend": "verdict_memory_plane",
-                        "database": str(root / ".verdict" / "memory.db"),
+                        "database": str(shared_db),
                         "shared_context": True,
                     },
                     indent=2,
@@ -233,10 +231,7 @@ def configure_memory_bridge(
             hermes_dir = home / ".hermes"
             if hermes_dir.exists():
                 h_cfg = hermes_dir / "verdict_bridge.json"
-                h_cfg.write_text(
-                    json.dumps({"memory_plane": str(root / ".verdict" / "memory.db")}),
-                    encoding="utf-8",
-                )
+                h_cfg.write_text(json.dumps({"memory_plane": str(shared_db)}), encoding="utf-8")
                 configured.append("hermes")
 
         elif tool == "cursor_jcode":
@@ -260,7 +255,7 @@ def configure_memory_bridge(
                 "command": "uv",
                 "args": ["run", "-m", "verdict.cli", "serve"],
                 "env": {
-                    "VERDICT_MEMORY_PLANE_PATH": str(root / ".verdict" / "memory.db"),
+                    "VERDICT_MEMORY_PLANE_PATH": str(shared_db),
                     "VERDICT_GUIDANCE_ENABLED": "1",
                 },
             }
@@ -271,7 +266,7 @@ def configure_memory_bridge(
         "status": "success",
         "configured_tools": configured,
         "synced_session_records": synced_sessions,
-        "memory_db_path": str(root / ".verdict" / "memory.db"),
+        "memory_db_path": str(shared_db),
     }
 
 
@@ -279,7 +274,12 @@ class MemoryHookController:
     """Complete 13-hook controller managing prompt, task, file, command, session, and verification events."""
 
     def __init__(self, plane: MemoryPlane | None = None, db_path: str | Path | None = None) -> None:
-        self.plane = plane or MemoryPlane(db_path or ".verdict/memory.db")
+        if plane is not None:
+            self.plane = plane
+        else:
+            from verdict.documentation_preflight import shared_memory_path
+
+            self.plane = MemoryPlane(db_path or shared_memory_path())
         self.receipt_store = ReceiptStore(
             ":memory:" if not db_path else str(db_path) + "_receipts.db"
         )
@@ -328,12 +328,23 @@ class MemoryHookController:
         return {"status": "success", "receipt_id": rec.receipt_id}
 
     # 2. Task Lifecycle Hooks
-    def on_task_start(self, task_id: str, goal: str) -> dict[str, Any]:
-        """Before task execution: log context start receipt."""
+    def on_task_start(
+        self, task_id: str, goal: str, *, implementation: bool = False
+    ) -> dict[str, Any]:
+        """Before task execution: preflight docs before implementation work."""
+        if implementation:
+            from verdict.documentation_preflight import require_documentation_preflight
+
+            report = require_documentation_preflight(memory_path=self.plane.path)
+        else:
+            report = None
         rec = self.receipt_store.put_receipt(
             receipt_type="context", scope=task_id, payload={"goal": goal, "task_id": task_id}
         )
-        return {"status": "success", "receipt_id": rec.receipt_id}
+        result: dict[str, Any] = {"status": "success", "receipt_id": rec.receipt_id}
+        if report is not None:
+            result["documentation_preflight"] = report.to_dict()
+        return result
 
     def on_task_complete(
         self, task_id: str, status: str = "complete", summary: str = ""
@@ -345,18 +356,27 @@ class MemoryHookController:
         return {"status": "success", "receipt_id": rec.receipt_id}
 
     # 3. File & Edit Hooks
-    def on_file_edit_start(self, file_path: str) -> dict[str, Any]:
+    def on_file_edit_start(self, file_path: str, *, implementation: bool = False) -> dict[str, Any]:
         """Before file edit: validate path safety against quarantine rules."""
         norm = file_path.replace("\\", "/").lower()
-        if "/tmp" in norm or "\\tmp" in norm or norm.startswith("/tmp"):
+        if "/tmp" in norm or "\\tmp" in norm or norm.startswith("/tmp"):  # nosec B108: deliberate quarantine check
             raise ValueError(f"quarantined_path_rejected:{file_path}")
+
+        preflight = None
+        if implementation:
+            from verdict.documentation_preflight import require_documentation_preflight
+
+            preflight = require_documentation_preflight(memory_path=self.plane.path)
 
         rec = self.receipt_store.put_receipt(
             receipt_type="execution",
             scope=f"edit_start:{file_path}",
             payload={"path": file_path, "action": "pre_edit_check"},
         )
-        return {"status": "success", "receipt_id": rec.receipt_id}
+        result: dict[str, Any] = {"status": "success", "receipt_id": rec.receipt_id}
+        if preflight is not None:
+            result["documentation_preflight"] = preflight.to_dict()
+        return result
 
     def on_file_edit_complete(self, file_path: str, diff_hash: str = "") -> dict[str, Any]:
         """After file edit: log provenance receipt."""
@@ -488,9 +508,27 @@ def run_doctor_diagnostics(
 
     issues: list[str] = []
     repaired: list[str] = []
+    v_dir = home / ".verdict"
+    memory_db = v_dir / "memory.db"
+    had_verdict_dir = v_dir.exists()
+    had_memory_db = memory_db.exists()
+
+    from verdict.documentation_preflight import run_documentation_preflight
+
+    documentation_report = run_documentation_preflight(
+        repo_root=root, memory_path=home / ".verdict" / "memory.db", fix=fix
+    )
+    if not documentation_report.passed:
+        issues.append("authoritative documentation preflight did not pass")
+        issues.extend(documentation_report.errors)
+    elif fix and documentation_report.ingested:
+        repaired.append("authoritative documentation preflight repaired")
+    if fix and not had_verdict_dir and v_dir.exists():
+        repaired.append("created_verdict_dir")
+    if fix and not had_memory_db and memory_db.exists():
+        repaired.append("initialized_memory_db")
 
     # 1. Check .verdict directory
-    v_dir = root / ".verdict"
     if not v_dir.exists():
         issues.append("missing_verdict_dir")
         if fix:
@@ -498,7 +536,7 @@ def run_doctor_diagnostics(
             repaired.append("created_verdict_dir")
 
     # 2. Check Memory database
-    db_path = v_dir / "memory.db"
+    db_path = memory_db
     if not db_path.exists():
         issues.append("missing_memory_db")
         if fix:
@@ -523,10 +561,11 @@ def run_doctor_diagnostics(
                 repaired.append("fixed_codex_bridge")
 
     return {
-        "status": "healthy" if not issues or fix else "issues_found",
+        "status": "healthy" if not issues else "issues_found",
         "issues": issues,
         "repaired": repaired,
         "fix_applied": fix,
+        "documentation_preflight": documentation_report.to_dict(),
     }
 
 

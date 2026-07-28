@@ -49,6 +49,7 @@ def resolve_subagent_model(
         Dict with model info or None if no eligible model
     """
     try:
+        result: dict[str, Any]
         model = select_model_for_role(
             role, protected=protected, dev_mode=dev_mode, diversity_from=diversity_from
         )

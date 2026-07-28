@@ -749,6 +749,25 @@ def cmd_doctor(fix: bool = False) -> None:
     issues_found = []
     fixed_issues = []
 
+    from verdict.documentation_preflight import run_documentation_preflight
+
+    documentation_report = run_documentation_preflight(fix=fix)
+    console.print(
+        "  • Documentation preflight: "
+        f"[{'green' if documentation_report.passed else 'red'}]"
+        f"{documentation_report.status}[/] "
+        f"({documentation_report.inventory} documents, "
+        f"{documentation_report.ingested} ingested, "
+        f"{documentation_report.stale} stale, "
+        f"{documentation_report.missing} missing)"
+    )
+    if not documentation_report.passed:
+        issues_found.extend(
+            ["authoritative documentation preflight did not pass", *documentation_report.errors]
+        )
+    elif fix and documentation_report.ingested:
+        fixed_issues.append("authoritative documentation preflight repaired")
+
     # 1. Config Check
     config_dir = os.path.join(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
@@ -919,7 +938,8 @@ def cmd_memory(args: Any) -> None:
     from verdict.memory_masterdocs_adapter import MasterDocsAdapter
     from verdict.memory_plane import MemoryPlane, MemoryRecord
 
-    plane = MemoryPlane(getattr(args, "db_path", ".verdict/memory.db"))
+    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
+    plane = MemoryPlane(db_path)
     sub = getattr(args, "memory_command", None)
 
     if sub == "put":
@@ -967,6 +987,17 @@ def cmd_memory(args: Any) -> None:
         console.print(
             f"[bold green]✓ Code graph ingested {graph_rep.records_created} node(s)[/bold green]"
         )
+    elif sub == "docs":
+        from verdict.documentation_preflight import run_documentation_preflight
+
+        docs_report = run_documentation_preflight(
+            repo_root=Path(getattr(args, "repo_root", Path.cwd())),
+            memory_path=plane.path,
+            fix=getattr(args, "fix", False),
+        )
+        console.print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
+        if not docs_report.passed:
+            raise SystemExit(1)
     elif sub == "setup":
         report = detect_available_tools()
         tools_to_config = getattr(args, "tools", None)
@@ -1164,6 +1195,15 @@ def main() -> None:
 
     cg_p = memory_sub.add_parser("graph", help="Ingest code review graph database")
     cg_p.add_argument("--db", default="code_graph.db", help="Database path")
+
+    docs_p = memory_sub.add_parser(
+        "docs", help="Verify or ingest authoritative project, Ruflo, and RuVector documentation"
+    )
+    docs_p.add_argument(
+        "--fix", action="store_true", help="Fetch and ingest missing/stale documents"
+    )
+    docs_p.add_argument("--repo-root", default=str(Path.cwd()), help="Repository root")
+    docs_p.add_argument("--db-path", default=None, help="Shared memory database path")
 
     setup_p = memory_sub.add_parser(
         "setup",

@@ -130,7 +130,23 @@ class MemoryPlane:
 
     def put(self, record: MemoryRecord) -> MemoryRecord:
         """Append a record and supersede the previous active value for its key."""
-        normalized = self._normalize(record)
+        return self._put(record, allow_authority=False)
+
+    def put_verified(self, record: MemoryRecord) -> MemoryRecord:
+        """Append a record after a caller has verified its authority boundary.
+
+        Ordinary callers cannot self-assert ``authority_verified``.  Trusted
+        adapters such as documentation preflight use this explicit method,
+        which still validates the content hash and provenance before storage.
+        """
+        if not record.authority_verified:
+            raise ValueError("verified memory records must declare authority_verified")
+        if record.authority in {"", "unverified"}:
+            raise ValueError("verified memory records require an authority")
+        return self._put(record, allow_authority=True)
+
+    def _put(self, record: MemoryRecord, *, allow_authority: bool) -> MemoryRecord:
+        normalized = self._normalize(record, allow_authority=allow_authority)
         self._db.execute("BEGIN IMMEDIATE")
         try:
             existing_id = self._db.execute(
@@ -293,7 +309,7 @@ class MemoryPlane:
         """Return non-sensitive local health metadata."""
         return self.status()
 
-    def _normalize(self, record: MemoryRecord) -> MemoryRecord:
+    def _normalize(self, record: MemoryRecord, *, allow_authority: bool = False) -> MemoryRecord:
         if (
             not record.record_id
             or not record.namespace
@@ -322,7 +338,7 @@ class MemoryPlane:
             updated_at=updated,
             content_hash=digest,
             schema_version=SCHEMA_VERSION,
-            authority_verified=False,
+            authority_verified=record.authority_verified if allow_authority else False,
         )
 
     def _insert(self, record: MemoryRecord) -> None:
