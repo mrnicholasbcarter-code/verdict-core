@@ -1,19 +1,22 @@
-"""Unified Memory Bridge and Tool Integration Autopilot.
+"""Unified Memory Bridge, Tool Integration Autopilot, and 13-Hook Lifecycle Controller.
 
 Detects available AI tool environments (Codex, Claude Code, Pi, Ruflo, Hermes),
-preselects them by default, configures shared memory bridge hooks, and syncs
-session context across tools into canonical MemoryPlane.
+preselects them by default, configures shared memory bridge hooks, and manages
+the full 6-category lifecycle hook matrix across prompt, task, file, command,
+session, and verification events.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from verdict.memory_plane import MemoryPlane
+from verdict.memory_plane import MemoryPlane, MemoryRecord
 from verdict.memory_session_adapter import SessionAdapter, session_record_to_memory_record
+from verdict.receipt_store import ReceiptStore
 
 
 @dataclass(frozen=True)
@@ -123,7 +126,6 @@ def configure_memory_bridge(
             if "Verdict Unified Memory Bridge" not in existing:
                 agents_md.write_text(existing + bridge_instruction, encoding="utf-8")
 
-            # Scan and sync session files
             sess_dir = home / ".codex" / "sessions"
             if sess_dir.exists():
                 for sf in sess_dir.glob("*.json*"):
@@ -206,22 +208,18 @@ def configure_memory_bridge(
     }
 
 
-__all__ = ["ToolDetectionReport", "configure_memory_bridge", "detect_available_tools"]
-
-
 class MemoryHookController:
-    """Lifecycle controller managing on_prompt, on_session_end, and execution hooks."""
+    """Complete 13-hook controller managing prompt, task, file, command, session, and verification events."""
 
     def __init__(self, plane: MemoryPlane | None = None, db_path: str | Path | None = None) -> None:
         self.plane = plane or MemoryPlane(db_path or ".verdict/memory.db")
-        from verdict.receipt_store import ReceiptStore
-
         self.receipt_store = ReceiptStore(
             ":memory:" if not db_path else str(db_path) + "_receipts.db"
         )
 
+    # 1. Prompt & Context Hooks
     def on_prompt(self, user_prompt: str, context_budget: int = 2048) -> str:
-        """Before prompt execution: search memory and inject context pack."""
+        """Before prompt submission: search memory and compile ContextPack."""
         from verdict.context_pack import ContextPackCompiler, ContextPackSlot
 
         records = self.plane.search(user_prompt, limit=5)
@@ -253,15 +251,96 @@ class MemoryHookController:
         pack = compiler.compile(slots)
         return pack.compiled_prompt
 
+    def on_response(self, response_text: str, session_id: str = "default") -> dict[str, Any]:
+        """After model response: log context receipt."""
+        rec = self.receipt_store.put_receipt(
+            receipt_type="context",
+            scope=session_id,
+            payload={"response_length": len(response_text)},
+        )
+        return {"status": "success", "receipt_id": rec.receipt_id}
+
+    # 2. Task Lifecycle Hooks
+    def on_task_start(self, task_id: str, goal: str) -> dict[str, Any]:
+        """Before task execution: log context start receipt."""
+        rec = self.receipt_store.put_receipt(
+            receipt_type="context", scope=task_id, payload={"goal": goal, "task_id": task_id}
+        )
+        return {"status": "success", "receipt_id": rec.receipt_id}
+
+    def on_task_complete(
+        self, task_id: str, status: str = "complete", summary: str = ""
+    ) -> dict[str, Any]:
+        """After task completion: log outcome receipt."""
+        rec = self.receipt_store.put_receipt(
+            receipt_type="outcome", scope=task_id, payload={"status": status, "summary": summary}
+        )
+        return {"status": "success", "receipt_id": rec.receipt_id}
+
+    # 3. File & Edit Hooks
+    def on_file_edit_start(self, file_path: str) -> dict[str, Any]:
+        """Before file edit: validate path safety against quarantine rules."""
+        norm = file_path.replace("\\", "/").lower()
+        if "/tmp" in norm or "\\tmp" in norm or norm.startswith("/tmp"):
+            raise ValueError(f"quarantined_path_rejected:{file_path}")
+
+        rec = self.receipt_store.put_receipt(
+            receipt_type="execution",
+            scope=f"edit_start:{file_path}",
+            payload={"path": file_path, "action": "pre_edit_check"},
+        )
+        return {"status": "success", "receipt_id": rec.receipt_id}
+
+    def on_file_edit_complete(self, file_path: str, diff_hash: str = "") -> dict[str, Any]:
+        """After file edit: log provenance receipt."""
+        rec = self.receipt_store.put_receipt(
+            receipt_type="execution",
+            scope=f"edit_complete:{file_path}",
+            payload={"path": file_path, "diff_hash": diff_hash},
+        )
+        return {"status": "success", "receipt_id": rec.receipt_id}
+
+    # 4. Command Execution Hooks
+    def on_command_execute(self, cmd_str: str) -> dict[str, Any]:
+        """Before command execution: perform security scanning for destructive commands."""
+        destructive_patterns = [r"rm\s+-rf\s+/", r"rm\s+-rf\s+~", r"rm\s+-rf\s+\$HOME", r"mkfs"]
+        for pat in destructive_patterns:
+            if re.search(pat, cmd_str):
+                raise ValueError(f"destructive_command_rejected:{cmd_str}")
+
+        rec = self.receipt_store.put_receipt(
+            receipt_type="execution", scope="pre_command", payload={"command": cmd_str}
+        )
+        return {"status": "success", "receipt_id": rec.receipt_id}
+
+    def on_command_complete(
+        self, cmd_str: str, exit_code: int, duration_ms: float = 0.0
+    ) -> dict[str, Any]:
+        """After command execution: log output receipt."""
+        rec = self.receipt_store.put_receipt(
+            receipt_type="execution",
+            scope="post_command",
+            payload={"command": cmd_str, "exit_code": exit_code, "duration_ms": duration_ms},
+        )
+        return {"status": "success", "receipt_id": rec.receipt_id}
+
+    # 5. Session Lifecycle Hooks
+    def on_session_start(self, session_id: str, project_scope: str = "default") -> dict[str, Any]:
+        """On session start: log context receipt."""
+        rec = self.receipt_store.put_receipt(
+            receipt_type="context",
+            scope=session_id,
+            payload={"action": "session_start", "project_scope": project_scope},
+        )
+        return {"status": "success", "receipt_id": rec.receipt_id}
+
     def on_session_end(
         self,
         session_id: str,
         transcript: list[dict[str, Any]],
         receipts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """On session end: persist transcript to MemoryPlane and receipts to ReceiptStore."""
-        from verdict.memory_plane import MemoryRecord
-
+        """On session end: store transcript records to MemoryPlane and receipts to ReceiptStore."""
         stored_count = 0
         for idx, item in enumerate(transcript):
             content = item.get("content") or json.dumps(item)
@@ -296,19 +375,22 @@ class MemoryHookController:
             "receipts_logged": receipt_count,
         }
 
-    def on_task_start(self, task_id: str, goal: str) -> dict[str, Any]:
-        """On task start: log context receipt."""
+    def on_session_restore(self, session_id: str) -> dict[str, Any]:
+        """On session restore: log restore receipt."""
         rec = self.receipt_store.put_receipt(
-            receipt_type="context", scope=task_id, payload={"goal": goal, "task_id": task_id}
+            receipt_type="context", scope=session_id, payload={"action": "session_restore"}
         )
         return {"status": "success", "receipt_id": rec.receipt_id}
 
-    def on_tool_call(self, tool_name: str, args: dict[str, Any], result: Any) -> dict[str, Any]:
-        """On tool call: log execution receipt with automatic redaction."""
+    # 6. Verification & Error Hooks
+    def on_verify(
+        self, target: str, status: str = "passed", details: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Before promotion: log verification receipt."""
         rec = self.receipt_store.put_receipt(
-            receipt_type="execution",
-            scope=f"tool:{tool_name}",
-            payload={"tool": tool_name, "args": args, "result_summary": str(result)[:200]},
+            receipt_type="verification",
+            scope=f"verify:{target}",
+            payload={"target": target, "status": status, "details": details or {}},
         )
         return {"status": "success", "receipt_id": rec.receipt_id}
 
@@ -322,4 +404,9 @@ class MemoryHookController:
         return {"status": "success", "receipt_id": rec.receipt_id}
 
 
-__all__.append("MemoryHookController")
+__all__ = [
+    "MemoryHookController",
+    "ToolDetectionReport",
+    "configure_memory_bridge",
+    "detect_available_tools",
+]
