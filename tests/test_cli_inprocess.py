@@ -288,6 +288,10 @@ def test_cmd_doctor_all_healthy(
 
     monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
 
+    import verdict.documentation_preflight as documentation_preflight
+
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+
     # Mock socket connection to make local port reachable
     import socket
     from unittest.mock import MagicMock

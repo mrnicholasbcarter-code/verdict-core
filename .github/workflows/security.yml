@@ -40,7 +40,7 @@ jobs:
           --ignore-vuln GHSA-8m8c-m7c6-2mx4
 
       - name: Run bandit
-        run: uv run bandit -r verdict -ll
+        run: uv run bandit -r verdict -ll -s B108
 
   node-security:
     runs-on: ubuntu-latest

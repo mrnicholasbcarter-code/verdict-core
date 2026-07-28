@@ -38,7 +38,7 @@ class MasterDocsAdapter:
             return False
         norm = path_str.replace("\\", "/").lower()
 
-        if not allow_tmp and ("/tmp" in norm or "\\tmp" in norm or norm.startswith("/tmp")):
+        if not allow_tmp and ("/tmp" in norm or "\\tmp" in norm or norm.startswith("/tmp")):  # nosec B108: deliberate quarantine check
             return False
         if any(q in norm for q in ["/vendor/", "/generated/", "/temp/"]):
             return False
