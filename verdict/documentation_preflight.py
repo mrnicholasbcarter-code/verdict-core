@@ -496,11 +496,25 @@ def _records_for_entry(
     for index, chunk in enumerate(chunks):
         chunk_hash = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
         provenance = _provenance(entry, raw_hash, text, now, index, len(chunks))
+        identity = ":".join(
+            (
+                entry.source.source_id,
+                entry.relative_path,
+                entry.source.ref,
+                entry.tree_sha or "",
+                raw_hash,
+                str(index),
+            )
+        )
         result.append(
             MemoryRecord(
-                record_id=hashlib.sha256(
-                    f"{entry.source.source_id}:{entry.relative_path}:{raw_hash}:{index}".encode()
-                ).hexdigest(),
+                # The resolved ref/tree identity is part of the record ID so
+                # an unchanged document at a new authoritative commit still
+                # refreshes provenance instead of being mistaken for an
+                # idempotent duplicate.  Keep raw_hash in the identity as a
+                # guard for test/local sources whose content may change
+                # without a corresponding Git tree SHA.
+                record_id=hashlib.sha256(identity.encode()).hexdigest(),
                 namespace="authoritative-docs",
                 key=f"{entry.source.source_id}:{entry.relative_path}#chunk-{index:04d}",
                 content=chunk,
@@ -529,10 +543,18 @@ def _manifest_record(
 ) -> MemoryRecord:
     provenance = _provenance(entry, raw_hash, text, now, 0, 1)
     content = json.dumps({"path": entry.relative_path, **provenance}, sort_keys=True)
+    identity = ":".join(
+        (
+            "manifest",
+            entry.source.source_id,
+            entry.relative_path,
+            entry.source.ref,
+            entry.tree_sha or "",
+            raw_hash,
+        )
+    )
     return MemoryRecord(
-        record_id=hashlib.sha256(
-            f"manifest:{entry.source.source_id}:{entry.relative_path}:{raw_hash}".encode()
-        ).hexdigest(),
+        record_id=hashlib.sha256(identity.encode()).hexdigest(),
         namespace="documentation-manifest",
         key=_manifest_key(entry),
         content=content,

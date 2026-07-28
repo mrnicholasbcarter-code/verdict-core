@@ -79,6 +79,43 @@ def test_preflight_detects_changed_content_and_repairs_it(tmp_path: Path) -> Non
     assert repaired.ingested == 1
 
 
+def test_preflight_refreshes_provenance_when_commit_changes_without_content_change(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text("unchanged authoritative text", encoding="utf-8")
+    db = tmp_path / "memory.db"
+
+    first_source = _source(tmp_path)
+    first = run_documentation_preflight(sources=[first_source], memory_path=db, fix=True, now=100)
+    assert first.passed is True
+
+    second_source = DocumentationSource(
+        "fixture", "fixture", "https://example.test/fixture", "commit-2", tmp_path
+    )
+    refreshed = run_documentation_preflight(
+        sources=[second_source], memory_path=db, fix=True, now=101
+    )
+    assert refreshed.passed is True
+    assert refreshed.ingested == 1
+
+    unchanged = run_documentation_preflight(
+        sources=[second_source], memory_path=db, fix=False, now=102
+    )
+    assert unchanged.passed is True
+    assert unchanged.skipped_fresh == 1
+
+    with MemoryPlane(db) as plane:
+        manifest_history = plane.history(
+            "documentation-manifest", "fixture:docs/adr/ADR-001.md", scope="shared"
+        )
+        assert len(manifest_history) == 2
+        assert manifest_history[-1].status == "active"
+        assert manifest_history[-1].provenance["commit"] == "commit-2"
+        assert manifest_history[-2].status == "superseded"
+
+
 def test_preflight_blocks_missing_remote_provenance_without_fetch(tmp_path: Path) -> None:
     source = DocumentationSource(
         "remote",
