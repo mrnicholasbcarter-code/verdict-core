@@ -137,7 +137,7 @@ def ingest_legacy_artifacts(report: LegacyArtifactReport, plane: MemoryPlane) ->
                 )
                 tables = {row["name"] for row in cursor.fetchall()}
                 for tbl in list(tables)[:5]:
-                    c = conn.execute(f"SELECT * FROM {tbl} LIMIT 100")
+                    c = conn.execute(f"SELECT * FROM {tbl} LIMIT 100")  # nosec B608
                     rows = [dict(r) for r in c.fetchall()]
                     if rows:
                         content_str = json.dumps(rows, default=str)

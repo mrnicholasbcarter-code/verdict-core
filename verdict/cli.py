@@ -740,7 +740,7 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
         console.print("---")
 
 
-def cmd_doctor() -> None:
+def cmd_doctor(fix: bool = False) -> None:
     """Scan the Verdict setup and OmniRoute connections for issues and repair them."""
     console.print(
         Panel.fit("[bold green]🩺 Verdict System Doctor[/bold green]", border_style="green")
@@ -942,7 +942,7 @@ def cmd_memory(args: Any) -> None:
         for r in results:
             console.print(f"- [{r.namespace}:{r.key}] ({r.source}): {r.content[:100]}")
     elif sub == "export":
-        data = plane.export_manifest()
+        data = plane.export_records()
         out = getattr(args, "output", "memory_manifest.json")
         with open(out, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -951,8 +951,8 @@ def cmd_memory(args: Any) -> None:
         man = args.manifest
         with open(man, encoding="utf-8") as f:
             data = json.load(f)
-        report = plane.import_manifest(data)
-        console.print(f"[bold green]✓ Imported {report.imported_records} record(s)[/bold green]")
+        count = plane.import_records(data)
+        console.print(f"[bold green]✓ Imported {count} record(s)[/bold green]")
     elif sub == "masterdocs":
         db = getattr(args, "db", "MasterDocsRAG.db")
         adapter = MasterDocsAdapter()
@@ -962,10 +962,10 @@ def cmd_memory(args: Any) -> None:
         )
     elif sub == "graph":
         db = getattr(args, "db", "code_graph.db")
-        adapter = CodeGraphAdapter()
-        rep = adapter.ingest_sqlite(db, plane)
+        graph_adapter = CodeGraphAdapter()
+        graph_rep = graph_adapter.ingest_sqlite(db, plane)
         console.print(
-            f"[bold green]✓ Code graph ingested {rep.records_created} node(s)[/bold green]"
+            f"[bold green]✓ Code graph ingested {graph_rep.records_created} node(s)[/bold green]"
         )
     elif sub == "setup":
         report = detect_available_tools()
@@ -993,7 +993,7 @@ def cmd_uninstall(purge_data: bool = False) -> None:
     """Reversibly uninstall memory bridge hooks and MCP registrations."""
     from verdict.memory_bridge import uninstall_memory_bridge
     res = uninstall_memory_bridge(purge_data=purge_data)
-    console.print(f"[bold green]✓ Uninstalled targets: {res["uninstalled_targets"]}[/bold green]")
+    console.print(f"[bold green]✓ Uninstalled targets: {res['uninstalled_targets']}[/bold green]")
     if purge_data:
         console.print("[bold yellow]⚠ Purged .verdict memory data directory.[/bold yellow]")
 

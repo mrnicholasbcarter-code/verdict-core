@@ -81,7 +81,7 @@ class MasterDocsAdapter:
             else:
                 for t in tables:
                     try:
-                        c = conn.execute(f"SELECT * FROM {t} LIMIT ?", (limit,))
+                        c = conn.execute(f"SELECT * FROM {t} LIMIT ?", (limit,))  # nosec B608
                         r_list = [dict(r) for r in c.fetchall()]
                         if r_list and "content" in r_list[0]:
                             rows = r_list
