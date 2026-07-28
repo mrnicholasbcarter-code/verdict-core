@@ -308,6 +308,95 @@ def test_cmd_doctor_all_healthy(
     assert "Doctor Report: 0 issues identified. 0 resolved." in out
 
 
+def test_cli_documentation_json_surfaces_blocked_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_read_omniroute_token", lambda: None)
+    monkeypatch.setattr(cli, "console", cli.Console(quiet=True))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verdict",
+            "memory",
+            "docs",
+            "--json",
+            "--repo-root",
+            str(tmp_path),
+            "--db-path",
+            str(tmp_path / "memory.db"),
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["operation"] == "documentation-preflight"
+    assert report["status"] == "blocked"
+
+
+def test_cli_memory_docs_json_reports_repaired_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text("# Decision\n\nUse verified docs.", encoding="utf-8")
+    source = documentation_preflight.DocumentationSource(
+        "fixture-cli",
+        "fixture",
+        "https://example.test/fixture",
+        "commit-1",
+        tmp_path,
+        freshness_seconds=10**12,
+    )
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: (source,))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verdict",
+            "memory",
+            "docs",
+            "--json",
+            "--fix",
+            "--repo-root",
+            str(tmp_path),
+            "--db-path",
+            str(tmp_path / "memory.db"),
+        ],
+    )
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "ready"
+    assert report["state"] == "repaired"
+    assert report["repaired"] is True
+
+
+def test_cli_doctor_json_has_machine_readable_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["documentation_preflight"]["status"] == "ready"
+    assert report["status"] == "issues_found"
+
+
 def test_cmd_doctor_issues_and_duplicates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

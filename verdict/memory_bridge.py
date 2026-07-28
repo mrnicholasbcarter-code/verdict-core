@@ -560,8 +560,9 @@ def run_doctor_diagnostics(
                 configure_memory_bridge(["codex"], home_dir=home, cwd=root)
                 repaired.append("fixed_codex_bridge")
 
+    documentation_ready = documentation_report.passed
     return {
-        "status": "healthy" if not issues else "issues_found",
+        "status": "healthy" if not issues and documentation_ready else "issues_found",
         "issues": issues,
         "repaired": repaired,
         "fix_applied": fix,

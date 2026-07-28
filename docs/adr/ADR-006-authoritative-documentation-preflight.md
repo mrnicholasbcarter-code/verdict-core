@@ -1,6 +1,6 @@
 # ADR-006: Authoritative documentation preflight before implementation
 
-- **Status:** Accepted — implementation in progress on issue #152
+- **Status:** Accepted — implemented in #152/PR #154; reconciliation tracked by #156
 - **Date:** 2026-07-28
 - **Decision owners:** Verdict Core maintainers
 
@@ -72,3 +72,19 @@ The manifest makes provenance and drift reviewable, while the existing
 document adapter remains available for general unverified local documents.
 The complete Ruflo/RuVector inventory is runtime-generated from authoritative
 commits rather than vendored into Verdict, avoiding stale duplicate copies.
+
+## Completion and reconciliation
+
+The enforcement implementation was merged by PR #154. Follow-up issue #156
+reconciles source drift, completes active chunk validation, and provides the
+machine-readable `doctor --json` and `memory docs --json` diagnostics. The
+shared-memory reconciliation receipt is maintained on the ticket because the
+database and raw upstream payloads are runtime state and are intentionally not
+committed.
+
+The current inventory observed during reconciliation is 704 paths: Verdict
+Core 7, Ruflo 284 at `26c35b59b40a0a95b286ccf5ac675a15edcc995f`, and RuVector
+413 at resolved ref `597be6a753472f0521fe2def097116e717ed4332`. Six duplicate
+blob projections remain visible in diagnostics and retrieval paths. The shared
+plane contains 704 active manifests and 10,971 active authoritative chunks;
+prior source versions are retained only as superseded history.
