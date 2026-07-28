@@ -4,19 +4,6 @@
 - **Date:** 2026-07-28
 - **Decision owners:** Verdict Core maintainers
 - **Ticket:** #153
-- **Completion:** Implemented and merged by PR #155; refreshed after PR #157 and
-  verified after PR #159. Ticket #153 is complete; future catalog refreshes
-  remain runtime evidence only.
-
-The latest shared catalog records remain qualified snapshots of 3,977 rows,
-3,964 unique IDs, and a 13-row duplicate delta on both documented endpoints.
-The public snapshot hash is
-`eaaeb37b9b01771f904398668ec04a27f90228fa812004a172fbd640da59548c`; the
-management snapshot hash is
-`25e568789598bbdd80cbcca3eae0b07906f3e2b4101cccb661a6e095a73ab2f1`. The
-sanitized committed evidence hash is
-`1ee9e5288c6778b6f30a1a755b89f1028fa90a3e56ba6a49be0b410e682b8d43`. These
-hashes identify different capture encodings and must not be conflated.
 
 ## Context
 
@@ -59,11 +46,10 @@ unknown responses cannot be stored.
 
 The 2026-07-28 live instance returned 3,977 rows, 3,964 unique IDs, zero
 malformed rows, and 13 duplicate-row deltas on both documented endpoints. The
-public and management qualified records are active in shared memory with
-freshness and provenance metadata; raw JSON remains outside the repository.
-The bounded eight-model sample recorded zero ready results (one HTTP error and
-seven timeouts in the initial run; a later refresh recorded one rate limit and
-six timeouts), so no provider liveness claim is made.
+public and management payload hashes are retained only in sanitized evidence;
+the raw JSON remains outside the repository. A bounded eight-model sample
+returned one HTTP 404 and seven timeouts, with zero ready results, so no
+provider liveness claim is made from this run.
 
 ## Consequences
 

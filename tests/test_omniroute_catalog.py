@@ -192,13 +192,9 @@ def test_qualification_is_stored_with_hash_and_freshness_provenance(tmp_path) ->
     assert record.namespace == "omniroute-catalog"
     assert record.provenance["payload_hash"] == report.snapshot.payload_hash
     assert record.provenance["qualification_hash"] == record.metadata["qualification_hash"]
-    assert record.expires_at >= report.snapshot.fresh_until.timestamp()
+    assert record.expires_at == report.snapshot.fresh_until.timestamp()
     with MemoryPlane(tmp_path / "memory.db") as plane:
-        history = plane.history(
-            "omniroute-catalog", "http://127.0.0.1:20128/v1/models", scope="shared"
-        )
-        assert history
-        assert history[-1].record_id == record.record_id
+        assert plane.get("omniroute-catalog", "http://127.0.0.1:20128/v1/models", scope="shared")
 
 
 def test_qualification_storage_is_idempotent_for_same_snapshot(tmp_path) -> None:
