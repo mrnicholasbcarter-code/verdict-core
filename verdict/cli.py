@@ -912,6 +912,82 @@ def cmd_doctor() -> None:
         console.print("  [green]✓ System is healthy! All checks passed.[/green]")
 
 
+def cmd_memory(args: Any) -> None:
+    """Handle memory subcommands: put, search, export, import, masterdocs, graph."""
+    from verdict.memory_bridge import configure_memory_bridge, detect_available_tools
+    from verdict.memory_graph_adapter import CodeGraphAdapter
+    from verdict.memory_masterdocs_adapter import MasterDocsAdapter
+    from verdict.memory_plane import MemoryPlane, MemoryRecord
+
+    plane = MemoryPlane(getattr(args, "db_path", ".verdict/memory.db"))
+    sub = getattr(args, "memory_command", None)
+
+    if sub == "put":
+        rec = MemoryRecord(
+            record_id=f"rec_{args.key}",
+            namespace=getattr(args, "namespace", "default"),
+            key=args.key,
+            content=args.content,
+            source=getattr(args, "source", "cli"),
+        )
+        plane.put(rec)
+        console.print(
+            f"[bold green]✓ Memory record put: {rec.key} (ns: {rec.namespace})[/bold green]"
+        )
+    elif sub == "search":
+        results = plane.search(
+            args.query, namespace=getattr(args, "namespace", None), limit=getattr(args, "limit", 10)
+        )
+        console.print(f"[bold cyan]Found {len(results)} memory record(s):[/bold cyan]")
+        for r in results:
+            console.print(f"- [{r.namespace}:{r.key}] ({r.source}): {r.content[:100]}")
+    elif sub == "export":
+        data = plane.export_manifest()
+        out = getattr(args, "output", "memory_manifest.json")
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        console.print(f"[bold green]✓ Exported memory manifest to {out}[/bold green]")
+    elif sub == "import":
+        man = args.manifest
+        with open(man, encoding="utf-8") as f:
+            data = json.load(f)
+        report = plane.import_manifest(data)
+        console.print(f"[bold green]✓ Imported {report.imported_records} record(s)[/bold green]")
+    elif sub == "masterdocs":
+        db = getattr(args, "db", "MasterDocsRAG.db")
+        adapter = MasterDocsAdapter()
+        rep = adapter.canonicalize_db(db, plane)
+        console.print(
+            f"[bold green]✓ MasterDocs ingested {rep.ingested} record(s) ({rep.quarantined} quarantined)[/bold green]"
+        )
+    elif sub == "graph":
+        db = getattr(args, "db", "code_graph.db")
+        adapter = CodeGraphAdapter()
+        rep = adapter.ingest_sqlite(db, plane)
+        console.print(
+            f"[bold green]✓ Code graph ingested {rep.records_created} node(s)[/bold green]"
+        )
+    elif sub == "setup":
+        report = detect_available_tools()
+        tools_to_config = getattr(args, "tools", None)
+        if not tools_to_config:
+            tools_to_config = list(report.preselected_tools)
+        else:
+            tools_to_config = [t.strip() for t in tools_to_config.split(",") if t.strip()]
+
+        console.print(
+            f"[bold cyan]Detected available AI tools:[/bold cyan] {list(report.preselected_tools)}"
+        )
+        console.print(f"[bold cyan]Configuring memory bridge for:[/bold cyan] {tools_to_config}")
+
+        res = configure_memory_bridge(tools_to_config, plane)
+        console.print(f"[bold green]✓ Configured tools: {res['configured_tools']}[/bold green]")
+        console.print(f"[bold green]✓ Memory database ready: {res['memory_db_path']}[/bold green]")
+
+    else:
+        console.print("[bold yellow]Use --help to view memory subcommands.[/bold yellow]")
+
+
 def cmd_check() -> None:
     """Validate the Verdict configuration file and print status."""
     config_dir = os.path.join(
@@ -1045,6 +1121,40 @@ def main() -> None:
 
     subparsers.add_parser("check", help="Validate system configuration file syntax and sanity")
 
+    memory_p = subparsers.add_parser("memory", help="Local-first unified memory management")
+    memory_sub = memory_p.add_subparsers(dest="memory_command")
+
+    put_p = memory_sub.add_parser("put", help="Put a record into memory")
+    put_p.add_argument("key", help="Key for memory record")
+    put_p.add_argument("content", help="Content of memory record")
+    put_p.add_argument("--namespace", default="default", help="Namespace")
+    put_p.add_argument("--source", default="cli", help="Source provenance")
+
+    srch_p = memory_sub.add_parser("search", help="Search memory records")
+    srch_p.add_argument("query", help="Query text")
+    srch_p.add_argument("--namespace", default=None, help="Namespace filter")
+    srch_p.add_argument("--limit", type=int, default=10, help="Max results")
+
+    exp_p = memory_sub.add_parser("export", help="Export memory manifest")
+    exp_p.add_argument("--output", default="memory_manifest.json", help="Output file")
+
+    imp_p = memory_sub.add_parser("import", help="Import memory manifest")
+    imp_p.add_argument("manifest", help="Manifest JSON file")
+
+    md_p = memory_sub.add_parser("masterdocs", help="Canonicalize MasterDocs database")
+    md_p.add_argument("--db", default="MasterDocsRAG.db", help="Database path")
+
+    cg_p = memory_sub.add_parser("graph", help="Ingest code review graph database")
+    cg_p.add_argument("--db", default="code_graph.db", help="Database path")
+
+    setup_p = memory_sub.add_parser(
+        "setup",
+        help="Autopilot wizard to connect tools (Codex, Claude, Pi, Ruflo) to Unified Memory",
+    )
+    setup_p.add_argument(
+        "--tools", default=None, help="Comma-separated tools to configure (default: auto-detected)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -1098,6 +1208,8 @@ def main() -> None:
         cmd_doctor()
     elif args.command == "check":
         cmd_check()
+    elif args.command == "memory":
+        cmd_memory(args)
     else:
         parser.print_help()
 
