@@ -1,6 +1,6 @@
 # ADR-007: Qualify OmniRoute catalog identity separately from liveness
 
-- **Status:** Accepted
+- **Status:** Accepted — implemented and merged in PR #155
 - **Date:** 2026-07-28
 - **Decision owners:** Verdict Core maintainers
 - **Ticket:** #153
