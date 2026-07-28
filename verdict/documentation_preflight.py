@@ -27,6 +27,8 @@ from verdict.memory_plane import SCHEMA_VERSION, MemoryPlane, MemoryRecord
 DOCUMENT_PREFLIGHT_VERSION = "1"
 DEFAULT_FRESHNESS_SECONDS = 86_400
 DEFAULT_RUFLO_REPOSITORY = "https://github.com/ruvnet/ruflo"
+DEFAULT_RUFLO_API = "https://api.github.com/repos/ruvnet/ruflo"
+DEFAULT_RUFLO_REF = "main"
 DEFAULT_RUVECTOR_REPOSITORY = "https://github.com/ruvnet/RuVector"
 DEFAULT_RUVECTOR_API = "https://api.github.com/repos/ruvnet/RuVector"
 DEFAULT_RUVECTOR_REF = "main"
@@ -172,6 +174,16 @@ def discover_sources(repo_root: Path | None = None) -> tuple[DocumentationSource
                 "ruflo", "ruflo", DEFAULT_RUFLO_REPOSITORY, _git_commit(ruflo_root), ruflo_root
             )
         )
+    else:
+        sources.append(
+            DocumentationSource(
+                "ruflo",
+                "ruflo",
+                DEFAULT_RUFLO_REPOSITORY,
+                os.getenv("VERDICT_RUFLO_REF", DEFAULT_RUFLO_REF),
+                api_base=DEFAULT_RUFLO_API,
+            )
+        )
 
     ruvector_value = os.getenv("VERDICT_RUVECTOR_ROOT")
     ruvector_root = Path(ruvector_value).expanduser().resolve() if ruvector_value else None
@@ -306,10 +318,10 @@ def run_documentation_preflight(
                         raise ValueError("empty document")
                     records = _records_for_entry(entry, text, raw_hash, current)
                     for record in records:
-                        plane.put_verified(record)
+                        plane.repair_verified(record)
                     _retire_extra_chunks(plane, active_records, entry, len(records), current)
                     manifest_record = _manifest_record(entry, raw_hash, text, current)
-                    plane.put_verified(manifest_record)
+                    plane.repair_verified(manifest_record)
                     detail.update(
                         {
                             "raw_hash": raw_hash,
@@ -430,6 +442,8 @@ def _resolve_source(
         return source
     if not source.api_base or _is_git_sha(source.ref):
         return source
+    if fetch is None and not source.api_base.startswith("https://api.github.com/repos/"):
+        raise ValueError("remote source API is not an allowlisted GitHub HTTPS source")
     ref_url = f"{source.api_base}/git/ref/heads/{source.ref}"
     payload = json.loads(_download(ref_url, fetch).decode("utf-8"))
     commit = str(payload.get("object", {}).get("sha", ""))
@@ -541,6 +555,11 @@ def _raise_immutable_tree_failure(source: DocumentationSource) -> list[tuple[Pat
 def _download(url: str, fetch: Callable[[str], bytes] | None) -> bytes:
     if fetch:
         return fetch(url)
+    if fetch is None and not (
+        url.startswith("https://api.github.com/repos/")
+        or url.startswith("https://raw.githubusercontent.com/")
+    ):
+        raise ValueError("authoritative fetch URL is not an allowlisted GitHub HTTPS source")
     request = urllib.request.Request(
         url, headers={"Accept": "application/json", "User-Agent": "verdict-core"}
     )
@@ -629,6 +648,8 @@ def _manifest_record(
             "document_hash": provenance["document_hash"],
             "commit": entry.source.ref,
             "chunk_count": provenance["chunk_count"],
+            "preflight_version": DOCUMENT_PREFLIGHT_VERSION,
+            "schema_version": SCHEMA_VERSION,
         },
         expires_at=now + entry.source.freshness_seconds,
         authority="authoritative",
@@ -643,6 +664,9 @@ def _provenance(
 ) -> dict[str, Any]:
     return {
         "preflight_version": DOCUMENT_PREFLIGHT_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "source": f"{entry.source.ecosystem}:authoritative",
+        "observed_at": now,
         "ecosystem": entry.source.ecosystem,
         "repository": entry.source.repository,
         "source_url": entry.raw_url or _local_url(entry.source, entry.relative_path),
@@ -774,6 +798,9 @@ def _manifest_is_fresh(
         and record.authority == "authoritative"
         and record.namespace == "documentation-manifest"
         and record.status == "active"
+        and record.source == f"{entry.source.ecosystem}:authoritative"
+        and record.trust == "upstream-documented"
+        and record.scope == "shared"
         and record.expires_at is not None
         and record.expires_at > now
         and data.get("commit") == entry.source.ref
@@ -787,6 +814,7 @@ def _manifest_is_fresh(
         and data.get("preflight_version") == DOCUMENT_PREFLIGHT_VERSION
         and data.get("schema_version") == SCHEMA_VERSION
         and record.schema_version == SCHEMA_VERSION
+        and _manifest_integrity_fields_match(record)
     ):
         return False
     try:
@@ -858,13 +886,21 @@ def _chunk_matches(
     return bool(
         record.authority_verified
         and record.authority == "authoritative"
+        and record.source == f"{entry.source.ecosystem}:authoritative"
+        and record.trust == "upstream-documented"
+        and record.scope == "shared"
         and record.expires_at is not None
         and record.expires_at > now
         and record.content == chunk
         and record.content_hash == chunk_hash
         and record.schema_version == SCHEMA_VERSION
-        and metadata.get("chunk_index") == index
-        and metadata.get("chunk_count") == count
+        and metadata
+        == {
+            "document_hash": provenance.get("document_hash"),
+            "raw_hash": raw_hash,
+            "chunk_index": index,
+            "chunk_count": count,
+        }
         and provenance.get("repository") == entry.source.repository
         and provenance.get("source_url")
         == (entry.raw_url or _local_url(entry.source, entry.relative_path))
@@ -879,6 +915,61 @@ def _chunk_matches(
         and provenance.get("tree_sha") == entry.tree_sha
         and provenance.get("preflight_version") == DOCUMENT_PREFLIGHT_VERSION
         and provenance.get("schema_version") == SCHEMA_VERSION
+        and provenance.get("source") == f"{entry.source.ecosystem}:authoritative"
+        and provenance.get("observed_at") == provenance.get("retrieved_at")
+        and provenance.get("fresh_until") == record.expires_at
+    )
+
+
+def _manifest_integrity_fields_match(record: MemoryRecord) -> bool:
+    """Validate the persisted manifest itself before trusting its provenance."""
+
+    provenance = record.provenance or {}
+    metadata = record.metadata or {}
+    expected_content = json.dumps(
+        {"path": provenance.get("relative_path"), **provenance}, sort_keys=True
+    )
+    expected_content_hash = hashlib.sha256(expected_content.encode("utf-8")).hexdigest()
+    expected_metadata = {
+        "raw_hash": provenance.get("raw_hash"),
+        "document_hash": provenance.get("document_hash"),
+        "commit": provenance.get("commit"),
+        "chunk_count": provenance.get("chunk_count"),
+        "preflight_version": provenance.get("preflight_version"),
+        "schema_version": SCHEMA_VERSION,
+    }
+    required_provenance = {
+        "preflight_version",
+        "schema_version",
+        "source",
+        "observed_at",
+        "ecosystem",
+        "repository",
+        "source_url",
+        "ref",
+        "commit",
+        "relative_path",
+        "raw_hash",
+        "document_hash",
+        "retrieved_at",
+        "fresh_until",
+        "chunk_index",
+        "chunk_count",
+        "tree_sha",
+    }
+    retrieved_at = provenance.get("retrieved_at")
+    fresh_until = provenance.get("fresh_until")
+    if not isinstance(retrieved_at, (int, float)) or not isinstance(fresh_until, (int, float)):
+        return False
+    return bool(
+        record.content == expected_content
+        and record.content_hash == expected_content_hash
+        and metadata == expected_metadata
+        and required_provenance.issubset(provenance)
+        and provenance.get("schema_version") == SCHEMA_VERSION
+        and provenance.get("source") == record.source
+        and fresh_until > retrieved_at
+        and record.expires_at == fresh_until
     )
 
 
