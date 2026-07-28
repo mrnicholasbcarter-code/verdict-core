@@ -132,9 +132,7 @@ def ingest_legacy_artifacts(report: LegacyArtifactReport, plane: MemoryPlane) ->
             try:
                 conn = sqlite3.connect(str(path))
                 conn.row_factory = sqlite3.Row
-                cursor = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table';"
-                )
+                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
                 tables = {row["name"] for row in cursor.fetchall()}
                 for tbl in list(tables)[:5]:
                     c = conn.execute(f"SELECT * FROM {tbl} LIMIT 100")  # nosec B608

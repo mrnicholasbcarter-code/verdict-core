@@ -988,14 +988,15 @@ def cmd_memory(args: Any) -> None:
         console.print("[bold yellow]Use --help to view memory subcommands.[/bold yellow]")
 
 
-
 def cmd_uninstall(purge_data: bool = False) -> None:
     """Reversibly uninstall memory bridge hooks and MCP registrations."""
     from verdict.memory_bridge import uninstall_memory_bridge
+
     res = uninstall_memory_bridge(purge_data=purge_data)
     console.print(f"[bold green]✓ Uninstalled targets: {res['uninstalled_targets']}[/bold green]")
     if purge_data:
         console.print("[bold yellow]⚠ Purged .verdict memory data directory.[/bold yellow]")
+
 
 def cmd_check() -> None:
     """Validate the Verdict configuration file and print status."""
@@ -1124,10 +1125,18 @@ def main() -> None:
     )
     suggest_p.add_argument("--log_path", default="verdict-decisions.jsonl")
 
-    doctor_p = subparsers.add_parser("doctor", help="Scan and repair system configuration and connectivity issues")
-    doctor_p.add_argument("--fix", action="store_true", help="Automatically repair detected configuration issues")
-    uninst_p = subparsers.add_parser("uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations")
-    uninst_p.add_argument("--purge-data", action="store_true", help="Purge .verdict memory database directory")
+    doctor_p = subparsers.add_parser(
+        "doctor", help="Scan and repair system configuration and connectivity issues"
+    )
+    doctor_p.add_argument(
+        "--fix", action="store_true", help="Automatically repair detected configuration issues"
+    )
+    uninst_p = subparsers.add_parser(
+        "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"
+    )
+    uninst_p.add_argument(
+        "--purge-data", action="store_true", help="Purge .verdict memory database directory"
+    )
     subparsers.add_parser("check", help="Validate system configuration file syntax and sanity")
 
     memory_p = subparsers.add_parser("memory", help="Local-first unified memory management")

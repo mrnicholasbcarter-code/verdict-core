@@ -67,10 +67,7 @@ class CodeGraphEngine:
         root = Path(root_dir).resolve()
         count = 0
         for py_file in root.glob("**/*.py"):
-            if any(
-                p in str(py_file)
-                for p in [".venv", "venv", "__pycache__", "build", "dist"]
-            ):
+            if any(p in str(py_file) for p in [".venv", "venv", "__pycache__", "build", "dist"]):
                 continue
             self.parse_file(py_file, root)
             count += 1
@@ -116,9 +113,7 @@ class CodeGraphEngine:
                         docstring=doc,
                     )
                 )
-                self.add_edge(
-                    CodeEdge(source_id=file_node_id, target_id=c_id, kind="contains")
-                )
+                self.add_edge(CodeEdge(source_id=file_node_id, target_id=c_id, kind="contains"))
 
                 # Inheritance edges
                 for base in node.bases:
@@ -129,11 +124,7 @@ class CodeGraphEngine:
                         base_name = base.attr
                     if base_name:
                         base_id = f"class_ref:{base_name}"
-                        self.add_edge(
-                            CodeEdge(
-                                source_id=c_id, target_id=base_id, kind="inherits"
-                            )
-                        )
+                        self.add_edge(CodeEdge(source_id=c_id, target_id=base_id, kind="inherits"))
 
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 is_test = node.name.startswith("test_") or "test" in rel_path.lower()
@@ -156,9 +147,7 @@ class CodeGraphEngine:
                         docstring=doc,
                     )
                 )
-                self.add_edge(
-                    CodeEdge(source_id=file_node_id, target_id=f_id, kind="contains")
-                )
+                self.add_edge(CodeEdge(source_id=file_node_id, target_id=f_id, kind="contains"))
 
                 # Call edges
                 for sub in ast.walk(node):
@@ -171,9 +160,7 @@ class CodeGraphEngine:
                         if call_name:
                             target_id = f"fn_call:{call_name}"
                             self.add_edge(
-                                CodeEdge(
-                                    source_id=f_id, target_id=target_id, kind="calls"
-                                )
+                                CodeEdge(source_id=f_id, target_id=target_id, kind="calls")
                             )
 
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -183,11 +170,7 @@ class CodeGraphEngine:
                     target_id = f"import:{node.names[0].name}"
                 else:
                     continue
-                self.add_edge(
-                    CodeEdge(
-                        source_id=file_node_id, target_id=target_id, kind="imports"
-                    )
-                )
+                self.add_edge(CodeEdge(source_id=file_node_id, target_id=target_id, kind="imports"))
 
     # Query Patterns & Analytics
     def callers_of(self, symbol_name: str) -> list[CodeNode]:
@@ -269,16 +252,11 @@ class CodeGraphEngine:
         """Find functions or classes exceeding line count threshold."""
         large: list[CodeNode] = []
         for node in self.nodes.values():
-            if (
-                node.kind in ("Function", "Class", "Test")
-                and node.line_count >= min_lines
-            ):
+            if node.kind in ("Function", "Class", "Test") and node.line_count >= min_lines:
                 large.append(node)
         return sorted(large, key=lambda n: n.line_count, reverse=True)
 
-    def get_impact_radius(
-        self, changed_files: list[str], max_depth: int = 2
-    ) -> set[str]:
+    def get_impact_radius(self, changed_files: list[str], max_depth: int = 2) -> set[str]:
         """Perform BFS to compute impacted entities starting from changed files."""
         impacted: set[str] = set()
         queue: list[tuple[str, int]] = [(f"file:{f}", 0) for f in changed_files]
@@ -376,8 +354,7 @@ class CodeGraphEngine:
                 for n in self.nodes.values()
             ],
             "edges": [
-                {"source": e.source_id, "target": e.target_id, "kind": e.kind}
-                for e in self.edges
+                {"source": e.source_id, "target": e.target_id, "kind": e.kind} for e in self.edges
             ],
         }
 

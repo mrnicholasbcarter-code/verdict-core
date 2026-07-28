@@ -534,7 +534,7 @@ def uninstall_memory_bridge(
     home_dir: Path | None = None, cwd: Path | None = None, purge_data: bool = False
 ) -> dict[str, Any]:
     """Reversibly strip tool memory bridge headers and MCP entries, preserving source code and data by default."""
-    home = (home_dir or Path.home()).resolve()
+    _home = (home_dir or Path.home()).resolve()
     root = (cwd or Path.cwd()).resolve()
 
     uninstalled: list[str] = []
@@ -564,11 +564,7 @@ def uninstall_memory_bridge(
             shutil.rmtree(v_dir, ignore_errors=True)
             uninstalled.append(".verdict_data_purged")
 
-    return {
-        "status": "success",
-        "uninstalled_targets": uninstalled,
-        "data_purged": purge_data,
-    }
+    return {"status": "success", "uninstalled_targets": uninstalled, "data_purged": purge_data}
 
 
 __all__.extend(["run_doctor_diagnostics", "uninstall_memory_bridge"])

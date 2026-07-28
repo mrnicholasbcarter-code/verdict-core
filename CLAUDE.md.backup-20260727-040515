@@ -1,0 +1,116 @@
+# Verdict — Claude Code Configuration
+
+## Project Identity
+**Verdict** — Policy-gated, availability-aware LLM routing control plane. Deterministic safety floors, quantitative-trading-grade execution, closed-loop telemetry.
+
+## Rules
+- Do what asked; nothing more, nothing less
+- Prefer editing existing files over creating new ones
+- Don't create documentation files unless explicitly requested
+- Save working files to `/src` `/tests` `/docs` `/config` `/scripts`
+- Read file before editing
+- Commit secrets, credentials, .env files? **NEVER**
+- Add `Co-Authored-By` trailer to user commits unless project's `.claude/settings.json` `attribution.commit` set
+- Keep files under 500 lines
+- Validate input at system boundaries
+
+## Architecture
+```
+verdict/
+├── api.py                   # FastAPI server — /v1/route, /v1/route/explain, /v1/models
+├── availability.py          # AvailabilityReport, candidates, eligibility
+├── availability_cache.py    # Bounded cache, TTL, SWR, explain_freshness (issue #56)
+├── benchmarking.py          # Reproducible benchmarks
+├── catalog.py               # Model catalog, filters
+├── cli.py                   # verdict CLI — route, explain, models, policy, dashboard
+├── contracts.py             # Typed contracts (TaskSpec, RoutingDecision, etc.)
+├── dispatcher.py            # AssignmentExplanation, Dispatcher, SwarmDispatcher
+├── eligibility.py           # EligibilityGate — hard safety floors
+├── gate.py                  # Gate — composes eligibility + intelligence
+├── intelligence.py          # IntelligenceService — advisory ranking (cannot bypass gate)
+├── omniroute.py             # OmniRouteHTTPTransport — native OpenAI-compatible
+├── planner.py               # IntakePlanner, PlanningResult
+├── probes.py                # ProbeRunner, 1-token liveness checks
+├── contracts/               # JSON schemas
+└── schemas/                 # OpenAPI, Pydantic models
+```
+
+## Key Invariants
+1. **Eligibility gate runs FIRST** — hard safety floors (capability, budget, privacy, capacity) before any ranking
+2. **Intelligence is ADVISORY ONLY** — cannot override gate exclusions
+3. **Availability cache is BOUNDED** — TTL + stale-while-revalidate, explicit `unknown`/`error` states, isolation by provider/model/policy-version
+4. **Explainability is FIRST-CLASS** — `/v1/route/explain` surfaces observed_at, expires_at, age, source, confidence, candidate/eligible counts, per-candidate exclusion reasons, cache refresh/error state
+5. **Contracts are VERSIONED** — `TaskSpec.v1`, `RoutingDecisionContract.v1`, breaking changes require new version
+
+## CLI Structure (Cobra-style)
+```
+verdict [global flags] <command> [args]
+Commands:
+  route       Route task to best model
+  explain     Show eligibility ranking & freshness
+  models      List/refresh available models
+  policy      Manage routing policies (get/set/validate)
+  dashboard   Launch/manage verdict-ui
+  config      Manage local configuration
+  completion  Generate shell completions
+  serve       Launch FastAPI microservice
+  detect      Detect available LLM providers
+  probe       Run 1-token liveness probe
+  suggest     Review intelligence suggestions
+  doctor      Scan & repair config/connectivity
+  check       Validate config syntax
+```
+
+## Testing
+```bash
+# Run all tests (321 tests)
+pytest -v
+
+# Lint + typecheck
+ruff check .
+mypy --strict verdict/
+```
+
+## Configuration
+```toml
+# ~/.verdict/config.toml (global)
+# .verdict/config.toml (project-local — takes precedence)
+
+[gateway]
+primary_model = "anthropic/claude-3-opus-20240229"
+providers = {}
+
+[intelligence]
+profile = "balanced"  # fast | balanced | thorough
+timeout_ms = 8000
+allow_client_model_override = false
+
+[availability]
+ttl_seconds = 60
+stale_window_seconds = 30
+omniroute_base_url = "http://localhost:20128"  # Optional
+```
+
+## OmniRoute Integration
+- **3,318+ models** across **250+ providers**
+- **107+ free tiers** — no API keys needed
+- Auto-fallback, RTK compression (15–95% token savings)
+- Smart routing: `auto/best-coding`, `auto/best-reasoning`, `auto/best-fast`
+
+## Ecosystem
+| Repo | Purpose | Language |
+|------|---------|----------|
+| `verdict-core` | Python control plane (flagship) | Python |
+| `verdict-node` | Express/Next.js middleware | TypeScript |
+| `verdict-cockpit` | Next.js dashboard | TypeScript |
+| `verdict-risk` | Zero-allocation risk engine | Python |
+| `verdict-edge` | Edge mining framework | Python |
+| `verdict-backtest` | Monte Carlo harness | Python |
+
+## Links
+- Core: https://github.com/verdict/verdict-core
+- Node: https://github.com/verdict/verdict-node
+- Cockpit: https://github.com/verdict/verdict-cockpit
+- Risk: https://github.com/verdict/verdict-risk
+- Edge: https://github.com/verdict/verdict-edge
+- Backtest: https://github.com/verdict/verdict-backtest
