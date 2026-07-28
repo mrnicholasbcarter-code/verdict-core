@@ -4,6 +4,16 @@
 - **Date:** 2026-07-28
 - **Decision owners:** Verdict Core maintainers
 - **Ticket:** #153
+- **Completion:** Implemented and merged by PR #155; current memory refresh and
+  documentation reconciliation are tracked by #156.
+
+The shared catalog record remains a qualified 3,977-row snapshot with 3,964
+unique IDs and 13 duplicate-row delta. Its stored payload hash is
+`67b5c218a05ac163868a3608cb7ffd4bebf5c45daeef91eb1700d813e58c2e27`; the
+sanitized committed evidence hash is `1ee9e5288c6778b6f30a1a755b89f1028fa90a3e56ba6a49be0b410e682b8d43`.
+These hashes intentionally identify different capture encodings: the shared
+record hashes the runtime response bytes, while the evidence artifact hashes
+the earlier sanitized qualification payload. They must not be conflated.
 
 ## Context
 

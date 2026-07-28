@@ -806,8 +806,17 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
         console.print("---")
 
 
-def cmd_doctor(fix: bool = False) -> None:
+def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     """Scan the Verdict setup and OmniRoute connections for issues and repair them."""
+    if output_json:
+        from verdict.memory_bridge import run_doctor_diagnostics
+
+        report = run_doctor_diagnostics(fix=fix)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        if report["status"] != "healthy":
+            raise SystemExit(1)
+        return
+
     console.print(
         Panel.fit("[bold green]🩺 Verdict System Doctor[/bold green]", border_style="green")
     )
@@ -1005,8 +1014,25 @@ def cmd_memory(args: Any) -> None:
     from verdict.memory_plane import MemoryPlane, MemoryRecord
 
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
-    plane = MemoryPlane(db_path)
     sub = getattr(args, "memory_command", None)
+
+    if sub == "docs":
+        from verdict.documentation_preflight import run_documentation_preflight
+
+        docs_report = run_documentation_preflight(
+            repo_root=Path(getattr(args, "repo_root", Path.cwd())),
+            memory_path=Path(db_path),
+            fix=getattr(args, "fix", False),
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
+        else:
+            console.print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
+        if not docs_report.passed:
+            raise SystemExit(1)
+        return
+
+    plane = MemoryPlane(db_path)
 
     if sub == "put":
         rec = MemoryRecord(
@@ -1053,17 +1079,6 @@ def cmd_memory(args: Any) -> None:
         console.print(
             f"[bold green]✓ Code graph ingested {graph_rep.records_created} node(s)[/bold green]"
         )
-    elif sub == "docs":
-        from verdict.documentation_preflight import run_documentation_preflight
-
-        docs_report = run_documentation_preflight(
-            repo_root=Path(getattr(args, "repo_root", Path.cwd())),
-            memory_path=plane.path,
-            fix=getattr(args, "fix", False),
-        )
-        console.print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
-        if not docs_report.passed:
-            raise SystemExit(1)
     elif sub == "setup":
         report = detect_available_tools()
         tools_to_config = getattr(args, "tools", None)
@@ -1249,6 +1264,7 @@ def main() -> None:
     doctor_p.add_argument(
         "--fix", action="store_true", help="Automatically repair detected configuration issues"
     )
+    doctor_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     uninst_p = subparsers.add_parser(
         "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"
     )
@@ -1291,6 +1307,7 @@ def main() -> None:
     )
     docs_p.add_argument("--repo-root", default=str(Path.cwd()), help="Repository root")
     docs_p.add_argument("--db-path", default=None, help="Shared memory database path")
+    docs_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     setup_p = memory_sub.add_parser(
         "setup",
@@ -1362,7 +1379,7 @@ def main() -> None:
     elif args.command == "suggest":
         cmd_suggest(args.log_path)
     elif args.command == "doctor":
-        cmd_doctor(fix=getattr(args, "fix", False))
+        cmd_doctor(fix=getattr(args, "fix", False), output_json=getattr(args, "json", False))
     elif args.command == "uninstall":
         cmd_uninstall(purge_data=getattr(args, "purge_data", False))
     elif args.command == "check":
