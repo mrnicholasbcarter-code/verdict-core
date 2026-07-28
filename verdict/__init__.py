@@ -107,6 +107,18 @@ from verdict.memory_session_adapter import (
 )
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.omniroute_catalog import (
+    CATALOG_QUALIFICATION_VERSION,
+    CatalogQualificationError,
+    CatalogQualificationReport,
+    CatalogSnapshot,
+    ProbeQualification,
+    probe_catalog,
+    qualify_catalog,
+    select_probe_models,
+    store_qualification,
+    summarize_probes,
+)
 from verdict.planner import (
     FailureClass,
     IntakePlanner,
@@ -147,6 +159,7 @@ from verdict.workers import (
 
 __all__ = [
     "ADAPTER_PROTOCOL_VERSION",
+    "CATALOG_QUALIFICATION_VERSION",
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_FIXTURE_PATH",
     "DOCUMENT_ADAPTER_VERSION",
@@ -168,6 +181,9 @@ __all__ = [
     "CallableOmniRouteTransport",
     "CandidateRequirements",
     "CapabilityRequirement",
+    "CatalogQualificationError",
+    "CatalogQualificationReport",
+    "CatalogSnapshot",
     "ContractValidationError",
     "DispatchPolicy",
     "DispatchResult",
@@ -217,6 +233,7 @@ __all__ = [
     "PlanningUnavailable",
     "ProbeObservation",
     "ProbePolicy",
+    "ProbeQualification",
     "ProbeRegistry",
     "ProbeRunner",
     "ProviderConfig",
@@ -261,12 +278,17 @@ __all__ = [
     "load_benchmark_fixture",
     "normalize_session_record",
     "openai_probe_transport",
+    "probe_catalog",
+    "qualify_catalog",
     "request_features",
     "resolve_subagent_model",
     "run_reproducible_benchmarks",
     "select_model_for_role",
     "select_models_for_parallel_roles",
+    "select_probe_models",
     "session_record_to_memory_record",
+    "store_qualification",
+    "summarize_probes",
 ]
 
 __version__ = "0.1.0"

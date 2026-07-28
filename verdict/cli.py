@@ -698,6 +698,72 @@ def cmd_probe(
         sys.exit(1)
 
 
+def cmd_catalog(
+    *,
+    base_url: str,
+    management: bool,
+    expected_rows: int,
+    freshness_seconds: int,
+    db_path: str | None,
+    probe: bool,
+    probe_limit: int,
+    probe_timeout: float,
+    output_json: bool,
+) -> None:
+    """Qualify one documented OmniRoute catalog endpoint."""
+    import urllib.request
+
+    from verdict.omniroute_catalog import probe_catalog, qualify_catalog, store_qualification
+
+    path = "/api/models/catalog" if management else "/v1/models"
+    source_url = base_url.rstrip("/") + path
+    request = urllib.request.Request(source_url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310
+            payload = response.read()
+    except Exception as exc:
+        failure_report: dict[str, Any] = {
+            "operation": "omniroute-catalog-qualification",
+            "status": "unknown",
+            "passed": False,
+            "errors": [type(exc).__name__],
+        }
+        if output_json:
+            print(json.dumps(failure_report, sort_keys=True))
+        else:
+            console.print(f"[red]Catalog qualification unavailable: {type(exc).__name__}[/red]")
+        sys.exit(1)
+    report = qualify_catalog(
+        payload,
+        source_url=source_url,
+        expected_row_count=expected_rows,
+        freshness_seconds=freshness_seconds,
+    )
+    probe_summary = None
+    if probe and report.snapshot and report.passed:
+        from verdict.probes import openai_probe_transport
+
+        probe_summary = probe_catalog(
+            payload,
+            openai_probe_transport(
+                base_url.rstrip("/") + "/v1", api_key=os.getenv("OPENAI_API_KEY")
+            ),
+            limit=probe_limit,
+            timeout_seconds=probe_timeout,
+        )
+    if db_path and report.snapshot and report.passed:
+        store_qualification(report, memory_path=db_path, probes=probe_summary)
+    report_payload = report.to_dict()
+    if probe_summary:
+        report_payload["probes"] = probe_summary.to_dict()
+    if output_json:
+        print(json.dumps(report_payload, sort_keys=True))
+    else:
+        console.print_json(json.dumps(report_payload))
+    if not report.passed:
+        sys.exit(1)
+
+
 def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
     """Run the SuggestionService to propose evidence-backed improvements."""
     from rich.console import Console
@@ -1151,6 +1217,27 @@ def main() -> None:
     probe_p.add_argument("--timeout", type=float, default=20.0, help="Per-probe timeout seconds")
     probe_p.add_argument("--json", action="store_true", help="Output JSON")
 
+    catalog_p = subparsers.add_parser(
+        "catalog", help="Qualify and optionally store a sanitized OmniRoute catalog snapshot"
+    )
+    catalog_p.add_argument(
+        "--base-url", default="http://127.0.0.1:20128", help="OmniRoute base URL"
+    )
+    catalog_p.add_argument(
+        "--management", action="store_true", help="Use the documented management catalog endpoint"
+    )
+    catalog_p.add_argument("--expected-rows", type=int, default=3977)
+    catalog_p.add_argument("--freshness-seconds", type=int, default=3600)
+    catalog_p.add_argument("--db-path", default=None, help="Store qualification in a memory DB")
+    catalog_p.add_argument(
+        "--probe",
+        action="store_true",
+        help="Run a bounded liveness sample after catalog qualification",
+    )
+    catalog_p.add_argument("--probe-limit", type=int, default=16)
+    catalog_p.add_argument("--probe-timeout", type=float, default=20.0)
+    catalog_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
     suggest_p = subparsers.add_parser(
         "suggest", help="Review intelligence suggestions from past outcomes"
     )
@@ -1258,6 +1345,18 @@ def main() -> None:
             sys.exit(1)
     elif args.command == "probe":
         cmd_probe(args.models, base_url=args.base_url, timeout=args.timeout, output_json=args.json)
+    elif args.command == "catalog":
+        cmd_catalog(
+            base_url=args.base_url,
+            management=args.management,
+            expected_rows=args.expected_rows,
+            freshness_seconds=args.freshness_seconds,
+            db_path=args.db_path,
+            probe=args.probe,
+            probe_limit=args.probe_limit,
+            probe_timeout=args.probe_timeout,
+            output_json=args.json,
+        )
     elif args.command == "detect":
         cmd_detect(verbose=args.verbose, output_json=args.json, output_config=args.config)
     elif args.command == "suggest":
