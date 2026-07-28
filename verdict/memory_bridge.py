@@ -1,15 +1,18 @@
 """Unified Memory Bridge, Tool Integration Autopilot, and 13-Hook Lifecycle Controller.
 
-Detects available AI tool environments (Codex, Claude Code, Pi, Ruflo, Hermes),
-preselects them by default, configures shared memory bridge hooks, and manages
-the full 6-category lifecycle hook matrix across prompt, task, file, command,
-session, and verification events.
+Detects available AI tool environments (Codex, Claude Code, Pi, Ruflo, Hermes,
+JCode/Cursor, OmniRoute, GitHub CLI, MCP servers), preselects them by default,
+configures shared memory bridge hooks, updates .mcp.json, and manages the full
+6-category lifecycle hook matrix across prompt, task, file, command, session,
+and verification events.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,64 +33,100 @@ class ToolDetectionReport:
 def detect_available_tools(
     home_dir: Path | None = None, cwd: Path | None = None
 ) -> ToolDetectionReport:
-    """Detect available AI agent tools and preselect installed tools."""
+    """Detect available AI agent tools across all 9 ecosystem categories and preselect installed tools."""
     home = (home_dir or Path.home()).resolve()
     root = (cwd or Path.cwd()).resolve()
 
     tools: dict[str, dict[str, Any]] = {}
 
-    # Codex
+    # 1. Codex
     codex_home = home / ".codex"
     codex_local = root / ".codex"
-    codex_installed = codex_home.exists() or codex_local.exists()
     tools["codex"] = {
         "name": "Codex",
-        "installed": codex_installed,
+        "installed": codex_home.exists() or codex_local.exists(),
         "config_path": str(codex_local if codex_local.exists() else codex_home),
         "session_dir": str(codex_home / "sessions"),
     }
 
-    # Claude Code
+    # 2. Claude Code
     claude_home = home / ".claude"
     claude_md = root / "CLAUDE.md"
-    claude_installed = claude_home.exists() or claude_md.exists()
     tools["claude"] = {
         "name": "Claude Code",
-        "installed": claude_installed,
+        "installed": claude_home.exists() or claude_md.exists(),
         "config_path": str(claude_home if claude_home.exists() else root),
         "session_dir": str(claude_home / "transcripts"),
     }
 
-    # Pi
+    # 3. Pi
     pi_home = home / ".pi"
     pi_local = root / ".pi"
-    pi_installed = pi_home.exists() or pi_local.exists()
     tools["pi"] = {
         "name": "Pi",
-        "installed": pi_installed,
+        "installed": pi_home.exists() or pi_local.exists(),
         "config_path": str(pi_local if pi_local.exists() else pi_home),
         "session_dir": str(pi_home / "sessions"),
     }
 
-    # Ruflo / Claude Flow
+    # 4. Ruflo / Claude Flow
     ruflo_home = home / ".claude-flow"
     ruflo_local = root / ".claude-flow"
-    ruflo_installed = ruflo_home.exists() or ruflo_local.exists() or (root / "ruflo").exists()
     tools["ruflo"] = {
         "name": "Ruflo / Claude Flow",
-        "installed": ruflo_installed,
+        "installed": ruflo_home.exists() or ruflo_local.exists() or (root / "ruflo").exists(),
         "config_path": str(ruflo_local if ruflo_local.exists() else ruflo_home),
         "session_dir": str(ruflo_home / "memory"),
     }
 
-    # Hermes
+    # 5. Hermes
     hermes_home = home / ".hermes"
-    hermes_installed = hermes_home.exists()
     tools["hermes"] = {
         "name": "Hermes",
-        "installed": hermes_installed,
+        "installed": hermes_home.exists(),
         "config_path": str(hermes_home),
         "session_dir": str(hermes_home / "history"),
+    }
+
+    # 6. JCode / Cursor / VSCode
+    cursor_file = root / ".cursorrules"
+    vscode_dir = root / ".vscode"
+    jcode_home = home / ".jcode"
+    tools["cursor_jcode"] = {
+        "name": "JCode / Cursor / VSCode",
+        "installed": cursor_file.exists() or vscode_dir.exists() or jcode_home.exists(),
+        "config_path": str(cursor_file if cursor_file.exists() else vscode_dir),
+        "session_dir": str(vscode_dir),
+    }
+
+    # 7. OmniRoute / LLMGate
+    omniroute_home = home / ".omniroute"
+    omniroute_env = bool(os.getenv("OMNIROUTE_BASE_URL"))
+    tools["omniroute"] = {
+        "name": "OmniRoute / LLMGate",
+        "installed": omniroute_home.exists() or omniroute_env,
+        "config_path": str(omniroute_home if omniroute_home.exists() else root / "verdict.yaml"),
+        "session_dir": str(omniroute_home),
+    }
+
+    # 8. GitHub CLI & Workflows
+    gh_cli = bool(shutil.which("gh"))
+    github_dir = root / ".github"
+    tools["github"] = {
+        "name": "GitHub CLI & Workflows",
+        "installed": gh_cli or github_dir.exists(),
+        "config_path": str(github_dir if github_dir.exists() else root),
+        "session_dir": str(github_dir / "workflows"),
+    }
+
+    # 9. MCP Servers (.mcp.json)
+    mcp_local = root / ".mcp.json"
+    mcp_global = home / ".mcp.json"
+    tools["mcp"] = {
+        "name": "MCP Server Registry (.mcp.json)",
+        "installed": mcp_local.exists() or mcp_global.exists(),
+        "config_path": str(mcp_local if mcp_local.exists() else mcp_global),
+        "session_dir": str(mcp_local.parent),
     }
 
     preselected = tuple(name for name, info in tools.items() if info["installed"])
@@ -101,7 +140,7 @@ def configure_memory_bridge(
     home_dir: Path | None = None,
     cwd: Path | None = None,
 ) -> dict[str, Any]:
-    """Configure memory bridge and sync existing sessions into MemoryPlane."""
+    """Configure memory bridge, update MCP servers, and sync existing sessions into MemoryPlane."""
     home = (home_dir or Path.home()).resolve()
     root = (cwd or Path.cwd()).resolve()
     mem_plane = plane or MemoryPlane(root / ".verdict" / "memory.db")
@@ -199,6 +238,34 @@ def configure_memory_bridge(
                     encoding="utf-8",
                 )
                 configured.append("hermes")
+
+        elif tool == "cursor_jcode":
+            cursor_file = root / ".cursorrules"
+            existing = cursor_file.read_text("utf-8") if cursor_file.exists() else ""
+            if "Verdict Unified Memory Bridge" not in existing:
+                cursor_file.write_text(existing + bridge_instruction, encoding="utf-8")
+            configured.append("cursor_jcode")
+
+        elif tool in {"mcp", "all"}:
+            mcp_file = root / ".mcp.json"
+            mcp_data: dict[str, Any] = {"mcpServers": {}}
+            if mcp_file.exists():
+                try:
+                    mcp_data = json.loads(mcp_file.read_text("utf-8"))
+                except Exception:
+                    mcp_data = {"mcpServers": {}}
+
+            servers = mcp_data.setdefault("mcpServers", {})
+            servers["verdict-memory"] = {
+                "command": "uv",
+                "args": ["run", "-m", "verdict.cli", "serve"],
+                "env": {
+                    "VERDICT_MEMORY_PLANE_PATH": str(root / ".verdict" / "memory.db"),
+                    "VERDICT_GUIDANCE_ENABLED": "1",
+                },
+            }
+            mcp_file.write_text(json.dumps(mcp_data, indent=2), encoding="utf-8")
+            configured.append("mcp")
 
     return {
         "status": "success",
@@ -410,3 +477,98 @@ __all__ = [
     "configure_memory_bridge",
     "detect_available_tools",
 ]
+
+
+def run_doctor_diagnostics(
+    home_dir: Path | None = None, cwd: Path | None = None, fix: bool = False
+) -> dict[str, Any]:
+    """Scan system health, memory plane databases, MCP entries, tool bridge headers, and auto-repair if fix=True."""
+    home = (home_dir or Path.home()).resolve()
+    root = (cwd or Path.cwd()).resolve()
+
+    issues: list[str] = []
+    repaired: list[str] = []
+
+    # 1. Check .verdict directory
+    v_dir = root / ".verdict"
+    if not v_dir.exists():
+        issues.append("missing_verdict_dir")
+        if fix:
+            v_dir.mkdir(parents=True, exist_ok=True)
+            repaired.append("created_verdict_dir")
+
+    # 2. Check Memory database
+    db_path = v_dir / "memory.db"
+    if not db_path.exists():
+        issues.append("missing_memory_db")
+        if fix:
+            MemoryPlane(db_path)
+            repaired.append("initialized_memory_db")
+
+    # 3. Check MCP server entry
+    mcp_file = root / ".mcp.json"
+    if not mcp_file.exists():
+        issues.append("missing_mcp_config")
+        if fix:
+            configure_memory_bridge(["mcp"], home_dir=home, cwd=root)
+            repaired.append("created_mcp_config")
+
+    # 4. Check tool bridges
+    report = detect_available_tools(home_dir=home, cwd=root)
+    for tool in report.preselected_tools:
+        if tool == "codex" and not (root / ".codex" / "AGENTS.md").exists():
+            issues.append("missing_codex_bridge")
+            if fix:
+                configure_memory_bridge(["codex"], home_dir=home, cwd=root)
+                repaired.append("fixed_codex_bridge")
+
+    return {
+        "status": "healthy" if not issues or fix else "issues_found",
+        "issues": issues,
+        "repaired": repaired,
+        "fix_applied": fix,
+    }
+
+
+def uninstall_memory_bridge(
+    home_dir: Path | None = None, cwd: Path | None = None, purge_data: bool = False
+) -> dict[str, Any]:
+    """Reversibly strip tool memory bridge headers and MCP entries, preserving source code and data by default."""
+    home = (home_dir or Path.home()).resolve()
+    root = (cwd or Path.cwd()).resolve()
+
+    uninstalled: list[str] = []
+
+    for file_path in [root / ".codex" / "AGENTS.md", root / "CLAUDE.md", root / ".cursorrules"]:
+        if file_path.exists():
+            content = file_path.read_text("utf-8")
+            if "# Verdict Unified Memory Bridge" in content:
+                parts = content.split("# Verdict Unified Memory Bridge")
+                file_path.write_text(parts[0].rstrip(), encoding="utf-8")
+                uninstalled.append(file_path.name)
+
+    mcp_file = root / ".mcp.json"
+    if mcp_file.exists():
+        try:
+            data = json.loads(mcp_file.read_text("utf-8"))
+            if "mcpServers" in data and "verdict-memory" in data["mcpServers"]:
+                del data["mcpServers"]["verdict-memory"]
+                mcp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                uninstalled.append(".mcp.json")
+        except Exception:
+            pass
+
+    if purge_data:
+        v_dir = root / ".verdict"
+        if v_dir.exists():
+            shutil.rmtree(v_dir, ignore_errors=True)
+            uninstalled.append(".verdict_data_purged")
+
+    return {
+        "status": "success",
+        "uninstalled_targets": uninstalled,
+        "data_purged": purge_data,
+    }
+
+
+__all__.extend(["run_doctor_diagnostics", "uninstall_memory_bridge"])
