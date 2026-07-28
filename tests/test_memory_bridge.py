@@ -1,4 +1,4 @@
-"""Tests for memory bridge tool detection, preselection, autopilot configuration, and 13-hook matrix."""
+"""Tests for expanded tool detection across 9 ecosystems, MCP server config, and 13-hook matrix."""
 
 from pathlib import Path
 
@@ -8,11 +8,13 @@ from verdict.memory_bridge import (
     MemoryHookController,
     configure_memory_bridge,
     detect_available_tools,
+    run_doctor_diagnostics,
+    uninstall_memory_bridge,
 )
 from verdict.memory_plane import MemoryPlane
 
 
-def test_detect_available_tools(tmp_path: Path) -> None:
+def test_detect_available_tools_expanded(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     cwd_dir = tmp_path / "repo"
     home_dir.mkdir()
@@ -20,17 +22,22 @@ def test_detect_available_tools(tmp_path: Path) -> None:
 
     (home_dir / ".codex").mkdir()
     (cwd_dir / "CLAUDE.md").write_text("# Claude docs", encoding="utf-8")
+    (cwd_dir / ".cursorrules").write_text("# Cursor rules", encoding="utf-8")
+    (cwd_dir / ".mcp.json").write_text("{}", encoding="utf-8")
 
     report = detect_available_tools(home_dir=home_dir, cwd=cwd_dir)
     assert report.detected_tools["codex"]["installed"] is True
     assert report.detected_tools["claude"]["installed"] is True
-    assert report.detected_tools["pi"]["installed"] is False
+    assert report.detected_tools["cursor_jcode"]["installed"] is True
+    assert report.detected_tools["mcp"]["installed"] is True
 
     assert "codex" in report.preselected_tools
     assert "claude" in report.preselected_tools
+    assert "cursor_jcode" in report.preselected_tools
+    assert "mcp" in report.preselected_tools
 
 
-def test_configure_memory_bridge(tmp_path: Path) -> None:
+def test_configure_memory_bridge_expanded(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     cwd_dir = tmp_path / "repo"
     home_dir.mkdir()
@@ -39,7 +46,7 @@ def test_configure_memory_bridge(tmp_path: Path) -> None:
     plane = MemoryPlane(cwd_dir / "memory.db")
 
     res = configure_memory_bridge(
-        selected_tools=["codex", "claude", "pi", "ruflo"],
+        selected_tools=["codex", "claude", "cursor_jcode", "mcp"],
         plane=plane,
         home_dir=home_dir,
         cwd=cwd_dir,
@@ -47,10 +54,15 @@ def test_configure_memory_bridge(tmp_path: Path) -> None:
 
     assert res["status"] == "success"
     assert "codex" in res["configured_tools"]
+    assert "cursor_jcode" in res["configured_tools"]
+    assert "mcp" in res["configured_tools"]
 
-    agents_md = cwd_dir / ".codex" / "AGENTS.md"
-    assert agents_md.exists()
-    assert "Verdict Unified Memory Bridge" in agents_md.read_text("utf-8")
+    cursor_rules = cwd_dir / ".cursorrules"
+    assert "Verdict Unified Memory Bridge" in cursor_rules.read_text("utf-8")
+
+    mcp_json = cwd_dir / ".mcp.json"
+    assert mcp_json.exists()
+    assert "verdict-memory" in mcp_json.read_text("utf-8")
 
 
 def test_memory_hook_controller_all_13_hooks(tmp_path: Path) -> None:
@@ -98,3 +110,26 @@ def test_memory_hook_controller_all_13_hooks(tmp_path: Path) -> None:
     assert v_res["status"] == "success"
     e_res = controller.on_error("Network timeout")
     assert e_res["status"] == "success"
+
+
+def test_doctor_and_uninstall(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    cwd_dir = tmp_path / "repo"
+    home_dir.mkdir()
+    cwd_dir.mkdir()
+
+    # 1. Run doctor scan (expect issues)
+    doc_res = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=False)
+    assert doc_res["status"] == "issues_found"
+    assert "missing_verdict_dir" in doc_res["issues"]
+
+    # 2. Run doctor with fix=True
+    fix_res = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=True)
+    assert fix_res["status"] == "healthy"
+    assert "created_verdict_dir" in fix_res["repaired"]
+
+    # 3. Configure bridges then test uninstall
+    configure_memory_bridge(["codex", "claude", "mcp"], home_dir=home_dir, cwd=cwd_dir)
+    un_res = uninstall_memory_bridge(home_dir=home_dir, cwd=cwd_dir, purge_data=False)
+    assert un_res["status"] == "success"
+    assert ".mcp.json" in un_res["uninstalled_targets"]
