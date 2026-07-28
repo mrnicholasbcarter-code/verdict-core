@@ -95,6 +95,105 @@ def test_preflight_manifest_reports_actual_chunk_count_and_validates_chunks(tmp_
     assert blocked.inventory_details["fixture"][0]["state"] == "stale"
 
 
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "content",
+        "content_hash",
+        "metadata",
+        "provenance",
+        "schema_version",
+        "expires_at",
+        "chunk_count",
+    ],
+)
+def test_preflight_blocks_each_manifest_integrity_tamper(tmp_path: Path, tamper: str) -> None:
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text("A" * 2400, encoding="utf-8")
+    db = tmp_path / "memory.db"
+    source = _source(tmp_path)
+    assert run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=100).passed
+
+    with MemoryPlane(db) as plane:
+        manifest_history = plane.history(
+            "documentation-manifest", "fixture:docs/adr/ADR-001.md", scope="shared"
+        )
+        assert manifest_history
+        manifest = manifest_history[-1]
+        if tamper == "content":
+            plane._db.execute(
+                "UPDATE memories SET content='tampered' WHERE record_id=?", (manifest.record_id,)
+            )
+        elif tamper == "content_hash":
+            plane._db.execute(
+                "UPDATE memories SET content_hash='0' WHERE record_id=?", (manifest.record_id,)
+            )
+        elif tamper == "metadata":
+            plane._db.execute(
+                "UPDATE memories SET metadata_json='{}' WHERE record_id=?", (manifest.record_id,)
+            )
+        elif tamper == "provenance":
+            plane._db.execute(
+                "UPDATE memories SET provenance_json='{}' WHERE record_id=?", (manifest.record_id,)
+            )
+        elif tamper == "schema_version":
+            plane._db.execute(
+                "UPDATE memories SET schema_version=999 WHERE record_id=?", (manifest.record_id,)
+            )
+        elif tamper == "expires_at":
+            plane._db.execute(
+                "UPDATE memories SET expires_at=1 WHERE record_id=?", (manifest.record_id,)
+            )
+        elif tamper == "chunk_count":
+            provenance = dict(manifest.provenance or {})
+            provenance["chunk_count"] = 999
+            metadata = dict(manifest.metadata or {})
+            metadata["chunk_count"] = 999
+            plane._db.execute(
+                "UPDATE memories SET provenance_json=?, metadata_json=? WHERE record_id=?",
+                (json.dumps(provenance), json.dumps(metadata), manifest.record_id),
+            )
+
+    blocked = run_documentation_preflight(sources=[source], memory_path=db, fix=False, now=101)
+    assert blocked.passed is False
+    assert blocked.stale == 1
+    assert blocked.inventory_details["fixture"][0]["state"] == "stale"
+
+
+def test_fix_repairs_tampered_manifest_by_replacing_same_record_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text("stable source", encoding="utf-8")
+    db = tmp_path / "memory.db"
+    source = _source(tmp_path)
+    assert run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=100).passed
+    with MemoryPlane(db) as plane:
+        manifest_history = plane.history(
+            "documentation-manifest", "fixture:docs/adr/ADR-001.md", scope="shared"
+        )
+        assert manifest_history
+        manifest = manifest_history[-1]
+        plane._db.execute(
+            "UPDATE memories SET metadata_json='{}' WHERE record_id=?", (manifest.record_id,)
+        )
+
+    repaired = run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=101)
+    assert repaired.passed
+    assert repaired.ingested == 1
+    second = run_documentation_preflight(sources=[source], memory_path=db, fix=False, now=102)
+    assert second.passed
+    assert second.skipped_fresh == 1
+    with MemoryPlane(db) as plane:
+        history = plane.history(
+            "documentation-manifest", "fixture:docs/adr/ADR-001.md", scope="shared"
+        )
+        assert len(history) == 1
+        assert history[-1].metadata["preflight_version"] == "1"
+
+
 def test_preflight_fails_closed_when_pinned_git_tree_cannot_be_read(tmp_path: Path) -> None:
     source = DocumentationSource(
         "pinned", "fixture", "https://example.test/fixture", "a" * 40, tmp_path
@@ -240,6 +339,75 @@ def test_discover_sources_falls_back_to_remote_when_local_ruvector_is_unresolved
     assert source.ref == "main"
 
 
+def test_discover_sources_falls_back_to_remote_ruflo_without_local_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("VERDICT_RUFLO_REF", "main")
+    monkeypatch.setenv("VERDICT_RUFLO_ROOT", str(tmp_path / "missing-ruflo"))
+    source = next(item for item in discover_sources(tmp_path) if item.source_id == "ruflo")
+    assert source.repository == "https://github.com/ruvnet/ruflo"
+    assert source.api_base == "https://api.github.com/repos/ruvnet/ruflo"
+    assert source.root is None
+    assert source.ref == "main"
+
+
+def test_remote_ruflo_fallback_resolves_and_ingests_nested_adr_projections(tmp_path: Path) -> None:
+    source = DocumentationSource(
+        "ruflo",
+        "ruflo",
+        "https://github.com/ruvnet/ruflo",
+        "main",
+        api_base="https://api.example.test/repos/ruvnet/ruflo",
+    )
+    first = b"# Plugin ADR\n\nUse the plugin contract.\n"
+    second = b"# V3 ADR\n\nUse the v3 contract.\n"
+    commit = "b" * 40
+    import hashlib
+
+    def blob_sha(payload: bytes) -> str:
+        return hashlib.sha1(b"blob " + str(len(payload)).encode() + b"\0" + payload).hexdigest()
+
+    tree = {
+        "truncated": False,
+        "tree": [
+            {
+                "type": "blob",
+                "path": "plugins/ruflo-adr/docs/adrs/0001-contract.md",
+                "sha": blob_sha(first),
+            },
+            {"type": "blob", "path": "v3/docs/adr/ADR-001-contract.md", "sha": blob_sha(second)},
+        ],
+    }
+
+    def fetch(url: str) -> bytes:
+        if url.endswith("/git/ref/heads/main"):
+            return json.dumps({"object": {"sha": commit}}).encode()
+        if url.endswith(f"/git/trees/{commit}?recursive=1"):
+            return json.dumps(tree).encode()
+        if url.endswith("0001-contract.md"):
+            return first
+        if url.endswith("ADR-001-contract.md"):
+            return second
+        raise AssertionError(f"unexpected fetch URL: {url}")
+
+    report = run_documentation_preflight(
+        sources=[source], memory_path=tmp_path / "memory.db", fix=True, fetch=fetch, now=100
+    )
+    assert report.passed
+    assert report.source_commits == {"ruflo": commit}
+    assert report.inventory == 2
+    assert {item["path"] for item in report.inventory_details["ruflo"]} == {
+        "plugins/ruflo-adr/docs/adrs/0001-contract.md",
+        "v3/docs/adr/ADR-001-contract.md",
+    }
+    with MemoryPlane(tmp_path / "memory.db") as plane:
+        active = [
+            item for item in plane.export_records(scope="shared") if item["status"] == "active"
+        ]
+        assert len([item for item in active if item["namespace"] == "documentation-manifest"]) == 2
+        assert len([item for item in active if item["namespace"] == "authoritative-docs"]) == 2
+
+
 def test_preflight_resolves_remote_ref_and_verifies_blob_sha(tmp_path: Path) -> None:
     source = DocumentationSource(
         "remote",
@@ -373,6 +541,10 @@ def test_implementation_hook_fails_closed_until_preflight_passes(
     controller = MemoryHookController(plane=plane)
     with pytest.raises(DocumentationPreflightError):
         controller.on_task_start("task", "implement", implementation=True)
+    assert controller.receipt_store.query_receipts(limit=10) == []
+    with pytest.raises(DocumentationPreflightError):
+        controller.on_file_edit_start("src/app.py", implementation=True)
+    assert controller.receipt_store.query_receipts(limit=10) == []
     plane.close()
 
 
