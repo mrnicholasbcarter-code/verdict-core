@@ -638,48 +638,43 @@ def cmd_probe(
     base_url: str = "http://localhost:20128/v1",
     timeout: float = 20.0,
     output_json: bool = False,
+    allow_live_probe: bool = False,
+    transport: Any | None = None,
 ) -> None:
-    """Run a real one-token liveness probe against each model through a router.
+    """Run a bounded one-token probe, requiring consent for network transport.
 
     Sends the fixed, no-user-data probe payload (max_tokens=1) so a model can be
     confirmed live before it is assigned real work (e.g. a subagent).
     """
-    import time
+    from verdict.probes import ProbePolicy, ProbeRunner, _redact
 
-    from verdict.probes import ProbePolicy, openai_probe_transport
+    is_injected = transport is not None
+    if not is_injected and not allow_live_probe:
+        message = "live probes require explicit consent; pass --allow-live-probe"
+        if output_json:
+            print(json.dumps({"error": message, "diagnostics": None}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(2)
+    if transport is None:
+        from verdict.probes import openai_probe_transport
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    policy = ProbePolicy(timeout_seconds=timeout)
-    transport = openai_probe_transport(base_url, api_key=api_key)
-
-    results: list[dict[str, Any]] = []
-    for model_id in models:
-        payload = policy.payload(model_id)
-        started = time.monotonic()
-        entry: dict[str, Any] = {"model": model_id}
-        try:
-            response = transport(model_id, payload, timeout)
-            latency_ms = (time.monotonic() - started) * 1000.0
-            status_code = response.get("status_code")
-            body = response.get("body") or {}
-            usage = body.get("usage") if isinstance(body, dict) else None
-            entry.update(
-                {
-                    "ok": bool(status_code and 200 <= int(status_code) < 300),
-                    "http_status": status_code,
-                    "latency_ms": round(latency_ms, 1),
-                    "usage": usage,
-                }
-            )
-        except Exception as exc:
-            entry.update({"ok": False, "error": type(exc).__name__, "detail": str(exc)[:200]})
-        results.append(entry)
+        transport = openai_probe_transport(base_url, api_key=os.getenv("OPENAI_API_KEY"))
+    provider_name = "fixture" if is_injected else "omniroute"
+    run = ProbeRunner(ProbePolicy(timeout_seconds=timeout)).run_with_diagnostics(
+        models,
+        transport,
+        live=not is_injected,
+        consented=allow_live_probe if not is_injected else False,
+        provider=provider_name,
+    )
+    results = [_probe_result_payload(observation) for observation in run.observations]
 
     if output_json:
-        print(json.dumps(results, indent=2))
+        print(json.dumps({"diagnostics": run.diagnostics.to_dict(), "results": results}, indent=2))
         return
 
-    table = Table(title=f"Verdict probe  ({base_url})")
+    table = Table(title=f"Verdict probe  ({_redact(base_url)})")
     table.add_column("Model", style="cyan")
     table.add_column("Status")
     table.add_column("HTTP")
@@ -698,6 +693,29 @@ def cmd_probe(
         sys.exit(1)
 
 
+def _probe_result_payload(observation: Any) -> dict[str, Any]:
+    """Convert a probe observation to a credential-safe CLI result."""
+
+    status = str(observation.status)
+    http_status = observation.http_status
+    http_success = isinstance(http_status, int) and 200 <= http_status < 300
+    ok = http_success and status == "ready"
+    return {
+        "model": observation.model_id,
+        "ok": ok,
+        "status": status,
+        "availability_state": observation.availability_state,
+        "http_status": http_status,
+        "latency_ms": observation.latency_ms,
+        "usage_available": observation.usage_available,
+        "prompt_tokens": observation.prompt_tokens,
+        "completion_tokens": observation.completion_tokens,
+        "total_tokens": observation.total_tokens,
+        "error_class": observation.error_class,
+        "error": observation.error,
+    }
+
+
 def cmd_catalog(
     *,
     base_url: str,
@@ -709,6 +727,7 @@ def cmd_catalog(
     probe_limit: int,
     probe_timeout: float,
     output_json: bool,
+    allow_live_probe: bool = False,
 ) -> None:
     """Qualify one or both documented OmniRoute catalog projections."""
     import urllib.request
@@ -720,6 +739,14 @@ def cmd_catalog(
         reconcile_catalog_projections,
         store_qualification,
     )
+
+    if probe and not allow_live_probe:
+        message = "catalog live probes require explicit consent; pass --allow-live-probe"
+        if output_json:
+            print(json.dumps({"error": message, "probes": None}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(2)
 
     paths = [
         (
@@ -765,6 +792,9 @@ def cmd_catalog(
             ),
             limit=probe_limit,
             timeout_seconds=probe_timeout,
+            live=True,
+            consented=allow_live_probe,
+            provider_name="omniroute",
         )
     if db_path:
         for label, projection in reports.items():
@@ -1314,6 +1344,11 @@ def main() -> None:
         help="OpenAI-compatible base URL (default: local OmniRoute)",
     )
     probe_p.add_argument("--timeout", type=float, default=20.0, help="Per-probe timeout seconds")
+    probe_p.add_argument(
+        "--allow-live-probe",
+        action="store_true",
+        help="Explicitly consent to network liveness probes",
+    )
     probe_p.add_argument("--json", action="store_true", help="Output JSON")
 
     catalog_p = subparsers.add_parser(
@@ -1337,6 +1372,11 @@ def main() -> None:
     )
     catalog_p.add_argument("--probe-limit", type=int, default=16)
     catalog_p.add_argument("--probe-timeout", type=float, default=20.0)
+    catalog_p.add_argument(
+        "--allow-live-probe",
+        action="store_true",
+        help="Explicitly consent to network liveness probes",
+    )
     catalog_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     suggest_p = subparsers.add_parser(
@@ -1483,7 +1523,13 @@ def main() -> None:
             console.print('  [bold cyan]pipx install "verdict-core[all]" --force[/bold cyan]')
             sys.exit(1)
     elif args.command == "probe":
-        cmd_probe(args.models, base_url=args.base_url, timeout=args.timeout, output_json=args.json)
+        cmd_probe(
+            args.models,
+            base_url=args.base_url,
+            timeout=args.timeout,
+            output_json=args.json,
+            allow_live_probe=args.allow_live_probe,
+        )
     elif args.command == "catalog":
         cmd_catalog(
             base_url=args.base_url,
@@ -1495,6 +1541,7 @@ def main() -> None:
             probe_limit=args.probe_limit,
             probe_timeout=args.probe_timeout,
             output_json=args.json,
+            allow_live_probe=args.allow_live_probe,
         )
     elif args.command == "detect":
         cmd_detect(verbose=args.verbose, output_json=args.json, output_config=args.config)

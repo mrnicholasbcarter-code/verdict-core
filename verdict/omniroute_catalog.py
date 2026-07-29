@@ -155,6 +155,7 @@ class ProbeQualification:
     results: tuple[dict[str, Any], ...]
     catalog_payload_hash: str | None = None
     selected_model_ids: tuple[str, ...] = ()
+    diagnostics: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -167,6 +168,7 @@ class ProbeQualification:
             "error_classes": dict(self.error_classes),
             "selected_model_ids": list(self.selected_model_ids),
             "results": [dict(item) for item in self.results],
+            "diagnostics": dict(self.diagnostics) if self.diagnostics else None,
         }
 
 
@@ -252,6 +254,7 @@ def summarize_probes(
     captured_at: datetime,
     selected_model_ids: Sequence[str] = (),
     catalog_payload_hash: str | None = None,
+    diagnostics: Mapping[str, Any] | None = None,
 ) -> ProbeQualification:
     """Convert ProbeObservation-like objects to a sanitized qualification."""
 
@@ -293,6 +296,7 @@ def summarize_probes(
         error_classes=dict(sorted(errors.items())),
         results=tuple(results),
         selected_model_ids=tuple(selected_model_ids),
+        diagnostics=dict(diagnostics) if diagnostics is not None else None,
     )
 
 
@@ -345,6 +349,9 @@ def probe_catalog(
     limit: int = MAX_CATALOG_PROBE_SAMPLE,
     timeout_seconds: float = 20.0,
     captured_at: datetime | None = None,
+    live: bool = False,
+    consented: bool = False,
+    provider_name: str = "fixture",
 ) -> ProbeQualification:
     """Run an explicitly bounded, credential-safe liveness sample."""
 
@@ -361,13 +368,16 @@ def probe_catalog(
             max_models_per_run=limit,
         )
     )
-    observations = runner.run(selected, transport, now=observed_at)
+    run = runner.run_with_diagnostics(
+        selected, transport, now=observed_at, live=live, consented=consented, provider=provider_name
+    )
     catalog_raw = payload if isinstance(payload, bytes) else canonical_json(payload)
     return summarize_probes(
-        observations,
+        run.observations,
         captured_at=observed_at,
         selected_model_ids=selected,
         catalog_payload_hash=hashlib.sha256(catalog_raw).hexdigest(),
+        diagnostics=run.diagnostics.to_dict(),
     )
 
 

@@ -2,6 +2,7 @@ import time
 import urllib.error
 from dataclasses import asdict
 from datetime import datetime, timezone
+from threading import Event, Thread
 
 import pytest
 
@@ -14,8 +15,11 @@ from verdict.availability import (
 from verdict.models import ModelInfo
 from verdict.probes import (
     PROBE_PROMPT,
+    ProbeBudget,
+    ProbeConsentRequiredError,
     ProbeObservation,
     ProbePolicy,
+    ProbeResponseTooLargeError,
     ProbeRunner,
     openai_probe_transport,
 )
@@ -304,3 +308,164 @@ def test_injected_observation_time_controls_next_probe_time():
 
     assert result.next_probe_at is not None
     assert (result.next_probe_at - observed_at).total_seconds() == 30
+
+
+def test_live_probe_requires_explicit_consent_before_transport() -> None:
+    calls: list[str] = []
+
+    def transport(model_id, payload, timeout):
+        del payload, timeout
+        calls.append(model_id)
+        return {"status_code": 200, "body": {}}
+
+    with pytest.raises(ProbeConsentRequiredError):
+        ProbeRunner().run_with_diagnostics(
+            ["live/model"], transport, live=True, provider="omniroute"
+        )
+    assert calls == []
+
+
+def test_hermetic_run_reports_budget_and_diagnostics_without_live_consent() -> None:
+    calls: list[str] = []
+    run = ProbeRunner().run_with_diagnostics(
+        ["a", "a", "b", "c"],
+        ok_transport(calls),
+        provider="fixture",
+        budget=ProbeBudget("fixture", max_requests=2, max_tokens=2),
+    )
+
+    assert [call[0] for call in calls] == ["a", "b"]
+    assert run.diagnostics.live is False
+    assert run.diagnostics.consented is False
+    assert run.diagnostics.transport_calls == 2
+    assert run.diagnostics.unique_models == 3
+    assert run.diagnostics.budget_limited_models == 1
+    assert run.observations[-1].error == "budget_exhausted"
+    assert run.diagnostics.to_dict()["diagnostics_version"] == "1"
+
+
+def test_token_budget_stops_scheduling_after_observed_usage() -> None:
+    calls: list[str] = []
+
+    def expensive(model_id, payload, timeout):
+        del payload, timeout
+        calls.append(model_id)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"total_tokens": 2},
+            },
+        }
+
+    run = ProbeRunner().run_with_diagnostics(
+        ["a", "b", "c"],
+        expensive,
+        provider="fixture",
+        budget=ProbeBudget("fixture", max_requests=3, max_tokens=1),
+    )
+
+    assert calls == ["a"]
+    assert run.diagnostics.observed_tokens == 2
+    assert [item.error for item in run.observations] == [
+        None,
+        "budget_exhausted",
+        "budget_exhausted",
+    ]
+
+
+def test_response_byte_budget_stops_scheduling_after_observed_response() -> None:
+    calls: list[str] = []
+
+    def response(model_id, payload, timeout):
+        del payload, timeout
+        calls.append(model_id)
+        return {"status_code": 200, "body": {"payload": "1234567890"}}
+
+    run = ProbeRunner(ProbePolicy(max_response_bytes=1024)).run_with_diagnostics(
+        ["a", "b"],
+        response,
+        provider="fixture",
+        budget=ProbeBudget("fixture", max_requests=2, max_tokens=2, max_response_bytes=10),
+    )
+
+    assert calls == ["a"]
+    assert run.diagnostics.response_bytes > 10
+    assert run.observations[1].error == "budget_exhausted"
+
+
+def test_pre_cancelled_run_never_invokes_transport() -> None:
+    calls: list[str] = []
+    cancel = Event()
+    cancel.set()
+    run = ProbeRunner().run_with_diagnostics(
+        ["a", "b"], ok_transport(calls), provider="fixture", cancel_event=cancel
+    )
+
+    assert calls == []
+    assert [item.status for item in run.observations] == ["cancelled", "cancelled"]
+    assert run.diagnostics.cancelled_models == 2
+    assert run.diagnostics.cancellation_requested is True
+
+
+def test_cancellation_during_run_is_not_ready() -> None:
+    started = Event()
+    cancel = Event()
+
+    def slow(model_id, payload, timeout):
+        del model_id, payload, timeout
+        started.set()
+        time.sleep(0.2)
+        return {"status_code": 200, "body": {}}
+
+    output: list = []
+
+    def run_probe() -> None:
+        output.append(
+            ProbeRunner(ProbePolicy(max_duration_seconds=1)).run_with_diagnostics(
+                ["slow/model"], slow, provider="fixture", cancel_event=cancel
+            )
+        )
+
+    worker = Thread(target=run_probe)
+    worker.start()
+    assert started.wait(1)
+    cancel.set()
+    worker.join(1)
+    assert output[0].observations[0].status == "cancelled"
+    assert output[0].observations[0].availability_state != "ready"
+
+
+def test_oversized_mapping_response_fails_closed() -> None:
+    result = ProbeRunner(ProbePolicy(max_response_bytes=10, cooldown_seconds=0)).run(
+        ["large/model"],
+        lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {"choices": [{"message": {"content": "this is too large"}}]},
+        },
+    )[0]
+
+    assert result.status == "oversized_response"
+    assert result.error_class == "oversized_response"
+    assert result.availability_state != "ready"
+
+
+def test_openai_transport_bounds_read_before_json_parse() -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, limit):
+            assert limit == 11
+            return b"x" * 11
+
+    transport = openai_probe_transport(
+        "https://example.test/v1", opener=lambda request, timeout: Response(), max_response_bytes=10
+    )
+    with pytest.raises(ProbeResponseTooLargeError):
+        transport("model", ProbePolicy().payload("model"), 1)
