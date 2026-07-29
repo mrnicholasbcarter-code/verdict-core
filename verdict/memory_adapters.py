@@ -13,15 +13,16 @@ import os
 import re
 import stat
 import tempfile
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 ADAPTER_PROTOCOL_VERSION = "1"
 MANIFEST_VERSION = "1"
 DEFAULT_MAX_BYTES = 1_048_576
 DEFAULT_MAX_RECORDS = 10_000
+AdapterStatus = Literal["available", "degraded", "unavailable", "unknown"]
 
 _SECRET_KEY = re.compile(
     r"(?:api[_-]?key|access[_-]?key|secret|password|passwd|token|credential|authorization|cookie)",
@@ -71,12 +72,43 @@ class LocalManifestAdapter:
         return {"records": sum(1 for _ in records), "status": "accepted"}
 
 
+class CanonicalManifestAdapter(LocalManifestAdapter):
+    """Provider-named adapter restricted to the canonical manifest boundary.
+
+    The name is useful to callers that want to report MasterDocsRAG or Code
+    Review Graph capability without granting either integration permission to
+    read a private database.  Only caller-supplied, versioned manifest records
+    cross this boundary.
+    """
+
+    def __init__(self, adapter_id: str, *, source: str, formats: tuple[str, ...]):
+        self.adapter_id = _validate_identifier(adapter_id, "adapter_id")
+        self.source = _safe_label(source)
+        self.formats = formats
+
+    def export(self, *, root: Path, options: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+        records = super().export(root=root, options=options)
+        return tuple(
+            _with_boundary_metadata(record, source=self.source, adapter_id=self.adapter_id)
+            for record in records
+        )
+
+
 @dataclass(frozen=True)
 class AdapterDescriptor:
     adapter_id: str
     protocol_version: str = ADAPTER_PROTOCOL_VERSION
     available: bool = True
     description: str = ""
+    status: AdapterStatus | None = None
+    formats: tuple[str, ...] = ()
+    boundary: str = "canonical-manifest"
+
+    @property
+    def effective_status(self) -> AdapterStatus:
+        if self.status is not None:
+            return self.status
+        return "available" if self.available else "unavailable"
 
 
 @dataclass(frozen=True)
@@ -85,6 +117,7 @@ class AdapterResolution:
     available: bool
     protocol_version: str | None
     reason: str | None = None
+    status: AdapterStatus = "unknown"
 
 
 class AdapterRegistry:
@@ -101,10 +134,16 @@ class AdapterRegistry:
         version = _validate_identifier(adapter.protocol_version, "protocol_version")
         if version != ADAPTER_PROTOCOL_VERSION:
             raise ValueError(f"unsupported adapter protocol version: {version}")
+        chosen = descriptor or AdapterDescriptor(adapter_id=adapter_id, protocol_version=version)
+        if chosen.adapter_id != adapter_id:
+            raise ValueError("adapter descriptor id does not match implementation")
+        if chosen.protocol_version != version:
+            raise ValueError("adapter descriptor version does not match implementation")
+        if chosen.effective_status == "unavailable":
+            self.declare_unavailable(chosen)
+            return
         self._adapters[adapter_id] = adapter
-        self._descriptors[adapter_id] = descriptor or AdapterDescriptor(
-            adapter_id=adapter_id, protocol_version=version
-        )
+        self._descriptors[adapter_id] = chosen
 
     def declare_unavailable(self, descriptor: AdapterDescriptor) -> None:
         adapter_id = _validate_identifier(descriptor.adapter_id, "adapter_id")
@@ -115,21 +154,34 @@ class AdapterRegistry:
             protocol_version=descriptor.protocol_version,
             available=False,
             description=descriptor.description,
+            status="unavailable",
+            formats=descriptor.formats,
+            boundary=descriptor.boundary,
         )
         self._adapters.pop(adapter_id, None)
 
     def resolve(self, adapter_id: str) -> AdapterResolution:
         descriptor = self._descriptors.get(adapter_id)
         if descriptor is None:
-            return AdapterResolution(adapter_id, False, None, "adapter is not registered")
-        if not descriptor.available or adapter_id not in self._adapters:
+            return AdapterResolution(
+                adapter_id, False, None, "adapter is not registered", "unknown"
+            )
+        status = descriptor.effective_status
+        if status == "unavailable" or adapter_id not in self._adapters:
             return AdapterResolution(
                 adapter_id,
                 False,
                 descriptor.protocol_version,
                 descriptor.description or "adapter unavailable",
+                status,
             )
-        return AdapterResolution(adapter_id, True, descriptor.protocol_version)
+        return AdapterResolution(
+            adapter_id,
+            status in {"available", "degraded"},
+            descriptor.protocol_version,
+            descriptor.description if status != "available" else None,
+            status,
+        )
 
     def list(self) -> list[AdapterDescriptor]:
         return sorted(self._descriptors.values(), key=lambda descriptor: descriptor.adapter_id)
@@ -140,6 +192,120 @@ class AdapterRegistry:
             raise AdapterUnavailableError(adapter_id, resolution.reason or "adapter unavailable")
         return self._adapters[adapter_id]
 
+    def status(self) -> Sequence[dict[str, Any]]:
+        """Return non-sensitive capability and health metadata for every adapter."""
+        return [
+            {
+                "adapter_id": descriptor.adapter_id,
+                "protocol_version": descriptor.protocol_version,
+                "status": descriptor.effective_status,
+                "available": descriptor.effective_status in {"available", "degraded"},
+                "description": descriptor.description,
+                "formats": list(descriptor.formats),
+                "boundary": descriptor.boundary,
+            }
+            for descriptor in self.list()
+        ]
+
+    def ingest(
+        self, adapter_id: str, *, plane: Any, root: Path, options: Mapping[str, Any] | None = None
+    ) -> AdapterIngestionReport:
+        """Run one adapter while isolating adapter and record failures."""
+        resolution = self.resolve(adapter_id)
+        if not resolution.available:
+            return AdapterIngestionReport(
+                adapter_id=adapter_id,
+                status="unavailable" if resolution.status == "unavailable" else "unknown",
+                errors=(resolution.reason or "adapter unavailable",),
+            )
+        adapter = self.get(adapter_id)
+        opts = dict(options or {})
+        try:
+            exported = adapter.export(root=root, options=opts)
+            records = list(exported)
+        except Exception as exc:  # adapter failures must not abort the aggregate run
+            return AdapterIngestionReport(
+                adapter_id=adapter_id, status="degraded", errors=(_safe_error(exc),)
+            )
+
+        accepted = rejected = duplicates = superseded = 0
+        errors: list[str] = []
+        converter = getattr(adapter, "to_memory_record", None)
+        for raw in records:
+            try:
+                record = converter(raw) if callable(converter) else _memory_record_from_mapping(raw)
+                provenance = dict(record.provenance or {})
+                provenance.setdefault("adapter_protocol_version", ADAPTER_PROTOCOL_VERSION)
+                provenance.setdefault("schema_version", getattr(record, "schema_version", 2))
+                record = replace(record, provenance=provenance)
+                before = plane.get(record.namespace, record.key, scope=record.scope)
+                stored = plane.put(record)
+                if before is not None and before.content_hash == record.content_hash:
+                    duplicates += 1
+                else:
+                    accepted += 1
+                    superseded += int(stored.supersedes is not None)
+            except Exception as exc:  # one malformed record must not discard its batch
+                rejected += 1
+                errors.append(_safe_error(exc))
+        adapter_report: Any = getattr(adapter, "last_report", None)
+        adapter_errors = list(getattr(adapter_report, "errors", ()))
+        adapter_status = str(getattr(adapter_report, "status", "ok"))
+        if adapter_status in {"partial", "rejected", "quarantined"}:
+            adapter_errors.append(f"source reported {adapter_status}")
+        status: AdapterStatus = (
+            "degraded"
+            if rejected or adapter_errors or resolution.status == "degraded"
+            else "available"
+        )
+        return AdapterIngestionReport(
+            adapter_id=adapter_id,
+            status=status,
+            records_seen=len(records),
+            records_accepted=accepted,
+            records_rejected=rejected,
+            duplicates=duplicates,
+            superseded=superseded,
+            errors=tuple(errors + adapter_errors),
+        )
+
+    def ingest_many(
+        self, requests: Iterable[Mapping[str, Any]], *, plane: Any, root: Path
+    ) -> AdapterIngestionSummary:
+        """Run independent adapter requests and aggregate their reports."""
+        reports: list[AdapterIngestionReport] = []
+        for request in requests:
+            adapter_id = request.get("adapter_id")
+            if not isinstance(adapter_id, str):
+                reports.append(
+                    AdapterIngestionReport(
+                        adapter_id="unknown",
+                        status="unknown",
+                        errors=("request is missing adapter_id",),
+                    )
+                )
+                continue
+            reports.append(
+                self.ingest(
+                    adapter_id,
+                    plane=plane,
+                    root=root,
+                    options=request.get("options")
+                    if isinstance(request.get("options"), Mapping)
+                    else {},
+                )
+            )
+        status: AdapterStatus = (
+            "degraded"
+            if any(report.status == "degraded" for report in reports)
+            else "unknown"
+            if any(report.status == "unknown" for report in reports)
+            else "unavailable"
+            if reports and all(report.status == "unavailable" for report in reports)
+            else "available"
+        )
+        return AdapterIngestionSummary(status=status, reports=tuple(reports))
+
 
 class AdapterUnavailableError(RuntimeError):
     """Raised when a declared integration cannot be used in this installation."""
@@ -148,6 +314,234 @@ class AdapterUnavailableError(RuntimeError):
         super().__init__(f"adapter '{adapter_id}' unavailable: {reason}")
         self.adapter_id = adapter_id
         self.reason = reason
+
+
+@dataclass(frozen=True)
+class AdapterIngestionReport:
+    """Bounded, non-sensitive result for one registry ingestion."""
+
+    adapter_id: str
+    status: AdapterStatus
+    records_seen: int = 0
+    records_accepted: int = 0
+    records_rejected: int = 0
+    duplicates: int = 0
+    superseded: int = 0
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "adapter_id": self.adapter_id,
+            "status": self.status,
+            "records_seen": self.records_seen,
+            "records_accepted": self.records_accepted,
+            "records_rejected": self.records_rejected,
+            "duplicates": self.duplicates,
+            "superseded": self.superseded,
+            "errors": list(self.errors),
+        }
+
+
+@dataclass(frozen=True)
+class AdapterIngestionSummary:
+    status: AdapterStatus
+    reports: tuple[AdapterIngestionReport, ...]
+
+    @property
+    def records_accepted(self) -> int:
+        return sum(report.records_accepted for report in self.reports)
+
+    @property
+    def records_rejected(self) -> int:
+        return sum(report.records_rejected for report in self.reports)
+
+    @property
+    def duplicates(self) -> int:
+        return sum(report.duplicates for report in self.reports)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "records_accepted": self.records_accepted,
+            "records_rejected": self.records_rejected,
+            "duplicates": self.duplicates,
+            "reports": [report.to_dict() for report in self.reports],
+        }
+
+
+class DocumentMemoryAdapter:
+    """Expose the deterministic document adapter through the registry."""
+
+    adapter_id = "document"
+    protocol_version = ADAPTER_PROTOCOL_VERSION
+
+    def __init__(self) -> None:
+        self.last_report: Any = None
+
+    def export(self, *, root: Path, options: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+        from verdict.memory_document_adapter import DocumentIngestionPolicy, DocumentIngestor
+
+        raw_paths = options.get("paths", (root,))
+        if isinstance(raw_paths, (str, bytes, Path)):
+            raw_paths = (raw_paths,)
+        if not isinstance(raw_paths, Iterable):
+            raise ValueError("document adapter paths must be iterable")
+        policy = DocumentIngestionPolicy(
+            (root,),
+            max_file_bytes=int(options.get("max_file_bytes", 1_048_576)),
+            chunk_size=int(options.get("chunk_size", 1_200)),
+        )
+        result = DocumentIngestor(policy).ingest(
+            raw_paths,
+            namespace=str(options.get("namespace", "documents")),
+            scope=str(options.get("scope", "default")),
+            source=str(options.get("source", "document")),
+            dry_run=bool(options.get("dry_run", False)),
+        )
+        self.last_report = result.report
+        return result.records
+
+    def import_records(
+        self, records: Iterable[Mapping[str, Any]], *, options: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return {"records": sum(1 for _ in records), "status": "accepted"}
+
+
+class SessionMemoryAdapter:
+    """Expose the explicit JSONL session adapter through the registry."""
+
+    adapter_id = "session-jsonl"
+    protocol_version = ADAPTER_PROTOCOL_VERSION
+
+    def __init__(self) -> None:
+        self.last_report: Any = None
+
+    def export(self, *, root: Path, options: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+        from verdict.memory_session_adapter import SessionAdapter
+
+        source = options.get("source")
+        if not isinstance(source, (str, Path)):
+            raise ValueError("session adapter requires an explicit source path")
+        result = SessionAdapter().import_file(
+            source,
+            project=str(options.get("project", "default")),
+            session_id=str(options.get("session_id", Path(source).stem)),
+            format=str(options.get("format", "jsonl")),
+        )
+        self.last_report = result.report
+        if result.report.status in {"unavailable", "error"}:
+            raise ValueError(
+                result.report.errors[0] if result.report.errors else "session import failed"
+            )
+        return result.records
+
+    def import_records(
+        self, records: Iterable[Mapping[str, Any]], *, options: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return {"records": sum(1 for _ in records), "status": "accepted"}
+
+
+class ManifestRecordsAdapter(LocalManifestAdapter):
+    """Adapter for a provider's exported canonical records, never its private DB."""
+
+    def __init__(self, adapter_id: str, source: str):
+        self.adapter_id = _validate_identifier(adapter_id, "adapter_id")
+        self.source = _safe_label(source)
+
+    def export(self, *, root: Path, options: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+        records = super().export(root=root, options=options)
+        return tuple(
+            _with_boundary_metadata(record, source=self.source, adapter_id=self.adapter_id)
+            for record in records
+        )
+
+
+def build_default_adapter_registry() -> AdapterRegistry:
+    """Build the local-first registry without importing provider SDKs or DBs."""
+    registry = AdapterRegistry()
+    registry.register(
+        LocalManifestAdapter(),
+        descriptor=AdapterDescriptor(
+            "local-manifest", description="canonical versioned manifest", formats=("json",)
+        ),
+    )
+    registry.register(
+        DocumentMemoryAdapter(),
+        descriptor=AdapterDescriptor(
+            "document",
+            description="allowlisted Markdown/text documents",
+            formats=("md", "markdown", "txt"),
+        ),
+    )
+    registry.register(
+        SessionMemoryAdapter(),
+        descriptor=AdapterDescriptor(
+            "session-jsonl",
+            description="explicit provider-neutral/provider-exported JSONL",
+            formats=("jsonl", "claude-jsonl", "codex-jsonl", "pi-jsonl"),
+        ),
+    )
+    registry.register(
+        ManifestRecordsAdapter("masterdocs-manifest", "masterdocs-export"),
+        descriptor=AdapterDescriptor(
+            "masterdocs-manifest", description="MasterDocs exported manifest", formats=("json",)
+        ),
+    )
+    registry.register(
+        ManifestRecordsAdapter("code-graph-manifest", "code-review-graph-export"),
+        descriptor=AdapterDescriptor(
+            "code-graph-manifest",
+            description="Code Review Graph exported manifest",
+            formats=("json",),
+        ),
+    )
+    unavailable = (
+        ("codex-session", "provider-specific Codex state requires an explicit JSONL export"),
+        ("claude-session", "provider-specific Claude state requires an explicit JSONL export"),
+        ("pi-session", "provider-specific Pi state requires an explicit JSONL export"),
+        ("ruflo-session", "provider-specific Ruflo state requires an explicit JSONL export"),
+        ("masterdocs-sqlite", "private database boundary unsupported; use masterdocs-manifest"),
+        ("code-graph-sqlite", "private database boundary unsupported; use code-graph-manifest"),
+    )
+    for adapter_id, reason in unavailable:
+        registry.declare_unavailable(
+            AdapterDescriptor(
+                adapter_id,
+                available=False,
+                status="unavailable",
+                description=reason,
+                formats=("jsonl",) if adapter_id.endswith("session") else ("sqlite",),
+            )
+        )
+    return registry
+
+
+def _with_boundary_metadata(
+    record: Mapping[str, Any], *, source: str, adapter_id: str
+) -> dict[str, Any]:
+    item = dict(record)
+    provenance = dict(item.get("provenance") or {})
+    provenance.setdefault("source", source)
+    provenance.setdefault("adapter_id", adapter_id)
+    provenance.setdefault("adapter_protocol_version", ADAPTER_PROTOCOL_VERSION)
+    provenance.setdefault("schema_version", MANIFEST_VERSION)
+    item["provenance"] = provenance
+    return item
+
+
+def _memory_record_from_mapping(raw: Mapping[str, Any]) -> Any:
+    from dataclasses import fields
+
+    from verdict.memory_plane import MemoryRecord
+
+    allowed = {field.name for field in fields(MemoryRecord)}
+    item = {key: value for key, value in raw.items() if key in allowed}
+    return MemoryRecord(**item)
+
+
+def _safe_error(error: Exception) -> str:
+    text = str(error).replace("\n", " ").strip()
+    return text[:256] or error.__class__.__name__
 
 
 @dataclass(frozen=True)
@@ -183,6 +577,8 @@ class ManifestReport:
     skipped: int = 0
     redacted: int = 0
     unavailable_adapters: tuple[str, ...] = ()
+    manifest_hash: str | None = None
+    manifest_hash_verified: bool = False
     errors: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -197,6 +593,8 @@ class ManifestReport:
             "skipped": self.skipped,
             "redacted": self.redacted,
             "unavailable_adapters": list(self.unavailable_adapters),
+            "manifest_hash": self.manifest_hash,
+            "manifest_hash_verified": self.manifest_hash_verified,
             "errors": list(self.errors),
         }
 
@@ -241,6 +639,7 @@ def export_manifest(
         "adapter_id": _safe_label(adapter_id),
         "records": prepared,
     }
+    manifest["manifest_hash"] = _manifest_digest(manifest)
     encoded = json.dumps(
         manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
@@ -256,6 +655,8 @@ def export_manifest(
         records_written=0 if dry_run or errors else len(prepared),
         duplicates=0,
         redacted=redacted_count,
+        manifest_hash=str(manifest["manifest_hash"]),
+        manifest_hash_verified=True,
         errors=tuple(errors),
     )
 
@@ -280,6 +681,11 @@ def import_manifest(
         raise ManifestError("unsupported manifest version")
     if payload.get("adapter_protocol_version") != ADAPTER_PROTOCOL_VERSION:
         raise ManifestError("unsupported adapter protocol version")
+    supplied_manifest_hash = payload.get("manifest_hash")
+    if not isinstance(supplied_manifest_hash, str):
+        raise ManifestError("manifest hash is missing")
+    if supplied_manifest_hash != _manifest_digest(payload):
+        raise ManifestError("manifest hash mismatch")
     raw_records = payload.get("records")
     if not isinstance(raw_records, list) or len(raw_records) > policy.max_records:
         raise ManifestError("invalid or oversized records list")
@@ -315,6 +721,8 @@ def import_manifest(
         records_written=0 if dry_run else len(accepted),
         duplicates=duplicates,
         redacted=redacted_count,
+        manifest_hash=supplied_manifest_hash,
+        manifest_hash_verified=True,
     )
 
 
@@ -324,6 +732,13 @@ def content_hash(record: Mapping[str, Any]) -> str:
         record, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _manifest_digest(manifest: Mapping[str, Any]) -> str:
+    payload = {key: value for key, value in manifest.items() if key != "manifest_hash"}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 def _prepare_record(
@@ -427,14 +842,22 @@ __all__ = [
     "ADAPTER_PROTOCOL_VERSION",
     "MANIFEST_VERSION",
     "AdapterDescriptor",
+    "AdapterIngestionReport",
+    "AdapterIngestionSummary",
     "AdapterRegistry",
     "AdapterResolution",
+    "AdapterStatus",
     "AdapterUnavailableError",
+    "CanonicalManifestAdapter",
+    "DocumentMemoryAdapter",
     "ImportPolicy",
     "LocalManifestAdapter",
     "ManifestError",
+    "ManifestRecordsAdapter",
     "ManifestReport",
     "MemoryAdapter",
+    "SessionMemoryAdapter",
+    "build_default_adapter_registry",
     "content_hash",
     "export_manifest",
     "import_manifest",

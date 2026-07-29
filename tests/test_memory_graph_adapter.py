@@ -54,10 +54,21 @@ def test_code_graph_adapter_ingest_sqlite(tmp_path: Path) -> None:
     plane = MemoryPlane(":memory:")
     adapter = CodeGraphAdapter()
 
-    report = adapter.ingest_sqlite(db_file, plane)
+    report = adapter.ingest_sqlite(db_file, plane, allow_legacy_sqlite=True)
     assert report.nodes_processed == 1
     assert report.records_created == 1
 
     records = plane.search("MemoryRecord")
     assert len(records) == 1
     assert records[0].namespace == "code_graph"
+
+
+def test_private_sqlite_requires_explicit_legacy_opt_in(tmp_path: Path) -> None:
+    db_file = tmp_path / "code_graph.db"
+    db_file.touch()
+    try:
+        CodeGraphAdapter().ingest_sqlite(db_file, MemoryPlane(":memory:"))
+    except ValueError as exc:
+        assert "private" in str(exc)
+    else:
+        raise AssertionError("private SQLite input was accepted without opt-in")

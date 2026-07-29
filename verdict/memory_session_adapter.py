@@ -25,6 +25,18 @@ SESSION_FORMAT = "jsonl"
 SESSION_FORMAT_VERSION = 1
 SessionImportStatus = Literal["ok", "partial", "error", "unavailable"]
 
+
+@dataclass(frozen=True)
+class SessionFormatDescriptor:
+    """Explicit provider format capability without importing provider state."""
+
+    format_id: str
+    provider: str
+    description: str
+    schema_versions: tuple[str, ...] = (SESSION_SCHEMA_VERSION,)
+    available: bool = True
+
+
 DEFAULT_MAX_FILE_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_LINE_BYTES = 256 * 1024
 DEFAULT_MAX_RECORDS = 10_000
@@ -144,6 +156,12 @@ class SessionAdapter:
 
     adapter_id = "session-jsonl"
     protocol_version = SESSION_ADAPTER_PROTOCOL_VERSION
+    format_descriptors = (
+        SessionFormatDescriptor("jsonl", "provider-neutral", "canonical JSONL session events"),
+        SessionFormatDescriptor("claude-jsonl", "claude", "Claude Code exported JSONL"),
+        SessionFormatDescriptor("codex-jsonl", "codex", "Codex exported JSONL"),
+        SessionFormatDescriptor("pi-jsonl", "pi", "Pi exported JSONL"),
+    )
 
     def import_file(
         self,
@@ -156,7 +174,8 @@ class SessionAdapter:
     ) -> SessionImportResult:
         """Import one explicit JSONL path, returning unavailable for other formats."""
         selected_format = _select_format(source, format)
-        if selected_format != "jsonl":
+        supported_formats = {descriptor.format_id for descriptor in self.format_descriptors}
+        if selected_format not in supported_formats:
             return _unavailable(selected_format, f"unsupported session format: {selected_format}")
         try:
             project_id = _validate_identifier(project, "project")
@@ -167,6 +186,7 @@ class SessionAdapter:
             Path(source),
             project=project_id,
             session_id=session_key,
+            format=selected_format,
             policy=policy or SessionImportPolicy(),
         )
 
@@ -185,7 +205,13 @@ class SessionAdapter:
         )
 
     def _import_jsonl(
-        self, source: Path, *, project: str, session_id: str, policy: SessionImportPolicy
+        self,
+        source: Path,
+        *,
+        project: str,
+        session_id: str,
+        format: str = SESSION_FORMAT,
+        policy: SessionImportPolicy,
     ) -> SessionImportResult:
         try:
             data = _read_bounded(source, policy.max_file_bytes)
@@ -234,12 +260,13 @@ class SessionAdapter:
                 break
             try:
                 record, changed = _normalize_record(
-                    payload,
+                    _flatten_provider_payload(payload),
                     line_number=line_number,
                     project=project,
                     session_id=session_id,
                     namespace=namespace,
                     input_version=version,
+                    source_format=format,
                     policy=policy,
                 )
             except ValueError as exc:
@@ -251,10 +278,14 @@ class SessionAdapter:
 
         status: SessionImportStatus = "partial" if errors else "ok"
         manifest = _build_manifest(
-            project=project, session_id=session_id, namespace=namespace, records=records
+            project=project,
+            session_id=session_id,
+            namespace=namespace,
+            records=records,
+            format=format,
         )
         report = SessionImportReport(
-            format="jsonl",
+            format=format,
             status=status,
             records_seen=seen,
             records_emitted=len(records),
@@ -289,6 +320,7 @@ def normalize_session_record(
             session_id=session_key,
             namespace=f"project/{project_id}/session/{session_key}",
             input_version=SESSION_SCHEMA_VERSION,
+            source_format=SESSION_FORMAT,
             policy=SessionImportPolicy(include_raw_prompts=not redact),
         )
         return record
@@ -362,6 +394,7 @@ def _normalize_record(
     session_id: str,
     namespace: str,
     input_version: str,
+    source_format: str = SESSION_FORMAT,
     policy: SessionImportPolicy,
 ) -> tuple[dict[str, Any], int]:
     raw_role = payload.get("role")
@@ -412,7 +445,7 @@ def _normalize_record(
         "project": project,
         "session_id": session_id,
         "namespace": namespace,
-        "source_format": "jsonl",
+        "source_format": source_format,
         "source_line": line_number,
         "input_schema_version": input_version,
     }
@@ -468,6 +501,7 @@ def _normalize_record(
             "source": "session-jsonl",
             "adapter": SessionAdapter.adapter_id,
             "adapter_protocol_version": SESSION_ADAPTER_PROTOCOL_VERSION,
+            "format": source_format,
             "source_line": line_number,
             "project": project,
             "session_id": session_id,
@@ -484,14 +518,19 @@ def _normalize_record(
 
 
 def _build_manifest(
-    *, project: str, session_id: str, namespace: str, records: list[dict[str, Any]]
+    *,
+    project: str,
+    session_id: str,
+    namespace: str,
+    records: list[dict[str, Any]],
+    format: str = "jsonl",
 ) -> dict[str, Any]:
     ordered = sorted(records, key=lambda record: (int(record["sequence"]), record["record_id"]))
     manifest = {
         "manifest_version": SESSION_SCHEMA_VERSION,
         "adapter_id": SessionAdapter.adapter_id,
         "adapter_protocol_version": SESSION_ADAPTER_PROTOCOL_VERSION,
-        "format": "jsonl",
+        "format": format,
         "project": project,
         "session_id": session_id,
         "namespace": namespace,
@@ -504,6 +543,33 @@ def _build_manifest(
 def _manifest_hash(manifest: Mapping[str, Any]) -> str:
     payload = {key: value for key, value in manifest.items() if key != "manifest_hash"}
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def verify_session_manifest(manifest: Mapping[str, Any]) -> bool:
+    """Verify a session manifest before offline replay/import."""
+    supplied = manifest.get("manifest_hash")
+    if not isinstance(supplied, str) or supplied != _manifest_hash(manifest):
+        return False
+    records = manifest.get("records")
+    return isinstance(records, list) and all(
+        isinstance(record, Mapping)
+        and isinstance(record.get("content_hash"), str)
+        and record.get("content_hash")
+        == hashlib.sha256(str(record.get("content", "")).encode("utf-8")).hexdigest()
+        for record in records
+    )
+
+
+def _flatten_provider_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize common Claude/Codex/Pi message wrappers before validation."""
+    nested = payload.get("message")
+    if not isinstance(nested, Mapping):
+        nested = payload.get("item")
+    if not isinstance(nested, Mapping):
+        return dict(payload)
+    result = dict(nested)
+    result.update({key: value for key, value in payload.items() if key not in {"message", "item"}})
+    return result
 
 
 def _redact_value(value: Any, *, key: str, redact_credentials: bool) -> tuple[Any, int]:
@@ -620,6 +686,7 @@ __all__ = [
     "SESSION_FORMAT_VERSION",
     "SESSION_SCHEMA_VERSION",
     "SessionAdapter",
+    "SessionFormatDescriptor",
     "SessionImportPolicy",
     "SessionImportReport",
     "SessionImportResult",
@@ -627,4 +694,5 @@ __all__ = [
     "import_session_jsonl",
     "normalize_session_record",
     "session_record_to_memory_record",
+    "verify_session_manifest",
 ]
