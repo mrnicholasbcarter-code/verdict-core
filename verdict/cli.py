@@ -710,57 +710,81 @@ def cmd_catalog(
     probe_timeout: float,
     output_json: bool,
 ) -> None:
-    """Qualify one documented OmniRoute catalog endpoint."""
+    """Qualify one or both documented OmniRoute catalog projections."""
     import urllib.request
 
-    from verdict.omniroute_catalog import probe_catalog, qualify_catalog, store_qualification
-
-    path = "/api/models/catalog" if management else "/v1/models"
-    source_url = base_url.rstrip("/") + path
-    request = urllib.request.Request(source_url, headers={"Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310
-            payload = response.read()
-    except Exception as exc:
-        failure_report: dict[str, Any] = {
-            "operation": "omniroute-catalog-qualification",
-            "status": "unknown",
-            "passed": False,
-            "errors": [type(exc).__name__],
-        }
-        if output_json:
-            print(json.dumps(failure_report, sort_keys=True))
-        else:
-            console.print(f"[red]Catalog qualification unavailable: {type(exc).__name__}[/red]")
-        sys.exit(1)
-    report = qualify_catalog(
-        payload,
-        source_url=source_url,
-        expected_row_count=expected_rows,
-        freshness_seconds=freshness_seconds,
+    from verdict.omniroute_catalog import (
+        CatalogQualificationReport,
+        probe_catalog,
+        qualify_catalog,
+        reconcile_catalog_projections,
+        store_qualification,
     )
+
+    paths = [
+        (
+            "management" if management else "public",
+            "/api/models/catalog" if management else "/v1/models",
+        )
+    ]
+    if not management:
+        paths.append(("management", "/api/models/catalog"))
+    reports: dict[str, CatalogQualificationReport] = {}
+    payloads: dict[str, bytes] = {}
+    for label, path in paths:
+        source_url = base_url.rstrip("/") + path
+        request = urllib.request.Request(source_url, headers={"Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310
+                payload = response.read()
+        except Exception as exc:
+            reports[label] = CatalogQualificationReport("unknown", None, (type(exc).__name__,))
+            continue
+        payloads[label] = payload
+        reports[label] = qualify_catalog(
+            payload,
+            source_url=source_url,
+            expected_row_count=expected_rows,
+            freshness_seconds=freshness_seconds,
+        )
+    report = reports["management" if management else "public"]
+    reconciliation = None
+    if not management and all(label in reports for label in ("public", "management")):
+        reconciliation = reconcile_catalog_projections(reports["public"], reports["management"])
+    report_payload: dict[str, Any] = report.to_dict()
+    if not management:
+        report_payload["projections"] = {label: value.to_dict() for label, value in reports.items()}
     probe_summary = None
     if probe and report.snapshot and report.passed:
         from verdict.probes import openai_probe_transport
 
         probe_summary = probe_catalog(
-            payload,
+            payloads["management" if management else "public"],
             openai_probe_transport(
                 base_url.rstrip("/") + "/v1", api_key=os.getenv("OPENAI_API_KEY")
             ),
             limit=probe_limit,
             timeout_seconds=probe_timeout,
         )
-    if db_path and report.snapshot and report.passed:
-        store_qualification(report, memory_path=db_path, probes=probe_summary)
-    report_payload = report.to_dict()
+    if db_path:
+        for label, projection in reports.items():
+            if projection.snapshot:
+                store_qualification(
+                    projection,
+                    memory_path=db_path,
+                    probes=probe_summary
+                    if label == ("management" if management else "public")
+                    else None,
+                )
     if probe_summary:
         report_payload["probes"] = probe_summary.to_dict()
+    if reconciliation:
+        report_payload["projection_reconciliation"] = reconciliation.to_dict()
     if output_json:
         print(json.dumps(report_payload, sort_keys=True))
     else:
         console.print_json(json.dumps(report_payload))
-    if not report.passed:
+    if not report.passed or (reconciliation is not None and not reconciliation.passed):
         sys.exit(1)
 
 
@@ -1257,7 +1281,9 @@ def main() -> None:
         "--base-url", default="http://127.0.0.1:20128", help="OmniRoute base URL"
     )
     catalog_p.add_argument(
-        "--management", action="store_true", help="Use the documented management catalog endpoint"
+        "--management",
+        action="store_true",
+        help="Use only the documented management endpoint (default fetches both projections)",
     )
     catalog_p.add_argument("--expected-rows", type=int, default=3977)
     catalog_p.add_argument("--freshness-seconds", type=int, default=3600)

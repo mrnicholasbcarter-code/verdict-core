@@ -452,6 +452,89 @@ def test_cmd_doctor_issues_and_duplicates(
     assert "node2" in deleted_nodes
 
 
+def test_cmd_catalog_fetches_and_reconciles_both_projections(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    public = {"object": "list", "data": [{"id": "a/model", "owned_by": "a"}]}
+    management = {
+        "catalogVersion": "model-metadata-v1:static",
+        "catalog": {"a": {"active": True, "models": [{"id": "a/model"}]}},
+    }
+
+    class Response:
+        def __init__(self, payload: object) -> None:
+            self.payload = json.dumps(payload).encode()
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self.payload
+
+    def mock_urlopen(request: object, timeout: int) -> Response:
+        url = str(request.full_url)  # type: ignore[attr-defined]
+        return Response(public if url.endswith("/v1/models") else management)
+
+    monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
+    cli.cmd_catalog(
+        base_url="https://example.test",
+        management=False,
+        expected_rows=1,
+        freshness_seconds=3600,
+        db_path=None,
+        probe=False,
+        probe_limit=1,
+        probe_timeout=1.0,
+        output_json=True,
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "qualified"
+    assert output["projection_reconciliation"]["passed"] is True
+
+
+def test_cmd_catalog_fails_closed_when_management_projection_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"object": "list", "data": [{"id": "a/model"}]}).encode()
+
+    def mock_urlopen(request: object, timeout: int) -> Response:
+        if str(request.full_url).endswith("/api/models/catalog"):  # type: ignore[attr-defined]
+            raise OSError("management unavailable")
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
+    with pytest.raises(SystemExit):
+        cli.cmd_catalog(
+            base_url="https://example.test",
+            management=False,
+            expected_rows=1,
+            freshness_seconds=3600,
+            db_path=None,
+            probe=False,
+            probe_limit=1,
+            probe_timeout=1.0,
+            output_json=True,
+        )
+    output = json.loads(capsys.readouterr().out)
+    assert output["projection_reconciliation"]["status"] == "unknown"
+    assert output["projection_reconciliation"]["passed"] is False
+
+
 def test_cmd_check_missing_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
