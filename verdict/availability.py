@@ -1290,6 +1290,9 @@ class ProbeEnrichedAdapter:
         registry: Any | None = None,
         max_probed: int = 16,
         clock: Any = None,
+        live: bool = False,
+        consented: bool = False,
+        provider: str = "unknown",
     ) -> None:
         self.base = base
         self.probe_transport = probe_transport
@@ -1303,6 +1306,9 @@ class ProbeEnrichedAdapter:
             self._runner = ProbeRunner(policy=policy, registry=registry)
         self.max_probed = max_probed
         self.clock = clock
+        self.live = live
+        self.consented = consented
+        self.provider = provider
 
     def evaluate(
         self,
@@ -1318,7 +1324,14 @@ class ProbeEnrichedAdapter:
         model_ids = [c.model.id for c in report.candidates][: self.max_probed]
         if not model_ids:
             return report
-        observations = self._runner.run(model_ids, self.probe_transport, now=now)
+        observations = self._runner.run(
+            model_ids,
+            self.probe_transport,
+            now=now,
+            live=self.live,
+            consented=self.consented,
+            provider=self.provider,
+        )
         probe_by_id: dict[str, RuntimeObservation] = {}
         for obs in observations:
             try:

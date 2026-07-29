@@ -648,15 +648,27 @@ def test_cmd_probe_reports_live_model(
     def fake_transport_factory(base_url, api_key=None, opener=None):  # type: ignore[no-untyped-def]
         def transport(model_id, payload, timeout):  # type: ignore[no-untyped-def]
             assert payload["max_tokens"] == 1
-            return {"status_code": 200, "body": {"usage": {"total_tokens": 3}}}
+            return {
+                "status_code": 200,
+                "body": {
+                    "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                    "usage": {"total_tokens": 3},
+                },
+            }
 
         return transport
 
     monkeypatch.setattr("verdict.probes.openai_probe_transport", fake_transport_factory)
-    cli.cmd_probe(["some/model:free"], base_url="http://localhost:20128/v1", output_json=True)
+    cli.cmd_probe(
+        ["some/model:free"],
+        base_url="http://localhost:20128/v1",
+        output_json=True,
+        allow_live_probe=True,
+    )
     out = json.loads(capsys.readouterr().out)
-    assert out[0]["ok"] is True
-    assert out[0]["http_status"] == 200
+    assert out["diagnostics"]["consented"] is True
+    assert out["results"][0]["ok"] is True
+    assert out["results"][0]["http_status"] == 200
 
 
 def test_cmd_probe_flags_down_model(
@@ -672,6 +684,67 @@ def test_cmd_probe_flags_down_model(
 
     monkeypatch.setattr("verdict.probes.openai_probe_transport", fake_transport_factory)
     with pytest.raises(SystemExit):
-        cli.cmd_probe(["down/model"], output_json=False)
+        cli.cmd_probe(["down/model"], output_json=False, allow_live_probe=True)
     err_out = capsys.readouterr().out
     assert "DOWN" in err_out
+
+
+def test_cmd_probe_requires_consent_before_live_transport(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unexpected_transport(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("live transport must not be constructed")
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", unexpected_transport)
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_probe(["some/model"], output_json=True)
+    assert exc.value.code == 2
+    report = json.loads(capsys.readouterr().out)
+    assert "explicit consent" in report["error"]
+
+
+def test_cmd_probe_live_json_includes_sanitized_diagnostics(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_transport_factory(base_url, api_key=None, opener=None):  # type: ignore[no-untyped-def]
+        def transport(model_id, payload, timeout):  # type: ignore[no-untyped-def]
+            return {
+                "status_code": 200,
+                "body": {
+                    "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                    "usage": {"total_tokens": 1},
+                },
+            }
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", fake_transport_factory)
+    cli.cmd_probe(["some/model"], allow_live_probe=True, output_json=True)
+    report = json.loads(capsys.readouterr().out)
+    assert report["diagnostics"]["provider"] == "omniroute"
+    assert report["diagnostics"]["consented"] is True
+    assert report["results"][0]["ok"] is True
+
+
+def test_cmd_catalog_probe_requires_consent_before_fetching_catalog_probe(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unexpected_urlopen(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("catalog probe must not fetch without consent")
+
+    monkeypatch.setattr("urllib.request.urlopen", unexpected_urlopen)
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_catalog(
+            base_url="https://example.test",
+            management=True,
+            expected_rows=1,
+            freshness_seconds=3600,
+            db_path=None,
+            probe=True,
+            probe_limit=1,
+            probe_timeout=1.0,
+            output_json=True,
+        )
+    assert exc.value.code == 2
+    report = json.loads(capsys.readouterr().out)
+    assert "explicit consent" in report["error"]

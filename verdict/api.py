@@ -193,10 +193,18 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
         from verdict.availability import ProbeEnrichedAdapter
         from verdict.probes import openai_probe_transport
 
+        probe_consented = os.getenv("LLMGATE_ALLOW_LIVE_PROBES", "").lower() in {"1", "true", "yes"}
         probe_transport = openai_probe_transport(
             probe_base_url, api_key=os.getenv("LLMGATE_PROBE_API_KEY") or api_key
         )
-        enriched: Any = ProbeEnrichedAdapter(adapter, probe_transport=probe_transport, enabled=True)
+        enriched: Any = ProbeEnrichedAdapter(
+            adapter,
+            probe_transport=probe_transport,
+            enabled=True,
+            live=True,
+            consented=probe_consented,
+            provider="omniroute",
+        )
     else:
         enriched = adapter
     cache = AvailabilityCache(
