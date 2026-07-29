@@ -1152,6 +1152,48 @@ def cmd_uninstall(purge_data: bool = False) -> None:
         console.print("[bold yellow]⚠ Purged .verdict memory data directory.[/bold yellow]")
 
 
+def cmd_runtime(
+    operation: str,
+    *,
+    apply: bool = False,
+    consent: bool = False,
+    service_ids: list[str] | None = None,
+    output_json: bool = False,
+    manager: Any | None = None,
+) -> None:
+    """Inspect or explicitly reconcile canonical global runtime ownership."""
+    from verdict.runtime_daemons import RuntimeManager, RuntimeManagerError
+
+    manager = manager or RuntimeManager()
+    try:
+        if operation == "status":
+            report = manager.status()
+        elif operation == "reconcile":
+            if apply:
+                report = manager.reconcile_apply(
+                    service_ids=service_ids or [spec.service_id for spec in manager.specs],
+                    consent=consent,
+                )
+            else:
+                report = manager.reconcile_plan()
+        else:
+            raise RuntimeManagerError(f"unsupported runtime operation: {operation}")
+    except RuntimeManagerError as exc:
+        payload = {"operation": "runtime", "status": "blocked", "errors": [str(exc)]}
+        if output_json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            console.print(f"[bold red]Runtime operation blocked:[/] {exc}")
+        raise SystemExit(2) from exc
+
+    if output_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        console.print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    if not report.passed:
+        raise SystemExit(1)
+
+
 def cmd_check() -> None:
     """Validate the Verdict configuration file and print status."""
     config_dir = os.path.join(
@@ -1309,6 +1351,32 @@ def main() -> None:
         "--fix", action="store_true", help="Automatically repair detected configuration issues"
     )
     doctor_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    runtime_p = subparsers.add_parser(
+        "runtime", help="Inspect and safely reconcile global Ruflo/RuVector ownership"
+    )
+    runtime_sub = runtime_p.add_subparsers(dest="runtime_command", required=True)
+    runtime_status_p = runtime_sub.add_parser("status", help="Report runtime ownership status")
+    runtime_status_p.add_argument("--json", action="store_true", help="Output JSON")
+    runtime_reconcile_p = runtime_sub.add_parser(
+        "reconcile", help="Plan or explicitly apply duplicate-service reconciliation"
+    )
+    runtime_reconcile_p.add_argument(
+        "--plan",
+        action="store_true",
+        help="Perform a read-only deterministic plan (the default when --apply is absent)",
+    )
+    runtime_reconcile_p.add_argument("--apply", action="store_true", help="Apply planned stops")
+    runtime_reconcile_p.add_argument(
+        "--yes", action="store_true", help="Explicit consent required with --apply"
+    )
+    runtime_reconcile_p.add_argument(
+        "--service",
+        dest="service_ids",
+        action="append",
+        help="Limit apply to this exact service id; repeat for multiple services",
+    )
+    runtime_reconcile_p.add_argument("--json", action="store_true", help="Output JSON")
     uninst_p = subparsers.add_parser(
         "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"
     )
@@ -1434,6 +1502,14 @@ def main() -> None:
         cmd_suggest(args.log_path)
     elif args.command == "doctor":
         cmd_doctor(fix=getattr(args, "fix", False), output_json=getattr(args, "json", False))
+    elif args.command == "runtime":
+        cmd_runtime(
+            args.runtime_command,
+            apply=getattr(args, "apply", False),
+            consent=getattr(args, "yes", False),
+            service_ids=getattr(args, "service_ids", None),
+            output_json=getattr(args, "json", False),
+        )
     elif args.command == "uninstall":
         cmd_uninstall(purge_data=getattr(args, "purge_data", False))
     elif args.command == "check":
