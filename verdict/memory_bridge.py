@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from verdict.memory_plane import MemoryPlane, MemoryRecord
+from verdict.memory_gate import MemoryGate, MemoryWriteRequest
+from verdict.memory_plane import MemoryPlane
 from verdict.memory_session_adapter import SessionAdapter, session_record_to_memory_record
 from verdict.receipt_store import ReceiptStore
 
@@ -148,6 +149,7 @@ def configure_memory_bridge(
     shared_db = shared_memory_path(home)
     mem_plane = plane or MemoryPlane(shared_db)
     session_adapter = SessionAdapter()
+    gate = MemoryGate(mem_plane)
 
     configured: list[str] = []
     synced_sessions: int = 0
@@ -174,8 +176,23 @@ def configure_memory_bridge(
                     try:
                         rep = session_adapter.import_file(sf, session_id=sf.stem, project="default")
                         for r in rep.records:
-                            mem_plane.put(session_record_to_memory_record(r))
-                        synced_sessions += len(rep.records)
+                            canonical = session_record_to_memory_record(r)
+                            result = gate.write(
+                                MemoryWriteRequest(
+                                    namespace=canonical.namespace,
+                                    key=canonical.key,
+                                    value=canonical.content,
+                                    authority="session_adapter",
+                                    provenance=canonical.provenance,
+                                    scope=canonical.scope,
+                                    source=canonical.source,
+                                    trust=canonical.trust,
+                                    metadata=canonical.metadata,
+                                    sensitivity=canonical.sensitivity,
+                                    expires_at=canonical.expires_at,
+                                )
+                            )
+                            synced_sessions += int(result.allowed)
                     except Exception:
                         continue
             configured.append("codex")
@@ -192,8 +209,23 @@ def configure_memory_bridge(
                     try:
                         rep = session_adapter.import_file(sf, session_id=sf.stem, project="default")
                         for r in rep.records:
-                            mem_plane.put(session_record_to_memory_record(r))
-                        synced_sessions += len(rep.records)
+                            canonical = session_record_to_memory_record(r)
+                            result = gate.write(
+                                MemoryWriteRequest(
+                                    namespace=canonical.namespace,
+                                    key=canonical.key,
+                                    value=canonical.content,
+                                    authority="session_adapter",
+                                    provenance=canonical.provenance,
+                                    scope=canonical.scope,
+                                    source=canonical.source,
+                                    trust=canonical.trust,
+                                    metadata=canonical.metadata,
+                                    sensitivity=canonical.sensitivity,
+                                    expires_at=canonical.expires_at,
+                                )
+                            )
+                            synced_sessions += int(result.allowed)
                     except Exception:
                         continue
             configured.append("claude")
@@ -273,16 +305,26 @@ def configure_memory_bridge(
 class MemoryHookController:
     """Complete 13-hook controller managing prompt, task, file, command, session, and verification events."""
 
-    def __init__(self, plane: MemoryPlane | None = None, db_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        plane: MemoryPlane | None = None,
+        db_path: str | Path | None = None,
+        gate: MemoryGate | None = None,
+    ) -> None:
         if plane is not None:
             self.plane = plane
         else:
             from verdict.documentation_preflight import shared_memory_path
 
             self.plane = MemoryPlane(db_path or shared_memory_path())
+        self.gate = gate or MemoryGate(self.plane)
         self.receipt_store = ReceiptStore(
             ":memory:" if not db_path else str(db_path) + "_receipts.db"
         )
+
+    def write_memory(self, request: MemoryWriteRequest) -> dict[str, Any]:
+        """Route lifecycle memory writes through the durable gate."""
+        return self.gate.write(request).to_dict()
 
     # 1. Prompt & Context Hooks
     def on_prompt(self, user_prompt: str, context_budget: int = 2048) -> str:
@@ -431,18 +473,19 @@ class MemoryHookController:
         stored_count = 0
         for idx, item in enumerate(transcript):
             content = item.get("content") or json.dumps(item)
-            rec = MemoryRecord(
-                record_id=f"rec_sess_{session_id}_{idx}",
-                namespace="session_history",
-                key=f"{session_id}:item_{idx}",
-                content=content,
-                source=f"session:{session_id}",
-                authority="session_adapter",
-                confidence=1.0,
-                sensitivity="internal",
+            result = self.gate.write(
+                MemoryWriteRequest(
+                    namespace="session_history",
+                    key=f"{session_id}:item_{idx}",
+                    value=content,
+                    authority="session_adapter",
+                    confidence=1.0,
+                    provenance={"source": f"session:{session_id}", "item_index": idx},
+                    scope=session_id,
+                )
             )
-            self.plane.put(rec)
-            stored_count += 1
+            if result.allowed:
+                stored_count += 1
 
         receipt_count = 0
         if receipts:

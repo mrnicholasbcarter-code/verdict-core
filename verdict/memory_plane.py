@@ -357,6 +357,29 @@ class MemoryPlane:
         ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def records(
+        self,
+        *,
+        namespace: str | None = None,
+        scope: str | None = "default",
+        include_history: bool = False,
+    ) -> list[MemoryRecord]:
+        """Return canonical records for durable adapter/audit inspection."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope is not None:
+            clauses.append("scope=?")
+            params.append(scope)
+        if namespace is not None:
+            clauses.append("namespace=?")
+            params.append(namespace)
+        if not include_history:
+            clauses.append("status='active'")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        query = "SELECT * FROM memories" + where + " ORDER BY namespace, key, created_at, record_id"  # nosec B608
+        rows = self._db.execute(query, params).fetchall()
+        return [self._from_row(row) for row in rows]
+
     def export_records(
         self, *, scope: str = "default", include_history: bool = False
     ) -> list[dict[str, Any]]:
