@@ -338,6 +338,56 @@ def test_cli_documentation_json_surfaces_blocked_state(
     assert report["status"] == "blocked"
 
 
+def test_cli_runtime_plan_is_json_and_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    state_dir = tmp_path / "runtime"
+    monkeypatch.setenv("VERDICT_RUNTIME_STATE_DIR", str(state_dir))
+    import verdict.runtime_daemons as runtime_daemons
+
+    monkeypatch.setattr(runtime_daemons, "_probe_endpoint", lambda _endpoint: False)
+    monkeypatch.setattr(runtime_daemons, "_probe_health", lambda _endpoint: "unavailable")
+
+    class EmptyInspector:
+        def snapshots(self) -> tuple[object, ...]:
+            return ()
+
+        def snapshot(self, _pid: int) -> None:
+            return None
+
+    monkeypatch.setattr(runtime_daemons, "ProcfsInspector", lambda: EmptyInspector())
+    monkeypatch.setattr(sys, "argv", ["verdict", "runtime", "reconcile", "--plan", "--json"])
+
+    cli.main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["operation"] == "runtime"
+    assert report["contract_version"] == "1"
+    # Read-only status must not create ownership state. The command may create
+    # no directory at all, or the test environment may create an empty parent.
+    assert not any(state_dir.glob("*.ownership.json"))
+
+
+def test_cli_runtime_apply_requires_explicit_consent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["verdict", "runtime", "reconcile", "--apply", "--service", "ruflo-mcp", "--json"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 2
+    assert "explicit consent" in capsys.readouterr().out
+
+
 def test_cli_memory_docs_json_reports_repaired_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
