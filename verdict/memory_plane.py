@@ -376,9 +376,7 @@ class MemoryPlane:
         if not include_history:
             clauses.append("status='active'")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        query = (  # nosec B608: clauses are fixed internal predicates; values are bound below.
-            "SELECT * FROM memories" + where + " ORDER BY namespace, key, created_at, record_id"
-        )
+        query = "SELECT * FROM memories" + where + " ORDER BY namespace, key, created_at, record_id"  # nosec B608
         rows = self._db.execute(query, params).fetchall()
         return [self._from_row(row) for row in rows]
 
