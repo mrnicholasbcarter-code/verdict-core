@@ -514,6 +514,10 @@ def run_doctor_diagnostics(
     had_memory_db = memory_db.exists()
 
     from verdict.documentation_preflight import run_documentation_preflight
+    from verdict.memory_adapters import build_default_adapter_registry
+
+    adapter_registry = build_default_adapter_registry()
+    adapter_capabilities = adapter_registry.status()
 
     documentation_report = run_documentation_preflight(
         repo_root=root, memory_path=home / ".verdict" / "memory.db", fix=fix
@@ -567,6 +571,7 @@ def run_doctor_diagnostics(
         "repaired": repaired,
         "fix_applied": fix,
         "documentation_preflight": documentation_report.to_dict(),
+        "memory_adapters": {"protocol_version": "1", "capabilities": adapter_capabilities},
     }
 
 

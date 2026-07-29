@@ -1,6 +1,6 @@
 # ADR-004: Local-First Memory Plane
 
-- **Status:** proposed for issues #121 and #126
+- **Status:** accepted; implementation incrementally delivered under #130
 - **Date:** 2026-07-27
 - **Deciders:** Verdict Core maintainers
 - **Related:** [#121](https://github.com/mrnicholasbcarter-code/verdict-core/issues/121), [#126](https://github.com/mrnicholasbcarter-code/verdict-core/issues/126), [#130](https://github.com/mrnicholasbcarter-code/verdict-core/issues/130)
@@ -48,11 +48,16 @@ AgentDB, RuVector, OpenViking, Codex, Claude, or Pi stores. Importers are
 separate, versioned adapters and begin with dry-run manifests before commit.
 The provider-neutral document and JSONL session adapters in #130 accept only
 explicit caller paths, apply bounded reads and symlink/path policy, redact by
-default, and emit deterministic manifests. Session records expose an explicit
-conversion to the canonical `MemoryRecord` shape; adapters do not write to the
-plane automatically. Canonical MasterDocsRAG ingestion, provider-specific
-connectors, receipts, semantic indexing, and runtime daemon ownership remain
-follow-up slices (#117, #121, #127, #129).
+default, and emit deterministic manifests. The default registry reports
+available, degraded, unavailable, and unknown capabilities and isolates
+adapter/record failures in aggregate reports. Session records expose an
+explicit conversion to the canonical `MemoryRecord` shape; adapters do not
+write to the plane automatically. MasterDocsRAG and Code Review Graph private
+SQLite inputs are explicitly unavailable through the default registry: callers
+must supply validated exported manifests. Provider-specific Claude, Codex, and
+Pi JSONL descriptors are explicit format capabilities. Receipts, semantic
+indexing, and runtime daemon ownership remain follow-up slices (#117, #121,
+#127, #129).
 
 ## Consequences
 
@@ -68,7 +73,8 @@ Negative:
 - lexical retrieval is intentionally weaker than semantic retrieval until an
   optional local model adapter is added and benchmarked;
 - adapter coverage is incremental and cannot be claimed complete in this
-  slice;
+  slice; registry capability status is the source of truth for unsupported
+  provider/database formats;
 - SQLite path ownership and backup/retention policy require operator config.
 
 ## Verification requirements

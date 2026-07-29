@@ -1054,28 +1054,46 @@ def cmd_memory(args: Any) -> None:
         for r in results:
             console.print(f"- [{r.namespace}:{r.key}] ({r.source}): {r.content[:100]}")
     elif sub == "export":
-        data = plane.export_records()
+        from verdict.memory_adapters import ImportPolicy, export_manifest
+
         out = getattr(args, "output", "memory_manifest.json")
-        with open(out, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        console.print(f"[bold green]✓ Exported memory manifest to {out}[/bold green]")
+        destination = Path(out).expanduser().resolve()
+        policy = ImportPolicy((destination.parent,))
+        export_report = export_manifest(
+            plane.export_records(),
+            destination,
+            policy=policy,
+            source="memory-plane",
+            adapter_id="local-manifest",
+        )
+        if export_report.status != "ok":
+            raise SystemExit("memory manifest export failed: " + "; ".join(export_report.errors))
+        console.print(f"[bold green]✓ Exported memory manifest to {destination}[/bold green]")
     elif sub == "import":
+        from verdict.memory_adapters import ImportPolicy, import_manifest
+
         man = args.manifest
-        with open(man, encoding="utf-8") as f:
-            data = json.load(f)
-        count = plane.import_records(data)
-        console.print(f"[bold green]✓ Imported {count} record(s)[/bold green]")
+        source = Path(man).expanduser().resolve()
+        policy = ImportPolicy((source.parent,))
+        manifest_records, import_report = import_manifest(source, policy=policy)
+        count = plane.import_records(manifest_records)
+        console.print(
+            f"[bold green]✓ Imported {count[0]} record(s) ({import_report.duplicates} duplicates; "
+            f"manifest {import_report.manifest_hash})[/bold green]"
+        )
     elif sub == "masterdocs":
         db = getattr(args, "db", "MasterDocsRAG.db")
         adapter = MasterDocsAdapter()
-        rep = adapter.canonicalize_db(db, plane)
+        rep = adapter.canonicalize_db(db, plane, allow_legacy_sqlite=args.allow_legacy_sqlite)
         console.print(
             f"[bold green]✓ MasterDocs ingested {rep.ingested} record(s) ({rep.quarantined} quarantined)[/bold green]"
         )
     elif sub == "graph":
         db = getattr(args, "db", "code_graph.db")
         graph_adapter = CodeGraphAdapter()
-        graph_rep = graph_adapter.ingest_sqlite(db, plane)
+        graph_rep = graph_adapter.ingest_sqlite(
+            db, plane, allow_legacy_sqlite=args.allow_legacy_sqlite
+        )
         console.print(
             f"[bold green]✓ Code graph ingested {graph_rep.records_created} node(s)[/bold green]"
         )
@@ -1295,9 +1313,19 @@ def main() -> None:
 
     md_p = memory_sub.add_parser("masterdocs", help="Canonicalize MasterDocs database")
     md_p.add_argument("--db", default="MasterDocsRAG.db", help="Database path")
+    md_p.add_argument(
+        "--allow-legacy-sqlite",
+        action="store_true",
+        help="Explicitly allow an exported local SQLite artifact (prefer manifests)",
+    )
 
     cg_p = memory_sub.add_parser("graph", help="Ingest code review graph database")
     cg_p.add_argument("--db", default="code_graph.db", help="Database path")
+    cg_p.add_argument(
+        "--allow-legacy-sqlite",
+        action="store_true",
+        help="Explicitly allow an exported local SQLite artifact (prefer manifests)",
+    )
 
     docs_p = memory_sub.add_parser(
         "docs", help="Verify or ingest authoritative project, Ruflo, and RuVector documentation"

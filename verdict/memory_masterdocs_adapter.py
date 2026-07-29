@@ -14,6 +14,8 @@ from typing import Any
 
 from verdict.memory_plane import MemoryPlane, MemoryRecord
 
+MASTERDOCS_ADAPTER_VERSION = "1"
+
 
 @dataclass(frozen=True)
 class MasterDocsIngestionReport:
@@ -27,7 +29,12 @@ class MasterDocsIngestionReport:
 
 
 class MasterDocsAdapter:
-    """Adapter to ingest MasterDocsRAG SQLite databases into MemoryPlane."""
+    """Legacy SQLite importer requiring explicit local/export opt-in.
+
+    The default adapter registry deliberately exposes only the manifest
+    boundary.  This compatibility class remains available for callers that
+    have an explicitly exported, allowlisted local SQLite artifact.
+    """
 
     def __init__(self, allowlisted_roots: tuple[Path, ...] | None = None) -> None:
         self.allowlisted_roots = allowlisted_roots or (Path.cwd().resolve(),)
@@ -51,9 +58,19 @@ class MasterDocsAdapter:
         return any(resolved.is_relative_to(root) for root in self.allowlisted_roots)
 
     def canonicalize_db(
-        self, db_path: str | Path, plane: MemoryPlane, allow_tmp: bool = False, limit: int = 1000
+        self,
+        db_path: str | Path,
+        plane: MemoryPlane,
+        allow_tmp: bool = False,
+        limit: int = 1000,
+        allow_legacy_sqlite: bool = False,
     ) -> MasterDocsIngestionReport:
-        """Read documents from MasterDocs database and store in MemoryPlane."""
+        """Read an explicitly approved local/exported SQLite artifact."""
+        if not allow_legacy_sqlite:
+            raise ValueError(
+                "private MasterDocs SQLite input is disabled; use a validated manifest "
+                "or set allow_legacy_sqlite=True for an exported local artifact"
+            )
         path = Path(db_path).resolve()
         if not path.exists() or not path.is_file():
             raise FileNotFoundError(f"masterdocs_db_not_found:{path}")
@@ -114,7 +131,17 @@ class MasterDocsAdapter:
                     authority="masterdocs_rag",
                     confidence=1.0,
                     sensitivity="public",
-                    provenance={"db_path": str(path), "doc_path": doc_path},
+                    scope="default",
+                    provenance={
+                        "source": f"masterdocs:{doc_path}",
+                        "adapter": "masterdocs-sqlite-legacy",
+                        "adapter_version": MASTERDOCS_ADAPTER_VERSION,
+                        "schema_version": 2,
+                        "db_path": str(path),
+                        "doc_path": doc_path,
+                        "content_hash": content_hash,
+                        "authority": "masterdocs_rag",
+                    },
                 )
                 plane.put(record)
                 ingested += 1
@@ -132,4 +159,4 @@ class MasterDocsAdapter:
         )
 
 
-__all__ = ["MasterDocsAdapter", "MasterDocsIngestionReport"]
+__all__ = ["MASTERDOCS_ADAPTER_VERSION", "MasterDocsAdapter", "MasterDocsIngestionReport"]

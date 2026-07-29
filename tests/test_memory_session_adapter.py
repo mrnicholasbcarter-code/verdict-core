@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 
 from verdict.memory_plane import MemoryPlane
-from verdict.memory_session_adapter import SessionAdapter, SessionImportPolicy, import_session
+from verdict.memory_session_adapter import (
+    SessionAdapter,
+    SessionImportPolicy,
+    import_session,
+    verify_session_manifest,
+)
 
 
 def write_jsonl(path: Path, records: list[object]) -> None:
@@ -120,6 +125,12 @@ def test_manifests_are_deterministic_and_unsupported_formats_are_explicit(tmp_pa
     first = SessionAdapter().import_session(source, project="p", session_id="s")
     second = SessionAdapter().import_session(source, project="p", session_id="s")
     assert first.manifest == second.manifest
+    assert verify_session_manifest(first.manifest)
+    tampered = dict(first.manifest)
+    tampered["records"] = list(first.manifest["records"])
+    tampered["records"][0] = dict(tampered["records"][0])
+    tampered["records"][0]["content"] = "tampered"
+    assert not verify_session_manifest(tampered)
 
     unsupported = import_session(
         tmp_path / "provider.db", project="p", session_id="s", format="sqlite"
@@ -127,6 +138,20 @@ def test_manifests_are_deterministic_and_unsupported_formats_are_explicit(tmp_pa
     assert unsupported.report.status == "unavailable"
     assert unsupported.records == ()
     assert "unsupported" in unsupported.report.errors[0]
+
+
+def test_provider_export_descriptors_accept_wrapped_jsonl(tmp_path: Path) -> None:
+    source = tmp_path / "events.jsonl"
+    for provider in ("claude", "codex", "pi"):
+        write_jsonl(
+            source, [{"schema_version": 1, "message": {"role": "assistant", "content": "ok"}}]
+        )
+        result = SessionAdapter().import_file(
+            source, project="p", session_id=provider, format=f"{provider}-jsonl"
+        )
+        assert result.report.status == "ok"
+        assert result.manifest["format"] == f"{provider}-jsonl"
+        assert result.records[0]["provenance"]["format"] == f"{provider}-jsonl"
 
 
 def test_invalid_utf8_is_reported_without_aborting_other_lines(tmp_path: Path) -> None:
