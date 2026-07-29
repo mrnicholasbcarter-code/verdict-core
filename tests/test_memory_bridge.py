@@ -102,6 +102,7 @@ def test_memory_hook_controller_all_13_hooks(tmp_path: Path) -> None:
     assert ss_res["status"] == "success"
     se_res = controller.on_session_end("sess_1", transcript=[{"role": "user", "content": "Hello"}])
     assert se_res["status"] == "success"
+    assert plane.get("session_history", "sess_1:item_0", scope="sess_1") is not None
     sr_res = controller.on_session_restore("sess_1")
     assert sr_res["status"] == "success"
 
