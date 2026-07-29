@@ -118,6 +118,31 @@ class CatalogQualificationReport:
 
 
 @dataclass(frozen=True)
+class CatalogProjectionReconciliation:
+    """Sanitized comparison of the public and management projections."""
+
+    status: Literal["consistent", "contradictory", "unknown"]
+    public_status: CatalogStatus
+    management_status: CatalogStatus
+    compared_fields: tuple[str, ...]
+    mismatches: tuple[str, ...] = ()
+
+    @property
+    def passed(self) -> bool:
+        return self.status == "consistent" and not self.mismatches
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "passed": self.passed,
+            "public_status": self.public_status,
+            "management_status": self.management_status,
+            "compared_fields": list(self.compared_fields),
+            "mismatches": list(self.mismatches),
+        }
+
+
+@dataclass(frozen=True)
 class ProbeQualification:
     """Sanitized liveness results for an explicitly bounded probe sample."""
 
@@ -172,6 +197,53 @@ def qualify_catalog(
     if snapshot.row_count != snapshot.expected_row_count or snapshot.malformed_row_count:
         return CatalogQualificationReport("partial", snapshot)
     return CatalogQualificationReport("qualified", snapshot)
+
+
+def reconcile_catalog_projections(
+    public: CatalogQualificationReport, management: CatalogQualificationReport
+) -> CatalogProjectionReconciliation:
+    """Compare projections without retaining either raw payload."""
+
+    fields = (
+        "expected_row_count",
+        "row_count",
+        "unique_id_count",
+        "malformed_row_count",
+        "duplicate_row_delta",
+        "duplicate_ids",
+        "provider_counts",
+        "capability_counts",
+        "profile_counts",
+        "context_length",
+        "max_output_tokens",
+    )
+    public_snapshot = public.snapshot
+    management_snapshot = management.snapshot
+    if public_snapshot is None or management_snapshot is None:
+        return CatalogProjectionReconciliation(
+            status="unknown",
+            public_status=public.status,
+            management_status=management.status,
+            compared_fields=fields,
+            mismatches=("one or both projections have no valid snapshot",),
+        )
+
+    mismatches: list[str] = []
+    for field in fields:
+        public_value = getattr(public_snapshot, field)
+        management_value = getattr(management_snapshot, field)
+        if field == "duplicate_ids":
+            public_value = tuple(sorted(public_value, key=lambda item: str(item.get("id"))))
+            management_value = tuple(sorted(management_value, key=lambda item: str(item.get("id"))))
+        if public_value != management_value:
+            mismatches.append(field)
+    return CatalogProjectionReconciliation(
+        status="consistent" if not mismatches else "contradictory",
+        public_status=public.status,
+        management_status=management.status,
+        compared_fields=fields,
+        mismatches=tuple(mismatches),
+    )
 
 
 def summarize_probes(
@@ -455,11 +527,13 @@ __all__ = [
     "CATALOG_QUALIFICATION_VERSION",
     "DEFAULT_CATALOG_FRESHNESS_SECONDS",
     "DEFAULT_EXPECTED_ROW_COUNT",
+    "CatalogProjectionReconciliation",
     "CatalogQualificationError",
     "CatalogQualificationReport",
     "CatalogSnapshot",
     "ProbeQualification",
     "qualify_catalog",
+    "reconcile_catalog_projections",
     "store_qualification",
     "summarize_probes",
 ]

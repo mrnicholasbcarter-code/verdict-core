@@ -7,6 +7,7 @@ from verdict.omniroute_catalog import (
     CatalogQualificationError,
     probe_catalog,
     qualify_catalog,
+    reconcile_catalog_projections,
     select_probe_models,
     store_qualification,
     summarize_probes,
@@ -194,7 +195,9 @@ def test_qualification_is_stored_with_hash_and_freshness_provenance(tmp_path) ->
     assert record.provenance["qualification_hash"] == record.metadata["qualification_hash"]
     assert record.expires_at == report.snapshot.fresh_until.timestamp()
     with MemoryPlane(tmp_path / "memory.db") as plane:
-        assert plane.get("omniroute-catalog", "http://127.0.0.1:20128/v1/models", scope="shared")
+        assert plane.history(
+            "omniroute-catalog", "http://127.0.0.1:20128/v1/models", scope="shared"
+        )
 
 
 def test_qualification_storage_is_idempotent_for_same_snapshot(tmp_path) -> None:
@@ -233,6 +236,79 @@ def test_stale_or_partial_reports_are_stored_as_non_healthy(tmp_path) -> None:
     assert record.confidence == 0.0
 
 
+def test_catalog_projections_reconcile_without_overriding_expected_count_policy() -> None:
+    public_payload = _public([_row("a/model"), _row("b/model")])
+    management_payload = {
+        "catalogVersion": "model-metadata-v1:static",
+        "catalog": {
+            "a": {"active": True, "models": [{"id": "a/model"}]},
+            "b": {"active": True, "models": [{"id": "b/model"}]},
+        },
+    }
+    public = qualify_catalog(
+        public_payload,
+        source_url="https://example.test/v1/models",
+        captured_at=NOW,
+        now=NOW,
+        expected_row_count=3,
+    )
+    management = qualify_catalog(
+        management_payload,
+        source_url="https://example.test/api/models/catalog",
+        captured_at=NOW,
+        now=NOW,
+        expected_row_count=3,
+    )
+    reconciliation = reconcile_catalog_projections(public, management)
+    assert reconciliation.status == "consistent"
+    assert reconciliation.passed is True
+    assert public.status == "partial"
+    assert management.status == "partial"
+
+
+def test_contradictory_catalog_projections_are_not_qualified() -> None:
+    public = qualify_catalog(
+        _public([_row("a/model")]),
+        source_url="https://example.test/v1/models",
+        captured_at=NOW,
+        now=NOW,
+        expected_row_count=1,
+    )
+    management = qualify_catalog(
+        {
+            "catalogVersion": "model-metadata-v1:static",
+            "catalog": {"b": {"active": True, "models": [{"id": "b/model"}]}},
+        },
+        source_url="https://example.test/api/models/catalog",
+        captured_at=NOW,
+        now=NOW,
+        expected_row_count=1,
+    )
+    reconciliation = reconcile_catalog_projections(public, management)
+    assert reconciliation.status == "contradictory"
+    assert reconciliation.passed is False
+    assert "provider_counts" in reconciliation.mismatches
+
+
+def test_projection_reconciliation_is_unknown_when_a_projection_has_schema_drift() -> None:
+    valid = qualify_catalog(
+        _public([_row("a/model")]),
+        source_url="https://example.test/v1/models",
+        captured_at=NOW,
+        now=NOW,
+        expected_row_count=1,
+    )
+    unknown = qualify_catalog(
+        {"items": []},
+        source_url="https://example.test/api/models/catalog",
+        captured_at=NOW,
+        now=NOW,
+    )
+    reconciliation = reconcile_catalog_projections(valid, unknown)
+    assert reconciliation.status == "unknown"
+    assert reconciliation.passed is False
+
+
 def test_unknown_schema_cannot_be_stored(tmp_path) -> None:
     report = qualify_catalog(
         {"items": []}, source_url="https://example.test/models", captured_at=NOW, now=NOW
@@ -259,4 +335,21 @@ def test_committed_evidence_artifact_is_sanitized_and_matches_reconciliation() -
     serialized = json.dumps(evidence).lower()
     assert "choices" not in serialized
     assert "usage" not in serialized
+    assert "bearer" not in serialized
+
+
+def test_refreshed_evidence_preserves_partial_baseline_and_hash_provenance() -> None:
+    import json
+    from pathlib import Path
+
+    evidence = json.loads(
+        Path("docs/evidence/omniroute-catalog-qualification-2026-07-29.json").read_text()
+    )
+    assert evidence["expected_row_policy"] == 3977
+    assert evidence["public"]["rows"] == 4031
+    assert evidence["management"]["rows"] == 4031
+    assert evidence["public"]["target_row_delta"] == 54
+    assert evidence["projection_reconciliation"]["passed"] is True
+    assert evidence["liveness_sample"]["protected_work_ready"] is False
+    serialized = json.dumps(evidence).lower()
     assert "bearer" not in serialized

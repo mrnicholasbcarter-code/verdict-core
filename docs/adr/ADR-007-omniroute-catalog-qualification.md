@@ -1,6 +1,7 @@
 # ADR-007: Qualify OmniRoute catalog identity separately from liveness
 
-- **Status:** Accepted — implemented and merged in PR #155
+- **Status:** Accepted — implemented and merged in PR #155; refresh in #162 is
+  diagnostic and remains partial under the recorded baseline policy
 - **Date:** 2026-07-28
 - **Decision owners:** Verdict Core maintainers
 - **Ticket:** #153
@@ -23,6 +24,11 @@ classification, provider and capability counts, context/output bounds, and
 explicit profile evidence. The public endpoint is the default identity source;
 the management endpoint is an explicit fallback.
 
+The CLI fetches the public identity projection first and the management
+projection as an explicit consistency check by default; either projection can
+still be requested alone. Projection consistency never overrides freshness,
+schema, or expected-count qualification.
+
 Catalog qualification is fail-closed: malformed schema is `unknown`, stale
 data is `stale`, malformed or row-count drift is `partial`, and only a fresh
 complete snapshot is `qualified`. Raw catalog responses are never committed or
@@ -44,18 +50,27 @@ unknown responses cannot be stored.
 
 ## Evidence
 
-The 2026-07-28 live instance returned 3,977 rows, 3,964 unique IDs, zero
-malformed rows, and 13 duplicate-row deltas on both documented endpoints. The
-public and management payload hashes are retained only in sanitized evidence;
-the raw JSON remains outside the repository. A bounded eight-model sample
-returned one HTTP 404 and seven timeouts, with zero ready results, so no
-provider liveness claim is made from this run.
+The prior 2026-07-28 live instance returned 3,977 rows, 3,964 unique IDs, zero
+malformed rows, and 13 duplicate-row deltas on both documented endpoints. A
+fresh 2026-07-29 refresh observed 4,031 rows, 4,018 unique IDs, zero malformed
+rows, and the same 13-row duplicate delta on both projections. Under the
+unchanged 3,977-row expected-count policy, both snapshots are `partial` with
+target delta `+54`; the expected policy is not silently changed. The public
+payload hash is
+`e5670120560aca1612298922abcfbc126d02ca80536a439abdbc9583f7f6f6bd`; the
+management payload hash is
+`e550cc4415dbb5cbd1d3f058c112b9df4a36276969ce44267ae63f4819b157cc`. The
+projections reconcile consistently on identity, duplicate, provider,
+capability, profile, and bounds fields. Sanitized evidence is in
+`docs/evidence/omniroute-catalog-qualification-2026-07-29.json`; raw payloads
+remain outside the repository. No liveness probe was run in this refresh, so
+no provider liveness claim is made.
 
 ## Consequences
 
 Catalog review can cover all models without hardcoded provider lists, while
-protected work remains safe when runtime truth is missing. Live probing is
-bounded and auditable, but it is only a sample and is not a complete
-3,977-model availability certification. A later ticket may add an authenticated
-management liveness route or a scheduled qualification report; that work must
-retain the same fail-closed and privacy boundaries.
+protected work remains safe when runtime truth is missing. The 2026-07-29
+refresh is retained as partial diagnostic evidence until the expected-count
+change is independently reviewed. A later ticket may approve a new baseline or
+add an authenticated management liveness route; that work must retain the same
+fail-closed and privacy boundaries.
