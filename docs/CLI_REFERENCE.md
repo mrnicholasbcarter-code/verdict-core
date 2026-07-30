@@ -76,6 +76,9 @@ verdict policy <subcommand> [args]
 | `validate <file>` | Validate policy syntax |
 | `list` | List available policies |
 | `delete <name>` | Delete policy |
+| `explain <file>` | Evaluate a redacted policy fixture without execution |
+| `simulate <file>` | Simulate policy and transition decisions offline |
+| `backtest <file>` | Alias for deterministic offline simulation |
 
 ---
 
