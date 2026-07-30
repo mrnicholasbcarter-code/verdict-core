@@ -669,15 +669,26 @@ class ReceiptStore:
     ) -> ReceiptRecord | None:
         """Fetch one record; a supplied scope always constrains the lookup."""
         self._assert_integrity(scope=scope)
-        params: list[Any] = [receipt_id]
-        clause = self._scope_clause(scope, params)
-        tombstone_clause = (
-            ""
-            if include_tombstones
-            else " AND NOT EXISTS (SELECT 1 FROM receipts t WHERE t.tombstone_for = receipts.receipt_id)"
-        )
+        if scope is None:
+            if include_tombstones:
+                return self._fetch_one("SELECT * FROM receipts WHERE receipt_id = ?", (receipt_id,))
+            return self._fetch_one(
+                "SELECT * FROM receipts WHERE receipt_id = ? "
+                "AND NOT EXISTS (SELECT 1 FROM receipts t "
+                "WHERE t.tombstone_for = receipts.receipt_id)",
+                (receipt_id,),
+            )
+        validated_scope = _validate_scope(scope)
+        if include_tombstones:
+            return self._fetch_one(
+                "SELECT * FROM receipts WHERE receipt_id = ? AND scope = ?",
+                (receipt_id, validated_scope),
+            )
         return self._fetch_one(
-            f"SELECT * FROM receipts WHERE receipt_id = ?{clause}{tombstone_clause}", tuple(params)
+            "SELECT * FROM receipts WHERE receipt_id = ? AND scope = ? "
+            "AND NOT EXISTS (SELECT 1 FROM receipts t "
+            "WHERE t.tombstone_for = receipts.receipt_id)",
+            (receipt_id, validated_scope),
         )
 
     def query_receipts(
