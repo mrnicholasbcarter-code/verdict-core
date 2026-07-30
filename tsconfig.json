@@ -9,7 +9,10 @@
     "exactOptionalPropertyTypes": true,
     "isolatedModules": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@bodanglin/verdict-contracts": ["./contracts/src/index.ts"]
+    }
   },
   "include": ["contracts/**/*.ts", "tests/typescript/**/*.ts", "verdict/client-sdk/**/*.ts"]
 }
