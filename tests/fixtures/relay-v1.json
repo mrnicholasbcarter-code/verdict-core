@@ -1,0 +1,43 @@
+{
+  "schema_version": "1",
+  "cases": [
+    {
+      "name": "responses-buffered-unknown-fields",
+      "surface": "responses",
+      "request": {
+        "model": "model-a",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        "reasoning": {"effort": "low"},
+        "metadata": {"future": true}
+      },
+      "response": {
+        "id": "resp_fixture",
+        "object": "response",
+        "status": "completed",
+        "output": [],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        "future_field": {"preserve": true}
+      }
+    },
+    {
+      "name": "responses-stream-terminal",
+      "surface": "responses",
+      "request": {"model": "model-a", "input": "hello", "stream": true},
+      "stream_chunks": [
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+      ]
+    },
+    {
+      "name": "chat-tool-and-structured-output",
+      "surface": "chat",
+      "request": {
+        "model": "model-a",
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+        "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        "response_format": {"type": "json_schema", "json_schema": {"name": "answer"}}
+      },
+      "response": {"id": "chat_fixture", "choices": [], "usage": {"total_tokens": 2}}
+    }
+  ]
+}

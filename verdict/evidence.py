@@ -102,8 +102,12 @@ def request_features(payload: dict[str, Any]) -> dict[str, Any]:
     tools = payload.get("tools")
     response_format = payload.get("response_format")
     messages = payload.get("messages")
+    input_items = payload.get("input")
     if not isinstance(messages, list):
         messages = []
+    if not isinstance(input_items, list):
+        input_items = []
+    content_items = [*messages, *input_items]
     feature_payload: dict[str, Any] = {
         "stream": payload.get("stream") is True,
         "tools": isinstance(tools, list) and bool(tools),
@@ -115,13 +119,19 @@ def request_features(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "vision": any(
             isinstance(message, dict)
-            and isinstance(message.get("content"), list)
-            and any(
-                isinstance(part, dict) and part.get("type") == "image_url"
-                for part in message["content"]
+            and (
+                message.get("type") in {"input_image", "image_url"}
+                or (
+                    isinstance(message.get("content"), list)
+                    and any(
+                        isinstance(part, dict) and part.get("type") in {"image_url", "input_image"}
+                        for part in message["content"]
+                    )
+                )
             )
-            for message in messages
+            for message in content_items
         ),
+        "reasoning": isinstance(payload.get("reasoning"), (dict, str)),
     }
     if isinstance(tools, list):
         names = [
@@ -196,6 +206,10 @@ def build_routing_decision_contract(
     request_id: str | None = None,
     correlation_id: str | None = None,
     occurred_at: str | None = None,
+    requested_identity: str | None = None,
+    resolved_route: dict[str, Any] | None = None,
+    actual_route: dict[str, Any] | None = None,
+    attempted_routes: list[dict[str, Any]] | None = None,
 ) -> RoutingDecisionContract:
     """Convert a legacy decision into a strict, redacted v1 route contract."""
 
@@ -264,6 +278,14 @@ def build_routing_decision_contract(
         "request_id": rid,
         "policy_version": decision.policy_version,
     }
+    if requested_identity:
+        payload["selected_route"]["requested_identity"] = _bounded_text(requested_identity)
+    if resolved_route is not None:
+        payload["selected_route"]["resolved_route"] = _copy_json(resolved_route)
+    if actual_route is not None:
+        payload["selected_route"]["actual_route"] = _copy_json(actual_route)
+    if attempted_routes is not None:
+        payload["selected_route"]["attempted_routes"] = _copy_json(attempted_routes)
     try:
         return RoutingDecisionContract.from_dict(cast_json(redact_contract_secrets(payload)))
     except ContractValidationError:
