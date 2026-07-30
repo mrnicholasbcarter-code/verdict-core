@@ -8,6 +8,7 @@ import {
   type TaskSpec,
   type RoutingDecision,
   type AvailabilitySnapshot,
+  type EvidenceReceipt,
 } from "../src/index.js";
 
 describe("Contract Validation", () => {
@@ -128,6 +129,95 @@ describe("Contract Validation", () => {
       expect(result.state).toBe("unknown");
       expect(result.ttl_seconds).toBe(60);
       expect(typeof result.signals).toBe("object");
+    });
+  });
+
+  describe("EvidenceReceipt", () => {
+    it("should preserve exact route identity and evidence authority", () => {
+      const receipt: EvidenceReceipt = {
+        schema_version: "1",
+        receipt_id: "receipt-1",
+        kind: "decision",
+        scope: "project:test",
+        occurred_at: "2026-07-30T00:00:00Z",
+        requested_alias: "nvidia/model:free",
+        selected_route: {
+          gateway: "omniroute/instance-a",
+          provider: "nvidia",
+          connection: "team-free",
+          endpoint: "https://gateway.example/v1/responses",
+          protocol: "openai.responses",
+          model_id: "nvidia/model",
+          transformation_chain: ["responses-http"],
+          fallback_chain: [],
+        },
+        evidence: [
+          {
+            authority: "verified",
+            source: "verdict:fixture",
+            method: "hermetic-probe",
+            adapter_version: "adapter-1",
+            observed_at: "2026-07-30T00:00:00Z",
+            expires_at: "2026-07-30T00:05:00Z",
+            scope: "project:test",
+            confidence: 1,
+            evidence_digest: `sha256:${"a".repeat(64)}`,
+            limitations: [],
+            sample_count: 1,
+          },
+        ],
+        payload: { route_identity: { gateway: "omniroute/instance-a", protocol: "openai.responses" } },
+        parent_receipt_ids: [],
+        extensions: { future_field: { version: 2 } },
+      };
+
+      const parsed = parseContract("EvidenceReceipt", receipt);
+      expect(parsed).toEqual(receipt);
+      expect(serializeContract("EvidenceReceipt", parsed)).toContain('"authority":"verified"');
+    });
+
+    it("should reject unknown receipt fields and preserve fail-closed boundaries", () => {
+      expect(() =>
+        parseContract("evidence_receipt", {
+          receipt_id: "receipt-1",
+          kind: "decision",
+          scope: "project:test",
+          occurred_at: "2026-07-30T00:00:00Z",
+          evidence: [],
+          payload: {},
+          parent_receipt_ids: [],
+          extensions: {},
+          unexpected: true,
+        }),
+      ).toThrow(ContractValidationError);
+    });
+
+    it("should reject prompt content in receipt metadata", () => {
+      const receipt = {
+        receipt_id: "receipt-2",
+        kind: "outcome",
+        scope: "project:test",
+        occurred_at: "2026-07-30T00:00:00Z",
+        evidence: [
+          {
+            authority: "observed",
+            source: "fixture",
+            method: "probe",
+            adapter_version: "1",
+            observed_at: "2026-07-30T00:00:00Z",
+            expires_at: "2026-07-30T00:05:00Z",
+            scope: "project:test",
+            confidence: 1,
+            evidence_digest: `sha256:${"a".repeat(64)}`,
+            limitations: [],
+          },
+        ],
+        payload: { raw_prompt: "must not persist" },
+        parent_receipt_ids: [],
+        extensions: {},
+      };
+
+      expect(() => parseContract("evidence_receipt", receipt)).toThrow(ContractValidationError);
     });
   });
 

@@ -107,12 +107,87 @@ function rejectSecrets(value: unknown, path: readonly (string | number)[] = []):
   }
 }
 
+function rejectReceiptSensitiveFields(value: unknown, path: readonly (string | number)[] = []): void {
+  if (Array.isArray(value)) {
+    value.forEach((child, index) => rejectReceiptSensitiveFields(child, [...path, index]));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  const sensitive = new Set([
+    'prompt',
+    'raw_prompt',
+    'completion',
+    'raw_completion',
+    'messages',
+    'tool_arguments',
+    'raw_tool_arguments',
+  ]);
+  for (const [key, child] of Object.entries(value)) {
+    if (sensitive.has(normalizedKey(key))) {
+      throw new ContractValidationError(
+        'secret_bearing',
+        `sensitive receipt field rejected: ${key}`,
+        [...path, key],
+      );
+    }
+    rejectReceiptSensitiveFields(child, [...path, key]);
+  }
+}
+
 const jsonObject = z.record(z.string(), z.unknown());
 const nullableString = z.string().nullable();
 const schemaVersion = z.literal('1');
 const nonEmptyString = z.string().trim().min(1);
 const nonNegativeNumber = z.number().finite().nonnegative();
 const nonNegativeInteger = z.number().int().nonnegative();
+
+export const evidenceAuthoritySchema = z.enum(['claimed', 'observed', 'verified', 'inferred']);
+export type EvidenceAuthority = z.output<typeof evidenceAuthoritySchema>;
+export const receiptKindSchema = z.enum(['decision', 'context', 'execution', 'verification', 'outcome']);
+export type ReceiptKind = z.output<typeof receiptKindSchema>;
+
+const routeIdentitySchema = z.object({
+  gateway: nonEmptyString,
+  provider: nonEmptyString,
+  connection: nonEmptyString,
+  endpoint: nonEmptyString,
+  protocol: nonEmptyString,
+  model_id: nonEmptyString,
+  model_revision: nullableString.optional(),
+  account_class: nullableString.optional(),
+  endpoint_class: nullableString.optional(),
+  transformation_chain: z.array(nonEmptyString).default([]),
+  fallback_chain: z.array(nonEmptyString).default([]),
+}).strict();
+
+const evidenceItemSchema = z.object({
+  authority: evidenceAuthoritySchema,
+  source: nonEmptyString,
+  method: nonEmptyString,
+  adapter_version: nonEmptyString,
+  observed_at: nonEmptyString,
+  expires_at: nonEmptyString,
+  scope: nonEmptyString,
+  confidence: z.number().finite().min(0).max(1),
+  evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  limitations: z.array(nonEmptyString).default([]),
+  sample_count: nonNegativeInteger.min(1).optional(),
+}).strict();
+
+const evidenceReceiptSchema = z.object({
+  schema_version: schemaVersion.default('1'),
+  receipt_id: nonEmptyString,
+  kind: receiptKindSchema,
+  scope: nonEmptyString,
+    occurred_at: nonEmptyString,
+    requested_alias: nonEmptyString.optional(),
+    selected_route: routeIdentitySchema.optional(),
+    actual_route: routeIdentitySchema.optional(),
+    evidence: z.array(evidenceItemSchema).min(1),
+  payload: jsonObject.default({}),
+  parent_receipt_ids: z.array(nonEmptyString).default([]),
+  extensions: jsonObject.default({}),
+}).strict();
 
 const workflowActions = [
   'answer',
@@ -447,6 +522,8 @@ const schemas = {
   OutcomeEvent: outcomeEventSchema,
   learning_event: learningEventSchema,
   LearningEvent: learningEventSchema,
+  evidence_receipt: evidenceReceiptSchema,
+  EvidenceReceipt: evidenceReceiptSchema,
 } as const;
 
 export type ContractName = keyof typeof schemas;
@@ -464,6 +541,9 @@ export type WorkflowEpisode = z.output<typeof workflowEpisodeSchema>;
 export type OutcomeEpisode = z.output<typeof outcomeEpisodeSchema>;
 export type TaskWorkflowOutcomeEpisode = z.output<typeof taskWorkflowOutcomeEpisodeSchema>;
 export type LearningEvent = z.output<typeof learningEventSchema>;
+export type RouteIdentity = z.output<typeof routeIdentitySchema>;
+export type EvidenceItem = z.output<typeof evidenceItemSchema>;
+export type EvidenceReceipt = z.output<typeof evidenceReceiptSchema>;
 
 function errorCategory(error: ZodError, path: readonly (string | number)[]): ContractErrorCategory {
   const issue = error.issues[0];
@@ -519,6 +599,9 @@ export function parseContract<N extends ContractName>(
         }
       : value;
   rejectSecrets(input);
+  if (name === 'EvidenceReceipt' || name === 'evidence_receipt') {
+    rejectReceiptSensitiveFields(input);
+  }
   const parsed = parseWithSchema(
     schema as ZodType<z.output<(typeof schemas)[N]>>,
     input,

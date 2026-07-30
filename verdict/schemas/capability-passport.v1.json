@@ -71,6 +71,18 @@
         },
         "model_revision": {
           "$ref": "#/$defs/non_empty_string"
+        },
+        "account_class": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "endpoint_class": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "transformation_chain": {
+          "$ref": "#/$defs/limitations"
+        },
+        "fallback_chain": {
+          "$ref": "#/$defs/limitations"
         }
       }
     },
@@ -125,6 +137,27 @@
         },
         "limitations": {
           "$ref": "#/$defs/limitations"
+        },
+        "authority": {
+          "enum": [
+            "claimed",
+            "observed",
+            "verified",
+            "inferred"
+          ]
+        },
+        "method": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "adapter_version": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "scope": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

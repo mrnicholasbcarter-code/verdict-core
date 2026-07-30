@@ -12,8 +12,10 @@ from verdict.capability_passports import (
     CapabilityPassport,
     CapabilityPassportError,
     CapabilityStatus,
+    EvidenceAuthority,
     RouteIdentity,
 )
+from verdict.evidence_receipts import EvidenceItem, EvidenceReceipt, ReceiptKind
 
 NOW = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
 DIGEST = "sha256:" + ("a" * 64)
@@ -32,6 +34,10 @@ def evidence(
         expires_at=expires_at or NOW + timedelta(minutes=10),
         confidence=1,
         evidence_digest=DIGEST,
+        authority=EvidenceAuthority.OBSERVED,
+        method="fixture",
+        adapter_version="test-1",
+        scope="test",
     )
 
 
@@ -81,6 +87,27 @@ def test_fresh_observation_is_authoritative_over_conflicting_claim() -> None:
     assert decision.admitted is False
     assert decision.claimed is not None
     assert decision.observed is not None
+
+
+def test_inferred_evidence_cannot_satisfy_a_hard_requirement() -> None:
+    item = passport(
+        observed={
+            "tools": CapabilityEvidence(
+                status=CapabilityStatus.SUPPORTED,
+                source="verdict:inference",
+                observed_at=NOW,
+                expires_at=NOW + timedelta(minutes=5),
+                confidence=1,
+                evidence_digest=DIGEST,
+                authority=EvidenceAuthority.INFERRED,
+            )
+        }
+    )
+
+    decision = item.resolve("tools", at=NOW + timedelta(seconds=1))
+
+    assert decision.status is CapabilityStatus.UNKNOWN
+    assert decision.reason == "observation authority inferred is not direct"
 
 
 def test_expired_observation_and_passport_fail_closed() -> None:
@@ -176,3 +203,164 @@ def test_json_schema_accepts_canonical_passport_and_rejects_default_true_shape()
 
     assert list(validator.iter_errors(valid)) == []
     assert list(validator.iter_errors(invalid))
+
+
+def test_evidence_schema_accepts_receipt_contract() -> None:
+    schema_path = Path(__file__).parents[1] / "verdict" / "schemas" / "evidence-receipt.v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    item = EvidenceItem(
+        authority=EvidenceAuthority.VERIFIED,
+        source="fixture",
+        method="test",
+        adapter_version="1",
+        observed_at=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        scope="test",
+        confidence=1,
+        evidence_digest=DIGEST,
+    )
+    receipt = EvidenceReceipt(
+        receipt_id="receipt-1",
+        kind=ReceiptKind.OUTCOME,
+        scope="test",
+        occurred_at=NOW,
+        evidence=(item,),
+    )
+
+    assert list(validator.iter_errors(receipt.to_dict())) == []
+
+
+def test_evidence_schema_rejects_unallowlisted_payload() -> None:
+    schema_path = Path(__file__).parents[1] / "verdict" / "schemas" / "evidence-receipt.v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    item = EvidenceItem(
+        authority=EvidenceAuthority.OBSERVED,
+        source="fixture",
+        method="test",
+        adapter_version="1",
+        observed_at=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        scope="test",
+        confidence=1,
+        evidence_digest=DIGEST,
+    )
+    receipt = EvidenceReceipt(
+        receipt_id="receipt-2",
+        kind=ReceiptKind.OUTCOME,
+        scope="test",
+        occurred_at=NOW,
+        evidence=(item,),
+    ).to_dict()
+    receipt["payload"] = {"raw_prompt": "forbidden"}
+
+    assert list(validator.iter_errors(receipt))
+
+
+def test_route_identity_preserves_endpoint_and_fallback_provenance() -> None:
+    identity = RouteIdentity(
+        gateway="omniroute/instance-a",
+        provider="nvidia",
+        connection="team-free",
+        endpoint="https://gateway.example/v1/responses",
+        protocol="openai.responses",
+        model_id="nvidia/model",
+        account_class="shared-free",
+        endpoint_class="responses-http",
+        transformation_chain=("omniroute.responses.v1",),
+        fallback_chain=("nvidia/model-2",),
+    )
+
+    assert RouteIdentity.from_dict(identity.to_dict()) == identity
+    assert (
+        identity.key
+        != RouteIdentity.from_dict({**identity.to_dict(), "endpoint_class": "responses-ws"}).key
+    )
+
+
+def test_evidence_receipt_round_trip_and_digest_are_deterministic() -> None:
+    item = EvidenceItem(
+        authority=EvidenceAuthority.VERIFIED,
+        source="verdict:fixture",
+        method="hermetic-probe",
+        adapter_version="adapter-1",
+        observed_at=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        scope="project:test",
+        confidence=1,
+        evidence_digest=DIGEST,
+        limitations=("fixture only",),
+        sample_count=2,
+    )
+    receipt = EvidenceReceipt(
+        receipt_id="rcpt-1",
+        kind=ReceiptKind.DECISION,
+        scope="project:test",
+        occurred_at=NOW,
+        evidence=(item,),
+        requested_alias="nvidia/model:free",
+        selected_route=RouteIdentity(
+            gateway="omniroute/instance-a",
+            provider="nvidia",
+            connection="team-free",
+            endpoint="https://gateway.example/v1/responses",
+            protocol="openai.responses",
+            model_id="nvidia/model",
+        ),
+        payload={"route_key": "sha256:route"},
+        extensions={"future_field": {"version": 2}},
+    )
+
+    restored = EvidenceReceipt.from_dict(receipt.to_dict())
+
+    assert restored == receipt
+    assert restored.digest == receipt.digest
+
+
+def test_receipt_rejects_raw_prompt_and_secret_metadata() -> None:
+    item = EvidenceItem(
+        authority=EvidenceAuthority.OBSERVED,
+        source="fixture",
+        method="test",
+        adapter_version="1",
+        observed_at=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        scope="test",
+        confidence=1,
+        evidence_digest=DIGEST,
+    )
+
+    with pytest.raises(CapabilityPassportError, match="sensitive"):
+        EvidenceReceipt(
+            receipt_id="rcpt-2",
+            kind="outcome",
+            scope="test",
+            occurred_at=NOW,
+            evidence=(item,),
+            payload={"raw_prompt": "do not store"},
+        )
+
+
+def test_receipt_payload_is_allowlisted() -> None:
+    item = EvidenceItem(
+        authority=EvidenceAuthority.OBSERVED,
+        source="fixture",
+        method="test",
+        adapter_version="1",
+        observed_at=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        scope="test",
+        confidence=1,
+        evidence_digest=DIGEST,
+    )
+
+    with pytest.raises(CapabilityPassportError, match="unknown field"):
+        EvidenceReceipt(
+            receipt_id="rcpt-3",
+            kind="decision",
+            scope="test",
+            occurred_at=NOW,
+            evidence=(item,),
+            payload={"arbitrary": "data"},
+        )
