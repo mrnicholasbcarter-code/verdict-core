@@ -19,9 +19,29 @@ from types import MappingProxyType
 from typing import Any
 
 CAPABILITY_PASSPORT_SCHEMA_VERSION = "1"
+EVIDENCE_AUTHORITY_SCHEMA_VERSION = "1"
 
 _CAPABILITY_NAME = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RECEIPT_METADATA_KEYS = frozenset(
+    {
+        "attempt",
+        "correlation_id",
+        "cost",
+        "failure_class",
+        "fallback_count",
+        "latency_ms",
+        "policy_version",
+        "quality_outcome",
+        "request_id",
+        "route_key",
+        "status_code",
+        "task_fingerprint",
+        "token_counts",
+        "transport_outcome",
+        "verification_status",
+    }
+)
 
 
 class CapabilityPassportError(ValueError):
@@ -36,9 +56,30 @@ class CapabilityStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
+class EvidenceAuthority(str, Enum):
+    """How directly an evidence item supports a claim.
+
+    The value is descriptive provenance, not an authorization decision.  The
+    passport resolver still requires a fresh observed item for hard
+    capability admission.
+    """
+
+    CLAIMED = "claimed"
+    OBSERVED = "observed"
+    VERIFIED = "verified"
+    INFERRED = "inferred"
+
+
 @dataclass(frozen=True)
 class RouteIdentity:
-    """Identity of one executable route, not merely a model-family name."""
+    """Identity of one executable route, not merely a model-family name.
+
+    ``gateway`` is the gateway instance identity (not just a product name),
+    while the optional account/endpoint and transformation fields preserve the
+    distinctions that matter when the same model alias is exposed through
+    multiple routes.  The optional fields keep v1 construction compatible
+    with passports emitted before the evidence-authority slice.
+    """
 
     gateway: str
     provider: str
@@ -47,6 +88,10 @@ class RouteIdentity:
     protocol: str
     model_id: str
     model_revision: str | None = None
+    account_class: str | None = None
+    endpoint_class: str | None = None
+    transformation_chain: tuple[str, ...] = ()
+    fallback_chain: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("gateway", "provider", "connection", "endpoint", "protocol", "model_id"):
@@ -59,13 +104,35 @@ class RouteIdentity:
             raise CapabilityPassportError(
                 "route_identity.model_revision must be non-empty when supplied"
             )
+        for name in ("account_class", "endpoint_class"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise CapabilityPassportError(
+                    f"route_identity.{name} must be non-empty when supplied"
+                )
+        object.__setattr__(
+            self,
+            "transformation_chain",
+            _string_tuple(self.transformation_chain, "route_identity.transformation_chain"),
+        )
+        object.__setattr__(
+            self,
+            "fallback_chain",
+            _string_tuple(self.fallback_chain, "route_identity.fallback_chain"),
+        )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> RouteIdentity:
         payload = _strict_mapping(
             value,
             required={"gateway", "provider", "connection", "endpoint", "protocol", "model_id"},
-            optional={"model_revision"},
+            optional={
+                "model_revision",
+                "account_class",
+                "endpoint_class",
+                "transformation_chain",
+                "fallback_chain",
+            },
             field_name="route_identity",
         )
         return cls(
@@ -76,6 +143,10 @@ class RouteIdentity:
             protocol=payload["protocol"],
             model_id=payload["model_id"],
             model_revision=payload.get("model_revision"),
+            account_class=payload.get("account_class"),
+            endpoint_class=payload.get("endpoint_class"),
+            transformation_chain=tuple(payload.get("transformation_chain", ())),
+            fallback_chain=tuple(payload.get("fallback_chain", ())),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -89,6 +160,14 @@ class RouteIdentity:
         }
         if self.model_revision is not None:
             payload["model_revision"] = self.model_revision
+        if self.account_class is not None:
+            payload["account_class"] = self.account_class
+        if self.endpoint_class is not None:
+            payload["endpoint_class"] = self.endpoint_class
+        if self.transformation_chain:
+            payload["transformation_chain"] = list(self.transformation_chain)
+        if self.fallback_chain:
+            payload["fallback_chain"] = list(self.fallback_chain)
         return payload
 
     @property
@@ -109,6 +188,11 @@ class CapabilityEvidence:
     confidence: float
     evidence_digest: str
     limitations: tuple[str, ...] = ()
+    authority: EvidenceAuthority = EvidenceAuthority.OBSERVED
+    method: str = "unspecified"
+    adapter_version: str = "unknown"
+    scope: str = "default"
+    sample_count: int | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
@@ -118,6 +202,23 @@ class CapabilityEvidence:
                 raise CapabilityPassportError("evidence.status is invalid") from exc
         if not isinstance(self.source, str) or not self.source.strip():
             raise CapabilityPassportError("evidence.source must be non-empty")
+        if isinstance(self.authority, str):
+            try:
+                object.__setattr__(self, "authority", EvidenceAuthority(self.authority))
+            except ValueError as exc:
+                raise CapabilityPassportError("evidence.authority is invalid") from exc
+        if not isinstance(self.authority, EvidenceAuthority):
+            raise CapabilityPassportError("evidence.authority is invalid")
+        for name in ("method", "adapter_version", "scope"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise CapabilityPassportError(f"evidence.{name} must be non-empty")
+        if self.sample_count is not None and (
+            isinstance(self.sample_count, bool)
+            or not isinstance(self.sample_count, int)
+            or self.sample_count < 1
+        ):
+            raise CapabilityPassportError("evidence.sample_count must be a positive integer")
         observed_at = _utc_datetime(self.observed_at, "evidence.observed_at")
         expires_at = _utc_datetime(self.expires_at, "evidence.expires_at")
         if expires_at <= observed_at:
@@ -153,7 +254,14 @@ class CapabilityEvidence:
                 "confidence",
                 "evidence_digest",
             },
-            optional={"limitations"},
+            optional={
+                "limitations",
+                "authority",
+                "method",
+                "adapter_version",
+                "scope",
+                "sample_count",
+            },
             field_name="evidence",
         )
         return cls(
@@ -164,10 +272,15 @@ class CapabilityEvidence:
             confidence=payload["confidence"],
             evidence_digest=payload["evidence_digest"],
             limitations=tuple(payload.get("limitations", ())),
+            authority=payload.get("authority", EvidenceAuthority.OBSERVED),
+            method=payload.get("method", "unspecified"),
+            adapter_version=payload.get("adapter_version", "unknown"),
+            scope=payload.get("scope", "default"),
+            sample_count=payload.get("sample_count"),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "status": self.status.value,
             "source": self.source,
             "observed_at": _format_datetime(self.observed_at),
@@ -175,7 +288,14 @@ class CapabilityEvidence:
             "confidence": self.confidence,
             "evidence_digest": self.evidence_digest,
             "limitations": list(self.limitations),
+            "authority": self.authority.value,
+            "method": self.method,
+            "adapter_version": self.adapter_version,
+            "scope": self.scope,
         }
+        if self.sample_count is not None:
+            payload["sample_count"] = self.sample_count
+        return payload
 
     def is_current(self, at: datetime) -> bool:
         return _utc_datetime(at, "at") < self.expires_at
@@ -252,7 +372,7 @@ class CapabilityPassport:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "route_identity": self.route_identity.to_dict(),
             "qualified_at": _format_datetime(self.qualified_at),
@@ -267,6 +387,7 @@ class CapabilityPassport:
             },
             "limitations": list(self.limitations),
         }
+        return payload
 
     @property
     def digest(self) -> str:
@@ -293,6 +414,17 @@ class CapabilityPassport:
             reason = "observation expired" if observation is not None else "observation missing"
             return CapabilityDecision(
                 name, CapabilityStatus.UNKNOWN, reason, fresh_claim, observation
+            )
+        if fresh_observation.authority not in {
+            EvidenceAuthority.OBSERVED,
+            EvidenceAuthority.VERIFIED,
+        }:
+            return CapabilityDecision(
+                name,
+                CapabilityStatus.UNKNOWN,
+                f"observation authority {fresh_observation.authority.value} is not direct",
+                fresh_claim,
+                fresh_observation,
             )
         return CapabilityDecision(
             name,
@@ -393,6 +525,7 @@ def _digest(value: Mapping[str, Any]) -> str:
 
 __all__ = [
     "CAPABILITY_PASSPORT_SCHEMA_VERSION",
+    "EVIDENCE_AUTHORITY_SCHEMA_VERSION",
     "CapabilityDecision",
     "CapabilityEvidence",
     "CapabilityPassport",

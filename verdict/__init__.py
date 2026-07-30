@@ -32,11 +32,13 @@ from verdict.benchmarking import (
 )
 from verdict.capability_passports import (
     CAPABILITY_PASSPORT_SCHEMA_VERSION,
+    EVIDENCE_AUTHORITY_SCHEMA_VERSION,
     CapabilityDecision,
     CapabilityEvidence,
     CapabilityPassport,
     CapabilityPassportError,
     CapabilityStatus,
+    EvidenceAuthority,
     RouteIdentity,
 )
 from verdict.contracts import (
@@ -71,6 +73,7 @@ from verdict.evidence import (
     build_routing_decision_contract,
     request_features,
 )
+from verdict.evidence_receipts import EvidenceItem, EvidenceReceipt, ReceiptKind
 from verdict.gate import Gate
 from verdict.guidance import (
     GuidanceConfig,
@@ -273,6 +276,7 @@ __all__ = [
     "DEFAULT_FIXTURE_PATH",
     "DEFAULT_RUNTIME_STATE_DIR",
     "DOCUMENT_ADAPTER_VERSION",
+    "EVIDENCE_AUTHORITY_SCHEMA_VERSION",
     "GATE_VERSION",
     "MANIFEST_VERSION",
     "PROBE_DIAGNOSTICS_VERSION",
@@ -343,6 +347,9 @@ __all__ = [
     "DocumentIngestor",
     "DocumentIssue",
     "DocumentMemoryAdapter",
+    "EvidenceAuthority",
+    "EvidenceItem",
+    "EvidenceReceipt",
     "EvidenceStore",
     "ExplainEvidence",
     "FailureClass",
@@ -412,6 +419,7 @@ __all__ = [
     "ProtocolSurface",
     "ProviderConfig",
     "ReadinessReport",
+    "ReceiptKind",
     "RouteIdentity",
     "RoutingDecision",
     "RoutingDecisionContract",
