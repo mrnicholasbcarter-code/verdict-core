@@ -229,6 +229,7 @@ verdict benchmark [flags]
 | `LLMGATE_PRIMARY` | Primary model (legacy) |
 | `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile |
 | `LLMGATE_LOG_PATH` | Decision log path |
+| `VERDICT_RECEIPTS_DB` | Durable SQLite receipt database; required for authenticated API mode |
 
 ---
 

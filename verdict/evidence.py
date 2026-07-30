@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from collections import OrderedDict
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -25,6 +26,7 @@ from verdict.contracts import (
     redact_contract_secrets,
 )
 from verdict.models import RoutingDecision
+from verdict.receipt_store import ReceiptConflictError, ReceiptStore
 from verdict.security import fingerprint_text, redact_text
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -394,11 +396,15 @@ class EvidenceStore:
             self._records.popitem(last=False)
         return key
 
-    def append_event(self, key: str, event: OutcomeEvent) -> ExplainEvidence | None:
+    def append_event(
+        self, key: str, event: OutcomeEvent, *, scope: str | None = None
+    ) -> ExplainEvidence | None:
         """Append one lifecycle event, preserving the first terminal event."""
         if key not in self._records:
             return None
         current = self._records[key]
+        if scope is not None and current.scope != scope:
+            return None
         if (
             event.request_id != current.routing_decision.request_id
             or event.correlation_id != current.routing_decision.correlation_id
@@ -451,8 +457,129 @@ class EvidenceStore:
             return matches[0]
         return None
 
-    def update_outcome(self, key: str, event: OutcomeEvent) -> ExplainEvidence | None:
-        return self.append_event(key, event)
+    def update_outcome(
+        self, key: str, event: OutcomeEvent, *, scope: str | None = None
+    ) -> ExplainEvidence | None:
+        return self.append_event(key, event, scope=scope)
+
+
+class DurableEvidenceStore:
+    """SQLite-backed adapter preserving the legacy explain-by-ID contract."""
+
+    def __init__(self, db_path: str, *, max_entries: int = 256) -> None:
+        # ``max_entries`` remains accepted for configuration compatibility. A
+        # durable store must not silently evict audit facts based on process
+        # memory pressure.
+        del max_entries
+        self.receipts = ReceiptStore(db_path, strict_scope=True)
+
+    @staticmethod
+    def _decode(root: Any, events: list[Any]) -> ExplainEvidence:
+        payload = root.payload
+        if not isinstance(payload, dict):
+            raise ContractValidationError("stored evidence payload is not an object")
+        routing_payload = payload.get("routing_decision")
+        if not isinstance(routing_payload, dict):
+            raise ContractValidationError("stored evidence has no routing decision")
+        routing = RoutingDecisionContract.from_dict(routing_payload)
+        event_payloads = [item.payload for item in events]
+        decoded: list[OutcomeEvent] = []
+        raw_events = payload.get("events", [])
+        if isinstance(raw_events, list):
+            decoded.extend(
+                OutcomeEvent.from_dict(item) for item in raw_events if isinstance(item, dict)
+            )
+        for item in event_payloads:
+            if not isinstance(item, dict):
+                raise ContractValidationError("stored evidence event is not an object")
+            decoded.append(OutcomeEvent.from_dict(item))
+        if not decoded:
+            raise ContractValidationError("stored evidence requires at least one event")
+        return ExplainEvidence(
+            routing,
+            decoded[-1],
+            events=tuple(decoded),
+            evidence_id=root.receipt_id,
+            scope=root.scope,
+        )
+
+    def put(self, evidence: ExplainEvidence, *, scope: str) -> str:
+        if not scope:
+            raise ValueError("evidence storage scope is required")
+        key = f"evidence-{uuid4().hex}"
+        payload = evidence.to_dict()
+        payload["evidence_id"] = key
+        payload["scope"] = scope
+        self.receipts.put_receipt("decision", scope, payload, receipt_id=key)
+        return key
+
+    def _root(self, key: str, scope: str) -> Any | None:
+        return self.receipts.get_receipt(key, scope=scope, include_tombstones=True)
+
+    def _current(self, key: str, scope: str) -> ExplainEvidence | None:
+        root = self._root(key, scope)
+        if root is None or root.receipt_type != "decision":
+            return None
+        integrity = self.receipts.verify_integrity(scope=scope)
+        if not integrity["valid"]:
+            return None
+        events = self.receipts.query_receipts(
+            scope=scope, parent_receipt_id=key, limit=100_000, include_tombstones=True
+        )
+        return self._decode(root, sorted(events, key=lambda item: item.sequence))
+
+    def append_event(self, key: str, event: OutcomeEvent, *, scope: str) -> ExplainEvidence | None:
+        current = self._current(key, scope)
+        if current is None:
+            return None
+        with suppress(ReceiptConflictError):
+            self.receipts.append_event(
+                key,
+                scope=scope,
+                payload=event.to_dict(),
+                event_id=event.event_id or f"evt-{uuid4().hex}",
+                event_type=event.event_type or "lifecycle_event",
+                terminal_outcome=(event.outcome if event.outcome in _TERMINAL_OUTCOMES else None),
+            )
+            # The durable store has already retained the accepted terminal
+            # event. Returning its canonical state keeps the API retry-safe.
+        return self._current(key, scope)
+
+    def update_outcome(
+        self, key: str, event: OutcomeEvent, *, scope: str
+    ) -> ExplainEvidence | None:
+        return self.append_event(key, event, scope=scope)
+
+    def find(
+        self,
+        *,
+        evidence_id: str | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        scope: str,
+    ) -> ExplainEvidence | None:
+        if not scope:
+            raise ValueError("evidence lookup scope is required")
+        if evidence_id:
+            return self._current(evidence_id, scope)
+        candidates = self.receipts.query_receipts(
+            receipt_type="decision", scope=scope, limit=100_000, include_tombstones=False
+        )
+        matches: list[ExplainEvidence] = []
+        for root in candidates:
+            payload = root.payload
+            routing = payload.get("routing_decision") if isinstance(payload, dict) else None
+            if not isinstance(routing, dict):
+                continue
+            if (request_id is not None and routing.get("request_id") == request_id) or (
+                correlation_id is not None and routing.get("correlation_id") == correlation_id
+            ):
+                current = self._current(root.receipt_id, scope)
+                if current is not None:
+                    matches.append(current)
+        if len(matches) > 1:
+            raise AmbiguousEvidenceSelectorError("evidence selector matches multiple executions")
+        return matches[0] if matches else None
 
 
 def cast_json(value: Any) -> dict[str, Any]:
@@ -465,6 +592,7 @@ def cast_json(value: Any) -> dict[str, Any]:
 
 __all__ = [
     "AmbiguousEvidenceSelectorError",
+    "DurableEvidenceStore",
     "EvidenceStore",
     "ExplainEvidence",
     "build_outcome_event",

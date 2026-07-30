@@ -26,6 +26,7 @@ from verdict.contracts import redact_contract_secrets
 from verdict.eligibility import EligibilityGate
 from verdict.evidence import (
     AmbiguousEvidenceSelectorError,
+    DurableEvidenceStore,
     EvidenceStore,
     ExplainEvidence,
     build_outcome_event,
@@ -147,7 +148,7 @@ gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
 availability_cache_instance: AvailabilityCache | None = None
 eligibility_gate_instance: EligibilityGate | None = None
-evidence_store_instance: EvidenceStore | None = None
+evidence_store_instance: EvidenceStore | DurableEvidenceStore | None = None
 guidance_plane_instance: GuidanceControlPlane | None = None
 
 DEFAULT_AVAILABILITY_TTL_SECONDS = 60
@@ -290,9 +291,18 @@ async def lifespan(app: FastAPI) -> Any:
     availability_cache_instance, eligibility_gate_instance = (
         built if built is not None else (None, None)
     )
-    evidence_store_instance = EvidenceStore(
-        max_entries=max(1, int(os.getenv("VERDICT_EVIDENCE_MAX_ENTRIES", "256")))
-    )
+    evidence_db = os.getenv("VERDICT_RECEIPTS_DB") or os.getenv("VERDICT_EVIDENCE_DB")
+    max_entries = max(1, int(os.getenv("VERDICT_EVIDENCE_MAX_ENTRIES", "256")))
+    if evidence_db:
+        evidence_store_instance = DurableEvidenceStore(evidence_db, max_entries=max_entries)
+    elif os.getenv("PYTEST_CURRENT_TEST") or os.getenv(
+        "LLMGATE_ALLOW_ANONYMOUS", "false"
+    ).lower() in {"1", "true", "yes", "on"}:
+        # Anonymous development/test mode has an explicit in-memory backend.
+        # Authenticated deployments must configure a durable DB path.
+        evidence_store_instance = DurableEvidenceStore(":memory:", max_entries=max_entries)
+    else:
+        raise RuntimeError("VERDICT_RECEIPTS_DB must be configured for authenticated API mode")
     # Guidance is opt-in and host-neutral. Keep normal routing startup
     # independent of project instruction files and optional agent tooling.
     try:
@@ -903,7 +913,7 @@ def _finish_evidence(
     events = evidence.events or (evidence.outcome_event,)
     updated = ExplainEvidence(evidence.routing_decision, event, events=(*events, event))
     if evidence_store_instance is not None and evidence_key is not None:
-        stored = evidence_store_instance.update_outcome(evidence_key, event)
+        stored = evidence_store_instance.update_outcome(evidence_key, event, scope=evidence.scope)
         if stored is not None:
             return stored
     return updated
