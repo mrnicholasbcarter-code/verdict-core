@@ -28,7 +28,7 @@ jobs:
       - name: Run chat benchmark
         run: uv run python scripts/benchmark.py --workload chat --iterations 50 --warmup 10 --output benchmark-chat.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: benchmark-*.json
