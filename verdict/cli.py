@@ -39,27 +39,16 @@ def _read_omniroute_token() -> str | None:
 
 
 def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
-    """Make an authenticated request to the local OmniRoute server."""
+    """Make an authenticated request to the explicitly configured local router."""
     token = _read_omniroute_token()
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    import socket
-
-    port = 20128
-
-    def check_port(p: int) -> bool:
-        try:
-            with socket.create_connection(("127.0.0.1", p), timeout=0.1):
-                return True
-        except Exception:
-            return False
-
-    if not check_port(20128) and check_port(20132):
-        port = 20132
-
-    url = f"http://127.0.0.1:{port}{path}"
+    base_url = os.getenv("OMNIROUTE_BASE_URL")
+    if not base_url:
+        return None
+    url = base_url.rstrip("/") + "/" + path.lstrip("/")
 
     import json
     import urllib.request
