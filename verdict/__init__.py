@@ -277,6 +277,14 @@ from verdict.responses_compatibility import (
     ResponsesCompatibilityRule,
     adapt_responses_payload,
 )
+from verdict.runtime_compatibility import (
+    RUNTIME_COMPATIBILITY_SCHEMA_VERSION,
+    RuntimeCapabilityAssessment,
+    RuntimeCompatibilityEntry,
+    RuntimeCompatibilityReport,
+    RuntimeCompatibilityStatus,
+    build_runtime_compatibility_report,
+)
 from verdict.runtime_contract import (
     DEFAULT_RUNTIME_STATE_DIR,
     RUNTIME_CONTRACT_VERSION,
@@ -413,6 +421,7 @@ __all__ = [
     "RESPONSES_NON_STREAM_CASE",
     "RESPONSES_STREAM_CASE",
     "RESPONSES_STRICT_OUTPUT_CASE",
+    "RUNTIME_COMPATIBILITY_SCHEMA_VERSION",
     "RUNTIME_CONTRACT_VERSION",
     "RUNTIME_HEALTH_SCHEMA_VERSION",
     "RUNTIME_PASSPORT_SCHEMA_VERSION",
@@ -602,8 +611,12 @@ __all__ = [
     "RoutingDecision",
     "RoutingDecisionContract",
     "RuntimeCandidate",
+    "RuntimeCapabilityAssessment",
     "RuntimeCapabilityDecision",
     "RuntimeCapabilityPassport",
+    "RuntimeCompatibilityEntry",
+    "RuntimeCompatibilityReport",
+    "RuntimeCompatibilityStatus",
     "RuntimeHealthError",
     "RuntimeHealthObservation",
     "RuntimeHealthReport",
@@ -673,6 +686,7 @@ __all__ = [
     "build_evaluation_report",
     "build_outcome_event",
     "build_routing_decision_contract",
+    "build_runtime_compatibility_report",
     "build_runtime_health_report",
     "compile_policy",
     "content_hash",
