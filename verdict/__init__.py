@@ -306,6 +306,14 @@ from verdict.runtime_passports import (
     RuntimeSubjectIdentity,
     RuntimeSubjectKind,
 )
+from verdict.strength_profiles import (
+    STRENGTH_PROFILE_SCHEMA_VERSION,
+    StrengthAggregate,
+    StrengthFailureClass,
+    StrengthObservation,
+    StrengthProfileError,
+    aggregate_strength,
+)
 from verdict.structured_qualification import (
     CHAT_STRICT_OUTPUT_CASE,
     RESPONSES_STRICT_OUTPUT_CASE,
@@ -408,6 +416,7 @@ __all__ = [
     "RUNTIME_CONTRACT_VERSION",
     "RUNTIME_HEALTH_SCHEMA_VERSION",
     "RUNTIME_PASSPORT_SCHEMA_VERSION",
+    "STRENGTH_PROFILE_SCHEMA_VERSION",
     "STRICT_RESULT_SCHEMA",
     "STRUCTURED_OUTPUT_CASES",
     "STRUCTURED_QUALIFICATION_VERSION",
@@ -615,6 +624,10 @@ __all__ = [
     "SessionImportResult",
     "SignedPolicyDecisionArtifact",
     "StaticOmniRouteTransport",
+    "StrengthAggregate",
+    "StrengthFailureClass",
+    "StrengthObservation",
+    "StrengthProfileError",
     "StrictSchemaError",
     "StructuredOutputCase",
     "StructuredOutputObservation",
@@ -654,6 +667,7 @@ __all__ = [
     "WorkflowPlan",
     "WorkflowSelector",
     "adapt_responses_payload",
+    "aggregate_strength",
     "build_cache_report",
     "build_default_adapter_registry",
     "build_evaluation_report",
