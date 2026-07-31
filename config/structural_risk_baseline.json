@@ -1,0 +1,132 @@
+[
+  {
+    "path": "verdict/__init__.py",
+    "max_lines": 714,
+    "rationale": "Existing public API re-export surface; migration tracked by issue #123."
+  },
+  {
+    "path": "verdict/api.py",
+    "max_lines": 1325,
+    "rationale": "Existing API control-plane hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/availability.py",
+    "max_lines": 1375,
+    "rationale": "Existing availability hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/capability_passports.py",
+    "max_lines": 535,
+    "rationale": "Existing capability passport module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/cli.py",
+    "max_lines": 1675,
+    "rationale": "Existing CLI and setup hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/context_pack.py",
+    "max_lines": 887,
+    "rationale": "Existing context-pack module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/contracts.py",
+    "max_lines": 1107,
+    "rationale": "Existing contract hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/documentation_preflight.py",
+    "max_lines": 1048,
+    "rationale": "Existing documentation preflight module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/evaluation.py",
+    "max_lines": 1616,
+    "rationale": "Existing evaluation module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/evidence.py",
+    "max_lines": 625,
+    "rationale": "Existing evidence module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/memory_adapters.py",
+    "max_lines": 864,
+    "rationale": "Existing memory adapters module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/memory_bridge.py",
+    "max_lines": 658,
+    "rationale": "Existing memory bridge module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/memory_gate.py",
+    "max_lines": 646,
+    "rationale": "Existing memory gate module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/memory_plane.py",
+    "max_lines": 568,
+    "rationale": "Existing memory plane module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/memory_session_adapter.py",
+    "max_lines": 698,
+    "rationale": "Existing memory session adapter; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/omniroute.py",
+    "max_lines": 570,
+    "rationale": "Existing gateway transport hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/omniroute_catalog.py",
+    "max_lines": 549,
+    "rationale": "Existing OmniRoute catalog module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/policy.py",
+    "max_lines": 688,
+    "rationale": "Existing policy module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/probes.py",
+    "max_lines": 917,
+    "rationale": "Existing provider probes hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/protocol_probes.py",
+    "max_lines": 713,
+    "rationale": "Existing protocol probes module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/provider_detection.py",
+    "max_lines": 688,
+    "rationale": "Existing provider discovery hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/receipt_store.py",
+    "max_lines": 1052,
+    "rationale": "Existing receipt store module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/ruflo_adapter.py",
+    "max_lines": 1012,
+    "rationale": "Existing Ruflo adapter hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/ruflo_integration.py",
+    "max_lines": 552,
+    "rationale": "Existing Ruflo integration hotspot; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/structured_qualification.py",
+    "max_lines": 628,
+    "rationale": "Existing structured qualification module; decomposition tracked by issue #123."
+  },
+  {
+    "path": "verdict/tool_qualification.py",
+    "max_lines": 1004,
+    "rationale": "Existing tool qualification module; decomposition tracked by issue #123."
+  }
+]
