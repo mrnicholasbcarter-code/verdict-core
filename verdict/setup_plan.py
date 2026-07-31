@@ -25,6 +25,10 @@ class SetupAction:
     kind: str
     target: str
     description: str
+    reason: str
+    security_impact: str
+    postcondition: str
+    undo: str
     reversible: bool
     requires_consent: bool
 
@@ -36,6 +40,10 @@ class SetupAction:
             "kind": self.kind,
             "target": self.target,
             "description": self.description,
+            "reason": self.reason,
+            "security_impact": self.security_impact,
+            "postcondition": self.postcondition,
+            "undo": self.undo,
             "reversible": self.reversible,
             "requires_consent": self.requires_consent,
         }
@@ -124,6 +132,10 @@ def build_setup_plan() -> SetupPlan:
                 kind="inspect",
                 target="config",
                 description="Preserve the existing Verdict configuration unchanged.",
+                reason="An existing configuration must not be overwritten implicitly.",
+                security_impact="No change; existing configuration and credential references remain untouched.",
+                postcondition="The existing configuration remains byte-for-byte unchanged.",
+                undo="No action required; this is a read-only inspection.",
                 reversible=True,
                 requires_consent=False,
             ),
@@ -135,6 +147,10 @@ def build_setup_plan() -> SetupPlan:
                 kind="write_config",
                 target="config",
                 description="Create a minimal Verdict configuration after explicit consent.",
+                reason="A missing configuration is required before an operator can apply setup.",
+                security_impact="Creates only local configuration; credentials remain environment/keyring references.",
+                postcondition="A validated minimal configuration exists at the planned target.",
+                undo="Remove the newly created configuration after confirming it was not modified.",
                 reversible=True,
                 requires_consent=True,
             ),
