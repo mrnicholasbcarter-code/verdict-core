@@ -24,6 +24,7 @@ from verdict.capability_passports import (
     RouteIdentity,
 )
 from verdict.contracts import TaskSpec
+from verdict.runtime_passports import RuntimeCapabilityPassport
 
 POLICY_SCHEMA_VERSION = "1"
 POLICY_VERSION = "policy-1"
@@ -83,6 +84,7 @@ class PolicyCandidate:
     candidate_id: str
     route_identity: RouteIdentity | None = None
     passport: CapabilityPassport | None = None
+    runtime_passports: tuple[RuntimeCapabilityPassport, ...] = ()
     availability: str = AvailabilityState.UNKNOWN.value
     evidence_ids: tuple[str, ...] = ()
     cost: float | None = None
@@ -109,6 +111,10 @@ class PolicyCandidate:
                 raise PolicyValidationError(f"{name} must be numeric when supplied")
         if not isinstance(self.metadata, Mapping):
             raise PolicyValidationError("metadata must be an object")
+        if not isinstance(self.runtime_passports, tuple) or any(
+            not isinstance(item, RuntimeCapabilityPassport) for item in self.runtime_passports
+        ):
+            raise PolicyValidationError("runtime_passports must contain runtime passports")
         if self.requested_alias is not None and (
             not isinstance(self.requested_alias, str) or not self.requested_alias.strip()
         ):
@@ -153,6 +159,7 @@ class PolicyCandidate:
             "candidate_id",
             "route_identity",
             "passport",
+            "runtime_passports",
             "availability",
             "evidence_ids",
             "cost",
@@ -191,6 +198,12 @@ class PolicyCandidate:
             )
             if passport is not None
             else None,
+            runtime_passports=tuple(
+                item
+                if isinstance(item, RuntimeCapabilityPassport)
+                else RuntimeCapabilityPassport.from_dict(item)
+                for item in value.get("runtime_passports", ())
+            ),
             availability=availability,
             evidence_ids=_string_sequence(evidence_ids, "evidence_ids"),
             cost=value.get("cost"),
@@ -293,6 +306,7 @@ class Policy:
     policy_id: str = "default"
     version: str = POLICY_VERSION
     required_capabilities: frozenset[str] = frozenset()
+    required_runtime_capabilities: frozenset[str] = frozenset()
     allowed_providers: frozenset[str] = frozenset()
     denied_providers: frozenset[str] = frozenset()
     allowed_protocols: frozenset[str] = frozenset()
@@ -316,6 +330,7 @@ class Policy:
                 raise PolicyValidationError(f"{name} must be non-empty")
         for name in (
             "required_capabilities",
+            "required_runtime_capabilities",
             "allowed_providers",
             "denied_providers",
             "allowed_protocols",
@@ -348,6 +363,7 @@ class Policy:
             "policy_id",
             "version",
             "required_capabilities",
+            "required_runtime_capabilities",
             "allowed_providers",
             "denied_providers",
             "allowed_protocols",
@@ -367,6 +383,7 @@ class Policy:
             raise PolicyValidationError(f"policy has unknown field(s): {sorted(unknown)}")
         array_fields = (
             "required_capabilities",
+            "required_runtime_capabilities",
             "allowed_providers",
             "denied_providers",
             "allowed_protocols",
@@ -377,6 +394,7 @@ class Policy:
             policy_id=value.get("policy_id", "default"),
             version=value.get("version", POLICY_VERSION),
             required_capabilities=arrays["required_capabilities"],
+            required_runtime_capabilities=arrays["required_runtime_capabilities"],
             allowed_providers=arrays["allowed_providers"],
             denied_providers=arrays["denied_providers"],
             allowed_protocols=arrays["allowed_protocols"],
@@ -412,6 +430,7 @@ class Policy:
             "policy_id": self.policy_id,
             "version": self.version,
             "required_capabilities": sorted(self.required_capabilities),
+            "required_runtime_capabilities": sorted(self.required_runtime_capabilities),
             "allowed_providers": sorted(self.allowed_providers),
             "denied_providers": sorted(self.denied_providers),
             "allowed_protocols": sorted(self.allowed_protocols),
@@ -521,6 +540,37 @@ class Policy:
                             unknown = True
                             reasons.append(f"capability {capability!r} is unknown")
                             remediation.append(f"refresh direct evidence for {capability}")
+
+        if self.required_runtime_capabilities:
+            if not candidate.runtime_passports:
+                unknown = True
+                reasons.append("runtime capability passport is missing")
+                remediation.append("negotiate the required tool or peer capability")
+            else:
+                runtime_matches = [
+                    item
+                    for item in candidate.runtime_passports
+                    if item.subject.scope
+                    == (
+                        candidate.effective_route.connection
+                        if candidate.effective_route is not None
+                        else item.subject.scope
+                    )
+                ]
+                if not runtime_matches:
+                    unknown = True
+                    reasons.append("runtime capability passport scope does not match route")
+                    remediation.append("publish a runtime passport for the selected connection")
+                for capability in sorted(self.required_runtime_capabilities):
+                    decisions = [
+                        item.resolve(capability, at=checked_at) for item in runtime_matches
+                    ]
+                    if any(item.status is CapabilityStatus.UNSUPPORTED for item in decisions):
+                        reasons.append(f"runtime capability {capability!r} is unsupported")
+                    elif not any(item.admitted for item in decisions):
+                        unknown = True
+                        reasons.append(f"runtime capability {capability!r} is unknown")
+                        remediation.append(f"negotiate direct evidence for runtime {capability}")
 
         if any("unsupported" in item for item in reasons):
             return self._decision(

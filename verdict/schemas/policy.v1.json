@@ -4,10 +4,10 @@
   "title": "Verdict Policy v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "policy_id", "version", "required_capabilities", "allowed_providers", "denied_providers", "allowed_protocols", "protected", "allow_degraded", "allow_stale_evidence", "require_route_identity", "require_actual_identity", "require_fresh_evidence", "allow_fallback", "retry_safe_required", "require_idempotency_key", "max_attempts"],
+  "required": ["schema_version", "policy_id", "version", "required_capabilities", "required_runtime_capabilities", "allowed_providers", "denied_providers", "allowed_protocols", "protected", "allow_degraded", "allow_stale_evidence", "require_route_identity", "require_actual_identity", "require_fresh_evidence", "allow_fallback", "retry_safe_required", "require_idempotency_key", "max_attempts"],
   "properties": {
     "schema_version": {"const": "1"}, "policy_id": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1},
-    "required_capabilities": {"$ref": "#/$defs/string_array"}, "allowed_providers": {"$ref": "#/$defs/string_array"}, "denied_providers": {"$ref": "#/$defs/string_array"}, "allowed_protocols": {"$ref": "#/$defs/string_array"},
+    "required_capabilities": {"$ref": "#/$defs/string_array"}, "required_runtime_capabilities": {"$ref": "#/$defs/string_array"}, "allowed_providers": {"$ref": "#/$defs/string_array"}, "denied_providers": {"$ref": "#/$defs/string_array"}, "allowed_protocols": {"$ref": "#/$defs/string_array"},
     "protected": {"type": "boolean"}, "allow_degraded": {"type": "boolean"}, "allow_stale_evidence": {"type": "boolean"}, "require_route_identity": {"type": "boolean"}, "require_actual_identity": {"type": "boolean"}, "require_fresh_evidence": {"type": "boolean"}, "allow_fallback": {"type": "boolean"}, "retry_safe_required": {"type": "boolean"}, "require_idempotency_key": {"type": "boolean"}, "max_attempts": {"type": "integer", "minimum": 1}
   },
   "$defs": {"string_array": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}

@@ -17,6 +17,11 @@ from verdict.policy import (
     compile_policy,
 )
 from verdict.policy_artifacts import SignedPolicyDecisionArtifact
+from verdict.runtime_passports import (
+    RuntimeCapabilityPassport,
+    RuntimeSubjectIdentity,
+    RuntimeSubjectKind,
+)
 from verdict.transitions import (
     ByteState,
     ExecutionContext,
@@ -80,6 +85,54 @@ def candidate(
     )
 
 
+def runtime_passport(
+    model: str, status: CapabilityStatus = CapabilityStatus.SUPPORTED
+) -> RuntimeCapabilityPassport:
+    evidence = CapabilityEvidence(
+        status=status,
+        source="fixture:handshake",
+        observed_at=NOW - timedelta(seconds=1),
+        expires_at=NOW + timedelta(minutes=5),
+        confidence=1,
+        evidence_digest="sha256:" + "2" * 64,
+        authority=EvidenceAuthority.VERIFIED,
+        method="hermetic-handshake",
+        adapter_version="test-1",
+        scope="account-a",
+    )
+    return RuntimeCapabilityPassport(
+        subject=RuntimeSubjectIdentity(
+            kind=RuntimeSubjectKind.MCP_SERVER,
+            subject_id=f"docs-{model}",
+            provider="fixture",
+            protocol="mcp",
+            protocol_version="2025-06-18",
+            transport="https",
+            auth_mode="bearer",
+            endpoint_digest="sha256:" + "3" * 64,
+            scope="account-a",
+        ),
+        qualified_at=NOW - timedelta(seconds=1),
+        expires_at=NOW + timedelta(minutes=5),
+        negotiated={"resources.read": evidence},
+    )
+
+
+def runtime_candidate(
+    model: str, status: CapabilityStatus = CapabilityStatus.SUPPORTED
+) -> PolicyCandidate:
+    item = candidate(model)
+    return PolicyCandidate(
+        candidate_id=item.candidate_id,
+        route_identity=item.route_identity,
+        passport=item.passport,
+        runtime_passports=(runtime_passport(model, status),),
+        availability=item.availability,
+        evidence_ids=item.evidence_ids,
+        quality_score=item.quality_score,
+    )
+
+
 def test_unknown_required_capability_never_becomes_allow() -> None:
     unknown = candidate("a/unknown", status=CapabilityStatus.UNKNOWN)
     missing = PolicyCandidate(
@@ -89,6 +142,51 @@ def test_unknown_required_capability_never_becomes_allow() -> None:
     compiled = policy.compile([unknown, missing], at=NOW, ranking={"a/unknown": 100})
     assert compiled.eligible == ()
     assert {item.decision for item in compiled.decisions} == {DecisionState.UNKNOWN}
+
+
+def test_runtime_negotiated_capability_is_a_separate_hard_policy_gate() -> None:
+    allowed = runtime_candidate("a/allowed")
+    missing = candidate("b/missing")
+    policy = Policy(required_runtime_capabilities=frozenset({"resources.read"}))
+
+    result = policy.compile([allowed, missing], at=NOW)
+
+    assert [item.candidate_id for item in result.eligible] == ["a/allowed"]
+    assert result.decisions[1].decision is DecisionState.UNKNOWN
+
+
+def test_runtime_unsupported_evidence_is_deny_not_unknown() -> None:
+    denied = runtime_candidate("a/denied", CapabilityStatus.UNSUPPORTED)
+    policy = Policy(required_runtime_capabilities=frozenset({"resources.read"}))
+
+    result = policy.compile([denied], at=NOW)
+
+    assert result.decisions[0].decision is DecisionState.DENY
+    assert "runtime capability 'resources.read' is unsupported" in result.decisions[0].reasons
+
+
+def test_policy_runtime_capabilities_round_trip_through_dict() -> None:
+    policy = Policy(required_runtime_capabilities=frozenset({"resources.read"}))
+
+    assert Policy.from_dict(policy.to_dict()) == policy
+
+
+def test_policy_candidate_runtime_passports_round_trip_through_dict() -> None:
+    original = runtime_candidate("round-trip")
+
+    restored = PolicyCandidate.from_dict(
+        {
+            "candidate_id": original.candidate_id,
+            "route_identity": original.route_identity.to_dict(),
+            "passport": original.passport.to_dict(),
+            "runtime_passports": [item.to_dict() for item in original.runtime_passports],
+            "availability": original.availability,
+            "evidence_ids": list(original.evidence_ids),
+            "quality_score": original.quality_score,
+        }
+    )
+
+    assert restored == original
 
 
 def test_unsupported_capability_is_deny_and_ranking_cannot_reintroduce_it() -> None:
