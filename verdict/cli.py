@@ -1141,10 +1141,34 @@ def cmd_memory(args: Any) -> None:
     elif sub == "masterdocs":
         db = getattr(args, "db", "MasterDocsRAG.db")
         adapter = MasterDocsAdapter()
-        rep = adapter.canonicalize_db(db, plane, allow_legacy_sqlite=args.allow_legacy_sqlite)
-        console.print(
-            f"[bold green]✓ MasterDocs ingested {rep.ingested} record(s) ({rep.quarantined} quarantined)[/bold green]"
+        result = adapter.canonicalize_db_records(
+            db,
+            allow_legacy_sqlite=args.allow_legacy_sqlite,
+            limit=getattr(args, "limit", 1000),
+            ingest_timestamp=getattr(args, "ingest_timestamp", None),
         )
+        if result.report.status in {"unavailable", "rejected", "empty"}:
+            payload = result.to_dict()
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                console.print(json.dumps(payload["report"], indent=2, sort_keys=True))
+            raise SystemExit(1)
+        if getattr(args, "dry_run", False):
+            payload = result.to_dict()
+        else:
+            imported_report = adapter.import_result(result, plane)
+            payload = {
+                "report": imported_report.to_dict(),
+                "records": [dict(record) for record in result.records],
+            }
+            if imported_report.status in {"rejected", "partial"} and imported_report.ingested == 0:
+                raise SystemExit(1)
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            console.print(json.dumps(payload["report"], indent=2, sort_keys=True))
+        return
     elif sub == "graph":
         db = getattr(args, "db", "code_graph.db")
         graph_adapter = CodeGraphAdapter()
@@ -1465,6 +1489,15 @@ def main() -> None:
         action="store_true",
         help="Explicitly allow an exported local SQLite artifact (prefer manifests)",
     )
+    md_p.add_argument("--dry-run", action="store_true", help="Canonicalize without writing memory")
+    md_p.add_argument("--limit", type=int, default=1000, help="Maximum source rows to inspect")
+    md_p.add_argument(
+        "--ingest-timestamp",
+        type=float,
+        default=None,
+        help="Stable provenance timestamp (defaults to deterministic zero)",
+    )
+    md_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     cg_p = memory_sub.add_parser("graph", help="Ingest code review graph database")
     cg_p.add_argument("--db", default="code_graph.db", help="Database path")
