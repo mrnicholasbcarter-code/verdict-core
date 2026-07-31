@@ -157,6 +157,50 @@ def test_omniroute_token_does_not_inspect_home_or_private_paths(
     assert cli._read_omniroute_token() is None
 
 
+def test_omniroute_management_requests_require_configured_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("must not open a default endpoint"),
+    )
+
+    assert cli._omniroute_api_request("GET", "/api/provider-nodes") is None
+
+
+def test_omniroute_management_requests_use_configured_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    seen: list[str] = []
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"ok": true}'
+
+    def fake_urlopen(request: urllib.request.Request, *, timeout: float) -> Response:
+        seen.append(str(request.full_url))
+        assert timeout == 5
+        return Response()
+
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:24000/management")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert cli._omniroute_api_request("GET", "/api/provider-nodes") == {"ok": True}
+    assert seen == ["http://127.0.0.1:24000/management/api/provider-nodes"]
+
+
 def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:
     cli.cmd_route("format docs", "low", terse=False)
 
