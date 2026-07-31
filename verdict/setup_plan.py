@@ -7,11 +7,14 @@ request, leaving consent and execution to a separate transaction boundary.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 SCHEMA_VERSION = "1"
+_DIGEST_PREFIX = "sha256:"
 
 
 @dataclass(frozen=True)
@@ -46,8 +49,8 @@ class SetupPlan:
     config_exists: bool
     actions: tuple[SetupAction, ...]
 
-    def to_dict(self) -> dict[str, object]:
-        """Return a JSON-compatible plan with explicit safety status."""
+    def _content_dict(self) -> dict[str, object]:
+        """Return the digest input, excluding all derived identity fields."""
 
         return {
             "kind": "setup_plan",
@@ -61,6 +64,36 @@ class SetupPlan:
             "actions": [action.to_dict() for action in self.actions],
             "next": "review this plan before a future setup apply command",
         }
+
+    @property
+    def digest(self) -> str:
+        """Return the canonical content-addressed identity of this plan."""
+
+        canonical = json.dumps(
+            self._content_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        return _DIGEST_PREFIX + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @property
+    def plan_digest(self) -> str:
+        """Return the stable digest field used by machine-readable contracts."""
+
+        return self.digest
+
+    @property
+    def plan_id(self) -> str:
+        """Return the plan identity as a compatibility alias for ``plan_digest``."""
+
+        return self.digest
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible plan with explicit safety status and identity."""
+
+        content = self._content_dict()
+        digest = self.digest
+        content["plan_digest"] = digest
+        content["plan_id"] = digest
+        return content
 
 
 def _display_config_path() -> str:

@@ -131,16 +131,7 @@ def cmd_setup(
 ) -> None:
     """Interactive setup wizard or a mutation-free setup plan."""
     if dry_run or output_json or non_interactive:
-        from verdict.setup_plan import build_setup_plan
-
-        plan: dict[str, Any] = build_setup_plan().to_dict()
-        if output_json:
-            print(json.dumps(plan, indent=2, sort_keys=True))
-        else:
-            print("Verdict setup plan (dry-run; no changes made)")
-            print(f"Config: {plan['config']['path']}")
-            for action in plan["actions"]:
-                print(f"- {action['description']}")
+        cmd_setup_plan(output_json=output_json)
         return
 
     # First, run auto-detection to show user what's available
@@ -431,6 +422,27 @@ def cmd_setup(
     console.print(f"\n[bold green]✓ Saved configuration to {config_path}![/bold green]")
     console.print("[dim]Configuration contents:[/dim]")
     console.print(yaml.dump(config, default_flow_style=False))
+
+
+def cmd_setup_plan(*, output_json: bool = False) -> None:
+    """Print the mutation-free setup plan without discovery or side effects."""
+
+    from verdict.setup_plan import build_setup_plan
+
+    plan: dict[str, Any] = build_setup_plan().to_dict()
+    if output_json:
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return
+    print("Verdict setup plan (dry-run; no changes made)")
+    print(f"Plan: {plan['plan_id']}")
+    config = plan["config"]
+    actions = plan["actions"]
+    assert isinstance(config, dict)
+    assert isinstance(actions, list)
+    print(f"Config: {config['path']}")
+    for action in actions:
+        assert isinstance(action, dict)
+        print(f"- {action['description']}")
 
 
 def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
@@ -1375,6 +1387,12 @@ def main() -> None:
 
     setup_cli_p = subparsers.add_parser("setup", help="Plan or apply the interactive setup wizard")
     setup_cli_p.add_argument(
+        "setup_action",
+        nargs="?",
+        choices=["plan"],
+        help="Read-only setup operation (currently: plan)",
+    )
+    setup_cli_p.add_argument(
         "--dry-run", action="store_true", help="Build a mutation-free setup plan"
     )
     setup_cli_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -1587,7 +1605,12 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "setup":
-        cmd_setup(dry_run=args.dry_run, output_json=args.json, non_interactive=args.non_interactive)
+        if args.setup_action == "plan":
+            cmd_setup_plan(output_json=args.json)
+        else:
+            cmd_setup(
+                dry_run=args.dry_run, output_json=args.json, non_interactive=args.non_interactive
+            )
     elif args.command == "route":
         cmd_route(args.task, args.criticality, args.terse)
     elif args.command == "stats":
