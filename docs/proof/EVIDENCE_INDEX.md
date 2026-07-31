@@ -17,6 +17,14 @@ what it deliberately refuses to claim.
 | Adversarial checklist | [`ADVERSARIAL_REVIEW_CHECKLIST.md`](ADVERSARIAL_REVIEW_CHECKLIST.md) |
 | Validator | `python scripts/verify_proof_matrix.py` |
 
+## Conversion assets
+
+- [Portfolio proof matrix](../portfolio/PORTFOLIO_PROOF_MATRIX.md) maps each
+  audience to an evidence-backed project story and preserves limitations.
+- [AI Gateway Assurance Audit](../portfolio/AI_GATEWAY_ASSURANCE_AUDIT.md)
+  defines the scoped consulting offer, deliverables, exclusions, and safe
+  contact path.
+
 ## Verified local contracts
 
 - Hard eligibility is applied before advisory ranking; excluded candidates
