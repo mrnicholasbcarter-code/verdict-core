@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["verdict"]
-artifacts = ["schemas/contracts.v1.json"]
+artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json"]
 
 [project]
 name = "verdict-core"

@@ -2,6 +2,8 @@ __pycache__/
 *.jsonl
 benchmark_output*
 benchmark_evidence*
+evidence/*.json
+evidence/test_suite/*.json
 route-log*
 run_test_grid.sh
 *_claims_patch.py
