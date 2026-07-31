@@ -212,6 +212,14 @@ Graph context and impact analysis before implementation/review, ticket-backed
 work packages, OmniRoute-aware worker selection, layered verification, and
 exact-head CI/PR follow-through through merge.
 
+## Evidence and public claims
+
+The current public proof snapshot is maintained in the [proof matrix](docs/proof/EVIDENCE_INDEX.md).
+It separates verified local contracts from observed, partial, self-reported,
+and unsupported claims. Catalog counts are historical observations—not proof
+that every listed route is live—and quantified portfolio claims require a
+reproducible artifact before they can be presented as verified results.
+
 ---
 
 ## Project Structure
