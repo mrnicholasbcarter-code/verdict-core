@@ -173,6 +173,8 @@ jobs:
           /tmp/verdict-wheel/bin/python -m pip install dist/*.whl
           /tmp/verdict-wheel/bin/verdict --help
           /tmp/verdict-wheel/bin/verdict detect --json
+          /tmp/verdict-wheel/bin/verdict quickstart --json --non-interactive --dry-run > /tmp/verdict-wheel-quickstart.json
+          /tmp/verdict-wheel/bin/python -c 'import json; from pathlib import Path; report = json.loads(Path("/tmp/verdict-wheel-quickstart.json").read_text()); assert report["decision"]["selected_route"]["runtime_id"] == "demo/frontier-tools"'
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v7
         with:

@@ -266,7 +266,10 @@ pytest -v
 uv run --extra dev --extra dashboard --extra server ruff check .
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 
-# Run flagship demo
+# Run the credential-free flagship quickstart (works from an installed wheel)
+verdict quickstart --json --non-interactive --dry-run
+
+# Run the source-checkout compatibility wrapper
 python scripts/flagship_demo.py
 ```
 

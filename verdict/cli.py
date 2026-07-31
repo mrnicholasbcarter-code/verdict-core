@@ -551,6 +551,32 @@ def cmd_benchmark(
         output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 
+def cmd_quickstart(
+    *, output_json: bool = False, non_interactive: bool = False, dry_run: bool = False
+) -> None:
+    """Run the deterministic, credential-free flagship quickstart."""
+
+    # The flags are explicit operational contracts even though this fixture is
+    # already non-interactive and read-only. Keep the values visible for future
+    # extensions without changing the deterministic output.
+    _ = non_interactive, dry_run
+    try:
+        from verdict.flagship_demo import render_report, run_demo
+
+        result = run_demo()
+    except Exception as exc:
+        if output_json:
+            print(json.dumps({"status": "fail", "error": type(exc).__name__}, sort_keys=True))
+        else:
+            print(f"Verdict credential-free quickstart: FAIL ({type(exc).__name__})")
+        raise SystemExit(1) from exc
+
+    if output_json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(render_report(result), end="")
+
+
 def cmd_cost_report() -> None:
     """Calculates and prints the estimated token usage execution cost from historic routing decisions."""
     import json
@@ -1352,6 +1378,17 @@ def main() -> None:
     benchmark_p.add_argument("--allow-live-provider", action="store_true")
     benchmark_p.add_argument("--live-provider", default=None)
 
+    quickstart_p = subparsers.add_parser(
+        "quickstart", help="Run the credential-free deterministic flagship quickstart"
+    )
+    quickstart_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    quickstart_p.add_argument(
+        "--non-interactive", action="store_true", help="Do not prompt for input"
+    )
+    quickstart_p.add_argument(
+        "--dry-run", action="store_true", help="Run the read-only quickstart fixture"
+    )
+
     subparsers.add_parser("ui", help="Launch the Streamlit analytics dashboard")
 
     serve_p = subparsers.add_parser("serve", help="Launch the FastAPI microservice")
@@ -1539,6 +1576,10 @@ def main() -> None:
             args.output_json,
             allow_live_provider=args.allow_live_provider,
             live_provider=args.live_provider,
+        )
+    elif args.command == "quickstart":
+        cmd_quickstart(
+            output_json=args.json, non_interactive=args.non_interactive, dry_run=args.dry_run
         )
     elif args.command == "ui":
         try:
