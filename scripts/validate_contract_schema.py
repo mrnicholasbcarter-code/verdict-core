@@ -17,6 +17,8 @@ RUNTIME_HEALTH_SCHEMA_PATH = ROOT / "schemas" / "runtime-health.v1.json"
 PACKAGED_RUNTIME_HEALTH_SCHEMA_PATH = ROOT / "verdict" / "schemas" / "runtime-health.v1.json"
 RUNTIME_PASSPORT_SCHEMA_PATH = ROOT / "schemas" / "runtime-passport.v1.json"
 PACKAGED_RUNTIME_PASSPORT_SCHEMA_PATH = ROOT / "verdict" / "schemas" / "runtime-passport.v1.json"
+GATEWAY_ADAPTER_SCHEMA_PATH = ROOT / "schemas" / "gateway-adapter.v1.json"
+PACKAGED_GATEWAY_ADAPTER_SCHEMA_PATH = ROOT / "verdict" / "schemas" / "gateway-adapter.v1.json"
 
 
 def main() -> int:
@@ -29,6 +31,8 @@ def main() -> int:
     packaged_runtime_health_schema = json.loads(PACKAGED_RUNTIME_HEALTH_SCHEMA_PATH.read_text())
     runtime_passport_schema = json.loads(RUNTIME_PASSPORT_SCHEMA_PATH.read_text())
     packaged_runtime_passport_schema = json.loads(PACKAGED_RUNTIME_PASSPORT_SCHEMA_PATH.read_text())
+    gateway_adapter_schema = json.loads(GATEWAY_ADAPTER_SCHEMA_PATH.read_text())
+    packaged_gateway_adapter_schema = json.loads(PACKAGED_GATEWAY_ADAPTER_SCHEMA_PATH.read_text())
     if schema != packaged_schema:
         print(
             f"{PACKAGED_SCHEMA_PATH.relative_to(ROOT)} does not match {SCHEMA_PATH.relative_to(ROOT)}"
@@ -51,10 +55,17 @@ def main() -> int:
             f"{RUNTIME_PASSPORT_SCHEMA_PATH.relative_to(ROOT)}"
         )
         return 1
+    if gateway_adapter_schema != packaged_gateway_adapter_schema:
+        print(
+            f"{PACKAGED_GATEWAY_ADAPTER_SCHEMA_PATH.relative_to(ROOT)} does not match "
+            f"{GATEWAY_ADAPTER_SCHEMA_PATH.relative_to(ROOT)}"
+        )
+        return 1
     Draft202012Validator.check_schema(schema)
     Draft202012Validator.check_schema(context_schema)
     Draft202012Validator.check_schema(runtime_health_schema)
     Draft202012Validator.check_schema(runtime_passport_schema)
+    Draft202012Validator.check_schema(gateway_adapter_schema)
     errors = sorted(
         Draft202012Validator(schema).iter_errors(fixture),
         key=lambda error: list(error.absolute_path),
