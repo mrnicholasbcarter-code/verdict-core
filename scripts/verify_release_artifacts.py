@@ -20,6 +20,14 @@ def run(command: list[str], *, cwd: Path | None = None) -> None:
     subprocess.run(command, cwd=cwd, check=True)
 
 
+def executable_path(environment: Path, name: str) -> Path:
+    """Return a venv executable path on both POSIX and Windows."""
+
+    directory = "Scripts" if sys.platform == "win32" else "bin"
+    suffix = ".exe" if sys.platform == "win32" else ""
+    return environment / directory / f"{name}{suffix}"
+
+
 def artifact_pair(dist: Path) -> tuple[Path, Path]:
     wheels = sorted(dist.glob("*.whl"))
     sdists = sorted(dist.glob("*.tar.gz"))
@@ -35,7 +43,8 @@ def install_and_smoke_test(artifact: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="verdict-release-") as directory:
         environment = Path(directory) / "venv"
         venv.EnvBuilder(with_pip=True).create(environment)
-        python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        python = executable_path(environment, "python")
+        verdict = executable_path(environment, "verdict")
         run([str(python), "-m", "pip", "install", "--disable-pip-version-check", str(artifact)])
         run(
             [
@@ -44,6 +53,8 @@ def install_and_smoke_test(artifact: Path) -> None:
                 "import verdict; from verdict import Gate; print(verdict.__version__, Gate.__name__)",
             ]
         )
+        run([str(verdict), "--help"])
+        run([str(python), "-m", "verdict", "--help"])
 
 
 def main() -> None:
