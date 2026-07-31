@@ -62,6 +62,8 @@ jobs:
         run: pytest tests/ -v --tb=short
       - name: Validate versioned contract schema
         run: python scripts/validate_contract_schema.py
+      - name: Check structural risk baseline
+        run: python scripts/check_structural_risk.py --json
       - name: Check coverage
         run: pytest tests/ --cov=verdict --cov-report=xml --cov-fail-under=70
 

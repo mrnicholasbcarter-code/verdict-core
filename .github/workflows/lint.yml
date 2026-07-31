@@ -21,5 +21,7 @@ jobs:
         run: ruff check .
       - name: Check formatting
         run: ruff format --check .
+      - name: Check structural risk baseline
+        run: python scripts/check_structural_risk.py --json
       - name: Run mypy
         run: mypy verdict --strict

@@ -42,6 +42,9 @@ jobs:
       - name: Run bandit
         run: uv run bandit -r verdict -ll -s B108
 
+      - name: Check structural risk baseline
+        run: uv run python scripts/check_structural_risk.py --json
+
   node-security:
     runs-on: ubuntu-latest
     steps:
