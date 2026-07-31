@@ -220,6 +220,15 @@ and unsupported claims. Catalog counts are historical observations—not proof
 that every listed route is live—and quantified portfolio claims require a
 reproducible artifact before they can be presented as verified results.
 
+## Portfolio and consulting
+
+The [portfolio proof matrix](docs/portfolio/PORTFOLIO_PROOF_MATRIX.md) maps the
+project’s audience-specific stories to reproducible evidence and states the
+limits of each claim. For teams operating multiple AI gateways, the [AI Gateway
+Assurance Audit](docs/portfolio/AI_GATEWAY_ASSURANCE_AUDIT.md) describes a
+scoped review of route identity, capability qualification, policy/failover,
+and privacy-safe evidence.
+
 ---
 
 ## Project Structure
