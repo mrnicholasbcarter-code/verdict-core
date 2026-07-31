@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/runtime-health.v1.json",
+  "title": "Verdict Runtime Health Evidence v1",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "status", "passed", "summary", "observations", "errors"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["ready", "degraded", "unknown", "blocked"]},
+    "passed": {"type": "boolean"},
+    "summary": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "observations": {"type": "array", "items": {"$ref": "#/$defs/observation"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "observation": {
+      "type": "object",
+      "required": ["schema_version", "component_id", "component_kind", "instance_id", "status", "observed_at", "source", "method", "endpoint", "endpoint_class", "version", "identity_verified", "limitations", "evidence_digest"],
+      "properties": {
+        "schema_version": {"const": "1"},
+        "component_id": {"type": "string", "minLength": 1},
+        "component_kind": {"type": "string", "minLength": 1},
+        "instance_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["absent", "configured", "reachable", "authenticated", "catalog_claimed", "protocol_compatible", "observed_working", "degraded", "unknown"]},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "source": {"type": "string", "minLength": 1},
+        "method": {"type": "string", "minLength": 1},
+        "endpoint": {"type": ["string", "null"]},
+        "endpoint_class": {"type": "string", "minLength": 1},
+        "version": {"type": ["string", "null"]},
+        "identity_verified": {"type": "boolean"},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+        "evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

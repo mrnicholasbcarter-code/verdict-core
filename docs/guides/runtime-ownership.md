@@ -8,10 +8,18 @@ Inspect without changing processes:
 ```bash
 verdict runtime status --json
 verdict runtime reconcile --plan --json
+verdict runtime explain --json
 ```
 
 Both commands are read-only. `ambiguous-process-identity` and `port-collision`
 are operator review states, not permission to stop a process.
+
+`runtime explain` is also read-only. It emits versioned capability evidence for
+each configured component, separating configuration, reachability, identity
+verification, and observed health. A healthy HTTP endpoint does not claim MCP
+protocol compatibility, tool success, model quality, or ownership of the
+process. An absent or ambiguous service remains `unknown`; it is never treated
+as healthy because a package, port, or process name exists.
 
 To apply only already-proven duplicate stops, review the plan and provide both
 an exact service scope and explicit consent:
