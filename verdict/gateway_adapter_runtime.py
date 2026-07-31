@@ -22,7 +22,7 @@ from verdict.gateway_adapters import (
     _strict,
 )
 
-TelemetryValue = None | bool | int | float | str
+TelemetryValue = bool | int | float | str | None
 
 
 @dataclass(frozen=True)

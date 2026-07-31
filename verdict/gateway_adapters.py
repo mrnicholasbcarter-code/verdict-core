@@ -34,7 +34,7 @@ _SECRET_NAMES = frozenset(
     }
 )
 
-TelemetryValue: TypeAlias = None | bool | int | float | str
+TelemetryValue: TypeAlias = bool | int | float | str | None
 
 
 class GatewayAdapterError(ValueError):
