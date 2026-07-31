@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
@@ -15,6 +17,9 @@ import verdict.api as api
 from verdict.intelligence import ReadinessReport
 from verdict.models import RoutingDecision
 from verdict.proxy import UpstreamProxy
+
+ROOT = Path(__file__).parents[1]
+RELAY_FIXTURES = json.loads((ROOT / "tests" / "fixtures" / "relay-v1.json").read_text())
 
 
 class ChunkedSSE(httpx.AsyncByteStream):
@@ -101,7 +106,7 @@ class RecordingTransport(httpx.AsyncBaseTransport):
                 stream=ChunkedSSE(
                     [
                         b'data: {"choices":[',
-                        b'{"delta":{"tool_calls":[{"index":0}}]}]}\n\n',
+                        b'{"delta":{"tool_calls":[{"index":0}]}}]}\n\n',
                         b"data: [DONE]\n\n",
                     ]
                 ),
@@ -110,6 +115,50 @@ class RecordingTransport(httpx.AsyncBaseTransport):
             200,
             headers={"content-type": "application/json", "x-upstream": "complete"},
             content=response_body,
+        )
+
+
+class ResponsesTransport(RecordingTransport):
+    def __init__(self, *, stream: bool = False, statuses: list[int] | None = None) -> None:
+        super().__init__(stream=stream)
+        self.statuses = list(statuses or [200])
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        raw_body = await request.aread()
+        body = json.loads(raw_body) if raw_body else None
+        self.requests.append(
+            {
+                "method": request.method,
+                "url": str(request.url),
+                "headers": dict(request.headers),
+                "body": body,
+            }
+        )
+        status = self.statuses.pop(0) if self.statuses else 200
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": "temporary outage"}})
+        if self.stream:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=ChunkedSSE(
+                    [
+                        b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+                        b'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+                    ]
+                ),
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={
+                "id": "resp-test",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+                "unknown_future_field": {"kept": True},
+            },
         )
 
 
@@ -260,6 +309,7 @@ def test_evidence_explain_is_tagged_and_has_ordered_events(monkeypatch) -> None:
     assert payload["envelope_version"] == "1"
     assert [event["event_type"] for event in payload["events"]] == [
         "execution_started",
+        "chat_completion_attempt_completed",
         "chat_completion_buffered",
     ]
 
@@ -577,9 +627,125 @@ def test_proxy_streaming_preserves_arbitrary_upstream_chunk_boundaries(monkeypat
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.text == (
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0}}]}]}\n\ndata: [DONE]\n\n'
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0}]}}]}\n\ndata: [DONE]\n\n'
     )
     assert transport.requests[0]["body"] == {**payload, "model": "selected-model"}
+
+
+def test_responses_endpoint_preserves_wire_shape_and_server_idempotency(monkeypatch) -> None:
+    transport = ResponsesTransport()
+    _configure_test_app(monkeypatch, transport)
+    payload = {
+        "model": "client-requested-model",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "preserve all fields"}]}
+        ],
+        "stream": False,
+        "tools": [{"type": "function", "name": "lookup", "parameters": {}}],
+        "reasoning": {"effort": "low"},
+        "metadata": {"future": "field"},
+    }
+
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/responses", json=payload, headers={"idempotency-key": "response-idem"}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["unknown_future_field"] == {"kept": True}
+    forwarded = transport.requests[0]
+    assert forwarded["url"].endswith("/v1/responses")
+    assert forwarded["headers"]["idempotency-key"] == "response-idem"
+    assert forwarded["body"] == {**payload, "model": "selected-model"}
+
+
+def test_relay_fixture_corpus_is_versioned_and_covers_both_surfaces() -> None:
+    assert RELAY_FIXTURES["schema_version"] == "1"
+    assert {case["surface"] for case in RELAY_FIXTURES["cases"]} == {"chat", "responses"}
+    assert {"responses-buffered-unknown-fields", "responses-stream-terminal"} <= {
+        case["name"] for case in RELAY_FIXTURES["cases"]
+    }
+
+
+def test_responses_streaming_preserves_terminal_events(monkeypatch) -> None:
+    transport = ResponsesTransport(stream=True)
+    _configure_test_app(monkeypatch, transport)
+
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={"input": "preserve all fields", "stream": True},
+            headers={"x-verdict-correlation-id": "responses-stream"},
+        )
+        evidence = client.get("/v1/route/explain?correlation_id=responses-stream").json()
+
+    assert response.status_code == 200
+    assert "response.output_text.delta" in response.text
+    assert "response.completed" in response.text
+    assert evidence["outcome_event"]["event_type"] == "responses_streamed"
+
+
+def test_responses_truncated_stream_is_not_recorded_as_success(monkeypatch) -> None:
+    class TruncatedTransport(ResponsesTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            await request.aread()
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=ChunkedSSE([b'data: {"type":"response.output_text.delta"}\n\n']),
+            )
+
+    transport = TruncatedTransport(stream=True)
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={"input": "preserve all fields", "stream": True},
+            headers={"x-verdict-correlation-id": "truncated"},
+        )
+        evidence = client.get("/v1/route/explain?correlation_id=truncated").json()
+
+    assert response.status_code == 200
+    assert evidence["outcome_event"]["outcome"] == "error"
+    assert evidence["outcome_event"]["details"]["error_class"] == "malformed_stream"
+
+
+def test_pre_byte_fallback_requires_idempotency_and_is_never_used_for_tools(monkeypatch) -> None:
+    transport = ResponsesTransport(statuses=[503, 503, 200, 503])
+    _configure_test_app(monkeypatch, transport)
+
+    class Alternatives(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None):
+            decision = await super().route(task or "preserve all fields", criticality, context)
+            return replace(
+                decision,
+                alternatives=["backup-model"],
+                candidate_states=[{"model_id": "backup-model", "admitted": True, "state": "ready"}],
+            )
+
+    monkeypatch.setattr(api, "_build_intelligence", lambda: Alternatives())
+    with TestClient(api.app) as client:
+        no_key = client.post("/v1/responses", json={"input": "preserve all fields"})
+        with_key = client.post(
+            "/v1/responses",
+            json={"input": "preserve all fields"},
+            headers={"idempotency-key": "idem"},
+        )
+        tool = client.post(
+            "/v1/responses",
+            json={"input": "preserve all fields", "tools": [{"type": "function", "name": "write"}]},
+            headers={"idempotency-key": "tool-idem"},
+        )
+
+    assert no_key.status_code == 503
+    assert with_key.status_code == 200
+    assert tool.status_code == 503
+    assert [item["body"]["model"] for item in transport.requests] == [
+        "selected-model",
+        "selected-model",
+        "backup-model",
+        "selected-model",
+    ]
 
 
 def test_proxy_rejects_oversized_and_malformed_payloads(monkeypatch) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import os
 from collections.abc import AsyncIterator
@@ -44,6 +45,18 @@ from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, Intelligen
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
+from verdict.relay import (
+    build_attempts,
+    failure_class,
+    idempotency_key,
+    is_opaque_alias,
+    protocol_for_surface,
+    response_actual_route_status,
+    retry_safety,
+    retryable_exception,
+    retryable_transport_status,
+    transition_edge,
+)
 from verdict.security import bearer_matches, redact_text, validate_server_security
 
 
@@ -51,11 +64,17 @@ class _EvidenceStreamAdapter:
     """Own stream iteration, terminalization, and upstream cleanup."""
 
     def __init__(
-        self, upstream: AsyncIterator[bytes], *, on_terminal: Any, event_factory: Any
+        self,
+        upstream: AsyncIterator[bytes],
+        *,
+        on_terminal: Any,
+        event_factory: Any,
+        event_prefix: str = "chat_completion",
     ) -> None:
         self._upstream = upstream
         self._on_terminal = on_terminal
         self._event_factory = event_factory
+        self._event_prefix = event_prefix
         self._terminal = False
         self._closed = False
         self._cleanup_task: asyncio.Task[Any] | None = None
@@ -69,26 +88,38 @@ class _EvidenceStreamAdapter:
             return await self._upstream.__anext__()
         except StopAsyncIteration:
             cleanup_error = await self._cleanup()
-            self._finish("chat_completion_streamed", "success", "completed", cleanup_error)
+            self._finish(f"{self._event_prefix}_streamed", "success", "completed", cleanup_error)
             raise
         except asyncio.CancelledError:
             cleanup_error = await self._cleanup()
-            self._finish("chat_completion_stream_aborted", "cancelled", "aborted", cleanup_error)
+            self._finish(
+                f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error
+            )
             raise
-        except Exception as exc:
+        except _StreamProtocolError as exc:
             cleanup_error = await self._cleanup()
             self._finish(
-                "chat_completion_stream_error",
+                f"{self._event_prefix}_stream_error",
                 "error",
                 "error",
                 cleanup_error,
-                error_class=type(exc).__name__,
+                error_class=getattr(exc, "code", None) or type(exc).__name__,
+            )
+            raise StopAsyncIteration from None
+        except Exception as exc:
+            cleanup_error = await self._cleanup()
+            self._finish(
+                f"{self._event_prefix}_stream_error",
+                "error",
+                "error",
+                cleanup_error,
+                error_class=(getattr(exc, "code", None) or type(exc).__name__),
             )
             raise
 
     async def aclose(self) -> None:
         cleanup_error = await self._cleanup()
-        self._finish("chat_completion_stream_aborted", "cancelled", "aborted", cleanup_error)
+        self._finish(f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error)
 
     async def _cleanup(self) -> str | None:
         if self._closed:
@@ -126,6 +157,146 @@ class _EvidenceStreamAdapter:
         self._on_terminal(
             self._event_factory(event_type, outcome, phase, cleanup_error, error_class)
         )
+
+
+class _StreamProtocolError(RuntimeError):
+    """Raised when an upstream stream is malformed or ends without a terminal event."""
+
+    code = "malformed_stream"
+
+
+class _ValidatedSSEStream:
+    """Validate SSE framing incrementally while yielding the original bytes unchanged."""
+
+    def __init__(
+        self,
+        upstream: AsyncIterator[bytes],
+        *,
+        surface: str,
+        max_bytes: int = 16 * 1024 * 1024,
+        max_buffer: int = 256 * 1024,
+        max_events: int = 100_000,
+    ) -> None:
+        self._upstream = upstream
+        self._surface = surface
+        self._max_bytes = max_bytes
+        self._max_buffer = max_buffer
+        self._max_events = max_events
+        self._decoder = codecs.getincrementaldecoder("utf-8")()
+        self._buffer = ""
+        self._event_data: list[str] = []
+        self._bytes = 0
+        self._events = 0
+        self._terminal = False
+        self._closed = False
+
+    def __aiter__(self) -> _ValidatedSSEStream:
+        return self
+
+    async def __anext__(self) -> bytes:
+        try:
+            chunk = await self._upstream.__anext__()
+        except StopAsyncIteration:
+            self._finish_text(self._decoder.decode(b"", final=True))
+            if self._event_data:
+                self._finish_event()
+            if not self._terminal:
+                raise _StreamProtocolError("stream ended without a terminal event") from None
+            raise
+        except UnicodeDecodeError as exc:
+            raise _StreamProtocolError("stream contained invalid UTF-8") from exc
+        if not isinstance(chunk, bytes):
+            raise _StreamProtocolError("upstream stream yielded a non-byte chunk")
+        self._bytes += len(chunk)
+        if self._bytes > self._max_bytes:
+            raise _StreamProtocolError("stream exceeded the aggregate byte limit")
+        try:
+            decoded = self._decoder.decode(chunk, final=False)
+        except UnicodeDecodeError as exc:
+            raise _StreamProtocolError("stream contained invalid UTF-8") from exc
+        self._finish_text(decoded)
+        return chunk
+
+    def _finish_text(self, text: str) -> None:
+        self._buffer += text
+        if len(self._buffer) > self._max_buffer:
+            raise _StreamProtocolError("stream event buffer exceeded its limit")
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if len(line) > self._max_buffer:
+                raise _StreamProtocolError("stream line exceeded its limit")
+            self._consume_line(line.rstrip("\r"))
+
+    def _consume_line(self, line: str) -> None:
+        if line == "":
+            if self._event_data:
+                self._finish_event()
+            return
+        if line.startswith(":"):
+            return
+        if line.startswith("data:"):
+            self._event_data.append(line[5:].lstrip())
+            return
+        # ``event:``, ``id:``, and ``retry:`` are valid SSE metadata. Unknown
+        # fields are ignored by the SSE standard and remain wire-transparent.
+
+    def _finish_event(self) -> None:
+        data = "\n".join(self._event_data)
+        self._event_data.clear()
+        self._events += 1
+        if self._events > self._max_events:
+            raise _StreamProtocolError("stream exceeded its event limit")
+        if self._terminal:
+            raise _StreamProtocolError("stream emitted data after its terminal event")
+        if self._surface == "chat" and data == "[DONE]":
+            self._terminal = True
+            return
+        try:
+            parsed = json.loads(data)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise _StreamProtocolError("stream event was not valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise _StreamProtocolError("stream event must be a JSON object")
+        if self._surface == "responses":
+            event_type = parsed.get("type")
+            if event_type in {"response.completed", "response.failed", "response.incomplete"}:
+                self._terminal = True
+        else:
+            choices = parsed.get("choices")
+            if isinstance(choices, list) and any(
+                isinstance(choice, dict) and choice.get("finish_reason") is not None
+                for choice in choices
+            ):
+                self._terminal = True
+
+    @property
+    def terminal(self) -> bool:
+        return self._terminal
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self._upstream, "aclose", None)
+        if callable(close):
+            await close()
+
+
+async def _prime_stream(result: StreamedUpstreamResponse) -> StreamedUpstreamResponse:
+    """Read the first upstream chunk before committing to a client stream."""
+
+    body = result.body
+    try:
+        first = await body.__anext__()
+    except StopAsyncIteration as exc:
+        raise _StreamProtocolError("stream ended before its first byte") from exc
+
+    async def primed_body() -> AsyncIterator[bytes]:
+        yield first
+        async for chunk in body:
+            yield chunk
+
+    return replace(result, body=primed_body())
 
 
 class _EvidenceStreamingResponse(StreamingResponse):
@@ -533,15 +704,28 @@ def _safe_decision_dict(decision: Any) -> dict[str, Any]:
 
 
 def _task_text(payload: dict[str, Any]) -> str:
-    messages = payload.get("messages", [])
+    messages = payload.get("messages", payload.get("input", []))
+    if isinstance(messages, str):
+        return messages
     if not isinstance(messages, list):
         return ""
     parts: list[str] = []
     for message in messages:
+        if isinstance(message, str):
+            parts.append(message)
+            continue
         if isinstance(message, dict):
             content = message.get("content")
             if isinstance(content, str):
                 parts.append(content)
+            elif isinstance(content, list):
+                parts.extend(
+                    item["text"]
+                    for item in content
+                    if isinstance(item, dict) and isinstance(item.get("text"), str)
+                )
+            elif isinstance(message.get("text"), str):
+                parts.append(message["text"])
     return "\n".join(parts)
 
 
@@ -555,6 +739,19 @@ def _headers_for_body(result: BufferedUpstreamResponse) -> dict[str, str]:
     headers = dict(result.headers)
     headers.pop("content-length", None)
     return headers
+
+
+def _relay_response_headers(
+    result: BufferedUpstreamResponse | StreamedUpstreamResponse,
+) -> dict[str, str]:
+    """Return safe upstream metadata without stale framing or forged Verdict headers."""
+
+    headers = dict(result.headers)
+    headers.pop("content-length", None)
+    headers.pop("content-encoding", None)
+    return {
+        name: value for name, value in headers.items() if not name.lower().startswith("x-verdict-")
+    }
 
 
 def _evidence_scope(request: Request) -> str:
@@ -691,9 +888,8 @@ async def list_models() -> Response:
     )
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: Request) -> Response:
-    """Route and transparently forward an OpenAI chat completion request."""
+async def _relay_completion(request: Request, *, surface: str) -> Response:
+    """Route and transparently forward one OpenAI protocol surface."""
     if intelligence_instance is None or proxy_instance is None:
         raise HTTPException(status_code=503, detail="Proxy not initialized")
 
@@ -709,6 +905,8 @@ async def chat_completions(request: Request) -> Response:
         return _proxy_error(400, "request body must be a JSON object")
 
     task = _task_text(payload)
+    protocol = protocol_for_surface(surface)
+    event_prefix = "chat_completion" if surface == "chat" else "responses"
     features = request_features(payload)
     correlation_id = request.headers.get("x-verdict-correlation-id")
     if not correlation_id and isinstance(payload.get("correlation_id"), str):
@@ -719,6 +917,15 @@ async def chat_completions(request: Request) -> Response:
     criticality = payload.get("criticality", "medium")
     if not isinstance(criticality, str):
         criticality = "unknown"
+    request_identity = (
+        payload.get("model") if isinstance(payload.get("model"), str) else "unspecified"
+    )
+    request_key = idempotency_key(request, payload)
+    safety = retry_safety(request, payload, request_key)
+    attempts = build_attempts(proxy_instance, decision, protocol=protocol)
+    if not attempts:
+        return _proxy_error(503, "no executable route was selected")
+    attempted_routes = [item.route.to_dict() for item in attempts]
     route_evidence, evidence_key = _start_evidence(
         decision,
         task=task,
@@ -728,6 +935,9 @@ async def chat_completions(request: Request) -> Response:
         or (payload.get("request_id") if isinstance(payload.get("request_id"), str) else None),
         correlation_id=correlation_id,
         scope=_evidence_scope(request),
+        requested_identity=request_identity,
+        resolved_route=attempts[0].route.to_dict(),
+        attempted_routes=attempted_routes,
     )
     decision = replace(
         decision, request_id=route_evidence.routing_decision.request_id or decision.request_id
@@ -735,7 +945,7 @@ async def chat_completions(request: Request) -> Response:
     if decision.decision == "denied":
         outcome = build_outcome_event(
             route_evidence.routing_decision,
-            event_type="chat_completion_denied",
+            event_type=f"{event_prefix}_denied",
             outcome="denied",
             features=features,
         )
@@ -747,36 +957,155 @@ async def chat_completions(request: Request) -> Response:
             headers=_evidence_headers(evidence),
         )
 
-    forwarded = dict(payload)
-    # Verdict-local controls must never be forwarded to an upstream provider.
-    for local_field in ("request_id", "correlation_id", "criticality"):
-        forwarded.pop(local_field, None)
-    forwarded["model"] = decision.model
-
-    started_at = monotonic()
-    try:
-        result = await proxy_instance.chat(forwarded)
-    except asyncio.CancelledError:
-        outcome = build_outcome_event(
-            route_evidence.routing_decision,
-            event_type="chat_completion_cancelled",
-            outcome="cancelled",
-            features=features,
-            abort_observed=True,
-            latency_ms=(monotonic() - started_at) * 1000,
-        )
-        _finish_evidence(route_evidence, outcome, evidence_key)
-        raise
-    except Exception as exc:
+    if decision.protected and is_opaque_alias(attempts[0].model):
         evidence = _finish_evidence(
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
-                event_type="chat_completion_error",
+                event_type=f"{event_prefix}_denied",
+                outcome="denied",
+                features=features,
+                details={"failure_class": "opaque_route_unattested"},
+            ),
+            evidence_key,
+        )
+        return _proxy_error(
+            503,
+            "protected execution requires an attested actual route",
+            headers=_evidence_headers(evidence),
+        )
+    started_at = monotonic()
+    result: BufferedUpstreamResponse | StreamedUpstreamResponse | None = None
+    attempts_used: list[dict[str, Any]] = []
+    last_error: BaseException | None = None
+    last_status: int | None = None
+
+    def record_attempt_event(*, attempt: Any, event_type: str, details: dict[str, Any]) -> None:
+        nonlocal route_evidence
+        route_evidence = _finish_evidence(
+            route_evidence,
+            build_outcome_event(
+                route_evidence.routing_decision,
+                event_type=event_type,
+                outcome="unknown",
+                features=features,
+                details={
+                    "attempt": len(attempts_used) - 1,
+                    "model": attempt.model,
+                    "route": attempt.route.to_dict(),
+                    "policy_version": decision.policy_version,
+                    **details,
+                },
+            ),
+            evidence_key,
+        )
+
+    for index, attempt in enumerate(attempts):
+        if index:
+            edge = transition_edge(
+                attempts,
+                index - 1,
+                request_id=route_evidence.routing_decision.request_id or decision.request_id,
+                key=request_key,
+                safety=safety,
+                protocol=protocol,
+                protected=decision.protected,
+            )
+            if edge is None or not edge.legal:
+                break
+        else:
+            edge = None
+        forwarded = dict(payload)
+        # Verdict-local controls must never be forwarded to an upstream provider.
+        for local_field in ("request_id", "correlation_id", "criticality", "idempotency_key"):
+            forwarded.pop(local_field, None)
+        forwarded["model"] = attempt.model
+        try:
+            if surface == "responses":
+                result = await proxy_instance.responses(forwarded, idempotency_key=request_key)
+            else:
+                result = await proxy_instance.chat(forwarded, idempotency_key=request_key)
+            if isinstance(result, StreamedUpstreamResponse):
+                result = replace(result, body=_ValidatedSSEStream(result.body, surface=surface))
+                result = await _prime_stream(result)
+            last_status = result.status_code
+            attempts_used.append(
+                {
+                    "model": attempt.model,
+                    "route_key": attempt.route.key,
+                    "outcome": "success" if result.status_code < 400 else "error",
+                    "failure_class": None
+                    if result.status_code < 400
+                    else failure_class(result.status_code),
+                    "transition_legal": True if index == 0 else bool(edge and edge.legal),
+                }
+            )
+            record_attempt_event(
+                attempt=attempt,
+                event_type=(
+                    f"{event_prefix}_attempt_completed"
+                    if result.status_code < 400
+                    else f"{event_prefix}_attempt_failed"
+                ),
+                details={
+                    "status_code": result.status_code,
+                    "failure_class": None
+                    if result.status_code < 400
+                    else failure_class(result.status_code),
+                    "transition_edge": edge.to_dict() if edge is not None else None,
+                },
+            )
+            if result.status_code < 400 or not retryable_transport_status(result.status_code):
+                break
+            last_error = None
+        except asyncio.CancelledError:
+            outcome = build_outcome_event(
+                route_evidence.routing_decision,
+                event_type=f"{event_prefix}_cancelled",
+                outcome="cancelled",
+                features=features,
+                abort_observed=True,
+                latency_ms=(monotonic() - started_at) * 1000,
+                details={"attempted_routes": attempts_used},
+            )
+            _finish_evidence(route_evidence, outcome, evidence_key)
+            raise
+        except Exception as exc:
+            result = None
+            last_error = exc
+            attempts_used.append(
+                {
+                    "model": attempt.model,
+                    "route_key": attempt.route.key,
+                    "outcome": "error",
+                    "failure_class": failure_class(error=exc),
+                    "transition_legal": True if index == 0 else bool(edge and edge.legal),
+                }
+            )
+            record_attempt_event(
+                attempt=attempt,
+                event_type=f"{event_prefix}_attempt_failed",
+                details={
+                    "failure_class": failure_class(error=exc),
+                    "transition_edge": edge.to_dict() if edge is not None else None,
+                },
+            )
+            if not retryable_exception(exc):
+                break
+
+    if result is None:
+        evidence = _finish_evidence(
+            route_evidence,
+            build_outcome_event(
+                route_evidence.routing_decision,
+                event_type=f"{event_prefix}_error",
                 outcome="error",
                 features=features,
-                error_class=type(exc).__name__,
+                error_class=failure_class(last_status, last_error),
+                retries=max(0, len(attempts_used) - 1),
+                fallbacks=attempts_used[1:],
                 latency_ms=(monotonic() - started_at) * 1000,
+                details={"attempted_routes": attempts_used},
             ),
             evidence_key,
         )
@@ -794,8 +1123,8 @@ async def chat_completions(request: Request) -> Response:
     transport_outcome = "success" if result.status_code < 400 else "upstream_error"
     decision_record = replace(decision, transport_outcome=transport_outcome)
     response_outcome = "success" if result.status_code < 400 else "error"
-    response_headers = dict(result.headers)
-    response_headers["x-verdict-model"] = decision_record.model
+    response_headers = _relay_response_headers(result)
+    response_headers["x-verdict-model"] = attempts_used[-1]["model"]
     response_headers["x-verdict-tier"] = str(decision_record.tier)
     response_headers["x-verdict-request-id"] = decision_record.request_id
     response_headers["x-verdict-decision"] = decision_record.decision
@@ -809,11 +1138,14 @@ async def chat_completions(request: Request) -> Response:
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
-                event_type="chat_completion_buffered",
+                event_type=f"{event_prefix}_buffered",
                 outcome=response_outcome,
                 status_code=result.status_code,
                 features=features,
                 latency_ms=(monotonic() - started_at) * 1000,
+                retries=max(0, len(attempts_used) - 1),
+                fallbacks=attempts_used[1:],
+                details={"attempted_routes": attempts_used},
             ),
             evidence_key,
         )
@@ -852,11 +1184,23 @@ async def chat_completions(request: Request) -> Response:
                 abort_observed=phase != "completed",
                 error_class=error_class,
                 latency_ms=(monotonic() - started_at) * 1000,
-                details=details,
+                retries=max(0, len(attempts_used) - 1),
+                fallbacks=attempts_used[1:],
+                details={
+                    **details,
+                    "attempted_routes": attempts_used,
+                    "actual_route": result.actual_route.to_dict()
+                    if result.actual_route is not None
+                    else None,
+                    "actual_route_status": (response_actual_route_status(result)),
+                },
             )
 
         evidence_stream = _EvidenceStreamAdapter(
-            result.body, on_terminal=finalize_stream, event_factory=stream_event
+            result.body,
+            on_terminal=finalize_stream,
+            event_factory=stream_event,
+            event_prefix=event_prefix,
         )
 
         return _EvidenceStreamingResponse(
@@ -868,6 +1212,18 @@ async def chat_completions(request: Request) -> Response:
     raise TypeError(f"unsupported upstream response: {type(result)!r}")
 
 
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request) -> Response:
+    """Route and transparently forward an OpenAI chat completion request."""
+    return await _relay_completion(request, surface="chat")
+
+
+@app.post("/v1/responses")
+async def responses(request: Request) -> Response:
+    """Route and transparently forward an OpenAI Responses request."""
+    return await _relay_completion(request, surface="responses")
+
+
 def _start_evidence(
     decision: Any,
     *,
@@ -877,6 +1233,9 @@ def _start_evidence(
     request_id: str | None = None,
     correlation_id: str | None = None,
     scope: str,
+    requested_identity: str | None = None,
+    resolved_route: dict[str, Any] | None = None,
+    attempted_routes: list[dict[str, Any]] | None = None,
 ) -> tuple[ExplainEvidence, str | None]:
     """Create and retain immutable decision evidence before upstream I/O."""
 
@@ -887,6 +1246,9 @@ def _start_evidence(
         features=features,
         request_id=request_id,
         correlation_id=correlation_id,
+        requested_identity=requested_identity,
+        resolved_route=resolved_route,
+        attempted_routes=attempted_routes,
     )
     started = build_outcome_event(
         routing,
