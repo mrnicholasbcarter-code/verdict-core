@@ -253,6 +253,14 @@ from verdict.runtime_contract import (
     default_service_specs,
 )
 from verdict.runtime_daemons import ProcfsInspector, RuntimeManager
+from verdict.runtime_health import (
+    RUNTIME_HEALTH_SCHEMA_VERSION,
+    RuntimeHealthError,
+    RuntimeHealthObservation,
+    RuntimeHealthReport,
+    RuntimeHealthStatus,
+    build_runtime_health_report,
+)
 from verdict.structured_qualification import (
     CHAT_STRICT_OUTPUT_CASE,
     RESPONSES_STRICT_OUTPUT_CASE,
@@ -349,6 +357,7 @@ __all__ = [
     "RESPONSES_STREAM_CASE",
     "RESPONSES_STRICT_OUTPUT_CASE",
     "RUNTIME_CONTRACT_VERSION",
+    "RUNTIME_HEALTH_SCHEMA_VERSION",
     "STRICT_RESULT_SCHEMA",
     "STRUCTURED_OUTPUT_CASES",
     "STRUCTURED_QUALIFICATION_VERSION",
@@ -515,6 +524,10 @@ __all__ = [
     "RoutingDecision",
     "RoutingDecisionContract",
     "RuntimeCandidate",
+    "RuntimeHealthError",
+    "RuntimeHealthObservation",
+    "RuntimeHealthReport",
+    "RuntimeHealthStatus",
     "RuntimeManager",
     "RuntimeManagerError",
     "RuntimeObservation",
@@ -569,6 +582,7 @@ __all__ = [
     "build_evaluation_report",
     "build_outcome_event",
     "build_routing_decision_contract",
+    "build_runtime_health_report",
     "compile_policy",
     "content_hash",
     "counterfactual_from_receipt",

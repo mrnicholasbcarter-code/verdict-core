@@ -864,8 +864,11 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     """Scan the Verdict setup and OmniRoute connections for issues and repair them."""
     if output_json:
         from verdict.memory_bridge import run_doctor_diagnostics
+        from verdict.runtime_daemons import RuntimeManager
+        from verdict.runtime_health import build_runtime_health_report
 
         report = run_doctor_diagnostics(fix=fix)
+        report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
         print(json.dumps(report, indent=2, sort_keys=True))
         if report["status"] != "healthy":
             raise SystemExit(1)
@@ -1206,6 +1209,10 @@ def cmd_runtime(
                 )
             else:
                 report = manager.reconcile_plan()
+        elif operation == "explain":
+            from verdict.runtime_health import build_runtime_health_report
+
+            report = build_runtime_health_report(manager.status())
         else:
             raise RuntimeManagerError(f"unsupported runtime operation: {operation}")
     except RuntimeManagerError as exc:
@@ -1220,6 +1227,8 @@ def cmd_runtime(
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
         console.print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    if operation == "explain":
+        return
     if not report.passed:
         raise SystemExit(1)
 
@@ -1398,6 +1407,10 @@ def main() -> None:
     runtime_sub = runtime_p.add_subparsers(dest="runtime_command", required=True)
     runtime_status_p = runtime_sub.add_parser("status", help="Report runtime ownership status")
     runtime_status_p.add_argument("--json", action="store_true", help="Output JSON")
+    runtime_explain_p = runtime_sub.add_parser(
+        "explain", help="Report observed runtime capability and health evidence"
+    )
+    runtime_explain_p.add_argument("--json", action="store_true", help="Output JSON")
     runtime_reconcile_p = runtime_sub.add_parser(
         "reconcile", help="Plan or explicitly apply duplicate-service reconciliation"
     )
