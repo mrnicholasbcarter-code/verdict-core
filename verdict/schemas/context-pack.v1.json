@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/context-pack.v1.json",
+  "title": "Verdict ContextPack v1",
+  "type": "object",
+  "required": ["schema_version", "plan", "unit", "pack", "receipt"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "plan": {"$ref": "#/$defs/context_plan"},
+    "unit": {"$ref": "#/$defs/context_unit"},
+    "pack": {"$ref": "#/$defs/context_pack"},
+    "receipt": {"$ref": "#/$defs/context_receipt"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "slot_type": {"enum": ["system", "receipt", "memory", "dynamic", "instructions", "policy", "state", "evidence", "tools", "examples", "history"]},
+    "context_plan": {
+      "type": "object",
+      "required": ["schema_version", "plan_id", "candidate_id", "tenant_scope", "project_scope", "token_budget", "input_token_budget", "output_token_reserve", "tool_token_reserve", "required_slot_types", "retrieval_algorithm", "retrieval_version", "created_at"],
+      "properties": {
+        "schema_version": {"const": "1"}, "plan_id": {"type": "string", "minLength": 1}, "candidate_id": {"type": "string", "minLength": 1},
+        "tenant_scope": {"type": "string", "minLength": 1}, "project_scope": {"type": "string", "minLength": 1},
+        "token_budget": {"type": "integer", "minimum": 1}, "input_token_budget": {"type": "integer", "minimum": 1},
+        "output_token_reserve": {"type": "integer", "minimum": 0}, "tool_token_reserve": {"type": "integer", "minimum": 0},
+        "required_slot_types": {"type": "array", "items": {"$ref": "#/$defs/slot_type"}},
+        "retrieval_algorithm": {"type": "string", "minLength": 1}, "retrieval_version": {"type": "string", "minLength": 1}, "created_at": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "context_unit": {
+      "type": "object",
+      "required": ["schema_version", "unit_id", "slot_type", "key", "content", "source_uri", "source_digest", "revision", "span", "observed_at", "valid_from", "valid_until", "trust", "authority", "sensitivity", "tenant_scope", "project_scope", "raw", "transform_lineage", "token_count", "cache_key", "confidence", "created_at"],
+      "properties": {
+        "schema_version": {"const": "1"}, "unit_id": {"type": "string", "minLength": 1}, "slot_type": {"$ref": "#/$defs/slot_type"}, "key": {"type": "string", "minLength": 1}, "content": {"type": "string"},
+        "source_uri": {"type": "string", "minLength": 1}, "source_digest": {"$ref": "#/$defs/digest"}, "revision": {"type": "string", "minLength": 1},
+        "span": {"type": ["object", "null"], "additionalProperties": {"type": "integer", "minimum": 0}}, "observed_at": {"$ref": "#/$defs/timestamp"}, "valid_from": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}, "valid_until": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "trust": {"type": "string", "minLength": 1}, "authority": {"type": "string", "minLength": 1}, "sensitivity": {"type": "string", "minLength": 1}, "tenant_scope": {"type": "string", "minLength": 1}, "project_scope": {"type": "string", "minLength": 1}, "raw": {"type": "boolean"},
+        "transform_lineage": {"type": "array", "items": {"type": "string", "minLength": 1}}, "token_count": {"type": "integer", "minimum": 1}, "cache_key": {"type": ["string", "null"]}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "created_at": {"type": "number"}
+      },
+      "additionalProperties": false
+    },
+    "context_decision": {
+      "type": "object",
+      "required": ["schema_version", "unit_id", "action", "reason", "input_tokens", "output_tokens", "fidelity", "reversible_ref"],
+      "properties": {"schema_version": {"const": "1"}, "unit_id": {"type": "string", "minLength": 1}, "action": {"enum": ["include", "exclude", "transform"]}, "reason": {"type": "string", "minLength": 1}, "input_tokens": {"type": "integer", "minimum": 0}, "output_tokens": {"type": "integer", "minimum": 0}, "fidelity": {"type": "string", "minLength": 1}, "reversible_ref": {"type": ["string", "null"]}},
+      "additionalProperties": false
+    },
+    "context_slot": {
+      "type": "object",
+      "required": ["slot_type", "key", "content", "source", "confidence", "sensitivity", "created_at", "source_uri", "source_digest", "revision", "tenant_scope", "project_scope", "valid_until"],
+      "properties": {"slot_type": {"$ref": "#/$defs/slot_type"}, "key": {"type": "string", "minLength": 1}, "content": {"type": "string"}, "source": {"type": "string", "minLength": 1}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "sensitivity": {"type": "string"}, "created_at": {"type": "number"}, "source_uri": {"type": ["string", "null"]}, "source_digest": {"type": ["string", "null"]}, "revision": {"type": "string"}, "tenant_scope": {"type": "string"}, "project_scope": {"type": "string"}, "valid_until": {"type": ["string", "null"]}},
+      "additionalProperties": false
+    },
+    "context_pack": {
+      "type": "object",
+      "required": ["schema_version", "pack_id", "plan_id", "plan_digest", "candidate_id", "tenant_scope", "project_scope", "compiled_prompt", "used_tokens", "token_budget", "slots", "units", "conflicts", "decisions", "truncated_count", "created_at", "receipt_id"],
+      "properties": {"schema_version": {"const": "1"}, "pack_id": {"type": "string", "minLength": 1}, "plan_id": {"type": ["string", "null"]}, "plan_digest": {"type": ["string", "null"]}, "candidate_id": {"type": ["string", "null"]}, "tenant_scope": {"type": "string"}, "project_scope": {"type": "string"}, "compiled_prompt": {"type": "string"}, "used_tokens": {"type": "integer", "minimum": 0}, "token_budget": {"type": "integer", "minimum": 1}, "slots": {"type": "array", "items": {"$ref": "#/$defs/context_slot"}}, "units": {"type": "array", "items": {"$ref": "#/$defs/context_unit"}}, "conflicts": {"type": "array", "items": {"type": "object"}}, "decisions": {"type": "array", "items": {"$ref": "#/$defs/context_decision"}}, "truncated_count": {"type": "integer", "minimum": 0}, "created_at": {"type": "number"}, "receipt_id": {"type": ["string", "null"]}},
+      "additionalProperties": false
+    },
+    "context_receipt": {
+      "type": "object",
+      "required": ["schema_version", "receipt_id", "plan_digest", "pack_digest", "decisions", "unresolved_uncertainties", "created_at"],
+      "properties": {"schema_version": {"const": "1"}, "receipt_id": {"type": "string", "minLength": 1}, "plan_digest": {"$ref": "#/$defs/digest"}, "pack_digest": {"$ref": "#/$defs/digest"}, "decisions": {"type": "array", "items": {"$ref": "#/$defs/context_decision"}}, "unresolved_uncertainties": {"type": "array", "items": {"type": "string", "minLength": 1}}, "created_at": {"$ref": "#/$defs/timestamp"}},
+      "additionalProperties": false
+    }
+  }
+}
