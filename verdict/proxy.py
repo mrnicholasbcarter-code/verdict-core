@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from verdict.capability_passports import RouteIdentity
+from verdict.responses_compatibility import adapt_responses_payload
 from verdict.security import host_is_allowed, validate_upstream_url
 
 _HOP_BY_HOP_HEADERS = frozenset(
@@ -40,6 +41,7 @@ class BufferedUpstreamResponse:
     headers: list[tuple[str, str]]
     body: bytes
     actual_route: RouteIdentity | None = None
+    compatibility_rule_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,7 @@ class StreamedUpstreamResponse:
     headers: list[tuple[str, str]]
     body: AsyncIterator[bytes]
     actual_route: RouteIdentity | None = None
+    compatibility_rule_version: str | None = None
 
 
 class UpstreamProxy:
@@ -161,12 +164,28 @@ class UpstreamProxy:
     async def responses(
         self, payload: dict[str, Any], *, idempotency_key: str | None = None
     ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
-        """Forward a Responses request with the same transparent semantics as Chat."""
+        """Forward a Responses request with route-scoped compatibility adaptation."""
 
-        return await self._forward("responses", payload, idempotency_key=idempotency_key)
+        model = payload.get("model")
+        route = self.route_identity(
+            model if isinstance(model, str) else "configured-upstream", "openai.responses"
+        )
+        adapted_payload, compatibility_rule_version = adapt_responses_payload(payload, route)
+
+        return await self._forward(
+            "responses",
+            adapted_payload,
+            idempotency_key=idempotency_key,
+            compatibility_rule_version=compatibility_rule_version,
+        )
 
     async def _forward(
-        self, path: str, payload: dict[str, Any], *, idempotency_key: str | None = None
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        compatibility_rule_version: str | None = None,
     ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
         client = self._client()
         self._validate_destination()
@@ -188,6 +207,7 @@ class UpstreamProxy:
                     headers=self._response_headers(response),
                     body=response.content,
                     actual_route=self._actual_route(response),
+                    compatibility_rule_version=compatibility_rule_version,
                 )
             finally:
                 await client.aclose()
@@ -203,6 +223,7 @@ class UpstreamProxy:
                     headers=response_headers,
                     body=buffered_body,
                     actual_route=actual_route,
+                    compatibility_rule_version=compatibility_rule_version,
                 )
             finally:
                 await response.aclose()
@@ -221,4 +242,5 @@ class UpstreamProxy:
             headers=response_headers,
             body=stream_body(),
             actual_route=actual_route,
+            compatibility_rule_version=compatibility_rule_version,
         )

@@ -54,7 +54,7 @@ from verdict.relay import (
     response_actual_route_status,
     retry_safety,
     retryable_exception,
-    retryable_transport_status,
+    retryable_response_status,
     transition_edge,
 )
 from verdict.security import bearer_matches, redact_text, validate_server_security
@@ -1038,6 +1038,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     if result.status_code < 400
                     else failure_class(result.status_code),
                     "transition_legal": True if index == 0 else bool(edge and edge.legal),
+                    "compatibility_rule_version": result.compatibility_rule_version,
                 }
             )
             record_attempt_event(
@@ -1053,9 +1054,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     if result.status_code < 400
                     else failure_class(result.status_code),
                     "transition_edge": edge.to_dict() if edge is not None else None,
+                    "compatibility_rule_version": result.compatibility_rule_version,
                 },
             )
-            if result.status_code < 400 or not retryable_transport_status(result.status_code):
+            if result.status_code < 400 or not retryable_response_status(
+                result.status_code,
+                compatibility_applied=result.compatibility_rule_version is not None,
+            ):
                 break
             last_error = None
         except asyncio.CancelledError:
@@ -1145,7 +1150,10 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 latency_ms=(monotonic() - started_at) * 1000,
                 retries=max(0, len(attempts_used) - 1),
                 fallbacks=attempts_used[1:],
-                details={"attempted_routes": attempts_used},
+                details={
+                    "attempted_routes": attempts_used,
+                    "compatibility_rule_version": result.compatibility_rule_version,
+                },
             ),
             evidence_key,
         )
@@ -1189,6 +1197,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 details={
                     **details,
                     "attempted_routes": attempts_used,
+                    "compatibility_rule_version": result.compatibility_rule_version,
                     "actual_route": result.actual_route.to_dict()
                     if result.actual_route is not None
                     else None,
