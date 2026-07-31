@@ -748,3 +748,132 @@ def test_cmd_catalog_probe_requires_consent_before_fetching_catalog_probe(
     assert exc.value.code == 2
     report = json.loads(capsys.readouterr().out)
     assert "explicit consent" in report["error"]
+
+
+def _make_documents_db(path: Path, rows: list[tuple[str, str]]) -> Path:
+    import sqlite3
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE documents (id TEXT, path TEXT, content TEXT);")
+        connection.executemany(
+            "INSERT INTO documents VALUES (?, ?, ?)",
+            [
+                (str(index), source_path, content)
+                for index, (source_path, content) in enumerate(rows)
+            ],
+        )
+    return path
+
+
+def test_cmd_memory_masterdocs_default_is_unavailable_machine_readable_and_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --allow-legacy-sqlite the migration boundary reports unavailable JSON and exits 1."""
+    import argparse
+
+    from verdict.memory_masterdocs_adapter import MasterDocsAdapter
+
+    db = _make_documents_db(tmp_path / "MasterDocsRAG.db", [("docs/readme.md", "# Hi\n\nbody")])
+    # The adapter is constructed inside cmd_memory with allowlisted_roots=(cwd,); pin cwd so the
+    # fixture db is reachable. We canonicalize directly to assert the boundary outcome shape.
+    monkeypatch.chdir(tmp_path)
+    adapter = MasterDocsAdapter(allowlisted_roots=(tmp_path,))
+    blocked = adapter.canonicalize_db_records(db, allow_legacy_sqlite=False)
+    assert blocked.report.status == "unavailable"
+    assert blocked.records == ()
+
+    args = argparse.Namespace(
+        memory_command="masterdocs",
+        db_path=str(tmp_path / "memory.db"),
+        db=str(db),
+        allow_legacy_sqlite=False,
+        dry_run=False,
+        limit=1000,
+        ingest_timestamp=None,
+        json=True,
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_memory(args)
+    assert exc.value.code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["report"]["status"] == "unavailable"
+    assert out["records"] == []
+
+
+def test_cmd_memory_masterdocs_allow_legacy_dry_run_json_canonicalizes_without_writing_plane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--allow-legacy-sqlite --dry-run --json canonicalizes a small documents fixture and writes no MemoryPlane."""
+    import argparse
+
+    from verdict.memory_plane import MemoryPlane
+
+    db = _make_documents_db(tmp_path / "MasterDocsRAG.db", [("docs/readme.md", "# Header\n\nbody")])
+    # Pin the process cwd so cmd_memory's adapter allowlist (cwd) covers the fixture.
+    monkeypatch.chdir(tmp_path)
+    memory_db = tmp_path / "memory.db"
+
+    args = argparse.Namespace(
+        memory_command="masterdocs",
+        db_path=str(memory_db),
+        db=str(db),
+        allow_legacy_sqlite=True,
+        dry_run=True,
+        limit=1000,
+        ingest_timestamp=0.0,
+        json=True,
+    )
+    cli.cmd_memory(args)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["status"] == "ok"
+    assert payload["report"]["status"] not in {"unavailable", "rejected", "empty"}
+    assert payload["report"]["documents_accepted"] == 1
+    assert payload["report"]["chunks_emitted"] == 1
+    # Dry run emits canonical chunks via the report but performs no plane import.
+    assert payload["report"]["chunks_emitted"] == 1
+    assert payload["report"]["status"] == "ok"
+    record = payload["records"][0]
+    assert record["namespace"] == "masterdocs"
+    assert record["trust"] == "imported-unverified"
+    assert record["authority_verified"] is False
+
+    # Dry run canonicalizes without importing any records into the configured plane.
+    with MemoryPlane(str(memory_db)) as plane:
+        assert plane.search("Header", namespace="masterdocs") == []
+
+
+def test_cmd_memory_masterdocs_accepted_import_reports_canonical_status_and_writes_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An accepted non-dry-run import reports canonical status and persists records to MemoryPlane."""
+    import argparse
+
+    from verdict.memory_plane import MemoryPlane
+
+    db = _make_documents_db(tmp_path / "MasterDocsRAG.db", [("docs/readme.md", "# Header\n\nbody")])
+    monkeypatch.chdir(tmp_path)
+    memory_db = tmp_path / "memory.db"
+
+    args = argparse.Namespace(
+        memory_command="masterdocs",
+        db_path=str(memory_db),
+        db=str(db),
+        allow_legacy_sqlite=True,
+        dry_run=False,
+        limit=1000,
+        ingest_timestamp=0.0,
+        json=True,
+    )
+    cli.cmd_memory(args)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["status"] == "ok"
+    assert payload["report"]["documents_accepted"] == 1
+    assert payload["report"]["chunks_emitted"] == 1
+    assert payload["report"]["ingested"] == 1
+
+    assert memory_db.exists()
+    with MemoryPlane(str(memory_db)) as plane:
+        hits = plane.search("Header", namespace="masterdocs")
+        assert len(hits) == 1
+        assert hits[0].key.startswith("docs/readme.md#chunk-")
+        assert hits[0].trust == "imported-unverified"
