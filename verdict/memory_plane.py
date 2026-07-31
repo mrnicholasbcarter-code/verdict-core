@@ -268,19 +268,20 @@ class MemoryPlane:
                 )
             stored = replace(normalized, supersedes=supersedes)
             self._insert(stored)
-            self._db.execute(
-                "INSERT INTO memory_fts(record_id, namespace, key, content, source, trust, scope) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    stored.record_id,
-                    stored.namespace,
-                    stored.key,
-                    stored.content,
-                    stored.source,
-                    stored.trust,
-                    stored.scope,
-                ),
-            )
+            if stored.status == "active":
+                self._db.execute(
+                    "INSERT INTO memory_fts(record_id, namespace, key, content, source, trust, scope) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        stored.record_id,
+                        stored.namespace,
+                        stored.key,
+                        stored.content,
+                        stored.source,
+                        stored.trust,
+                        stored.scope,
+                    ),
+                )
             self._db.execute("COMMIT")
             return stored
         except Exception:
@@ -298,6 +299,41 @@ class MemoryPlane:
         ):
             raise ValueError("replacement identity does not match the target")
         return self.put(replacement)
+
+    def tombstone(self, namespace: str, key: str, *, scope: str = "default") -> MemoryRecord | None:
+        """Append a privacy-safe tombstone for the current active record.
+
+        The prior record remains in append-only history but is superseded and
+        removed from retrieval.  The marker intentionally contains no copy of
+        the deleted content and is idempotent when no active record remains.
+        """
+        current = self._active_row(namespace, scope, key)
+        if current is None:
+            return None
+        now = time.time()
+        record = MemoryRecord(
+            record_id=f"tombstone:{current['record_id']}",
+            namespace=namespace,
+            key=key,
+            content="[tombstone]",
+            source="memory-plane",
+            trust="local-operation",
+            scope=scope,
+            metadata={"tombstone_for": current["record_id"]},
+            created_at=now,
+            updated_at=now,
+            supersedes=current["record_id"],
+            authority="memory-plane",
+            sensitivity=current["sensitivity"],
+            provenance={
+                "operation": "tombstone",
+                "tombstone_for": current["record_id"],
+                "schema_version": SCHEMA_VERSION,
+            },
+            confidence=1.0,
+            status="tombstone",
+        )
+        return self._put(record, allow_authority=False)
 
     def get(self, namespace: str, key: str, *, scope: str = "default") -> MemoryRecord | None:
         row = self._active_row(namespace, scope, key)
