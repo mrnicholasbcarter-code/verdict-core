@@ -269,6 +269,13 @@ from verdict.protocol_probes import (
     ProtocolProbeTransport,
     ProtocolSurface,
 )
+from verdict.qualification_report import (
+    QUALIFICATION_REPORT_VERSION,
+    QualificationDecision,
+    QualificationEvidenceSummary,
+    QualificationReport,
+    build_qualification_report,
+)
 from verdict.responses_compatibility import (
     NVIDIA_RESPONSES_COMPATIBILITY_RULE,
     RESPONSES_COMPATIBILITY_RULE_VERSION,
@@ -416,6 +423,7 @@ __all__ = [
     "PROTOCOL_PROBE_CASES",
     "PROTOCOL_PROBE_PROMPT",
     "PROTOCOL_PROBE_VERSION",
+    "QUALIFICATION_REPORT_VERSION",
     "RESPONSES_COMPATIBILITY_RULES",
     "RESPONSES_COMPATIBILITY_RULE_VERSION",
     "RESPONSES_NON_STREAM_CASE",
@@ -601,6 +609,9 @@ __all__ = [
     "ProtocolProbeTransport",
     "ProtocolSurface",
     "ProviderConfig",
+    "QualificationDecision",
+    "QualificationEvidenceSummary",
+    "QualificationReport",
     "ReadinessReport",
     "ReceiptKind",
     "ResponsesCompatibilityError",
@@ -685,6 +696,7 @@ __all__ = [
     "build_default_adapter_registry",
     "build_evaluation_report",
     "build_outcome_event",
+    "build_qualification_report",
     "build_routing_decision_contract",
     "build_runtime_compatibility_report",
     "build_runtime_health_report",
