@@ -55,3 +55,6 @@ skills-lock.json
 
 .env.memory
 .verdict/adaptive_state/
+
+# Private claim evidence stays outside the repository.
+docs/proof/private_*
