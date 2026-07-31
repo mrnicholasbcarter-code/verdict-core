@@ -74,6 +74,14 @@ def retryable_transport_status(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429} or status_code >= 500
 
 
+def retryable_response_status(status_code: int, *, compatibility_applied: bool) -> bool:
+    """Allow ordinary transient retries but stop deterministic compatibility 4xx errors."""
+
+    if compatibility_applied and status_code in {400, 404, 422}:
+        return False
+    return retryable_transport_status(status_code)
+
+
 def retryable_exception(error: BaseException) -> bool:
     return isinstance(error, (httpx.TimeoutException, httpx.NetworkError, ConnectionError, OSError))
 
@@ -207,6 +215,7 @@ __all__ = [
     "response_actual_route_status",
     "retry_safety",
     "retryable_exception",
+    "retryable_response_status",
     "retryable_transport_status",
     "transition_edge",
 ]

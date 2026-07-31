@@ -269,6 +269,14 @@ from verdict.protocol_probes import (
     ProtocolProbeTransport,
     ProtocolSurface,
 )
+from verdict.responses_compatibility import (
+    NVIDIA_RESPONSES_COMPATIBILITY_RULE,
+    RESPONSES_COMPATIBILITY_RULE_VERSION,
+    RESPONSES_COMPATIBILITY_RULES,
+    ResponsesCompatibilityError,
+    ResponsesCompatibilityRule,
+    adapt_responses_payload,
+)
 from verdict.runtime_contract import (
     DEFAULT_RUNTIME_STATE_DIR,
     RUNTIME_CONTRACT_VERSION,
@@ -384,6 +392,7 @@ __all__ = [
     "GATEWAY_ADAPTER_CONTRACT_VERSION",
     "GATE_VERSION",
     "MANIFEST_VERSION",
+    "NVIDIA_RESPONSES_COMPATIBILITY_RULE",
     "POLICY_SCHEMA_VERSION",
     "POLICY_VERSION",
     "PROBE_DIAGNOSTICS_VERSION",
@@ -391,6 +400,8 @@ __all__ = [
     "PROTOCOL_PROBE_CASES",
     "PROTOCOL_PROBE_PROMPT",
     "PROTOCOL_PROBE_VERSION",
+    "RESPONSES_COMPATIBILITY_RULES",
+    "RESPONSES_COMPATIBILITY_RULE_VERSION",
     "RESPONSES_NON_STREAM_CASE",
     "RESPONSES_STREAM_CASE",
     "RESPONSES_STRICT_OUTPUT_CASE",
@@ -574,6 +585,8 @@ __all__ = [
     "ProviderConfig",
     "ReadinessReport",
     "ReceiptKind",
+    "ResponsesCompatibilityError",
+    "ResponsesCompatibilityRule",
     "RetrySafety",
     "RouteIdentity",
     "RouteIdentityAttestation",
@@ -640,6 +653,7 @@ __all__ = [
     "WorkflowKind",
     "WorkflowPlan",
     "WorkflowSelector",
+    "adapt_responses_payload",
     "build_cache_report",
     "build_default_adapter_registry",
     "build_evaluation_report",

@@ -14,12 +14,24 @@ from fastapi.testclient import TestClient
 from starlette.requests import ClientDisconnect
 
 import verdict.api as api
+from verdict.capability_passports import RouteIdentity
 from verdict.intelligence import ReadinessReport
 from verdict.models import RoutingDecision
 from verdict.proxy import UpstreamProxy
+from verdict.responses_compatibility import (
+    NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS,
+    NVIDIA_RESPONSES_COMPATIBILITY_RULE,
+    RESPONSES_COMPATIBILITY_RULE_VERSION,
+    ResponsesCompatibilityError,
+    ResponsesCompatibilityRule,
+    adapt_responses_payload,
+)
 
 ROOT = Path(__file__).parents[1]
 RELAY_FIXTURES = json.loads((ROOT / "tests" / "fixtures" / "relay-v1.json").read_text())
+RESPONSES_COMPATIBILITY_FIXTURE = json.loads(
+    (ROOT / "tests" / "fixtures" / "responses-compatibility-v1.json").read_text()
+)
 
 
 class ChunkedSSE(httpx.AsyncByteStream):
@@ -657,6 +669,181 @@ def test_responses_endpoint_preserves_wire_shape_and_server_idempotency(monkeypa
     assert forwarded["url"].endswith("/v1/responses")
     assert forwarded["headers"]["idempotency-key"] == "response-idem"
     assert forwarded["body"] == {**payload, "model": "selected-model"}
+
+
+def _route(model_id: str, provider: str) -> RouteIdentity:
+    return RouteIdentity(
+        gateway="verdict-upstream",
+        provider=provider,
+        connection="configured",
+        endpoint="https://upstream.example/responses",
+        protocol="openai.responses",
+        model_id=model_id,
+    )
+
+
+def test_responses_compatibility_is_provider_model_and_protocol_scoped() -> None:
+    payload = {
+        "model": NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0],
+        "prompt_cache_key": "cache-key",
+        "truncation": "auto",
+        "client_metadata": {"client": "codex"},
+        "tools": [{"type": "function", "name": "lookup"}],
+    }
+    adapted, version = adapt_responses_payload(
+        payload, _route(NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0], "nvidia")
+    )
+
+    assert version == RESPONSES_COMPATIBILITY_RULE_VERSION
+    assert "prompt_cache_key" not in adapted
+    assert adapted["truncation"] == "auto"
+    assert adapted["client_metadata"] == {"client": "codex"}
+    assert adapted["tools"] == payload["tools"]
+    assert payload["prompt_cache_key"] == "cache-key"
+
+    unchanged, no_rule = adapt_responses_payload(
+        payload, _route(NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0], "other-provider")
+    )
+    assert no_rule is None
+    assert unchanged == payload
+
+
+def test_responses_compatibility_does_not_change_codex_native_routes() -> None:
+    payload = {
+        "model": NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0],
+        "prompt_cache_key": "cache-key",
+    }
+    adapted, version = adapt_responses_payload(
+        payload, _route(NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0], "codex")
+    )
+    assert version is None
+    assert adapted == payload
+
+    chat_route = RouteIdentity(
+        gateway="verdict-upstream",
+        provider="nvidia",
+        connection="configured",
+        endpoint="https://upstream.example/chat/completions",
+        protocol="openai.chat.completions",
+        model_id=NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0],
+    )
+    adapted_chat, chat_version = adapt_responses_payload(payload, chat_route)
+    assert chat_version is None
+    assert adapted_chat == payload
+
+
+def test_responses_compatibility_rejects_ambiguous_rules() -> None:
+    rule = ResponsesCompatibilityRule(
+        rule_id="duplicate",
+        version="duplicate-v1",
+        provider="nvidia",
+        model_patterns=(NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0],),
+        protocol="openai.responses",
+        strip_fields=frozenset({"truncation"}),
+    )
+    with pytest.raises(ResponsesCompatibilityError, match="multiple"):
+        adapt_responses_payload(
+            {"truncation": "auto"},
+            _route(NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0], "nvidia"),
+            rules=(NVIDIA_RESPONSES_COMPATIBILITY_RULE, rule),
+        )
+
+
+def test_proxy_applies_nvidia_responses_rule_before_http_transport() -> None:
+    transport = ResponsesTransport()
+    proxy = UpstreamProxy(
+        "https://upstream.example/v1", transport=transport, allow_private_hosts={"upstream.example"}
+    )
+    payload = {
+        "model": NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0],
+        "input": "hello",
+        "prompt_cache_key": "cache-key",
+        "truncation": "auto",
+        "client_metadata": {"client": "codex"},
+    }
+
+    asyncio.run(proxy.responses(payload))
+
+    forwarded = transport.requests[0]["body"]
+    assert "prompt_cache_key" not in forwarded
+    assert forwarded["truncation"] == "auto"
+    assert forwarded["client_metadata"] == {"client": "codex"}
+
+
+def test_responses_compatibility_rule_reloads_from_durable_fixture() -> None:
+    assert RESPONSES_COMPATIBILITY_FIXTURE["schema_version"] == "1"
+    reloaded = tuple(
+        ResponsesCompatibilityRule.from_dict(rule)
+        for rule in RESPONSES_COMPATIBILITY_FIXTURE["rules"]
+    )
+    assert reloaded == (NVIDIA_RESPONSES_COMPATIBILITY_RULE,)
+    assert (
+        ResponsesCompatibilityRule.from_dict(NVIDIA_RESPONSES_COMPATIBILITY_RULE.to_dict())
+        == NVIDIA_RESPONSES_COMPATIBILITY_RULE
+    )
+
+
+def test_proxy_preserves_nvidia_responses_streaming_and_compatibility_metadata() -> None:
+    transport = ResponsesTransport(stream=True)
+    proxy = UpstreamProxy(
+        "https://upstream.example/v1", transport=transport, allow_private_hosts={"upstream.example"}
+    )
+    payload = {
+        "model": NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[1],
+        "input": "hello",
+        "prompt_cache_key": "cache-key",
+        "truncation": "auto",
+        "client_metadata": {"client": "codex"},
+        "tools": [{"type": "function", "name": "lookup"}],
+        "stream": True,
+    }
+
+    async def run() -> tuple[bytes, str | None]:
+        result = await proxy.responses(payload)
+        assert result.compatibility_rule_version == RESPONSES_COMPATIBILITY_RULE_VERSION
+        assert result.status_code == 200
+        assert hasattr(result.body, "__aiter__")
+        body = b"".join([chunk async for chunk in result.body])
+        return body, result.compatibility_rule_version
+
+    body, version = asyncio.run(run())
+    assert version == RESPONSES_COMPATIBILITY_RULE_VERSION
+    assert b"response.output_text.delta" in body
+    forwarded = transport.requests[0]["body"]
+    assert "prompt_cache_key" not in forwarded
+    assert forwarded["truncation"] == "auto"
+    assert forwarded["client_metadata"] == {"client": "codex"}
+    assert forwarded["tools"] == payload["tools"]
+    assert forwarded["stream"] is True
+
+
+def test_compatibility_400_is_not_retried_unchanged_or_failed_over(monkeypatch) -> None:
+    transport = ResponsesTransport(statuses=[400, 200])
+    _configure_test_app(monkeypatch, transport)
+
+    class NvidiaIntelligence(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None):
+            decision = await super().route(task, criticality, context)
+            return replace(
+                decision,
+                model=NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0],
+                alternatives=["nvidia/backup"],
+                candidate_states=[
+                    {"model_id": "nvidia/backup", "admitted": True, "state": "ready"}
+                ],
+            )
+
+    monkeypatch.setattr(api, "_build_intelligence", lambda: NvidiaIntelligence())
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={"input": "preserve all fields", "prompt_cache_key": "cache-key"},
+            headers={"idempotency-key": "compat-400"},
+        )
+
+    assert response.status_code == 400
+    assert len(transport.requests) == 1
+    assert "prompt_cache_key" not in transport.requests[0]["body"]
 
 
 def test_relay_fixture_corpus_is_versioned_and_covers_both_surfaces() -> None:
