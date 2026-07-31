@@ -126,8 +126,23 @@ PROVIDER_MAPPING = {
 }
 
 
-def cmd_setup() -> None:
-    """Interactive setup wizard."""
+def cmd_setup(
+    *, dry_run: bool = False, output_json: bool = False, non_interactive: bool = False
+) -> None:
+    """Interactive setup wizard or a mutation-free setup plan."""
+    if dry_run or output_json or non_interactive:
+        from verdict.setup_plan import build_setup_plan
+
+        plan: dict[str, Any] = build_setup_plan().to_dict()
+        if output_json:
+            print(json.dumps(plan, indent=2, sort_keys=True))
+        else:
+            print("Verdict setup plan (dry-run; no changes made)")
+            print(f"Config: {plan['config']['path']}")
+            for action in plan["actions"]:
+                print(f"- {action['description']}")
+        return
+
     # First, run auto-detection to show user what's available
     _print_detection_banner()
     detected_result = None
@@ -1358,7 +1373,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Verdict: policy-gated LLM Router")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    subparsers.add_parser("setup", help="Interactive setup wizard")
+    setup_cli_p = subparsers.add_parser("setup", help="Plan or apply the interactive setup wizard")
+    setup_cli_p.add_argument(
+        "--dry-run", action="store_true", help="Build a mutation-free setup plan"
+    )
+    setup_cli_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    setup_cli_p.add_argument(
+        "--non-interactive", action="store_true", help="Do not prompt or mutate state"
+    )
 
     route_p = subparsers.add_parser("route", help="Route a single prompt/task")
     route_p.add_argument("task", help="Task description or prompt text")
@@ -1565,7 +1587,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "setup":
-        cmd_setup()
+        cmd_setup(dry_run=args.dry_run, output_json=args.json, non_interactive=args.non_interactive)
     elif args.command == "route":
         cmd_route(args.task, args.criticality, args.terse)
     elif args.command == "stats":
