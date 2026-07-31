@@ -76,6 +76,45 @@ def test_setup_plan_preserves_existing_config_without_reading_contents(
     assert config_path.read_bytes() == before
 
 
+def test_setup_plan_digest_is_deterministic_and_excludes_digest_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+    from verdict.setup_plan import build_setup_plan
+
+    plan = build_setup_plan()
+    payload = plan.to_dict()
+
+    assert plan.digest.startswith("sha256:")
+    assert plan.digest == plan.plan_digest == plan.plan_id
+    assert payload["plan_digest"] == plan.digest
+    assert payload["plan_id"] == plan.digest
+
+    payload["plan_digest"] = "sha256:" + "0" * 64
+    payload["plan_id"] = "tampered"
+    assert plan.digest == build_setup_plan().digest
+
+
+def test_setup_plan_cli_alias_is_read_only_and_json_compatible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(
+        "verdict.provider_detection.detect_all_providers",
+        lambda: pytest.fail("setup plan must not discover providers"),
+    )
+    monkeypatch.setattr("sys.argv", ["verdict", "setup", "plan", "--json"])
+
+    cli.main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["kind"] == "setup_plan"
+    assert report["plan_id"] == report["plan_digest"]
+    assert report["mutation_free"] is True
+    assert not (tmp_path / "config").exists()
+
+
 def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:
     cli.cmd_route("format docs", "low", terse=False)
 
