@@ -24,6 +24,38 @@ def test_memory_plane_replaces_fts_and_expires(tmp_path):
         assert plane.get("docs", "gone") is None
 
 
+def test_memory_plane_tombstone_hides_content_and_preserves_history(tmp_path):
+    with MemoryPlane(tmp_path / "memory.db") as plane:
+        stored = plane.put(
+            MemoryRecord("r1", "docs", "private", "do not retrieve", "local", scope="repo")
+        )
+
+        tombstone = plane.tombstone("docs", "private", scope="repo")
+
+        assert tombstone is not None
+        assert tombstone.status == "tombstone"
+        assert tombstone.supersedes == stored.record_id
+        assert tombstone.content == "[tombstone]"
+        assert plane.get("docs", "private", scope="repo") is None
+        assert plane.search("retrieve", scope="repo") == []
+        assert plane.list_namespaces(scope="repo") == []
+        assert plane.export_records(scope="repo") == []
+        history = plane.history("docs", "private", scope="repo")
+        assert [item.status for item in history] == ["superseded", "tombstone"]
+        assert plane.export_records(scope="repo", include_history=True)[-1]["status"] == (
+            "tombstone"
+        )
+        assert plane.tombstone("docs", "private", scope="repo") is None
+
+
+def test_memory_plane_tombstone_does_not_leave_an_fts_row(tmp_path):
+    with MemoryPlane(tmp_path / "memory.db") as plane:
+        plane.put(MemoryRecord("r1", "docs", "private", "secret phrase", "local"))
+        plane.tombstone("docs", "private")
+
+        assert plane._db.execute("SELECT count(*) FROM memory_fts").fetchone()[0] == 0
+
+
 def test_memory_plane_health_is_non_sensitive(tmp_path):
     with MemoryPlane(tmp_path / "memory.db") as plane:
         assert plane.health() == {
