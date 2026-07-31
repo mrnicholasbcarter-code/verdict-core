@@ -33,25 +33,8 @@ def _print_detection_banner() -> None:
 
 
 def _read_omniroute_token() -> str | None:
-    """Read the OmniRoute management token from local filesystem or env."""
-    db_path = os.path.expanduser("~/.omniroute/storage.sqlite")
-    if not os.path.exists(db_path):
-        return os.getenv("OMNIROUTE_API_KEY")
-    import sqlite3
+    """Read an explicitly configured OmniRoute token without private-database access."""
 
-    try:
-        con = sqlite3.connect(db_path)
-        try:
-            # Check for active key named 'Jcode' first, then 'ok', or any active management key
-            row = con.execute(
-                "select key from api_keys where is_active=1 order by case when name='Jcode' then 0 when name='ok' then 1 else 2 end, id limit 1"
-            ).fetchone()
-            if row:
-                return str(row[0])
-        finally:
-            con.close()
-    except Exception:
-        pass
     return os.getenv("OMNIROUTE_API_KEY")
 
 

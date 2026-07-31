@@ -115,6 +115,48 @@ def test_setup_plan_cli_alias_is_read_only_and_json_compatible(
     assert not (tmp_path / "config").exists()
 
 
+def test_omniroute_token_ignores_private_sqlite_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    private_dir = tmp_path / ".omniroute"
+    private_dir.mkdir()
+    database = private_dir / "storage.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE api_keys (key TEXT, is_active INTEGER, name TEXT, id INTEGER)"
+        )
+        connection.execute("INSERT INTO api_keys VALUES ('private-db-token', 1, 'default', 1)")
+        connection.commit()
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+
+    assert cli._read_omniroute_token() is None
+
+
+def test_omniroute_token_uses_explicit_environment_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "explicit-env-token")
+
+    assert cli._read_omniroute_token() == "explicit-env-token"
+
+
+def test_omniroute_token_does_not_inspect_home_or_private_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_path_checked(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("credential lookup must not inspect private paths")
+
+    monkeypatch.setattr(cli.os.path, "exists", fail_if_path_checked)
+    monkeypatch.setattr(cli.os.path, "expanduser", fail_if_path_checked)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+
+    assert cli._read_omniroute_token() is None
+
+
 def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:
     cli.cmd_route("format docs", "low", terse=False)
 
