@@ -35,6 +35,47 @@ def test_cmd_route_terse_uses_configured_primary(
     assert capsys.readouterr().out.strip() == "test-primary"
 
 
+def test_setup_dry_run_json_is_mutation_free_and_does_not_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+    def fail_if_probed(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("setup dry-run must not probe providers")
+
+    monkeypatch.setattr("verdict.provider_detection.detect_all_providers", fail_if_probed)
+    cli.cmd_setup(dry_run=True, output_json=True, non_interactive=True)
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["kind"] == "setup_plan"
+    assert report["schema_version"] == "1"
+    assert report["mutation_free"] is True
+    assert report["network_access"] == "disabled"
+    assert report["credential_access"] == "disabled"
+    assert report["config"]["exists"] is False
+    assert report["actions"][0]["action_id"] == "create-config"
+    assert report["actions"][0]["requires_consent"] is True
+    assert not (tmp_path / "config").exists()
+
+
+def test_setup_plan_preserves_existing_config_without_reading_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_dir = tmp_path / "config" / "verdict"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "verdict.yaml"
+    config_path.write_text("primary_model: keep-me\n", encoding="utf-8")
+    before = config_path.read_bytes()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+    cli.cmd_setup(dry_run=True, output_json=True)
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["config"]["exists"] is True
+    assert report["actions"][0]["action_id"] == "preserve-config"
+    assert config_path.read_bytes() == before
+
+
 def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:
     cli.cmd_route("format docs", "low", terse=False)
 
