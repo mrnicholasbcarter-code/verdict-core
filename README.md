@@ -2,16 +2,17 @@
 
 # Verdict
 
-**Route LLM tasks by criticality.**
+**Use the right AI model for every task—not the most expensive one.**
 
-Never send prod code to a cheap model. Never burn $20/hr on formatting.
+Verdict stretches your Claude Code Max, Codex Pro, 9router, and OmniRoute setup further by routing each task to the least expensive capable model, while reserving frontier models for work that truly needs them. Configure once, use more of what you already have, and keep your best-model usage under control.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Status: active development](https://img.shields.io/badge/status-active%20development-orange.svg)](#project-status)
 
-[Quickstart](#30-second-demo) · [How It Works](#how-it-works) · [CLI](#cli-reference) · [Architecture](#architecture) · [Docs](#documentation) · [Contributing](CONTRIBUTING.md)
+[Quickstart](#30-second-demo) · [Why it matters](#why-verdict) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 </div>
 
@@ -19,28 +20,45 @@ Never send prod code to a cheap model. Never burn $20/hr on formatting.
 
 ## Why Verdict?
 
-Every LLM router today answers the same question: *"which model should I use?"*
+### The problem it solves
 
-Verdict answers a harder one: ***"which models am I allowed to use — and can you prove it?"***
+Claude Code Max and Codex Pro give you access to excellent frontier models—but frontier usage is limited and expensive to burn on every action. At the same time, 9router and OmniRoute may already expose many capable alternatives: free models, low-cost models, fast models, and specialists.
+
+Verdict is the decision layer between your task and those providers:
+
+1. Understand the task's difficulty, risk, context, and tool needs.
+2. Remove models that cannot safely or reliably handle it.
+3. Send routine work to the least expensive capable option.
+4. Escalate difficult or sensitive work to a frontier model when justified.
+5. Record why the route was chosen and what happened.
+
+The goal is not “always use the cheapest model.” The goal is **use the cheapest model that is good enough—and keep premium capacity available for the work that needs it.**
+
+
+Most AI tooling starts with: *"which model should I use?"*
+
+Verdict starts earlier: ***"should this action happen, which choices are allowed, and can we prove what happened?"***
+
+In plain English: Verdict helps you use more of the models you already pay for—free, low-cost, and frontier—without sending every task to the most expensive option. It blocks choices that violate your rules, budget, privacy, or safety requirements.
 
 It's the difference between a recommendation engine and a **control plane**:
 
 | | Typical router | **Verdict** |
 |---|---|---|
-| Model selection | Heuristic tiers, static allowlists | Orchestrator picks from the **OmniRoute catalog** — thousands of advertised models, liveness probe-verified in bounded samples |
+| Model selection | Heuristic tiers, static allowlists | Orchestrator proposes candidates; Verdict admits only policy- and evidence-qualified options |】【。-vesm. ???
 | Safety | Best-effort fallback | **Fail-closed gate** — capability, budget, privacy, availability checks run *before* any upstream call |
 | Unknown health | Assumed healthy | Explicit `unknown` / `error` states — **unknown ≠ healthy** |
 | Explainability | "we picked GPT-4" | Per-candidate exclusion reasons, freshness timestamps, confidence, cache state — served at `GET /v1/route/explain` |
 | Learning | None | Outcomes feed back through SONA / RuVector — advisory only, **never** bypasses the gate |
 | Accountability | Logs | Durable, privacy-safe **evidence receipts** for every routing decision |
 
-> The orchestrator (a frontier model you pay for once per unit of work) does the expensive thinking. The gate (deterministic Python, no LLM) does the enforcing. Neither can do the other's job — by design, codified in [20+ ADRs](docs/adr/).
+> An optional orchestrator can do the expensive research. The gate (deterministic Python, no LLM in the enforcement path) does the enforcing. Neither can do the other's job — by design, codified in [20+ ADRs](docs/adr/).
 
 ---
 
 ## 30-Second Demo
 
-No API keys. No config. Deterministic, offline, auditable:
+No API keys. No config. Deterministic, offline, auditable. This is a local fixture demo—not a live provider call or production-readiness proof:
 
 ```bash
 verdict quickstart --non-interactive --dry-run
@@ -66,13 +84,14 @@ Every exclusion carries a machine-readable reason and state (`capability_mismatc
 ## Install
 
 ```bash
-# Universal installer (Linux/macOS — binary release, falls back to pipx)
-curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh | bash
-
-# From source (uv)
+# Recommended: transparent source install (uv)
+# Requires Python 3.10+ and uv.
 git clone https://github.com/mrnicholasbcarter-code/verdict-core.git
 cd verdict-core
 uv sync --extra dev --extra server --extra dashboard
+
+# Optional convenience installer (review release assets first; Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh | bash
 ```
 
 Then:
@@ -184,24 +203,25 @@ Full reference: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 
 ## Architecture
 
-| Component | Role | Technology |
-|---|---|---|
-| **EligibilityGate** | Fail-closed deterministic checks — no LLM in the request path | Python |
-| **ProbeRunner** | Consented, budgeted liveness probes | Python + httpx |
-| **OmniRoute catalog** | Catalog mirror: pricing, capabilities, context windows — liveness probe-verified in bounded samples | External service (port 20128) |
-| **Orchestrator** | Frontier-model selection & worker dispatch | Ruflo swarms |
-| **Learning loop** | Outcome → advisory feedback | SONA + RuVector + ReasoningBank |
-| **Evidence ledger** | Durable, privacy-safe routing receipts | JSONL + signed manifests |
+| Component | Role | Technology | Status |
+|---|---|---|---|
+| **EligibilityGate** | Fail-closed deterministic checks — no LLM in the request path | Python | Implemented |
+| **ProbeRunner** | Consented, budgeted liveness probes | Python + httpx | Implemented |
+| **OmniRoute catalog** | Optional historical catalog snapshots with bounded liveness evidence and explicit limitations | External service (optional) | Optional adapter |
+| **Orchestrator** | Candidate research, assignment, and worker dispatch | Optional runtime adapters | In progress |
+| **Learning loop** | Outcome → advisory feedback | Optional intelligence adapters | In progress |
+| **Evidence ledger** | Durable, privacy-safe routing receipts | JSONL + signed manifests | Implemented; expanding |
 
 Design decisions live in **[docs/adr/](docs/adr/)** — 20+ records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more.
 
 ### TypeScript ecosystem
 
+TypeScript packages are published under the current `@bodanglin/*` namespace. Check each package README and release metadata before integrating:
+
 | Package | Description |
 |---|---|
-| `@verdict/node` | Express/Next.js middleware — OpenAI-compatible forwarding with SSE parity |
-| `@verdict/contracts` | Canonical Zod schemas & TS types shared with Python |
-| `verdict-client` | TypeScript client SDK |
+| `@bodanglin/verdict-contracts` | Canonical TypeScript contract schemas and types |
+| `@bodanglin/verdict-client` | TypeScript client SDK |
 
 Python ↔ TypeScript field-level parity is verified in CI — see [CONTRACT_PARITY.md](CONTRACT_PARITY.md).
 
@@ -209,10 +229,11 @@ Python ↔ TypeScript field-level parity is verified in CI — see [CONTRACT_PAR
 
 ## Security
 
-- **Fail-closed everywhere**: protected work halts when fresh truth is unavailable — never silently falls back
+- **Fail-closed protected work**: protected actions halt when required fresh truth is unavailable — no silent fallback
 - **Consent-gated probes**: network liveness checks require explicit `--allow-live-probe`
-- **Privacy**: no PII in logs; privacy-safe receipt ledger ([THREAT_MODEL_RECEIPTS.md](docs/THREAT_MODEL_RECEIPTS.md))
-- **Supply chain**: CI runs `pip-audit`, `npm audit`, and `osv-scanner` on every commit
+- **Privacy**: privacy-safe receipt ledger ([THREAT_MODEL_RECEIPTS.md](docs/THREAT_MODEL_RECEIPTS.md)); logs and evidence must not contain PII
+- **Supply chain**: CI runs dependency/security checks on protected-branch pushes, pull requests, and scheduled runs; see [security workflow](.github/workflows/security.yml) for scope and documented exceptions
+- **Installer trust**: source/uv installation is the most transparent path; review `install.sh` and release assets before using `curl | bash`
 - **Report vulnerabilities**: see [SECURITY.md](SECURITY.md)
 
 ---
