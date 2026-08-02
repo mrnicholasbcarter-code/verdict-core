@@ -37,6 +37,7 @@ class BenchmarkCase:
     warmup_iterations: int
     notes: str
     func: Callable[[], None]
+    p95_ns_max: int | None = None
 
 
 def _canonical_json_bytes(payload: Any) -> bytes:
@@ -91,6 +92,28 @@ def _git_commit() -> str | None:
     return commit or None
 
 
+def _benchmark_metadata(
+    fixture_path: str | os.PathLike[str], fixture: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "source": "checked-in fixture",
+        "timer": "time.perf_counter_ns",
+        "clock": "local monotonic clock",
+        "fixture_path": str(Path(fixture_path)),
+        "fixture_digest_sha256": _fixture_digest(fixture),
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "git_commit": _git_commit(),
+        "policy_version": fixture.get("policy_version"),
+        "thresholds": fixture.get("thresholds", {}),
+    }
+
+
+def _case_threshold(fixture: dict[str, Any], name: str) -> int | None:
+    threshold = fixture.get("thresholds", {}).get(name, {}).get("p95_ns_max")
+    return int(threshold) if threshold is not None else None
+
+
 def _contract_roundtrip_case(fixture: dict[str, Any]) -> BenchmarkCase:
     task_payload = fixture["contracts"]["task_spec"]
     decision_payload = fixture["contracts"]["routing_decision_contract"]
@@ -107,6 +130,7 @@ def _contract_roundtrip_case(fixture: dict[str, Any]) -> BenchmarkCase:
         warmup_iterations=int(fixture["settings"]["warmup_iterations"]),
         notes="Strict local contract serialization/deserialization using checked-in fixtures.",
         func=run,
+        p95_ns_max=_case_threshold(fixture, "contract_roundtrip"),
     )
 
 
@@ -124,6 +148,7 @@ def _dispatcher_case(fixture: dict[str, Any]) -> BenchmarkCase:
         warmup_iterations=int(fixture["settings"]["warmup_iterations"]),
         notes="Local availability normalization and dry-run candidate selection only.",
         func=run,
+        p95_ns_max=_case_threshold(fixture, "dispatcher_eligibility"),
     )
 
 
@@ -142,6 +167,7 @@ def _gate_case(fixture: dict[str, Any]) -> BenchmarkCase:
         warmup_iterations=int(fixture["settings"]["warmup_iterations"]),
         notes="Compatibility routing only; no live provider call is made.",
         func=run,
+        p95_ns_max=_case_threshold(fixture, "compatibility_routing"),
     )
 
 
@@ -159,12 +185,16 @@ def _run_case(case: BenchmarkCase) -> dict[str, Any]:
         case.func()
         samples_ns.append(time.perf_counter_ns() - start)
 
+    summary = _summarize(samples_ns)
+    threshold_passed = case.p95_ns_max is None or int(summary["p95"]) <= case.p95_ns_max
     return {
         "name": case.name,
         "iterations": case.iterations,
         "warmup_iterations": case.warmup_iterations,
         "notes": case.notes,
-        "summary": _summarize(samples_ns),
+        "summary": summary,
+        "thresholds": {"p95_ns_max": case.p95_ns_max},
+        "threshold_passed": threshold_passed,
         "samples_ns": samples_ns,
     }
 
@@ -184,18 +214,26 @@ def run_reproducible_benchmarks(
     mode = "live-provider" if live_provider else "local-reproducible"
     cases = _build_local_cases(fixture)
 
+    metadata = _benchmark_metadata(fixture_path, fixture)
+    benchmarks = [_run_case(case) for case in cases]
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "mode": mode,
         "live_provider": live_provider,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "git_commit": _git_commit(),
-        "python_version": platform.python_version(),
-        "platform": platform.platform(),
-        "fixture_path": str(Path(fixture_path)),
-        "fixture_digest_sha256": _fixture_digest(fixture),
-        "policy_version": fixture.get("policy_version"),
-        "benchmarks": [_run_case(case) for case in cases],
+        "git_commit": metadata["git_commit"],
+        "python_version": metadata["python_version"],
+        "platform": metadata["platform"],
+        "fixture_path": metadata["fixture_path"],
+        "fixture_digest_sha256": metadata["fixture_digest_sha256"],
+        "policy_version": metadata["policy_version"],
+        "metadata": metadata,
+        "metrics": {
+            "benchmark_count": len(benchmarks),
+            "sample_count": sum(int(item["summary"]["samples"]) for item in benchmarks),
+            "thresholds_passed": all(bool(item["threshold_passed"]) for item in benchmarks),
+        },
+        "benchmarks": benchmarks,
         "notes": [
             "Local reproducible mode does not measure provider network latency or generation quality.",
             "Live provider results must be reported separately with provider, model, region, and sampling date.",
@@ -211,6 +249,7 @@ def format_benchmark_report(report: dict[str, Any]) -> str:
         f"fixture_digest_sha256: {report['fixture_digest_sha256']}",
         f"python: {report['python_version']}",
         f"git_commit: {report['git_commit'] or 'unknown'}",
+        f"thresholds_passed: {str(report['metrics']['thresholds_passed']).lower()}",
         "",
     ]
     for benchmark in report["benchmarks"]:
