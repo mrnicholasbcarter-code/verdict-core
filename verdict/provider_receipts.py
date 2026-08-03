@@ -47,7 +47,10 @@ class ProviderReceipt:
         if any(not isinstance(item, str) or not item.strip() for item in self.evidence_refs):
             raise ValueError("evidence_refs must contain non-empty strings")
         _reject_sensitive(self.provenance)
-        _reject_sensitive(self.details or {})
+        object.__setattr__(self, "provenance", _freeze(self.provenance))
+        if self.details is not None:
+            _reject_sensitive(self.details)
+            object.__setattr__(self, "details", _freeze(self.details))
 
     def to_dict(self) -> dict[str, Any]:
         return {
