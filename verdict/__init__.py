@@ -56,6 +56,7 @@ from verdict.contracts import (
     AvailabilitySnapshot,
     CapabilityRequirement,
     ContractValidationError,
+    ExecutionEnvelope,
     FallbackAttempt,
     LearningEvent,
     OutcomeEpisode,
@@ -239,6 +240,14 @@ from verdict.policy import (
     migrate_task_policy,
 )
 from verdict.policy_artifacts import ARTIFACT_SCHEMA_VERSION, SignedPolicyDecisionArtifact
+from verdict.provider_receipts import (
+    PROVIDER_RECEIPT_SCHEMA_VERSION,
+    ProviderReceipt,
+    build_provider_receipt,
+    canonical_hash,
+)
+
+
 from verdict.probes import (
     PROBE_DIAGNOSTICS_VERSION,
     PROBE_PROMPT,
@@ -601,6 +610,10 @@ __all__ = [
     "PromotionDecision",
     "PromotionPolicy",
     "PromotionState",
+    "PROVIDER_RECEIPT_SCHEMA_VERSION",
+    "ProviderReceipt",
+    "build_provider_receipt",
+    "canonical_hash",
     "ProtocolProbeCase",
     "ProtocolProbeConsentRequiredError",
     "ProtocolProbeObservation",
