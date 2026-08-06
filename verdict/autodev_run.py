@@ -264,23 +264,33 @@ def _run_unit(
             latency_ms=int((time.monotonic() - started) * 1000),
         )
 
+    # The mechanical tier may have written a partial repair before declining the
+    # unit. Those edits are on disk either way, so they belong in this unit's
+    # attribution rather than going unreported or landing on a later unit.
     attempt = executor.execute_unit(unit)
     if not attempt.applied:
-        return _from_attempt(attempt, verified=False, reason=attempt.reason)
+        return _from_attempt(
+            attempt,
+            verified=False,
+            reason=attempt.reason,
+            changed_files=_touched_since(repo, before, runner=runner),
+        )
 
     touched = _touched_since(repo, before, runner=runner)
     ok, reason = _verify(unit, repo, touched, runner=runner)
-    return _from_attempt(attempt, verified=ok, reason=reason)
+    return _from_attempt(attempt, verified=ok, reason=reason, changed_files=touched)
 
 
-def _from_attempt(attempt: PatchAttempt, *, verified: bool, reason: str) -> UnitOutcome:
+def _from_attempt(
+    attempt: PatchAttempt, *, verified: bool, reason: str, changed_files: tuple[str, ...]
+) -> UnitOutcome:
     return UnitOutcome(
         unit_id=attempt.unit_id,
         tier="model",
         model=attempt.model,
         verified=verified,
         reason=reason,
-        changed_files=attempt.changed_files,
+        changed_files=changed_files,
         usage=attempt.usage,
         latency_ms=attempt.latency_ms,
     )

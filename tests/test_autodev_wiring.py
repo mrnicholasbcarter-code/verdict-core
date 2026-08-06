@@ -238,6 +238,33 @@ def test_units_are_attributed_their_own_changes_not_the_whole_dirty_tree(repo: P
     assert by_id["fix-b"].changed_files == ("b.py",)
 
 
+def test_a_partial_mechanical_fix_is_still_attributed_when_the_unit_fails(repo: Path) -> None:
+    """`ruff --fix` writes before the tier decides; those edits must be reported.
+
+    The unit owns a file with one auto-fixable import and one error ruff cannot
+    fix, so the mechanical tier repairs part of it and then declines the unit.
+    The model tier then fails. The tree changed regardless, and a report that
+    said `changed_files=[]` would understate what the run did to the repo.
+    """
+    (repo / "a.py").write_text("import os\nundefined_name\n", encoding="utf-8")
+    unit = dict(PLAN[0], verification_command=["ruff", "check", "--select", "F", "a.py"])
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=ReceiptStore(":memory:"),
+        decomposer=_decomposer([unit]),
+        executor=_executor(repo, {}),  # returns "no diff", so the model tier fails
+        mechanical=True,
+    )
+
+    outcome = report.outcomes[0]
+    assert outcome.verified is False
+    assert outcome.tier == "model"
+    assert outcome.changed_files == ("a.py",)
+    assert "import os" not in (repo / "a.py").read_text(encoding="utf-8")
+
+
 def test_run_requires_a_git_repository(tmp_path: Path) -> None:
     with pytest.raises(AutodevError, match="not a git repository"):
         run_autodev("x", tmp_path, decomposer=_decomposer(PLAN))
