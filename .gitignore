@@ -35,7 +35,9 @@ coverage.xml
 Thumbs.db
 node_build.log
 build.log
-patch_*.py
+# Scratch patch scripts at the repo root only — not package modules such as
+# verdict/patch_executor.py, which an unanchored rule silently excluded.
+/patch_*.py
 *.bak
 .coverage
 coverage.xml
