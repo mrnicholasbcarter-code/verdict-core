@@ -14,8 +14,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Mapping
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -68,22 +67,8 @@ _ROLE_ALIASES = {
 _TOOL_EVENTS = {"tool", "tool_call", "tool_result", "function_call", "function_result"}
 
 _KNOWN_SESSION_GLOBS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    (
-        "claude",
-        "claude-jsonl",
-        (
-            ".claude/projects/**/*.jsonl",
-            ".claude/sessions/**/*.jsonl",
-        ),
-    ),
-    (
-        "codex",
-        "codex-jsonl",
-        (
-            ".codex/sessions/**/*.jsonl",
-            ".codex/projects/**/*.jsonl",
-        ),
-    ),
+    ("claude", "claude-jsonl", (".claude/projects/**/*.jsonl", ".claude/sessions/**/*.jsonl")),
+    ("codex", "codex-jsonl", (".codex/sessions/**/*.jsonl", ".codex/projects/**/*.jsonl")),
     (
         "pi",
         "pi-jsonl",
@@ -93,14 +78,7 @@ _KNOWN_SESSION_GLOBS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             ".pi-subagents/artifacts/*transcript.jsonl",
         ),
     ),
-    (
-        "ruflo",
-        "ruflo-jsonl",
-        (
-            ".ruflo/sessions/**/*.jsonl",
-            ".claude-flow/sessions/**/*.jsonl",
-        ),
-    ),
+    ("ruflo", "ruflo-jsonl", (".ruflo/sessions/**/*.jsonl", ".claude-flow/sessions/**/*.jsonl")),
 )
 
 
@@ -1088,21 +1066,21 @@ class _InputTooLargeError(Exception):
 
 
 __all__ = [
-    "DEFAULT_MAX_FILE_BYTES",
     "DEFAULT_MAX_DISCOVERY_FILES",
+    "DEFAULT_MAX_FILE_BYTES",
     "DEFAULT_MAX_LINE_BYTES",
     "DEFAULT_MAX_RECORDS",
     "SESSION_ADAPTER_PROTOCOL_VERSION",
     "SESSION_FORMAT",
     "SESSION_FORMAT_VERSION",
     "SESSION_SCHEMA_VERSION",
+    "SessionAdapter",
     "SessionAutoImportReport",
     "SessionAutoImportResult",
     "SessionCandidate",
     "SessionDiscoveryPolicy",
     "SessionDiscoveryReport",
     "SessionDiscoveryResult",
-    "SessionAdapter",
     "SessionFormatDescriptor",
     "SessionImportPolicy",
     "SessionImportReport",

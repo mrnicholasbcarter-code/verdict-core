@@ -11,10 +11,8 @@ import asyncio
 import json
 import os
 import subprocess
-import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -47,6 +45,7 @@ class RufloTransport(ABC):
 @dataclass
 class SubprocessTransportConfig:
     """Configuration for Ruflo subprocess transport."""
+
     ruflo_command: str = "ruflo"  # or "npx @claude-flow/cli@latest"
     working_dir: str | None = None
     env: dict[str, str] | None = None
@@ -62,9 +61,11 @@ class RufloSubprocessTransport(RufloTransport):
     def __init__(self, config: SubprocessTransportConfig | None = None):
         self.config = config or SubprocessTransportConfig()
 
-    def _run_ruflo(self, args: list[str], input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _run_ruflo(
+        self, args: list[str], input_data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Run Ruflo CLI command and return parsed JSON response."""
-        cmd = [self.config.ruflo_command] + args
+        cmd = [self.config.ruflo_command, *args]
 
         env = os.environ.copy()
         if self.config.env:
@@ -86,7 +87,9 @@ class RufloSubprocessTransport(RufloTransport):
         except subprocess.TimeoutExpired as e:
             raise RufloTransportError(f"Ruflo command timed out: {cmd}") from e
         except FileNotFoundError as e:
-            raise RufloTransportError(f"Ruflo command not found: {self.config.ruflo_command}") from e
+            raise RufloTransportError(
+                f"Ruflo command not found: {self.config.ruflo_command}"
+            ) from e
         except Exception as e:
             raise RufloTransportError(f"Failed to execute Ruflo: {e}") from e
 
@@ -97,9 +100,14 @@ class RufloSubprocessTransport(RufloTransport):
 
         # Parse JSON output
         try:
-            return json.loads(result.stdout)
+            payload = json.loads(result.stdout)
         except json.JSONDecodeError as e:
             raise RufloTransportError(f"Invalid JSON from Ruflo: {result.stdout[:500]}") from e
+        if not isinstance(payload, dict):
+            raise RufloTransportError(
+                f"Ruflo response must be a JSON object, got {type(payload).__name__}"
+            )
+        return payload
 
     def submit(self, request: dict[str, Any]) -> dict[str, Any]:
         return self._run_ruflo(["task", "submit"], request)
@@ -142,6 +150,7 @@ class RufloSubprocessTransport(RufloTransport):
 @dataclass
 class HttpTransportConfig:
     """Configuration for Ruflo HTTP transport."""
+
     base_url: str  # e.g., "http://localhost:8080"
     api_key: str | None = None
     timeout_seconds: float = 30.0
@@ -171,12 +180,21 @@ class RufloHttpTransport(RufloTransport):
             )
         return self._client
 
-    async def _request(self, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def _request(
+        self, method: str, path: str, data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         client = await self._get_client()
         try:
             response = await client.request(method, path, json=data)
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RufloTransportError(
+                    f"Ruflo response must be a JSON object, got {type(payload).__name__}"
+                )
+            return payload
+        except RufloTransportError:
+            raise
         except httpx.HTTPStatusError as e:
             raise RufloTransportError(f"HTTP {e.response.status_code}: {e.response.text}") from e
         except httpx.TimeoutException as e:
@@ -213,7 +231,7 @@ class RufloHttpTransport(RufloTransport):
             path += f"?workflow_id={workflow_id}"
         return asyncio.run(self._request("GET", path))
 
-    async def close(self):
+    async def close(self) -> None:
         if self._client:
             await self._client.aclose()
             self._client = None
@@ -221,10 +239,11 @@ class RufloHttpTransport(RufloTransport):
 
 class RufloTransportError(Exception):
     """Transport-level error for Ruflo communication."""
+
     pass
 
 
-def create_ruflo_transport(transport_type: str = "auto", **kwargs) -> RufloTransport:
+def create_ruflo_transport(transport_type: str = "auto", **kwargs: Any) -> RufloTransport:
     """Factory function to create appropriate Ruflo transport.
 
     Args:
@@ -273,5 +292,5 @@ class SyncRufloHttpTransport(RufloTransport):
     def result(self, request: dict[str, Any]) -> dict[str, Any]:
         return self._async_transport.result(request)
 
-    def close(self):
+    def close(self) -> None:
         asyncio.run(self._async_transport.close())

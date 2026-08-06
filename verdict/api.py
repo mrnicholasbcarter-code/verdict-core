@@ -5,7 +5,7 @@ import codecs
 import json
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -492,7 +492,6 @@ def _build_intelligence() -> IntelligenceService:
     )
 
 
-@asynccontextmanager
 def _build_model_passport_store() -> ModelPassportStore:
     """Build the in-memory model-passport isolation cache.
 

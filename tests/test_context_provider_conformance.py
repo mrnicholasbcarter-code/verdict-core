@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-import pytest
-
-from verdict.context_pack import ContextPackCompiler, ContextPackSlot
-from verdict.memory_adapters import (
-    AdapterDescriptor,
-    AdapterRegistry,
-    AdapterResolution,
-    build_default_adapter_registry,
-)
+from verdict.memory_adapters import build_default_adapter_registry
 from verdict.memory_gate import AuthorityLevel, MemoryGate, MemoryWriteRequest
 from verdict.memory_plane import MemoryPlane, MemoryRecord
 

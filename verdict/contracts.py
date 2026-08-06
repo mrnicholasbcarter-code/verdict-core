@@ -306,6 +306,7 @@ class ExecutionEnvelope(Contract):
     Contains all information needed for Ruflo to execute within Verdict-approved
     boundaries without requiring callbacks to Verdict for eligibility decisions.
     """
+
     task_spec: TaskSpec
     eligibility_decision: dict[str, Any]  # EligibilityGate result with admitted candidates
     policy_digest: str  # SHA-256 digest of compiled Policy for audit trail

@@ -6,21 +6,16 @@ These tests prove the core architectural invariants that must never be violated.
 from __future__ import annotations
 
 import pytest
-from unittest.mock import Mock, patch
 
-from verdict.eligibility import EligibilityGate, EligibilityVerdict
-from verdict.intelligence import IntelligenceService
-from verdict.policy import Policy, PolicyCandidate, DecisionState, compile_policy
-from verdict.router import select_best_model
-from verdict.models import ModelInfo, ProviderConfig
-from verdict.availability import AvailabilityReport, AvailabilityState, AvailabilityCandidate
+from verdict.availability import AvailabilityCandidate, AvailabilityReport, AvailabilityState
 from verdict.availability_cache import AvailabilityCache
-from verdict.ruflo_adapter import RufloAdapter, build_fake_ruflo_adapter, CapabilityManifest
-from verdict.ruflo_transport import RufloTransport
-from verdict.contracts import TaskSpec, ExecutionEnvelope, VerificationPlan
+from verdict.contracts import ExecutionEnvelope, TaskSpec, VerificationPlan
+from verdict.eligibility import EligibilityGate
 from verdict.memory_bridge import MemoryHookController
 from verdict.memory_plane import MemoryPlane
+from verdict.models import ModelInfo
 from verdict.receipt_store import ReceiptStore
+from verdict.ruflo_adapter import CapabilityManifest, build_fake_ruflo_adapter
 
 
 class TestEligibilityRunsFirst:
@@ -28,6 +23,7 @@ class TestEligibilityRunsFirst:
 
     def test_eligibility_gate_filters_before_router(self):
         """Router only sees candidates that passed eligibility gate."""
+
         # Follow the pattern from existing tests: source returns full report, cache filters
         def fake_source():
             return AvailabilityReport(
@@ -82,9 +78,27 @@ class TestEligibilityRunsFirst:
 
         # Evaluate all candidates - gate.evaluate takes a list of ModelInfo
         candidates = [
-            ModelInfo(id="provider/eligible-model", provider="provider", capability_tier=1, quality_confidence=0.9, is_available=True),
-            ModelInfo(id="provider/denied-model", provider="provider", capability_tier=1, quality_confidence=0.95, is_available=True),
-            ModelInfo(id="provider/unknown-model", provider="provider", capability_tier=1, quality_confidence=0.98, is_available=True),
+            ModelInfo(
+                id="provider/eligible-model",
+                provider="provider",
+                capability_tier=1,
+                quality_confidence=0.9,
+                is_available=True,
+            ),
+            ModelInfo(
+                id="provider/denied-model",
+                provider="provider",
+                capability_tier=1,
+                quality_confidence=0.95,
+                is_available=True,
+            ),
+            ModelInfo(
+                id="provider/unknown-model",
+                provider="provider",
+                capability_tier=1,
+                quality_confidence=0.98,
+                is_available=True,
+            ),
         ]
         result = gate.evaluate(candidates, protected=True)
 
@@ -136,6 +150,7 @@ class TestRufloCannotExecuteOutsideVerdictConstraints:
         # Verify the envelope structure includes hard constraints
         # Use contracts.TaskSpec which has 'objective' not 'prompt'
         from verdict.contracts import TaskSpec as ContractTaskSpec
+
         envelope = ExecutionEnvelope(
             task_spec=ContractTaskSpec(objective="test", criticality="high", task_type="test"),
             eligibility_decision={"eligible": ["model1"], "excluded": ["model2"]},
@@ -147,7 +162,9 @@ class TestRufloCannotExecuteOutsideVerdictConstraints:
                 "max_concurrency": 1,
                 "privacy_level": "standard",
             },
-            verification_requirements=VerificationPlan(checks=["output_valid", "cost_within_budget"]),
+            verification_requirements=VerificationPlan(
+                checks=["output_valid", "cost_within_budget"]
+            ),
             evidence_ids=["evidence_123"],
         )
 
@@ -242,7 +259,6 @@ class TestReceiptChainIntegrity:
 
     def test_receipt_store_immutability(self):
         """ReceiptStore never updates existing records."""
-        from verdict.receipt_store import ReceiptStore
 
         store = ReceiptStore(":memory:")
         receipt = store.put_receipt(
@@ -259,10 +275,9 @@ class TestReceiptChainIntegrity:
         """EvidenceStore only appends events, never modifies decisions."""
         from verdict.evidence import DurableEvidenceStore
 
-        store = DurableEvidenceStore(":memory:")
+        DurableEvidenceStore(":memory:")
         # The store creates immutable decision snapshots
         # Events are append-only
-        pass
 
 
 class TestContractualBoundaries:
@@ -270,10 +285,9 @@ class TestContractualBoundaries:
 
     def test_ruflo_adapter_uses_typed_envelopes(self):
         """All Ruflo communication uses typed request/response envelopes."""
-        adapter = build_fake_ruflo_adapter()
+        build_fake_ruflo_adapter()
 
         # All methods return typed response objects
-        from verdict.ruflo_adapter import RufloSubmitResponse, RufloStatusResponse, RufloControlResponse, RufloResult
 
         # submit returns RufloSubmitResponse
         # status returns RufloStatusResponse
@@ -284,7 +298,6 @@ class TestContractualBoundaries:
     def test_execution_envelope_is_versioned_contract(self):
         """ExecutionEnvelope is a v1 contract with schema validation."""
         # Use the contracts module's TaskSpec which has 'objective' and 'task_type'
-        from verdict.contracts import TaskSpec
         envelope = ExecutionEnvelope(
             task_spec=TaskSpec(objective="test", task_type="test"),
             eligibility_decision={},

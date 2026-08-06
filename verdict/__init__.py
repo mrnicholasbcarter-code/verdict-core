@@ -240,14 +240,6 @@ from verdict.policy import (
     migrate_task_policy,
 )
 from verdict.policy_artifacts import ARTIFACT_SCHEMA_VERSION, SignedPolicyDecisionArtifact
-from verdict.provider_receipts import (
-    PROVIDER_RECEIPT_SCHEMA_VERSION,
-    ProviderReceipt,
-    build_provider_receipt,
-    canonical_hash,
-)
-
-
 from verdict.probes import (
     PROBE_DIAGNOSTICS_VERSION,
     PROBE_PROMPT,
@@ -277,6 +269,12 @@ from verdict.protocol_probes import (
     ProtocolProbeRunner,
     ProtocolProbeTransport,
     ProtocolSurface,
+)
+from verdict.provider_receipts import (
+    PROVIDER_RECEIPT_SCHEMA_VERSION,
+    ProviderReceipt,
+    build_provider_receipt,
+    canonical_hash,
 )
 from verdict.responses_compatibility import (
     NVIDIA_RESPONSES_COMPATIBILITY_RULE,
@@ -417,6 +415,7 @@ __all__ = [
     "PROTOCOL_PROBE_CASES",
     "PROTOCOL_PROBE_PROMPT",
     "PROTOCOL_PROBE_VERSION",
+    "PROVIDER_RECEIPT_SCHEMA_VERSION",
     "RESPONSES_COMPATIBILITY_RULES",
     "RESPONSES_COMPATIBILITY_RULE_VERSION",
     "RESPONSES_NON_STREAM_CASE",
@@ -523,6 +522,7 @@ __all__ = [
     "EvidenceReceipt",
     "EvidenceStore",
     "ExecutionContext",
+    "ExecutionEnvelope",
     "ExplainEvidence",
     "FailureClass",
     "FallbackAttempt",
@@ -593,10 +593,6 @@ __all__ = [
     "PromotionDecision",
     "PromotionPolicy",
     "PromotionState",
-    "PROVIDER_RECEIPT_SCHEMA_VERSION",
-    "ProviderReceipt",
-    "build_provider_receipt",
-    "canonical_hash",
     "ProtocolProbeCase",
     "ProtocolProbeConsentRequiredError",
     "ProtocolProbeObservation",
@@ -605,6 +601,7 @@ __all__ = [
     "ProtocolProbeTransport",
     "ProtocolSurface",
     "ProviderConfig",
+    "ProviderReceipt",
     "ReadinessReport",
     "ReceiptKind",
     "ResponsesCompatibilityError",
@@ -685,8 +682,10 @@ __all__ = [
     "build_default_adapter_registry",
     "build_evaluation_report",
     "build_outcome_event",
+    "build_provider_receipt",
     "build_routing_decision_contract",
     "build_runtime_health_report",
+    "canonical_hash",
     "compile_policy",
     "content_hash",
     "counterfactual_from_receipt",

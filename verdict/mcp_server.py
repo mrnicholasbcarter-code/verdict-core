@@ -394,8 +394,8 @@ class VerdictMCPServer:
 
             engine = CodeGraphEngine()
             count = engine.parse_directory(root)
-            report = engine.sync_to_memory_plane(self.get_plane())
-            return json.dumps({"files_parsed": count, "memory_report": report}, indent=2)
+            sync_report = engine.sync_to_memory_plane(self.get_plane())
+            return json.dumps({"files_parsed": count, "memory_report": sync_report}, indent=2)
         if name == "verdict_code_callers":
             symbol = str(args.get("symbol", ""))
             kind = str(args.get("kind", "callers"))
@@ -403,6 +403,8 @@ class VerdictMCPServer:
             from verdict.code_graph import CodeGraphEngine
 
             engine = CodeGraphEngine()
+            # Node-name queries yield list[str]; hub/bridge yield list[dict]. Both serialize.
+            result: list[str] | list[dict[str, Any]]
             if kind == "callers":
                 result = [n.name for n in engine.callers_of(symbol)]
             elif kind == "callees":

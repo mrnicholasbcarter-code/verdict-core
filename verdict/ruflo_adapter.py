@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from verdict.contracts import TaskSpec, WorkflowPlan
-from verdict.ruflo_transport import RufloTransport, RufloSubprocessTransport, RufloHttpTransport, create_ruflo_transport, RufloTransportError
+from verdict.ruflo_transport import RufloTransport
 
 RUFLO_ADAPTER_PROTOCOL_VERSION = "rufl-adapter/v1"
 SUPPORTED_PROTOCOL_VERSIONS = ["rufl-adapter/v1"]
@@ -525,6 +525,28 @@ class RufloAdapter:
     def capability_manifest(self) -> CapabilityManifest:
         return self._capability_manifest
 
+    def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send one request through the configured transport.
+
+        Accepts either a :class:`RufloTransport` (method-per-operation) or a bare
+        callable taking a ``{"method": ..., "params": ...}`` envelope, so both the
+        real transports and the test doubles share one call path.
+        """
+        transport = self._transport
+        if transport is None:
+            raise RufloUnavailableError("no transport configured")
+        if isinstance(transport, RufloTransport):
+            operations: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+                "submit": transport.submit,
+                "status": transport.status,
+                "control": transport.control,
+                "result": transport.result,
+            }
+            if method not in operations:
+                raise RufloUnavailableError(f"unsupported transport method: {method!r}")
+            return operations[method](params)
+        return transport({"method": method, "params": params})
+
     def submit(
         self,
         task_spec: TaskSpec,
@@ -563,7 +585,7 @@ class RufloAdapter:
             return self._fake_submit(request)
 
         try:
-            response_data = self._transport({"method": "submit", "params": request.to_dict()})
+            response_data = self._dispatch("submit", request.to_dict())
             return RufloSubmitResponse.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Submit failed: {e}") from e
@@ -588,7 +610,7 @@ class RufloAdapter:
             return self._fake_status(request)
 
         try:
-            response_data = self._transport({"method": "status", "params": request.__dict__})
+            response_data = self._dispatch("status", request.__dict__)
             return RufloStatusResponse.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Status query failed: {e}") from e
@@ -646,8 +668,8 @@ class RufloAdapter:
             return self._fake_result(task_id, workflow_id)
 
         try:
-            response_data = self._transport(
-                {"method": "result", "params": {"task_id": task_id, "workflow_id": workflow_id}}
+            response_data = self._dispatch(
+                "result", {"task_id": task_id, "workflow_id": workflow_id}
             )
             return RufloResult.from_dict(response_data)
         except Exception as e:
@@ -712,7 +734,7 @@ class RufloAdapter:
             return self._fake_control(request)
 
         try:
-            response_data = self._transport({"method": "control", "params": request.__dict__})
+            response_data = self._dispatch("control", request.__dict__)
             return RufloControlResponse.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Control action {action.value} failed: {e}") from e

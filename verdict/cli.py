@@ -888,10 +888,11 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
 def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     """Scan the Verdict setup and OmniRoute connections for issues and repair them."""
     if output_json:
+        from pathlib import Path
+
         from verdict.memory_bridge import run_doctor_diagnostics
         from verdict.runtime_daemons import RuntimeManager
         from verdict.runtime_health import build_runtime_health_report
-        from pathlib import Path
 
         report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
         report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
@@ -1425,7 +1426,7 @@ def cmd_uninstall(purge_data: bool = False) -> None:
     """Reversibly uninstall memory bridge hooks and MCP registrations."""
     from verdict.memory_bridge import uninstall_memory_bridge
 
-    res = uninstall_memory_bridge(purge_data=purge_data)
+    res = uninstall_memory_bridge(home_dir=Path.home(), cwd=Path.cwd(), purge_data=purge_data)
     console.print(f"[bold green]✓ Uninstalled targets: {res['uninstalled_targets']}[/bold green]")
     if purge_data:
         console.print("[bold yellow]⚠ Purged .verdict memory data directory.[/bold yellow]")
@@ -1553,15 +1554,13 @@ def cmd_check() -> None:
 def cmd_hook(args: Any) -> None:
     """Manage Verdict lifecycle hooks for Codex and Claude Code."""
     import time as _time
+
     from verdict.memory_bridge import configure_memory_bridge
-    from verdict.memory_gate import MemoryGate
     from verdict.memory_plane import MemoryPlane, MemoryRecord
-    from verdict.documentation_preflight import shared_memory_path
 
     hook_cmd = getattr(args, "hook_command", None)
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     plane = MemoryPlane(db_path)
-    gate = MemoryGate(plane)
 
     if hook_cmd == "recall":
         query = getattr(args, "query", "")
