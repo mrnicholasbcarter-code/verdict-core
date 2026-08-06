@@ -55,3 +55,8 @@ skills-lock.json
 
 .env.memory
 .verdict/adaptive_state/
+
+# Generated local runtime state (see CLAUDE.md "Generated Artifacts")
+.pi/
+.ruvector/
+.verdict-memory-mission/

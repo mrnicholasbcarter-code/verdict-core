@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Mapping
 
 PROVIDER_RECEIPT_SCHEMA_VERSION = "1"
@@ -141,6 +142,14 @@ def _reject_sensitive(value: Any) -> None:
     elif isinstance(value, (list, tuple)):
         for child in value:
             _reject_sensitive(child)
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(child) for key, child in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(child) for child in value)
+    return value
 
 
 def _json_copy(value: Any) -> Any:

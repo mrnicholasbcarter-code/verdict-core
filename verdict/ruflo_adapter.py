@@ -6,6 +6,7 @@ Provides:
 - Submit/Status/Pause/Resume/Cancel/Approval/Result typed operations
 - Capability manifest for declarative capability requirements
 - Fake adapter for deterministic testing (no network credentials required)
+- Real transport implementations for production use
 - Trust boundaries: Verdict never bypasses Ruflo's authority on protected work
 
 This module does NOT implement Ruflo itself - it defines the contract Verdict uses
@@ -23,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from verdict.contracts import TaskSpec, WorkflowPlan
+from verdict.ruflo_transport import RufloTransport, RufloSubprocessTransport, RufloHttpTransport, create_ruflo_transport, RufloTransportError
 
 RUFLO_ADAPTER_PROTOCOL_VERSION = "rufl-adapter/v1"
 SUPPORTED_PROTOCOL_VERSIONS = ["rufl-adapter/v1"]
@@ -510,7 +512,7 @@ class RufloAdapter:
     def __init__(
         self,
         config: RufloAdapterConfig | None = None,
-        transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        transport: RufloTransport | Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.config = config or RufloAdapterConfig()
         self._transport = transport

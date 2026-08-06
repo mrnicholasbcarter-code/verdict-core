@@ -1,10 +1,11 @@
 """Provider-neutral, privacy-safe session JSONL import.
 
-The session adapter is deliberately a file-format boundary.  It accepts an
-explicit JSONL file supplied by the caller, never discovers provider state,
-and never opens databases or invokes a provider SDK.  Imported records are
-normalized into stable, redacted dictionaries suitable for a
-``MemoryPlane`` or a manifest export.
+The session adapter is deliberately a file-format boundary.  It accepts either
+an explicit JSONL file supplied by the caller or regular JSONL files discovered
+from known local session locations.  Discovery is read-only, bounded, and never
+opens provider databases or invokes a provider SDK.  Imported records are
+normalized into stable, redacted dictionaries suitable for a ``MemoryPlane`` or
+a manifest export.
 """
 
 from __future__ import annotations
@@ -12,7 +13,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections.abc import Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -40,6 +43,7 @@ class SessionFormatDescriptor:
 DEFAULT_MAX_FILE_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_LINE_BYTES = 256 * 1024
 DEFAULT_MAX_RECORDS = 10_000
+DEFAULT_MAX_DISCOVERY_FILES = 64
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _SECRET_KEY = re.compile(
@@ -63,6 +67,42 @@ _ROLE_ALIASES = {
 }
 _TOOL_EVENTS = {"tool", "tool_call", "tool_result", "function_call", "function_result"}
 
+_KNOWN_SESSION_GLOBS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "claude",
+        "claude-jsonl",
+        (
+            ".claude/projects/**/*.jsonl",
+            ".claude/sessions/**/*.jsonl",
+        ),
+    ),
+    (
+        "codex",
+        "codex-jsonl",
+        (
+            ".codex/sessions/**/*.jsonl",
+            ".codex/projects/**/*.jsonl",
+        ),
+    ),
+    (
+        "pi",
+        "pi-jsonl",
+        (
+            ".pi/sessions/**/*.jsonl",
+            ".pi/conversations/**/*.jsonl",
+            ".pi-subagents/artifacts/*transcript.jsonl",
+        ),
+    ),
+    (
+        "ruflo",
+        "ruflo-jsonl",
+        (
+            ".ruflo/sessions/**/*.jsonl",
+            ".claude-flow/sessions/**/*.jsonl",
+        ),
+    ),
+)
+
 
 @dataclass(frozen=True)
 class SessionImportPolicy:
@@ -82,6 +122,50 @@ class SessionImportPolicy:
         if not versions:
             raise ValueError("at least one session schema version is required")
         object.__setattr__(self, "supported_versions", versions)
+
+
+@dataclass(frozen=True)
+class SessionDiscoveryPolicy:
+    """Bounds for read-only automatic session JSONL discovery."""
+
+    roots: tuple[str | Path, ...] = ()
+    providers: tuple[str, ...] = ("claude", "codex", "pi", "ruflo")
+    max_files: int = DEFAULT_MAX_DISCOVERY_FILES
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
+
+    def __post_init__(self) -> None:
+        if self.max_files <= 0 or self.max_file_bytes <= 0:
+            raise ValueError("session discovery limits must be positive")
+        providers = tuple(provider.lower() for provider in self.providers)
+        known = {provider for provider, _, _ in _KNOWN_SESSION_GLOBS}
+        if not providers or any(provider not in known for provider in providers):
+            raise ValueError("unsupported session discovery provider")
+        object.__setattr__(self, "providers", providers)
+        object.__setattr__(self, "roots", tuple(Path(root) for root in self.roots))
+
+
+@dataclass(frozen=True)
+class SessionCandidate:
+    """One regular JSONL file discovered from a known provider-neutral location."""
+
+    provider: str
+    format: str
+    path: Path
+    session_id: str
+    modified_at: float
+    size_bytes: int
+    file_sha256: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "format": self.format,
+            "path": str(self.path),
+            "session_id": self.session_id,
+            "modified_at": self.modified_at,
+            "size_bytes": self.size_bytes,
+            "file_sha256": self.file_sha256,
+        }
 
 
 @dataclass(frozen=True)
@@ -130,6 +214,82 @@ class SessionImportReport:
 
 
 @dataclass(frozen=True)
+class SessionDiscoveryReport:
+    """Secret-free report for automatic discovery."""
+
+    operation: str = "session-discovery"
+    adapter_protocol_version: str = SESSION_ADAPTER_PROTOCOL_VERSION
+    status: SessionImportStatus = "ok"
+    roots_scanned: int = 0
+    candidates_found: int = 0
+    skipped_files: int = 0
+    latest_modified_at: float | None = None
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "adapter_protocol_version": self.adapter_protocol_version,
+            "status": self.status,
+            "roots_scanned": self.roots_scanned,
+            "candidates_found": self.candidates_found,
+            "skipped_files": self.skipped_files,
+            "latest_modified_at": self.latest_modified_at,
+            "errors": list(self.errors),
+        }
+
+
+@dataclass(frozen=True)
+class SessionDiscoveryResult:
+    """Discovered candidates plus bounded discovery metadata."""
+
+    candidates: tuple[SessionCandidate, ...]
+    report: SessionDiscoveryReport
+
+
+@dataclass(frozen=True)
+class SessionAutoImportReport:
+    """Secret-free report for discovery/import orchestration."""
+
+    operation: str = "session-auto-import"
+    adapter_protocol_version: str = SESSION_ADAPTER_PROTOCOL_VERSION
+    status: SessionImportStatus = "ok"
+    dry_run: bool = True
+    candidates_found: int = 0
+    files_imported: int = 0
+    duplicate_files: int = 0
+    records_emitted: int = 0
+    malformed_records: int = 0
+    redacted_fields: int = 0
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "adapter_protocol_version": self.adapter_protocol_version,
+            "status": self.status,
+            "dry_run": self.dry_run,
+            "candidates_found": self.candidates_found,
+            "files_imported": self.files_imported,
+            "duplicate_files": self.duplicate_files,
+            "records_emitted": self.records_emitted,
+            "malformed_records": self.malformed_records,
+            "redacted_fields": self.redacted_fields,
+            "errors": list(self.errors),
+        }
+
+
+@dataclass(frozen=True)
+class SessionAutoImportResult:
+    """Result of a bounded automatic discovery/import pass."""
+
+    candidates: tuple[SessionCandidate, ...]
+    records: tuple[dict[str, Any], ...]
+    manifests: tuple[dict[str, Any], ...]
+    report: SessionAutoImportReport
+
+
+@dataclass(frozen=True)
 class SessionImportResult:
     """Normalized records and a deterministic, serializable manifest."""
 
@@ -161,6 +321,7 @@ class SessionAdapter:
         SessionFormatDescriptor("claude-jsonl", "claude", "Claude Code exported JSONL"),
         SessionFormatDescriptor("codex-jsonl", "codex", "Codex exported JSONL"),
         SessionFormatDescriptor("pi-jsonl", "pi", "Pi exported JSONL"),
+        SessionFormatDescriptor("ruflo-jsonl", "ruflo", "Ruflo exported JSONL"),
     )
 
     def import_file(
@@ -203,6 +364,185 @@ class SessionAdapter:
         return self.import_file(
             source, project=project, session_id=session_id, format=format, policy=policy
         )
+
+    def discover_sessions(
+        self, policy: SessionDiscoveryPolicy | None = None
+    ) -> SessionDiscoveryResult:
+        """Discover latest modified regular JSONL session files from known locations."""
+        discovery_policy = policy or SessionDiscoveryPolicy()
+        roots = _discovery_roots(discovery_policy)
+        candidates: list[SessionCandidate] = []
+        errors: list[str] = []
+        skipped = 0
+        seen_paths: set[Path] = set()
+
+        for root in roots:
+            for provider, format_id, patterns in _KNOWN_SESSION_GLOBS:
+                if provider not in discovery_policy.providers:
+                    continue
+                for pattern in patterns:
+                    try:
+                        matches = root.glob(pattern)
+                    except (OSError, ValueError) as exc:
+                        errors.append(f"{provider}: discovery pattern failed: {type(exc).__name__}")
+                        continue
+                    for path in matches:
+                        if len(candidates) >= discovery_policy.max_files:
+                            skipped += 1
+                            continue
+                        try:
+                            if path.is_symlink() or not path.is_file():
+                                skipped += 1
+                                continue
+                            normalized_path = path.resolve(strict=False)
+                            if normalized_path in seen_paths:
+                                continue
+                            seen_paths.add(normalized_path)
+                            stat = path.stat()
+                            if stat.st_size > discovery_policy.max_file_bytes:
+                                skipped += 1
+                                continue
+                            file_hash = _hash_file_bounded(path, discovery_policy.max_file_bytes)
+                        except _InputTooLargeError:
+                            skipped += 1
+                            continue
+                        except OSError:
+                            skipped += 1
+                            continue
+                        candidates.append(
+                            SessionCandidate(
+                                provider=provider,
+                                format=format_id,
+                                path=path,
+                                session_id=_candidate_session_id(provider, path, file_hash),
+                                modified_at=float(stat.st_mtime),
+                                size_bytes=int(stat.st_size),
+                                file_sha256=file_hash,
+                            )
+                        )
+
+        ordered = tuple(
+            sorted(candidates, key=lambda item: (item.modified_at, str(item.path)), reverse=True)
+        )
+        latest = ordered[0].modified_at if ordered else None
+        status: SessionImportStatus = "partial" if errors else "ok"
+        return SessionDiscoveryResult(
+            candidates=ordered,
+            report=SessionDiscoveryReport(
+                status=status,
+                roots_scanned=len(roots),
+                candidates_found=len(ordered),
+                skipped_files=skipped,
+                latest_modified_at=latest,
+                errors=tuple(errors),
+            ),
+        )
+
+    def import_discovered_sessions(
+        self,
+        *,
+        project: str,
+        discovery_policy: SessionDiscoveryPolicy | None = None,
+        import_policy: SessionImportPolicy | None = None,
+        known_file_hashes: set[str] | frozenset[str] | tuple[str, ...] = (),
+        dry_run: bool = True,
+    ) -> SessionAutoImportResult:
+        """Discover and optionally import session JSONL files with SHA-256 deduplication."""
+        try:
+            project_id = _validate_identifier(project, "project")
+        except ValueError as exc:
+            return SessionAutoImportResult(
+                candidates=(),
+                records=(),
+                manifests=(),
+                report=SessionAutoImportReport(status="error", dry_run=dry_run, errors=(str(exc),)),
+            )
+
+        discovery = self.discover_sessions(discovery_policy)
+        seen_hashes = {str(value) for value in known_file_hashes}
+        records: list[dict[str, Any]] = []
+        manifests: list[dict[str, Any]] = []
+        errors = list(discovery.report.errors)
+        imported = 0
+        duplicate_files = 0
+        malformed = 0
+        redacted = 0
+
+        for candidate in discovery.candidates:
+            if candidate.file_sha256 in seen_hashes:
+                duplicate_files += 1
+                continue
+            seen_hashes.add(candidate.file_sha256)
+            if dry_run:
+                continue
+            result = self.import_file(
+                candidate.path,
+                project=project_id,
+                session_id=candidate.session_id,
+                format=candidate.format,
+                policy=import_policy,
+            )
+            if result.report.status == "error":
+                errors.extend(result.report.errors)
+                continue
+            imported += 1
+            malformed += result.report.malformed_records
+            redacted += result.report.redacted_fields
+            manifests.append(result.manifest)
+            records.extend(result.records)
+            if result.report.errors:
+                errors.extend(result.report.errors)
+
+        status: SessionImportStatus = (
+            ("partial" if records or dry_run else "error") if errors else "ok"
+        )
+        return SessionAutoImportResult(
+            candidates=discovery.candidates,
+            records=tuple(records),
+            manifests=tuple(manifests),
+            report=SessionAutoImportReport(
+                status=status,
+                dry_run=dry_run,
+                candidates_found=len(discovery.candidates),
+                files_imported=imported,
+                duplicate_files=duplicate_files,
+                records_emitted=len(records),
+                malformed_records=malformed,
+                redacted_fields=redacted,
+                errors=tuple(errors),
+            ),
+        )
+
+    def poll_discovered_sessions(
+        self,
+        *,
+        project: str,
+        discovery_policy: SessionDiscoveryPolicy | None = None,
+        import_policy: SessionImportPolicy | None = None,
+        interval_seconds: float = 5.0,
+        iterations: int | None = None,
+        dry_run: bool = False,
+    ) -> Iterator[SessionAutoImportResult]:
+        """Long-running polling entrypoint for embedders that want a daemon loop."""
+        if interval_seconds < 0:
+            raise ValueError("poll interval must be non-negative")
+        if iterations is not None and iterations <= 0:
+            raise ValueError("iterations must be positive when supplied")
+        seen_hashes: set[str] = set()
+        count = 0
+        while iterations is None or count < iterations:
+            result = self.import_discovered_sessions(
+                project=project,
+                discovery_policy=discovery_policy,
+                import_policy=import_policy,
+                known_file_hashes=seen_hashes,
+                dry_run=dry_run,
+            )
+            seen_hashes.update(candidate.file_sha256 for candidate in result.candidates)
+            yield result
+            count += 1
+            if iterations is None or count < iterations:
+                time.sleep(interval_seconds)
 
     def _import_jsonl(
         self,
@@ -383,6 +723,49 @@ def import_session(
     """Format-dispatching entry point with explicit unavailable outcomes."""
     return SessionAdapter().import_file(
         source, project=project, session_id=session_id, format=format, policy=policy
+    )
+
+
+def discover_sessions(policy: SessionDiscoveryPolicy | None = None) -> SessionDiscoveryResult:
+    """Convenience wrapper for bounded provider-neutral session discovery."""
+    return SessionAdapter().discover_sessions(policy)
+
+
+def import_discovered_sessions(
+    *,
+    project: str,
+    discovery_policy: SessionDiscoveryPolicy | None = None,
+    import_policy: SessionImportPolicy | None = None,
+    known_file_hashes: set[str] | frozenset[str] | tuple[str, ...] = (),
+    dry_run: bool = True,
+) -> SessionAutoImportResult:
+    """Convenience wrapper for SHA-256/idempotent automatic discovery import."""
+    return SessionAdapter().import_discovered_sessions(
+        project=project,
+        discovery_policy=discovery_policy,
+        import_policy=import_policy,
+        known_file_hashes=known_file_hashes,
+        dry_run=dry_run,
+    )
+
+
+def poll_discovered_sessions(
+    *,
+    project: str,
+    discovery_policy: SessionDiscoveryPolicy | None = None,
+    import_policy: SessionImportPolicy | None = None,
+    interval_seconds: float = 5.0,
+    iterations: int | None = None,
+    dry_run: bool = False,
+) -> Iterator[SessionAutoImportResult]:
+    """Convenience wrapper for embedders wiring a polling/daemon loop."""
+    return SessionAdapter().poll_discovered_sessions(
+        project=project,
+        discovery_policy=discovery_policy,
+        import_policy=import_policy,
+        interval_seconds=interval_seconds,
+        iterations=iterations,
+        dry_run=dry_run,
     )
 
 
@@ -611,6 +994,33 @@ def _read_bounded(path: Path, limit: int) -> bytes:
     return data
 
 
+def _hash_file_bounded(path: Path, limit: int) -> str:
+    return hashlib.sha256(_read_bounded(path, limit)).hexdigest()
+
+
+def _discovery_roots(policy: SessionDiscoveryPolicy) -> tuple[Path, ...]:
+    if policy.roots:
+        return tuple(Path(root) for root in policy.roots)
+    roots = [Path.cwd()]
+    home = Path.home()
+    if home not in roots:
+        roots.append(home)
+    return tuple(roots)
+
+
+def _candidate_session_id(provider: str, path: Path, file_hash: str) -> str:
+    stem = path.stem
+    for suffix in ("_transcript", "-transcript", ".transcript"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", stem).strip(".-")
+    if not safe_stem:
+        safe_stem = "session"
+    candidate = f"{provider}-{safe_stem}-{file_hash[:12]}"
+    return candidate[:128].rstrip(".-") or f"{provider}-{file_hash[:12]}"
+
+
 def _select_format(source: str | Path, requested: str | None) -> str:
     if requested is not None:
         return requested.lower().lstrip(".")
@@ -679,20 +1089,30 @@ class _InputTooLargeError(Exception):
 
 __all__ = [
     "DEFAULT_MAX_FILE_BYTES",
+    "DEFAULT_MAX_DISCOVERY_FILES",
     "DEFAULT_MAX_LINE_BYTES",
     "DEFAULT_MAX_RECORDS",
     "SESSION_ADAPTER_PROTOCOL_VERSION",
     "SESSION_FORMAT",
     "SESSION_FORMAT_VERSION",
     "SESSION_SCHEMA_VERSION",
+    "SessionAutoImportReport",
+    "SessionAutoImportResult",
+    "SessionCandidate",
+    "SessionDiscoveryPolicy",
+    "SessionDiscoveryReport",
+    "SessionDiscoveryResult",
     "SessionAdapter",
     "SessionFormatDescriptor",
     "SessionImportPolicy",
     "SessionImportReport",
     "SessionImportResult",
+    "discover_sessions",
+    "import_discovered_sessions",
     "import_session",
     "import_session_jsonl",
     "normalize_session_record",
+    "poll_discovered_sessions",
     "session_record_to_memory_record",
     "verify_session_manifest",
 ]

@@ -7,8 +7,7 @@ Thanks for your interest. Here's how to contribute.
 ```bash
 git clone https://github.com/mrnicholasbcarter-code/verdict-core.git
 cd verdict-core
-python -m venv .venv && source .venv/bin/activate
-pip install -e '.[dev,server,dashboard]'
+uv sync --extra dev --extra server --extra dashboard
 ```
 
 Read [the autonomous-development contract](docs/guides/autonomous-development.md)
@@ -18,10 +17,10 @@ OmniRoute worker routing, and PR/CI lifecycle requirements.
 ## Running Tests
 
 ```bash
-.venv/bin/python -m pytest
-.venv/bin/python -m ruff check .
-.venv/bin/python -m ruff format --check .
-.venv/bin/python -m mypy verdict --strict
+uv run pytest -q
+uv run --extra dev --extra dashboard --extra server ruff check .
+uv run --extra dev --extra dashboard --extra server ruff format --check .
+uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 ```
 
 ## Pull Requests

@@ -6,8 +6,11 @@ from pathlib import Path
 from verdict.memory_plane import MemoryPlane
 from verdict.memory_session_adapter import (
     SessionAdapter,
+    SessionDiscoveryPolicy,
     SessionImportPolicy,
+    import_discovered_sessions,
     import_session,
+    poll_discovered_sessions,
     verify_session_manifest,
 )
 
@@ -174,3 +177,129 @@ def test_session_records_convert_to_memory_plane_records(tmp_path: Path) -> None
         stored = plane.put(record)
         assert stored.content == "durable"
         assert plane.get(record.namespace, record.key, scope=record.scope) == stored
+
+
+def test_discovers_known_provider_jsonl_locations_latest_first(tmp_path: Path) -> None:
+    files = {
+        "claude": tmp_path / ".claude" / "projects" / "demo" / "claude.jsonl",
+        "codex": tmp_path / ".codex" / "sessions" / "codex.jsonl",
+        "pi": tmp_path / ".pi-subagents" / "artifacts" / "abc123_worker_0_transcript.jsonl",
+        "ruflo": tmp_path / ".claude-flow" / "sessions" / "ruflo.jsonl",
+    }
+    for index, path in enumerate(files.values(), start=1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_jsonl(path, [{"schema_version": 1, "role": "assistant", "content": path.stem}])
+        timestamp = 1_700_000_000 + index
+        path.touch()
+        import os
+
+        os.utime(path, (timestamp, timestamp))
+
+    result = SessionAdapter().discover_sessions(SessionDiscoveryPolicy(roots=(tmp_path,)))
+
+    assert result.report.status == "ok"
+    assert result.report.candidates_found == 4
+    assert [candidate.provider for candidate in result.candidates] == [
+        "ruflo",
+        "pi",
+        "codex",
+        "claude",
+    ]
+    assert {candidate.format for candidate in result.candidates} == {
+        "claude-jsonl",
+        "codex-jsonl",
+        "pi-jsonl",
+        "ruflo-jsonl",
+    }
+    assert all(candidate.file_sha256 for candidate in result.candidates)
+
+
+def test_discovery_skips_symlinks_and_oversized_files(tmp_path: Path) -> None:
+    valid = tmp_path / ".codex" / "sessions" / "valid.jsonl"
+    valid.parent.mkdir(parents=True)
+    write_jsonl(valid, [{"schema_version": 1, "role": "assistant", "content": "ok"}])
+    oversized = tmp_path / ".codex" / "sessions" / "large.jsonl"
+    oversized.write_text("x" * 128, encoding="utf-8")
+    link = tmp_path / ".codex" / "sessions" / "linked.jsonl"
+    link.symlink_to(valid)
+
+    result = SessionAdapter().discover_sessions(
+        SessionDiscoveryPolicy(roots=(tmp_path,), providers=("codex",), max_file_bytes=96)
+    )
+
+    assert [candidate.path for candidate in result.candidates] == [valid]
+    assert result.report.skipped_files == 2
+
+
+def test_auto_import_dry_run_reports_without_records_and_import_redacts(tmp_path: Path) -> None:
+    source = tmp_path / ".claude" / "projects" / "demo" / "session.jsonl"
+    source.parent.mkdir(parents=True)
+    write_jsonl(
+        source,
+        [
+            {"schema_version": 1, "role": "user", "prompt": "keep me private"},
+            {
+                "schema_version": 1,
+                "event_type": "tool_result",
+                "content": "Authorization: Bearer private-token-value",
+            },
+        ],
+    )
+    discovery_policy = SessionDiscoveryPolicy(roots=(tmp_path,), providers=("claude",))
+
+    dry_run = import_discovered_sessions(
+        project="demo", discovery_policy=discovery_policy, dry_run=True
+    )
+    assert dry_run.report.dry_run is True
+    assert dry_run.report.candidates_found == 1
+    assert dry_run.report.files_imported == 0
+    assert dry_run.records == ()
+
+    imported = import_discovered_sessions(
+        project="demo", discovery_policy=discovery_policy, dry_run=False
+    )
+    encoded = json.dumps(imported.records, sort_keys=True)
+    assert imported.report.files_imported == 1
+    assert imported.report.records_emitted == 2
+    assert imported.report.redacted_fields >= 2
+    assert "keep me private" not in encoded
+    assert "private-token-value" not in encoded
+    assert imported.manifests[0]["format"] == "claude-jsonl"
+
+
+def test_auto_import_sha256_deduplicates_identical_session_files(tmp_path: Path) -> None:
+    first = tmp_path / ".codex" / "sessions" / "first.jsonl"
+    second = tmp_path / ".codex" / "sessions" / "second.jsonl"
+    first.parent.mkdir(parents=True)
+    write_jsonl(first, [{"schema_version": 1, "role": "assistant", "content": "same"}])
+    second.write_bytes(first.read_bytes())
+
+    result = import_discovered_sessions(
+        project="demo",
+        discovery_policy=SessionDiscoveryPolicy(roots=(tmp_path,), providers=("codex",)),
+        dry_run=False,
+    )
+
+    assert result.report.candidates_found == 2
+    assert result.report.files_imported == 1
+    assert result.report.duplicate_files == 1
+    assert result.report.records_emitted == 1
+
+
+def test_poll_discovered_sessions_tracks_seen_hashes_between_iterations(tmp_path: Path) -> None:
+    source = tmp_path / ".pi-subagents" / "artifacts" / "abc_worker_0_transcript.jsonl"
+    source.parent.mkdir(parents=True)
+    write_jsonl(source, [{"schema_version": 1, "role": "assistant", "content": "once"}])
+
+    results = list(
+        poll_discovered_sessions(
+            project="demo",
+            discovery_policy=SessionDiscoveryPolicy(roots=(tmp_path,), providers=("pi",)),
+            interval_seconds=0,
+            iterations=2,
+            dry_run=False,
+        )
+    )
+
+    assert [item.report.files_imported for item in results] == [1, 0]
+    assert [item.report.duplicate_files for item in results] == [0, 1]

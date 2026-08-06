@@ -209,6 +209,7 @@ const availabilityStates = [
   'unknown',
   'unavailable',
   'denied',
+  'quarantined',
   'quota_exhausted',
   'rate_limited',
   'unauthorized',
@@ -261,6 +262,27 @@ const capabilityRequirementSchema = z
     minimum_level: nullableString.default(null),
     reason: nullableString.default(null),
     schema_version: schemaVersion.default('1'),
+  })
+  .strict();
+
+const modelPassportSchema = z
+  .object({
+    schema_version: schemaVersion,
+    provider: nonEmptyString,
+    model_id: nonEmptyString,
+    auth_state: nonEmptyString,
+    last_verified_timestamp: nonEmptyString,
+    availability_state: nonEmptyString,
+    qualified_at: nonEmptyString,
+    expires_at: nonEmptyString,
+    latency_p95: z.number().finite().nonnegative().nullable().optional(),
+    context_window: z.number().int().optional(),
+    tool_support: z.boolean().optional(),
+    token_cost_per_1k: z.number().finite().nonnegative().nullable().optional(),
+    availability_reason: nonEmptyString.optional(),
+    quarantine_until: nonEmptyString.optional(),
+    quarantined_at: nonEmptyString.optional(),
+    recovery_attempts: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -497,6 +519,8 @@ const schemas = {
   TaskSpec: taskSpecSchema,
   capability_requirement: capabilityRequirementSchema,
   CapabilityRequirement: capabilityRequirementSchema,
+  model_passport: modelPassportSchema,
+  ModelPassport: modelPassportSchema,
   runtime_candidate: runtimeCandidateSchema,
   RuntimeCandidate: runtimeCandidateSchema,
   availability_snapshot: availabilitySnapshotSchema,
@@ -529,6 +553,7 @@ const schemas = {
 export type ContractName = keyof typeof schemas;
 export type TaskSpec = z.output<typeof taskSpecSchema>;
 export type CapabilityRequirement = z.output<typeof capabilityRequirementSchema>;
+export type ModelPassport = z.output<typeof modelPassportSchema>;
 export type RuntimeCandidate = z.output<typeof runtimeCandidateSchema>;
 export type AvailabilitySnapshot = z.output<typeof availabilitySnapshotSchema>;
 export type VerificationPlan = z.output<typeof verificationPlanSchema>;

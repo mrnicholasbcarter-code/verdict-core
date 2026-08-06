@@ -6,6 +6,54 @@ from verdict.models import ProviderConfig, RoutingDecision
 COMPLEXITY_MAP = {"critical": 0.9, "high": 0.7, "medium": 0.5, "low": 0.2}
 
 
+def resolve_default_providers() -> tuple[str, dict[str, ProviderConfig]]:
+    """Load config or auto-detect running OmniRoute and local servers."""
+    import os
+    from pathlib import Path
+
+    import yaml
+
+    config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "verdict"
+    config_path = config_dir / "verdict.yaml"
+
+    primary_model = "anthropic/claude-3-opus-20240229"
+    providers: dict[str, ProviderConfig] = {}
+
+    if config_path.exists():
+        try:
+            raw = yaml.safe_load(config_path.read_text("utf-8")) or {}
+            if raw.get("primary_model"):
+                primary_model = str(raw["primary_model"])
+            for k, v in (raw.get("providers") or {}).items():
+                if isinstance(v, dict):
+                    providers[k] = ProviderConfig(
+                        base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env")
+                    )
+        except Exception:
+            pass
+
+    if not providers:
+        from verdict.provider_detection import detect_all_providers, generate_verdict_config
+
+        det = detect_all_providers()
+        cfg = generate_verdict_config(det)
+        if cfg.get("primary_model"):
+            primary_model = str(cfg["primary_model"])
+        for k, v in (cfg.get("providers") or {}).items():
+            if isinstance(v, dict):
+                providers[k] = ProviderConfig(
+                    base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env")
+                )
+
+    if not providers:
+        providers = {
+            "omniroute": ProviderConfig(base_url="http://localhost:20128/v1"),
+            "public_ollama": ProviderConfig(base_url="http://localhost:11434/v1"),
+        }
+
+    return primary_model, providers
+
+
 class Gate:
     """The main router client."""
 
@@ -21,8 +69,14 @@ class Gate:
         profile: str = DEGRADED_PROFILE,
         intelligence_service: IntelligenceService | None = None,
     ):
+        if providers is None:
+            resolved_primary, resolved_providers = resolve_default_providers()
+            if primary_model == "anthropic/claude-3-opus-20240229" and resolved_primary:
+                primary_model = resolved_primary
+            providers = resolved_providers
+
         self.primary_model = primary_model
-        self.providers = providers or {}
+        self.providers = providers
         self.log_path = log_path
         self.log_full_task = log_full_task
         self.discovery_ttl = discovery_ttl

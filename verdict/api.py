@@ -7,6 +7,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any, cast
@@ -42,6 +43,7 @@ from verdict.guidance import (
     GuidanceUnavailableError,
 )
 from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
+from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
@@ -313,6 +315,49 @@ class _EvidenceStreamingResponse(StreamingResponse):
             await self._evidence_stream.aclose()
 
 
+class ModelPassportStore:
+    """Bounded in-memory isolation-cache for qualified model passports.
+
+    Keys are ``(provider, model_id)``; entries expire after a fixed TTL so a
+    fresh qualification is never served stale, and the same key is never
+    re-probed within the TTL window (isolation-key caching).
+    """
+
+    def __init__(self, *, ttl_seconds: int = 300) -> None:
+        self._ttl = ttl_seconds
+        self._entries: dict[tuple[str, str], tuple[datetime, ModelPassport]] = {}
+
+    def get(
+        self, provider: str, model_id: str, *, now: datetime | None = None
+    ) -> ModelPassport | None:
+        current = now if now is not None else datetime.now(timezone.utc)
+        entry = self._entries.get((provider, model_id))
+        if entry is None:
+            return None
+        expires_at, passport = entry
+        if current > expires_at:
+            self._entries.pop((provider, model_id), None)
+            return None
+        return passport
+
+    def put(self, passport: ModelPassport, *, now: datetime | None = None) -> None:
+        current = now if now is not None else datetime.now(timezone.utc)
+        self._entries[(passport.provider, passport.model_id)] = (
+            current.replace(second=0, microsecond=0) + timedelta(seconds=self._ttl),
+            passport,
+        )
+
+    def list_fresh(self, *, now: datetime | None = None) -> list[ModelPassport]:
+        current = now if now is not None else datetime.now(timezone.utc)
+        fresh: list[ModelPassport] = []
+        for key, (expires_at, passport) in list(self._entries.items()):
+            if current <= expires_at:
+                fresh.append(passport)
+            else:
+                self._entries.pop(key, None)
+        return fresh
+
+
 # Singleton service instances
 intelligence_instance: IntelligenceService | None = None
 gate_instance: Gate | None = None
@@ -321,6 +366,7 @@ availability_cache_instance: AvailabilityCache | None = None
 eligibility_gate_instance: EligibilityGate | None = None
 evidence_store_instance: EvidenceStore | DurableEvidenceStore | None = None
 guidance_plane_instance: GuidanceControlPlane | None = None
+model_passport_store_instance: ModelPassportStore | None = None
 
 DEFAULT_AVAILABILITY_TTL_SECONDS = 60
 DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
@@ -447,6 +493,20 @@ def _build_intelligence() -> IntelligenceService:
 
 
 @asynccontextmanager
+def _build_model_passport_store() -> ModelPassportStore:
+    """Build the in-memory model-passport isolation cache.
+
+    Qualification requires a probe endpoint.  When none is configured the store
+    is still built (empty) so ``/v1/models/qualify`` fails closed with a clear
+    503 instead of crashing startup — same posture as the availability cache.
+    """
+    probe_base_url = os.getenv("LLMGATE_PROBE_BASE_URL")
+    if not probe_base_url or probe_base_url.strip().lower() in {"", "none"}:
+        return ModelPassportStore()
+    ttl = max(1, int(os.getenv("LLMGATE_MODEL_PASSPORT_TTL", "300")))
+    return ModelPassportStore(ttl_seconds=ttl)
+
+
 async def lifespan(app: FastAPI) -> Any:
     global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
     global guidance_plane_instance
@@ -458,6 +518,8 @@ async def lifespan(app: FastAPI) -> Any:
     )
     proxy_instance = _build_proxy()
     global availability_cache_instance, eligibility_gate_instance
+    global model_passport_store_instance
+    model_passport_store_instance = _build_model_passport_store()
     built = _build_availability_cache()
     availability_cache_instance, eligibility_gate_instance = (
         built if built is not None else (None, None)
@@ -502,6 +564,7 @@ async def lifespan(app: FastAPI) -> Any:
     eligibility_gate_instance = None
     evidence_store_instance = None
     guidance_plane_instance = None
+    model_passport_store_instance = None
 
 
 app = FastAPI(
@@ -886,6 +949,84 @@ async def list_models() -> Response:
     return Response(
         content=filtered_body, status_code=result.status_code, headers=_headers_for_body(result)
     )
+
+
+class QualifyRequest(BaseModel):
+    """Body for ``POST /v1/models/qualify``."""
+
+    provider: str
+    model_id: str
+    estimated_tokens: int | None = None
+    require_tools: bool = False
+    require_structured_output: bool = False
+
+
+@app.post("/v1/models/qualify")
+async def qualify_model(request: Request, req: QualifyRequest) -> Response:
+    """Qualify one concrete provider model with a bounded probe cascade.
+
+    Returns a fresh ``ModelPassport`` (isolation-key cached for the store TTL),
+    or a fail-closed error when qualification is not configured.
+    """
+    if not req.provider.strip() or not req.model_id.strip():
+        return _proxy_error(422, "provider and model_id must be non-empty")
+    if "/" in req.provider or "/" in req.model_id:
+        return _proxy_error(422, "provider and model_id must not contain '/'")
+    if req.estimated_tokens is not None and req.estimated_tokens < 0:
+        return _proxy_error(422, "estimated_tokens must be non-negative")
+    if model_passport_store_instance is None:
+        return _proxy_error(503, "model qualification is not configured")
+    fresh = model_passport_store_instance.get(req.provider, req.model_id)
+    if fresh is not None:
+        return JSONResponse(content=fresh.to_dict())
+    probe_base_url = os.getenv("LLMGATE_PROBE_BASE_URL")
+    if not probe_base_url or probe_base_url.strip().lower() in {"", "none"}:
+        return _proxy_error(503, "model qualification requires LLMGATE_PROBE_BASE_URL")
+    try:
+        from verdict.model_passports import run_qualification
+        from verdict.probes import openai_probe_transport
+
+        api_key = os.getenv("LLMGATE_PROBE_API_KEY") or os.getenv("LLMGATE_UPSTREAM_API_KEY")
+        transport = openai_probe_transport(probe_base_url, api_key=api_key)
+        live = os.getenv("LLMGATE_ALLOW_LIVE_PROBES", "").lower() in {"1", "true", "yes"}
+        consented = os.getenv("LLMGATE_PROBE_CONSENTED", "").lower() in {"1", "true", "yes"}
+        passport = await asyncio.to_thread(
+            run_qualification,
+            provider=req.provider,
+            model_id=req.model_id,
+            transport=transport,
+            live=live,
+            consented=consented,
+            require_tools=req.require_tools,
+            require_structured_output=req.require_structured_output,
+            estimated_tokens=req.estimated_tokens,
+        )
+    except Exception:
+        return _proxy_error(502, "model qualification failed")
+    model_passport_store_instance.put(passport)
+    return JSONResponse(content=passport.to_dict())
+
+
+@app.get("/v1/models/passports")
+async def list_passports(request: Request, model_ids: str | None = None) -> Response:
+    """List fresh qualified model passports, optionally filtered by ids."""
+    if model_passport_store_instance is None:
+        return _proxy_error(503, "model qualification is not configured")
+    if model_ids:
+        wanted = [item.strip() for item in model_ids.split(",") if item.strip()]
+        if not wanted:
+            return _proxy_error(422, "model_ids must contain at least one id")
+        found = []
+        for item in wanted:
+            if "/" not in item:
+                return _proxy_error(422, f"model_id '{item}' must be provider/model")
+            provider, model_id = item.split("/", 1)
+            passport = model_passport_store_instance.get(provider, model_id)
+            if passport is not None:
+                found.append(passport.to_dict())
+        return JSONResponse(content={"passports": found})
+    passports = [p.to_dict() for p in model_passport_store_instance.list_fresh()]
+    return JSONResponse(content={"passports": passports})
 
 
 async def _relay_completion(request: Request, *, surface: str) -> Response:
