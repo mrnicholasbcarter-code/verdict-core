@@ -42,6 +42,10 @@ from verdict.work_unit import WorkUnit, normalize_owned_path
 
 DEFAULT_EXECUTOR_MODEL = "cc/claude-sonnet-5"
 AUTODEV_SCOPE = "autodev"
+# Measured token counts, not secrets: without this the receipt store's
+# ``token``/``prompt``/``completion`` key patterns redact the very numbers the
+# expensive/cheap split is supposed to be evidence for.
+_USAGE_ALLOWLIST = ("usage.prompt_tokens", "usage.completion_tokens", "usage.total_tokens")
 
 
 class AutodevError(RuntimeError):
@@ -221,6 +225,7 @@ def run_autodev(
                 "owned_files": list(unit.owned_files),
             },
             provenance={"source": "verdict.autodev", "authority": "observed"},
+            allowlist=_USAGE_ALLOWLIST,
         )
         receipt_ids.append(record.receipt_id)
 

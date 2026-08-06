@@ -132,6 +132,24 @@ def test_full_loop_verifies_units_and_persists_receipts(repo: Path, tmp_path: Pa
     assert all(r.payload["verified"] for r in records)
 
 
+def test_receipts_keep_the_measured_token_counts(repo: Path, tmp_path: Path) -> None:
+    """The store redacts `*_tokens` keys by default; the split needs the numbers."""
+    db = tmp_path / "receipts.db"
+    run_autodev(
+        "fix ruff errors",
+        repo,
+        store=ReceiptStore(db),
+        decomposer=_decomposer([PLAN[0]]),
+        executor=_executor(repo, {"a.py": A_DIFF}),
+        mechanical=False,
+    )
+
+    usage = ReceiptStore(db).query_receipts(scope=AUTODEV_SCOPE)[0].payload["usage"]
+    assert usage["prompt_tokens"] == 100
+    assert usage["completion_tokens"] == 20
+    assert usage["total_tokens"] == 120
+
+
 def test_out_of_bounds_patch_leaves_the_unit_unverified(repo: Path) -> None:
     stray = """diff --git a/b.py b/b.py
 --- a/b.py
