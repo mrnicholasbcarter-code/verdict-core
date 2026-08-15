@@ -21,14 +21,42 @@ from typing import Any, Literal
 from uuid import uuid4
 
 ReceiptType = Literal[
-    "decision", "context", "execution", "verification", "outcome", "manifest", "tombstone",
-    "file_edit", "file_read", "file_write", "file_delete", "command", "tool_call",
-    "session", "compaction", "error"
+    "decision",
+    "context",
+    "execution",
+    "verification",
+    "outcome",
+    "manifest",
+    "tombstone",
+    "file_edit",
+    "file_read",
+    "file_write",
+    "file_delete",
+    "command",
+    "tool_call",
+    "session",
+    "compaction",
+    "error",
 ]
 _RECEIPT_TYPES = frozenset(
-    {"decision", "context", "execution", "verification", "outcome", "manifest", "tombstone",
-     "file_edit", "file_read", "file_write", "file_delete", "command", "tool_call",
-     "session", "compaction", "error"}
+    {
+        "decision",
+        "context",
+        "execution",
+        "verification",
+        "outcome",
+        "manifest",
+        "tombstone",
+        "file_edit",
+        "file_read",
+        "file_write",
+        "file_delete",
+        "command",
+        "tool_call",
+        "session",
+        "compaction",
+        "error",
+    }
 )
 _SCHEMA_VERSION = 2
 _REDACTED = "[REDACTED]"

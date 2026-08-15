@@ -9,6 +9,7 @@ and verification events.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -30,7 +31,7 @@ class ToolInfo:
     config_path: str
     session_dir: str | None = None
 
-    def __getitem__(self, key: str):
+    def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
 
 
@@ -41,8 +42,7 @@ class ToolDetectionReport:
 
 
 def detect_available_tools(
-    home_dir: Path | None = None,
-    cwd: Path | None = None,
+    home_dir: Path | None = None, cwd: Path | None = None
 ) -> ToolDetectionReport:
     """Detect available AI tool environments, config paths, and session directories."""
     home = (home_dir or Path.home()).resolve()
@@ -85,8 +85,8 @@ def detect_available_tools(
     tools["ruflo"] = ToolInfo(
         name="Ruflo / Claude Flow",
         installed=ruflo_dir.exists() or ruflo_home.exists(),
-        config_path=str(rufl_dir if ruflo_dir.exists() else ruflo_home),
-        session_dir=str(rufl_home / "sessions" if ruflo_home.exists() else ""),
+        config_path=str(ruflo_dir if ruflo_dir.exists() else ruflo_home),
+        session_dir=str(ruflo_home / "sessions" if ruflo_home.exists() else ""),
     )
 
     # 5. Hermes
@@ -105,7 +105,11 @@ def detect_available_tools(
     tools["cursor_jcode"] = ToolInfo(
         name="Cursor / JCode",
         installed=vscode_dir.exists() or cursor_dir.exists() or cursor_rules.exists(),
-        config_path=str(vscode_dir if vscode_dir.exists() else (cursor_dir if cursor_dir.exists() else cursor_rules)),
+        config_path=str(
+            vscode_dir
+            if vscode_dir.exists()
+            else (cursor_dir if cursor_dir.exists() else cursor_rules)
+        ),
         session_dir=str(vscode_dir),
     )
 
@@ -147,11 +151,11 @@ def detect_available_tools(
 def _normalize_hook_command(cmd: str) -> str:
     """Normalize hook command for deduplication."""
     # Remove extra spaces, normalize quotes
-    cmd = re.sub(r'\s+', ' ', cmd.strip())
+    cmd = re.sub(r"\s+", " ", cmd.strip())
     # Remove the 2>/dev/null || true suffix for comparison
-    cmd = re.sub(r'\s*2>/dev/null\s*\|\|\s*true\s*$', '', cmd)
+    cmd = re.sub(r"\s*2>/dev/null\s*\|\|\s*true\s*$", "", cmd)
     # Normalize quote styles
-    cmd = cmd.replace('"', "'").replace('`', "'")
+    cmd = cmd.replace('"', "'").replace("`", "'")
     return cmd
 
 
@@ -175,16 +179,16 @@ def _install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
         settings["hooks"] = {}
 
     # Define the Verdict hooks we need (canonical form with single quotes)
-    verdict_hooks = {
+    verdict_hooks: dict[str, list[dict[str, Any]]] = {
         "PreToolUse": [
             {
                 "matcher": "Bash",
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "verdict hook record 'claude_pre_bash' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"bash command\")' --namespace sessions --source claude 2>/dev/null || true"
+                        "command": "verdict hook record 'claude_pre_bash' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"bash command\")' --namespace sessions --source claude 2>/dev/null || true",
                     }
-                ]
+                ],
             }
         ],
         "PostToolUse": [
@@ -193,9 +197,9 @@ def _install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "verdict hook record 'claude_session' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"no prompt captured\")' --namespace sessions --source claude 2>/dev/null || true"
+                        "command": "verdict hook record 'claude_session' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"no prompt captured\")' --namespace sessions --source claude 2>/dev/null || true",
                     }
-                ]
+                ],
             }
         ],
         "UserPromptSubmit": [
@@ -204,9 +208,9 @@ def _install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"\")' --json --limit 20 2>/dev/null || true"
+                        "command": "verdict hook recall '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"\")' --json --limit 20 2>/dev/null || true",
                     }
-                ]
+                ],
             }
         ],
         "SessionStart": [
@@ -215,19 +219,19 @@ def _install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' --json --limit 30 2>/dev/null || true"
+                        "command": "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' --json --limit 30 2>/dev/null || true",
                     }
-                ]
+                ],
             },
             {
                 "matcher": "startup|resume",
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' --json --limit 30 2>/dev/null || true"
+                        "command": "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' --json --limit 30 2>/dev/null || true",
                     }
-                ]
-            }
+                ],
+            },
         ],
         "SubagentStop": [
             {
@@ -235,11 +239,11 @@ def _install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "verdict hook record 'claude_subagent' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"subagent completed\")' --namespace sessions --source claude 2>/dev/null || true"
+                        "command": "verdict hook record 'claude_subagent' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"subagent completed\")' --namespace sessions --source claude 2>/dev/null || true",
                     }
-                ]
+                ],
             }
-        ]
+        ],
     }
 
     # First, CLEAN UP any existing verdict hooks with non-canonical quote styles
@@ -332,7 +336,7 @@ def _install_codex_hooks(hooks_file: Path, shared_db: Path) -> None:
         hooks_data["hooks"] = {}
 
     # Define Verdict hooks for Codex
-    codex_verdict_hooks = {
+    codex_verdict_hooks: dict[str, list[dict[str, Any]]] = {
         "PostToolUse": [
             {
                 "matcher": "Write|Edit|Bash",
@@ -342,7 +346,7 @@ def _install_codex_hooks(hooks_file: Path, shared_db: Path) -> None:
                         "command": "verdict hook record 'codex_session' '$(cat /tmp/codex_last_prompt 2>/dev/null || echo \"no prompt captured\")' --namespace sessions --source codex 2>/dev/null || true",
                         "timeout": 10,
                     }
-                ]
+                ],
             }
         ],
         "SessionStart": [
@@ -354,9 +358,9 @@ def _install_codex_hooks(hooks_file: Path, shared_db: Path) -> None:
                         "command": "verdict hook recall '$(cat /tmp/codex_session_prompt 2>/dev/null || echo \"\")' --json --limit 20 2>/dev/null || true",
                         "timeout": 10,
                     }
-                ]
+                ],
             }
-        ]
+        ],
     }
 
     # Merge hooks
@@ -523,12 +527,10 @@ def configure_memory_bridge(
 
         elif tool == "mcp":
             mcp_file = root / ".mcp.json"
-            mcp_data = {"mcpServers": {}}
+            mcp_data: dict[str, Any] = {"mcpServers": {}}
             if mcp_file.exists():
-                try:
+                with contextlib.suppress(Exception):
                     mcp_data = json.loads(mcp_file.read_text("utf-8"))
-                except Exception:
-                    pass
             if "mcpServers" not in mcp_data:
                 mcp_data["mcpServers"] = {}
             mcp_data["mcpServers"]["verdict-memory"] = {
@@ -548,9 +550,7 @@ def configure_memory_bridge(
             vscode_dir.mkdir(parents=True, exist_ok=True)
             verdict_cfg = vscode_dir / "verdict.json"
             verdict_cfg.write_text(
-                json.dumps(
-                    {"memoryPlane": str(shared_db), "autoSync": True}, indent=2
-                ),
+                json.dumps({"memoryPlane": str(shared_db), "autoSync": True}, indent=2),
                 encoding="utf-8",
             )
             # Also create .cursorrules for backward compatibility
@@ -558,11 +558,12 @@ def configure_memory_bridge(
             existing = cursor_rules.read_text("utf-8") if cursor_rules.exists() else ""
             if "Verdict Unified Memory Bridge" not in existing:
                 cursor_rules.write_text(
-                    existing + "\n\n# Verdict Unified Memory Bridge\n" +
-                    "- All sessions, context, and code graphs share one local-first MemoryPlane.\n" +
-                    "- Query memory prior to task execution: `verdict memory search '<query>'`.\n" +
-                    "- Export session records on completion: `verdict memory put <key> <content>`.\n",
-                    encoding="utf-8"
+                    existing
+                    + "\n\n# Verdict Unified Memory Bridge\n"
+                    + "- All sessions, context, and code graphs share one local-first MemoryPlane.\n"
+                    + "- Query memory prior to task execution: `verdict memory search '<query>'`.\n"
+                    + "- Export session records on completion: `verdict memory put <key> <content>`.\n",
+                    encoding="utf-8",
                 )
             configured.append("cursor_jcode")
 
@@ -661,12 +662,17 @@ class MemoryHookController:
         return result
 
     def on_task_complete(
-        self, task_id: str, success: bool | None = None, *, result: Any = None, status: str | None = None
+        self,
+        task_id: str,
+        success: bool | None = None,
+        *,
+        result: Any = None,
+        status: str | None = None,
     ) -> dict[str, Any]:
         """After task completion: log outcome receipt."""
         # Handle both calling conventions: success=bool or status="complete"
         if success is None and status is not None:
-            success = (status == "complete")
+            success = status == "complete"
         elif success is None:
             success = True
         rec = self.receipt_store.put_receipt(
@@ -686,6 +692,7 @@ class MemoryHookController:
         # For implementation work, require documentation preflight
         if implementation:
             from verdict.documentation_preflight import require_documentation_preflight
+
             report = require_documentation_preflight(memory_path=self.plane.path)
         else:
             report = None
@@ -712,9 +719,7 @@ class MemoryHookController:
     def on_file_read(self, file_path: str, content: str) -> dict[str, Any]:
         """After file read: index into memory for future recall."""
         rec = self.receipt_store.put_receipt(
-            receipt_type="file_read",
-            scope=file_path,
-            payload={"bytes": len(content)},
+            receipt_type="file_read", scope=file_path, payload={"bytes": len(content)}
         )
         return {"status": "success", "receipt_id": rec.receipt_id}
 
@@ -728,7 +733,7 @@ class MemoryHookController:
             key=file_path,
             value=content,
             authority="file_operation",
-            provenance="user_edit" if not is_new else "file_create",
+            provenance={"reason": "user_edit" if not is_new else "file_create"},
             scope="project",
             source="verdict",
             trust="gated-local-observation",
@@ -742,7 +747,11 @@ class MemoryHookController:
             payload={"bytes": len(content), "is_new": is_new},
         )
 
-        return {"status": "success", "receipt_id": rec.receipt_id, "memory_result": result.to_dict()}
+        return {
+            "status": "success",
+            "receipt_id": rec.receipt_id,
+            "memory_result": result.to_dict(),
+        }
 
     def on_file_delete(self, file_path: str) -> dict[str, Any]:
         """After file delete: mark as deleted in memory AND create receipt."""
@@ -751,7 +760,7 @@ class MemoryHookController:
             key=file_path,
             value="[DELETED]",
             authority="file_operation",
-            provenance="file_delete",
+            provenance={"reason": "file_delete"},
             scope="project",
             source="verdict",
             trust="gated-local-observation",
@@ -760,17 +769,28 @@ class MemoryHookController:
 
         # Also create receipt for evidence chain
         rec = self.receipt_store.put_receipt(
-            receipt_type="file_delete",
-            scope=file_path,
-            payload={"action": "delete"},
+            receipt_type="file_delete", scope=file_path, payload={"action": "delete"}
         )
 
-        return {"status": "success", "receipt_id": rec.receipt_id, "memory_result": result.to_dict()}
+        return {
+            "status": "success",
+            "receipt_id": rec.receipt_id,
+            "memory_result": result.to_dict(),
+        }
 
     # 4. Command Execution Hooks
     def on_command_execute(self, command: str) -> dict[str, Any]:
         """Before command execution: check for destructive commands."""
-        destructive = ["rm -rf /", "dd if=/dev/zero", "mkfs.", "> /dev/sda", "shutdown", "reboot", "halt", "poweroff"]
+        destructive = [
+            "rm -rf /",
+            "dd if=/dev/zero",
+            "mkfs.",
+            "> /dev/sda",
+            "shutdown",
+            "reboot",
+            "halt",
+            "poweroff",
+        ]
         for pattern in destructive:
             if pattern in command:
                 raise ValueError("destructive_command_rejected")
@@ -781,7 +801,9 @@ class MemoryHookController:
         )
         return {"status": "success", "receipt_id": rec.receipt_id}
 
-    def on_command_complete(self, command: str, exit_code: int, duration_ms: float = 0.0) -> dict[str, Any]:
+    def on_command_complete(
+        self, command: str, exit_code: int, duration_ms: float = 0.0
+    ) -> dict[str, Any]:
         """After command execution: log result receipt."""
         rec = self.receipt_store.put_receipt(
             receipt_type="command",
@@ -820,13 +842,17 @@ class MemoryHookController:
         )
         return {"status": "success", "receipt_id": rec.receipt_id}
 
-    def on_session_end(self, session_id: str, summary: str = "", transcript: list | None = None) -> dict[str, Any]:
+    def on_session_end(
+        self, session_id: str, summary: str = "", transcript: list[Any] | None = None
+    ) -> dict[str, Any]:
         """On session end: persist final state."""
         # Store transcript in memory plane for retrieval
         if transcript is not None:
             import json
-            from verdict.memory_plane import MemoryRecord
             import time
+
+            from verdict.memory_plane import MemoryRecord
+
             record = MemoryRecord(
                 record_id=f"{session_id}:item_0",
                 namespace="session_history",
@@ -852,18 +878,14 @@ class MemoryHookController:
     def on_session_restore(self, session_id: str) -> dict[str, Any]:
         """On session restore: load session history."""
         rec = self.receipt_store.put_receipt(
-            receipt_type="session",
-            scope=session_id,
-            payload={"action": "restore"},
+            receipt_type="session", scope=session_id, payload={"action": "restore"}
         )
         return {"status": "success", "receipt_id": rec.receipt_id}
 
     def on_compaction(self, session_id: str, removed_bytes: int) -> dict[str, Any]:
         """On context compaction: archive removed context."""
         rec = self.receipt_store.put_receipt(
-            receipt_type="compaction",
-            scope=session_id,
-            payload={"removed_bytes": removed_bytes},
+            receipt_type="compaction", scope=session_id, payload={"removed_bytes": removed_bytes}
         )
         return {"status": "success", "receipt_id": rec.receipt_id}
 
@@ -888,7 +910,7 @@ class MemoryHookController:
 
     def on_verify(self, check_name: str, status: str) -> dict[str, Any]:
         """On verification (alternate interface): log verification receipt."""
-        passed = (status == "passed")
+        passed = status == "passed"
         return self.on_verification(check_name, passed, status)
 
 
@@ -912,6 +934,7 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
         if fix:
             # Initialize empty SQLite database
             import sqlite3
+
             conn = sqlite3.connect(str(memory_db))
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memories (
@@ -937,7 +960,9 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
                     status TEXT NOT NULL DEFAULT 'active'
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_namespace_key ON memories(namespace, key)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_namespace_key ON memories(namespace, key)"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status)")
             conn.commit()
             conn.close()
@@ -987,18 +1012,15 @@ def uninstall_memory_bridge(home_dir: Path, cwd: Path, purge_data: bool = False)
     if settings_file.exists():
         uninstalled.append(".claude/settings.json (hooks)")
 
-    return {
-        "status": "success",
-        "uninstalled_targets": uninstalled,
-    }
+    return {"status": "success", "uninstalled_targets": uninstalled}
 
 
 __all__ = [
-    "ToolInfo",
+    "MemoryHookController",
     "ToolDetectionReport",
-    "detect_available_tools",
+    "ToolInfo",
     "configure_memory_bridge",
+    "detect_available_tools",
     "run_doctor_diagnostics",
     "uninstall_memory_bridge",
-    "MemoryHookController",
 ]

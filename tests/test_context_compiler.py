@@ -200,6 +200,7 @@ class TestContextCompiler:
         assert optimized.dropped_item_ids == ()
         assert optimized.iter_items() == envelope.iter_items()
 
+
 class TestContextAuthority:
     def test_authority_round_trips(self) -> None:
         item = ContextItem(
