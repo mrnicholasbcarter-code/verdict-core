@@ -3,7 +3,7 @@ from __future__ import annotations
 from verdict.contracts import TaskSpec
 from verdict.ruflo_adapter import TaskStatus, build_fake_ruflo_adapter
 from verdict.swarm_contracts import SwarmTaskBudget, SwarmTaskEnvelope
-from verdict.swarm_dispatcher import SwarmDispatcher, SwarmDispatchPolicy
+from verdict.swarm_dispatcher import SwarmDispatchPolicy, SwarmDispatcher
 
 
 def test_swarm_spec_supervisor_validates_roles_and_envelope_link() -> None:
@@ -23,9 +23,7 @@ def test_swarm_spec_supervisor_validates_roles_and_envelope_link() -> None:
 
 def test_supervisor_control_delegates_to_ruflo_adapter() -> None:
     adapter = build_fake_ruflo_adapter()
-    sub = adapter.submit(
-        task_spec=TaskSpec(objective="Run slice task", task_type="codegen")
-    )
+    sub = adapter.submit(task_spec=TaskSpec(objective="Run slice task", task_type="codegen"))
 
     paused = adapter.pause(sub.task_id)
     assert paused.success is False
