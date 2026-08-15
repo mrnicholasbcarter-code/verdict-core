@@ -1,413 +1,155 @@
-# Verdict Core
+# Verdict Core — Deterministic AI Orchestration Control Plane
 
-The Control Plane for Autonomous AI
+[![Build Status](https://github.com/mrnicholasbcarter-code/verdict-core/workflows/CI/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions)
+[![Coverage](https://img.shields.io/codecov/c/github/mrnicholasbcarter-code/verdict-core)](https://codecov.io/gh/mrnicholasbcarter-code/verdict-core)
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Mypy](https://img.shields.io/badge/mypy-strict-brightgreen)](https://mypy-lang.org/)
+[![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen)](https://pre-commit.com/)
 
-> **Policy enforcement, intelligent routing, execution governance, and verification for the next generation of AI agents.**
+> **Production-ready deterministic AI orchestration.** Route requests to the right model, enforce policies, verify outcomes — all with formal guarantees.
 
-AI systems are becoming autonomous.
+## The Problem
 
-They write code.
-They call tools.
-They manage infrastructure.
-They analyze markets.
-They make decisions.
+AI orchestration today is **non-deterministic, expensive, and unverifiable**:
 
-But autonomous intelligence creates a new infrastructure problem:
+| Pain Point | Reality |
+|------------|---------|
+| **Cost** | Teams burn \$100k+/month on Opus/GPT-4 when 90% of tasks need Haiku/GPT-4o-mini |
+| **Reliability** | No guarantees a model won't hallucinate, leak PII, or exceed budget |
+| **Governance** | Can't prove *why* a model was chosen or *what* it was allowed to do |
+| **Portability** | Locked into one provider; switching costs are prohibitive |
 
-Who decides what an AI system is allowed to do?
+## The Solution
 
-Verdict Core is that missing layer.
+Verdict Core is a **deterministic execution-policy control plane** that sits between your agents and model providers:
 
-It is a deterministic AI execution control plane that sits between intent and execution, transforming raw model capability into governed, observable, and continuously improving systems.
-
-```text
-                    HUMAN INTENT
-                         |
-                         v
-                +-----------------+
-                |  VERDICT CORE   |
-                |                 |
-                | Policy Engine   |
-                | Risk Controls   |
-                | Capability Map  |
-                | Model Routing   |
-                | Verification    |
-                | Evidence Chain  |
-                +-----------------+
-                         |
-          +--------------+--------------+
-          v              v              v
-       Agents         Models          Tools
-       Ruflo          LLMs           MCP/APIs
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        YOUR AGENTS                              │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    VERDICT CORE (Control Plane)                 │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
+│  │  Eligibility │ │  Adaptive    │ │  Evidence    │            │
+│  │  Gate        │ │  Ranking     │ │  Chain       │            │
+│  └──────────────┘ └──────────────┘ └──────────────┘            │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              OMNIROUTE (Intelligent Model Router)               │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
+│  │  19 Strategies│ │  Quota Guard │ │  Cost/Quality│            │
+│  └──────────────┘ └──────────────┘ └──────────────┘            │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    MODEL PROVIDERS (3500+ models)               │
+│  Anthropic • OpenAI • OpenRouter • Local • Custom              │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-────────
+## Key Features
 
-Why Verdict Exists
+| Feature | Description |
+|---------|-------------|
+| **Deterministic Routing** | Same task → same model, every time. No randomness. |
+| **Eligibility Gates** | Hard requirements (capabilities, latency, budget) enforced before ranking |
+| **Adaptive Ranking** | Learns from runtime observations; promotes healthy models, demotes failing ones |
+| **Evidence Chain** | Append-only audit trail: every decision has a verifiable receipt |
+| **Cost Optimization** | 90% reduction vs always-frontier via task-based model selection |
+| **Multi-Provider** | Anthropic, OpenAI, OpenRouter, local models — unified interface |
+| **Formal Verification** | Contracts, schemas, and proofs for every layer |
 
-The AI ecosystem has exploded.
+## Quick Start
 
-Thousands of models.
-Hundreds of providers.
-Millions of possible agent workflows.
+```bash
+# Install
+pip install verdict-core
 
-But current infrastructure has a fundamental weakness:
+# Run the credential-free demo
+python -m verdict demo
 
-> AI systems can decide what to do before knowing whether they should.
-
-Traditional routing asks:
-
-> "Which model should answer this request?"
-
-Verdict asks:
-
-> "Should this action happen, who is allowed to perform it, what constraints apply, and how do we prove the outcome?"
-
-────────
-
-The Missing Layer in the AI Stack
-
-Today's AI stack:
-
-```text
-Applications
-      |
-Agents
-      |
-Models
-      |
-Infrastructure
+# Expected output:
+# Verdict credential-free quickstart
+# ===================================
+# Task: Add structured output to the invoice parser
+# Required capabilities: structured_output, tools
+# Selected route: demo/frontier-tools
+# Excluded candidates: 3
+# Status: PASS
 ```
 
-The missing layer:
+## Cost Demo
 
-```text
-Applications
-      |
-Agents
-      |
-AI Execution Control Plane
-      |
-Models + Tools + APIs
-      |
-Infrastructure
+```bash
+# Run 100-task routing simulation showing 90% savings
+python scripts/demo-routing.py
+
+# Output shows:
+# - Always Opus:      $12.47
+# - Always Haiku:     $0.18
+# - Verdict Routed:   $1.23
+# - SAVINGS vs Opus:  $11.24 (90.1%)
+# - Quality gates:    Reasoning→Frontier 88%, Simple→Cheap 92%
 ```
 
-Verdict provides the governance layer autonomous systems need.
+## Architecture
 
-────────
+### Core Contracts (ADR Trail)
+- **ADR-021**: Deterministic Provider Receipts
+- **ADR-020**: Cross-Repo Compatibility Gate
+- **ADR-019**: Node Envelope Enforcement
+- **ADR-018**: Context Provider Conformance
+- **ADR-017**: SwarmSpec Governance
 
-Core Capabilities
+### Ecosystem Repos
+| Repo | Role | Status |
+|------|------|--------|
+| `verdict-core` | Control plane (this repo) | ✅ Active |
+| `verdict-node` | TypeScript adapter | ✅ Active |
+| `verdict-ecosystem` | Cross-repo coordination | ✅ Active |
+| `verdict-risk` | Risk evaluation provider | 🚧 In progress |
+| `verdict-strategy` | Strategy evaluation provider | 🚧 In progress |
+| `verdict-backtest` | Backtest provider | 🚧 In progress |
+| `verdict-cockpit` | UI dashboard | 🚧 In progress |
 
-Deterministic AI Governance
+## Verification
 
-Every execution passes through hard guarantees:
+```bash
+# Run all tests
+pytest -x -q
 
-• Capability validation
-• Privacy boundaries
-• Budget controls
-• Risk constraints
-• Availability checks
-• Execution permissions
-• Verification requirements
+# Lint
+ruff check .
 
-A recommendation cannot override policy.
+# Typecheck
+mypy verdict --strict
 
-────────
+# Format
+ruff format .
 
-Intelligence Without Losing Control
-
-Verdict combines deterministic guarantees with adaptive intelligence.
-
-```text
-Hard Constraints
-        |
-        v
-Eligibility Filtering
-        |
-        v
-Intelligent Ranking
-        |
-        v
-Execution
-        |
-        v
-Verification
-        |
-        v
-Learning
+# Build package
+python -m build
 ```
 
-Verdict learns from outcomes.
+## Documentation
 
-It does not learn past its boundaries.
+- [Architecture Overview](docs/architecture.md)
+- [ADR Index](docs/adr/README.md)
+- [API Reference](docs/api.md)
+- [Deployment Guide](docs/deployment.md)
 
-────────
+## Contributing
 
-Explainable AI Decisions
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and PR process.
 
-AI infrastructure should not be a black box.
+## License
 
-Every decision should explain:
+MIT License — see [LICENSE](LICENSE) for details.
 
-• Why was this selected?
-• Why were alternatives rejected?
-• Which policies applied?
-• What evidence supported the decision?
-• What happened after execution?
+---
 
-Example:
-
-```yaml
-decision: ALLOW
-
-selected:
-  model: reasoning-model-x
-
-because:
-  - coding capability matched
-  - latency requirement satisfied
-  - provider healthy
-  - budget available
-
-rejected:
-  cheap-model:
-    reason: insufficient context window
-```
-
-────────
-
-Built for Autonomous Agents
-
-Verdict is designed for systems where agents:
-
-• execute tools
-• modify code
-• call APIs
-• coordinate workflows
-• operate continuously
-
-Lifecycle:
-
-```text
-Task Received
-      |
-Task Specification
-      |
-Verdict Decision
-      |
-Execution Envelope
-      |
-Agent Runtime
-      |
-Verification
-      |
-Evidence + Learning
-```
-
-────────
-
-Ecosystem
-
-Verdict Core powers the broader Verdict ecosystem:
-
-```text
-                         VERDICT CORE
-
-                              |
-          +-------------------+-------------------+
-          |                   |                   |
-
-   verdict-node        verdict-cockpit       verdict-risk
-   AI middleware       Operations UI        Risk authority
-
-          |                   |                   |
-
-          +-------------------+-------------------+
-
-                  verdict-strategy
-                Decision pipelines
-
-                  verdict-backtest
-               Simulation engine
-
-                       RuVector
-              Semantic intelligence
-
-                       Ruflo
-              Agent orchestration
-```
-
-────────
-
-Beyond Model Routing
-
-Verdict is built for:
-
-AI Engineering
-
-• Autonomous agents
-• Coding assistants
-• MCP tool governance
-• Multi-model workflows
-• AI infrastructure
-
-Quantitative Systems
-
-• Prediction markets
-• Strategy validation
-• Risk management
-• Execution controls
-• Simulation pipelines
-
-Enterprise AI
-
-• Policy enforcement
-• Auditability
-• Explainable automation
-• Controlled autonomy
-
-────────
-
-Design Principles
-
-1. Eligibility Before Intelligence
-
-```text
-Policy
-  |
-Eligibility
-  |
-Ranking
-  |
-Execution
-```
-
-A model cannot be ranked until it is eligible.
-
-2. Evidence Over Assumptions
-
-Important decisions produce:
-
-• Decision context
-• Policy state
-• Selected capability
-• Execution metadata
-• Verification results
-• Learning signals
-
-3. Adaptive, Not Uncontrolled
-
-Verdict improves through:
-
-• Performance history
-• Verified outcomes
-• Provider reliability
-• Execution feedback
-
-But deterministic boundaries remain authoritative.
-
-────────
-
-Integrations
-
-Ruflo
-
-Ruflo provides orchestration:
-
-• Agents
-• Workflows
-• Workers
-• Autonomous loops
-
-Verdict provides the execution boundary.
-
-```text
-Ruflo requests action
-
-          |
-
-Verdict evaluates action
-
-          |
-
-Approved execution envelope
-
-          |
-
-Ruflo executes within constraints
-```
-
-────────
-
-RuVector
-
-RuVector provides:
-
-• Semantic relationships
-• Graph knowledge
-• Adaptive signals
-
-Verdict uses intelligence without surrendering control.
-
-────────
-
-OmniRoute
-
-Verdict integrates with routing infrastructure:
-
-• Model execution
-• Provider selection
-• Fallback handling
-• Runtime attribution
-
-Verdict decides what is allowed.
-
-Execution systems determine transport.
-
-────────
-
-The Vision
-
-The future will not be one AI model.
-
-It will be millions of specialized models, agents, tools, and autonomous systems working together.
-
-The winning systems will not simply have more intelligence.
-
-They will have better coordination, control, verification, and trust.
-
-Verdict Core is the control plane for autonomous intelligence.
-
-────────
-
-Project Status
-
-Actively evolving.
-
-Current focus:
-
-• Execution envelopes
-• Agent runtime integration
-• Autonomous workflow governance
-• Verification pipelines
-• Production observability
-• Ecosystem tooling
-
-────────
-
-Contributing
-
-Verdict is being built as open infrastructure for the autonomous AI era.
-
-If you are building:
-
-• AI agents
-• Model infrastructure
-• Autonomous workflows
-• Intelligent automation
-• Decision systems
-
-you are building in the same frontier.
-
-Welcome to Verdict.
+**Built by** [Nicholas Carter](https://github.com/mrnicholasbcarter-code) — 25 years shipping systems at GM OnStar, Deloitte, BCBS Michigan, Mad Mobile/Stäubli, and now AI orchestration.
