@@ -3,7 +3,7 @@ from __future__ import annotations
 from verdict.contracts import TaskSpec
 from verdict.ruflo_adapter import TaskStatus, build_fake_ruflo_adapter
 from verdict.swarm_contracts import SwarmTaskBudget, SwarmTaskEnvelope
-from verdict.swarm_dispatcher import SwarmDispatchPolicy, SwarmDispatcher
+from verdict.swarm_dispatcher import SwarmDispatcher, SwarmDispatchPolicy
 
 
 def test_swarm_spec_supervisor_validates_roles_and_envelope_link() -> None:
