@@ -8,6 +8,9 @@ echo "🚀 Verdict Core Quickstart - Clean Environment Demo"
 echo "=================================================="
 echo ""
 
+# Use the repository root (where this script lives) as the source
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # Create clean environment
 QUICKSTART_DIR="/tmp/verdict-quickstart-$(date +%s)"
 echo "📁 Creating clean environment: $QUICKSTART_DIR"
@@ -22,17 +25,17 @@ source venv/bin/activate
 
 # Install verdict-core from local source (editable)
 echo "📦 Installing verdict-core from local source..."
-pip install -e /home/nick/dev/verdict-core --quiet
+pip install -e "$REPO_ROOT" --quiet
 
 # Run flagship demo
-echo "🎭 Running flagship demo..."
+echo "🎭 Running flagship demo (deterministic fixture simulation)..."
 echo ""
-python /home/nick/dev/verdict-core/scripts/flagship_demo.py
+python "$REPO_ROOT/scripts/flagship_demo.py"
 
 echo ""
 echo "✅ Quickstart complete!"
 echo "   Environment: $QUICKSTART_DIR"
-echo "   To run again: source $QUICKSTART_DIR/venv/bin/activate && python /home/nick/dev/verdict-core/scripts/flagship_demo.py"
+echo "   To run again: source $QUICKSTART_DIR/venv/bin/activate && python $REPO_ROOT/scripts/flagship_demo.py"
 echo ""
 
 # Cleanup option

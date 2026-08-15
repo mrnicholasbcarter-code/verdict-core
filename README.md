@@ -58,10 +58,10 @@ It's the difference between a recommendation engine and a **control plane**:
 
 ## 30-Second Demo
 
-No API keys. No config. Deterministic, offline, auditable. This is a local fixture demo—not a live provider call or production-readiness proof:
+No API keys. No config. Deterministic, offline, auditable. This is a **deterministic fixture simulation**—not a live provider call or production-readiness proof:
 
 ```bash
-verdict quickstart --non-interactive --dry-run
+python scripts/flagship_demo.py
 ```
 
 ```
@@ -154,11 +154,11 @@ Every public claim carries a status in the [claims ledger](docs/proof/claims_led
 ```
 verdict setup          Interactive setup wizard (plan / --dry-run / --json)
 verdict route          Route a task: --criticality {critical,high,medium,low} --terse
-verdict quickstart     Credential-free deterministic flagship demo
+verdict quickstart     Credential-free deterministic flagship demo (requires install)
 verdict detect         Discover local LLM providers (--config emits suggested config)
 verdict probe          1-token liveness probe (--allow-live-probe for explicit consent)
 verdict catalog        Qualify an OmniRoute catalog snapshot (bounded sample probes)
-verdict benchmark      Reproducible local benchmark harness (--fixture, --output-json)
+verdict benchmark      Reproducible local benchmark harness --fixture mode only (deterministic simulation, --output-json)
 verdict stats          Routing analytics
 verdict suggest        Review intelligence suggestions from past outcomes
 verdict serve          Launch the FastAPI microservice
