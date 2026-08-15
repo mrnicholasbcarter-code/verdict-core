@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import time
 from dataclasses import MISSING, Field, dataclass, field, fields
 from types import UnionType
 from typing import Any, ClassVar, TypeVar, cast, get_args, get_origin, get_type_hints
@@ -743,6 +745,214 @@ class LearningEvent(Contract):
         return cls.from_dict({**payload, **overrides})
 
 
+@dataclass(frozen=True)
+class SourceState(Contract):
+    """Source-state binding for Trusted Change Report.
+
+    Represents an immutable snapshot of repository state at a point in time.
+    Supports three methods: clean_commit, dirty_snapshot, stash_restore.
+    """
+
+    schema_version: str = "1"
+    source_state_id: str = field(
+        default_factory=lambda: f"ss-{fingerprint_text(str(time.time()))[:12]}"
+    )
+    repository_url: str = ""
+    commit_sha: str = ""
+    commit_message: str | None = None
+    commit_author: str | None = None
+    commit_timestamp: str = ""
+    branch: str = ""
+    tag: str | None = None
+    dirty_files: list[str] = field(default_factory=list)
+    untracked_files: list[str] = field(default_factory=list)
+    submodule_states: dict[str, str] = field(default_factory=dict)
+    worktree_path: str | None = None
+    snapshot_timestamp: str = ""
+    snapshot_method: str = "clean_commit"
+    parent_source_state_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.snapshot_method not in ("clean_commit", "dirty_snapshot", "stash_restore"):
+            raise ContractValidationError(f"invalid snapshot_method: {self.snapshot_method}")
+        if not self.repository_url:
+            raise ContractValidationError("repository_url is required")
+        if not self.commit_sha:
+            raise ContractValidationError("commit_sha is required")
+        if not self.branch:
+            raise ContractValidationError("branch is required")
+        if not self.snapshot_timestamp:
+            raise ContractValidationError("snapshot_timestamp is required")
+
+
+@dataclass(frozen=True)
+class VerificationResult(Contract):
+    check_name: str = ""
+    check_type: str = ""
+    status: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+    artifact_digests: list[str] = field(default_factory=list)
+    duration_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.check_type not in (
+            "diff_boundary",
+            "focused_tests",
+            "regression",
+            "policy",
+            "ci",
+            "custom",
+        ):
+            raise ContractValidationError(f"invalid check_type: {self.check_type}")
+        if self.status not in ("passed", "failed", "skipped", "unknown"):
+            raise ContractValidationError(f"invalid status: {self.status}")
+        for digest in self.artifact_digests:
+            if not re.match(r"^sha256:[0-9a-f]{64}$", digest):
+                raise ContractValidationError(f"invalid artifact digest: {digest}")
+
+
+@dataclass(frozen=True)
+class DiffSummary(Contract):
+    files_changed: list[str] = field(default_factory=list)
+    lines_added: int = 0
+    lines_removed: int = 0
+    protected_files_touched: list[str] = field(default_factory=list)
+    boundary_violations: list[str] = field(default_factory=list)
+    diff_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if not re.match(r"^sha256:[0-9a-f]{64}$", self.diff_digest):
+            raise ContractValidationError(f"invalid diff_digest: {self.diff_digest}")
+        if self.lines_added < 0 or self.lines_removed < 0:
+            raise ContractValidationError("lines_added/removed must be non-negative")
+
+
+@dataclass(frozen=True)
+class TrustedChangeMetrics(Contract):
+    latency_ms: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    estimated_cost_usd: float | None = None
+    failure_class: str = "unknown"
+
+    def __post_init__(self) -> None:
+        if self.failure_class not in (
+            "none",
+            "code_quality",
+            "operational",
+            "policy",
+            "verification",
+            "timeout",
+            "unknown",
+        ):
+            raise ContractValidationError(f"invalid failure_class: {self.failure_class}")
+        if self.latency_ms < 0 or self.tokens_in < 0 or self.tokens_out < 0:
+            raise ContractValidationError("metrics must be non-negative")
+
+
+@dataclass(frozen=True)
+class AcceptanceDecision(Contract):
+    decision: str = ""
+    reason: str = ""
+    conditions: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.decision not in ("accepted", "denied", "unknown"):
+            raise ContractValidationError(f"invalid decision: {self.decision}")
+        if not self.reason:
+            raise ContractValidationError("reason is required")
+
+
+@dataclass(frozen=True)
+class RouteRecommendation(Contract):
+    category: str = ""
+    current_route: str = ""
+    recommended_route: str = ""
+    confidence: float = 0.0
+    sample_size: int = 0
+    limitations: list[str] = field(default_factory=list)
+    can_promote: bool = False
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ContractValidationError("confidence must be in [0, 1]")
+        if self.sample_size < 0:
+            raise ContractValidationError("sample_size must be non-negative")
+
+
+@dataclass(frozen=True)
+class RegressionObservation(Contract):
+    observed: bool = False
+    action: str = "none"
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.action not in ("none", "quarantine", "rollback", "replan"):
+            raise ContractValidationError(f"invalid action: {self.action}")
+
+
+@dataclass(frozen=True)
+class TrustedChangeReport(Contract):
+    """Portable evidence-gated acceptance report for a completed work unit.
+
+    Projects existing receipts, verification, and route evidence into one report.
+    """
+
+    schema_version: str = "1"
+    report_id: str = field(default_factory=lambda: f"tcr-{fingerprint_text(str(time.time()))[:12]}")
+    objective: str = ""
+    task_type: str = ""
+    source_state: SourceState | dict[str, Any] = field(default_factory=dict)
+    work_unit_ids: list[str] = field(default_factory=list)
+    route_decision: dict[str, Any] = field(default_factory=dict)
+    evidence_receipts: list[dict[str, Any]] = field(default_factory=list)
+    verification_results: list[VerificationResult] = field(default_factory=list)
+    diff_summary: DiffSummary = field(default_factory=DiffSummary)
+    metrics: TrustedChangeMetrics = field(default_factory=TrustedChangeMetrics)
+    acceptance: AcceptanceDecision = field(default_factory=AcceptanceDecision)
+    route_recommendation: RouteRecommendation | None = None
+    regression_observation: RegressionObservation = field(default_factory=RegressionObservation)
+    received_at: str = ""
+    generated_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.objective:
+            raise ContractValidationError("objective is required")
+        if not self.task_type:
+            raise ContractValidationError("task_type is required")
+        if not self.work_unit_ids:
+            raise ContractValidationError("at least one work_unit_id is required")
+        if not self.received_at:
+            raise ContractValidationError("received_at is required")
+        if not self.generated_at:
+            raise ContractValidationError("generated_at is required")
+        # Coerce nested contracts if passed as dict
+        if isinstance(self.source_state, dict):
+            object.__setattr__(self, "source_state", SourceState(**self.source_state))
+        if isinstance(self.diff_summary, dict):
+            object.__setattr__(self, "diff_summary", DiffSummary(**self.diff_summary))
+        if isinstance(self.metrics, dict):
+            object.__setattr__(self, "metrics", TrustedChangeMetrics(**self.metrics))
+        if isinstance(self.acceptance, dict):
+            object.__setattr__(self, "acceptance", AcceptanceDecision(**self.acceptance))
+        if self.route_recommendation and isinstance(self.route_recommendation, dict):
+            object.__setattr__(
+                self, "route_recommendation", RouteRecommendation(**self.route_recommendation)
+            )
+        if isinstance(self.regression_observation, dict):
+            object.__setattr__(
+                self, "regression_observation", RegressionObservation(**self.regression_observation)
+            )
+        # Coerce verification results
+        vr_list = []
+        for vr in self.verification_results:
+            if isinstance(vr, dict):
+                vr_list.append(VerificationResult(**vr))
+            else:
+                vr_list.append(vr)
+        object.__setattr__(self, "verification_results", vr_list)
+
+
 _CONTRACTS: dict[str, type[Contract]] = {
     name: cls
     for name, cls in {
@@ -777,6 +987,22 @@ _CONTRACTS: dict[str, type[Contract]] = {
         "LearningEvent": LearningEvent,
         "execution_envelope": ExecutionEnvelope,
         "ExecutionEnvelope": ExecutionEnvelope,
+        "source_state": SourceState,
+        "SourceState": SourceState,
+        "trusted_change_report": TrustedChangeReport,
+        "TrustedChangeReport": TrustedChangeReport,
+        "verification_result": VerificationResult,
+        "VerificationResult": VerificationResult,
+        "diff_summary": DiffSummary,
+        "DiffSummary": DiffSummary,
+        "trusted_change_metrics": TrustedChangeMetrics,
+        "TrustedChangeMetrics": TrustedChangeMetrics,
+        "acceptance_decision": AcceptanceDecision,
+        "AcceptanceDecision": AcceptanceDecision,
+        "route_recommendation": RouteRecommendation,
+        "RouteRecommendation": RouteRecommendation,
+        "regression_observation": RegressionObservation,
+        "RegressionObservation": RegressionObservation,
     }.items()
 }
 
