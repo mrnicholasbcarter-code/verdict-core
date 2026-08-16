@@ -262,7 +262,7 @@ Full reference: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 | **Learning loop** | Outcome → advisory feedback | Optional intelligence adapters | In progress |
 | **Evidence ledger** | Durable, privacy-safe routing receipts | JSONL + signed manifests | Implemented; expanding |
 
-Design decisions live in **[docs/adr/](docs/adr/)** — 25+ records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more.
+Design decisions live in **[docs/adr/](docs/adr/)** — 26 numbered records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more. The **[ADR index](docs/adr/README.md)** lists every record with its decision and current status.
 
 Ecosystem-stories ADR trail ([verdict-ecosystem](https://github.com/mrnicholasbcarter-code/verdict-ecosystem) tracks the source stories):
 
@@ -317,7 +317,7 @@ Python ↔ TypeScript field-level parity is verified in CI — see [CONTRACT_PAR
 | Getting started | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
 | CLI reference | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) |
 | Configuration | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
-| Architecture decision records (20+) | [docs/adr/](docs/adr/) |
+| Architecture decision records (26) | [docs/adr/README.md](docs/adr/README.md) |
 | Routing policy | [docs/specs/ROUTING_POLICY.md](docs/specs/ROUTING_POLICY.md) |
 | Acceptance gates (G1–G7) | [ACCEPTANCE_GATES.md](ACCEPTANCE_GATES.md) |
 | Evidence index & claims ledger | [docs/proof/EVIDENCE_INDEX.md](docs/proof/EVIDENCE_INDEX.md) |
