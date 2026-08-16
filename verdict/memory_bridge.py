@@ -685,8 +685,11 @@ class MemoryHookController:
     # 3. File Operation Hooks
     def on_file_edit_start(self, file_path: str, implementation: bool = False) -> dict[str, Any]:
         """Before file edit: check quarantine and permissions, and documentation preflight for implementation work."""
-        # Check if path is in quarantine
-        if file_path.startswith("/tmp/") or file_path.startswith("/var/tmp/"):
+        # Check if path is in quarantine (rejecting tmp paths, not using one -- not a
+        # hardcoded-tmp-directory usage risk)
+        if file_path.startswith("/tmp/") or file_path.startswith(  # nosec B108
+            "/var/tmp/"
+        ):
             raise ValueError("quarantined_path_rejected")
 
         # For implementation work, require documentation preflight
