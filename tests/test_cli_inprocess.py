@@ -806,6 +806,60 @@ def test_cmd_check_invalid_config(
     assert "Literal API key detected inside host URL for provider" in capsys.readouterr().out
 
 
+def test_cmd_compat_manifest_json(capsys: pytest.CaptureFixture[str]) -> None:
+    cli.cmd_compat("manifest", None, True)
+    output = json.loads(capsys.readouterr().out)
+    assert output["schema_version"]
+    assert output["manifest_hash"].startswith("sha256:")
+    assert "TaskSpec" in output["contracts"]
+
+
+def test_cmd_compat_check_passes_on_matching_declaration(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from verdict.compatibility_manifest import build_compatibility_manifest
+
+    declared_path = tmp_path / "declared.json"
+    declared_path.write_text(json.dumps(build_compatibility_manifest().to_dict()))
+
+    cli.cmd_compat("check", str(declared_path), True)
+    output = json.loads(capsys.readouterr().out)
+    assert output["allowed"] is True
+
+
+def test_cmd_compat_check_fails_closed_on_missing_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_compat("check", str(tmp_path / "nope.json"), False)
+    assert exc.value.code == 1
+    assert "not found" in capsys.readouterr().out
+
+
+def test_cmd_compat_check_fails_closed_on_mismatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from verdict.compatibility_manifest import build_compatibility_manifest
+
+    manifest_dict = build_compatibility_manifest().to_dict()
+    manifest_dict["contracts"]["TaskSpec"] = "sha256:" + "0" * 64
+    declared_path = tmp_path / "declared.json"
+    declared_path.write_text(json.dumps(manifest_dict))
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_compat("check", str(declared_path), True)
+    assert exc.value.code == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["allowed"] is False
+    assert "TaskSpec" in output["mismatched_contracts"]
+
+
+def test_cmd_compat_check_requires_declared_arg(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_compat("check", None, False)
+    assert exc.value.code == 1
+
+
 def test_cmd_probe_reports_live_model(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

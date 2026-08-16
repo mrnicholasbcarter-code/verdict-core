@@ -58,3 +58,9 @@ skills-lock.json
 
 # Private claim evidence stays outside the repository.
 docs/proof/private_*
+
+# Generated local runtime state (see CLAUDE.md "Generated Artifacts")
+.pi/
+.ruvector/
+.verdict-memory-mission/
+scripts/demo-results.json

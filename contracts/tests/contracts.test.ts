@@ -9,6 +9,7 @@ import {
   type RoutingDecision,
   type AvailabilitySnapshot,
   type EvidenceReceipt,
+  type ModelPassport,
 } from "../src/index.js";
 
 describe("Contract Validation", () => {
@@ -218,6 +219,82 @@ describe("Contract Validation", () => {
       };
 
       expect(() => parseContract("evidence_receipt", receipt)).toThrow(ContractValidationError);
+    });
+  });
+
+  describe("ModelPassport", () => {
+    it("should parse a valid model passport", () => {
+      const passport: ModelPassport = {
+        schema_version: "1",
+        provider: "openai",
+        model_id: "gpt-4o",
+        auth_state: "authorized",
+        last_verified_timestamp: "2026-07-30T00:00:00Z",
+        availability_state: "eligible",
+        qualified_at: "2026-07-30T00:00:00Z",
+        expires_at: "2026-07-30T00:05:00Z",
+        latency_p95: 123.4,
+        context_window: 128000,
+        tool_support: true,
+        token_cost_per_1k: 0.005,
+        availability_reason: "verified",
+        recovery_attempts: 0,
+      };
+
+      const result = parseContract("model_passport", passport);
+      expect(result).toEqual(passport);
+      expect(result.schema_version).toBe("1");
+    });
+
+    it("should parse a quarantined passport with quarantine timestamps", () => {
+      const passport = {
+        schema_version: "1",
+        provider: "openai",
+        model_id: "gpt-4o",
+        auth_state: "unauthorized",
+        last_verified_timestamp: "2026-07-30T00:00:00Z",
+        availability_state: "quarantined",
+        qualified_at: "2026-07-30T00:00:00Z",
+        expires_at: "2026-07-30T00:05:00Z",
+        quarantine_until: "2026-07-30T00:30:00Z",
+        quarantined_at: "2026-07-30T00:00:00Z",
+        recovery_attempts: 1,
+      };
+
+      const result = parseContract("ModelPassport", passport);
+      expect(result.availability_state).toBe("quarantined");
+      expect(result.quarantine_until).toBe("2026-07-30T00:30:00Z");
+    });
+
+    it("should reject unknown fields in a model passport", () => {
+      const passport = {
+        schema_version: "1",
+        provider: "openai",
+        model_id: "gpt-4o",
+        auth_state: "authorized",
+        last_verified_timestamp: "2026-07-30T00:00:00Z",
+        availability_state: "eligible",
+        qualified_at: "2026-07-30T00:00:00Z",
+        expires_at: "2026-07-30T00:05:00Z",
+        unexpected: true,
+      };
+
+      expect(() => parseContract("model_passport", passport)).toThrow(ContractValidationError);
+    });
+
+    it("should reject a non-'1' schema version", () => {
+      const passport = {
+        schema_version: "2",
+        provider: "openai",
+        model_id: "gpt-4o",
+        auth_state: "authorized",
+        last_verified_timestamp: "2026-07-30T00:00:00Z",
+        availability_state: "eligible",
+        qualified_at: "2026-07-30T00:00:00Z",
+        expires_at: "2026-07-30T00:05:00Z",
+      };
+
+      expect(() => parseContract("model_passport", passport)).toThrow(ContractValidationError);
     });
   });
 

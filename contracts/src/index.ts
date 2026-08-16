@@ -209,6 +209,7 @@ const availabilityStates = [
   'unknown',
   'unavailable',
   'denied',
+  'quarantined',
   'quota_exhausted',
   'rate_limited',
   'unauthorized',
@@ -261,6 +262,27 @@ const capabilityRequirementSchema = z
     minimum_level: nullableString.default(null),
     reason: nullableString.default(null),
     schema_version: schemaVersion.default('1'),
+  })
+  .strict();
+
+const modelPassportSchema = z
+  .object({
+    schema_version: schemaVersion,
+    provider: nonEmptyString,
+    model_id: nonEmptyString,
+    auth_state: nonEmptyString,
+    last_verified_timestamp: nonEmptyString,
+    availability_state: nonEmptyString,
+    qualified_at: nonEmptyString,
+    expires_at: nonEmptyString,
+    latency_p95: z.number().finite().nonnegative().nullable().optional(),
+    context_window: z.number().int().optional(),
+    tool_support: z.boolean().optional(),
+    token_cost_per_1k: z.number().finite().nonnegative().nullable().optional(),
+    availability_reason: nonEmptyString.optional(),
+    quarantine_until: nonEmptyString.optional(),
+    quarantined_at: nonEmptyString.optional(),
+    recovery_attempts: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -479,16 +501,96 @@ const taskWorkflowOutcomeEpisodeSchema = z
   .strict();
 
 const learningEventSchema = z
+ .object({
+   event_id: nullableString.default(null),
+   signal: z.string().default(''),
+   correlation_id: nullableString.default(null),
+   value: z.unknown().default(null),
+   occurred_at: nullableString.default(null),
+   evidence: jsonObject.default({}),
+   metadata: jsonObject.default({}),
+   request_id: nullableString.default(null),
+   schema_version: schemaVersion.default('1'),
+ })
+ .strict();
+
+const sourceStateSchema = z
   .object({
-    event_id: nullableString.default(null),
-    signal: z.string().default(''),
-    correlation_id: nullableString.default(null),
-    value: z.unknown().default(null),
-    occurred_at: nullableString.default(null),
-    evidence: jsonObject.default({}),
-    metadata: jsonObject.default({}),
-    request_id: nullableString.default(null),
     schema_version: schemaVersion.default('1'),
+    source_state_id: nonEmptyString,
+    repository_url: nonEmptyString,
+    commit_sha: nonEmptyString,
+    commit_message: z.string().optional(),
+    commit_author: z.string().optional(),
+    commit_timestamp: nonEmptyString,
+    branch: nonEmptyString,
+    tag: nullableString.optional(),
+    dirty_files: z.array(nonEmptyString).default([]),
+    untracked_files: z.array(nonEmptyString).default([]),
+    submodule_states: z.record(z.string(), nonEmptyString).default({}),
+    worktree_path: nullableString.optional(),
+    snapshot_timestamp: nonEmptyString,
+    snapshot_method: z.enum(['clean_commit', 'dirty_snapshot', 'stash_restore']).default('clean_commit'),
+    parent_source_state_id: nullableString.optional(),
+  })
+  .strict();
+
+const trustedChangeReportSchema = z
+  .object({
+    schema_version: schemaVersion.default('1'),
+    report_id: nonEmptyString,
+    objective: nonEmptyString,
+    task_type: nonEmptyString,
+    source_state: sourceStateSchema,
+    work_unit_ids: z.array(nonEmptyString).min(1),
+    route_decision: routingDecisionSchema,
+    evidence_receipts: z.array(evidenceReceiptSchema).min(1),
+    verification_results: z.array(
+      z.object({
+        check_name: nonEmptyString,
+        check_type: z.enum(['diff_boundary', 'focused_tests', 'regression', 'policy', 'ci', 'custom']),
+        status: z.enum(['passed', 'failed', 'skipped', 'unknown']),
+        details: jsonObject.default({}),
+        artifact_digests: z.array(z.string().regex(/^sha256:[0-9a-f]{64}$/)).default([]),
+        duration_ms: nonNegativeInteger.optional(),
+      })
+    ).default([]),
+    diff_summary: z.object({
+      files_changed: z.array(nonEmptyString).default([]),
+      lines_added: nonNegativeInteger.default(0),
+      lines_removed: nonNegativeInteger.default(0),
+      protected_files_touched: z.array(nonEmptyString).default([]),
+      boundary_violations: z.array(nonEmptyString).default([]),
+      diff_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    }),
+    metrics: z.object({
+      latency_ms: nonNegativeInteger.default(0),
+      tokens_in: nonNegativeInteger.default(0),
+      tokens_out: nonNegativeInteger.default(0),
+      estimated_cost_usd: z.number().finite().nonnegative().nullable().default(null),
+      failure_class: z.enum(['none', 'code_quality', 'operational', 'policy', 'verification', 'timeout', 'unknown']).default('unknown'),
+    }),
+    acceptance: z.object({
+      decision: z.enum(['accepted', 'denied', 'unknown']),
+      reason: nonEmptyString,
+      conditions: z.array(nonEmptyString).default([]),
+    }),
+    route_recommendation: z.object({
+      category: nonEmptyString,
+      current_route: nonEmptyString,
+      recommended_route: nonEmptyString,
+      confidence: z.number().finite().min(0).max(1),
+      sample_size: nonNegativeInteger.default(0),
+      limitations: z.array(nonEmptyString).default([]),
+      can_promote: z.boolean().default(false),
+    }).nullable().default(null),
+    regression_observation: z.object({
+      observed: z.boolean().default(false),
+      action: z.enum(['none', 'quarantine', 'rollback', 'replan']).default('none'),
+      details: jsonObject.default({}),
+    }).default({}),
+    received_at: nonEmptyString,
+    generated_at: nonEmptyString,
   })
   .strict();
 
@@ -497,6 +599,8 @@ const schemas = {
   TaskSpec: taskSpecSchema,
   capability_requirement: capabilityRequirementSchema,
   CapabilityRequirement: capabilityRequirementSchema,
+  model_passport: modelPassportSchema,
+  ModelPassport: modelPassportSchema,
   runtime_candidate: runtimeCandidateSchema,
   RuntimeCandidate: runtimeCandidateSchema,
   availability_snapshot: availabilitySnapshotSchema,
@@ -524,11 +628,16 @@ const schemas = {
   LearningEvent: learningEventSchema,
   evidence_receipt: evidenceReceiptSchema,
   EvidenceReceipt: evidenceReceiptSchema,
+  source_state: sourceStateSchema,
+  SourceState: sourceStateSchema,
+  trusted_change_report: trustedChangeReportSchema,
+  TrustedChangeReport: trustedChangeReportSchema,
 } as const;
 
 export type ContractName = keyof typeof schemas;
 export type TaskSpec = z.output<typeof taskSpecSchema>;
 export type CapabilityRequirement = z.output<typeof capabilityRequirementSchema>;
+export type ModelPassport = z.output<typeof modelPassportSchema>;
 export type RuntimeCandidate = z.output<typeof runtimeCandidateSchema>;
 export type AvailabilitySnapshot = z.output<typeof availabilitySnapshotSchema>;
 export type VerificationPlan = z.output<typeof verificationPlanSchema>;
@@ -543,6 +652,8 @@ export type TaskWorkflowOutcomeEpisode = z.output<typeof taskWorkflowOutcomeEpis
 export type LearningEvent = z.output<typeof learningEventSchema>;
 export type RouteIdentity = z.output<typeof routeIdentitySchema>;
 export type EvidenceItem = z.output<typeof evidenceItemSchema>;
+export type SourceState = z.output<typeof sourceStateSchema>;
+export type TrustedChangeReport = z.output<typeof trustedChangeReportSchema>;
 export type EvidenceReceipt = z.output<typeof evidenceReceiptSchema>;
 
 function errorCategory(error: ZodError, path: readonly (string | number)[]): ContractErrorCategory {

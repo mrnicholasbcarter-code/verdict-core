@@ -1,6 +1,6 @@
 # Contract Parity Evidence: Python ↔ TypeScript
 
-Generated: 2026-07-26
+Generated: 2026-08-01
 
 ## Overview
 This document provides field-by-field comparison between the canonical Python contracts in `verdict-core/contracts.py` and the TypeScript contracts in `@bodanglin/verdict-contracts`.
@@ -251,6 +251,5 @@ export const middleware = createMiddleware({
 - **Documentation**: https://verdict.dev/docs
 - **Python Package**: https://pypi.org/project/verdict-core/
 - **TypeScript Contracts**: https://www.npmjs.com/package/@bodanglin/verdict-contracts
-- **TypeScript Client**: https://www.npmjs.com/package/verdict-client
-- **TypeScript Node**: https://www.npmjs.com/package/@bodanglin/verdict-node
+- **TypeScript Middleware**: https://www.npmjs.com/package/@bodanglin/verdict-node
 - **Issues**: https://github.com/verdict/verdict-core/issues

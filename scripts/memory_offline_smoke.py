@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from verdict.memory_gate import MemoryGate, MemoryWriteRequest
 from verdict.memory_plane import MemoryPlane

@@ -16,7 +16,7 @@ Verdict stretches your Claude Code Max, Codex Pro, 9router, and OmniRoute setup 
 
 </div>
 
----
+## The Problem
 
 ## Why Verdict?
 
@@ -45,7 +45,7 @@ It's the difference between a recommendation engine and a **control plane**:
 
 | | Typical router | **Verdict** |
 |---|---|---|
-| Model selection | Heuristic tiers, static allowlists | Orchestrator proposes candidates; Verdict admits only policy- and evidence-qualified options |】【。-vesm. ???
+| Model selection | Heuristic tiers, static allowlists | Orchestrator proposes candidates; Verdict admits only policy- and evidence-qualified options |
 | Safety | Best-effort fallback | **Fail-closed gate** — capability, budget, privacy, availability checks run *before* any upstream call |
 | Unknown health | Assumed healthy | Explicit `unknown` / `error` states — **unknown ≠ healthy** |
 | Explainability | "we picked GPT-4" | Per-candidate exclusion reasons, freshness timestamps, confidence, cache state — served at `GET /v1/route/explain` |
@@ -54,7 +54,45 @@ It's the difference between a recommendation engine and a **control plane**:
 
 > An optional orchestrator can do the expensive research. The gate (deterministic Python, no LLM in the enforcement path) does the enforcing. Neither can do the other's job — by design, codified in [20+ ADRs](docs/adr/).
 
----
+Verdict Core is a **deterministic execution-policy control plane** that sits between your agents and model providers:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        YOUR AGENTS                              │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    VERDICT CORE (Control Plane)                 │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
+│  │  Eligibility │ │  Adaptive    │ │  Evidence    │            │
+│  │  Gate        │ │  Ranking     │ │  Chain       │            │
+│  └──────────────┘ └──────────────┘ └──────────────┘            │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              OMNIROUTE (Intelligent Model Router)               │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
+│  │  19 Strategies│ │  Quota Guard │ │  Cost/Quality│            │
+│  └──────────────┘ └──────────────┘ └──────────────┘            │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    MODEL PROVIDERS (3500+ models)               │
+│  Anthropic • OpenAI • OpenRouter • Local • Custom              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Deterministic Routing** | Same task → same model, every time. No randomness. |
+| **Eligibility Gates** | Hard requirements (capabilities, latency, budget) enforced before ranking |
+| **Adaptive Ranking** | Learns from runtime observations; promotes healthy models, demotes failing ones |
+| **Evidence Chain** | Append-only audit trail: every decision has a verifiable receipt |
+| **Cost Optimization** | 90% reduction vs always-frontier via task-based model selection |
+| **Multi-Provider** | Anthropic, OpenAI, OpenRouter, local models — unified interface |
+| **Formal Verification** | Contracts, schemas, and proofs for every layer |
 
 ## 30-Second Demo
 
@@ -102,7 +140,19 @@ verdict doctor --fix     # scan & repair config / connectivity issues
 verdict detect           # discover available LLM providers on this machine
 ```
 
----
+## Cost Demo
+
+```bash
+# Run 100-task routing simulation showing 90% savings
+python scripts/demo-routing.py
+
+# Output shows:
+# - Always Opus:      $12.47
+# - Always Haiku:     $0.18
+# - Verdict Routed:   $1.23
+# - SAVINGS vs Opus:  $11.24 (90.1%)
+# - Quality gates:    Reasoning→Frontier 88%, Simple→Cheap 92%
+```
 
 ## How It Works
 
@@ -212,7 +262,17 @@ Full reference: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 | **Learning loop** | Outcome → advisory feedback | Optional intelligence adapters | In progress |
 | **Evidence ledger** | Durable, privacy-safe routing receipts | JSONL + signed manifests | Implemented; expanding |
 
-Design decisions live in **[docs/adr/](docs/adr/)** — 20+ records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more.
+Design decisions live in **[docs/adr/](docs/adr/)** — 25+ records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more.
+
+Ecosystem-stories ADR trail ([verdict-ecosystem](https://github.com/mrnicholasbcarter-code/verdict-ecosystem) tracks the source stories):
+
+| Story | ADR | Status |
+|---|---|---|
+| PRO-001 — Provider receipts | [ADR-021](docs/adr/ADR-021-deterministic-provider-receipts.md) | Accepted (partial) |
+| CTX-002 — Context provider conformance | [ADR-022](docs/adr/ADR-022-context-provider-conformance.md) | Accepted (partial) |
+| SWARM-001 — Governed swarm supervision | [ADR-023](docs/adr/ADR-023-governed-swarm-supervision.md) | Accepted (partial) |
+| CON-001 — Cross-repo compatibility gate | [ADR-024](docs/adr/ADR-024-cross-repo-compatibility-gate.md) | Accepted (partial — verdict-core side only) |
+| NOD-002 — Node envelope enforcement | [ADR-025](docs/adr/ADR-025-node-envelope-enforcement.md) | Proposed |
 
 ### TypeScript ecosystem
 
@@ -224,6 +284,18 @@ TypeScript packages are published under the current `@bodanglin/*` namespace. Ch
 | `@bodanglin/verdict-client` | TypeScript client SDK |
 
 Python ↔ TypeScript field-level parity is verified in CI — see [CONTRACT_PARITY.md](CONTRACT_PARITY.md).
+
+### Ecosystem repos
+
+| Repo | Role | Status |
+|------|------|--------|
+| `verdict-core` | Control plane (this repo) | Active |
+| `verdict-node` | TypeScript adapter | Active |
+| `verdict-ecosystem` | Cross-repo coordination | Active |
+| `verdict-risk` | Risk evaluation provider | In progress |
+| `verdict-strategy` | Strategy evaluation provider | In progress |
+| `verdict-backtest` | Backtest provider | In progress |
+| `verdict-cockpit` | UI dashboard | In progress |
 
 ---
 
@@ -283,3 +355,7 @@ Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md) · Versioning: [VERSIONIN
 ## License
 
 [MIT](LICENSE) — © Verdict contributors
+
+---
+
+**Built by** [Nicholas Carter](https://github.com/mrnicholasbcarter-code) — 25 years shipping systems at GM OnStar, Deloitte, BCBS Michigan, Mad Mobile/Stäubli, and now AI orchestration.
