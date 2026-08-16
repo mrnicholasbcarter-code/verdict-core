@@ -353,6 +353,40 @@ const verificationPlanSchema = z
   })
   .strict();
 
+/**
+ * A single verification check plus the provenance needed to re-run it.
+ *
+ * `status` keeps `unknown` distinct from `passed`/`failed` so an inconclusive
+ * check is never read as a pass. `raw_output` is rejected when it carries
+ * credentials, mirroring `VerificationResult.__post_init__` in Python.
+ */
+const verificationResultSchema = z
+  .object({
+    check_name: nonEmptyString,
+    check_type: z.enum(['diff_boundary', 'focused_tests', 'regression', 'policy', 'ci', 'custom']),
+    status: z.enum(['passed', 'failed', 'skipped', 'unknown']),
+    details: jsonObject.default({}),
+    artifact_digests: z.array(z.string().regex(/^sha256:[0-9a-f]{64}$/)).default([]),
+    duration_ms: nonNegativeInteger.nullable().default(null),
+    command: z.string().default(''),
+    runtime: z.string().default(''),
+    provenance: z.string().default(''),
+    policy_requirement: z.string().default(''),
+    raw_output: z.string().default(''),
+    schema_version: schemaVersion.default('1'),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.raw_output && redactContractSecrets(value.raw_output) !== value.raw_output) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['raw_output'],
+        message:
+          'raw_output contains secret-bearing content; store the redacted text or its fingerprint instead',
+      });
+    }
+  });
+
 const workflowPlanSchema = z
   .object({
     steps: workflowStepsSchema,
@@ -545,16 +579,7 @@ const trustedChangeReportSchema = z
     work_unit_ids: z.array(nonEmptyString).min(1),
     route_decision: routingDecisionSchema,
     evidence_receipts: z.array(evidenceReceiptSchema).min(1),
-    verification_results: z.array(
-      z.object({
-        check_name: nonEmptyString,
-        check_type: z.enum(['diff_boundary', 'focused_tests', 'regression', 'policy', 'ci', 'custom']),
-        status: z.enum(['passed', 'failed', 'skipped', 'unknown']),
-        details: jsonObject.default({}),
-        artifact_digests: z.array(z.string().regex(/^sha256:[0-9a-f]{64}$/)).default([]),
-        duration_ms: nonNegativeInteger.optional(),
-      })
-    ).default([]),
+    verification_results: z.array(verificationResultSchema).default([]),
     diff_summary: z.object({
       files_changed: z.array(nonEmptyString).default([]),
       lines_added: nonNegativeInteger.default(0),
@@ -614,6 +639,8 @@ const schemas = {
   FallbackAttempt: fallbackAttemptSchema,
   verification_plan: verificationPlanSchema,
   VerificationPlan: verificationPlanSchema,
+  verification_result: verificationResultSchema,
+  VerificationResult: verificationResultSchema,
   task_episode: taskEpisodeSchema,
   TaskEpisode: taskEpisodeSchema,
   workflow_episode: workflowEpisodeSchema,
@@ -641,6 +668,7 @@ export type ModelPassport = z.output<typeof modelPassportSchema>;
 export type RuntimeCandidate = z.output<typeof runtimeCandidateSchema>;
 export type AvailabilitySnapshot = z.output<typeof availabilitySnapshotSchema>;
 export type VerificationPlan = z.output<typeof verificationPlanSchema>;
+export type VerificationResult = z.output<typeof verificationResultSchema>;
 export type WorkflowPlan = z.output<typeof workflowPlanSchema>;
 export type RoutingDecision = z.output<typeof routingDecisionSchema>;
 export type FallbackAttempt = z.output<typeof fallbackAttemptSchema>;

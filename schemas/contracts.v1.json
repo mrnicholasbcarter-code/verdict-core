@@ -53,6 +53,12 @@
   },
   "task_workflow_outcome_episode":{
    "$ref":"#/$defs/task_workflow_outcome_episode"
+  },
+  "verification_plan":{
+   "$ref":"#/$defs/verification_plan"
+  },
+  "verification_result":{
+   "$ref":"#/$defs/verification_result"
   }
  },
  "$defs":{
@@ -812,6 +818,98 @@
     },
     "outcome":{
      "$ref":"#/$defs/outcome_episode"
+    },
+    "schema_version":{
+     "const":"1"
+    }
+   }
+  },
+  "verification_plan":{
+   "type":"object",
+   "additionalProperties":false,
+   "required":[
+    "checks",
+    "on_failure",
+    "schema_version"
+   ],
+   "properties":{
+    "checks":{
+     "type":"array"
+    },
+    "on_failure":{
+     "enum":[
+      "deny",
+      "replan_or_deny"
+     ]
+    },
+    "schema_version":{
+     "const":"1"
+    }
+   }
+  },
+  "verification_result":{
+   "type":"object",
+   "additionalProperties":false,
+   "required":[
+    "check_name",
+    "check_type",
+    "status",
+    "schema_version"
+   ],
+   "properties":{
+    "check_name":{
+     "type":"string",
+     "minLength":1
+    },
+    "check_type":{
+     "enum":[
+      "diff_boundary",
+      "focused_tests",
+      "regression",
+      "policy",
+      "ci",
+      "custom"
+     ]
+    },
+    "status":{
+     "enum":[
+      "passed",
+      "failed",
+      "skipped",
+      "unknown"
+     ]
+    },
+    "details":{
+     "type":"object"
+    },
+    "artifact_digests":{
+     "type":"array",
+     "items":{
+      "type":"string",
+      "pattern":"^sha256:[0-9a-f]{64}$"
+     }
+    },
+    "duration_ms":{
+     "type":[
+      "integer",
+      "null"
+     ],
+     "minimum":0
+    },
+    "command":{
+     "type":"string"
+    },
+    "runtime":{
+     "type":"string"
+    },
+    "provenance":{
+     "type":"string"
+    },
+    "policy_requirement":{
+     "type":"string"
+    },
+    "raw_output":{
+     "type":"string"
     },
     "schema_version":{
      "const":"1"

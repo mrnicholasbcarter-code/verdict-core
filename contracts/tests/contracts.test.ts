@@ -10,6 +10,7 @@ import {
   type AvailabilitySnapshot,
   type EvidenceReceipt,
   type ModelPassport,
+  type VerificationResult,
 } from "../src/index.js";
 
 describe("Contract Validation", () => {
@@ -295,6 +296,80 @@ describe("Contract Validation", () => {
       };
 
       expect(() => parseContract("model_passport", passport)).toThrow(ContractValidationError);
+    });
+  });
+
+  describe("VerificationResult", () => {
+    const validResult: VerificationResult = {
+      check_name: "focused-tests",
+      check_type: "focused_tests",
+      status: "passed",
+      details: { selected: 12, suite: "tests/test_contracts.py" },
+      artifact_digests: [`sha256:${"3f".repeat(32)}`],
+      duration_ms: 1200,
+      command: "python -m pytest -q tests/test_contracts.py",
+      runtime: "cpython-3.11.9/linux-x86_64",
+      provenance: "verdict-core.ci/github-actions",
+      policy_requirement: "VER-009:focused-tests-must-pass",
+      raw_output: "12 passed in 1.20s",
+      schema_version: "1",
+    };
+
+    it("should parse a result carrying full re-run provenance", () => {
+      const parsed = parseContract("verification_result", validResult) as VerificationResult;
+
+      expect(parsed.command).toBe("python -m pytest -q tests/test_contracts.py");
+      expect(parsed.runtime).toBe("cpython-3.11.9/linux-x86_64");
+      expect(parsed.provenance).toBe("verdict-core.ci/github-actions");
+      expect(parsed.policy_requirement).toBe("VER-009:focused-tests-must-pass");
+      expect(JSON.parse(serializeContract(parsed))).toEqual(validResult);
+    });
+
+    it("should keep unknown distinct from passed and failed", () => {
+      const parsed = parseContract("verification_result", {
+        check_name: "coverage",
+        check_type: "ci",
+        status: "unknown",
+      }) as VerificationResult;
+
+      expect(parsed.status).toBe("unknown");
+      expect(["passed", "failed"]).not.toContain(parsed.status);
+    });
+
+    it("should reject secret-bearing raw output", () => {
+      expect(() =>
+        parseContract("verification_result", {
+          ...validResult,
+          raw_output: "Authorization: Bearer sk-live-DEADBEEF9182",
+        })
+      ).toThrow(ContractValidationError);
+    });
+
+    it("should reject an unknown status", () => {
+      expect(() =>
+        parseContract("verification_result", { ...validResult, status: "green" })
+      ).toThrow(ContractValidationError);
+    });
+
+    it("should reject a malformed artifact digest", () => {
+      expect(() =>
+        parseContract("verification_result", {
+          ...validResult,
+          artifact_digests: ["sha1:deadbeef"],
+        })
+      ).toThrow(ContractValidationError);
+    });
+
+    it("should reject a negative duration", () => {
+      expect(() =>
+        parseContract("verification_result", { ...validResult, duration_ms: -1 })
+      ).toThrow(ContractValidationError);
+    });
+
+    it("should reject unknown fields", () => {
+      expect(() =>
+        parseContract("verification_result", { ...validResult, unexpected: true })
+      ).toThrow(ContractValidationError);
     });
   });
 
