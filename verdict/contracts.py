@@ -33,6 +33,12 @@ _DEGRADED_MODE_POLICIES = frozenset({"deny", "allow", "allow_with_penalty"})
 _POLICY_FLOORS = frozenset(
     {"none", "isolated", "protected", "standard", "best_effort", "medium", "high"}
 )
+_VERIFICATION_CHECK_TYPES = frozenset(
+    {"diff_boundary", "focused_tests", "regression", "policy", "ci", "custom"}
+)
+# ``unknown`` is deliberately distinct from ``passed``/``failed`` so an
+# inconclusive check is never silently read as a pass.
+_VERIFICATION_STATUSES = frozenset({"passed", "failed", "skipped", "unknown"})
 _AVAILABILITY_STATES = frozenset(
     {
         "eligible",
@@ -787,28 +793,51 @@ class SourceState(Contract):
 
 @dataclass(frozen=True)
 class VerificationResult(Contract):
+    """A single verification check with the provenance needed to re-run it.
+
+    ``status`` keeps ``unknown`` distinct from ``passed``/``failed`` so an
+    absent or inconclusive check can never be read as a pass.  ``command``,
+    ``runtime``, and ``provenance`` record who produced the result and how, and
+    ``policy_requirement`` records which policy obligation the check discharges.
+    ``raw_output`` is rejected outright when it carries credentials.
+    """
+
     check_name: str = ""
     check_type: str = ""
     status: str = ""
     details: dict[str, Any] = field(default_factory=dict)
     artifact_digests: list[str] = field(default_factory=list)
     duration_ms: int | None = None
+    command: str = ""
+    runtime: str = ""
+    provenance: str = ""
+    policy_requirement: str = ""
+    raw_output: str = ""
+    schema_version: str = "1"
 
     def __post_init__(self) -> None:
-        if self.check_type not in (
-            "diff_boundary",
-            "focused_tests",
-            "regression",
-            "policy",
-            "ci",
-            "custom",
-        ):
+        if not self.check_name:
+            raise ContractValidationError("check_name must not be empty")
+        if self.check_type not in _VERIFICATION_CHECK_TYPES:
             raise ContractValidationError(f"invalid check_type: {self.check_type}")
-        if self.status not in ("passed", "failed", "skipped", "unknown"):
+        if self.status not in _VERIFICATION_STATUSES:
             raise ContractValidationError(f"invalid status: {self.status}")
         for digest in self.artifact_digests:
             if not re.match(r"^sha256:[0-9a-f]{64}$", digest):
                 raise ContractValidationError(f"invalid artifact digest: {digest}")
+        if self.duration_ms is not None and self.duration_ms < 0:
+            raise ContractValidationError("duration_ms must be non-negative")
+        # ``_reject_secrets`` only inspects field *names* and only runs on the
+        # ``from_dict`` path.  Raw command output is secret-bearing by content,
+        # not by key, so it is checked here and therefore also covers direct
+        # construction.  ``redact_text`` rewriting the value means a credential
+        # pattern matched.
+        if self.raw_output and redact_text(self.raw_output) != self.raw_output:
+            raise ContractValidationError(
+                "raw_output contains secret-bearing content; store the redacted "
+                "text or its fingerprint instead "
+                f"({fingerprint_text(self.raw_output, length=12)})"
+            )
 
 
 @dataclass(frozen=True)

@@ -300,5 +300,34 @@
       "schema_version": "1"
     },
     "schema_version": "1"
+  },
+  "verification_plan": {
+    "checks": [
+      {
+        "name": "focused-tests",
+        "type": "focused_tests"
+      }
+    ],
+    "on_failure": "replan_or_deny",
+    "schema_version": "1"
+  },
+  "verification_result": {
+    "check_name": "focused-tests",
+    "check_type": "focused_tests",
+    "status": "passed",
+    "details": {
+      "selected": 12,
+      "suite": "tests/test_contracts.py"
+    },
+    "artifact_digests": [
+      "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+    ],
+    "duration_ms": 1200,
+    "command": "python -m pytest -q tests/test_contracts.py",
+    "runtime": "cpython-3.11.9/linux-x86_64",
+    "provenance": "verdict-core.ci/github-actions",
+    "policy_requirement": "VER-009:focused-tests-must-pass",
+    "raw_output": "12 passed in 1.20s",
+    "schema_version": "1"
   }
 }
