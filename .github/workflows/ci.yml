@@ -62,6 +62,8 @@ jobs:
         run: pytest tests/ -v --tb=short
       - name: Validate versioned contract schema
         run: python scripts/validate_contract_schema.py
+      - name: Validate public proof matrix and claims ledger
+        run: python scripts/verify_proof_matrix.py
       - name: Check coverage
         run: pytest tests/ --cov=verdict --cov-report=xml --cov-fail-under=70
 

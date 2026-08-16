@@ -6,16 +6,18 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import io
 import json
 import tarfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 EVIDENCE_DIR = Path(__file__).parent.parent / "evidence"
 BUNDLE_DIR = Path(__file__).parent.parent / "evidence_bundle"
 MANIFEST_NAME = "evidence_manifest.json"
+MEMORY_SMOKE_NAME = "memory_offline_smoke.json"
 _ALLOWED_SUFFIXES = frozenset({".json", ".md", ".txt", ".log", ".xml"})
 
 
@@ -75,6 +77,34 @@ def collect_evidence(evidence_dir: Path = EVIDENCE_DIR) -> dict[str, Any]:
         )
     artifacts.sort(key=lambda artifact: artifact["path"])
     return {"schema_version": 1, "artifacts": artifacts}
+
+
+def collect_memory_offline_smoke(evidence_dir: Path = EVIDENCE_DIR) -> Path:
+    """Write the deterministic, redacted MemoryPlane smoke report."""
+
+    smoke_run: Callable[[], dict[str, object]]
+    if __package__:
+        from scripts.memory_offline_smoke import run as smoke_run
+    else:
+        # ``python scripts/evidence_bundle.py`` puts ``scripts/`` (rather than
+        # the repository root) first on ``sys.path``. Load the sibling by its
+        # resolved path so an unrelated installed ``scripts`` package cannot
+        # silently provide stale evidence code.
+        smoke_path = Path(__file__).with_name("memory_offline_smoke.py")
+        spec = importlib.util.spec_from_file_location("verdict_memory_offline_smoke", smoke_path)
+        if spec is None or spec.loader is None:
+            raise ValueError(f"cannot load MemoryPlane smoke script: {smoke_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        smoke_run = cast(Callable[[], dict[str, object]], module.run)
+
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    output = evidence_dir / MEMORY_SMOKE_NAME
+    content = (
+        json.dumps(smoke_run(), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    output.write_bytes(content)
+    return output
 
 
 def _validated_manifest(manifest: Any) -> dict[str, Any]:
@@ -252,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest = verify_bundle(args.evidence_dir, args.bundle)
             print(f"verified {len(manifest['artifacts'])} evidence artifacts")
             return 0
+        collect_memory_offline_smoke(args.evidence_dir)
         evidence = collect_evidence(args.evidence_dir)
         bundle_path = create_bundle(evidence, args.evidence_dir, args.output_dir)
         print(f"created deterministic evidence bundle: {bundle_path}")

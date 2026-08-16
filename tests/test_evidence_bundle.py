@@ -1,11 +1,21 @@
 """Tests for deterministic, content-addressed release evidence bundles."""
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.evidence_bundle import MANIFEST_NAME, collect_evidence, create_bundle, verify_bundle
+from scripts.evidence_bundle import (
+    MANIFEST_NAME,
+    MEMORY_SMOKE_NAME,
+    collect_evidence,
+    collect_memory_offline_smoke,
+    create_bundle,
+    verify_bundle,
+)
 
 
 def _write_fixtures(root: Path) -> None:
@@ -79,3 +89,48 @@ def test_manifest_rejects_duplicate_and_traversal_paths(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="duplicate"):
         verify_bundle(evidence_dir)
+
+
+def test_memory_smoke_is_included_and_tamper_evident(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    bundle_dir = tmp_path / "bundles"
+    collect_memory_offline_smoke(evidence_dir)
+
+    first = collect_evidence(evidence_dir)
+    bundle = create_bundle(first, evidence_dir, bundle_dir)
+    assert MEMORY_SMOKE_NAME in {item["path"] for item in first["artifacts"]}
+    verify_bundle(evidence_dir, bundle)
+
+    (evidence_dir / MEMORY_SMOKE_NAME).write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        verify_bundle(evidence_dir, bundle)
+
+
+def test_evidence_bundle_cli_generates_current_memory_smoke_report(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    bundle_dir = tmp_path / "bundles"
+    script = Path(__file__).parents[1] / "scripts" / "evidence_bundle.py"
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--output-dir",
+            str(bundle_dir),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=environment,
+    )
+
+    assert "created deterministic evidence bundle" in result.stdout
+    report = json.loads((evidence_dir / MEMORY_SMOKE_NAME).read_text(encoding="utf-8"))
+    assert report["search_hit_count"] == 1
+    assert "search_record_ids" not in report
+    assert report["record_schema"]
