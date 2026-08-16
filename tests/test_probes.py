@@ -221,7 +221,10 @@ def test_repeated_failures_quarantine_and_redact():
     assert "secret-value" not in (second.error or "")
     assert "token=secret" not in (second.error or "")
     assert "REDACTED" in (second.error or "")
-    assert_probe_excluded(third, AvailabilityState.DENIED)
+    # Repeated failures quarantine the model: the normalized availability state
+    # is the distinct QUARANTINED state (temporary, auto-recoverable) rather
+    # than permanent DENIED. See docs/adr/ADR-007-availability-state-lifecycle.md.
+    assert_probe_excluded(third, AvailabilityState.QUARANTINED)
 
 
 def test_timeout_and_usage_unavailable_are_not_ready():

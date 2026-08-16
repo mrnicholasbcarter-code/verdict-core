@@ -300,6 +300,30 @@ class VerificationPlan(Contract):
 
 
 @dataclass(frozen=True)
+class ExecutionEnvelope(Contract):
+    """Canonical handoff object between Verdict and Ruflo orchestration.
+
+    Contains all information needed for Ruflo to execute within Verdict-approved
+    boundaries without requiring callbacks to Verdict for eligibility decisions.
+    """
+
+    task_spec: TaskSpec
+    eligibility_decision: dict[str, Any]  # EligibilityGate result with admitted candidates
+    policy_digest: str  # SHA-256 digest of compiled Policy for audit trail
+    allowed_capabilities: list[str]  # Capabilities Verdict permits for this execution
+    execution_constraints: dict[str, Any]  # Hard constraints: budget, latency, concurrency, privacy
+    verification_requirements: VerificationPlan  # Required verification checks
+    evidence_ids: list[str]  # Linked evidence/receipt identifiers for proof chain
+    routing_decision: dict[str, Any] | None = None  # RoutingDecision if already made
+    created_at: str | None = None
+    schema_version: str = "1"
+
+    @classmethod
+    def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> ExecutionEnvelope:
+        return cls.from_dict({**payload, **overrides})
+
+
+@dataclass(frozen=True)
 class WorkflowPlan(Contract):
     steps: list[dict[str, Any]] = field(default_factory=list)
     plan_id: str | None = None
@@ -751,6 +775,8 @@ _CONTRACTS: dict[str, type[Contract]] = {
         "OutcomeEvent": OutcomeEvent,
         "learning_event": LearningEvent,
         "LearningEvent": LearningEvent,
+        "execution_envelope": ExecutionEnvelope,
+        "ExecutionEnvelope": ExecutionEnvelope,
     }.items()
 }
 

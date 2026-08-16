@@ -16,7 +16,7 @@ from rich.table import Table
 
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from verdict.gate import Gate
-from verdict.models import ProviderConfig
+from verdict.models import ModelInfo, ProviderConfig, TaskSpec
 
 console = Console()
 
@@ -888,11 +888,13 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
 def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     """Scan the Verdict setup and OmniRoute connections for issues and repair them."""
     if output_json:
+        from pathlib import Path
+
         from verdict.memory_bridge import run_doctor_diagnostics
         from verdict.runtime_daemons import RuntimeManager
         from verdict.runtime_health import build_runtime_health_report
 
-        report = run_doctor_diagnostics(fix=fix)
+        report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
         report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
         print(json.dumps(report, indent=2, sort_keys=True))
         if report["status"] != "healthy":
@@ -1088,6 +1090,202 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         console.print("  [green]✓ System is healthy! All checks passed.[/green]")
 
 
+def cmd_run(task: str, criticality: str, terse: bool = False) -> None:
+    """Run a single task through the routing gate (alias of route)."""
+    cmd_route(task, criticality, terse)
+
+
+def cmd_plan(output_json: bool = False) -> None:
+    """Print a mutation-free setup plan without probing or writing state."""
+    cmd_setup_plan(output_json=output_json)
+
+
+def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False) -> None:
+    """List the qualified model catalog used for routing and simulation."""
+    if catalog is None:
+        catalog = default_model_catalog()
+    if output_json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "id": m.id,
+                        "provider": m.provider,
+                        "tier": m.capability_tier,
+                        "context_window": m.context_window,
+                        "cost_per_1k": m.cost_per_1k,
+                        "availability_state": m.availability_state,
+                    }
+                    for m in catalog
+                ],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    table = Table(title="Verdict model catalog")
+    table.add_column("ID", style="cyan")
+    table.add_column("Provider")
+    table.add_column("Tier")
+    table.add_column("Context")
+    table.add_column("Cost/1k", justify="right")
+    table.add_column("State")
+    for m in catalog:
+        table.add_row(
+            m.id,
+            m.provider,
+            f"T{m.capability_tier}",
+            str(m.context_window) if m.context_window > 0 else "-",
+            f"${m.cost_per_1k:.4f}" if m.cost_per_1k else "-",
+            m.availability_state,
+        )
+    console.print(table)
+
+
+def cmd_inspect(
+    model_id: str, catalog: list[ModelInfo] | None = None, output_json: bool = False
+) -> None:
+    """Inspect one model's catalog record and any stored passport evidence."""
+    if catalog is None:
+        catalog = default_model_catalog()
+    matches = [m for m in catalog if m.id == model_id or f"{m.provider}/{m.id}" == model_id]
+    if not matches:
+        message = f"model not found in catalog: {model_id}"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    model = matches[0]
+    payload: dict[str, Any] = {
+        "id": model.id,
+        "provider": model.provider,
+        "tier": model.capability_tier,
+        "context_window": model.context_window,
+        "cost_per_1k": model.cost_per_1k,
+        "capabilities": sorted(model.capabilities),
+        "availability_state": model.availability_state,
+    }
+    if output_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    console.print(Panel(f"[bold cyan]{model.id}[/bold cyan]", title="Model inspect"))
+    console.print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def cmd_replay(session_id: str, output_json: bool = False) -> None:
+    """Replay a recorded execution session from the shared MemoryPlane."""
+    try:
+        from verdict.execution_session import ExecutionSession, ExecutionSessionError
+        from verdict.memory_plane import MemoryPlane
+    except ImportError as exc:
+        message = (
+            "replay is not yet available: verdict.execution_session is still in "
+            f"development ({exc})"
+        )
+        if output_json:
+            print(json.dumps({"status": "unavailable", "message": message}, sort_keys=True))
+        else:
+            console.print(f"[yellow]{message}[/yellow]")
+        raise SystemExit(3) from exc
+    db_path = os.environ.get("VERDICT_MEMORY_DB", str(Path.home() / ".verdict" / "memory.db"))
+    try:
+        session = ExecutionSession.resume(session_id, MemoryPlane(db_path))
+    except ExecutionSessionError as exc:
+        message = f"no recorded session found for id: {session_id} ({exc})"
+        if output_json:
+            print(json.dumps({"status": "missing", "message": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1) from exc
+    record = session.to_dict()
+    if output_json:
+        print(json.dumps(record, indent=2, sort_keys=True))
+        return
+    console.print(f"[bold cyan]Execution session {session_id}[/bold cyan]")
+    console.print(
+        f"  State: {record['state']}  |  Model: {record['model_id']}  |  "
+        f"Steps: {len(record['steps'])} completed: {len(record['completed_steps'])}"
+    )
+    console.print(f"  Task: {record['task_spec']}")
+
+
+def cmd_simulate(
+    task: str,
+    criticality: str = "medium",
+    *,
+    model_override: str | None = None,
+    output_json: bool = False,
+    catalog: list[ModelInfo] | None = None,
+    passports: dict[str, Any] | None = None,
+) -> None:
+    """Forecast tokens, cost, risk, and the expected model before any paid call."""
+    from verdict.simulator import simulate
+
+    spec = TaskSpec(prompt=task, criticality=criticality)
+    forecast = simulate(
+        spec,
+        model_catalog=catalog if catalog is not None else default_model_catalog(),
+        model_override=model_override,
+    )
+    if output_json:
+        print(json.dumps(forecast.to_dict(), indent=2, sort_keys=True))
+        return
+    table = Table(title="Verdict pre-execution simulation")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="magenta")
+    table.add_row("Model", f"{forecast.model} ({forecast.provider}, T{forecast.tier})")
+    table.add_row("Prompt tokens", str(forecast.prompt_tokens))
+    table.add_row("Completion tokens", str(forecast.completion_tokens))
+    table.add_row("Total tokens", str(forecast.total_tokens))
+    table.add_row("Est. cost", f"${forecast.cost_usd:.6f}")
+    table.add_row("Risk score", f"{forecast.risk_score} / 100")
+    table.add_row("Capacity confidence", f"{forecast.capacity_confidence:.2f}")
+    console.print(table)
+    console.print(f"[dim]{forecast.rationale}[/dim]")
+
+
+def default_model_catalog() -> list[ModelInfo]:
+    """Build the default catalog from the configured verdict.yaml and classified tiers."""
+    models: list[ModelInfo] = []
+    config_dir = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
+    )
+    config_path = os.path.join(config_dir, "verdict.yaml")
+    raw: dict[str, Any] = {}
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                raw = loaded
+
+    from verdict.classifier import classify
+
+    primary = str(raw.get("primary_model", "anthropic/claude-3-opus-20240229"))
+    models.append(
+        ModelInfo(
+            id=primary,
+            provider=primary.split("/", 1)[0] if "/" in primary else "unknown",
+            capability_tier=classify(primary),
+            context_window=200_000,
+        )
+    )
+    seen = {primary}
+    providers = raw.get("providers") or {}
+    if isinstance(providers, dict):
+        for name, provider in providers.items():
+            if not isinstance(provider, dict):
+                continue
+            for model_id in provider.get("models") or {}:
+                if model_id in seen:
+                    continue
+                seen.add(model_id)
+                models.append(
+                    ModelInfo(id=model_id, provider=name, capability_tier=classify(model_id))
+                )
+    return models
+
+
 def cmd_memory(args: Any) -> None:
     """Handle memory subcommands: put, search, export, import, masterdocs, graph."""
     from verdict.memory_bridge import configure_memory_bridge, detect_available_tools
@@ -1228,7 +1426,7 @@ def cmd_uninstall(purge_data: bool = False) -> None:
     """Reversibly uninstall memory bridge hooks and MCP registrations."""
     from verdict.memory_bridge import uninstall_memory_bridge
 
-    res = uninstall_memory_bridge(purge_data=purge_data)
+    res = uninstall_memory_bridge(home_dir=Path.home(), cwd=Path.cwd(), purge_data=purge_data)
     console.print(f"[bold green]✓ Uninstalled targets: {res['uninstalled_targets']}[/bold green]")
     if purge_data:
         console.print("[bold yellow]⚠ Purged .verdict memory data directory.[/bold yellow]")
@@ -1351,6 +1549,126 @@ def cmd_check() -> None:
         sys.exit(1)
 
     console.print("[bold green]✓ Configuration file is valid.[/bold green]")
+
+
+def cmd_hook(args: Any) -> None:
+    """Manage Verdict lifecycle hooks for Codex and Claude Code."""
+
+    from verdict.memory_bridge import configure_memory_bridge
+    from verdict.memory_gate import MemoryGate, MemoryWriteRequest
+    from verdict.memory_plane import MemoryPlane
+
+    hook_cmd = getattr(args, "hook_command", None)
+    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
+    plane = MemoryPlane(db_path)
+    gate = MemoryGate(plane)
+
+    if hook_cmd == "recall":
+        query = getattr(args, "query", "")
+        limit = getattr(args, "limit", 5)
+        results = plane.search(query, limit=limit)
+        if getattr(args, "json", False):
+            print(json.dumps([r.to_dict() for r in results], indent=2))
+        else:
+            console.print(f"[bold cyan]Recall: {len(results)} record(s)[/bold cyan]")
+            for r in results:
+                console.print(f"- [{r.namespace}:{r.key}] ({r.source}): {r.content[:120]}")
+
+    elif hook_cmd == "record":
+        key = getattr(args, "key", "session")
+        value = getattr(args, "value", "")
+        namespace = getattr(args, "namespace", "sessions")
+        source = getattr(args, "source", "cli")
+        req = MemoryWriteRequest(
+            namespace=namespace, key=key, value=value, source=source, authority="agent"
+        )
+        write_res = gate.write(req)
+        if write_res.allowed:
+            console.print(f"[bold green]✓ Recorded [{namespace}:{key}][/bold green]")
+        else:
+            console.print(
+                f"[bold red]✗ Rejected [{namespace}:{key}]: {write_res.reason}[/bold red]"
+            )
+
+    elif hook_cmd == "configure":
+        tools_str = getattr(args, "tools", None)
+        tools = [t.strip() for t in tools_str.split(",")] if tools_str else ["codex", "claude"]
+        res = configure_memory_bridge(selected_tools=tools)
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            console.print("[bold green]✓ Memory bridge configured.[/bold green]")
+            console.print(f"  DB: {res['memory_db_path']}")
+            console.print(f"  Targets: {', '.join(res['configured_tools'])}")
+
+    elif hook_cmd == "status":
+        codex_agents = Path.home() / ".codex" / "AGENTS.md"
+        claude_md = Path.cwd() / "CLAUDE.md"
+        mcp_file = Path.cwd() / ".mcp.json"
+        status = {
+            "codex_agents_md": codex_agents.exists()
+            and "Verdict Unified Memory Bridge" in codex_agents.read_text(),
+            "claude_md": claude_md.exists()
+            and "Verdict Unified Memory Bridge" in claude_md.read_text(),
+            "mcp_json": False,
+            "memory_db": Path(db_path).exists(),
+        }
+        if mcp_file.exists():
+            try:
+                data = json.loads(mcp_file.read_text())
+                status["mcp_json"] = "verdict-memory" in data.get(
+                    "mcpServers", {}
+                ) or "verdict-core" in data.get("mcpServers", {})
+            except Exception:
+                pass
+        if getattr(args, "json", False):
+            print(json.dumps(status, indent=2))
+        else:
+            for k, v in status.items():
+                icon = "✅" if v else "⚠️"
+                console.print(f"{icon} {k}: {v}")
+
+
+def cmd_mcp(args: Any) -> None:
+    """Manage and run Model Context Protocol (MCP) server."""
+    mcp_cmd = getattr(args, "mcp_command", None)
+    if mcp_cmd == "serve":
+        from verdict.mcp_server import main as run_mcp
+
+        run_mcp()
+    elif mcp_cmd == "init":
+        from verdict.memory_bridge import configure_memory_bridge
+
+        res = configure_memory_bridge(selected_tools=["mcp", "codex", "claude"])
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            console.print(
+                "[bold green]✅ Verdict MCP server initialized across tool environments.[/bold green]"
+            )
+            console.print(f"Memory DB: {res['memory_db_path']}")
+    elif mcp_cmd == "status":
+        mcp_file = Path.cwd() / ".mcp.json"
+        registered = False
+        if mcp_file.exists():
+            try:
+                data = json.loads(mcp_file.read_text("utf-8"))
+                servers = data.get("mcpServers", {})
+                registered = "verdict-memory" in servers or "verdict-core" in servers
+            except Exception:
+                pass
+        status_info = {"mcp_registered": registered, "mcp_config": str(mcp_file)}
+        if getattr(args, "json", False):
+            print(json.dumps(status_info, indent=2))
+        else:
+            if registered:
+                console.print(
+                    "[bold green]✅ Verdict MCP server is registered in .mcp.json[/bold green]"
+                )
+            else:
+                console.print(
+                    "[yellow]⚠️ Verdict MCP server is not registered in .mcp.json[/yellow]"
+                )
 
 
 def main() -> None:
@@ -1574,6 +1892,77 @@ def main() -> None:
         "--tools", default=None, help="Comma-separated tools to configure (default: auto-detected)"
     )
 
+    mcp_p = subparsers.add_parser(
+        "mcp", help="Manage and run Model Context Protocol (MCP) stdio server"
+    )
+    mcp_sub = mcp_p.add_subparsers(dest="mcp_command", required=True)
+    mcp_sub.add_parser("serve", help="Launch the stdio MCP JSON-RPC server")
+    mcp_init_p = mcp_sub.add_parser(
+        "init", help="Configure Verdict MCP server across host tool environments"
+    )
+    mcp_init_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    mcp_status_p = mcp_sub.add_parser("status", help="Report active MCP registrations")
+    mcp_status_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    hook_p = subparsers.add_parser(
+        "hook", help="Manage Verdict lifecycle hooks for Codex and Claude"
+    )
+    hook_sub = hook_p.add_subparsers(dest="hook_command", required=True)
+    hook_recall_p = hook_sub.add_parser("recall", help="Search memory for prior context")
+    hook_recall_p.add_argument("query", help="Search query")
+    hook_recall_p.add_argument("--limit", type=int, default=5, help="Max results")
+    hook_recall_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    hook_record_p = hook_sub.add_parser("record", help="Record a session/event memory entry")
+    hook_record_p.add_argument("key", help="Memory key")
+    hook_record_p.add_argument("value", help="Memory value/content")
+    hook_record_p.add_argument("--namespace", default="sessions", help="Namespace")
+    hook_record_p.add_argument("--source", default="cli", help="Source provenance")
+    hook_configure_p = hook_sub.add_parser(
+        "configure", help="Configure memory bridge for Codex and Claude"
+    )
+    hook_configure_p.add_argument(
+        "--tools", default=None, help="Comma-separated tools (default: codex,claude)"
+    )
+    hook_configure_p.add_argument(
+        "--json", action="store_true", help="Output machine-readable JSON"
+    )
+    hook_status_p = hook_sub.add_parser("status", help="Show hook and MCP registration status")
+    hook_status_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    hook_status_p.add_argument("--db-path", default=None, help="Shared memory database path")
+
+    run_p = subparsers.add_parser("run", help="Route a single prompt/task (alias of route)")
+    run_p.add_argument("task", help="Task description or prompt text")
+    run_p.add_argument("--terse", action="store_true", help="Output ONLY the target model string")
+    run_p.add_argument(
+        "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
+    )
+
+    plan_p = subparsers.add_parser("plan", help="Print a mutation-free setup plan")
+    plan_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    models_p = subparsers.add_parser(
+        "models", help="List the qualified model catalog used for routing and simulation"
+    )
+    models_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    inspect_p = subparsers.add_parser("inspect", help="Inspect one model's catalog record")
+    inspect_p.add_argument("model_id", help="Model ID to inspect")
+    inspect_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    replay_p = subparsers.add_parser("replay", help="Replay a recorded execution session")
+    replay_p.add_argument("session_id", help="Session ID to replay")
+    replay_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    simulate_p = subparsers.add_parser(
+        "simulate", help="Forecast tokens, cost, risk, and model before any paid call"
+    )
+    simulate_p.add_argument("task", help="Task description or prompt text")
+    simulate_p.add_argument(
+        "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
+    )
+    simulate_p.add_argument("--model", dest="model_override", default=None, help="Model override")
+    simulate_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -1667,6 +2056,24 @@ def main() -> None:
         cmd_check()
     elif args.command == "memory":
         cmd_memory(args)
+    elif args.command == "mcp":
+        cmd_mcp(args)
+    elif args.command == "hook":
+        cmd_hook(args)
+    elif args.command == "run":
+        cmd_run(args.task, args.criticality, args.terse)
+    elif args.command == "plan":
+        cmd_plan(output_json=args.json)
+    elif args.command == "models":
+        cmd_models(output_json=args.json)
+    elif args.command == "inspect":
+        cmd_inspect(args.model_id, output_json=args.json)
+    elif args.command == "replay":
+        cmd_replay(args.session_id, output_json=args.json)
+    elif args.command == "simulate":
+        cmd_simulate(
+            args.task, args.criticality, model_override=args.model_override, output_json=args.json
+        )
     else:
         parser.print_help()
 

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/model-passport.v1.json",
+  "title": "Verdict Model Passport v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "provider",
+    "model_id",
+    "auth_state",
+    "last_verified_timestamp",
+    "availability_state",
+    "qualified_at",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "provider": {"$ref": "#/$defs/non_empty_string"},
+    "model_id": {"$ref": "#/$defs/non_empty_string"},
+    "auth_state": {"enum": ["authorized", "unauthorized", "unknown"]},
+    "last_verified_timestamp": {"type": "string", "format": "date-time"},
+    "availability_state": {
+      "enum": ["eligible", "degraded", "quarantined", "denied"]
+    },
+    "qualified_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "latency_p95": {"type": "number", "minimum": 0, "exclusiveMinimum": false},
+    "context_window": {"type": "integer", "minimum": -1},
+    "tool_support": {"type": "boolean"},
+    "token_cost_per_1k": {"type": "number", "minimum": 0},
+    "availability_reason": {"$ref": "#/$defs/non_empty_string"},
+    "quarantine_until": {"type": "string", "format": "date-time"},
+    "quarantined_at": {"type": "string", "format": "date-time"},
+    "recovery_attempts": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
