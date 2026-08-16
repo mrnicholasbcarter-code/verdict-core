@@ -13,7 +13,7 @@ import json
 import re
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -818,7 +818,7 @@ class ReceiptStore:
 
     def _iter_chain_records(
         self, *, scope: str | None, include_tombstones: bool, page_size: int = 5_000
-    ):
+    ) -> Iterator[ReceiptRecord]:
         """Yield receipts in ascending ``(scope, sequence)`` order, one page at a time.
 
         Chain verification has to start at the first link of a scope and follow
@@ -838,16 +838,21 @@ class ReceiptStore:
                         "SELECT DISTINCT scope FROM receipts ORDER BY scope"
                     ).fetchall()
                 ]
-            tombstone_clause = (
-                ""
-                if include_tombstones
-                else " AND NOT EXISTS ("
-                "SELECT 1 FROM receipts t WHERE t.tombstone_for = receipts.receipt_id)"
-            )
-            query = (
-                "SELECT * FROM receipts WHERE scope = ? AND sequence > ?"
-                f"{tombstone_clause} ORDER BY sequence ASC LIMIT ?"
-            )
+            # Two static literals rather than clause interpolation: no runtime
+            # value ever reaches the SQL text, and static strings keep that
+            # provable (S608/B608 stay quiet for the same reason).
+            if include_tombstones:
+                query = (
+                    "SELECT * FROM receipts WHERE scope = ? AND sequence > ?"
+                    " ORDER BY sequence ASC LIMIT ?"
+                )
+            else:
+                query = (
+                    "SELECT * FROM receipts WHERE scope = ? AND sequence > ?"
+                    " AND NOT EXISTS (SELECT 1 FROM receipts t"
+                    " WHERE t.tombstone_for = receipts.receipt_id)"
+                    " ORDER BY sequence ASC LIMIT ?"
+                )
             for current in scopes:
                 last = 0
                 while True:

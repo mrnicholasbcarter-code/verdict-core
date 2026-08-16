@@ -155,9 +155,7 @@ def test_mutating_any_recorded_field_breaks_the_chain(tmp_path, field: str) -> N
         original = payload[field]
         if field in ("tools", "changes", "verification"):
             payload[field] = []
-        elif field == "previous_hash":
-            payload[field] = OTHER_DIGEST
-        elif field == "envelope_hash":
+        elif field == "previous_hash" or field == "envelope_hash":
             payload[field] = OTHER_DIGEST
         else:
             payload[field] = f"tampered-{original}"
