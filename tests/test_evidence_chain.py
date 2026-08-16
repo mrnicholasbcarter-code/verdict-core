@@ -15,11 +15,7 @@ from typing import Any
 
 import pytest
 
-from verdict.contracts import (
-    ContractValidationError,
-    EvidenceChainLink,
-    contract_from_dict,
-)
+from verdict.contracts import ContractValidationError, EvidenceChainLink, contract_from_dict
 from verdict.receipt_store import ReceiptStore
 
 DIGEST = "sha256:" + "a" * 64
@@ -34,9 +30,7 @@ VALID_LINK: dict[str, Any] = {
     "model": "claude-opus-5",
     "tools": ["pytest", "ruff"],
     "changes": ["verdict/contracts.py"],
-    "verification": [
-        {"check_name": "focused", "check_type": "focused_tests", "status": "passed"}
-    ],
+    "verification": [{"check_name": "focused", "check_type": "focused_tests", "status": "passed"}],
     "outcome": "success",
     "timestamp": "2026-08-16T14:40:00Z",
     "previous_hash": "",
@@ -115,12 +109,8 @@ def test_link_rejects_unknown_and_secret_bearing_fields() -> None:
 def _store_links(store: ReceiptStore, scope: str, count: int = 3) -> list[str]:
     ids = []
     for index in range(count):
-        link = EvidenceChainLink.from_dict(
-            {**VALID_LINK, "decision": f"route:accept:{index}"}
-        )
-        record = store.put_receipt(
-            receipt_type="decision", scope=scope, payload=link.to_dict()
-        )
+        link = EvidenceChainLink.from_dict({**VALID_LINK, "decision": f"route:accept:{index}"})
+        record = store.put_receipt(receipt_type="decision", scope=scope, payload=link.to_dict())
         ids.append(record.receipt_id)
     return ids
 
@@ -155,9 +145,7 @@ def test_mutating_any_recorded_field_breaks_the_chain(tmp_path, field: str) -> N
         original = payload[field]
         if field in ("tools", "changes", "verification"):
             payload[field] = []
-        elif field == "previous_hash":
-            payload[field] = OTHER_DIGEST
-        elif field == "envelope_hash":
+        elif field in ("previous_hash", "envelope_hash"):
             payload[field] = OTHER_DIGEST
         else:
             payload[field] = f"tampered-{original}"
@@ -179,9 +167,7 @@ def test_reordering_the_chain_is_detected(tmp_path) -> None:
     receipt_ids = _store_links(store, "evidence")
     conn = sqlite3.connect(store.db_path)
     try:
-        conn.execute(
-            "UPDATE receipts SET sequence = ? WHERE receipt_id = ?", (99, receipt_ids[1])
-        )
+        conn.execute("UPDATE receipts SET sequence = ? WHERE receipt_id = ?", (99, receipt_ids[1]))
         conn.commit()
     finally:
         conn.close()
@@ -202,13 +188,11 @@ def test_export_import_round_trip_preserves_verification(tmp_path) -> None:
     assert report["valid"] is True
     assert report["checked"] == 3
 
-    restored = sorted(
-        target.query_receipts(scope="evidence"), key=lambda item: item.sequence
-    )
+    restored = sorted(target.query_receipts(scope="evidence"), key=lambda item: item.sequence)
     for record in restored:
         # The link must survive transport as a link, not as loose JSON.
-        assert EvidenceChainLink.from_dict(record.payload).verification == (
-            VALID_LINK["verification"]
+        assert (
+            EvidenceChainLink.from_dict(record.payload).verification == (VALID_LINK["verification"])
         )
 
 
@@ -225,9 +209,7 @@ def test_chain_walk_spans_more_than_one_page(tmp_path) -> None:
     store = ReceiptStore(tmp_path / "receipts.db")
     _store_links(store, "evidence", count=25)
 
-    walked = list(
-        store._iter_chain_records(scope="evidence", include_tombstones=True, page_size=4)
-    )
+    walked = list(store._iter_chain_records(scope="evidence", include_tombstones=True, page_size=4))
     assert [record.sequence for record in walked] == list(range(1, 26))
     assert store.verify_integrity(scope="evidence")["valid"] is True
 
