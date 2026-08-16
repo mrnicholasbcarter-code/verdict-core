@@ -86,11 +86,34 @@ _OUTCOME_VALUES = frozenset(
         "skipped",
     }
 )
+# Content digests are written as ``sha256:<64 lowercase hex>`` everywhere in the
+# repo.  Naming the pattern once keeps the evidence chain and the per-check
+# digests from drifting apart.
+_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
+# ISO 8601 with an optional fractional part and an optional offset.  A link
+# without a parseable instant cannot be ordered against its neighbours, so the
+# format is pinned rather than accepted as free text.
+_ISO_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"
+)
+
 _REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "TaskSpec": frozenset({"objective", "task_type"}),
     "WorkflowPlan": frozenset({"steps"}),
     "RoutingDecisionContract": frozenset({"selected_route"}),
     "OutcomeEvent": frozenset({"event_type", "outcome", "occurred_at"}),
+    "EvidenceChainLink": frozenset(
+        {
+            "decision",
+            "policy",
+            "envelope_hash",
+            "runtime",
+            "provider",
+            "model",
+            "outcome",
+            "timestamp",
+        }
+    ),
 }
 _BUDGET_FIELDS = frozenset(
     {
@@ -823,7 +846,7 @@ class VerificationResult(Contract):
         if self.status not in _VERIFICATION_STATUSES:
             raise ContractValidationError(f"invalid status: {self.status}")
         for digest in self.artifact_digests:
-            if not re.match(r"^sha256:[0-9a-f]{64}$", digest):
+            if not re.match(_DIGEST_PATTERN, digest):
                 raise ContractValidationError(f"invalid artifact digest: {digest}")
         if self.duration_ms is not None and self.duration_ms < 0:
             raise ContractValidationError("duration_ms must be non-negative")
@@ -850,7 +873,7 @@ class DiffSummary(Contract):
     diff_digest: str = ""
 
     def __post_init__(self) -> None:
-        if not re.match(r"^sha256:[0-9a-f]{64}$", self.diff_digest):
+        if not re.match(_DIGEST_PATTERN, self.diff_digest):
             raise ContractValidationError(f"invalid diff_digest: {self.diff_digest}")
         if self.lines_added < 0 or self.lines_removed < 0:
             raise ContractValidationError("lines_added/removed must be non-negative")
@@ -982,6 +1005,67 @@ class TrustedChangeReport(Contract):
         object.__setattr__(self, "verification_results", vr_list)
 
 
+@dataclass(frozen=True)
+class EvidenceChainLink(Contract):
+    """One append-only link binding a decision to the evidence that justifies it.
+
+    A receipt store already hashes whatever payload it is handed, so tampering
+    is detectable no matter what that payload contains.  What it cannot do is
+    notice that a field was never recorded in the first place.  This contract
+    closes that gap: it pins the eleven facts a link must carry plus the hash of
+    the link before it, so an omission fails at construction rather than
+    surviving as a chain that verifies perfectly and proves nothing.
+
+    ``previous_hash`` is empty only for the genesis link.  Every later link
+    repeats its predecessor's ``record_hash``, which is what makes truncating
+    the middle of a chain detectable rather than merely dishonest.
+
+    ``verification`` holds serialized :class:`VerificationResult` payloads and
+    is validated through that contract, so a link cannot smuggle in a check
+    whose status is outside the known set.  ``outcome`` reuses the shared
+    ``_OUTCOME_VALUES`` allowlist for the same reason.
+    """
+
+    decision: str = ""
+    policy: str = ""
+    envelope_hash: str = ""
+    runtime: str = ""
+    provider: str = ""
+    model: str = ""
+    tools: list[str] = field(default_factory=list)
+    changes: list[str] = field(default_factory=list)
+    verification: list[dict[str, Any]] = field(default_factory=list)
+    outcome: str = ""
+    timestamp: str = ""
+    previous_hash: str = ""
+    schema_version: str = "1"
+
+    def __post_init__(self) -> None:
+        for name in ("decision", "policy", "runtime", "provider", "model"):
+            if not getattr(self, name).strip():
+                raise ContractValidationError(f"{name} must not be empty")
+        if not re.match(_DIGEST_PATTERN, self.envelope_hash):
+            raise ContractValidationError(f"invalid envelope_hash: {self.envelope_hash}")
+        # An empty ``previous_hash`` marks the genesis link.  Anything else must
+        # be a real digest, so a truncated or hand-edited chain cannot pass by
+        # blanking the field it is meant to be pinned by.
+        if self.previous_hash and not re.match(_DIGEST_PATTERN, self.previous_hash):
+            raise ContractValidationError(f"invalid previous_hash: {self.previous_hash}")
+        for name in ("tools", "changes"):
+            if any(not isinstance(item, str) or not item.strip() for item in getattr(self, name)):
+                raise ContractValidationError(f"{name} must contain non-empty strings")
+        if self.outcome not in _OUTCOME_VALUES:
+            raise ContractValidationError(f"invalid outcome: {self.outcome}")
+        if not _ISO_TIMESTAMP.match(self.timestamp):
+            raise ContractValidationError(f"invalid timestamp: {self.timestamp}")
+        for entry in self.verification:
+            if not isinstance(entry, dict):
+                raise ContractValidationError("verification must contain objects")
+            # Round-trip through the check contract so an unknown status or a
+            # malformed digest is rejected here rather than at replay time.
+            VerificationResult.from_dict(entry)
+
+
 _CONTRACTS: dict[str, type[Contract]] = {
     name: cls
     for name, cls in {
@@ -1020,6 +1104,8 @@ _CONTRACTS: dict[str, type[Contract]] = {
         "SourceState": SourceState,
         "trusted_change_report": TrustedChangeReport,
         "TrustedChangeReport": TrustedChangeReport,
+        "evidence_chain_link": EvidenceChainLink,
+        "EvidenceChainLink": EvidenceChainLink,
         "verification_result": VerificationResult,
         "VerificationResult": VerificationResult,
         "diff_summary": DiffSummary,

@@ -816,46 +816,95 @@ class ReceiptStore:
             if self._shared_conn is None:
                 conn.close()
 
+    def _iter_chain_records(
+        self, *, scope: str | None, include_tombstones: bool, page_size: int = 5_000
+    ):
+        """Yield receipts in ascending ``(scope, sequence)`` order, one page at a time.
+
+        Chain verification has to start at the first link of a scope and follow
+        it forward.  A single capped query cannot do that: it returns the newest
+        rows, so the oldest row in the window appears to follow nothing.  Paging
+        forward per scope keeps the walk complete without holding an entire
+        store in memory.
+        """
+        conn = self._get_connection()
+        try:
+            if scope is not None:
+                scopes = [_validate_scope(scope)]
+            else:
+                scopes = [
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT DISTINCT scope FROM receipts ORDER BY scope"
+                    ).fetchall()
+                ]
+            tombstone_clause = (
+                ""
+                if include_tombstones
+                else " AND NOT EXISTS ("
+                "SELECT 1 FROM receipts t WHERE t.tombstone_for = receipts.receipt_id)"
+            )
+            query = (
+                "SELECT * FROM receipts WHERE scope = ? AND sequence > ?"
+                f"{tombstone_clause} ORDER BY sequence ASC LIMIT ?"
+            )
+            for current in scopes:
+                last = 0
+                while True:
+                    rows = conn.execute(query, (current, last, page_size)).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        record = self._row_to_record(row)
+                        last = record.sequence
+                        yield record
+        finally:
+            if self._shared_conn is None:
+                conn.close()
+
     def verify_integrity(self, *, scope: str | None = None) -> dict[str, Any]:
-        """Verify payload hashes, record hashes, and per-scope hash chains."""
-        records = self._query_receipts_unchecked(
-            scope=scope, limit=100_000, include_tombstones=True
-        )
-        by_scope: dict[str, list[ReceiptRecord]] = {}
-        for record in records:
-            by_scope.setdefault(record.scope, []).append(record)
+        """Verify payload hashes, record hashes, and per-scope hash chains.
+
+        The walk is streamed in ascending ``(scope, sequence)`` order rather
+        than loaded as one capped query.  A capped query returns the *newest*
+        rows, so once a scope passed the cap the oldest row in the window no
+        longer followed anything and the chain check reported a break in a
+        perfectly healthy store.  Because :meth:`_assert_integrity` gates the
+        read path on this result, that false positive locked every query on the
+        store, not just this one.
+        """
         errors: list[str] = []
         checked = 0
-        for _record_scope, scoped in by_scope.items():
-            previous: str | None = None
-            for record in sorted(scoped, key=lambda item: item.sequence):
-                checked += 1
-                content_hash = hashlib.sha256(_canonical(record.payload).encode()).hexdigest()
-                if content_hash != record.content_hash:
-                    errors.append(f"{record.receipt_id}:content_hash")
-                if record.sequence < 1 or record.previous_hash != previous:
-                    errors.append(f"{record.receipt_id}:chain_link")
-                expected = self._record_hash(
-                    record.receipt_id,
-                    record.timestamp,
-                    record.receipt_type,
-                    record.content_hash,
-                    record.scope,
-                    record.sequence,
-                    record.previous_hash,
-                    sensitivity=record.sensitivity,
-                    provenance=record.provenance,
-                    parent_receipt_id=record.parent_receipt_id,
-                    event_id=record.event_id,
-                    event_type=record.event_type,
-                    terminal_outcome=record.terminal_outcome,
-                    tombstone_for=record.tombstone_for,
-                    key_ref=record.key_ref,
-                    idempotency_key=record.idempotency_key,
-                )
-                if expected != record.record_hash:
-                    errors.append(f"{record.receipt_id}:record_hash")
-                previous = record.record_hash
+        previous_by_scope: dict[str, str | None] = {}
+        for record in self._iter_chain_records(scope=scope, include_tombstones=True):
+            checked += 1
+            previous = previous_by_scope.get(record.scope)
+            content_hash = hashlib.sha256(_canonical(record.payload).encode()).hexdigest()
+            if content_hash != record.content_hash:
+                errors.append(f"{record.receipt_id}:content_hash")
+            if record.sequence < 1 or record.previous_hash != previous:
+                errors.append(f"{record.receipt_id}:chain_link")
+            expected = self._record_hash(
+                record.receipt_id,
+                record.timestamp,
+                record.receipt_type,
+                record.content_hash,
+                record.scope,
+                record.sequence,
+                record.previous_hash,
+                sensitivity=record.sensitivity,
+                provenance=record.provenance,
+                parent_receipt_id=record.parent_receipt_id,
+                event_id=record.event_id,
+                event_type=record.event_type,
+                terminal_outcome=record.terminal_outcome,
+                tombstone_for=record.tombstone_for,
+                key_ref=record.key_ref,
+                idempotency_key=record.idempotency_key,
+            )
+            if expected != record.record_hash:
+                errors.append(f"{record.receipt_id}:record_hash")
+            previous_by_scope[record.scope] = record.record_hash
         return {"valid": not errors, "checked": checked, "errors": errors, "scope": scope}
 
     def _query_receipts_unchecked(
