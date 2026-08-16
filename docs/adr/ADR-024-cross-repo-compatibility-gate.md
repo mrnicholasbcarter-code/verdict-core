@@ -1,7 +1,7 @@
 # ADR-024: Cross-Repo Compatibility Gate
 
-**Status**: Proposed (not yet implemented)
-**Date**: 2026-08-16
+**Status**: Partially Implemented — `verdict-core` side complete (manifest + fail-closed gate CLI); downstream repo declarations and CI wiring still open
+**Date**: 2026-08-16 (proposed); implemented 2026-08-16
 **Story**: [VERDICT-CON-001](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/VERDICT-CON-001.md) (verdict-ecosystem)
 
 ## Context
@@ -23,10 +23,11 @@ exception — an unverified or absent compatibility declaration should fail
 closed, not be assumed compatible.
 
 `verdict-core/IMPLEMENTATION_STATUS.md` (verdict-ecosystem, as of
-2026-08-02) lists CON-001 as **Planned**. This ADR records the intended
-design direction; it intentionally does not claim implementation.
+2026-08-02) lists CON-001 as **Planned**. This ADR originally recorded the
+intended design direction without claiming implementation; the
+`verdict-core`-side half of that design has since been built (below).
 
-## Decision (proposed)
+## Decision
 
 Establish a compatibility manifest and gate, following the same
 fail-closed shape as the routing eligibility gate:
@@ -44,14 +45,41 @@ fail-closed shape as the routing eligibility gate:
   eligibility gate's "no LLM in the enforcement path" principle
   (README, ADR-002).
 
-## Consequences (anticipated)
+## Implementation (verdict-core side)
 
-- Requires coordinated work across `verdict-core` (manifest
-  publication) and each consumer repo (declaration + gate wiring) — this is
-  cross-repository scope, not a `verdict-core`-only change.
-- Without this gate, contract drift between repos is currently
-  undetected until runtime failure; that risk remains open until CON-001 is
-  implemented.
-- Tracked for implementation as a follow-up issue (not part of PR #263)
-  since it requires design work beyond what this ADR trail can respond
-  for in a documentation-only pass.
+- `verdict/compatibility_manifest.py` — `build_compatibility_manifest()`
+  builds a `CompatibilityManifest` (schema version, per-contract SHA-256
+  hashes over `verdict/contracts.py`, and a combined `manifest_hash`) from
+  the contracts currently defined in this repo. `check_compatibility()`
+  compares a downstream repo's declared manifest against it and returns a
+  `CompatibilityCheckResult(allowed, reason, mismatched_contracts)` —
+  fails closed (`allowed=False`) on a missing declaration, an empty
+  declaration, an unsupported schema version, or any hash mismatch.
+  Unknown extra keys in the declared manifest are ignored (forward
+  compatible). Covered by `tests/test_compatibility_manifest.py` (8 tests:
+  determinism, pass/fail cases, round-trip, schema-version rejection).
+- CLI gate, wired in `verdict/cli.py`:
+  - `verdict compat manifest [--json]` — publishes the current manifest.
+  - `verdict compat check --declared <path> [--json]` — reads a
+    downstream repo's declared manifest JSON and exits 1 (failing closed)
+    on a missing file, invalid JSON, a missing `contracts` object, or a
+    `check_compatibility()` mismatch; exits 0 only when compatible.
+    `--json` produces machine-readable output only (no mixed
+    human/machine stdout), for CI consumption.
+  - Covered by `tests/test_cli_inprocess.py` (`test_cmd_compat_*`: manifest
+    JSON shape, matching declaration passes, missing file / mismatch fail
+    closed, missing `--declared` fails closed).
+
+## Consequences
+
+- The `verdict-core` half (manifest publication + fail-closed gate CLI) is
+  implemented and tested; contract drift originating in `verdict-core` is
+  now machine-detectable via `verdict compat check`.
+- **Still open**: each downstream repo (`verdict-node`, `verdict-risk`,
+  `verdict-strategy`, `verdict-backtest`, `verdict-cockpit`) must itself
+  declare the manifest version it has verified against and wire
+  `verdict compat check` into its own CI — that is cross-repository scope
+  this repo cannot complete unilaterally. Until each consumer repo does
+  so, the gate exists but is not yet enforced anywhere.
+- Tracked for the remaining cross-repo wiring as a follow-up issue per
+  consumer repo.

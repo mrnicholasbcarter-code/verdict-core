@@ -271,7 +271,7 @@ Ecosystem-stories ADR trail ([verdict-ecosystem](https://github.com/mrnicholasbc
 | PRO-001 — Provider receipts | [ADR-021](docs/adr/ADR-021-deterministic-provider-receipts.md) | Accepted (partial) |
 | CTX-002 — Context provider conformance | [ADR-022](docs/adr/ADR-022-context-provider-conformance.md) | Accepted (partial) |
 | SWARM-001 — Governed swarm supervision | [ADR-023](docs/adr/ADR-023-governed-swarm-supervision.md) | Accepted (partial) |
-| CON-001 — Cross-repo compatibility gate | [ADR-024](docs/adr/ADR-024-cross-repo-compatibility-gate.md) | Proposed |
+| CON-001 — Cross-repo compatibility gate | [ADR-024](docs/adr/ADR-024-cross-repo-compatibility-gate.md) | Accepted (partial — verdict-core side only) |
 | NOD-002 — Node envelope enforcement | [ADR-025](docs/adr/ADR-025-node-envelope-enforcement.md) | Proposed |
 
 ### TypeScript ecosystem
