@@ -329,5 +329,39 @@
     "policy_requirement": "VER-009:focused-tests-must-pass",
     "raw_output": "12 passed in 1.20s",
     "schema_version": "1"
+  },
+  "evidence_chain_link": {
+    "decision": "route:accept",
+    "policy": "hard-policy-v3",
+    "envelope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtime": "local",
+    "provider": "anthropic",
+    "model": "claude-opus-5",
+    "tools": [
+      "pytest",
+      "ruff"
+    ],
+    "changes": [
+      "verdict/contracts.py"
+    ],
+    "verification": [
+      {
+        "check_name": "focused",
+        "check_type": "focused_tests",
+        "status": "passed",
+        "details": {},
+        "artifact_digests": [],
+        "command": "",
+        "runtime": "",
+        "provenance": "",
+        "policy_requirement": "",
+        "raw_output": "",
+        "schema_version": "1"
+      }
+    ],
+    "outcome": "success",
+    "timestamp": "2026-08-16T14:40:00Z",
+    "previous_hash": "",
+    "schema_version": "1"
   }
 }
