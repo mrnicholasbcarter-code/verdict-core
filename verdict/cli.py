@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import yaml
 from rich.console import Console
@@ -1551,6 +1551,82 @@ def cmd_check() -> None:
     console.print("[bold green]✓ Configuration file is valid.[/bold green]")
 
 
+def cmd_compat(compat_command: str | None, declared: str | None, output_json: bool) -> None:
+    """Publish or check the cross-repo contract compatibility manifest (ADR-024, CON-001).
+
+    Fails closed: a missing declaration or a hash mismatch against the current
+    verdict-core contracts blocks (exit 1) rather than assuming compatibility.
+    """
+    from verdict.compatibility_manifest import build_compatibility_manifest, check_compatibility
+
+    if compat_command == "manifest":
+        manifest = build_compatibility_manifest()
+        if output_json:
+            print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+        else:
+            console.print(
+                f"[bold]Cross-repo compatibility manifest[/] (schema {manifest.schema_version})"
+            )
+            console.print(f"manifest_hash: [cyan]{manifest.manifest_hash}[/]")
+            for name, digest in sorted(manifest.contracts.items()):
+                console.print(f"  {name}: {digest}")
+        return
+
+    if compat_command == "check":
+
+        def _fail(reason: str) -> NoReturn:
+            if output_json:
+                print(json.dumps({"allowed": False, "reason": reason}, indent=2))
+            else:
+                console.print(f"[bold red]❌ {reason}[/bold red] (failing closed)")
+            sys.exit(1)
+
+        if not os.path.exists(declared or ""):
+            _fail(f"Declared manifest file not found: {declared}")
+
+        try:
+            with open(declared) as f:  # type: ignore[arg-type]
+                declared_raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            _fail(f"Declared manifest is invalid JSON: {exc}")
+
+        declared_contracts = (
+            declared_raw.get("contracts") if isinstance(declared_raw, dict) else None
+        )
+        if not isinstance(declared_contracts, dict):
+            _fail("Declared manifest missing 'contracts' object.")
+
+        result = check_compatibility(declared_contracts)
+        if result.allowed:
+            if output_json:
+                print(json.dumps({"allowed": True, "reason": None}, indent=2))
+            else:
+                console.print(
+                    "[bold green]✓ Compatible with current verdict-core contracts.[/bold green]"
+                )
+            return
+
+        if output_json:
+            print(
+                json.dumps(
+                    {
+                        "allowed": False,
+                        "reason": result.reason,
+                        "mismatched_contracts": list(result.mismatched_contracts),
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[bold red]❌ Compatibility check failed: {result.reason}[/bold red]")
+            for name in result.mismatched_contracts:
+                console.print(f"  - {name}")
+        sys.exit(1)
+
+    console.print("[bold red]❌ Unknown compat subcommand. Use 'manifest' or 'check'.[/bold red]")
+    sys.exit(1)
+
+
 def cmd_hook(args: Any) -> None:
     """Manage Verdict lifecycle hooks for Codex and Claude Code."""
 
@@ -1829,6 +1905,23 @@ def main() -> None:
     )
     subparsers.add_parser("check", help="Validate system configuration file syntax and sanity")
 
+    compat_p = subparsers.add_parser(
+        "compat", help="Cross-repo contract compatibility manifest and gate (ADR-024)"
+    )
+    compat_sub = compat_p.add_subparsers(dest="compat_command")
+    compat_manifest_p = compat_sub.add_parser(
+        "manifest", help="Print the current verdict-core contract compatibility manifest"
+    )
+    compat_manifest_p.add_argument("--json", action="store_true", help="Output JSON")
+    compat_check_p = compat_sub.add_parser(
+        "check",
+        help="Check a downstream repo's declared manifest against the current one, failing closed",
+    )
+    compat_check_p.add_argument(
+        "--declared", required=True, help="Path to the downstream repo's declared manifest JSON"
+    )
+    compat_check_p.add_argument("--json", action="store_true", help="Output JSON")
+
     memory_p = subparsers.add_parser("memory", help="Local-first unified memory management")
     memory_sub = memory_p.add_subparsers(dest="memory_command")
 
@@ -2054,6 +2147,12 @@ def main() -> None:
         cmd_uninstall(purge_data=getattr(args, "purge_data", False))
     elif args.command == "check":
         cmd_check()
+    elif args.command == "compat":
+        cmd_compat(
+            getattr(args, "compat_command", None),
+            getattr(args, "declared", None),
+            getattr(args, "json", False),
+        )
     elif args.command == "memory":
         cmd_memory(args)
     elif args.command == "mcp":
