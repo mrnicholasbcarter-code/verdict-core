@@ -21,6 +21,8 @@ jobs:
         uses: astral-sh/setup-uv@v7
       - name: Install dependencies
         run: uv sync --extra dev --extra dashboard --extra server
+      - name: Run reproducible local benchmark gate
+        run: uv run python benchmarks/run_reproducible.py --output-json benchmark-reproducible.json --fail-on-threshold
       - name: Run coding benchmark
         run: uv run python scripts/benchmark.py --workload coding --iterations 50 --warmup 10 --output benchmark-coding.json
       - name: Run reasoning benchmark
@@ -40,6 +42,10 @@ jobs:
             const fs = require('fs');
             const files = ['benchmark-coding.json', 'benchmark-reasoning.json', 'benchmark-chat.json'];
             let comment = '## 📊 Benchmark Results\n\n';
+            if (fs.existsSync('benchmark-reproducible.json')) {
+              const report = JSON.parse(fs.readFileSync('benchmark-reproducible.json', 'utf8'));
+              comment += `Reproducible local gate: ${report.metrics.thresholds_passed ? 'passed' : 'failed'} (${report.metrics.sample_count} samples, fixture ${report.fixture_digest_sha256})\n\n`;
+            }
             for (const file of files) {
               if (fs.existsSync(file)) {
                 const data = JSON.parse(fs.readFileSync(file, 'utf8'));
