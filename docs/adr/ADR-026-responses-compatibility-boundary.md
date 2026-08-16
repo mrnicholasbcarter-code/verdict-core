@@ -1,4 +1,4 @@
-# ADR-020: Versioned Responses compatibility at the HTTP executor boundary
+# ADR-026: Versioned Responses compatibility at the HTTP executor boundary
 
 - **Status:** Accepted — v1 implementation for #125
 - **Date:** 2026-07-31
