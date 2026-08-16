@@ -262,7 +262,17 @@ Full reference: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 | **Learning loop** | Outcome → advisory feedback | Optional intelligence adapters | In progress |
 | **Evidence ledger** | Durable, privacy-safe routing receipts | JSONL + signed manifests | Implemented; expanding |
 
-Design decisions live in **[docs/adr/](docs/adr/)** — 20+ records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more.
+Design decisions live in **[docs/adr/](docs/adr/)** — 25+ records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more.
+
+Ecosystem-stories ADR trail ([verdict-ecosystem](https://github.com/mrnicholasbcarter-code/verdict-ecosystem) tracks the source stories):
+
+| Story | ADR | Status |
+|---|---|---|
+| PRO-001 — Provider receipts | [ADR-021](docs/adr/ADR-021-deterministic-provider-receipts.md) | Accepted (partial) |
+| CTX-002 — Context provider conformance | [ADR-022](docs/adr/ADR-022-context-provider-conformance.md) | Accepted (partial) |
+| SWARM-001 — Governed swarm supervision | [ADR-023](docs/adr/ADR-023-governed-swarm-supervision.md) | Accepted (partial) |
+| CON-001 — Cross-repo compatibility gate | [ADR-024](docs/adr/ADR-024-cross-repo-compatibility-gate.md) | Proposed |
+| NOD-002 — Node envelope enforcement | [ADR-025](docs/adr/ADR-025-node-envelope-enforcement.md) | Proposed |
 
 ### TypeScript ecosystem
 
