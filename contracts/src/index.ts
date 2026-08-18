@@ -414,6 +414,58 @@ const availabilitySnapshotSchema = z
   })
   .strict();
 
+/**
+ * ExecutionEnvelope v1 — Immutable authorization token issued by Core.
+ *
+ * Contains the decision provenance, policy constraints, and cryptographic
+ * binding. Must be validated by edge adapters (e.g., verdict-node) before
+ * forwarding any request upstream.
+ *
+ * Strict unknown-field rejection: any field not explicitly declared is an
+ * `invalid_value` error. This prevents schema drift and ensures tamper
+ * evidence.
+ */
+const executionEnvelopeConstraintsSchema = z
+  .object({
+    allowed_models: z.array(nonEmptyString).default([]),
+    allowed_tools: z.array(nonEmptyString).default([]),
+    allowed_agents: z.array(nonEmptyString).default([]),
+    budget_usd: nonNegativeNumber.optional(),
+    max_request_usd: nonNegativeNumber.optional(),
+    max_latency_ms: nonNegativeInteger.optional(),
+    risk_ceiling: z.enum(safetyLevels).optional(),
+    required_verification: z.array(nonEmptyString).default([]),
+  })
+  .strict();
+
+const executionEnvelopeSchema = z
+  .object({
+    schema_version: schemaVersion,
+    decision_id: nonEmptyString,
+    policy_version: nonEmptyString,
+    policy_digest: nonEmptyString,
+    expires_at: nonEmptyString,
+    task_spec_fingerprint: nonEmptyString,
+    execution_constraints: executionEnvelopeConstraintsSchema,
+    verification_plan: z
+      .object({
+        required_checks: z.array(nonEmptyString).default([]),
+        evidence_refs: z.array(nonEmptyString).default([]),
+        quality_gates: z.array(nonEmptyString).default([]),
+      })
+      .strict()
+      .default({}),
+    provenance: z
+      .object({
+        core_version: nonEmptyString,
+        policy_fingerprint: nonEmptyString,
+        issued_at: nonEmptyString,
+        issued_by: nonEmptyString,
+      })
+      .strict(),
+  })
+  .strict();
+
 const routingDecisionSchema = z
   .object({
     selected_route: jsonObject,
@@ -429,6 +481,8 @@ const routingDecisionSchema = z
     request_id: nullableString.default(null),
     policy_version: z.string().default('1'),
     schema_version: schemaVersion.default('1'),
+    /** Optional Core-issued execution envelope for edge enforcement. */
+    execution_envelope: executionEnvelopeSchema.optional(),
   })
   .strict();
 
@@ -635,6 +689,9 @@ const schemas = {
   routing_decision: routingDecisionSchema,
   RoutingDecision: routingDecisionSchema,
   RoutingDecisionContract: routingDecisionSchema,
+  execution_envelope: executionEnvelopeSchema,
+  ExecutionEnvelope: executionEnvelopeSchema,
+  ExecutionEnvelopeContract: executionEnvelopeSchema,
   fallback_attempt: fallbackAttemptSchema,
   FallbackAttempt: fallbackAttemptSchema,
   verification_plan: verificationPlanSchema,
@@ -671,6 +728,7 @@ export type VerificationPlan = z.output<typeof verificationPlanSchema>;
 export type VerificationResult = z.output<typeof verificationResultSchema>;
 export type WorkflowPlan = z.output<typeof workflowPlanSchema>;
 export type RoutingDecision = z.output<typeof routingDecisionSchema>;
+export type ExecutionEnvelope = z.output<typeof executionEnvelopeSchema>;
 export type FallbackAttempt = z.output<typeof fallbackAttemptSchema>;
 export type OutcomeEvent = z.output<typeof outcomeEventSchema>;
 export type TaskEpisode = z.output<typeof taskEpisodeSchema>;
