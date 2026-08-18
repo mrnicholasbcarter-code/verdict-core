@@ -130,7 +130,119 @@ class MemoryPlane:
 
     def put(self, record: MemoryRecord) -> MemoryRecord:
         """Append a record and supersede the previous active value for its key."""
-        normalized = self._normalize(record)
+        return self._put(record, allow_authority=False)
+
+    def put_verified(self, record: MemoryRecord) -> MemoryRecord:
+        """Append a record after a caller has verified its authority boundary.
+
+        Ordinary callers cannot self-assert ``authority_verified``.  Trusted
+        adapters such as documentation preflight use this explicit method,
+        which still validates the content hash and provenance before storage.
+        """
+        if not record.authority_verified:
+            raise ValueError("verified memory records must declare authority_verified")
+        if record.authority in {"", "unverified"}:
+            raise ValueError("verified memory records require an authority")
+        return self._put(record, allow_authority=True)
+
+    def repair_verified(self, record: MemoryRecord) -> MemoryRecord:
+        """Repair a previously persisted verified record after source revalidation.
+
+        A normal ``put`` is intentionally idempotent by ``record_id`` and
+        content hash.  That is insufficient when a privileged database writer
+        has tampered with metadata, provenance, expiry, or even the stored
+        content.  The documentation adapter uses this narrowly scoped method
+        only after re-reading and re-verifying the authoritative source.
+        """
+        if not record.authority_verified:
+            raise ValueError("verified memory records must declare authority_verified")
+        if record.authority in {"", "unverified"}:
+            raise ValueError("verified memory records require an authority")
+        normalized = self._normalize(record, allow_authority=True)
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            existing = self._db.execute(
+                "SELECT record_id FROM memories WHERE record_id=?", (normalized.record_id,)
+            ).fetchone()
+            if existing is None:
+                self._db.execute("COMMIT")
+                return self.put_verified(normalized)
+
+            conflicting = self._db.execute(
+                "SELECT record_id FROM memories WHERE namespace=? AND scope=? AND key=? "
+                "AND status='active' AND record_id<>? ORDER BY created_at DESC LIMIT 1",
+                (normalized.namespace, normalized.scope, normalized.key, normalized.record_id),
+            ).fetchone()
+            if conflicting:
+                self._db.execute(
+                    "UPDATE memories SET status='superseded', updated_at=? WHERE record_id=?",
+                    (normalized.updated_at, conflicting["record_id"]),
+                )
+                self._db.execute(
+                    "DELETE FROM memory_fts WHERE record_id=?", (conflicting["record_id"],)
+                )
+                normalized = replace(
+                    normalized, supersedes=normalized.supersedes or conflicting["record_id"]
+                )
+
+            values = (
+                normalized.namespace,
+                normalized.key,
+                normalized.content,
+                normalized.source,
+                normalized.trust,
+                normalized.scope,
+                _json(normalized.metadata),
+                normalized.created_at,
+                normalized.updated_at,
+                normalized.expires_at,
+                normalized.supersedes,
+                normalized.authority,
+                int(normalized.authority_verified),
+                normalized.confidence,
+                normalized.sensitivity,
+                _json(normalized.provenance),
+                normalized.content_hash,
+                normalized.schema_version,
+                normalized.status,
+                normalized.record_id,
+            )
+            self._db.execute(
+                "UPDATE memories SET namespace=?, key=?, content=?, source=?, trust=?, "
+                "scope=?, metadata_json=?, created_at=?, updated_at=?, expires_at=?, "
+                "supersedes=?, authority=?, authority_verified=?, confidence=?, "
+                "sensitivity=?, provenance_json=?, content_hash=?, schema_version=?, "
+                "status=? WHERE record_id=?",
+                values,
+            )
+            self._db.execute("DELETE FROM memory_fts WHERE record_id=?", (normalized.record_id,))
+            if normalized.status == "active":
+                self._db.execute(
+                    "INSERT INTO memory_fts(record_id, namespace, key, content, source, trust, scope) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        normalized.record_id,
+                        normalized.namespace,
+                        normalized.key,
+                        normalized.content,
+                        normalized.source,
+                        normalized.trust,
+                        normalized.scope,
+                    ),
+                )
+            self._db.execute("COMMIT")
+            row = self._db.execute(
+                "SELECT * FROM memories WHERE record_id=?", (normalized.record_id,)
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("verified record repair did not persist")
+            return self._from_row(row)
+        except Exception:
+            self._db.execute("ROLLBACK")
+            raise
+
+    def _put(self, record: MemoryRecord, *, allow_authority: bool) -> MemoryRecord:
+        normalized = self._normalize(record, allow_authority=allow_authority)
         self._db.execute("BEGIN IMMEDIATE")
         try:
             existing_id = self._db.execute(
@@ -156,19 +268,20 @@ class MemoryPlane:
                 )
             stored = replace(normalized, supersedes=supersedes)
             self._insert(stored)
-            self._db.execute(
-                "INSERT INTO memory_fts(record_id, namespace, key, content, source, trust, scope) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    stored.record_id,
-                    stored.namespace,
-                    stored.key,
-                    stored.content,
-                    stored.source,
-                    stored.trust,
-                    stored.scope,
-                ),
-            )
+            if stored.status == "active":
+                self._db.execute(
+                    "INSERT INTO memory_fts(record_id, namespace, key, content, source, trust, scope) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        stored.record_id,
+                        stored.namespace,
+                        stored.key,
+                        stored.content,
+                        stored.source,
+                        stored.trust,
+                        stored.scope,
+                    ),
+                )
             self._db.execute("COMMIT")
             return stored
         except Exception:
@@ -186,6 +299,41 @@ class MemoryPlane:
         ):
             raise ValueError("replacement identity does not match the target")
         return self.put(replacement)
+
+    def tombstone(self, namespace: str, key: str, *, scope: str = "default") -> MemoryRecord | None:
+        """Append a privacy-safe tombstone for the current active record.
+
+        The prior record remains in append-only history but is superseded and
+        removed from retrieval.  The marker intentionally contains no copy of
+        the deleted content and is idempotent when no active record remains.
+        """
+        current = self._active_row(namespace, scope, key)
+        if current is None:
+            return None
+        now = time.time()
+        record = MemoryRecord(
+            record_id=f"tombstone:{current['record_id']}",
+            namespace=namespace,
+            key=key,
+            content="[tombstone]",
+            source="memory-plane",
+            trust="local-operation",
+            scope=scope,
+            metadata={"tombstone_for": current["record_id"]},
+            created_at=now,
+            updated_at=now,
+            supersedes=current["record_id"],
+            authority="memory-plane",
+            sensitivity=current["sensitivity"],
+            provenance={
+                "operation": "tombstone",
+                "tombstone_for": current["record_id"],
+                "schema_version": SCHEMA_VERSION,
+            },
+            confidence=1.0,
+            status="tombstone",
+        )
+        return self._put(record, allow_authority=False)
 
     def get(self, namespace: str, key: str, *, scope: str = "default") -> MemoryRecord | None:
         row = self._active_row(namespace, scope, key)
@@ -245,6 +393,29 @@ class MemoryPlane:
         ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def records(
+        self,
+        *,
+        namespace: str | None = None,
+        scope: str | None = "default",
+        include_history: bool = False,
+    ) -> list[MemoryRecord]:
+        """Return canonical records for durable adapter/audit inspection."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope is not None:
+            clauses.append("scope=?")
+            params.append(scope)
+        if namespace is not None:
+            clauses.append("namespace=?")
+            params.append(namespace)
+        if not include_history:
+            clauses.append("status='active'")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        query = "SELECT * FROM memories" + where + " ORDER BY namespace, key, created_at, record_id"  # nosec B608
+        rows = self._db.execute(query, params).fetchall()
+        return [self._from_row(row) for row in rows]
+
     def export_records(
         self, *, scope: str = "default", include_history: bool = False
     ) -> list[dict[str, Any]]:
@@ -293,7 +464,7 @@ class MemoryPlane:
         """Return non-sensitive local health metadata."""
         return self.status()
 
-    def _normalize(self, record: MemoryRecord) -> MemoryRecord:
+    def _normalize(self, record: MemoryRecord, *, allow_authority: bool = False) -> MemoryRecord:
         if (
             not record.record_id
             or not record.namespace
@@ -322,7 +493,7 @@ class MemoryPlane:
             updated_at=updated,
             content_hash=digest,
             schema_version=SCHEMA_VERSION,
-            authority_verified=False,
+            authority_verified=record.authority_verified if allow_authority else False,
         )
 
     def _insert(self, record: MemoryRecord) -> None:

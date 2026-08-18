@@ -12,15 +12,17 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
       - name: Install dependencies
         run: uv sync --extra dev --extra dashboard --extra server
+      - name: Run reproducible local benchmark gate
+        run: uv run python benchmarks/run_reproducible.py --output-json benchmark-reproducible.json --fail-on-threshold
       - name: Run coding benchmark
         run: uv run python scripts/benchmark.py --workload coding --iterations 50 --warmup 10 --output benchmark-coding.json
       - name: Run reasoning benchmark
@@ -28,18 +30,22 @@ jobs:
       - name: Run chat benchmark
         run: uv run python scripts/benchmark.py --workload chat --iterations 50 --warmup 10 --output benchmark-chat.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: benchmark-*.json
       - name: Comment benchmark results
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
             const files = ['benchmark-coding.json', 'benchmark-reasoning.json', 'benchmark-chat.json'];
             let comment = '## 📊 Benchmark Results\n\n';
+            if (fs.existsSync('benchmark-reproducible.json')) {
+              const report = JSON.parse(fs.readFileSync('benchmark-reproducible.json', 'utf8'));
+              comment += `Reproducible local gate: ${report.metrics.thresholds_passed ? 'passed' : 'failed'} (${report.metrics.sample_count} samples, fixture ${report.fixture_digest_sha256})\n\n`;
+            }
             for (const file of files) {
               if (fs.existsSync(file)) {
                 const data = JSON.parse(fs.readFileSync(file, 'utf8'));

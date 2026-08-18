@@ -15,7 +15,7 @@ def normalize_model_record(provider_name: str, record: object) -> ModelInfo | No
     if not isinstance(record, dict):
         return None
     model_id = record.get("id") or record.get("name")
-    if not isinstance(model_id, str) or not model_id:
+    if not isinstance(model_id, str) or not model_id or model_id.startswith("auto/"):
         return None
     raw_capabilities = record.get("capabilities", {})
     if isinstance(raw_capabilities, dict):
@@ -32,8 +32,8 @@ def normalize_model_record(provider_name: str, record: object) -> ModelInfo | No
         capability_tier=classify(model_id),
         context_window=context if isinstance(context, int) else -1,
         capabilities=capabilities,
-        is_available=False,
-        availability_state="unknown",
+        is_available=True,
+        availability_state="eligible",
         source="catalog",
     )
 

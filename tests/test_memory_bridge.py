@@ -43,7 +43,7 @@ def test_configure_memory_bridge_expanded(tmp_path: Path) -> None:
     home_dir.mkdir()
     cwd_dir.mkdir()
 
-    plane = MemoryPlane(cwd_dir / "memory.db")
+    plane = MemoryPlane(home_dir / ".verdict" / "memory.db")
 
     res = configure_memory_bridge(
         selected_tools=["codex", "claude", "cursor_jcode", "mcp"],
@@ -102,6 +102,7 @@ def test_memory_hook_controller_all_13_hooks(tmp_path: Path) -> None:
     assert ss_res["status"] == "success"
     se_res = controller.on_session_end("sess_1", transcript=[{"role": "user", "content": "Hello"}])
     assert se_res["status"] == "success"
+    assert plane.get("session_history", "sess_1:item_0", scope="sess_1") is not None
     sr_res = controller.on_session_restore("sess_1")
     assert sr_res["status"] == "success"
 
@@ -112,20 +113,26 @@ def test_memory_hook_controller_all_13_hooks(tmp_path: Path) -> None:
     assert e_res["status"] == "success"
 
 
-def test_doctor_and_uninstall(tmp_path: Path) -> None:
+def test_doctor_and_uninstall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home_dir = tmp_path / "home"
     cwd_dir = tmp_path / "repo"
     home_dir.mkdir()
     cwd_dir.mkdir()
 
+    import verdict.documentation_preflight as documentation_preflight
+
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+
     # 1. Run doctor scan (expect issues)
     doc_res = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=False)
     assert doc_res["status"] == "issues_found"
-    assert "missing_verdict_dir" in doc_res["issues"]
+    assert "missing_memory_db" in doc_res["issues"]
 
     # 2. Run doctor with fix=True
     fix_res = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=True)
-    assert fix_res["status"] == "healthy"
+    # The documentation gate remains fail-closed when the fixture has no
+    # authoritative repository sources; unrelated bridge repairs still apply.
+    assert fix_res["status"] == "issues_found"
     assert "created_verdict_dir" in fix_res["repaired"]
 
     # 3. Configure bridges then test uninstall

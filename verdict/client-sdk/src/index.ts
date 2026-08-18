@@ -546,6 +546,13 @@ export class VerdictClient {
           `Failed to validate routing decision: ${error.message}`
         );
       }
+      if (error instanceof Error) {
+        throw new ContractValidationError(
+          'routing_decision',
+          [],
+          `Failed to validate routing decision: ${error.message}`
+        );
+      }
       throw error;
     }
   }

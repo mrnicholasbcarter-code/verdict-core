@@ -76,6 +76,9 @@ verdict policy <subcommand> [args]
 | `validate <file>` | Validate policy syntax |
 | `list` | List available policies |
 | `delete <name>` | Delete policy |
+| `explain <file>` | Evaluate a redacted policy fixture without execution |
+| `simulate <file>` | Simulate policy and transition decisions offline |
+| `backtest <file>` | Alias for deterministic offline simulation |
 
 ---
 
@@ -226,6 +229,7 @@ verdict benchmark [flags]
 | `LLMGATE_PRIMARY` | Primary model (legacy) |
 | `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile |
 | `LLMGATE_LOG_PATH` | Decision log path |
+| `VERDICT_RECEIPTS_DB` | Durable SQLite receipt database; required for authenticated API mode |
 
 ---
 

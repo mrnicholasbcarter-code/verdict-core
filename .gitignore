@@ -2,6 +2,8 @@ __pycache__/
 *.jsonl
 benchmark_output*
 benchmark_evidence*
+evidence/*.json
+evidence/test_suite/*.json
 route-log*
 run_test_grid.sh
 *_claims_patch.py
@@ -53,3 +55,12 @@ skills-lock.json
 
 .env.memory
 .verdict/adaptive_state/
+
+# Private claim evidence stays outside the repository.
+docs/proof/private_*
+
+# Generated local runtime state (see CLAUDE.md "Generated Artifacts")
+.pi/
+.ruvector/
+.verdict-memory-mission/
+scripts/demo-results.json

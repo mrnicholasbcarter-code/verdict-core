@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -31,7 +31,7 @@ jobs:
     needs: typescript-contract-parity
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -62,6 +62,8 @@ jobs:
         run: pytest tests/ -v --tb=short
       - name: Validate versioned contract schema
         run: python scripts/validate_contract_schema.py
+      - name: Validate public proof matrix and claims ledger
+        run: python scripts/verify_proof_matrix.py
       - name: Check coverage
         run: pytest tests/ --cov=verdict --cov-report=xml --cov-fail-under=70
 
@@ -173,6 +175,8 @@ jobs:
           /tmp/verdict-wheel/bin/python -m pip install dist/*.whl
           /tmp/verdict-wheel/bin/verdict --help
           /tmp/verdict-wheel/bin/verdict detect --json
+          /tmp/verdict-wheel/bin/verdict quickstart --json --non-interactive --dry-run > /tmp/verdict-wheel-quickstart.json
+          /tmp/verdict-wheel/bin/python -c 'import json; from pathlib import Path; report = json.loads(Path("/tmp/verdict-wheel-quickstart.json").read_text()); assert report["decision"]["selected_route"]["runtime_id"] == "demo/frontier-tools"'
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v7
         with:

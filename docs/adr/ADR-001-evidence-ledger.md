@@ -4,7 +4,7 @@
 - **Date**: 2026-07-22
 - **Deciders**: Verdict Core maintainers
 - **Tags**: evidence, provenance, privacy, transport, lifecycle
-- **Amends**: `ADR-ORCHESTRATOR-ROUTING.md`
+- **Amended by**: `ADR-ORCHESTRATOR-ROUTING.md`
 - **Related**: Ruflo ADR-103, ADR-131, ADR-144, ADR-150, ADR-171, ADR-176
 
 ## Context

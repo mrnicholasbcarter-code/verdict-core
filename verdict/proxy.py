@@ -7,12 +7,15 @@ response extensions can pass through unchanged.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+from verdict.capability_passports import RouteIdentity
+from verdict.responses_compatibility import adapt_responses_payload
 from verdict.security import host_is_allowed, validate_upstream_url
 
 _HOP_BY_HOP_HEADERS = frozenset(
@@ -27,6 +30,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "upgrade",
     }
 )
+_UNSAFE_RESPONSE_HEADERS = frozenset({"set-cookie"})
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,8 @@ class BufferedUpstreamResponse:
     status_code: int
     headers: list[tuple[str, str]]
     body: bytes
+    actual_route: RouteIdentity | None = None
+    compatibility_rule_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,8 @@ class StreamedUpstreamResponse:
     status_code: int
     headers: list[tuple[str, str]]
     body: AsyncIterator[bytes]
+    actual_route: RouteIdentity | None = None
+    compatibility_rule_version: str | None = None
 
 
 class UpstreamProxy:
@@ -90,12 +98,47 @@ class UpstreamProxy:
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
 
+    def route_identity(self, model: str, protocol: str) -> RouteIdentity:
+        """Describe the configured executable route without reading gateway state."""
+
+        provider = model.split("/", 1)[0] if "/" in model else "configured-upstream"
+        return RouteIdentity(
+            gateway="verdict-upstream",
+            provider=provider,
+            connection="configured",
+            endpoint=self._url(
+                "responses" if protocol == "openai.responses" else "chat/completions"
+            ),
+            protocol=protocol,
+            model_id=model,
+        )
+
+    @staticmethod
+    def _actual_route(response: httpx.Response) -> RouteIdentity | None:
+        """Decode an optional adapter-owned route attestation header.
+
+        Generic OpenAI providers do not expose this header.  In that case the
+        relay records the configured route but deliberately does not claim an
+        observed member route for opaque gateway aliases.
+        """
+
+        raw = response.headers.get("x-verdict-actual-route")
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+            return RouteIdentity.from_dict(value) if isinstance(value, dict) else None
+        except (TypeError, ValueError):
+            return None
+
     @staticmethod
     def _response_headers(response: httpx.Response) -> list[tuple[str, str]]:
         return [
             (name, value)
             for name, value in response.headers.multi_items()
             if name.lower() not in _HOP_BY_HOP_HEADERS
+            and name.lower() not in _UNSAFE_RESPONSE_HEADERS
+            and not name.lower().startswith("x-verdict-")
         ]
 
     async def models(self) -> BufferedUpstreamResponse:
@@ -113,18 +156,49 @@ class UpstreamProxy:
             await client.aclose()
 
     async def chat(
-        self, payload: dict[str, Any]
+        self, payload: dict[str, Any], *, idempotency_key: str | None = None
     ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
         """Forward a chat request while preserving the upstream wire format."""
+        return await self._forward("chat/completions", payload, idempotency_key=idempotency_key)
+
+    async def responses(
+        self, payload: dict[str, Any], *, idempotency_key: str | None = None
+    ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
+        """Forward a Responses request with route-scoped compatibility adaptation."""
+
+        model = payload.get("model")
+        route = self.route_identity(
+            model if isinstance(model, str) else "configured-upstream", "openai.responses"
+        )
+        adapted_payload, compatibility_rule_version = adapt_responses_payload(payload, route)
+
+        return await self._forward(
+            "responses",
+            adapted_payload,
+            idempotency_key=idempotency_key,
+            compatibility_rule_version=compatibility_rule_version,
+        )
+
+    async def _forward(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        compatibility_rule_version: str | None = None,
+    ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
         client = self._client()
         self._validate_destination()
         request = client.build_request(
             "POST",
-            self._url("chat/completions"),
-            headers={**self._headers(), "content-type": "application/json"},
+            self._url(path),
+            headers={
+                **self._headers(),
+                "content-type": "application/json",
+                **({"idempotency-key": idempotency_key} if idempotency_key else {}),
+            },
             json=payload,
         )
-
         if payload.get("stream") is not True:
             try:
                 response = await client.send(request)
@@ -132,17 +206,24 @@ class UpstreamProxy:
                     status_code=response.status_code,
                     headers=self._response_headers(response),
                     body=response.content,
+                    actual_route=self._actual_route(response),
+                    compatibility_rule_version=compatibility_rule_version,
                 )
             finally:
                 await client.aclose()
 
         response = await client.send(request, stream=True)
         response_headers = self._response_headers(response)
+        actual_route = self._actual_route(response)
         if response.status_code >= 400:
             try:
                 buffered_body = await response.aread()
                 return BufferedUpstreamResponse(
-                    status_code=response.status_code, headers=response_headers, body=buffered_body
+                    status_code=response.status_code,
+                    headers=response_headers,
+                    body=buffered_body,
+                    actual_route=actual_route,
+                    compatibility_rule_version=compatibility_rule_version,
                 )
             finally:
                 await response.aclose()
@@ -157,5 +238,9 @@ class UpstreamProxy:
                 await client.aclose()
 
         return StreamedUpstreamResponse(
-            status_code=response.status_code, headers=response_headers, body=stream_body()
+            status_code=response.status_code,
+            headers=response_headers,
+            body=stream_body(),
+            actual_route=actual_route,
+            compatibility_rule_version=compatibility_rule_version,
         )

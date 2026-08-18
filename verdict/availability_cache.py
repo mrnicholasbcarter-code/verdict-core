@@ -101,7 +101,7 @@ class AvailabilityCache:
     serving poisoned data.
     """
 
-    source: Callable[[], AvailabilityReport]
+    source: Callable[..., AvailabilityReport]
     ttl_seconds: int = 60
     stale_window_seconds: int = 30
     policy_version: str = "policy-2026-07-13.1"

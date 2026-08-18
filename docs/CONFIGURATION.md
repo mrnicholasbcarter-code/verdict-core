@@ -88,6 +88,8 @@ auto_open = true
 | `LLMGATE_FRONTIER_ALLOWLIST` | `intelligence.frontier_allowlist` | `model1,model2` |
 | `LLMGATE_AVAILABILITY_TTL_SECONDS` | `availability.ttl_seconds` | `60` |
 | `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | `availability.stale_window_seconds` | `30` |
+| `VERDICT_RECEIPTS_DB` | durable API evidence SQLite path | unset; required for authenticated API mode |
+| `VERDICT_EVIDENCE_DB` | legacy alias for the durable evidence path | unset |
 
 ### Optional platform-neutral guidance
 

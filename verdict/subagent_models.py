@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from verdict.availability import (
@@ -124,8 +125,10 @@ class SubagentModelSelector:
     @classmethod
     def from_environment(cls) -> SubagentModelSelector:
         """Build selector from environment (OmniRoute base URL, etc.)."""
-        base_url = os.getenv("OMNIROUTE_BASE_URL") or os.getenv(
-            "LLMGATE_UPSTREAM_BASE_URL", "http://127.0.0.1:20128/v1"
+        base_url = (
+            os.getenv("OMNIROUTE_BASE_URL")
+            or os.getenv("LLMGATE_UPSTREAM_BASE_URL")
+            or "http://127.0.0.1:20128/v1"
         )
         api_key = os.getenv("OMNIROUTE_API_KEY")
         management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
@@ -142,7 +145,9 @@ class SubagentModelSelector:
             max_response_bytes=16_777_216,
         )
 
-        adapter = OmniRouteAvailabilityAdapter(transport)
+        adapter: Callable[[CandidateRequirements], AvailabilityReport] = (
+            OmniRouteAvailabilityAdapter(transport).evaluate
+        )
 
         # Enable probe-enriched adapter in production
         probe_enabled = (
@@ -153,12 +158,24 @@ class SubagentModelSelector:
             from verdict.availability import ProbeEnrichedAdapter
             from verdict.probes import openai_probe_transport
 
+            probe_consented = os.getenv("LLMGATE_ALLOW_LIVE_PROBES", "").lower() in {
+                "1",
+                "true",
+                "yes",
+            }
             probe_transport = openai_probe_transport(
                 probe_base_url, api_key=os.getenv("LLMGATE_PROBE_API_KEY") or api_key
             )
-            adapter = ProbeEnrichedAdapter(adapter, probe_transport=probe_transport, enabled=True)
+            adapter = ProbeEnrichedAdapter(
+                OmniRouteAvailabilityAdapter(transport),
+                probe_transport=probe_transport,
+                enabled=True,
+                live=True,
+                consented=probe_consented,
+                provider="omniroute",
+            ).evaluate
 
-        cache = AvailabilityCache(source=adapter.evaluate, ttl_seconds=60, stale_window_seconds=30)
+        cache = AvailabilityCache(source=adapter, ttl_seconds=60, stale_window_seconds=30)
 
         gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
 
@@ -264,6 +281,13 @@ class SubagentModelSelector:
             return None
 
         # 3. Advisory ranking (cannot reintroduce excluded candidates)
+        estimated_tokens = requirements.estimated_tokens
+        estimated_cost = requirements.estimated_cost
+        budget_per_1k = (
+            estimated_cost / max(1, estimated_tokens / 1000)
+            if estimated_cost is not None and estimated_tokens
+            else None
+        )
         task_spec = type(
             "TaskSpec",
             (),
@@ -272,10 +296,7 @@ class SubagentModelSelector:
                 "criticality": "medium" if role in {"worker", "reviewer", "oracle"} else "low",
                 "context": {"role": role},
                 "requirements": [],
-                "budget_per_1k": requirements.estimated_cost
-                / max(1, requirements.estimated_tokens / 1000)
-                if requirements.estimated_tokens
-                else None,
+                "budget_per_1k": budget_per_1k,
                 "privacy_level": "standard",
             },
         )()

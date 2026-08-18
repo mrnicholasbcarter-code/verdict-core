@@ -22,6 +22,11 @@ def main() -> None:
         "--output-json", default=None, help="Optional path to write the full JSON report"
     )
     parser.add_argument(
+        "--fail-on-threshold",
+        action="store_true",
+        help="Exit non-zero when any checked-in reproducible threshold fails",
+    )
+    parser.add_argument(
         "--allow-live-provider",
         action="store_true",
         help="Acknowledge that provider measurements are separate and must be explicitly enabled",
@@ -42,6 +47,9 @@ def main() -> None:
         output_path = Path(args.output_json)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+
+    if args.fail_on_threshold and not report["metrics"]["thresholds_passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

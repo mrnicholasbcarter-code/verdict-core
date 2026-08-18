@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/gateway-adapter.v1.json",
+  "title": "Verdict Gateway Adapter v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "adapter_id", "adapter_version", "protocol", "protocol_version", "capabilities", "discovery", "telemetry_allowlist"],
+  "properties": {
+    "contract_version": {"const": "1"},
+    "adapter_id": {"$ref": "#/$defs/name"},
+    "adapter_version": {"$ref": "#/$defs/non_empty_string"},
+    "protocol": {"$ref": "#/$defs/name"},
+    "protocol_version": {"$ref": "#/$defs/non_empty_string"},
+    "capabilities": {"$ref": "#/$defs/capabilities"},
+    "discovery": {"$ref": "#/$defs/discovery"},
+    "telemetry_allowlist": {"$ref": "#/$defs/string_array"}
+  },
+  "$defs": {
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "discovery": {"$ref": "#/$defs/support"},
+        "request_translation": {"$ref": "#/$defs/support"},
+        "route_attestation": {"$ref": "#/$defs/support"},
+        "streaming": {"$ref": "#/$defs/support"},
+        "cancellation": {"$ref": "#/$defs/support"},
+        "failure_normalization": {"$ref": "#/$defs/support"},
+        "telemetry": {"$ref": "#/$defs/support"}
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["distribution", "entrypoint", "implementation_digest"],
+      "properties": {
+        "distribution": {"$ref": "#/$defs/non_empty_string"},
+        "entrypoint": {"$ref": "#/$defs/non_empty_string"},
+        "implementation_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "support": {"enum": ["supported", "unsupported", "unknown"]},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.:/-]*$"},
+    "non_empty_string": {"type": "string", "minLength": 1},
+    "string_array": {"type": "array", "items": {"$ref": "#/$defs/non_empty_string"}, "uniqueItems": true}
+  }
+}

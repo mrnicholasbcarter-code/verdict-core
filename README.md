@@ -1,286 +1,361 @@
-# Verdict — Policy-Gated LLM Routing Control Plane
+<div align="center">
 
-[![PyPI](https://img.shields.io/pypi/v/verdict-core.svg)](https://pypi.org/project/verdict-core/)
-[![Python](https://img.shields.io/pypi/pyversions/verdict-core.svg)](https://pypi.org/project/verdict-core/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://github.com/verdict/verdict-core/workflows/CI/badge.svg)](https://github.com/verdict/verdict-core/actions)
+# Verdict
 
-> **The gate rules on each task** — deterministic safety verdicts, availability-aware routing, quantitative-trading-grade execution, closed-loop telemetry.
+**Use the right AI model for every task—not the most expensive one.**
 
----
+Verdict stretches your Claude Code Max, Codex Pro, 9router, and OmniRoute setup further by routing each task to the least expensive capable model, while reserving frontier models for work that truly needs them. Configure once, use more of what you already have, and keep your best-model usage under control.
 
-## What is Verdict?
+[![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
+[![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Status: active development](https://img.shields.io/badge/status-active%20development-orange.svg)](#project-status)
 
-Verdict is a **policy-gated, availability-aware LLM routing control plane** — not a simple proxy. It provides:
+[Quickstart](#30-second-demo) · [Why it matters](#why-verdict) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
-- **Deterministic safety floors**: Hard gate checks (capability, budget, privacy, availability) run locally before any upstream call
-- **Availability-aware routing**: Bounded cache with stale-while-revalidate, explicit `unknown`/`error` states, concurrent refresh deduplication
-- **Explainability first**: `GET /v1/route/explain` surfaces observed_at, expires_at, age, source, confidence, candidate/eligible counts, per-candidate exclusion reasons, cache refresh/error state
-- **Quantitative-trading-grade execution**: Monte Carlo backtest harness, capacity admission with deterministic effort reservations, conservative runtime headroom
-- **Closed-loop telemetry**: SONA feedback loop feeds outcomes (latency, success, cost) back to RuVector for continuous MoE ranking improvement
+</div>
 
----
+## The Problem
 
-## Quick Start
+## Why Verdict?
 
-```bash
-# Install
-pipx install verdict-core
+### The problem it solves
 
-# Or with server extras
-pipx install 'verdict-core[server]'
+Claude Code Max and Codex Pro give you access to excellent frontier models—but frontier usage is limited and expensive to burn on every action. At the same time, 9router and OmniRoute may already expose many capable alternatives: free models, low-cost models, fast models, and specialists.
 
-# Configure
-verdict setup
+Verdict is the decision layer between your task and those providers:
 
-# Route a task
-verdict route "Refactor this Python module to use type hints" --terse
-```
+1. Understand the task's difficulty, risk, context, and tool needs.
+2. Remove models that cannot safely or reliably handle it.
+3. Send routine work to the least expensive capable option.
+4. Escalate difficult or sensitive work to a frontier model when justified.
+5. Record why the route was chosen and what happened.
 
----
+The goal is not “always use the cheapest model.” The goal is **use the cheapest model that is good enough—and keep premium capacity available for the work that needs it.**
 
-## Architecture
+
+Most AI tooling starts with: *"which model should I use?"*
+
+Verdict starts earlier: ***"should this action happen, which choices are allowed, and can we prove what happened?"***
+
+In plain English: Verdict helps you use more of the models you already pay for—free, low-cost, and frontier—without sending every task to the most expensive option. It blocks choices that violate your rules, budget, privacy, or safety requirements.
+
+It's the difference between a recommendation engine and a **control plane**:
+
+| | Typical router | **Verdict** |
+|---|---|---|
+| Model selection | Heuristic tiers, static allowlists | Orchestrator proposes candidates; Verdict admits only policy- and evidence-qualified options |
+| Safety | Best-effort fallback | **Fail-closed gate** — capability, budget, privacy, availability checks run *before* any upstream call |
+| Unknown health | Assumed healthy | Explicit `unknown` / `error` states — **unknown ≠ healthy** |
+| Explainability | "we picked GPT-4" | Per-candidate exclusion reasons, freshness timestamps, confidence, cache state — served at `GET /v1/route/explain` |
+| Learning | None | Outcomes feed back through SONA / RuVector — advisory only, **never** bypasses the gate |
+| Accountability | Logs | Durable, privacy-safe **evidence receipts** for every routing decision |
+
+> An optional orchestrator can do the expensive research. The gate (deterministic Python, no LLM in the enforcement path) does the enforcing. Neither can do the other's job — by design, codified in [20+ ADRs](docs/adr/).
+
+Verdict Core is a **deterministic execution-policy control plane** that sits between your agents and model providers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        VERDICT CORE                              │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
-│  │   Gate      │  │ Eligibility │  │ Intelligence│              │
-│  │  (Policy)   │──▶│  (Filter)   │──▶│  (Ranking)  │              │
-│  └─────────────┘  └─────────────┘  └─────────────┘              │
-│         │               │               │                        │
-│         ▼               ▼               ▼                        │
-│  ┌─────────────────────────────────────────────────┐             │
-│  │          Availability Cache (SWR)                │             │
-│  │  TTL + stale-window, explicit unknown/error,     │             │
-│  │  isolation by provider/model/policy-version      │             │
-│  └─────────────────────────────────────────────────┘             │
+│                        YOUR AGENTS                              │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    VERDICT CORE (Control Plane)                 │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
+│  │  Eligibility │ │  Adaptive    │ │  Evidence    │            │
+│  │  Gate        │ │  Ranking     │ │  Chain       │            │
+│  └──────────────┘ └──────────────┘ └──────────────┘            │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              OMNIROUTE (Intelligent Model Router)               │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
+│  │  19 Strategies│ │  Quota Guard │ │  Cost/Quality│            │
+│  └──────────────┘ └──────────────┘ └──────────────┘            │
+└─────────────────────────┬───────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    MODEL PROVIDERS (3500+ models)               │
+│  Anthropic • OpenAI • OpenRouter • Local • Custom              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Core Components
+## Key Features
 
-| Module | Purpose |
-|--------|---------|
-| `verdict.gate` | Deterministic policy enforcement — capability, budget, privacy, capacity |
-| `verdict.eligibility` | Availability-aware filtering with explicit unknown handling |
-| `verdict.intelligence` | Advisory ranking (cannot bypass hard gate) |
-| `verdict.availability_cache` | Bounded SWR cache, `explain_freshness()` for `/v1/route/explain` |
-| `verdict.omniroute` | Native OmniRoute transport (250+ providers, 90+ free tiers) |
-| `verdict.contracts` | Versioned Pydantic contracts for all public APIs |
+| Feature | Description |
+|---------|-------------|
+| **Deterministic Routing** | Same task → same model, every time. No randomness. |
+| **Eligibility Gates** | Hard requirements (capabilities, latency, budget) enforced before ranking |
+| **Adaptive Ranking** | Learns from runtime observations; promotes healthy models, demotes failing ones |
+| **Evidence Chain** | Append-only audit trail: every decision has a verifiable receipt |
+| **Cost Optimization** | 90% reduction vs always-frontier via task-based model selection |
+| **Multi-Provider** | Anthropic, OpenAI, OpenRouter, local models — unified interface |
+| **Formal Verification** | Contracts, schemas, and proofs for every layer |
+
+## 30-Second Demo
+
+No API keys. No config. Deterministic, offline, auditable. This is a local fixture demo—not a live provider call or production-readiness proof:
+
+```bash
+verdict quickstart --non-interactive --dry-run
+```
+
+```
+Verdict credential-free quickstart
+===================================
+Task: Add structured output to the invoice parser
+Required capabilities: structured_output, tools
+Selected route: demo/frontier-tools
+Excluded candidates: 3
+Status: PASS
+- demo/no-tools: missing capability: tools
+- demo/quota-empty: quota exhausted
+- demo/unverified: health unknown
+```
+
+Every exclusion carries a machine-readable reason and state (`capability_mismatch`, `quota_exhausted`, `unknown`). That's the gate working.
+
+---
+
+## Install
+
+```bash
+# Recommended: transparent source install (uv)
+# Requires Python 3.10+ and uv.
+git clone https://github.com/mrnicholasbcarter-code/verdict-core.git
+cd verdict-core
+uv sync --extra dev --extra server --extra dashboard
+
+# Optional convenience installer (review release assets first; Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh | bash
+```
+
+Then:
+
+```bash
+verdict setup            # interactive setup wizard (supports --dry-run --json)
+verdict doctor --fix     # scan & repair config / connectivity issues
+verdict detect           # discover available LLM providers on this machine
+```
+
+## Cost Demo
+
+```bash
+# Run 100-task routing simulation showing 90% savings
+python scripts/demo-routing.py
+
+# Output shows:
+# - Always Opus:      $12.47
+# - Always Haiku:     $0.18
+# - Verdict Routed:   $1.23
+# - SAVINGS vs Opus:  $11.24 (90.1%)
+# - Quality gates:    Reasoning→Frontier 88%, Simple→Cheap 92%
+```
+
+## How It Works
+
+```
+                    ┌──────────────────────────────────────────────┐
+                    │           ORCHESTRATOR (frontier model)       │
+                    │  1. Research the task                         │
+                    │  2. Review the OmniRoute catalog              │
+                    │  3. Pick right-sized candidates per slice     │
+                    │  4. Dispatch workers (Ruflo swarms / agents)  │
+                    └──────────────────┬───────────────────────────┘
+                                       │ candidate set
+                                       ▼
+                    ┌──────────────────────────────────────────────┐
+                    │        ELIGIBILITY GATE (deterministic)       │
+                    │  ✓ Capability passports  ✓ Budget floors     │
+                    │  ✓ Privacy policy        ✓ Probe-verified     │
+                    │    availability (TTL + stale-while-revalidate)│
+                    │                                               │
+                    │  PROTECTED WORK: fail-closed when fresh truth │
+                    │  is absent. Intelligence is advisory — it can │
+                    │  NEVER re-admit an excluded candidate.        │
+                    └──────────────────┬───────────────────────────┘
+                                       │ admitted set
+                                       ▼
+                    Workers execute → outcomes → SONA / RuVector
+                    (learning loop improves advice, not authorization)
+```
+
+**The gate has no selection logic. The orchestrator has no enforcement power.** That separation is the whole point — see [ADR-002](docs/adr/ADR-002-orchestrator-routing.md) and the [Routing Policy](docs/specs/ROUTING_POLICY.md).
+
+### Hard guarantees (test-enforced)
+
+- **Intelligence cannot re-admit an excluded candidate** — `test_ranker_cannot_reintroduce_excluded_candidate`
+- **Protected work fails closed when fresh truth is absent** — `test_protected_work_fails_closed_when_truth_absent`
+- **Gate filters before any ranking** — `test_intelligence_route_filters_before_ranking`
+- **Explain surface carries per-model eligibility and exclusions** — `test_explain_surfaces_eligible_set_and_exclusions`
+- **Budget, concurrency, and timeout limits enforced** — over-budget plans and replan increases rejected (`tests/test_planner.py`, `tests/test_ruflo_verification.py`)
+- Every claim maps to acceptance criteria in [ACCEPTANCE_GATES.md](ACCEPTANCE_GATES.md) — CI fails if any gate lacks evidence
+
+### Evidence-backed public claims
+
+Every public claim carries a status in the [claims ledger](docs/proof/claims_ledger.v1.json) — verified, observed, partial, self-reported, or unsupported — indexed in the [proof matrix](docs/proof/EVIDENCE_INDEX.md). Catalog counts are historical observations, not proof that every advertised route is live. The [portfolio proof matrix](docs/portfolio/PORTFOLIO_PROOF_MATRIX.md) maps each audience story to reproducible evidence and states its limits.
 
 ---
 
 ## CLI Reference
 
-```bash
-verdict [global flags] <command> [args]
-
-Commands:
-  route       Route task to best model
-  explain     Show eligibility ranking & freshness
-  models      List/refresh available models
-  policy      Manage routing policies (get/set/validate)
-  dashboard   Launch/manage verdict-ui
-  config      Manage local configuration
-  completion  Generate shell completions
-  serve       Launch FastAPI microservice
-  detect      Detect available LLM providers
-  probe       Run 1-token liveness probe
-  suggest     Review intelligence suggestions
-  doctor      Scan & repair config/connectivity
-  check       Validate config syntax
+```
+verdict setup          Interactive setup wizard (plan / --dry-run / --json)
+verdict route          Route a task: --criticality {critical,high,medium,low} --terse
+verdict quickstart     Credential-free deterministic flagship demo
+verdict detect         Discover local LLM providers (--config emits suggested config)
+verdict probe          1-token liveness probe (--allow-live-probe for explicit consent)
+verdict catalog        Qualify an OmniRoute catalog snapshot (bounded sample probes)
+verdict benchmark      Reproducible local benchmark harness (--fixture, --output-json)
+verdict stats          Routing analytics
+verdict suggest        Review intelligence suggestions from past outcomes
+verdict serve          Launch the FastAPI microservice
+verdict ui             Launch the Streamlit analytics dashboard
+verdict doctor         Scan & repair configuration (--fix, --json)
+verdict runtime        Inspect/reconcile global Ruflo/RuVector ownership
+verdict memory         Local-first unified memory plane (put/search/export/import/...)
+verdict check          Validate config syntax and sanity
+verdict uninstall      Reversibly remove hooks and MCP registrations
 ```
 
-### Route Examples
-
-```bash
-# Terse output (model name only)
-verdict route "Write a Rust CLI tool" --terse
-# → anthropic/claude-3-opus-20240229
-
-# Verbose with reasoning
-verdict route "Refactor this TypeScript component"
-# → model: openai/gpt-4o
-#    reason: capability=tools, budget=medium, latency=p50<2s
-#    freshness: 12.3s old (omniroute:http)
-
-# Production critical path
-verdict route "Deploy to production" --criticality high --context '{"repo":"acme/api"}'
-```
-
----
-
-## Server Mode
-
-```bash
-# Start OpenAI-compatible proxy
-verdict serve --host 0.0.0.0 --port 8000
-
-# With availability cache (requires OmniRoute)
-export OMNIROUTE_BASE_URL=http://localhost:20128
-verdict serve
-```
-
-### Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /v1/chat/completions` | OpenAI-compatible chat completion |
-| `POST /v1/route` | Route task, return selected model + reasoning |
-| `GET /v1/route/explain` | Freshness + eligibility explain (issue #56/#73) |
-| `GET /v1/models` | List available models with capability tags |
+Full flags and examples: **[docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md)**
 
 ---
 
 ## Configuration
 
-Verdict uses layered config:
+Layered — project overrides global:
+
+1. **Global**: `~/.verdict/config.toml`
+2. **Project**: `.verdict/config.toml`
 
 ```toml
-# ~/.verdict/config.toml (global)
-# .verdict/config.toml (project-local — takes precedence)
-
 [gateway]
-primary_model = "anthropic/claude-3-opus-20240229"
+primary_model = "anthropic/claude-3-opus-20240229"   # frontier floor for protected work
 providers = {}
 
 [intelligence]
-profile = "balanced"  # fast | balanced | thorough
+profile = "balanced"        # fast | balanced | thorough
 timeout_ms = 8000
 allow_client_model_override = false
 
 [availability]
-ttl_seconds = 60
-stale_window_seconds = 30
-omniroute_base_url = "http://localhost:20128"  # Optional
+ttl_seconds = 60            # availability cache TTL
+stale_window_seconds = 30   # stale-while-revalidate window
+omniroute_base_url = "http://localhost:20128"   # optional live catalog
 ```
+
+Full reference: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 
 ---
 
-## OmniRoute Integration
+## Architecture
 
-Verdict integrates natively with **OmniRoute** (`http://localhost:20128/v1`) as
-its provider boundary for:
-- **3,318+ models** across **250+ providers**
-- **107+ free tiers** — no API keys needed
-- Auto-fallback, RTK compression (15–95% token savings)
-- `auto/best-coding`, `auto/best-reasoning`, `auto/best-fast` smart routing
+| Component | Role | Technology | Status |
+|---|---|---|---|
+| **EligibilityGate** | Fail-closed deterministic checks — no LLM in the request path | Python | Implemented |
+| **ProbeRunner** | Consented, budgeted liveness probes | Python + httpx | Implemented |
+| **OmniRoute catalog** | Optional historical catalog snapshots with bounded liveness evidence and explicit limitations | External service (optional) | Optional adapter |
+| **Orchestrator** | Candidate research, assignment, and worker dispatch | Optional runtime adapters | In progress |
+| **Learning loop** | Outcome → advisory feedback | Optional intelligence adapters | In progress |
+| **Evidence ledger** | Durable, privacy-safe routing receipts | JSONL + signed manifests | Implemented; expanding |
 
-```bash
-# Start OmniRoute (Docker)
-docker run -d -p 20128:20128 omnibus/omniroute
+Design decisions live in **[docs/adr/](docs/adr/)** — 26 numbered records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more. The **[ADR index](docs/adr/README.md)** lists every record with its decision and current status.
 
-# Configure Verdict
-export OMNIROUTE_BASE_URL=http://localhost:20128
-verdict serve
-```
+Ecosystem-stories ADR trail ([verdict-ecosystem](https://github.com/mrnicholasbcarter-code/verdict-ecosystem) tracks the source stories):
 
-### Runtime discovery and MCP
+| Story | ADR | Status |
+|---|---|---|
+| PRO-001 — Provider receipts | [ADR-021](docs/adr/ADR-021-deterministic-provider-receipts.md) | Accepted (partial) |
+| CTX-002 — Context provider conformance | [ADR-022](docs/adr/ADR-022-context-provider-conformance.md) | Accepted (partial) |
+| SWARM-001 — Governed swarm supervision | [ADR-023](docs/adr/ADR-023-governed-swarm-supervision.md) | Accepted (partial) |
+| CON-001 — Cross-repo compatibility gate | [ADR-024](docs/adr/ADR-024-cross-repo-compatibility-gate.md) | Accepted (partial — verdict-core side only) |
+| NOD-002 — Node envelope enforcement | [ADR-025](docs/adr/ADR-025-node-envelope-enforcement.md) | Proposed |
 
-Verdict uses OmniRoute's OpenAI-compatible catalog for model identity, while
-availability decisions remain separate: catalog presence does not mean a
-provider is healthy, reachable, within quota, or eligible. When the deployment
-exposes authenticated management APIs, the availability adapter can discover
-documented runtime signals such as provider catalogs, MCP status/tools, and
-quota summaries. Optional endpoints include:
+### TypeScript ecosystem
 
-```text
-GET /v1/models
-GET /api/models/catalog
-GET /api/mcp/status
-GET /api/mcp/tools
-GET /api/free-tier/summary
-GET /api/quota/pools/{pool_id}/usage
-```
+TypeScript packages are published under the current `@bodanglin/*` namespace. Check each package README and release metadata before integrating:
 
-Management and MCP access normally require the OmniRoute bearer token. A
-missing token, `401`, timeout, malformed response, or unavailable optional
-endpoint is recorded as unknown/stale—not as healthy. Protected work therefore
-fails closed when fresh runtime truth is absent. Verdict never reads
-OmniRoute's private database and never copies provider credentials into model
-selection. See [the worker/discovery guide](docs/guides/omniroute-workers.md)
-and [the routing policy](docs/specs/ROUTING_POLICY.md) for the full contract.
+| Package | Description |
+|---|---|
+| `@bodanglin/verdict-contracts` | Canonical TypeScript contract schemas and types |
+| `@bodanglin/verdict-client` | TypeScript client SDK |
 
-## Autonomous development workflow
+Python ↔ TypeScript field-level parity is verified in CI — see [CONTRACT_PARITY.md](CONTRACT_PARITY.md).
 
-The repository's development contract is documented in
-[Autonomous development](docs/guides/autonomous-development.md). It requires
-documentation lookup and sanitized RAG ingestion before design, Code Review
-Graph context and impact analysis before implementation/review, ticket-backed
-work packages, OmniRoute-aware worker selection, layered verification, and
-exact-head CI/PR follow-through through merge.
+### Ecosystem repos
+
+| Repo | Role | Status |
+|------|------|--------|
+| `verdict-core` | Control plane (this repo) | Active |
+| `verdict-node` | TypeScript adapter | Active |
+| `verdict-ecosystem` | Cross-repo coordination | Active |
+| `verdict-risk` | Risk evaluation provider | In progress |
+| `verdict-strategy` | Strategy evaluation provider | In progress |
+| `verdict-backtest` | Backtest provider | In progress |
+| `verdict-cockpit` | UI dashboard | In progress |
 
 ---
 
-## Project Structure
+## Security
 
-```
-verdict-core/
-├── verdict/                 # Main package
-│   ├── api.py              # FastAPI server + /v1/route/explain
-│   ├── availability.py     # Capability/quota/health checks
-│   ├── availability_cache.py  # Bounded SWR cache (issue #56)
-│   ├── contracts.py        # Versioned Pydantic contracts
-│   ├── dispatcher.py       # Routing logic
-│   ├── eligibility.py      # Gate + filter pipeline
-│   ├── gate.py             # Policy enforcement
-│   ├── intelligence.py     # Advisory ranking
-│   ├── omniroute.py        # OmniRoute transport
-│   ├── planner.py          # Task decomposition
-│   ├── cli.py              # Cobra-style CLI
-│   └── ...
-├── tests/                   # 320 tests passing
-├── scripts/                 # flagship_demo.py, verify_release_artifacts.py
-├── benchmarks/              # Reproducible benchmarks
-└── docs/                    # Architecture, guides, API reference
-```
+- **Fail-closed protected work**: protected actions halt when required fresh truth is unavailable — no silent fallback
+- **Consent-gated probes**: network liveness checks require explicit `--allow-live-probe`
+- **Privacy**: privacy-safe receipt ledger ([THREAT_MODEL_RECEIPTS.md](docs/THREAT_MODEL_RECEIPTS.md)); logs and evidence must not contain PII
+- **Supply chain**: CI runs dependency/security checks on protected-branch pushes, pull requests, and scheduled runs; see [security workflow](.github/workflows/security.yml) for scope and documented exceptions
+- **Installer trust**: source/uv installation is the most transparent path; review `install.sh` and release assets before using `curl | bash`
+- **Report vulnerabilities**: see [SECURITY.md](SECURITY.md)
 
 ---
 
-## Ecosystem
+## Documentation
 
-| Repo | Purpose | Status |
-|------|---------|--------|
-| `verdict-core` | Python control plane (flagship) | ✅ 320 tests |
-| `verdict-node` | Express/Next.js middleware | ✅ 139 tests |
-| `verdict-cockpit` | Next.js dashboard | 🚧 |
-| `verdict-risk` | Risk engine | 🚧 |
-| `verdict-edge` | Edge mining framework | 🚧 |
-| `verdict-backtest` | Monte Carlo harness | 🚧 |
-| `verdict` | Umbrella/meta repo | 🚧 |
+| Topic | Link |
+|---|---|
+| Getting started | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
+| CLI reference | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) |
+| Configuration | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| Architecture decision records (26) | [docs/adr/README.md](docs/adr/README.md) |
+| Routing policy | [docs/specs/ROUTING_POLICY.md](docs/specs/ROUTING_POLICY.md) |
+| Acceptance gates (G1–G7) | [ACCEPTANCE_GATES.md](ACCEPTANCE_GATES.md) |
+| Evidence index & claims ledger | [docs/proof/EVIDENCE_INDEX.md](docs/proof/EVIDENCE_INDEX.md) |
+| Portfolio proof matrix | [docs/portfolio/PORTFOLIO_PROOF_MATRIX.md](docs/portfolio/PORTFOLIO_PROOF_MATRIX.md) |
+| Capability passports | [docs/CAPABILITY_PASSPORTS.md](docs/CAPABILITY_PASSPORTS.md) |
+| Contract parity (Python ↔ TS) | [CONTRACT_PARITY.md](CONTRACT_PARITY.md) |
+| Autonomous development | [docs/guides/autonomous-development.md](docs/guides/autonomous-development.md) |
+| OmniRoute workers | [docs/guides/omniroute-workers.md](docs/guides/omniroute-workers.md) |
+| Runtime ownership | [docs/guides/runtime-ownership.md](docs/guides/runtime-ownership.md) |
+| Local development | [docs/guides/local-development.md](docs/guides/local-development.md) |
 
 ---
 
 ## Development
 
 ```bash
-# Install dev deps
-pipx install verdict-core --editable
+# Tests (81 test files — unit + integration)
+uv run pytest -q
 
-# Run tests
-pytest -v
+# Lint & format
+uv run --extra dev --extra server --extra dashboard ruff check .
+uv run --extra dev --extra server --extra dashboard ruff format --check .
 
-# Lint + typecheck
-uv run --extra dev --extra dashboard --extra server ruff check .
-uv run --extra dev --extra dashboard --extra server mypy verdict --strict
+# Type check (strict)
+uv run --extra dev --extra server --extra dashboard mypy verdict --strict
 
-# Run flagship demo
-python scripts/flagship_demo.py
+# Build
+uv run python -m build
 ```
+
+Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md) · Versioning: [VERSIONING.md](VERSIONING.md) · Release process: [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+[MIT](LICENSE) — © Verdict contributors
 
 ---
 
-## Links
-
-- **Documentation**: https://verdict.dev/docs
-- **Issues**: https://github.com/verdict/verdict-core/issues
-- **Discord**: https://discord.gg/verdict
-- **OmniRoute**: https://github.com/verdict/omniroute
+**Built by** [Nicholas Carter](https://github.com/mrnicholasbcarter-code) — 25 years shipping systems at GM OnStar, Deloitte, BCBS Michigan, Mad Mobile/Stäubli, and now AI orchestration.

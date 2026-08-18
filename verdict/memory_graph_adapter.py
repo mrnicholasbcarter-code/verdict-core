@@ -16,6 +16,8 @@ from typing import Any
 
 from verdict.memory_plane import MemoryPlane, MemoryRecord
 
+CODE_GRAPH_ADAPTER_VERSION = "1"
+
 
 @dataclass(frozen=True)
 class CodeGraphIngestionReport:
@@ -28,7 +30,7 @@ class CodeGraphIngestionReport:
 
 
 class CodeGraphAdapter:
-    """Adapter to ingest Code Review Graph data into MemoryPlane."""
+    """Adapter for graph exports, with explicit legacy SQLite compatibility."""
 
     def ingest_dict(
         self, graph_data: dict[str, Any], plane: MemoryPlane
@@ -67,7 +69,15 @@ class CodeGraphAdapter:
                 authority="code_review_graph",
                 confidence=1.0,
                 sensitivity="public",
-                provenance={"file": file_path, "kind": kind},
+                provenance={
+                    "source": f"code_review_graph:{file_path}",
+                    "adapter": "code-graph-manifest",
+                    "adapter_version": CODE_GRAPH_ADAPTER_VERSION,
+                    "schema_version": 2,
+                    "file": file_path,
+                    "kind": kind,
+                    "content_hash": content_hash,
+                },
             )
             plane.put(record)
             records_created += 1
@@ -81,9 +91,18 @@ class CodeGraphAdapter:
         )
 
     def ingest_sqlite(
-        self, db_path: str | Path, plane: MemoryPlane, limit: int = 1000
+        self,
+        db_path: str | Path,
+        plane: MemoryPlane,
+        limit: int = 1000,
+        allow_legacy_sqlite: bool = False,
     ) -> CodeGraphIngestionReport:
-        """Ingest Code Review Graph SQLite database into MemoryPlane."""
+        """Ingest an explicitly approved local/exported SQLite artifact."""
+        if not allow_legacy_sqlite:
+            raise ValueError(
+                "private Code Review Graph SQLite input is disabled; use a validated "
+                "manifest or set allow_legacy_sqlite=True for an exported local artifact"
+            )
         path = Path(db_path).resolve()
         if not path.exists() or not path.is_file():
             raise FileNotFoundError(f"code_graph_db_not_found:{path}")
@@ -125,7 +144,15 @@ class CodeGraphAdapter:
                         authority="code_review_graph",
                         confidence=1.0,
                         sensitivity="public",
-                        provenance={"file": file_p, "db_name": path.name},
+                        provenance={
+                            "source": f"code_graph_db:{path.name}:{file_p}",
+                            "adapter": "code-graph-sqlite-legacy",
+                            "adapter_version": CODE_GRAPH_ADAPTER_VERSION,
+                            "schema_version": 2,
+                            "file": file_p,
+                            "db_name": path.name,
+                            "content_hash": content_hash,
+                        },
                     )
                     plane.put(record)
                     records_created += 1
@@ -141,4 +168,4 @@ class CodeGraphAdapter:
         )
 
 
-__all__ = ["CodeGraphAdapter", "CodeGraphIngestionReport"]
+__all__ = ["CODE_GRAPH_ADAPTER_VERSION", "CodeGraphAdapter", "CodeGraphIngestionReport"]

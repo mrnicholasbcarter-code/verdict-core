@@ -322,7 +322,7 @@ class CodeGraphEngine:
             content_hash = hashlib.sha256(content_str.encode("utf-8")).hexdigest()
 
             record = MemoryRecord(
-                record_id=f"rec_cg_{node.kind}_{node.name}",
+                record_id=f"rec_cg_{node.kind}_{node.name}_{content_hash[:8]}",
                 namespace="code_graph",
                 key=f"{node.kind.lower()}:{node.name}",
                 content=content_str,

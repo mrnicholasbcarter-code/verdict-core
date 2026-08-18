@@ -26,6 +26,7 @@ def _map_to_accepted_state(state: AvailabilityState) -> AvailabilityState:
     """
     _mapping = {
         AvailabilityState.DENIED: AvailabilityState.UNAVAILABLE,
+        AvailabilityState.QUARANTINED: AvailabilityState.UNAVAILABLE,
         AvailabilityState.LOCKED_OUT: AvailabilityState.RATE_LIMITED,
         AvailabilityState.CIRCUIT_OPEN: AvailabilityState.UNAVAILABLE,
         AvailabilityState.TIMEOUT: AvailabilityState.UNKNOWN,
@@ -67,6 +68,7 @@ class AvailabilityState(str, Enum):
     UNKNOWN = "unknown"
     UNAVAILABLE = "unavailable"
     DENIED = "denied"
+    QUARANTINED = "quarantined"
     QUOTA_EXHAUSTED = "quota_exhausted"
     RATE_LIMITED = "rate_limited"
     UNAUTHORIZED = "unauthorized"
@@ -562,6 +564,7 @@ _KNOWN_HEALTH_STATES = frozenset(
         "unavailable",
         "outage",
         "denied",
+        "quarantined",
         "quota_exhausted",
         "rate_limited",
         "unauthorized",
@@ -651,7 +654,7 @@ def _probe_state(obs: RuntimeObservation) -> tuple[AvailabilityState, str] | Non
             reported_state is not None
             and (
                 not isinstance(reported_state, str)
-                or reported_state not in {"ready", "degraded", "denied"}
+                or reported_state not in {"ready", "degraded", "denied", "quarantined"}
             )
         )
         or (error_class is not None and not isinstance(error_class, str))
@@ -719,8 +722,8 @@ def _probe_state(obs: RuntimeObservation) -> tuple[AvailabilityState, str] | Non
     if status == "skipped":
         if detail == "cooldown" and reported_state in {None, "degraded"}:
             return AvailabilityState.RATE_LIMITED, "cooldown"
-        if detail == "quarantined" and reported_state in {None, "denied"}:
-            return AvailabilityState.DENIED, "quarantined"
+        if detail == "quarantined" and reported_state in {None, "denied", "quarantined"}:
+            return AvailabilityState.QUARANTINED, "quarantined"
         return AvailabilityState.MALFORMED, "contradictory probe metadata"
     return AvailabilityState.MALFORMED, "malformed probe metadata"
 
@@ -967,6 +970,11 @@ def _candidate_is_eligible(
 def _availability_state_is_eligible(
     item: AvailabilityCandidate, requirements: CandidateRequirements
 ) -> bool:
+    # QUARANTINED is never admitted to live selection: like DENIED it fails
+    # closed here, but the two states differ in recovery.  QUARANTINED models
+    # stay tracked and are eligible for automated revalidation (a successful
+    # probe returns them to READY); DENIED requires manual re-enable.  See
+    # docs/adr/ADR-007-availability-state-lifecycle.md.
     if item.state is AvailabilityState.READY:
         return True
     if (
@@ -1290,6 +1298,9 @@ class ProbeEnrichedAdapter:
         registry: Any | None = None,
         max_probed: int = 16,
         clock: Any = None,
+        live: bool = False,
+        consented: bool = False,
+        provider: str = "unknown",
     ) -> None:
         self.base = base
         self.probe_transport = probe_transport
@@ -1303,6 +1314,9 @@ class ProbeEnrichedAdapter:
             self._runner = ProbeRunner(policy=policy, registry=registry)
         self.max_probed = max_probed
         self.clock = clock
+        self.live = live
+        self.consented = consented
+        self.provider = provider
 
     def evaluate(
         self,
@@ -1318,7 +1332,14 @@ class ProbeEnrichedAdapter:
         model_ids = [c.model.id for c in report.candidates][: self.max_probed]
         if not model_ids:
             return report
-        observations = self._runner.run(model_ids, self.probe_transport, now=now)
+        observations = self._runner.run(
+            model_ids,
+            self.probe_transport,
+            now=now,
+            live=self.live,
+            consented=self.consented,
+            provider=self.provider,
+        )
         probe_by_id: dict[str, RuntimeObservation] = {}
         for obs in observations:
             try:
