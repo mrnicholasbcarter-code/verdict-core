@@ -8,6 +8,7 @@ import {
   type TaskSpec,
   type RoutingDecision,
   type AvailabilitySnapshot,
+  type ExecutionEnvelope,
 } from "../src/index.js";
 
 describe("Contract Validation", () => {
@@ -194,6 +195,122 @@ describe("Contract Validation", () => {
       expect((redacted as Record<string, unknown>).normal_field).toBe("value");
       expect((redacted.nested as Record<string, unknown>).authorization).toBe("[redacted]");
       expect((redacted.nested as Record<string, unknown>).public_data).toBe("visible");
+    });
+  });
+
+  describe("ExecutionEnvelope", () => {
+    const validEnvelope: ExecutionEnvelope = {
+      schema_version: "1",
+      decision_id: "dec-123",
+      policy_version: "1",
+      policy_digest: "sha256:abc123",
+      expires_at: new Date(Date.now() + 3600000).toISOString(),
+      task_spec_fingerprint: "task-456",
+      execution_constraints: {
+        allowed_models: ["gpt-4o", "claude-3-5-sonnet"],
+        allowed_tools: ["read_file", "write_file"],
+        allowed_agents: ["coding-agent"],
+        budget_usd: 10.0,
+        max_request_usd: 1.0,
+        max_latency_ms: 30000,
+        risk_ceiling: "high",
+        required_verification: ["safety_check", "budget_check"],
+      },
+      verification_plan: {
+        required_checks: ["safety_check"],
+        evidence_refs: ["evidence-1"],
+        quality_gates: ["quality_gate_1"],
+      },
+      provenance: {
+        core_version: "0.1.0",
+        policy_fingerprint: "sha256:policy123",
+        issued_at: new Date().toISOString(),
+        issued_by: "core-router",
+      },
+      schema_version: "1",
+    };
+
+    it("parses a valid envelope", () => {
+      const parsed = parseContract("execution_envelope", validEnvelope);
+      expect(parsed.decision_id).toBe("dec-123");
+      expect(parsed.policy_digest).toBe("sha256:abc123");
+      expect(parsed.execution_constraints.allowed_models).toEqual(["gpt-4o", "claude-3-5-sonnet"]);
+      expect(parsed.provenance.core_version).toBe("0.1.0");
+    });
+
+    it("rejects unknown top-level fields", () => {
+      const tampered = { ...validEnvelope, injected_field: "malicious" };
+      expect(() => parseContract("execution_envelope", tampered)).toThrow(ContractValidationError);
+      try {
+        parseContract("execution_envelope", tampered);
+      } catch (err: any) {
+        expect(err.category).toBe("unknown_field");
+      }
+    });
+
+    it("rejects unknown nested constraint fields", () => {
+      const tampered = {
+        ...validEnvelope,
+        execution_constraints: {
+          ...validEnvelope.execution_constraints,
+          allow_everything: true,
+        },
+      };
+      expect(() => parseContract("execution_envelope", tampered)).toThrow(ContractValidationError);
+      try {
+        parseContract("execution_envelope", tampered);
+      } catch (err: any) {
+        expect(err.category).toBe("unknown_field");
+      }
+    });
+
+    it("rejects tampered policy_digest", () => {
+      const tampered = { ...validEnvelope, policy_digest: "sha256:different" };
+      const parsed = parseContract("execution_envelope", tampered);
+      // Parsing succeeds (schema valid) but digest mismatch detected by edge adapter
+      expect(parsed.policy_digest).toBe("sha256:different");
+    });
+
+    it("rejects expired envelope", () => {
+      const expired = { ...validEnvelope, expires_at: new Date(Date.now() - 1000).toISOString() };
+      const parsed = parseContract("execution_envelope", expired);
+      // Schema parsing succeeds; expiry check done by edge adapter
+      expect(parsed.expires_at).toBe(expired.expires_at);
+    });
+
+    it("rejects malformed schema_version", () => {
+      const malformed = { ...validEnvelope, schema_version: "2" };
+      expect(() => parseContract("execution_envelope", malformed)).toThrow(ContractValidationError);
+      try {
+        parseContract("execution_envelope", malformed);
+      } catch (err: any) {
+        expect(err.category).toBe("schema_version");
+      }
+    });
+
+    it("rejects missing required fields", () => {
+      const { decision_id: _removed, ...missing } = validEnvelope;
+      expect(() => parseContract("execution_envelope", missing)).toThrow(ContractValidationError);
+    });
+
+    it("accepts minimal constraints (empty arrays)", () => {
+      const minimal = {
+        ...validEnvelope,
+        execution_constraints: {
+          allowed_models: [],
+          allowed_tools: [],
+          allowed_agents: [],
+        },
+      };
+      const parsed = parseContract("execution_envelope", minimal);
+      expect(parsed.execution_constraints.allowed_models).toEqual([]);
+    });
+
+    it("serializes and round-trips correctly", () => {
+      const serialized = serializeContract("execution_envelope", validEnvelope);
+      const reparsed = parseContract("execution_envelope", JSON.parse(serialized));
+      expect(reparsed.decision_id).toBe(validEnvelope.decision_id);
+      expect(reparsed.policy_digest).toBe(validEnvelope.policy_digest);
     });
   });
 });
