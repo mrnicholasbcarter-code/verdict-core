@@ -440,29 +440,16 @@ const executionEnvelopeConstraintsSchema = z
 
 const executionEnvelopeSchema = z
   .object({
-    schema_version: schemaVersion,
-    decision_id: nonEmptyString,
-    policy_version: nonEmptyString,
+    schema_version: schemaVersion.default('1'),
+    task_spec: taskSpecSchema,
+    eligibility_decision: jsonObject,
     policy_digest: nonEmptyString,
-    expires_at: nonEmptyString,
-    task_spec_fingerprint: nonEmptyString,
+    allowed_capabilities: z.array(nonEmptyString),
     execution_constraints: executionEnvelopeConstraintsSchema,
-    verification_plan: z
-      .object({
-        required_checks: z.array(nonEmptyString).default([]),
-        evidence_refs: z.array(nonEmptyString).default([]),
-        quality_gates: z.array(nonEmptyString).default([]),
-      })
-      .strict()
-      .default({}),
-    provenance: z
-      .object({
-        core_version: nonEmptyString,
-        policy_fingerprint: nonEmptyString,
-        issued_at: nonEmptyString,
-        issued_by: nonEmptyString,
-      })
-      .strict(),
+    verification_requirements: verificationPlanSchema,
+    evidence_ids: z.array(nonEmptyString),
+    routing_decision: jsonObject.nullable().default(null),
+    created_at: nullableString.default(null),
   })
   .strict();
 
