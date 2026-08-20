@@ -18,6 +18,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from verdict.enforcement import EnforcementContext, check_enforcement
 from verdict.guidance import GuidanceControlPlane
 from verdict.memory_plane import MemoryPlane, MemoryRecord
 
@@ -91,6 +92,9 @@ class MemoryWriteRequest:
     metadata: dict[str, Any] | None = None
     sensitivity: str = "internal"
     expires_at: float | None = None
+    # Feature 004 (VER-008 #225): the provider the write intends to act for.
+    # Additive, optional; unchanged for all pre-004 construction sites.
+    provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +110,12 @@ class MemoryWriteResult:
     ttl_set: int | None = None
     record: MemoryRecord | None = None
     event_id: str | None = None
+    # Feature 004 (VER-008 #225): additive audit surface for enforcement
+    # denials. ``decision_id`` traces a denial back to the feature-003
+    # authority receipt (SC-004); ``enforcement_reason`` is the stable
+    # flavor of the denial. Both default None so pre-004 callers are untouched.
+    decision_id: str | None = None
+    enforcement_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +129,8 @@ class MemoryWriteResult:
             "ttl_set": self.ttl_set,
             "record_id": self.record.record_id if self.record else None,
             "event_id": self.event_id,
+            "decision_id": self.decision_id,
+            "enforcement_reason": self.enforcement_reason,
         }
 
 
@@ -204,23 +216,31 @@ class MemoryGate:
     def list_authorities(self) -> dict[str, AuthorityLevel]:
         return dict(self._authorities)
 
-    async def evaluate_write(self, request: MemoryWriteRequest) -> MemoryWriteResult:
+    async def evaluate_write(
+        self, request: MemoryWriteRequest, *, context: EnforcementContext | None = None
+    ) -> MemoryWriteResult:
         """Async-compatible evaluation API retained for older integrations."""
 
-        return self._evaluate(request)
+        return self._evaluate(request, context=context)
 
-    def evaluate_write_sync(self, request: MemoryWriteRequest) -> MemoryWriteResult:
-        return self._evaluate(request)
+    def evaluate_write_sync(
+        self, request: MemoryWriteRequest, *, context: EnforcementContext | None = None
+    ) -> MemoryWriteResult:
+        return self._evaluate(request, context=context)
 
-    async def execute_write(self, request: MemoryWriteRequest) -> MemoryWriteResult:
+    async def execute_write(
+        self, request: MemoryWriteRequest, *, context: EnforcementContext | None = None
+    ) -> MemoryWriteResult:
         """Evaluate and, if allowed, persist one record and its audit event."""
 
-        return self.write(request)
+        return self.write(request, context=context)
 
-    def write(self, request: MemoryWriteRequest) -> MemoryWriteResult:
+    def write(
+        self, request: MemoryWriteRequest, *, context: EnforcementContext | None = None
+    ) -> MemoryWriteResult:
         """Evaluate and persist a request without requiring an event loop."""
 
-        result = self._evaluate(request)
+        result = self._evaluate(request, context=context)
         if not result.allowed:
             event_id = self._persist_event(request, result)
             return MemoryWriteResult(**{**result.__dict__, "event_id": event_id})
@@ -259,7 +279,9 @@ class MemoryGate:
                 continue
         return sorted(events, key=lambda event: (event.timestamp, event.event_id))[-max(limit, 0) :]
 
-    def _evaluate(self, request: MemoryWriteRequest) -> MemoryWriteResult:
+    def _evaluate(
+        self, request: MemoryWriteRequest, *, context: EnforcementContext | None = None
+    ) -> MemoryWriteResult:
         policy = self.get_policy(request.namespace)
         authority = self._get_authority_level(request.authority)
         if request.authority_level is not None and request.authority_level != authority:
@@ -319,9 +341,25 @@ class MemoryGate:
                 f"{request.namespace}:{request.scope}:{request.key}:{digest}".encode()
             ).hexdigest()[:24]
         )
-        return MemoryWriteResult(
+        allowed_result = MemoryWriteResult(
             allowed=True, reason="allowed", write_id=write_id, authority_verified=True, ttl_set=ttl
         )
+        # Feature 004 (FR-007): the hard decision-bound guard runs LAST, only
+        # after MemoryPolicy has already allowed the write. A denial here
+        # overrides the allow without weakening any earlier policy. ``context
+        # is None`` keeps pre-004 behavior unchanged (the opt-in seam).
+        if context is not None:
+            enforced = check_enforcement(context, request.provider)
+            if not enforced.allowed:
+                assert enforced.reason is not None  # invariant from EnforcementResult
+                return MemoryWriteResult(
+                    allowed=False,
+                    reason=enforced.reason.value,
+                    authority_verified=True,
+                    decision_id=enforced.decision_id,
+                    enforcement_reason=enforced.reason.value,
+                )
+        return allowed_result
 
     def _record_for(self, request: MemoryWriteRequest, write_id: str) -> MemoryRecord:
         safe_value = _redact_value(request.value)

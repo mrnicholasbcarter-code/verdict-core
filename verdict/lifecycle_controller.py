@@ -7,13 +7,18 @@ Integrates workflow compilation and verification gates.
 
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from verdict.contracts import TaskSpec
+from verdict.enforcement import EnforcementContext, check_enforcement
 from verdict.ruflo_adapter import RufloAdapter
 from verdict.workflow_compiler import CompiledWorkflow, WorkflowCompiler
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from verdict.decision_kernel import DecisionRecord
 
 
 @dataclass
@@ -72,7 +77,13 @@ class LifecycleController:
         self._workflows: dict[str, WorkflowHandle] = {}
 
     def submit_workflow(
-        self, workflow_plan: Any, task_spec: TaskSpec, *, idempotency_key: str | None = None
+        self,
+        workflow_plan: Any,
+        task_spec: TaskSpec,
+        *,
+        idempotency_key: str | None = None,
+        decision_record: DecisionRecord | None = None,
+        context: EnforcementContext | None = None,
     ) -> WorkflowHandle:
         """
         Submit a workflow for execution.
@@ -81,6 +92,12 @@ class LifecycleController:
             workflow_plan: The workflow to execute.
             task_spec: The task specification (as dict) for the workflow.
             idempotency_key: Optional idempotency key for deduplication.
+            decision_record: Optional feature-003 authority decision to enforce
+                at the submit verification gate. Ignored when verification is
+                disabled or no gate consults it.
+            context: Optional :class:`~verdict.enforcement.EnforcementContext`
+                carrying the authority decision; takes precedence over
+                ``decision_record`` when both are supplied.
 
         Returns:
             A WorkflowHandle for managing the workflow.
@@ -113,16 +130,28 @@ class LifecycleController:
 
         # Optionally run verification on submit
         if self.config.run_verification_on_submit:
-            self._run_verification_hooks(workflow_plan, stage="submit")
+            self._run_verification_hooks(
+                workflow_plan, stage="submit", decision_record=decision_record, context=context
+            )
 
         return handle
 
-    def status(self, workflow_id: str) -> Any | None:
+    def status(
+        self,
+        workflow_id: str,
+        *,
+        decision_record: DecisionRecord | None = None,
+        context: EnforcementContext | None = None,
+    ) -> Any | None:
         """
         Get the current status of a workflow.
 
         Args:
             workflow_id: The workflow ID.
+            decision_record: Optional feature-003 authority decision to enforce
+                at the completion verification gate.
+            context: Optional :class:`~verdict.enforcement.EnforcementContext`;
+                takes precedence over ``decision_record``.
 
         Returns:
             The status response, or None if not found.
@@ -145,7 +174,12 @@ class LifecycleController:
 
             # Optionally run verification on completion
             if self.config.run_verification_on_complete:
-                self._run_verification_hooks(workflow_plan=handle.workflow_plan, stage="complete")
+                self._run_verification_hooks(
+                    workflow_plan=handle.workflow_plan,
+                    stage="complete",
+                    decision_record=decision_record,
+                    context=context,
+                )
 
         return status_response
 
@@ -210,50 +244,53 @@ class LifecycleController:
             pass
         return getattr(response, "success", False)
 
-    def _run_verification_hooks(self, workflow_plan: Any, stage: str) -> list[Any]:
+    def _run_verification_hooks(
+        self,
+        workflow_plan: Any,
+        stage: str,
+        *,
+        decision_record: DecisionRecord | None = None,
+        context: EnforcementContext | None = None,
+    ) -> list[Any]:
         """
         Run the configured verification gates for a workflow at a given stage.
+
+        Feature 004 (VER-008 #225): when a ``decision_record`` or ``context``
+        is provided, the workflow-plan verification runs the real decision-bound
+        guard (``check_enforcement``) against the plan's target provider instead
+        of the pre-004 ``passed=True`` placeholder. ``context`` is preferred when
+        both are supplied. Absent both, the gate fails closed (NFR-002) only when
+        an enforcement guard is explicitly requested via the plan; legacy
+        callers that never pass a decision remain unaffected.
+
+        Extra verification gates are detected via :func:`inspect.signature`:
+        gates declaring ``decision_record`` and/or ``context`` receive them
+        (e.g. :class:`~verdict.enforcement.EnforcementVerificationGate`); legacy
+        gates are called with the original two-argument signature.
 
         Returns a list of validation results.
         """
         results: list[Any] = []
 
-        # 1. Run verification gates from the workflow plan (if enabled)
+        # 1. Run verification gates from the workflow plan (if enabled).
+        # Feature 004 replaces the unconditional ``passed=True`` placeholder with
+        # a decision-bound evaluation when an authority context is present; when
+        # no context is supplied, the legacy placeholder behavior is preserved.
         if self.config.use_workflow_plan_verification and hasattr(workflow_plan, "verification"):
             verification = getattr(workflow_plan, "verification", None)
             if verification:
-                # If it's a dict, we might need to convert it to a VerificationPlan
-                # For simplicity, we treat it as a VerificationPlan-like object.
-                # In a real implementation, we would instantiate the checks and run them.
-                # We'll create a placeholder result indicating we found verification.
-                results.append(
-                    {
-                        "stage": stage,
-                        "source": "workflow_plan",
-                        "passed": True,  # placeholder - actual evaluation would go here
-                        "message": "Verification from workflow plan (placeholder)",
-                        "details": str(verification)[:200],  # truncate for brevity
-                    }
+                plan_result = self._evaluate_workflow_plan_verification(
+                    workflow_plan=workflow_plan,
+                    stage=stage,
+                    verification=verification,
+                    context=context,
+                    decision_record=decision_record,
                 )
+                results.append(plan_result)
 
-        # 2. Run any extra verification gates configured in the LifecycleConfig
+        # 2. Run any extra verification gates configured in the LifecycleConfig.
         for gate in self.config.extra_verification_gates:
-            # Each gate should have an evaluate method that returns a result
-            if hasattr(gate, "evaluate"):
-                try:
-                    result = gate.evaluate(workflow_plan=workflow_plan, stage=stage)
-                    results.append(result)
-                except Exception as e:
-                    results.append(
-                        {
-                            "stage": stage,
-                            "source": "extra_gate",
-                            "passed": False,
-                            "message": f"Error running verification gate: {e}",
-                            "exception": str(e),
-                        }
-                    )
-            else:
+            if not hasattr(gate, "evaluate"):
                 results.append(
                     {
                         "stage": stage,
@@ -262,5 +299,129 @@ class LifecycleController:
                         "message": "Invalid verification gate (no evaluate method)",
                     }
                 )
+                continue
+            try:
+                result = self._invoke_gate(
+                    gate,
+                    workflow_plan=workflow_plan,
+                    stage=stage,
+                    decision_record=decision_record,
+                    context=context,
+                )
+                results.append(result)
+            except Exception as e:
+                results.append(
+                    {
+                        "stage": stage,
+                        "source": "extra_gate",
+                        "passed": False,
+                        "message": f"Error running verification gate: {e}",
+                        "exception": str(e),
+                    }
+                )
 
         return results
+
+    def _evaluate_workflow_plan_verification(
+        self,
+        *,
+        workflow_plan: Any,
+        stage: str,
+        verification: Any,
+        context: EnforcementContext | None,
+        decision_record: DecisionRecord | None = None,
+    ) -> dict[str, Any]:
+        """Feature 004: decision-bound evaluation of the plan's own verification block.
+
+        When an enforcement ``context`` is present (or a ``decision_record`` from
+        which one can be synthesized), the target provider declared on the plan
+        is checked against the authority before the step is admitted; a denial
+        fails closed (NFR-002) and carries ``decision_id``/``blocked_provider``/
+        ``admitted_set`` (FR-002). With neither supplied, the pre-004 placeholder
+        result is preserved for backwards compatibility.
+        """
+        from datetime import datetime, timezone
+
+        base: dict[str, Any] = {
+            "stage": stage,
+            "source": "workflow_plan",
+            "details": str(verification)[:200],  # truncate for brevity
+        }
+        if context is None and decision_record is not None:
+            context = EnforcementContext(
+                decision_record=decision_record, created_at=datetime.now(timezone.utc)
+            )
+        if context is None:
+            return {
+                **base,
+                "passed": True,  # legacy placeholder behavior
+                "message": "Verification from workflow plan (no enforcement context)",
+            }
+        target_provider = self._resolve_target_provider(workflow_plan)
+        result = check_enforcement(context, target_provider)
+        if result.allowed:
+            return {
+                **base,
+                "passed": True,
+                "message": "Verification admitted by decision-bound guard",
+                "decision_id": result.decision_id,
+                "blocked_provider": None,
+                "admitted_set": list(result.admitted_set),
+                "exclusions": list(result.exclusions),
+            }
+        assert result.reason is not None  # invariant from EnforcementResult
+        return {
+            **base,
+            "passed": False,
+            "message": "Verification denied by decision-bound guard",
+            "reason": result.reason.value,
+            "decision_id": result.decision_id,
+            "blocked_provider": target_provider,
+            "admitted_set": list(result.admitted_set),
+            "exclusions": list(result.exclusions),
+        }
+
+    @staticmethod
+    def _resolve_target_provider(workflow_plan: Any) -> str | None:
+        """Best-effort resolution of a plan's target provider id (FR-008)."""
+        value: Any = None
+        if hasattr(workflow_plan, "target_provider"):
+            value = workflow_plan.target_provider
+        elif isinstance(workflow_plan, dict):
+            value = workflow_plan.get("target_provider")
+        return value if isinstance(value, str) and value else None
+
+    def _invoke_gate(
+        self,
+        gate: Any,
+        *,
+        workflow_plan: Any,
+        stage: str,
+        decision_record: DecisionRecord | None,
+        context: EnforcementContext | None,
+    ) -> Any:
+        """Call ``gate.evaluate`` with exactly the keyword params it declares.
+
+        Legacy gates that accept only ``workflow_plan``/``stage`` are called
+        with the original signature; enforcement-aware gates additionally
+        receive ``decision_record`` and/or ``context`` depending on what their
+        ``evaluate`` signature advertises.
+        """
+        evaluate = gate.evaluate
+        parameters: set[str] = set()
+        try:
+            sig = inspect.signature(evaluate)
+        except (TypeError, ValueError):
+            parameters = {"workflow_plan", "stage"}
+        else:
+            parameters.update(sig.parameters.keys())
+            # Inspect may fail to resolve VAR_POSITIONAL/VAR_KEYWORD; fall back
+            # to the conservative two-arg call if nothing recognizable is found.
+        if "decision_record" in parameters or "context" in parameters:
+            kwargs: dict[str, Any] = {"workflow_plan": workflow_plan, "stage": stage}
+            if "decision_record" in parameters:
+                kwargs["decision_record"] = decision_record
+            if "context" in parameters:
+                kwargs["context"] = context
+            return evaluate(**kwargs)
+        return evaluate(workflow_plan=workflow_plan, stage=stage)
