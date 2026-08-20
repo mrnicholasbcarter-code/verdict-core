@@ -9,6 +9,7 @@ from jsonschema import Draft202012Validator
 from verdict.contracts import (
     AvailabilitySnapshot,
     ContractValidationError,
+    ExecutionEnvelope,
     OutcomeEpisode,
     OutcomeEvent,
     RoutingDecisionContract,
@@ -342,6 +343,39 @@ def test_invalid_fixtures_fail_python_and_json_schema(fixture_name: str) -> None
     assert errors, fixture_name
     with pytest.raises(ContractValidationError):
         TaskSpec.from_dict(payload)
+
+
+# ---------------------------------------------------------------------------
+# NOD-002 envelope enforcement parity (issue #286 / verdict-ecosystem NOD-002)
+#
+# The published `@bodanglin/verdict-contracts` ExecutionEnvelope (the schema
+# `verdict-node` validates against) carries a different field set than the
+# canonical Python `ExecutionEnvelope` in this module. The shared invalid
+# fixtures below are shaped for the TypeScript contract; both runtimes must
+# reject them. Python rejects them via its strict unknown-field / required-field
+# checks, proving fail-closed parity at the language boundary.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "invalid-envelope-missing-policy-digest.json",
+        "invalid-envelope-empty-decision-id.json",
+        "invalid-envelope-wrong-schema-version.json",
+    ],
+)
+def test_execution_envelope_invalid_fixtures_rejected_by_python(fixture_name: str) -> None:
+    payload = json.loads((FIXTURE_DIR / fixture_name).read_text())
+    with pytest.raises(ContractValidationError):
+        ExecutionEnvelope.from_dict(payload)
+
+
+def test_execution_envelope_valid_fixture_is_rejected_by_python_canonical() -> None:
+    """Documents the schema divergence: the TS-shaped valid envelope is not the
+    Python canonical shape, so Python rejects it. Both runtimes are strict;
+    reconciliation of the two `ExecutionEnvelope` shapes is tracked separately."""
+    payload = json.loads((FIXTURE_DIR / "envelope-valid.json").read_text())
+    with pytest.raises(ContractValidationError):
+        ExecutionEnvelope.from_dict(payload)
 
 
 def test_verification_result_records_rerun_provenance() -> None:

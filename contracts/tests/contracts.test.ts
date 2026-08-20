@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import {
   parseContract,
   serializeContract,
@@ -10,6 +12,11 @@ import {
   type AvailabilitySnapshot,
   type ExecutionEnvelope,
 } from "../src/index.js";
+
+const fixturesDir = fileURLToPath(new URL("../../tests/fixtures", import.meta.url));
+async function loadFixture(name: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(`${fixturesDir}/${name}`, "utf8")) as Record<string, unknown>;
+}
 
 describe("Contract Validation", () => {
   describe("TaskSpec", () => {
@@ -311,6 +318,28 @@ describe("Contract Validation", () => {
       const reparsed = parseContract("execution_envelope", JSON.parse(serialized));
       expect(reparsed.decision_id).toBe(validEnvelope.decision_id);
       expect(reparsed.policy_digest).toBe(validEnvelope.policy_digest);
+    });
+
+    // NOD-002 (issue #286) cross-runtime parity: the same shared invalid
+    // envelope fixtures must be rejected by the TS runtime here AND by the
+    // Python canonical contract in tests/test_contracts.py, proving the edge
+    // adapter cannot accept an envelope the orchestrator would reject.
+    it("rejects shared invalid fixtures identically to the Python canonical contract", async () => {
+      const invalidNames = [
+        "invalid-envelope-missing-policy-digest.json",
+        "invalid-envelope-empty-decision-id.json",
+        "invalid-envelope-wrong-schema-version.json",
+      ];
+      for (const name of invalidNames) {
+        const payload = await loadFixture(name);
+        expect(() => parseContract("execution_envelope", payload)).toThrow(ContractValidationError);
+      }
+    });
+
+    it("parses the shared valid envelope fixture", async () => {
+      const payload = await loadFixture("envelope-valid.json");
+      const parsed = parseContract("execution_envelope", payload);
+      expect((parsed as ExecutionEnvelope).decision_id).toBe("dec-001");
     });
   });
 });

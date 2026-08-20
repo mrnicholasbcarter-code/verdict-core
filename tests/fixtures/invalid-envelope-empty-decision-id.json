@@ -1,0 +1,20 @@
+{
+  "schema_version": "1",
+  "decision_id": "",
+  "policy_version": "1",
+  "policy_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "expires_at": "2099-01-01T00:00:00Z",
+  "task_spec_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "execution_constraints": {},
+  "verification_plan": {
+    "required_checks": [],
+    "evidence_refs": [],
+    "quality_gates": []
+  },
+  "provenance": {
+    "core_version": "0.1.0",
+    "policy_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "issued_at": "2026-08-20T00:00:00Z",
+    "issued_by": "core"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": "1",
+  "decision_id": "dec-001",
+  "policy_version": "1",
+  "policy_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "expires_at": "2099-01-01T00:00:00Z",
+  "task_spec_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "execution_constraints": {
+    "allowed_models": ["gpt-4o"],
+    "allowed_tools": ["search"],
+    "allowed_agents": [],
+    "budget_usd": 1.0,
+    "max_request_usd": 0.5,
+    "max_latency_ms": 5000,
+    "risk_ceiling": "medium",
+    "required_verification": ["tests"]
+  },
+  "verification_plan": {
+    "required_checks": ["tests"],
+    "evidence_refs": ["ev-1"],
+    "quality_gates": ["gate-1"]
+  },
+  "provenance": {
+    "core_version": "0.1.0",
+    "policy_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "issued_at": "2026-08-20T00:00:00Z",
+    "issued_by": "core"
+  }
+}
