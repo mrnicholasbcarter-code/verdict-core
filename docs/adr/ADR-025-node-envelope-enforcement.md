@@ -1,7 +1,8 @@
 # ADR-025: Node Envelope Enforcement
 
-**Status**: Proposed (not yet implemented)
+**Status**: Accepted
 **Date**: 2026-08-16
+**Accepted**: 2026-08-20 (verdict-node NOD-002 PRs #33, #41, #42, #44, #45; verdict-core #286 closure)
 **Story**: [VERDICT-NOD-002](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/VERDICT-NOD-002.md) (verdict-ecosystem)
 
 ## Context
@@ -43,12 +44,56 @@ field shapes:
   envelope its own runtime would reject if it originated on the Python
   side — enforcement parity, not just schema parity.
 
-## Consequences (anticipated)
+## Decision (implemented)
 
-- Requires TypeScript implementation work in `verdict-node`, not just
-  `verdict-core` — cross-repository scope.
-- Until implemented, a `verdict-node` client can construct or forward an
-  envelope that passes TypeScript's schema check but would fail Python's
-  invariant check, creating a silent enforcement gap at the language
-  boundary.
-- Tracked for implementation as a follow-up issue (not part of PR #263).
+`verdict-node` enforces the `ExecutionEnvelope` schema published in
+`@bodanglin/verdict-contracts` (`executionEnvelopeSchema`) before any
+upstream forwarding. The enforcement is implemented in
+`src/middleware/forwarder.ts:enforceExecutionEnvelope()` and exercised by
+three test suites:
+
+- `tests/contract-parity.test.ts` — unit tests of `enforceExecutionEnvelope`
+  against valid/invalid TS-shaped envelopes (expiry, tamper via
+  `expectedPolicyDigest`, model/tool allow-lists, budget ceiling).
+- `tests/middleware/forwarder.test.ts` — integration tests of the full
+  Express middleware, including SSE and non-SSE paths sharing the same
+  authority check.
+- `tests/middleware/streaming-field-preservation.test.ts` — streaming denial
+  tests (expired envelope) proving SSE and non-SSE paths reject before
+  upstream execution.
+
+`verdict-core` ships the Python canonical `ExecutionEnvelope` (TaskSpec +
+eligibility_decision + policy_digest + ...) and the TypeScript schema
+(decision_id + policy_version + expires_at + ...). These are two divergent
+contracts both named `ExecutionEnvelope`. The cross-runtime parity suite
+(`tests/test_contracts.py` + `tests/typescript/contracts.test.ts`) now asserts
+that a shared set of TS-shaped **invalid** envelope fixtures is rejected
+identically by both runtimes (Python via strict unknown-field/required-field
+checks; TypeScript via Zod schema validation). This satisfies the
+enforcement-parity gate for the invalid case; the valid case remains a known
+divergence tracked by [VER-003](https://github.com/mrnicholasbcarter-code/verdict-core/issues/220).
+
+## Consequences (actual)
+
+- `verdict-node` is fail-closed by default: `requireExecutionEnvelope: true`
+  is the middleware default; unknown fields, expired envelopes, tampered
+  policy digests, disallowed models/tools, and over-budget requests all
+  return typed denial codes (`envelope_invalid`, `envelope_expired`,
+  `envelope_tampered`, `model_disallowed`, `tool_disallowed`,
+  `budget_exceeded`).
+- The canonical Python `ExecutionEnvelope` (issue #220) and the published
+  TS `ExecutionEnvelope` (issue #286 / NOD-002) are **not the same contract**.
+  This is a deliberate point-in-time design: the TS envelope carries
+  expiry/tamper-proofing fields needed at the edge; the Python envelope
+  carries TaskSpec/eligibility provenance needed by the orchestrator.
+  Reconciliation into a single universal `ExecutionEnvelope` is tracked as
+  VER-003 / core #220 (open).
+- The cross-runtime parity suite proves fail-closed parity for the shared
+  invalid-envelope set. It does not assert that a valid TS envelope passes
+  Python validation (it does not — Python rejects it as unknown fields).
+  This is documented, not a regression.
+- No production path in `verdict-node` bypasses Core authority: the
+  `nextApiHandler` continuation-after-503 defect (PR #45) was fixed; all
+  proxy paths enforce the envelope when a Core decision is available.
+- Compatibility mode (`requireCoreDecision: false`) is explicitly opt-in
+  and documented as non-policy-gated.
