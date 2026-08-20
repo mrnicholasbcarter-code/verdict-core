@@ -417,8 +417,8 @@ def cmd_setup_plan(*, output_json: bool = False) -> None:
         print(f"- {action['description']}")
 
 
-def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
-    """Route a single task."""
+def _build_route_gate(allow_offline: bool = False) -> Gate:
+    """Build the CLI Gate from the user config (shared by route/compare)."""
     config_dir = os.path.join(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
     )
@@ -431,24 +431,37 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
             k: ProviderConfig(base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env"))
             for k, v in (raw.get("providers") or {}).items()
         }
-        gate = Gate(
+        return Gate(
             primary_model=raw.get("primary_model", "anthropic/claude-3-opus-20240229"),
             providers=providers,
             log_path=raw.get("log_path", "verdict-decisions.jsonl"),
+            allow_offline=allow_offline,
         )
-    else:
-        gate = Gate(
-            primary_model="anthropic/claude-3-opus-20240229",
-            providers={"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")},
-        )
+    return Gate(
+        primary_model="anthropic/claude-3-opus-20240229",
+        providers={"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")},
+        allow_offline=allow_offline,
+    )
+
+
+def cmd_route(
+    task: str, criticality: str, terse: bool = False, allow_offline: bool = False
+) -> None:
+    """Route a single task."""
+    gate = _build_route_gate(allow_offline=allow_offline)
 
     if terse:
         dec = gate.route(task, criticality)
         print(dec.model)
         return
 
-    with console.status("[bold green]Evaluating network & heuristics...", spinner="dots"):
-        dec = gate.route(task, criticality)
+    status_label = (
+        "[bold green]Evaluating static catalog (offline)..."
+        if allow_offline
+        else "[bold green]Evaluating network & heuristics..."
+    )
+    with console.status(status_label, spinner="dots"):
+        dec, selection = gate.route_with_strategy(task, criticality)
 
     tier_colors = {0: "red", 1: "magenta", 2: "yellow", 3: "green"}
     t_color = tier_colors.get(dec.tier, "white")
@@ -466,6 +479,7 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
   Protected: {str(dec.protected).lower()}
   Degraded:  {str(dec.degraded_mode).lower()}
   Latency:   [cyan]{dec.latency_ms:.1f}ms[/cyan]
+  Strategy:  [bold]{selection.strategy}[/bold]
 
 [bold dim]Reason:[/bold dim] [italic]{dec.reason}[/italic]
 """
@@ -477,6 +491,18 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
             expand=False,
         )
     )
+    # Machine-readable StrategySelection record (issue #265).
+    print(json.dumps({"strategy_selection": selection.to_dict()}, sort_keys=True))
+
+
+def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
+    """Compare a DIRECT frontier call against the Verdict route (issue #265)."""
+    from verdict.comparison import ComparisonHarness
+
+    gate = _build_route_gate(allow_offline=allow_offline)
+    harness = ComparisonHarness(gate=gate)
+    report = harness.compare(task, criticality=criticality)
+    print(json.dumps({"comparison_report": report.to_dict()}, sort_keys=True, indent=2))
 
 
 def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
@@ -1772,6 +1798,24 @@ def main() -> None:
     route_p.add_argument(
         "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
     )
+    route_p.add_argument(
+        "--allow-offline",
+        action="store_true",
+        help="Decide from the static catalog only — no network discovery or probes",
+    )
+
+    compare_p = subparsers.add_parser(
+        "compare", help="Compare a DIRECT frontier call vs the Verdict route for one task"
+    )
+    compare_p.add_argument("task", help="Task description or prompt text")
+    compare_p.add_argument(
+        "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
+    )
+    compare_p.add_argument(
+        "--allow-offline",
+        action="store_true",
+        help="Decide from the static catalog only — no network discovery or probes",
+    )
 
     stats_p = subparsers.add_parser("stats", help="View routing analytics")
     stats_p.add_argument("--log_path", default="verdict-decisions.jsonl")
@@ -2066,7 +2110,9 @@ def main() -> None:
                 dry_run=args.dry_run, output_json=args.json, non_interactive=args.non_interactive
             )
     elif args.command == "route":
-        cmd_route(args.task, args.criticality, args.terse)
+        cmd_route(args.task, args.criticality, args.terse, allow_offline=args.allow_offline)
+    elif args.command == "compare":
+        cmd_compare(args.task, args.criticality, allow_offline=args.allow_offline)
     elif args.command == "stats":
         cmd_stats(args.log_path)
     elif args.command == "benchmark":

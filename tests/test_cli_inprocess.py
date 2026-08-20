@@ -309,6 +309,13 @@ def test_main_dispatches_help_route_stats_detect(
     cli.main()
     assert "Available commands" in capsys.readouterr().out
 
+    # Pin an empty provider catalog so the route falls back to the primary
+    # model deterministically even on hosts running a live local server.
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "verdict.yaml").write_text(
+        "primary_model: anthropic/claude-3-opus-20240229\nproviders: {}\nlog_path: ''\n"
+    )
     monkeypatch.setattr(cli.sys, "argv", ["verdict", "route", "hello", "--terse"])
     cli.main()
     assert "anthropic/claude-3-opus-20240229" in capsys.readouterr().out

@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from verdict.classifier import classify
 from verdict.discovery import fetch_models
 from verdict.eligibility import EligibilityGate
 from verdict.escalation import scan
@@ -63,6 +64,7 @@ class IntelligenceService:
         allow_client_model_override: bool = False,
         planner: StructuredPlanner | None = None,
         eligibility_gate: EligibilityGate | None = None,
+        allow_offline: bool = False,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -79,7 +81,10 @@ class IntelligenceService:
         # Issue #57: single-source-of-truth eligibility gate consulted before
         # any ranking.  When None, routing falls back to catalog truth only.
         self.eligibility_gate = eligibility_gate
-        self.managed_backend_status = self._probe_managed_backend()
+        # Issue #265 (V1-002): allow_offline=True keeps every decision readable
+        # without network or subprocess probes — static catalog truth only.
+        self.allow_offline = allow_offline
+        self.managed_backend_status = "offline" if allow_offline else self._probe_managed_backend()
         self._policy_version = "policy-2026-07-13.1"
 
     async def rank(self, eligible: list[ModelInfo], task_spec: Any) -> IntelligenceRanking:
@@ -117,6 +122,32 @@ class IntelligenceService:
             return "healthy" if result.returncode == 0 else "unavailable"
         except Exception:
             return "unavailable"
+
+    def static_catalog(self) -> list[ModelInfo]:
+        """Build routing candidates from configured provider models only.
+
+        This is the allow_offline decision surface (issue #265): every row is
+        derived from static configuration, never from network discovery, so
+        the result is deterministic and readable without connectivity.
+        """
+        candidates: list[ModelInfo] = []
+        for provider_name, cfg in self.providers.items():
+            for model_id, model_cfg in cfg.models.items():
+                candidates.append(
+                    ModelInfo(
+                        id=model_id,
+                        provider=provider_name,
+                        capability_tier=classify(model_id),
+                        capabilities=frozenset(model_cfg.capabilities),
+                        max_tokens=model_cfg.max_tokens,
+                        cost_per_1k=model_cfg.cost_per_1k,
+                        pricing=dict(model_cfg.pricing),
+                        is_available=True,
+                        availability_state="eligible",
+                        source="static_catalog",
+                    )
+                )
+        return candidates
 
     def readiness(self) -> ReadinessReport:
         def _get_version(cmd: str) -> str:
@@ -173,18 +204,19 @@ class IntelligenceService:
             task_str = task
 
         # Hard deterministic floor logic here.
-        redacted_task = self._redact(task_str)
-        # Attempt an async call or subprocess with timeout to Ruflo
-        try:
-            import subprocess
+        if not self.allow_offline:
+            redacted_task = self._redact(task_str)
+            # Attempt an async call or subprocess with timeout to Ruflo
+            try:
+                import subprocess
 
-            subprocess.run(
-                [self.ruflo_command, "hooks", "model-route", "--context", redacted_task],
-                capture_output=True,
-                timeout=0.2,
-            )
-        except Exception:
-            pass
+                subprocess.run(
+                    [self.ruflo_command, "hooks", "model-route", "--context", redacted_task],
+                    capture_output=True,
+                    timeout=0.2,
+                )
+            except Exception:
+                pass
 
         # Fallback to strict heuristic scan
         eff_tier, heuristic_reason = scan(task_str)
@@ -215,9 +247,13 @@ class IntelligenceService:
         safety_floor = req_tier if req_tier <= 1 else 3
         final_tier = min(task_tier, safety_floor, eff_tier if eff_tier is not None else 3)
 
-        candidates = []
-        for name, cfg in self.providers.items():
-            candidates.extend(fetch_models(name, cfg, self.discovery_ttl))
+        if self.allow_offline:
+            # Static catalog only: no /v1/models discovery, no probes.
+            candidates = self.static_catalog()
+        else:
+            candidates = []
+            for name, cfg in self.providers.items():
+                candidates.extend(fetch_models(name, cfg, self.discovery_ttl))
 
         # Issue #57: filter candidates by live eligibility BEFORE any ranking.
         # The gate is the single source of truth shared with the explain

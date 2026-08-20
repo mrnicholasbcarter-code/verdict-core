@@ -1,3 +1,6 @@
+import asyncio
+import subprocess
+
 import pytest
 
 from verdict.intelligence import IntelligenceService
@@ -46,8 +49,6 @@ def test_redaction_before_ruflo_call(monkeypatch: pytest.MonkeyPatch) -> None:
         # Raise OSError to simulate unavailable adapter after checking arguments
         raise OSError("Simulated adapter failure")
 
-    import subprocess
-
     monkeypatch.setattr(subprocess, "run", mock_run)
 
     svc = IntelligenceService(
@@ -58,7 +59,6 @@ def test_redaction_before_ruflo_call(monkeypatch: pytest.MonkeyPatch) -> None:
         log_full_task=False,
         discovery_ttl=60,
     )
-    import asyncio
 
     decision = asyncio.run(
         svc.route("Here is a task with a private_key=sk-1234567890", criticality="medium")
