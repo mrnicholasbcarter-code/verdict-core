@@ -1278,6 +1278,15 @@ def _validate_field_value(annotation: Any, value: Any, field_name: str) -> None:
         return
     if annotation is Any or annotation is object:
         return
+    if _is_contract_type(annotation):
+        if isinstance(value, annotation):
+            return
+        if isinstance(value, dict):
+            # Recurse so nested contract violations surface their own
+            # messages (e.g. "missing required field(s): objective").
+            annotation.from_dict(value)
+            return
+        raise ContractValidationError(f"{field_name} has invalid type")
     if isinstance(annotation, type) and not isinstance(value, annotation):
         raise ContractValidationError(f"{field_name} has invalid type")
 
@@ -1396,6 +1405,16 @@ def _validate_contract_semantics(cls: type[Contract], payload: dict[str, Any]) -
                 frozenset({"deny", "replan_or_deny"}),
                 "verification.on_failure",
             )
+    elif cls is ExecutionEnvelope:
+        # NOD-002 / ADR-025: mirror the @bodanglin/verdict-contracts Zod schema
+        # (nonEmptyString for policy_digest and string-array items) so both
+        # runtimes accept/reject the shared envelope fixtures identically.
+        policy_digest = payload["policy_digest"]
+        if not isinstance(policy_digest, str) or not policy_digest.strip():
+            raise ContractValidationError("policy_digest must be a non-empty string")
+        for name in ("allowed_capabilities", "evidence_ids"):
+            if any(not isinstance(item, str) or not item.strip() for item in payload[name]):
+                raise ContractValidationError(f"{name} must contain non-empty strings")
     elif cls is RuntimeCandidate:
         _validate_enum(payload["availability"], _AVAILABILITY_STATES, "availability")
     elif cls is AvailabilitySnapshot:
