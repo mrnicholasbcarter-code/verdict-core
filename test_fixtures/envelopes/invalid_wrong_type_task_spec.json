@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "task_spec": "not an object",
+  "eligibility_decision": { "admitted": ["gpt-4"], "reason": "test" },
+  "policy_digest": "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+  "allowed_capabilities": ["chat"],
+  "execution_constraints": { "allowed_models": ["gpt-4"] },
+  "verification_requirements": { "checks": [] },
+  "evidence_ids": ["evidence-1"],
+  "routing_decision": null,
+  "created_at": "2024-01-01T00:00:00Z"
+}
