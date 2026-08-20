@@ -107,7 +107,10 @@ function rejectSecrets(value: unknown, path: readonly (string | number)[] = []):
   }
 }
 
-function rejectReceiptSensitiveFields(value: unknown, path: readonly (string | number)[] = []): void {
+function rejectReceiptSensitiveFields(
+  value: unknown,
+  path: readonly (string | number)[] = [],
+): void {
   if (Array.isArray(value)) {
     value.forEach((child, index) => rejectReceiptSensitiveFields(child, [...path, index]));
     return;
@@ -143,51 +146,63 @@ const nonNegativeInteger = z.number().int().nonnegative();
 
 export const evidenceAuthoritySchema = z.enum(['claimed', 'observed', 'verified', 'inferred']);
 export type EvidenceAuthority = z.output<typeof evidenceAuthoritySchema>;
-export const receiptKindSchema = z.enum(['decision', 'context', 'execution', 'verification', 'outcome']);
+export const receiptKindSchema = z.enum([
+  'decision',
+  'context',
+  'execution',
+  'verification',
+  'outcome',
+]);
 export type ReceiptKind = z.output<typeof receiptKindSchema>;
 
-const routeIdentitySchema = z.object({
-  gateway: nonEmptyString,
-  provider: nonEmptyString,
-  connection: nonEmptyString,
-  endpoint: nonEmptyString,
-  protocol: nonEmptyString,
-  model_id: nonEmptyString,
-  model_revision: nullableString.optional(),
-  account_class: nullableString.optional(),
-  endpoint_class: nullableString.optional(),
-  transformation_chain: z.array(nonEmptyString).default([]),
-  fallback_chain: z.array(nonEmptyString).default([]),
-}).strict();
+const routeIdentitySchema = z
+  .object({
+    gateway: nonEmptyString,
+    provider: nonEmptyString,
+    connection: nonEmptyString,
+    endpoint: nonEmptyString,
+    protocol: nonEmptyString,
+    model_id: nonEmptyString,
+    model_revision: nullableString.optional(),
+    account_class: nullableString.optional(),
+    endpoint_class: nullableString.optional(),
+    transformation_chain: z.array(nonEmptyString).default([]),
+    fallback_chain: z.array(nonEmptyString).default([]),
+  })
+  .strict();
 
-const evidenceItemSchema = z.object({
-  authority: evidenceAuthoritySchema,
-  source: nonEmptyString,
-  method: nonEmptyString,
-  adapter_version: nonEmptyString,
-  observed_at: nonEmptyString,
-  expires_at: nonEmptyString,
-  scope: nonEmptyString,
-  confidence: z.number().finite().min(0).max(1),
-  evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  limitations: z.array(nonEmptyString).default([]),
-  sample_count: nonNegativeInteger.min(1).optional(),
-}).strict();
+const evidenceItemSchema = z
+  .object({
+    authority: evidenceAuthoritySchema,
+    source: nonEmptyString,
+    method: nonEmptyString,
+    adapter_version: nonEmptyString,
+    observed_at: nonEmptyString,
+    expires_at: nonEmptyString,
+    scope: nonEmptyString,
+    confidence: z.number().finite().min(0).max(1),
+    evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    limitations: z.array(nonEmptyString).default([]),
+    sample_count: nonNegativeInteger.min(1).optional(),
+  })
+  .strict();
 
-const evidenceReceiptSchema = z.object({
-  schema_version: schemaVersion.default('1'),
-  receipt_id: nonEmptyString,
-  kind: receiptKindSchema,
-  scope: nonEmptyString,
+const evidenceReceiptSchema = z
+  .object({
+    schema_version: schemaVersion.default('1'),
+    receipt_id: nonEmptyString,
+    kind: receiptKindSchema,
+    scope: nonEmptyString,
     occurred_at: nonEmptyString,
     requested_alias: nonEmptyString.optional(),
     selected_route: routeIdentitySchema.optional(),
     actual_route: routeIdentitySchema.optional(),
     evidence: z.array(evidenceItemSchema).min(1),
-  payload: jsonObject.default({}),
-  parent_receipt_ids: z.array(nonEmptyString).default([]),
-  extensions: jsonObject.default({}),
-}).strict();
+    payload: jsonObject.default({}),
+    parent_receipt_ids: z.array(nonEmptyString).default([]),
+    extensions: jsonObject.default({}),
+  })
+  .strict();
 
 const workflowActions = [
   'answer',
@@ -576,18 +591,18 @@ const taskWorkflowOutcomeEpisodeSchema = z
   .strict();
 
 const learningEventSchema = z
- .object({
-   event_id: nullableString.default(null),
-   signal: z.string().default(''),
-   correlation_id: nullableString.default(null),
-   value: z.unknown().default(null),
-   occurred_at: nullableString.default(null),
-   evidence: jsonObject.default({}),
-   metadata: jsonObject.default({}),
-   request_id: nullableString.default(null),
-   schema_version: schemaVersion.default('1'),
- })
- .strict();
+  .object({
+    event_id: nullableString.default(null),
+    signal: z.string().default(''),
+    correlation_id: nullableString.default(null),
+    value: z.unknown().default(null),
+    occurred_at: nullableString.default(null),
+    evidence: jsonObject.default({}),
+    metadata: jsonObject.default({}),
+    request_id: nullableString.default(null),
+    schema_version: schemaVersion.default('1'),
+  })
+  .strict();
 
 const sourceStateSchema = z
   .object({
@@ -597,7 +612,10 @@ const sourceStateSchema = z
     commit_sha: nonEmptyString,
     commit_message: z.string().optional(),
     commit_author: z.string().optional(),
-    commit_timestamp: nonEmptyString,
+    // commit_timestamp defaults to "" on the Python contract (str = ""), so a
+    // minimal source binding may omit it; match that by defaulting to null
+    // (parity, feature 002).
+    commit_timestamp: nullableString.optional().default(null),
     branch: nonEmptyString,
     tag: nullableString.optional(),
     dirty_files: z.array(nonEmptyString).default([]),
@@ -605,7 +623,9 @@ const sourceStateSchema = z
     submodule_states: z.record(z.string(), nonEmptyString).default({}),
     worktree_path: nullableString.optional(),
     snapshot_timestamp: nonEmptyString,
-    snapshot_method: z.enum(['clean_commit', 'dirty_snapshot', 'stash_restore']).default('clean_commit'),
+    snapshot_method: z
+      .enum(['clean_commit', 'dirty_snapshot', 'stash_restore'])
+      .default('clean_commit'),
     parent_source_state_id: nullableString.optional(),
   })
   .strict();
@@ -618,8 +638,15 @@ const trustedChangeReportSchema = z
     task_type: nonEmptyString,
     source_state: sourceStateSchema,
     work_unit_ids: z.array(nonEmptyString).min(1),
-    route_decision: routingDecisionSchema,
-    evidence_receipts: z.array(evidenceReceiptSchema).min(1),
+    // route_decision and evidence_receipts are intentionally unstructured on the
+    // canonical Python contract (verdict/contracts.py: `dict[str, Any]` and
+    // `list[dict[str, Any]]`). FR-010: the carrier projects the already-decided
+    // route and receipt evidence *as data*, not re-derived, so these fields must
+    // not impose a stricter nested shape than Python accepts (parity gap fix,
+    // feature 002). Redaction still strips secret-bearing content by field name
+    // via redactContractSecrets, independent of the nested schema.
+    route_decision: jsonObject.default({}),
+    evidence_receipts: z.array(jsonObject).default([]),
     verification_results: z.array(verificationResultSchema).default([]),
     diff_summary: z.object({
       files_changed: z.array(nonEmptyString).default([]),
@@ -629,32 +656,49 @@ const trustedChangeReportSchema = z
       boundary_violations: z.array(nonEmptyString).default([]),
       diff_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     }),
-    metrics: z.object({
-      latency_ms: nonNegativeInteger.default(0),
-      tokens_in: nonNegativeInteger.default(0),
-      tokens_out: nonNegativeInteger.default(0),
-      estimated_cost_usd: z.number().finite().nonnegative().nullable().default(null),
-      failure_class: z.enum(['none', 'code_quality', 'operational', 'policy', 'verification', 'timeout', 'unknown']).default('unknown'),
-    }),
+    metrics: z
+      .object({
+        latency_ms: nonNegativeInteger.default(0),
+        tokens_in: nonNegativeInteger.default(0),
+        tokens_out: nonNegativeInteger.default(0),
+        estimated_cost_usd: z.number().finite().nonnegative().nullable().default(null),
+        failure_class: z
+          .enum([
+            'none',
+            'code_quality',
+            'operational',
+            'policy',
+            'verification',
+            'timeout',
+            'unknown',
+          ])
+          .default('unknown'),
+      })
+      .default({}),
     acceptance: z.object({
       decision: z.enum(['accepted', 'denied', 'unknown']),
       reason: nonEmptyString,
       conditions: z.array(nonEmptyString).default([]),
     }),
-    route_recommendation: z.object({
-      category: nonEmptyString,
-      current_route: nonEmptyString,
-      recommended_route: nonEmptyString,
-      confidence: z.number().finite().min(0).max(1),
-      sample_size: nonNegativeInteger.default(0),
-      limitations: z.array(nonEmptyString).default([]),
-      can_promote: z.boolean().default(false),
-    }).nullable().default(null),
-    regression_observation: z.object({
-      observed: z.boolean().default(false),
-      action: z.enum(['none', 'quarantine', 'rollback', 'replan']).default('none'),
-      details: jsonObject.default({}),
-    }).default({}),
+    route_recommendation: z
+      .object({
+        category: nonEmptyString,
+        current_route: nonEmptyString,
+        recommended_route: nonEmptyString,
+        confidence: z.number().finite().min(0).max(1),
+        sample_size: nonNegativeInteger.default(0),
+        limitations: z.array(nonEmptyString).default([]),
+        can_promote: z.boolean().default(false),
+      })
+      .nullable()
+      .default(null),
+    regression_observation: z
+      .object({
+        observed: z.boolean().default(false),
+        action: z.enum(['none', 'quarantine', 'rollback', 'replan']).default('none'),
+        details: jsonObject.default({}),
+      })
+      .default({}),
     received_at: nonEmptyString,
     generated_at: nonEmptyString,
   })
