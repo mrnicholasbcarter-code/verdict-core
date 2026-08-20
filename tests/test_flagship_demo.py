@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from scripts.flagship_demo import build_demo_result
-from verdict.flagship_demo import render_report, run_demo
+from verdict.flagship_demo import build_trusted_change_report_demo, render_report, run_demo
 
 ROOT = Path(__file__).parents[1]
 
@@ -57,6 +57,38 @@ def test_cli_output_ignores_provider_environment_variables() -> None:
 def test_packaged_demo_matches_source_wrapper() -> None:
     assert run_demo() == build_demo_result()
     assert "Status: PASS" in render_report(run_demo())
+
+
+def test_trusted_change_report_demo_accepts_and_is_deterministic() -> None:
+    """The TCR demo projects a clean change and accepts it, fully deterministically."""
+    first = build_trusted_change_report_demo()
+    second = build_trusted_change_report_demo()
+
+    # Source-bound, fail-closed verdict.
+    assert first["verdict"]["decision"] == "accepted"
+    assert first["verdict"]["reason"] == "ACCEPTED_ALL_GATES_GREEN"
+    assert first["report"]["source_state"]["commit_sha"]
+    # Deterministic across runs (no time.time() leaks).
+    assert first["report"] == second["report"]
+    assert first["redacted"] == second["redacted"]
+
+
+def test_trusted_change_report_demo_redacted_is_leak_free() -> None:
+    """The redacted export carries no secrets and no producer-internal fields."""
+    result = build_trusted_change_report_demo()
+    redacted = result["redacted"]
+    # The stamped verdict is carried into the portable report.
+    assert redacted["acceptance"]["decision"] == "accepted"
+    # Producer-internal fields are dropped.
+    for vr in redacted["verification_results"]:
+        assert "raw_output" not in vr
+        assert "command" not in vr
+        assert "runtime" not in vr
+    # No provider credentials survive.
+    text = json.dumps(redacted)
+    assert "OPENAI_API_KEY" not in text
+    assert "sk-demo" not in text
+    assert "api_key" not in text.lower() or "no_api_key" in text.lower()
 
 
 def test_installed_cli_quickstart_is_json_and_read_only(tmp_path: Path) -> None:
