@@ -485,6 +485,9 @@ const routingDecisionSchema = z
     schema_version: schemaVersion.default('1'),
     /** Optional Core-issued execution envelope for edge enforcement. */
     execution_envelope: executionEnvelopeSchema.optional(),
+    /** Feature 003 (VER-002 #219): stable decision id + tamper-evident receipt. */
+    decision_id: nullableString.default(null),
+    receipt: jsonObject.nullable().default(null),
   })
   .strict();
 
