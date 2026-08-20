@@ -416,6 +416,12 @@ class RoutingDecisionContract(Contract):
     request_id: str | None = None
     policy_version: str = "1"
     schema_version: str = "1"
+    # Feature 003 (VER-002 #219) — additive, backwards-compatible fields.
+    # Both default to None so every legacy constructor/consumer is unchanged;
+    # the DecisionKernel facade stamps them when it produces the canonical
+    # decision, and existing callers that ignore them see no behavioral change.
+    decision_id: str | None = None
+    receipt: dict[str, Any] | None = None
 
     @classmethod
     def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> RoutingDecisionContract:

@@ -672,6 +672,18 @@
         },
         "schema_version": {
           "const": "1"
+        },
+        "decision_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receipt": {
+          "type": [
+            "object",
+            "null"
+          ]
         }
       }
     },

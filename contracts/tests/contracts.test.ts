@@ -116,6 +116,8 @@ describe("Contract Validation", () => {
         request_id: null,
         policy_version: "1",
         schema_version: "1",
+        decision_id: null,
+        receipt: null,
       };
 
       const result = parseContract("routing_decision", decision);
