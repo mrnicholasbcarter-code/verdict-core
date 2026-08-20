@@ -14,8 +14,12 @@ import {
 } from "../src/index.js";
 
 const fixturesDir = fileURLToPath(new URL("../../tests/fixtures", import.meta.url));
+const envelopeFixturesDir = fileURLToPath(new URL("../../test_fixtures/envelopes", import.meta.url));
 async function loadFixture(name: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(`${fixturesDir}/${name}`, "utf8")) as Record<string, unknown>;
+}
+async function loadEnvelopeFixture(name: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(`${envelopeFixturesDir}/${name}`, "utf8")) as Record<string, unknown>;
 }
 
 describe("Contract Validation", () => {
@@ -205,14 +209,45 @@ describe("Contract Validation", () => {
     });
   });
 
+  // NOD-002 / ADR-025: ExecutionEnvelope mirrors the Python canonical
+  // ExecutionEnvelope (verdict/contracts.py) field-for-field. The canonical
+  // shape (task_spec/eligibility_decision/verification_requirements/...) is the
+  // single source of truth for both runtimes; the previous divergent shape
+  // (decision_id/policy_version/expires_at/task_spec_fingerprint/verification_plan/
+  // provenance) was unified to canonical under VER-003 / #220.
   describe("ExecutionEnvelope", () => {
     const validEnvelope: ExecutionEnvelope = {
       schema_version: "1",
-      decision_id: "dec-123",
-      policy_version: "1",
+      task_spec: {
+        objective: "Write a TypeScript function",
+        task_type: "codegen",
+        effort: "low",
+        reasoning: "low",
+        capabilities: [],
+        required_capabilities: [],
+        tools: [],
+        context: null,
+        context_requirements: {},
+        tool_requirements: {},
+        privacy: "public",
+        risk: "low",
+        budget: {},
+        latency: null,
+        latency_limit_ms: null,
+        workflow: null,
+        approvals: [],
+        criticality: "low",
+        verification: null,
+        parallelism: "serial",
+        destructive_operation: false,
+        production_impact: false,
+        degraded_mode_policy: "deny",
+        metadata: {},
+        schema_version: "1",
+      },
+      eligibility_decision: { admitted: ["gpt-4o"] },
       policy_digest: "sha256:abc123",
-      expires_at: new Date(Date.now() + 3600000).toISOString(),
-      task_spec_fingerprint: "task-456",
+      allowed_capabilities: ["chat", "codegen"],
       execution_constraints: {
         allowed_models: ["gpt-4o", "claude-3-5-sonnet"],
         allowed_tools: ["read_file", "write_file"],
@@ -223,26 +258,22 @@ describe("Contract Validation", () => {
         risk_ceiling: "high",
         required_verification: ["safety_check", "budget_check"],
       },
-      verification_plan: {
-        required_checks: ["safety_check"],
-        evidence_refs: ["evidence-1"],
-        quality_gates: ["quality_gate_1"],
+      verification_requirements: {
+        checks: ["safety_check"],
+        on_failure: "deny",
       },
-      provenance: {
-        core_version: "0.1.0",
-        policy_fingerprint: "sha256:policy123",
-        issued_at: new Date().toISOString(),
-        issued_by: "core-router",
-      },
-      schema_version: "1",
+      evidence_ids: ["evidence-1"],
+      routing_decision: null,
+      created_at: "2026-08-20T00:00:00Z",
     };
 
     it("parses a valid envelope", () => {
       const parsed = parseContract("execution_envelope", validEnvelope);
-      expect(parsed.decision_id).toBe("dec-123");
+      expect(parsed.task_spec.objective).toBe("Write a TypeScript function");
+      expect(parsed.eligibility_decision).toEqual({ admitted: ["gpt-4o"] });
       expect(parsed.policy_digest).toBe("sha256:abc123");
       expect(parsed.execution_constraints.allowed_models).toEqual(["gpt-4o", "claude-3-5-sonnet"]);
-      expect(parsed.provenance.core_version).toBe("0.1.0");
+      expect(parsed.verification_requirements.checks).toEqual(["safety_check"]);
     });
 
     it("rejects unknown top-level fields", () => {
@@ -278,13 +309,6 @@ describe("Contract Validation", () => {
       expect(parsed.policy_digest).toBe("sha256:different");
     });
 
-    it("rejects expired envelope", () => {
-      const expired = { ...validEnvelope, expires_at: new Date(Date.now() - 1000).toISOString() };
-      const parsed = parseContract("execution_envelope", expired);
-      // Schema parsing succeeds; expiry check done by edge adapter
-      expect(parsed.expires_at).toBe(expired.expires_at);
-    });
-
     it("rejects malformed schema_version", () => {
       const malformed = { ...validEnvelope, schema_version: "2" };
       expect(() => parseContract("execution_envelope", malformed)).toThrow(ContractValidationError);
@@ -296,7 +320,8 @@ describe("Contract Validation", () => {
     });
 
     it("rejects missing required fields", () => {
-      const { decision_id: _removed, ...missing } = validEnvelope;
+      // Remove a required canonical field (e.g., eligibility_decision)
+      const { eligibility_decision: _removed, ...missing } = validEnvelope;
       expect(() => parseContract("execution_envelope", missing)).toThrow(ContractValidationError);
     });
 
@@ -316,7 +341,7 @@ describe("Contract Validation", () => {
     it("serializes and round-trips correctly", () => {
       const serialized = serializeContract("execution_envelope", validEnvelope);
       const reparsed = parseContract("execution_envelope", JSON.parse(serialized));
-      expect(reparsed.decision_id).toBe(validEnvelope.decision_id);
+      expect(reparsed.eligibility_decision).toEqual(validEnvelope.eligibility_decision);
       expect(reparsed.policy_digest).toBe(validEnvelope.policy_digest);
     });
 
@@ -326,20 +351,20 @@ describe("Contract Validation", () => {
     // adapter cannot accept an envelope the orchestrator would reject.
     it("rejects shared invalid fixtures identically to the Python canonical contract", async () => {
       const invalidNames = [
-        "invalid-envelope-missing-policy-digest.json",
-        "invalid-envelope-empty-decision-id.json",
-        "invalid-envelope-wrong-schema-version.json",
+        "invalid_empty_policy_digest.json",
+        "invalid_missing_task_spec.json",
+        "invalid_wrong_type_task_spec.json",
       ];
       for (const name of invalidNames) {
-        const payload = await loadFixture(name);
+        const payload = await loadEnvelopeFixture(name);
         expect(() => parseContract("execution_envelope", payload)).toThrow(ContractValidationError);
       }
     });
 
     it("parses the shared valid envelope fixture", async () => {
-      const payload = await loadFixture("envelope-valid.json");
+      const payload = await loadEnvelopeFixture("valid_envelope.json");
       const parsed = parseContract("execution_envelope", payload);
-      expect((parsed as ExecutionEnvelope).decision_id).toBe("dec-001");
+      expect((parsed as ExecutionEnvelope).eligibility_decision).toEqual({ admitted: ["gpt-4"], reason: "test" });
     });
   });
 });
