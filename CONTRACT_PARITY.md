@@ -16,6 +16,7 @@ This document provides field-by-field comparison between the canonical Python co
 | WorkflowPlan | `verdict/contracts.py` | `contracts/src/index.ts` | ✅ PARITY |
 | OutcomeEvent | `verdict/contracts.py` | `contracts/src/index.ts` | ✅ PARITY |
 | SwarmTaskEnvelope | `verdict/swarm_contracts.py` | `contracts/src/index.ts` | ✅ PARITY |
+| ExecutionEnvelope | `verdict/contracts.py` | `contracts/src/index.ts` | ✅ PARITY (enforcement, see below) |
 
 ## Field-by-Field Comparison
 
@@ -88,6 +89,51 @@ This document provides field-by-field comparison between the canonical Python co
 | result_schema | Optional[Dict] | Record<string, unknown> \| null | ✅ |
 | redaction_rules | List[str] | string[] | ✅ |
 | schema_version | str | string | ✅ |
+
+## ExecutionEnvelope Enforcement Parity (NOD-002 / ADR-025)
+
+Field-level parity alone does not guarantee that both runtimes *reject* the
+same invalid envelopes. Enforcement parity is verified with a shared
+invalid-envelope fixture set validated by both runtimes:
+
+- Fixtures: `test_fixtures/envelopes/*.json` (canonical, in verdict-core),
+  copied verbatim to `verdict-node/test_fixtures/envelopes/`.
+- Python manifest: `tests/fixtures/invalid_envelopes.py`
+  (invariant + expected `ContractValidationError` text per fixture).
+- Python suite: `tests/test_envelope_parity.py` (pytest, runs in verdict-core CI).
+- TypeScript suites: `contracts/tests/envelope-parity.test.ts` (vitest, runs in
+  verdict-core CI) and `verdict-node/tests/contract-parity.test.ts` (jest, runs
+  in the verdict-node `contract-parity` CI job).
+
+Parity is asserted on the accept/reject **verdict** per fixture. Error
+*messages* are runtime-specific (Python `ContractValidationError` text vs. Zod
+issue text); both runtimes raise a `ContractValidationError` type.
+
+### Shared Invalid-Envelope Fixture Table
+
+| Fixture | Violated invariant | Python (`ExecutionEnvelope.from_dict`) | TypeScript (`parseContract('execution_envelope', …)`) | Match |
+|---------|-------------------|----------------------------------------|-------------------------------------------------------|-------|
+| invalid_missing_task_spec.json | task_spec required | ❌ `missing required field(s): task_spec` | ❌ rejected | ✅ |
+| invalid_wrong_type_task_spec.json | task_spec must be an object | ❌ `task_spec has invalid type` | ❌ rejected | ✅ |
+| invalid_task_spec_missing_objective.json | nested TaskSpec requires objective | ❌ `missing required field(s): objective` | ❌ rejected | ✅ |
+| invalid_task_spec_empty_objective.json | nested objective must not be blank | ❌ `objective must not be empty` | ❌ rejected | ✅ |
+| invalid_empty_policy_digest.json | policy_digest non-empty | ❌ `policy_digest must be a non-empty string` | ❌ rejected | ✅ |
+| invalid_wrong_type_allowed_capabilities.json | allowed_capabilities is an array | ❌ `allowed_capabilities must be an array` | ❌ rejected | ✅ |
+| invalid_empty_allowed_capability_item.json | capability items non-empty | ❌ `allowed_capabilities must contain non-empty strings` | ❌ rejected | ✅ |
+| invalid_wrong_type_execution_constraints.json | execution_constraints is an object | ❌ `execution_constraints must be an object` | ❌ rejected | ✅ |
+| invalid_wrong_type_verification_requirements.json | verification_requirements is an object | ❌ `verification_requirements has invalid type` | ❌ rejected | ✅ |
+| invalid_empty_evidence_id_item.json | evidence_ids items non-empty | ❌ `evidence_ids must contain non-empty strings` | ❌ rejected | ✅ |
+| invalid_unknown_field.json | unknown fields rejected (strict) | ❌ `unknown field(s): unknown_field` | ❌ rejected | ✅ |
+| invalid_empty_allowed_capabilities.json | empty arrays are valid | ✅ accepted | ✅ accepted | ✅ |
+| invalid_empty_evidence_ids.json | empty arrays are valid | ✅ accepted | ✅ accepted | ✅ |
+| valid_envelope.json | all invariants satisfied | ✅ accepted | ✅ accepted | ✅ |
+
+**Summary**: 14 fixtures, 14 verdict matches, 0 divergences.
+
+Additional invariants enforced identically by both runtimes (not fixture-file
+based, covered by unit tests): `schema_version` must be `"1"`, secret-bearing
+keys are rejected recursively (`api_key`, `token`, `*_secret`, …), and
+`verification_requirements.on_failure` must be `deny` or `replan_or_deny`.
 
 ## Validation Results
 
