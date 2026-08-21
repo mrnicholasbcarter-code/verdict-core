@@ -40,7 +40,7 @@ jobs:
 
       - name: Verify repository has no committed credential files
         run: |
-          ! git ls-files | grep -E '(^|/)(\.env|.*\.pem|.*\.key)$'
+          ! git ls-files | grep -Ei '(^|/)(\.env([._-].*)?|.*\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$'
 
   node-security:
     runs-on: ubuntu-latest
