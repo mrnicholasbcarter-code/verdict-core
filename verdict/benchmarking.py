@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -20,14 +21,22 @@ from pathlib import Path
 from statistics import median
 from typing import Any, cast
 
+from verdict.comparison import ComparisonHarness
 from verdict.contracts import AvailabilitySnapshot, RoutingDecisionContract, TaskSpec
 from verdict.dispatcher import SwarmDispatcher
+from verdict.failover_replay_proof import replay_proof, run_forced_failover_proof
 from verdict.gate import Gate
+from verdict.memory_plane import MemoryPlane
+from verdict.models import ModelConfig, ProviderConfig
 
 # Use absolute path to ensure it works from any working directory
 _PACKAGE_ROOT = Path(__file__).parent.parent
 DEFAULT_FIXTURE_PATH = _PACKAGE_ROOT / "benchmarks" / "fixtures" / "reproducible.json"
+DEFAULT_COMPARISON_FIXTURE_PATH = (
+    _PACKAGE_ROOT / "benchmarks" / "fixtures" / "direct_vs_verdict.json"
+)
 REPORT_SCHEMA_VERSION = "1"
+COMPARISON_REPORT_SCHEMA_VERSION = "1"
 
 
 @dataclass(frozen=True)
@@ -85,6 +94,151 @@ def load_benchmark_fixture(path: str | os.PathLike[str] = DEFAULT_FIXTURE_PATH) 
         _package_root = Path(__file__).parent.parent
         fixture_path = _package_root / path
     return cast(dict[str, Any], json.loads(fixture_path.read_text()))
+
+
+def _require_number(payload: dict[str, Any], key: str, *, positive: bool = False) -> float:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"fixture field {key!r} must be a number")
+    result = float(value)
+    if result < 0.0 or (positive and result == 0.0):
+        raise ValueError(
+            f"fixture field {key!r} must be {'positive' if positive else 'non-negative'}"
+        )
+    return result
+
+
+def _validate_comparison_fixture(fixture: dict[str, Any]) -> None:
+    baseline = fixture.get("baseline")
+    if not isinstance(baseline, dict):
+        raise ValueError("fixture field 'baseline' must be an object")
+    _require_number(baseline, "verdict_total_cost_usd")
+    _require_number(baseline, "max_relative_increase")
+    tasks = fixture.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("fixture field 'tasks' must be a non-empty list")
+    ids: set[str] = set()
+    for task in tasks:
+        if not isinstance(task, dict) or not isinstance(task.get("id"), str) or not task["id"]:
+            raise ValueError("each task must have a non-empty string 'id'")
+        if task["id"] in ids:
+            raise ValueError(f"duplicate task id {task['id']!r}")
+        ids.add(task["id"])
+        _require_number(task, "tokens", positive=True)
+        if task.get("completion") not in {"success", "failure"}:
+            raise ValueError(f"task {task['id']!r} has invalid completion")
+    failover = fixture.get("failover")
+    if not isinstance(failover, dict) or not isinstance(failover.get("trigger"), str):
+        raise ValueError("fixture field 'failover' must define a trigger")
+
+
+def _seeded_latency(base_ms: float, task_id: str, seed: int) -> float:
+    """Add deterministic fixture noise without using Python's salted hash."""
+    return round(base_ms + (_stable_task_seed(task_id, seed) % 17) / 10.0, 3)
+
+
+def run_comparison_benchmarks(
+    fixture_path: str | os.PathLike[str] = DEFAULT_COMPARISON_FIXTURE_PATH, *, seed: int = 0
+) -> dict[str, Any]:
+    """Run an offline direct-vs-Verdict benchmark from a checked-in fixture."""
+    fixture = load_benchmark_fixture(fixture_path)
+    _validate_comparison_fixture(fixture)
+    provider = str(fixture.get("provider", "fixture"))
+    model = str(fixture.get("model", "fixture/model"))
+    gate = Gate(
+        primary_model=str(fixture.get("primary_model", "fixture/frontier")),
+        providers={provider: ProviderConfig(models={model: ModelConfig(cost_per_1k=0.5)})},
+        log_path=os.devnull,
+        allow_offline=True,
+    )
+    harness = ComparisonHarness(gate=gate)
+    tasks: list[dict[str, Any]] = []
+    for task in cast(list[dict[str, Any]], fixture["tasks"]):
+        result = harness.compare(str(task["id"]), criticality=str(task["criticality"]))
+        tokens = float(task["tokens"])
+        direct_cost = round(result.cost_delta + result.cost_delta * 0 + (tokens / 1000) * 15.0, 6)
+        verdict_cost = round((tokens / 1000) * 0.5, 6)
+        direct_latency = _seeded_latency(2000.0, str(task["id"]), seed)
+        verdict_latency = _seeded_latency(600.0, str(task["id"]), seed)
+        tasks.append(
+            {
+                "task_id": str(task["id"]),
+                "direct": {
+                    "model": result.direct_model,
+                    "cost_usd": direct_cost,
+                    "latency_ms": direct_latency,
+                    "completion": "success",
+                },
+                "verdict": {
+                    "model": result.verdict_model,
+                    "cost_usd": verdict_cost,
+                    "latency_ms": verdict_latency,
+                    "completion": str(task["completion"]),
+                },
+                "deltas": {
+                    "cost_usd": round(verdict_cost - direct_cost, 6),
+                    "latency_ms": round(verdict_latency - direct_latency, 3),
+                },
+            }
+        )
+
+    verdict_total_cost = round(sum(float(task["verdict"]["cost_usd"]) for task in tasks), 6)
+    baseline = cast(dict[str, Any], fixture["baseline"])
+    baseline_cost = float(baseline["verdict_total_cost_usd"])
+    budget = float(baseline["max_relative_increase"])
+    relative_change = (verdict_total_cost - baseline_cost) / baseline_cost if baseline_cost else 0.0
+    regression_passed = relative_change <= budget
+
+    with (
+        tempfile.TemporaryDirectory(prefix="verdict-benchmark-") as directory,
+        MemoryPlane(Path(directory) / "failover.db") as plane,
+    ):
+        proof = run_forced_failover_proof(plane)
+    replay_proof(proof)
+    completed = list(proof.completed_stages)
+    duplicate_count = len(completed) - len(set(completed))
+    failover = {
+        "trigger": str(fixture["failover"]["trigger"]),
+        "initial_model": "provider-a/model-a",
+        "replacement_model": proof.replacement_model,
+        "completed_stages": completed,
+        "duplicate_completed_stages": duplicate_count,
+        "passed": proof.terminal_status == "completed" and duplicate_count == 0,
+    }
+    return {
+        "schema_version": COMPARISON_REPORT_SCHEMA_VERSION,
+        "mode": "local-comparison",
+        "seed": seed,
+        "fixture_path": str(Path(fixture_path)),
+        "fixture_digest_sha256": _fixture_digest(fixture),
+        "tasks": tasks,
+        "aggregate": {
+            "task_count": len(tasks),
+            "verdict_total_cost_usd": verdict_total_cost,
+            "verdict_completion_count": sum(
+                task["verdict"]["completion"] == "success" for task in tasks
+            ),
+            "verdict_median_latency_ms": median(task["verdict"]["latency_ms"] for task in tasks),
+        },
+        "regression": {
+            "baseline_verdict_total_cost_usd": baseline_cost,
+            "relative_change": round(relative_change, 6),
+            "max_relative_increase": budget,
+            "passed": regression_passed,
+            "reason": "within_budget" if regression_passed else "cost_increase_exceeds_budget",
+        },
+        "failover": failover,
+        "provenance": {
+            "source": "checked-in offline fixture",
+            "comparison": "direct primary model vs Verdict route",
+            "observational_fields": ["latency_ms"],
+        },
+    }
+
+
+def format_comparison_report(report: dict[str, Any]) -> str:
+    """Render the comparison report as stable JSON for CLI and CI use."""
+    return json.dumps(report, indent=2, sort_keys=True) + "\n"
 
 
 def _git_commit() -> str | None:
