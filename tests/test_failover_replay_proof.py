@@ -18,6 +18,17 @@ def test_forced_429_completes_and_replays_without_duplicate_commits(tmp_path):
     )
 
 
+def test_forced_429_proof_is_repeatable_in_one_memory_plane(tmp_path):
+    with MemoryPlane(tmp_path / "proof.db") as plane:
+        first = run_forced_failover_proof(plane)
+        second = run_forced_failover_proof(plane)
+
+    assert second.mission_id != first.mission_id
+    assert first.completed_stages == second.completed_stages
+    assert first.replacement_model == second.replacement_model
+    assert replay_proof(second).digest == second.digest
+
+
 def test_replay_rejects_tampered_sequence(tmp_path):
     with MemoryPlane(tmp_path / "proof.db") as plane:
         proof = run_forced_failover_proof(plane)
