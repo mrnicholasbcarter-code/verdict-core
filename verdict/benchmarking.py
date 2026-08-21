@@ -48,6 +48,12 @@ def _fixture_digest(payload: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
 
 
+def _stable_task_seed(task: str, seed: int) -> int:
+    """Derive a cross-process seed; Python's hash() is intentionally salted."""
+    digest = hashlib.sha256(f"{seed}:{task}".encode()).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
 def _quantile(sorted_values: Sequence[int], numerator: int, denominator: int) -> int:
     if not sorted_values:
         return 0
@@ -215,6 +221,7 @@ def run_reproducible_benchmarks(
     cases = _build_local_cases(fixture)
 
     metadata = _benchmark_metadata(fixture_path, fixture)
+    metadata["task_seed_derivation"] = "sha256(seed:task)"
     benchmarks = [_run_case(case) for case in cases]
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
