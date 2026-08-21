@@ -1778,14 +1778,15 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
 
 def cmd_hook(args: Any) -> None:
     """Manage Verdict lifecycle hooks for Codex and Claude Code."""
-    import time as _time
 
     from verdict.memory_bridge import configure_memory_bridge
-    from verdict.memory_plane import MemoryPlane, MemoryRecord
+    from verdict.memory_gate import MemoryGate, MemoryWriteRequest
+    from verdict.memory_plane import MemoryPlane
 
     hook_cmd = getattr(args, "hook_command", None)
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     plane = MemoryPlane(db_path)
+    gate = MemoryGate(plane)
 
     if hook_cmd == "recall":
         query = getattr(args, "query", "")
