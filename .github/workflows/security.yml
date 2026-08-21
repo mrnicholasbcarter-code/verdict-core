@@ -46,7 +46,7 @@ jobs:
 
           allowed = {".env.memory.example"}
           pattern = re.compile(
-              r"(^|/)(\.env(rc|([._-].*)?)?|[^/]*\.env|.*\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$",
+              r"(^|/)(\.envrc([._-].*)?|\.env([._-].*)?|[^/]*\.env|.*\.(pem|key|crt|cer|der|p12|pfx)(\.[^/]*)?|id_(rsa|dsa|ecdsa|ed25519)(\.[^/]*)?)$",
               re.IGNORECASE,
           )
           paths = (path.decode("utf-8", "surrogateescape") for path in sys.stdin.buffer.read().split(b"\0"))

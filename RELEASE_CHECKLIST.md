@@ -13,6 +13,8 @@ not a launch approval.
 | CI |  |  |  |  |  |
 | Bandit |  |  |  |  |  |
 | Dependency audit |  |  |  |  |  |
+| Committed credential-file scan |  |  |  |  |  |
+| npm production dependency audit |  |  |  |  |  |
 | CodeQL |  |  |  |  |  |
 | OSV |  |  |  |  |  |
 | Wheel/sdist smoke |  |  |  |  |  |

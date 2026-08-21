@@ -21,15 +21,19 @@ def test_security_workflow_has_non_advisory_audits_and_secret_hygiene_gate():
         ".env",
         ".env.production",
         ".envrc",
+        ".envrc.local",
         "production.env",
         "config/test.env",
         "client.pem",
         "client.key",
         "client.crt",
         "client.cer",
+        "client.der",
         "identity.p12",
         "identity.pfx",
         "id_rsa",
+        "id_rsa.backup",
+        "server.key.bak",
         "id_ed25519",
     ):
         assert _matches_committed_credential_file(filename, workflow)
@@ -64,6 +68,8 @@ def test_release_checklist_requires_evidence_bound_signoff():
         assert field in checklist
     assert "| CodeQL |" in checklist
     assert "| OSV |" in checklist
+    assert "| Committed credential-file scan |" in checklist
+    assert "| npm production dependency audit |" in checklist
     assert "| CodeQL/OSV |" not in checklist
     assert "Launch decision: **PENDING EVIDENCE**" in checklist
 
