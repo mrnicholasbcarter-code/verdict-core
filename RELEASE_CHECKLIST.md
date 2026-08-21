@@ -8,12 +8,15 @@ Record the exact source revision, command or workflow URL, result, limitation,
 reviewer, and UTC date for every checked gate. An unchecked or advisory result is
 not a launch approval.
 
-| Gate | Source revision | Evidence URL/command | Result | Limitation | Reviewer/date |
+| Gate | Source revision | Evidence URL/command (hosted URL required for CodeQL/OSV) | Result | Limitation | Reviewer/date |
 |---|---|---|---|---|---|
 | CI |  |  |  |  |  |
 | Bandit |  |  |  |  |  |
 | Dependency audit |  |  |  |  |  |
-| CodeQL/OSV |  |  |  |  |  |
+| Committed credential-file scan |  |  |  |  |  |
+| npm production dependency audit |  |  |  |  |  |
+| CodeQL |  |  |  |  |  |
+| OSV |  |  |  |  |  |
 | Wheel/sdist smoke |  |  |  |  |  |
 | Documentation smoke |  |  |  |  |  |
 
