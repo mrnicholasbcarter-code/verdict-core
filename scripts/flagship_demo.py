@@ -16,9 +16,8 @@ def main() -> None:
 
     # The fixture is intentionally credential-free; CodeQL's taint model does not
     # distinguish this constant-data demo from producer-controlled report content.
-    print(  # lgtm [py/clear-text-logging-sensitive-data] credential-free fixture
-        json.dumps(run_accepted_and_denied_demo(), indent=2, sort_keys=True)
-    )
+    # lgtm[py/clear-text-logging-sensitive-data] - fixed credential-free fixture
+    print(json.dumps(run_accepted_and_denied_demo(), indent=2, sort_keys=True))
 
 
 __all__ = ["build_demo_result", "main", "run_accepted_and_denied_demo", "run_demo"]
