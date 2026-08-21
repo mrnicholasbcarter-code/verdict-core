@@ -13,3 +13,11 @@ def test_release_checklist_requires_evidence_bound_signoff():
     checklist = Path("RELEASE_CHECKLIST.md").read_text()
     assert "Evidence-bound launch signoff" in checklist
     assert "PENDING EVIDENCE" in checklist
+    for field in (
+        "Source revision",
+        "Evidence URL/command",
+        "Result",
+        "Limitation",
+        "Reviewer/date",
+    ):
+        assert field in checklist
