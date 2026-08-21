@@ -63,12 +63,6 @@ jobs:
           cd ../verdict/client-sdk && npm pack --dry-run
           cd ../../verdict-node && npm pack --dry-run
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-
       - name: Publish to npm
         if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
         run: |
