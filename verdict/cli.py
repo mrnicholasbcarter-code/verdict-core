@@ -805,6 +805,35 @@ def cmd_autodev(
         sys.exit(1)
 
 
+def cmd_autodev_golden_path(
+    objective: str,
+    repo: str,
+    memory_path: str,
+    verification_command: list[str],
+    timeout_seconds: float,
+    owned_paths: list[str],
+    output_json: bool,
+) -> None:
+    """Run the offline, real-repository three-stage acceptance path."""
+    from verdict.golden_path import run_golden_path
+
+    report = run_golden_path(
+        objective,
+        repo,
+        memory_path=memory_path,
+        verification_command=verification_command,
+        timeout_seconds=timeout_seconds,
+        owned_paths=owned_paths,
+    )
+    if output_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        console.print(report.summary())
+        console.print(f"report digest: {report.report_digest}")
+    if report.decision != "accepted":
+        raise SystemExit(1)
+
+
 def _report_autodev_failure(reason: str, *, output_json: bool) -> None:
     if output_json:
         print(json.dumps({"error": "decomposition failed", "reason": reason}, sort_keys=True))
@@ -1821,6 +1850,18 @@ def main() -> None:
         "--dry-run", action="store_true", help="Show the plan and its cost without executing"
     )
 
+    golden_p = subparsers.add_parser(
+        "autodev-golden-path",
+        help="Run offline discovery, durable memory, and bounded verification",
+    )
+    golden_p.add_argument("--objective", required=True, help="Bounded mission objective")
+    golden_p.add_argument("--repo", required=True, help="Real Git repository to inspect")
+    golden_p.add_argument("--memory-path", default=".verdict-golden-memory.db")
+    golden_p.add_argument("--verify", nargs="+", default=["git", "status", "--short"])
+    golden_p.add_argument("--owned-path", action="append", default=[])
+    golden_p.add_argument("--timeout", type=float, default=10.0)
+    golden_p.add_argument("--json", action="store_true")
+
     stats_p = subparsers.add_parser("stats", help="View routing analytics")
     stats_p.add_argument("--log_path", default="verdict-decisions.jsonl")
 
@@ -2109,6 +2150,16 @@ def main() -> None:
             allow_live=args.allow_live,
             no_mechanical=args.no_mechanical,
             dry_run=args.dry_run,
+        )
+    elif args.command == "autodev-golden-path":
+        cmd_autodev_golden_path(
+            args.objective,
+            args.repo,
+            args.memory_path,
+            args.verify,
+            args.timeout,
+            args.owned_path,
+            args.json,
         )
     elif args.command == "stats":
         cmd_stats(args.log_path)
