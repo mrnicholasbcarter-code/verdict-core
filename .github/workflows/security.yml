@@ -33,14 +33,14 @@ jobs:
         run: uv pip install pip-audit bandit
 
       - name: Run pip-audit
-        run: >-
-          uv run pip-audit --local
-          --ignore-vuln GHSA-46jp-xpjr-93v5
-          --ignore-vuln GHSA-fpc7-926f-7q6q
-          --ignore-vuln GHSA-8m8c-m7c6-2mx4
+        run: uv run pip-audit --local
 
       - name: Run bandit
         run: uv run bandit -r verdict -ll -s B108
+
+      - name: Verify repository has no committed credential files
+        run: |
+          ! git ls-files | grep -E '(^|/)(\.env|.*\.pem|.*\.key)$'
 
   node-security:
     runs-on: ubuntu-latest
