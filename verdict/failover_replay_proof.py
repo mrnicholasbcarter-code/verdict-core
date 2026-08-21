@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from verdict.execution_session import ExecutionSession
 from verdict.failover_engine import FailoverEngine
@@ -63,8 +64,8 @@ class ReplayProof:
         )
 
 
-def run_forced_failover_proof(plane: MemoryPlane) -> ReplayProof:
-    mission = "mission-267"
+def run_forced_failover_proof(plane: MemoryPlane, *, mission_id: str | None = None) -> ReplayProof:
+    mission = mission_id or f"mission-267-{uuid4().hex}"
     events: list[MissionEvent] = []
 
     def emit(kind: str, stage: str, model: str, status: str, error: str | None = None) -> None:

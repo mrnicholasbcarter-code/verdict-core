@@ -650,9 +650,31 @@ def cmd_cost_report() -> None:
 
 
 def cmd_detect(
-    verbose: bool = False, output_json: bool = False, output_config: bool = False
+    verbose: bool = False,
+    output_json: bool = False,
+    output_config: bool = False,
+    offline: bool = False,
 ) -> None:
     """Detect available LLM providers."""
+    if offline:
+        payload: dict[str, Any] = {
+            "mode": "offline",
+            "network_access": False,
+            "credentials_read": False,
+            "local_providers": [],
+            "cli_providers": [],
+            "centralized_routers": [],
+            "cloud_apis": [],
+            "custom_endpoints": [],
+        }
+        if output_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif output_config:
+            print(yaml.dump({"providers": {}}, default_flow_style=False))
+        else:
+            console.print_json(json.dumps(payload, sort_keys=True))
+        return
+
     try:
         from verdict.provider_detection import (
             detect_all_providers,
@@ -2017,6 +2039,11 @@ def main() -> None:
     detect_p = subparsers.add_parser("detect", help="Detect available LLM providers")
     detect_p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     detect_p.add_argument("--json", action="store_true", help="Output JSON")
+    detect_p.add_argument(
+        "--offline",
+        action="store_true",
+        help="Deterministic offline mode: no network, no credentials",
+    )
     detect_p.add_argument("--config", action="store_true", help="Generate suggested Verdict config")
 
     # New: probe command (1-token liveness test before assigning work)
@@ -2256,6 +2283,16 @@ def main() -> None:
     replay_p.add_argument("session_id", help="Session ID to replay")
     replay_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    failover_p = subparsers.add_parser(
+        "failover-proof", help="Run the offline forced-failover and replay proof"
+    )
+    failover_p.add_argument(
+        "--memory-path",
+        default=".verdict-failover-memory.db",
+        help="MemoryPlane database path for the replayable session",
+    )
+    failover_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
     simulate_p = subparsers.add_parser(
         "simulate", help="Forecast tokens, cost, risk, and model before any paid call"
     )
@@ -2362,7 +2399,12 @@ def main() -> None:
             allow_live_probe=args.allow_live_probe,
         )
     elif args.command == "detect":
-        cmd_detect(verbose=args.verbose, output_json=args.json, output_config=args.config)
+        cmd_detect(
+            verbose=args.verbose,
+            output_json=args.json,
+            output_config=args.config,
+            offline=args.offline,
+        )
     elif args.command == "suggest":
         cmd_suggest(args.log_path)
     elif args.command == "doctor":
@@ -2405,8 +2447,40 @@ def main() -> None:
         cmd_simulate(
             args.task, args.criticality, model_override=args.model_override, output_json=args.json
         )
+    elif args.command == "failover-proof":
+        cmd_failover_proof(memory_path=args.memory_path, output_json=args.json)
     else:
         parser.print_help()
+
+
+def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:
+    """Run the offline forced-failover and replay proof, persisting the session."""
+    from verdict.failover_replay_proof import run_forced_failover_proof
+    from verdict.memory_plane import MemoryPlane
+
+    with MemoryPlane(memory_path) as plane:
+        proof = run_forced_failover_proof(plane)
+    payload = {
+        "session_id": proof.mission_id,
+        "initial_model": "provider-a/model-a",
+        "replacement_model": proof.replacement_model,
+        "failure_status": 429,
+        "completed_steps": list(proof.completed_stages),
+        "event_sequence": [e.to_dict() for e in proof.events],
+        "replay_digest": proof.digest,
+    }
+    if output_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        from rich.console import Console
+
+        console = Console()
+        console.print("[bold green]Failover proof completed[/bold green]")
+        console.print(f"  Session ID: {proof.mission_id}")
+        console.print("  Initial model: provider-a/model-a")
+        console.print(f"  Replacement model: {proof.replacement_model}")
+        console.print(f"  Completed steps: {list(proof.completed_stages)}")
+        console.print(f"  Digest: {proof.digest}")
 
 
 if __name__ == "__main__":
