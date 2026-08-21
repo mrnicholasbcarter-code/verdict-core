@@ -1,6 +1,0 @@
-# Development-only dependencies are not shipped at runtime. Runtime dependencies
-# remain fully blocking in OSV, pip-audit, and npm audit.
-[[PackageOverrides]]
-group = "dev"
-vulnerability.ignore = true
-reason = "Development-only dependency; excluded from the runtime security gate."
