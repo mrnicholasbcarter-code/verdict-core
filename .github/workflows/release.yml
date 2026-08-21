@@ -12,6 +12,7 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,6 +31,9 @@ jobs:
           cache: npm
           cache-dependency-path: contracts/package-lock.json
 
+      - name: Install Hatch
+        run: python -m pip install hatch twine
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
@@ -46,13 +50,27 @@ jobs:
         run: npm test --workspaces
 
       - name: Build Python package
-        run: uv build
+        run: hatch build
 
       - name: Check Python package
-        run: uv run twine check dist/*
+        run: twine check dist/*
 
       - name: Verify installed Python artifacts
-        run: uv run python scripts/verify_release_artifacts.py --dist dist
+        run: python scripts/verify_release_artifacts.py --dist dist
+
+      - name: Attest Python distributions
+        id: attest-python
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/
+
+      - name: Stage Python release assets
+        run: |
+          mkdir -p release-assets
+          cp dist/*.whl dist/*.tar.gz release-assets/
+          if [ -n "${{ steps.attest-python.outputs.bundle-path }}" ]; then
+            cp "${{ steps.attest-python.outputs.bundle-path }}" release-assets/python-distribution-provenance.intoto.jsonl
+          fi
 
       - name: Build TypeScript packages
         run: npm run build --workspaces
@@ -61,31 +79,29 @@ jobs:
         run: |
           cd contracts && npm pack --dry-run
           cd ../verdict/client-sdk && npm pack --dry-run
-          cd ../../verdict-node && npm pack --dry-run
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
 
       - name: Publish to npm
         if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
         run: |
           cd contracts && npm publish --access public --provenance
           cd ../verdict/client-sdk && npm publish --access public --provenance
-          cd ../../verdict-node && npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+      - name: Publish Python package to PyPI
         if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
-        with:
-          generate_release_notes: true
-          files: |
-            dist/*.whl
-            dist/*.tar.gz
-            contracts/*.tgz
-            verdict/client-sdk/*.tgz
-            verdict-node/*.tgz
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; refusing to mutate it." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --verify-tag \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME"

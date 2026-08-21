@@ -73,6 +73,28 @@ The fixture lives at `benchmarks/fixtures/reproducible.json` and the report
 stores its SHA-256 digest so reruns can prove they used the same checked-in
 inputs.
 
+## Direct-vs-Verdict comparison (BENCH-001)
+
+Issue #270 adds an offline task comparison fixture. It evaluates the same
+fixture task against the configured direct primary model and the Verdict route,
+then records cost, seeded latency observations, completion, regression-budget,
+and forced transient-failover results. This is a harness contract, not a live
+provider quality or network benchmark.
+
+Run it with:
+
+```bash
+uv run --extra dev python benchmarks/run_reproducible.py \
+  --comparison-fixture benchmarks/fixtures/direct_vs_verdict.json \
+  --seed 17 --fail-on-regression
+```
+
+The comparison report is deterministic for a fixed fixture and seed. Its
+latency fields are explicitly observational; the checked-in baseline and
+regression budget govern only the fixture's semantic cost result. The failover
+section replays the existing bounded offline proof and requires zero duplicate
+completed stages.
+
 If you truly need a live provider measurement, label it explicitly and opt in so
 it cannot be confused with the reproducible local baseline:
 
