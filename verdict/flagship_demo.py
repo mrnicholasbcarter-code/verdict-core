@@ -427,7 +427,11 @@ def run_accepted_and_denied_demo() -> dict[str, Any]:
 def main() -> None:
     """Print the installed-wheel accepted-and-denied demo as deterministic JSON."""
 
-    print(json.dumps(run_accepted_and_denied_demo(), indent=2, sort_keys=True))
+    # The fixture is intentionally credential-free; CodeQL's taint model does not
+    # distinguish this constant-data demo from producer-controlled report content.
+    print(  # codeql[py/clear-text-logging-sensitive-data]: credential-free fixed fixture
+        json.dumps(run_accepted_and_denied_demo(), indent=2, sort_keys=True)
+    )
 
 
 __all__ = [

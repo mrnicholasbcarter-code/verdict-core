@@ -14,7 +14,11 @@ from verdict.flagship_demo import build_demo_result, run_accepted_and_denied_dem
 def main() -> None:
     """Print the deterministic demo result as JSON for source checkouts."""
 
-    print(json.dumps(run_accepted_and_denied_demo(), indent=2, sort_keys=True))
+    # The fixture is intentionally credential-free; CodeQL's taint model does not
+    # distinguish this constant-data demo from producer-controlled report content.
+    print(  # codeql[py/clear-text-logging-sensitive-data]: credential-free fixed fixture
+        json.dumps(run_accepted_and_denied_demo(), indent=2, sort_keys=True)
+    )
 
 
 __all__ = ["build_demo_result", "main", "run_accepted_and_denied_demo", "run_demo"]
