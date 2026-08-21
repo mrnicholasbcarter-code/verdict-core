@@ -1,8 +1,8 @@
 name: Publish Python Package to PyPI
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 jobs:
   build:
@@ -16,8 +16,8 @@ jobs:
       with:
         python-version: "3.10"
         
-    - name: Install PyPA build module
-      run: python3 -m pip install build --user
+    - name: Install build tooling
+      run: python3 -m pip install build twine --user
       
     - name: Build a binary wheel and a source tarball
       run: python3 -m build
@@ -27,6 +27,9 @@ jobs:
       with:
         name: python-package-distributions
         path: dist/
+
+    - name: Check distribution metadata
+      run: python3 -m twine check dist/*
 
   publish-to-pypi:
     name: Publish Python 📦 to PyPI
