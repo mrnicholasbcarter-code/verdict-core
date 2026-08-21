@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import yaml
 from rich.console import Console
@@ -420,8 +420,8 @@ def cmd_setup_plan(*, output_json: bool = False) -> None:
         print(f"- {action['description']}")
 
 
-def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
-    """Route a single task."""
+def _build_route_gate(allow_offline: bool = False) -> Gate:
+    """Build the CLI Gate from the user config (shared by route/compare)."""
     config_dir = os.path.join(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
     )
@@ -434,24 +434,37 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
             k: ProviderConfig(base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env"))
             for k, v in (raw.get("providers") or {}).items()
         }
-        gate = Gate(
+        return Gate(
             primary_model=raw.get("primary_model", "anthropic/claude-3-opus-20240229"),
             providers=providers,
             log_path=raw.get("log_path", "verdict-decisions.jsonl"),
+            allow_offline=allow_offline,
         )
-    else:
-        gate = Gate(
-            primary_model="anthropic/claude-3-opus-20240229",
-            providers={"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")},
-        )
+    return Gate(
+        primary_model="anthropic/claude-3-opus-20240229",
+        providers={"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")},
+        allow_offline=allow_offline,
+    )
+
+
+def cmd_route(
+    task: str, criticality: str, terse: bool = False, allow_offline: bool = False
+) -> None:
+    """Route a single task."""
+    gate = _build_route_gate(allow_offline=allow_offline)
 
     if terse:
         dec = gate.route(task, criticality)
         print(dec.model)
         return
 
-    with console.status("[bold green]Evaluating network & heuristics...", spinner="dots"):
-        dec = gate.route(task, criticality)
+    status_label = (
+        "[bold green]Evaluating static catalog (offline)..."
+        if allow_offline
+        else "[bold green]Evaluating network & heuristics..."
+    )
+    with console.status(status_label, spinner="dots"):
+        dec, selection = gate.route_with_strategy(task, criticality)
 
     tier_colors = {0: "red", 1: "magenta", 2: "yellow", 3: "green"}
     t_color = tier_colors.get(dec.tier, "white")
@@ -469,6 +482,7 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
   Protected: {str(dec.protected).lower()}
   Degraded:  {str(dec.degraded_mode).lower()}
   Latency:   [cyan]{dec.latency_ms:.1f}ms[/cyan]
+  Strategy:  [bold]{selection.strategy}[/bold]
 
 [bold dim]Reason:[/bold dim] [italic]{dec.reason}[/italic]
 """
@@ -480,6 +494,18 @@ def cmd_route(task: str, criticality: str, terse: bool = False) -> None:
             expand=False,
         )
     )
+    # Machine-readable StrategySelection record (issue #265).
+    print(json.dumps({"strategy_selection": selection.to_dict()}, sort_keys=True))
+
+
+def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
+    """Compare a DIRECT frontier call against the Verdict route (issue #265)."""
+    from verdict.comparison import ComparisonHarness
+
+    gate = _build_route_gate(allow_offline=allow_offline)
+    harness = ComparisonHarness(gate=gate)
+    report = harness.compare(task, criticality=criticality)
+    print(json.dumps({"comparison_report": report.to_dict()}, sort_keys=True, indent=2))
 
 
 def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
@@ -1674,6 +1700,82 @@ def cmd_check() -> None:
     console.print("[bold green]✓ Configuration file is valid.[/bold green]")
 
 
+def cmd_compat(compat_command: str | None, declared: str | None, output_json: bool) -> None:
+    """Publish or check the cross-repo contract compatibility manifest (ADR-024, CON-001).
+
+    Fails closed: a missing declaration or a hash mismatch against the current
+    verdict-core contracts blocks (exit 1) rather than assuming compatibility.
+    """
+    from verdict.compatibility_manifest import build_compatibility_manifest, check_compatibility
+
+    if compat_command == "manifest":
+        manifest = build_compatibility_manifest()
+        if output_json:
+            print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+        else:
+            console.print(
+                f"[bold]Cross-repo compatibility manifest[/] (schema {manifest.schema_version})"
+            )
+            console.print(f"manifest_hash: [cyan]{manifest.manifest_hash}[/]")
+            for name, digest in sorted(manifest.contracts.items()):
+                console.print(f"  {name}: {digest}")
+        return
+
+    if compat_command == "check":
+
+        def _fail(reason: str) -> NoReturn:
+            if output_json:
+                print(json.dumps({"allowed": False, "reason": reason}, indent=2))
+            else:
+                console.print(f"[bold red]❌ {reason}[/bold red] (failing closed)")
+            sys.exit(1)
+
+        if not os.path.exists(declared or ""):
+            _fail(f"Declared manifest file not found: {declared}")
+
+        try:
+            with open(declared) as f:  # type: ignore[arg-type]
+                declared_raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            _fail(f"Declared manifest is invalid JSON: {exc}")
+
+        declared_contracts = (
+            declared_raw.get("contracts") if isinstance(declared_raw, dict) else None
+        )
+        if not isinstance(declared_contracts, dict):
+            _fail("Declared manifest missing 'contracts' object.")
+
+        result = check_compatibility(declared_contracts)
+        if result.allowed:
+            if output_json:
+                print(json.dumps({"allowed": True, "reason": None}, indent=2))
+            else:
+                console.print(
+                    "[bold green]✓ Compatible with current verdict-core contracts.[/bold green]"
+                )
+            return
+
+        if output_json:
+            print(
+                json.dumps(
+                    {
+                        "allowed": False,
+                        "reason": result.reason,
+                        "mismatched_contracts": list(result.mismatched_contracts),
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[bold red]❌ Compatibility check failed: {result.reason}[/bold red]")
+            for name in result.mismatched_contracts:
+                console.print(f"  - {name}")
+        sys.exit(1)
+
+    console.print("[bold red]❌ Unknown compat subcommand. Use 'manifest' or 'check'.[/bold red]")
+    sys.exit(1)
+
+
 def cmd_hook(args: Any) -> None:
     """Manage Verdict lifecycle hooks for Codex and Claude Code."""
     import time as _time
@@ -1701,16 +1803,16 @@ def cmd_hook(args: Any) -> None:
         value = getattr(args, "value", "")
         namespace = getattr(args, "namespace", "sessions")
         source = getattr(args, "source", "cli")
-        rec = MemoryRecord(
-            record_id=f"rec_{key}_{int(_time.time())}",
-            namespace=namespace,
-            key=key,
-            content=value,
-            source=source,
-            trust="gated-local-observation",
+        req = MemoryWriteRequest(
+            namespace=namespace, key=key, value=value, source=source, authority="agent"
         )
-        plane.put(rec)
-        console.print(f"[bold green]✓ Recorded [{namespace}:{key}][/bold green]")
+        write_res = gate.write(req)
+        if write_res.allowed:
+            console.print(f"[bold green]✓ Recorded [{namespace}:{key}][/bold green]")
+        else:
+            console.print(
+                f"[bold red]✗ Rejected [{namespace}:{key}]: {write_res.reason}[/bold red]"
+            )
 
     elif hook_cmd == "configure":
         tools_str = getattr(args, "tools", None)
@@ -1817,6 +1919,24 @@ def main() -> None:
     route_p.add_argument("--terse", action="store_true", help="Output ONLY the target model string")
     route_p.add_argument(
         "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
+    )
+    route_p.add_argument(
+        "--allow-offline",
+        action="store_true",
+        help="Decide from the static catalog only — no network discovery or probes",
+    )
+
+    compare_p = subparsers.add_parser(
+        "compare", help="Compare a DIRECT frontier call vs the Verdict route for one task"
+    )
+    compare_p.add_argument("task", help="Task description or prompt text")
+    compare_p.add_argument(
+        "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
+    )
+    compare_p.add_argument(
+        "--allow-offline",
+        action="store_true",
+        help="Decide from the static catalog only — no network discovery or probes",
     )
 
     autodev_p = subparsers.add_parser(
@@ -1993,6 +2113,23 @@ def main() -> None:
         "--purge-data", action="store_true", help="Purge .verdict memory database directory"
     )
     subparsers.add_parser("check", help="Validate system configuration file syntax and sanity")
+
+    compat_p = subparsers.add_parser(
+        "compat", help="Cross-repo contract compatibility manifest and gate (ADR-024)"
+    )
+    compat_sub = compat_p.add_subparsers(dest="compat_command")
+    compat_manifest_p = compat_sub.add_parser(
+        "manifest", help="Print the current verdict-core contract compatibility manifest"
+    )
+    compat_manifest_p.add_argument("--json", action="store_true", help="Output JSON")
+    compat_check_p = compat_sub.add_parser(
+        "check",
+        help="Check a downstream repo's declared manifest against the current one, failing closed",
+    )
+    compat_check_p.add_argument(
+        "--declared", required=True, help="Path to the downstream repo's declared manifest JSON"
+    )
+    compat_check_p.add_argument("--json", action="store_true", help="Output JSON")
 
     memory_p = subparsers.add_parser("memory", help="Local-first unified memory management")
     memory_sub = memory_p.add_subparsers(dest="memory_command")
@@ -2241,6 +2378,12 @@ def main() -> None:
         cmd_uninstall(purge_data=getattr(args, "purge_data", False))
     elif args.command == "check":
         cmd_check()
+    elif args.command == "compat":
+        cmd_compat(
+            getattr(args, "compat_command", None),
+            getattr(args, "declared", None),
+            getattr(args, "json", False),
+        )
     elif args.command == "memory":
         cmd_memory(args)
     elif args.command == "mcp":

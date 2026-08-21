@@ -40,6 +40,12 @@ CAPACITY_CONFIDENCE_THRESHOLD = 0.8
 # Passport freshness window for the in-memory isolation cache (seconds).
 PASSPORT_TTL_SECONDS = 300
 
+# Sentinel marking "caller did not supply expires_at", so __post_init__ can derive it
+# from qualified_at. A plain default_factory cannot see sibling fields, and defaulting
+# to a second _now() call collides with qualified_at whenever both land in the same
+# microsecond -- which is most of the time on a warm code path.
+_UNSET_EXPIRY = datetime.min.replace(tzinfo=timezone.utc)
+
 
 class ModelPassportError(CapabilityPassportError):
     """Raised when a model passport violates its versioned contract."""
@@ -63,7 +69,7 @@ class ModelPassport:
     quarantined_at: datetime | None = None
     recovery_attempts: int = 0
     qualified_at: datetime = field(default_factory=lambda: _now())
-    expires_at: datetime = field(default_factory=lambda: _now())
+    expires_at: datetime = _UNSET_EXPIRY
     schema_version: str = MODEL_PASSPORT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -92,7 +98,16 @@ class ModelPassport:
             or not _is_finite_number(self.token_cost_per_1k)
         ):
             raise ModelPassportError("token_cost_per_1k must be a finite number")
-        for name in ("last_verified_timestamp", "qualified_at", "expires_at"):
+        object.__setattr__(self, "qualified_at", _utc(self.qualified_at, "qualified_at"))
+        if self.expires_at is _UNSET_EXPIRY:
+            # Derive the default expiry from qualified_at so the two never collide.
+            # Mirrors passport_from_observation: truncate to the minute, then add the TTL.
+            object.__setattr__(
+                self,
+                "expires_at",
+                self.qualified_at.replace(second=0, microsecond=0) + _ttl_delta(),
+            )
+        for name in ("last_verified_timestamp", "expires_at"):
             object.__setattr__(self, name, _utc(getattr(self, name), name))
         if self.expires_at <= self.qualified_at:
             raise ModelPassportError("expires_at must be after qualified_at")

@@ -11,6 +11,12 @@ The report proves only local invariants: SQLite persistence, deterministic FTS
 search, deterministic export, redaction, and durable gate-event count. It does
 not claim semantic retrieval quality or external-adapter availability.
 
+The report also includes `schema_version`, backend identity, a redacted record
+schema/provenance shape, and a digest of that shape. Content, metadata values,
+temporary database paths, prompts, and credentials are deliberately omitted.
+The output is stable across runs, so it can be copied into a release evidence
+directory without turning local paths or memory contents into public evidence.
+
 The canonical record contract includes:
 
 | Field group | Required evidence |

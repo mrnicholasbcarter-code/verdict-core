@@ -17,6 +17,7 @@ def test_load_fixture_uses_checked_in_reproducible_fixture() -> None:
     fixture = load_benchmark_fixture()
     assert fixture["policy_version"] == "policy-2026-07-13.1"
     assert fixture["settings"]["warmup_iterations"] >= 1
+    assert fixture["thresholds"]["contract_roundtrip"]["p95_ns_max"] > 0
     assert fixture["routing_prompts"]
 
 
@@ -46,6 +47,20 @@ def test_reproducible_benchmark_report_is_deterministic_in_structure(tmp_path: P
     assert restored["fixture_digest_sha256"] == report_a["fixture_digest_sha256"]
 
 
+def test_report_records_metadata_metrics_and_thresholds() -> None:
+    report = run_reproducible_benchmarks(DEFAULT_FIXTURE_PATH)
+
+    assert report["metadata"]["source"] == "checked-in fixture"
+    assert report["metadata"]["timer"] == "time.perf_counter_ns"
+    assert report["metrics"]["benchmark_count"] == 3
+    assert report["metrics"]["sample_count"] == sum(
+        item["summary"]["samples"] for item in report["benchmarks"]
+    )
+    assert report["metrics"]["thresholds_passed"] is True
+    assert all(item["thresholds"]["p95_ns_max"] for item in report["benchmarks"])
+    assert all(item["threshold_passed"] is True for item in report["benchmarks"])
+
+
 def test_live_provider_requires_explicit_opt_in() -> None:
     with pytest.raises(ValueError, match="explicitly enabled"):
         run_reproducible_benchmarks(DEFAULT_FIXTURE_PATH, live_provider="openai/gpt-4o")
@@ -55,5 +70,6 @@ def test_format_report_mentions_local_reproducible_scope() -> None:
     report = run_reproducible_benchmarks(DEFAULT_FIXTURE_PATH)
     text = format_benchmark_report(report)
     assert "mode: local-reproducible" in text
+    assert "thresholds_passed: true" in text
     assert "contract_roundtrip" in text
     assert report["notes"][0].startswith("Local reproducible mode")

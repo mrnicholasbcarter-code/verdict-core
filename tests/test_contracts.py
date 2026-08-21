@@ -16,6 +16,7 @@ from verdict.contracts import (
     TaskEpisode,
     TaskSpec,
     TaskWorkflowOutcomeEpisode,
+    VerificationResult,
     WorkflowEpisode,
     WorkflowPlan,
     contract_from_dict,
@@ -341,3 +342,110 @@ def test_invalid_fixtures_fail_python_and_json_schema(fixture_name: str) -> None
     assert errors, fixture_name
     with pytest.raises(ContractValidationError):
         TaskSpec.from_dict(payload)
+
+
+# ---------------------------------------------------------------------------
+# NOD-002 envelope enforcement parity (issue #286 / verdict-ecosystem NOD-002)
+#
+# VER-003/#220 unified the TypeScript ExecutionEnvelope schema to the Python
+# canonical shape. The shared canonical fixtures in test_fixtures/envelopes/
+# are now accepted/rejected identically by both runtimes.
+#
+# Full cross-runtime parity is tested in tests/test_envelope_parity.py using the
+# manifest in tests/fixtures/invalid_envelopes.py.
+# ---------------------------------------------------------------------------
+
+
+def test_verification_result_records_rerun_provenance() -> None:
+    result = contract_from_dict(
+        "verification_result",
+        json.loads((FIXTURE_DIR / "contract-v1.json").read_text())["verification_result"],
+    )
+    assert isinstance(result, VerificationResult)
+    assert result.command == "python -m pytest -q tests/test_contracts.py"
+    assert result.runtime == "cpython-3.11.9/linux-x86_64"
+    assert result.provenance == "verdict-core.ci/github-actions"
+    assert result.policy_requirement == "VER-009:focused-tests-must-pass"
+    assert result.duration_ms == 1200
+
+
+def test_verification_result_unknown_is_distinct_from_pass_and_fail() -> None:
+    unknown = VerificationResult.from_dict(
+        {"check_name": "coverage", "check_type": "ci", "status": "unknown"}
+    )
+    assert unknown.status == "unknown"
+    assert unknown.status not in {"passed", "failed"}
+
+
+def test_verification_result_rejects_secrets_on_direct_construction() -> None:
+    """``from_dict`` redaction is name-based; raw output is secret-bearing by content."""
+    with pytest.raises(ContractValidationError, match="secret-bearing"):
+        VerificationResult(
+            check_name="deploy",
+            check_type="ci",
+            status="passed",
+            raw_output="curl -H 'Authorization: Bearer sk-live-DEADBEEF9182' https://api.example",
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "payload"),
+    [
+        ("empty check name", {"check_name": "", "check_type": "ci", "status": "passed"}),
+        ("unknown check type", {"check_name": "gate", "check_type": "smoke", "status": "passed"}),
+        ("unknown status", {"check_name": "gate", "check_type": "ci", "status": "green"}),
+        (
+            "malformed artifact digest",
+            {
+                "check_name": "gate",
+                "check_type": "ci",
+                "status": "passed",
+                "artifact_digests": ["sha1:deadbeef"],
+            },
+        ),
+        (
+            "negative duration",
+            {"check_name": "gate", "check_type": "ci", "status": "passed", "duration_ms": -1},
+        ),
+        (
+            "bearer token in raw output",
+            {
+                "check_name": "gate",
+                "check_type": "ci",
+                "status": "passed",
+                "raw_output": "Authorization: Bearer sk-live-DEADBEEF9182",
+            },
+        ),
+        (
+            "api key in raw output",
+            {
+                "check_name": "gate",
+                "check_type": "ci",
+                "status": "passed",
+                "raw_output": "api_key=AKIAIOSFODNN7EXAMPLE\nbuild ok",
+            },
+        ),
+    ],
+)
+def test_verification_result_rejects_invalid_v1_values(
+    name: str, payload: dict[str, object]
+) -> None:
+    del name
+    with pytest.raises(ContractValidationError):
+        VerificationResult.from_dict(payload)
+
+
+def test_schema_rejects_invalid_verification_result() -> None:
+    validator = Draft202012Validator(SCHEMA)
+    assert list(
+        validator.iter_errors(
+            {
+                "verification_result": {
+                    "check_name": "gate",
+                    "check_type": "ci",
+                    "status": "green",
+                    "schema_version": "1",
+                }
+            }
+        )
+    )

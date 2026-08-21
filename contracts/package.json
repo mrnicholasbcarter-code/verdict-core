@@ -19,7 +19,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));const {name,version,description,main,module,types,exports,files,license,author,repository,bugs,homepage,keywords,engines}=p;fs.writeFileSync('dist/package.json',JSON.stringify({name,version,description,main,module,types,exports,files,license,author,repository,bugs,homepage,keywords,engines},null,2))\"",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "prettier --check \"src/**/*.ts\"",

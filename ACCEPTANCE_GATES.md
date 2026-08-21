@@ -95,24 +95,27 @@ jobs:
       - name: Generate evidence bundle
         run: python scripts/evidence_bundle.py
       - name: Verify gates
-        run: python scripts/verify_gates.py
+        run: python scripts/verify_gates.py --evidence-dir evidence_bundle/ --json
 ```
 
 ## Verification
 
-```bash
-# Full verification
-python scripts/verify_gates.py --evidence-dir evidence_bundle/
+The checked-in validator enforces the machine-readable report contract before
+any release decision is made:
 
-# Quick check
-python -c "
-import json
-with open('evidence_bundle/gates_status.json') as f:
-    gates = json.load(f)
-failed = [k for k, v in gates.items() if v['status'] != 'PASS']
-if failed:
-    print(f'FAILED: {failed}')
-    exit(1)
-print('ALL GATES PASS')
-"
+```bash
+python scripts/verify_gates.py --evidence-dir evidence_bundle/ --json
 ```
+
+`evidence_bundle/gates_status.json` must contain schema version `1`, the
+audited repository and commit, and exactly one entry for every `G1.1` through
+`G7.4` criterion. Each entry has a `PASS`, `FAIL`, or `BLOCKED` status and at
+least one evidence-root-relative regular-file evidence path. Missing, unknown,
+duplicate, absolute, traversal, symlinked, or malformed report/evidence causes
+verification to fail. A report containing any `FAIL` or `BLOCKED` gate also
+exits nonzero. The validator is intentionally evidence-neutral: it checks the
+report and referenced artifacts, but never invents evidence or upgrades a
+missing criterion.
+
+See `scripts/verify_gates.py` and `tests/test_verify_gates.py` for the
+versioned contract and fail-closed cases.

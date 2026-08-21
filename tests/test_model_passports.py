@@ -251,3 +251,53 @@ class TestAvailabilityStateParity:
     def test_passport_ttl_constant(self) -> None:
         assert PASSPORT_TTL_SECONDS == 300
         assert MODEL_PASSPORT_SCHEMA_VERSION == "1"
+
+
+class TestDefaultExpiryDerivation:
+    """Regression: expires_at defaulted to a bare _now(), colliding with qualified_at.
+
+    Both fields used `default_factory=lambda: _now()`. Two separate clock reads land in
+    the same microsecond on a warm/fast path, making `expires_at == qualified_at` and
+    tripping the `expires_at must be after qualified_at` guard. Rare when cold, but
+    ~50% under load -- which is exactly when CI runs.
+    """
+
+    def test_default_construction_never_collides_under_load(self) -> None:
+        for _ in range(20_000):
+            ModelPassport(
+                provider="p", model_id="p/model", auth_state="authorized", context_window=80
+            )
+
+    def test_default_expiry_is_ttl_after_truncated_qualified_at(self) -> None:
+        passport = ModelPassport(
+            provider="p", model_id="p/model", auth_state="authorized", context_window=80
+        )
+        assert passport.expires_at is not None
+        expected = passport.qualified_at.replace(second=0, microsecond=0) + timedelta(
+            seconds=PASSPORT_TTL_SECONDS
+        )
+        assert passport.expires_at == expected
+        assert passport.expires_at > passport.qualified_at
+
+    def test_explicit_expires_at_is_still_honoured(self) -> None:
+        expires = NOW + timedelta(seconds=PASSPORT_TTL_SECONDS)
+        passport = ModelPassport(
+            provider="p",
+            model_id="p/model",
+            auth_state="authorized",
+            context_window=80,
+            qualified_at=NOW,
+            expires_at=expires,
+        )
+        assert passport.expires_at == expires
+
+    def test_explicit_invalid_expires_at_still_raises(self) -> None:
+        with pytest.raises(ModelPassportError, match="expires_at must be after qualified_at"):
+            ModelPassport(
+                provider="p",
+                model_id="p/model",
+                auth_state="authorized",
+                context_window=80,
+                qualified_at=NOW,
+                expires_at=NOW,
+            )

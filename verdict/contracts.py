@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import time
 from dataclasses import MISSING, Field, dataclass, field, fields
 from types import UnionType
 from typing import Any, ClassVar, TypeVar, cast, get_args, get_origin, get_type_hints
@@ -31,6 +33,12 @@ _DEGRADED_MODE_POLICIES = frozenset({"deny", "allow", "allow_with_penalty"})
 _POLICY_FLOORS = frozenset(
     {"none", "isolated", "protected", "standard", "best_effort", "medium", "high"}
 )
+_VERIFICATION_CHECK_TYPES = frozenset(
+    {"diff_boundary", "focused_tests", "regression", "policy", "ci", "custom"}
+)
+# ``unknown`` is deliberately distinct from ``passed``/``failed`` so an
+# inconclusive check is never silently read as a pass.
+_VERIFICATION_STATUSES = frozenset({"passed", "failed", "skipped", "unknown"})
 _AVAILABILITY_STATES = frozenset(
     {
         "eligible",
@@ -78,11 +86,34 @@ _OUTCOME_VALUES = frozenset(
         "skipped",
     }
 )
+# Content digests are written as ``sha256:<64 lowercase hex>`` everywhere in the
+# repo.  Naming the pattern once keeps the evidence chain and the per-check
+# digests from drifting apart.
+_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
+# ISO 8601 with an optional fractional part and an optional offset.  A link
+# without a parseable instant cannot be ordered against its neighbours, so the
+# format is pinned rather than accepted as free text.
+_ISO_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"
+)
+
 _REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "TaskSpec": frozenset({"objective", "task_type"}),
     "WorkflowPlan": frozenset({"steps"}),
     "RoutingDecisionContract": frozenset({"selected_route"}),
     "OutcomeEvent": frozenset({"event_type", "outcome", "occurred_at"}),
+    "EvidenceChainLink": frozenset(
+        {
+            "decision",
+            "policy",
+            "envelope_hash",
+            "runtime",
+            "provider",
+            "model",
+            "outcome",
+            "timestamp",
+        }
+    ),
 }
 _BUDGET_FIELDS = frozenset(
     {
@@ -385,6 +416,12 @@ class RoutingDecisionContract(Contract):
     request_id: str | None = None
     policy_version: str = "1"
     schema_version: str = "1"
+    # Feature 003 (VER-002 #219) — additive, backwards-compatible fields.
+    # Both default to None so every legacy constructor/consumer is unchanged;
+    # the DecisionKernel facade stamps them when it produces the canonical
+    # decision, and existing callers that ignore them see no behavioral change.
+    decision_id: str | None = None
+    receipt: dict[str, Any] | None = None
 
     @classmethod
     def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> RoutingDecisionContract:
@@ -743,6 +780,298 @@ class LearningEvent(Contract):
         return cls.from_dict({**payload, **overrides})
 
 
+@dataclass(frozen=True)
+class SourceState(Contract):
+    """Source-state binding for Trusted Change Report.
+
+    Represents an immutable snapshot of repository state at a point in time.
+    Supports three methods: clean_commit, dirty_snapshot, stash_restore.
+    """
+
+    schema_version: str = "1"
+    source_state_id: str = field(
+        default_factory=lambda: f"ss-{fingerprint_text(str(time.time()))[:12]}"
+    )
+    repository_url: str = ""
+    commit_sha: str = ""
+    commit_message: str | None = None
+    commit_author: str | None = None
+    commit_timestamp: str = ""
+    branch: str = ""
+    tag: str | None = None
+    dirty_files: list[str] = field(default_factory=list)
+    untracked_files: list[str] = field(default_factory=list)
+    submodule_states: dict[str, str] = field(default_factory=dict)
+    worktree_path: str | None = None
+    snapshot_timestamp: str = ""
+    snapshot_method: str = "clean_commit"
+    parent_source_state_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.snapshot_method not in ("clean_commit", "dirty_snapshot", "stash_restore"):
+            raise ContractValidationError(f"invalid snapshot_method: {self.snapshot_method}")
+        if not self.repository_url:
+            raise ContractValidationError("repository_url is required")
+        if not self.commit_sha:
+            raise ContractValidationError("commit_sha is required")
+        if not self.branch:
+            raise ContractValidationError("branch is required")
+        if not self.snapshot_timestamp:
+            raise ContractValidationError("snapshot_timestamp is required")
+
+
+@dataclass(frozen=True)
+class VerificationResult(Contract):
+    """A single verification check with the provenance needed to re-run it.
+
+    ``status`` keeps ``unknown`` distinct from ``passed``/``failed`` so an
+    absent or inconclusive check can never be read as a pass.  ``command``,
+    ``runtime``, and ``provenance`` record who produced the result and how, and
+    ``policy_requirement`` records which policy obligation the check discharges.
+    ``raw_output`` is rejected outright when it carries credentials.
+    """
+
+    check_name: str = ""
+    check_type: str = ""
+    status: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+    artifact_digests: list[str] = field(default_factory=list)
+    duration_ms: int | None = None
+    command: str = ""
+    runtime: str = ""
+    provenance: str = ""
+    policy_requirement: str = ""
+    raw_output: str = ""
+    schema_version: str = "1"
+
+    def __post_init__(self) -> None:
+        if not self.check_name:
+            raise ContractValidationError("check_name must not be empty")
+        if self.check_type not in _VERIFICATION_CHECK_TYPES:
+            raise ContractValidationError(f"invalid check_type: {self.check_type}")
+        if self.status not in _VERIFICATION_STATUSES:
+            raise ContractValidationError(f"invalid status: {self.status}")
+        for digest in self.artifact_digests:
+            if not re.match(_DIGEST_PATTERN, digest):
+                raise ContractValidationError(f"invalid artifact digest: {digest}")
+        if self.duration_ms is not None and self.duration_ms < 0:
+            raise ContractValidationError("duration_ms must be non-negative")
+        # ``_reject_secrets`` only inspects field *names* and only runs on the
+        # ``from_dict`` path.  Raw command output is secret-bearing by content,
+        # not by key, so it is checked here and therefore also covers direct
+        # construction.  ``redact_text`` rewriting the value means a credential
+        # pattern matched.
+        if self.raw_output and redact_text(self.raw_output) != self.raw_output:
+            raise ContractValidationError(
+                "raw_output contains secret-bearing content; store the redacted "
+                "text or its fingerprint instead "
+                f"({fingerprint_text(self.raw_output, length=12)})"
+            )
+
+
+@dataclass(frozen=True)
+class DiffSummary(Contract):
+    files_changed: list[str] = field(default_factory=list)
+    lines_added: int = 0
+    lines_removed: int = 0
+    protected_files_touched: list[str] = field(default_factory=list)
+    boundary_violations: list[str] = field(default_factory=list)
+    diff_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if not re.match(_DIGEST_PATTERN, self.diff_digest):
+            raise ContractValidationError(f"invalid diff_digest: {self.diff_digest}")
+        if self.lines_added < 0 or self.lines_removed < 0:
+            raise ContractValidationError("lines_added/removed must be non-negative")
+
+
+@dataclass(frozen=True)
+class TrustedChangeMetrics(Contract):
+    latency_ms: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    estimated_cost_usd: float | None = None
+    failure_class: str = "unknown"
+
+    def __post_init__(self) -> None:
+        if self.failure_class not in (
+            "none",
+            "code_quality",
+            "operational",
+            "policy",
+            "verification",
+            "timeout",
+            "unknown",
+        ):
+            raise ContractValidationError(f"invalid failure_class: {self.failure_class}")
+        if self.latency_ms < 0 or self.tokens_in < 0 or self.tokens_out < 0:
+            raise ContractValidationError("metrics must be non-negative")
+
+
+@dataclass(frozen=True)
+class AcceptanceDecision(Contract):
+    decision: str = ""
+    reason: str = ""
+    conditions: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.decision not in ("accepted", "denied", "unknown"):
+            raise ContractValidationError(f"invalid decision: {self.decision}")
+        if not self.reason:
+            raise ContractValidationError("reason is required")
+
+
+@dataclass(frozen=True)
+class RouteRecommendation(Contract):
+    category: str = ""
+    current_route: str = ""
+    recommended_route: str = ""
+    confidence: float = 0.0
+    sample_size: int = 0
+    limitations: list[str] = field(default_factory=list)
+    can_promote: bool = False
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ContractValidationError("confidence must be in [0, 1]")
+        if self.sample_size < 0:
+            raise ContractValidationError("sample_size must be non-negative")
+
+
+@dataclass(frozen=True)
+class RegressionObservation(Contract):
+    observed: bool = False
+    action: str = "none"
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.action not in ("none", "quarantine", "rollback", "replan"):
+            raise ContractValidationError(f"invalid action: {self.action}")
+
+
+@dataclass(frozen=True)
+class TrustedChangeReport(Contract):
+    """Portable evidence-gated acceptance report for a completed work unit.
+
+    Projects existing receipts, verification, and route evidence into one report.
+    """
+
+    schema_version: str = "1"
+    report_id: str = field(default_factory=lambda: f"tcr-{fingerprint_text(str(time.time()))[:12]}")
+    objective: str = ""
+    task_type: str = ""
+    source_state: SourceState | dict[str, Any] = field(default_factory=dict)
+    work_unit_ids: list[str] = field(default_factory=list)
+    route_decision: dict[str, Any] = field(default_factory=dict)
+    evidence_receipts: list[dict[str, Any]] = field(default_factory=list)
+    verification_results: list[VerificationResult] = field(default_factory=list)
+    diff_summary: DiffSummary = field(default_factory=DiffSummary)
+    metrics: TrustedChangeMetrics = field(default_factory=TrustedChangeMetrics)
+    acceptance: AcceptanceDecision = field(default_factory=AcceptanceDecision)
+    route_recommendation: RouteRecommendation | None = None
+    regression_observation: RegressionObservation = field(default_factory=RegressionObservation)
+    received_at: str = ""
+    generated_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.objective:
+            raise ContractValidationError("objective is required")
+        if not self.task_type:
+            raise ContractValidationError("task_type is required")
+        if not self.work_unit_ids:
+            raise ContractValidationError("at least one work_unit_id is required")
+        if not self.received_at:
+            raise ContractValidationError("received_at is required")
+        if not self.generated_at:
+            raise ContractValidationError("generated_at is required")
+        # Coerce nested contracts if passed as dict
+        if isinstance(self.source_state, dict):
+            object.__setattr__(self, "source_state", SourceState(**self.source_state))
+        if isinstance(self.diff_summary, dict):
+            object.__setattr__(self, "diff_summary", DiffSummary(**self.diff_summary))
+        if isinstance(self.metrics, dict):
+            object.__setattr__(self, "metrics", TrustedChangeMetrics(**self.metrics))
+        if isinstance(self.acceptance, dict):
+            object.__setattr__(self, "acceptance", AcceptanceDecision(**self.acceptance))
+        if self.route_recommendation and isinstance(self.route_recommendation, dict):
+            object.__setattr__(
+                self, "route_recommendation", RouteRecommendation(**self.route_recommendation)
+            )
+        if isinstance(self.regression_observation, dict):
+            object.__setattr__(
+                self, "regression_observation", RegressionObservation(**self.regression_observation)
+            )
+        # Coerce verification results
+        vr_list = []
+        for vr in self.verification_results:
+            if isinstance(vr, dict):
+                vr_list.append(VerificationResult(**vr))
+            else:
+                vr_list.append(vr)
+        object.__setattr__(self, "verification_results", vr_list)
+
+
+@dataclass(frozen=True)
+class EvidenceChainLink(Contract):
+    """One append-only link binding a decision to the evidence that justifies it.
+
+    A receipt store already hashes whatever payload it is handed, so tampering
+    is detectable no matter what that payload contains.  What it cannot do is
+    notice that a field was never recorded in the first place.  This contract
+    closes that gap: it pins the eleven facts a link must carry plus the hash of
+    the link before it, so an omission fails at construction rather than
+    surviving as a chain that verifies perfectly and proves nothing.
+
+    ``previous_hash`` is empty only for the genesis link.  Every later link
+    repeats its predecessor's ``record_hash``, which is what makes truncating
+    the middle of a chain detectable rather than merely dishonest.
+
+    ``verification`` holds serialized :class:`VerificationResult` payloads and
+    is validated through that contract, so a link cannot smuggle in a check
+    whose status is outside the known set.  ``outcome`` reuses the shared
+    ``_OUTCOME_VALUES`` allowlist for the same reason.
+    """
+
+    decision: str = ""
+    policy: str = ""
+    envelope_hash: str = ""
+    runtime: str = ""
+    provider: str = ""
+    model: str = ""
+    tools: list[str] = field(default_factory=list)
+    changes: list[str] = field(default_factory=list)
+    verification: list[dict[str, Any]] = field(default_factory=list)
+    outcome: str = ""
+    timestamp: str = ""
+    previous_hash: str = ""
+    schema_version: str = "1"
+
+    def __post_init__(self) -> None:
+        for name in ("decision", "policy", "runtime", "provider", "model"):
+            if not getattr(self, name).strip():
+                raise ContractValidationError(f"{name} must not be empty")
+        if not re.match(_DIGEST_PATTERN, self.envelope_hash):
+            raise ContractValidationError(f"invalid envelope_hash: {self.envelope_hash}")
+        # An empty ``previous_hash`` marks the genesis link.  Anything else must
+        # be a real digest, so a truncated or hand-edited chain cannot pass by
+        # blanking the field it is meant to be pinned by.
+        if self.previous_hash and not re.match(_DIGEST_PATTERN, self.previous_hash):
+            raise ContractValidationError(f"invalid previous_hash: {self.previous_hash}")
+        for name in ("tools", "changes"):
+            if any(not isinstance(item, str) or not item.strip() for item in getattr(self, name)):
+                raise ContractValidationError(f"{name} must contain non-empty strings")
+        if self.outcome not in _OUTCOME_VALUES:
+            raise ContractValidationError(f"invalid outcome: {self.outcome}")
+        if not _ISO_TIMESTAMP.match(self.timestamp):
+            raise ContractValidationError(f"invalid timestamp: {self.timestamp}")
+        for entry in self.verification:
+            if not isinstance(entry, dict):
+                raise ContractValidationError("verification must contain objects")
+            # Round-trip through the check contract so an unknown status or a
+            # malformed digest is rejected here rather than at replay time.
+            VerificationResult.from_dict(entry)
+
+
 _CONTRACTS: dict[str, type[Contract]] = {
     name: cls
     for name, cls in {
@@ -777,6 +1106,24 @@ _CONTRACTS: dict[str, type[Contract]] = {
         "LearningEvent": LearningEvent,
         "execution_envelope": ExecutionEnvelope,
         "ExecutionEnvelope": ExecutionEnvelope,
+        "source_state": SourceState,
+        "SourceState": SourceState,
+        "trusted_change_report": TrustedChangeReport,
+        "TrustedChangeReport": TrustedChangeReport,
+        "evidence_chain_link": EvidenceChainLink,
+        "EvidenceChainLink": EvidenceChainLink,
+        "verification_result": VerificationResult,
+        "VerificationResult": VerificationResult,
+        "diff_summary": DiffSummary,
+        "DiffSummary": DiffSummary,
+        "trusted_change_metrics": TrustedChangeMetrics,
+        "TrustedChangeMetrics": TrustedChangeMetrics,
+        "acceptance_decision": AcceptanceDecision,
+        "AcceptanceDecision": AcceptanceDecision,
+        "route_recommendation": RouteRecommendation,
+        "RouteRecommendation": RouteRecommendation,
+        "regression_observation": RegressionObservation,
+        "RegressionObservation": RegressionObservation,
     }.items()
 }
 
@@ -937,6 +1284,15 @@ def _validate_field_value(annotation: Any, value: Any, field_name: str) -> None:
         return
     if annotation is Any or annotation is object:
         return
+    if _is_contract_type(annotation):
+        if isinstance(value, annotation):
+            return
+        if isinstance(value, dict):
+            # Recurse so nested contract violations surface their own
+            # messages (e.g. "missing required field(s): objective").
+            annotation.from_dict(value)
+            return
+        raise ContractValidationError(f"{field_name} has invalid type")
     if isinstance(annotation, type) and not isinstance(value, annotation):
         raise ContractValidationError(f"{field_name} has invalid type")
 
@@ -1055,6 +1411,16 @@ def _validate_contract_semantics(cls: type[Contract], payload: dict[str, Any]) -
                 frozenset({"deny", "replan_or_deny"}),
                 "verification.on_failure",
             )
+    elif cls is ExecutionEnvelope:
+        # NOD-002 / ADR-025: mirror the @bodanglin/verdict-contracts Zod schema
+        # (nonEmptyString for policy_digest and string-array items) so both
+        # runtimes accept/reject the shared envelope fixtures identically.
+        policy_digest = payload["policy_digest"]
+        if not isinstance(policy_digest, str) or not policy_digest.strip():
+            raise ContractValidationError("policy_digest must be a non-empty string")
+        for name in ("allowed_capabilities", "evidence_ids"):
+            if any(not isinstance(item, str) or not item.strip() for item in payload[name]):
+                raise ContractValidationError(f"{name} must contain non-empty strings")
     elif cls is RuntimeCandidate:
         _validate_enum(payload["availability"], _AVAILABILITY_STATES, "availability")
     elif cls is AvailabilitySnapshot:

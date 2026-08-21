@@ -7,6 +7,11 @@
     "routing_iterations": 10,
     "criticality": "medium"
   },
+  "thresholds": {
+    "contract_roundtrip": {"p95_ns_max": 5000000},
+    "dispatcher_eligibility": {"p95_ns_max": 10000000},
+    "compatibility_routing": {"p95_ns_max": 1000000000}
+  },
   "contracts": {
     "task_spec": {
       "objective": "Prepare a compatibility routing decision for a documentation update.",

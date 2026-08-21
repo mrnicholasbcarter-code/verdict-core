@@ -107,7 +107,10 @@ function rejectSecrets(value: unknown, path: readonly (string | number)[] = []):
   }
 }
 
-function rejectReceiptSensitiveFields(value: unknown, path: readonly (string | number)[] = []): void {
+function rejectReceiptSensitiveFields(
+  value: unknown,
+  path: readonly (string | number)[] = [],
+): void {
   if (Array.isArray(value)) {
     value.forEach((child, index) => rejectReceiptSensitiveFields(child, [...path, index]));
     return;
@@ -143,51 +146,63 @@ const nonNegativeInteger = z.number().int().nonnegative();
 
 export const evidenceAuthoritySchema = z.enum(['claimed', 'observed', 'verified', 'inferred']);
 export type EvidenceAuthority = z.output<typeof evidenceAuthoritySchema>;
-export const receiptKindSchema = z.enum(['decision', 'context', 'execution', 'verification', 'outcome']);
+export const receiptKindSchema = z.enum([
+  'decision',
+  'context',
+  'execution',
+  'verification',
+  'outcome',
+]);
 export type ReceiptKind = z.output<typeof receiptKindSchema>;
 
-const routeIdentitySchema = z.object({
-  gateway: nonEmptyString,
-  provider: nonEmptyString,
-  connection: nonEmptyString,
-  endpoint: nonEmptyString,
-  protocol: nonEmptyString,
-  model_id: nonEmptyString,
-  model_revision: nullableString.optional(),
-  account_class: nullableString.optional(),
-  endpoint_class: nullableString.optional(),
-  transformation_chain: z.array(nonEmptyString).default([]),
-  fallback_chain: z.array(nonEmptyString).default([]),
-}).strict();
+const routeIdentitySchema = z
+  .object({
+    gateway: nonEmptyString,
+    provider: nonEmptyString,
+    connection: nonEmptyString,
+    endpoint: nonEmptyString,
+    protocol: nonEmptyString,
+    model_id: nonEmptyString,
+    model_revision: nullableString.optional(),
+    account_class: nullableString.optional(),
+    endpoint_class: nullableString.optional(),
+    transformation_chain: z.array(nonEmptyString).default([]),
+    fallback_chain: z.array(nonEmptyString).default([]),
+  })
+  .strict();
 
-const evidenceItemSchema = z.object({
-  authority: evidenceAuthoritySchema,
-  source: nonEmptyString,
-  method: nonEmptyString,
-  adapter_version: nonEmptyString,
-  observed_at: nonEmptyString,
-  expires_at: nonEmptyString,
-  scope: nonEmptyString,
-  confidence: z.number().finite().min(0).max(1),
-  evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  limitations: z.array(nonEmptyString).default([]),
-  sample_count: nonNegativeInteger.min(1).optional(),
-}).strict();
+const evidenceItemSchema = z
+  .object({
+    authority: evidenceAuthoritySchema,
+    source: nonEmptyString,
+    method: nonEmptyString,
+    adapter_version: nonEmptyString,
+    observed_at: nonEmptyString,
+    expires_at: nonEmptyString,
+    scope: nonEmptyString,
+    confidence: z.number().finite().min(0).max(1),
+    evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    limitations: z.array(nonEmptyString).default([]),
+    sample_count: nonNegativeInteger.min(1).optional(),
+  })
+  .strict();
 
-const evidenceReceiptSchema = z.object({
-  schema_version: schemaVersion.default('1'),
-  receipt_id: nonEmptyString,
-  kind: receiptKindSchema,
-  scope: nonEmptyString,
+const evidenceReceiptSchema = z
+  .object({
+    schema_version: schemaVersion.default('1'),
+    receipt_id: nonEmptyString,
+    kind: receiptKindSchema,
+    scope: nonEmptyString,
     occurred_at: nonEmptyString,
     requested_alias: nonEmptyString.optional(),
     selected_route: routeIdentitySchema.optional(),
     actual_route: routeIdentitySchema.optional(),
     evidence: z.array(evidenceItemSchema).min(1),
-  payload: jsonObject.default({}),
-  parent_receipt_ids: z.array(nonEmptyString).default([]),
-  extensions: jsonObject.default({}),
-}).strict();
+    payload: jsonObject.default({}),
+    parent_receipt_ids: z.array(nonEmptyString).default([]),
+    extensions: jsonObject.default({}),
+  })
+  .strict();
 
 const workflowActions = [
   'answer',
@@ -353,6 +368,40 @@ const verificationPlanSchema = z
   })
   .strict();
 
+/**
+ * A single verification check plus the provenance needed to re-run it.
+ *
+ * `status` keeps `unknown` distinct from `passed`/`failed` so an inconclusive
+ * check is never read as a pass. `raw_output` is rejected when it carries
+ * credentials, mirroring `VerificationResult.__post_init__` in Python.
+ */
+const verificationResultSchema = z
+  .object({
+    check_name: nonEmptyString,
+    check_type: z.enum(['diff_boundary', 'focused_tests', 'regression', 'policy', 'ci', 'custom']),
+    status: z.enum(['passed', 'failed', 'skipped', 'unknown']),
+    details: jsonObject.default({}),
+    artifact_digests: z.array(z.string().regex(/^sha256:[0-9a-f]{64}$/)).default([]),
+    duration_ms: nonNegativeInteger.nullable().default(null),
+    command: z.string().default(''),
+    runtime: z.string().default(''),
+    provenance: z.string().default(''),
+    policy_requirement: z.string().default(''),
+    raw_output: z.string().default(''),
+    schema_version: schemaVersion.default('1'),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.raw_output && redactContractSecrets(value.raw_output) !== value.raw_output) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['raw_output'],
+        message:
+          'raw_output contains secret-bearing content; store the redacted text or its fingerprint instead',
+      });
+    }
+  });
+
 const workflowPlanSchema = z
   .object({
     steps: workflowStepsSchema,
@@ -380,6 +429,45 @@ const availabilitySnapshotSchema = z
   })
   .strict();
 
+/**
+ * ExecutionEnvelope v1 — Immutable authorization token issued by Core.
+ *
+ * Contains the decision provenance, policy constraints, and cryptographic
+ * binding. Must be validated by edge adapters (e.g., verdict-node) before
+ * forwarding any request upstream.
+ *
+ * Strict unknown-field rejection: any field not explicitly declared is an
+ * `invalid_value` error. This prevents schema drift and ensures tamper
+ * evidence.
+ */
+const executionEnvelopeConstraintsSchema = z
+  .object({
+    allowed_models: z.array(nonEmptyString).default([]),
+    allowed_tools: z.array(nonEmptyString).default([]),
+    allowed_agents: z.array(nonEmptyString).default([]),
+    budget_usd: nonNegativeNumber.optional(),
+    max_request_usd: nonNegativeNumber.optional(),
+    max_latency_ms: nonNegativeInteger.optional(),
+    risk_ceiling: z.enum(safetyLevels).optional(),
+    required_verification: z.array(nonEmptyString).default([]),
+  })
+  .strict();
+
+const executionEnvelopeSchema = z
+  .object({
+    schema_version: schemaVersion.default('1'),
+    task_spec: taskSpecSchema,
+    eligibility_decision: jsonObject,
+    policy_digest: nonEmptyString,
+    allowed_capabilities: z.array(nonEmptyString),
+    execution_constraints: executionEnvelopeConstraintsSchema,
+    verification_requirements: verificationPlanSchema,
+    evidence_ids: z.array(nonEmptyString),
+    routing_decision: jsonObject.nullable().default(null),
+    created_at: nullableString.default(null),
+  })
+  .strict();
+
 const routingDecisionSchema = z
   .object({
     selected_route: jsonObject,
@@ -395,6 +483,11 @@ const routingDecisionSchema = z
     request_id: nullableString.default(null),
     policy_version: z.string().default('1'),
     schema_version: schemaVersion.default('1'),
+    /** Optional Core-issued execution envelope for edge enforcement. */
+    execution_envelope: executionEnvelopeSchema.optional(),
+    /** Feature 003 (VER-002 #219): stable decision id + tamper-evident receipt. */
+    decision_id: nullableString.default(null),
+    receipt: jsonObject.nullable().default(null),
   })
   .strict();
 
@@ -514,6 +607,106 @@ const learningEventSchema = z
   })
   .strict();
 
+const sourceStateSchema = z
+  .object({
+    schema_version: schemaVersion.default('1'),
+    source_state_id: nonEmptyString,
+    repository_url: nonEmptyString,
+    commit_sha: nonEmptyString,
+    commit_message: z.string().optional(),
+    commit_author: z.string().optional(),
+    // commit_timestamp defaults to "" on the Python contract (str = ""), so a
+    // minimal source binding may omit it; match that by defaulting to null
+    // (parity, feature 002).
+    commit_timestamp: nullableString.optional().default(null),
+    branch: nonEmptyString,
+    tag: nullableString.optional(),
+    dirty_files: z.array(nonEmptyString).default([]),
+    untracked_files: z.array(nonEmptyString).default([]),
+    submodule_states: z.record(z.string(), nonEmptyString).default({}),
+    worktree_path: nullableString.optional(),
+    snapshot_timestamp: nonEmptyString,
+    snapshot_method: z
+      .enum(['clean_commit', 'dirty_snapshot', 'stash_restore'])
+      .default('clean_commit'),
+    parent_source_state_id: nullableString.optional(),
+  })
+  .strict();
+
+const trustedChangeReportSchema = z
+  .object({
+    schema_version: schemaVersion.default('1'),
+    report_id: nonEmptyString,
+    objective: nonEmptyString,
+    task_type: nonEmptyString,
+    source_state: sourceStateSchema,
+    work_unit_ids: z.array(nonEmptyString).min(1),
+    // route_decision and evidence_receipts are intentionally unstructured on the
+    // canonical Python contract (verdict/contracts.py: `dict[str, Any]` and
+    // `list[dict[str, Any]]`). FR-010: the carrier projects the already-decided
+    // route and receipt evidence *as data*, not re-derived, so these fields must
+    // not impose a stricter nested shape than Python accepts (parity gap fix,
+    // feature 002). Redaction still strips secret-bearing content by field name
+    // via redactContractSecrets, independent of the nested schema.
+    route_decision: jsonObject.default({}),
+    evidence_receipts: z.array(jsonObject).default([]),
+    verification_results: z.array(verificationResultSchema).default([]),
+    diff_summary: z.object({
+      files_changed: z.array(nonEmptyString).default([]),
+      lines_added: nonNegativeInteger.default(0),
+      lines_removed: nonNegativeInteger.default(0),
+      protected_files_touched: z.array(nonEmptyString).default([]),
+      boundary_violations: z.array(nonEmptyString).default([]),
+      diff_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    }),
+    metrics: z
+      .object({
+        latency_ms: nonNegativeInteger.default(0),
+        tokens_in: nonNegativeInteger.default(0),
+        tokens_out: nonNegativeInteger.default(0),
+        estimated_cost_usd: z.number().finite().nonnegative().nullable().default(null),
+        failure_class: z
+          .enum([
+            'none',
+            'code_quality',
+            'operational',
+            'policy',
+            'verification',
+            'timeout',
+            'unknown',
+          ])
+          .default('unknown'),
+      })
+      .default({}),
+    acceptance: z.object({
+      decision: z.enum(['accepted', 'denied', 'unknown']),
+      reason: nonEmptyString,
+      conditions: z.array(nonEmptyString).default([]),
+    }),
+    route_recommendation: z
+      .object({
+        category: nonEmptyString,
+        current_route: nonEmptyString,
+        recommended_route: nonEmptyString,
+        confidence: z.number().finite().min(0).max(1),
+        sample_size: nonNegativeInteger.default(0),
+        limitations: z.array(nonEmptyString).default([]),
+        can_promote: z.boolean().default(false),
+      })
+      .nullable()
+      .default(null),
+    regression_observation: z
+      .object({
+        observed: z.boolean().default(false),
+        action: z.enum(['none', 'quarantine', 'rollback', 'replan']).default('none'),
+        details: jsonObject.default({}),
+      })
+      .default({}),
+    received_at: nonEmptyString,
+    generated_at: nonEmptyString,
+  })
+  .strict();
+
 const schemas = {
   task_spec: taskSpecSchema,
   TaskSpec: taskSpecSchema,
@@ -530,10 +723,15 @@ const schemas = {
   routing_decision: routingDecisionSchema,
   RoutingDecision: routingDecisionSchema,
   RoutingDecisionContract: routingDecisionSchema,
+  execution_envelope: executionEnvelopeSchema,
+  ExecutionEnvelope: executionEnvelopeSchema,
+  ExecutionEnvelopeContract: executionEnvelopeSchema,
   fallback_attempt: fallbackAttemptSchema,
   FallbackAttempt: fallbackAttemptSchema,
   verification_plan: verificationPlanSchema,
   VerificationPlan: verificationPlanSchema,
+  verification_result: verificationResultSchema,
+  VerificationResult: verificationResultSchema,
   task_episode: taskEpisodeSchema,
   TaskEpisode: taskEpisodeSchema,
   workflow_episode: workflowEpisodeSchema,
@@ -548,6 +746,10 @@ const schemas = {
   LearningEvent: learningEventSchema,
   evidence_receipt: evidenceReceiptSchema,
   EvidenceReceipt: evidenceReceiptSchema,
+  source_state: sourceStateSchema,
+  SourceState: sourceStateSchema,
+  trusted_change_report: trustedChangeReportSchema,
+  TrustedChangeReport: trustedChangeReportSchema,
 } as const;
 
 export type ContractName = keyof typeof schemas;
@@ -557,8 +759,10 @@ export type ModelPassport = z.output<typeof modelPassportSchema>;
 export type RuntimeCandidate = z.output<typeof runtimeCandidateSchema>;
 export type AvailabilitySnapshot = z.output<typeof availabilitySnapshotSchema>;
 export type VerificationPlan = z.output<typeof verificationPlanSchema>;
+export type VerificationResult = z.output<typeof verificationResultSchema>;
 export type WorkflowPlan = z.output<typeof workflowPlanSchema>;
 export type RoutingDecision = z.output<typeof routingDecisionSchema>;
+export type ExecutionEnvelope = z.output<typeof executionEnvelopeSchema>;
 export type FallbackAttempt = z.output<typeof fallbackAttemptSchema>;
 export type OutcomeEvent = z.output<typeof outcomeEventSchema>;
 export type TaskEpisode = z.output<typeof taskEpisodeSchema>;
@@ -568,6 +772,8 @@ export type TaskWorkflowOutcomeEpisode = z.output<typeof taskWorkflowOutcomeEpis
 export type LearningEvent = z.output<typeof learningEventSchema>;
 export type RouteIdentity = z.output<typeof routeIdentitySchema>;
 export type EvidenceItem = z.output<typeof evidenceItemSchema>;
+export type SourceState = z.output<typeof sourceStateSchema>;
+export type TrustedChangeReport = z.output<typeof trustedChangeReportSchema>;
 export type EvidenceReceipt = z.output<typeof evidenceReceiptSchema>;
 
 function errorCategory(error: ZodError, path: readonly (string | number)[]): ContractErrorCategory {
