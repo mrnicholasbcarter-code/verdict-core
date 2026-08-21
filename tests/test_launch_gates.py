@@ -11,7 +11,8 @@ def test_security_workflow_has_non_advisory_audits_and_secret_hygiene_gate():
         "- name: Run dependency audit\n        run: python -m pip_audit --local --skip-editable"
         in ci_workflow
     )
-    assert "git ls-files" in workflow
+    assert "git ls-files -z" in workflow
+    assert 'sys.stdin.buffer.read().split(b"\\0")' in workflow
     assert "|| true" not in workflow + ci_workflow
     assert "continue-on-error" not in workflow + ci_workflow
     assert "if: false" not in workflow + ci_workflow
@@ -64,27 +65,35 @@ def test_release_checklist_requires_evidence_bound_signoff():
     assert "| CodeQL |" in checklist
     assert "| OSV |" in checklist
     assert "| CodeQL/OSV |" not in checklist
+    assert "Launch decision: **PENDING EVIDENCE**" in checklist
 
 
 def _matches_committed_credential_file(filename: str, workflow: str) -> bool:
-    """Run the workflow's checked-in regex through grep for a representative path."""
+    """Exercise the checked-in pattern for representative credential paths."""
     pattern = next(
-        line.split("grep -Ei '", 1)[1].rsplit("'", 1)[0]
-        for line in workflow.splitlines()
-        if "grep -Ei" in line
+        line.strip()[2:-2] for line in workflow.splitlines() if line.strip().startswith('r"(^|/)')
     )
     result = subprocess.run(
-        ["grep", "-Ei", pattern], input=f"{filename}\n", text=True, capture_output=True, check=False
+        [
+            "python3",
+            "-c",
+            "import re, sys; raise SystemExit(not bool(re.search(sys.argv[1], sys.argv[2], re.I)))",
+            pattern,
+            filename,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
     )
     return result.returncode == 0
 
 
 def _credential_gate_passes_for_tracked_files(workflow: str) -> bool:
     """Verify the checked-in gate accepts only the repository's approved paths."""
-    command = next(
-        line.strip()
-        for line in workflow.splitlines()
-        if line.strip().startswith("! git ls-files |")
+    assert 'allowed = {".env.memory.example"}' in workflow
+    assert "pattern.search(path)" in workflow
+    command = "git ls-files -z | python3 -c " + repr(
+        "import re, sys; allowed={'.env.memory.example'}; pattern=re.compile(r'(^|/)(\\.env(rc|([._-].*)?)?|[^/]*\\.env|.*\\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$', re.I); paths=(path.decode('utf-8', 'surrogateescape') for path in sys.stdin.buffer.read().split(b'\\0')); blocked=[path for path in paths if path and path not in allowed and pattern.search(path)]; raise SystemExit(bool(blocked))"
     )
     result = subprocess.run(
         ["bash", "-o", "pipefail", "-c", command], text=True, capture_output=True, check=False

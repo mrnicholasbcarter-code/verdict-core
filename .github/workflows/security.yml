@@ -40,7 +40,21 @@ jobs:
 
       - name: Verify repository has no committed credential files
         run: |
-          ! git ls-files | grep -Ev '^\.env\.memory\.example$' | grep -Ei '(^|/)(\.env(rc|([._-].*)?)?|[^/]*\.env|.*\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$'
+          git ls-files -z | python3 -c '
+          import re
+          import sys
+
+          allowed = {".env.memory.example"}
+          pattern = re.compile(
+              r"(^|/)(\.env(rc|([._-].*)?)?|[^/]*\.env|.*\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$",
+              re.IGNORECASE,
+          )
+          paths = (path.decode("utf-8", "surrogateescape") for path in sys.stdin.buffer.read().split(b"\0"))
+          blocked = [path for path in paths if path and path not in allowed and pattern.search(path)]
+          if blocked:
+              print("Committed credential-shaped files:\n" + "\n".join(blocked), file=sys.stderr)
+              raise SystemExit(1)
+          '
 
   node-security:
     runs-on: ubuntu-latest
