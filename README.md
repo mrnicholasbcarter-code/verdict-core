@@ -4,7 +4,7 @@
 
 **Use the right AI model for every task—not the most expensive one.**
 
-Verdict stretches your Claude Code Max, Codex Pro, 9router, and OmniRoute setup further by routing each task to the least expensive capable model, while reserving frontier models for work that truly needs them. Configure once, use more of what you already have, and keep your best-model usage under control.
+Verdict is a local-first, policy-gated control plane for agent model selection. Task routing is explicit and opt-in; no provider or router is required for the offline proof paths.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -22,7 +22,7 @@ Verdict stretches your Claude Code Max, Codex Pro, 9router, and OmniRoute setup 
 
 ### The problem it solves
 
-Claude Code Max and Codex Pro give you access to excellent frontier models—but frontier usage is limited and expensive to burn on every action. At the same time, 9router and OmniRoute may already expose many capable alternatives: free models, low-cost models, fast models, and specialists.
+Agents may use frontier, hosted, or local providers, but Verdict does not assume that a catalog entry is reachable or qualified.
 
 Verdict is the decision layer between your task and those providers:
 
@@ -70,14 +70,14 @@ Verdict Core is a **deterministic execution-policy control plane** that sits bet
 └─────────────────────────┬───────────────────────────────────────┘
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              OMNIROUTE (Intelligent Model Router)               │
+│              EXPLICIT PROVIDER / ROUTE ADAPTERS                │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
 │  │  19 Strategies│ │  Quota Guard │ │  Cost/Quality│            │
 │  └──────────────┘ └──────────────┘ └──────────────┘            │
 └─────────────────────────┬───────────────────────────────────────┘
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    MODEL PROVIDERS (3500+ models)               │
+│              MODEL PROVIDERS (operator-configured)              │
 │  Anthropic • OpenAI • OpenRouter • Local • Custom              │
 └─────────────────────────────────────────────────────────────────┘
 ```
