@@ -24,6 +24,8 @@ def test_security_workflow_has_non_advisory_audits_and_secret_hygiene_gate():
         "id_ed25519",
     ):
         assert _matches_committed_credential_file(filename, workflow)
+    assert _matches_committed_credential_file("secrets/.env.memory.example", workflow)
+    assert _matches_committed_credential_file(".ENV.MEMORY.EXAMPLE", workflow)
     assert _credential_gate_passes_for_tracked_files(workflow)
 
 
@@ -49,6 +51,9 @@ def test_release_checklist_requires_evidence_bound_signoff():
         "Reviewer/date",
     ):
         assert field in checklist
+    assert "| CodeQL |" in checklist
+    assert "| OSV |" in checklist
+    assert "CodeQL/OSV" not in checklist
 
 
 def _matches_committed_credential_file(filename: str, workflow: str) -> bool:

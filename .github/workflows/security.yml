@@ -40,7 +40,7 @@ jobs:
 
       - name: Verify repository has no committed credential files
         run: |
-          ! git ls-files | grep -Evi '(^|/)(\.env\.memory\.example)$' | grep -Ei '(^|/)(\.env([._-].*)?|.*\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$'
+          ! git ls-files | grep -Ev '^\.env\.memory\.example$' | grep -Ei '(^|/)(\.env([._-].*)?|.*\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$'
 
   node-security:
     runs-on: ubuntu-latest

@@ -13,7 +13,8 @@ not a launch approval.
 | CI |  |  |  |  |  |
 | Bandit |  |  |  |  |  |
 | Dependency audit |  |  |  |  |  |
-| CodeQL/OSV |  |  |  |  |  |
+| CodeQL |  |  |  |  |  |
+| OSV |  |  |  |  |  |
 | Wheel/sdist smoke |  |  |  |  |  |
 | Documentation smoke |  |  |  |  |  |
 
