@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -240,6 +241,8 @@ def test_run_accepted_and_denied_demo_is_deterministic() -> None:
 
 def test_installed_wheel_emits_both_legs_and_writes_no_files(tmp_path: Path) -> None:
     """The packaged demo runs without checkout imports, credentials, or side effects."""
+    if shutil.which("uv") is None:
+        pytest.skip("uv is required for the isolated wheel portability test")
     wheel_dir = tmp_path / "wheel"
     venv_dir = tmp_path / "venv"
     run_dir = tmp_path / "run"
