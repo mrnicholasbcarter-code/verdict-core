@@ -1,8 +1,12 @@
 name: Publish Python Package to PyPI
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish
+        required: true
+        type: string
 
 jobs:
   build:
@@ -10,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.tag }}
     
     - name: Set up Python
       uses: actions/setup-python@v7
@@ -37,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/verdict
+      url: https://pypi.org/p/verdict-core
     permissions:
       id-token: write  # IMPORTANT: mandatory for trusted publishing
       contents: read

@@ -7,7 +7,7 @@
 - [x] Implement Hatch builds in the tag workflows.
 - [x] Enable GitHub artifact attestations with OIDC permissions.
 - [x] Make the tag-created GitHub Release immutable and artifact-scoped.
-- [ ] Run focused tests and local Hatch build/install verification.
-- [ ] Run Ruff, mypy, and the full Python test suite.
-- [ ] Obtain Sol read-only review and address any blocking findings.
-- [ ] Commit and report exact evidence.
+- [x] Run focused tests and local Hatch build/install verification.
+- [x] Run Ruff, mypy, and the full Python test suite.
+- [x] Obtain Sol read-only review and address any blocking findings.
+- [ ] Commit follow-up fix and report exact evidence.
