@@ -14,9 +14,12 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
+from verdict.autodev_run import DEFAULT_EXECUTOR_MODEL
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
+from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL
 from verdict.gate import Gate
 from verdict.models import ModelInfo, ProviderConfig, TaskSpec
+from verdict.patch_executor import DEFAULT_BASE_URL
 
 console = Console()
 
@@ -742,6 +745,126 @@ def cmd_probe(
     console.print(table)
     if not all(e.get("ok") for e in results):
         sys.exit(1)
+
+
+def cmd_autodev(
+    objective: str,
+    repo: str,
+    *,
+    orchestrator_model: str,
+    executor_model: str,
+    base_url: str,
+    output_json: bool = False,
+    allow_live: bool = False,
+    no_mechanical: bool = False,
+    dry_run: bool = False,
+) -> None:
+    """Decompose an objective, execute each unit, verify it, and record the outcome.
+
+    This edits the working tree and calls live models, so it requires explicit
+    consent via ``--allow-live``.  ``--dry-run`` shows the plan and its measured
+    cost without executing any unit.
+    """
+    from verdict.autodev_run import collect_ruff_evidence, run_autodev
+    from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
+
+    repo_path = Path(repo).resolve()
+    if not allow_live:
+        message = (
+            "autodev calls live models and edits the working tree; pass --allow-live to consent"
+        )
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(2)
+
+    api_key = os.getenv("OMNIROUTE_API_KEY")
+    evidence = collect_ruff_evidence(repo_path)
+
+    if dry_run:
+        decomposer = Decomposer(
+            DecompositionConfig(model=orchestrator_model, base_url=base_url, api_key=api_key)
+        )
+        try:
+            plan = decomposer.decompose(objective, repo_root=repo_path, evidence=evidence)
+        except DecompositionError as exc:
+            _report_autodev_failure(str(exc), output_json=output_json)
+            raise SystemExit(1) from exc
+        if output_json:
+            print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+        else:
+            console.print(f"[bold]{len(plan.units)} unit(s) planned[/bold] by {plan.model}")
+            for unit in plan.units:
+                console.print(
+                    f"  [cyan]{unit.unit_id}[/cyan]  {', '.join(unit.owned_files)}\n"
+                    f"      verify: {' '.join(unit.verification_command)}"
+                )
+            console.print(
+                f"orchestrator tokens: {plan.usage.total_tokens}"
+                f"{'' if plan.usage.reported else ' (not reported by provider)'}"
+            )
+        return
+
+    try:
+        report = run_autodev(
+            objective,
+            repo_path,
+            orchestrator_model=orchestrator_model,
+            executor_model=executor_model,
+            base_url=base_url,
+            api_key=api_key,
+            evidence=evidence,
+            mechanical=not no_mechanical,
+        )
+    except DecompositionError as exc:
+        # A decomposition that cannot state its own checks is a reportable
+        # negative result about decomposition, not a crash.
+        _report_autodev_failure(str(exc), output_json=output_json)
+        raise SystemExit(1) from exc
+
+    if output_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        console.print(report.summary())
+    if report.failed:
+        sys.exit(1)
+
+
+def cmd_autodev_golden_path(
+    objective: str,
+    repo: str,
+    memory_path: str,
+    verification_command: list[str],
+    timeout_seconds: float,
+    owned_paths: list[str],
+    output_json: bool,
+) -> None:
+    """Run the offline, real-repository three-stage acceptance path."""
+    from verdict.golden_path import run_golden_path
+
+    report = run_golden_path(
+        objective,
+        repo,
+        memory_path=memory_path,
+        verification_command=verification_command,
+        timeout_seconds=timeout_seconds,
+        owned_paths=owned_paths,
+    )
+    if output_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        console.print(report.summary())
+        console.print(f"report digest: {report.report_digest}")
+    if report.decision != "accepted":
+        raise SystemExit(1)
+
+
+def _report_autodev_failure(reason: str, *, output_json: bool) -> None:
+    if output_json:
+        print(json.dumps({"error": "decomposition failed", "reason": reason}, sort_keys=True))
+    else:
+        console.print(f"[bold red]decomposition failed:[/bold red] {reason}")
 
 
 def _probe_result_payload(observation: Any) -> dict[str, Any]:
@@ -1817,6 +1940,49 @@ def main() -> None:
         help="Decide from the static catalog only — no network discovery or probes",
     )
 
+    autodev_p = subparsers.add_parser(
+        "autodev", help="Decompose an objective, execute each unit on a cheap route, and verify"
+    )
+    autodev_p.add_argument("--objective", required=True, help="What the run must accomplish")
+    autodev_p.add_argument("--repo", default=".", help="Repository to work in (default: .)")
+    autodev_p.add_argument(
+        "--orchestrator-model",
+        default=DEFAULT_ORCHESTRATOR_MODEL,
+        help=f"Model that decomposes and plans (default: {DEFAULT_ORCHESTRATOR_MODEL})",
+    )
+    autodev_p.add_argument(
+        "--executor-model",
+        default=DEFAULT_EXECUTOR_MODEL,
+        help=f"Cheap route that executes units (default: {DEFAULT_EXECUTOR_MODEL})",
+    )
+    autodev_p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OpenAI-compatible gateway")
+    autodev_p.add_argument("--json", action="store_true", help="Emit the machine-readable report")
+    autodev_p.add_argument(
+        "--allow-live",
+        action="store_true",
+        help="Consent to live model calls and working-tree edits",
+    )
+    autodev_p.add_argument(
+        "--no-mechanical",
+        action="store_true",
+        help="Disable the zero-token deterministic tier and send every unit to a model",
+    )
+    autodev_p.add_argument(
+        "--dry-run", action="store_true", help="Show the plan and its cost without executing"
+    )
+
+    golden_p = subparsers.add_parser(
+        "autodev-golden-path",
+        help="Run offline discovery, durable memory, and bounded verification",
+    )
+    golden_p.add_argument("--objective", required=True, help="Bounded mission objective")
+    golden_p.add_argument("--repo", required=True, help="Real Git repository to inspect")
+    golden_p.add_argument("--memory-path", default=".verdict-golden-memory.db")
+    golden_p.add_argument("--verify", nargs="+", default=["git", "status", "--short"])
+    golden_p.add_argument("--owned-path", action="append", default=[])
+    golden_p.add_argument("--timeout", type=float, default=10.0)
+    golden_p.add_argument("--json", action="store_true")
+
     stats_p = subparsers.add_parser("stats", help="View routing analytics")
     stats_p.add_argument("--log_path", default="verdict-decisions.jsonl")
 
@@ -2110,9 +2276,29 @@ def main() -> None:
                 dry_run=args.dry_run, output_json=args.json, non_interactive=args.non_interactive
             )
     elif args.command == "route":
-        cmd_route(args.task, args.criticality, args.terse, allow_offline=args.allow_offline)
-    elif args.command == "compare":
-        cmd_compare(args.task, args.criticality, allow_offline=args.allow_offline)
+        cmd_route(args.task, args.criticality, args.terse)
+    elif args.command == "autodev":
+        cmd_autodev(
+            args.objective,
+            args.repo,
+            orchestrator_model=args.orchestrator_model,
+            executor_model=args.executor_model,
+            base_url=args.base_url,
+            output_json=args.json,
+            allow_live=args.allow_live,
+            no_mechanical=args.no_mechanical,
+            dry_run=args.dry_run,
+        )
+    elif args.command == "autodev-golden-path":
+        cmd_autodev_golden_path(
+            args.objective,
+            args.repo,
+            args.memory_path,
+            args.verify,
+            args.timeout,
+            args.owned_path,
+            args.json,
+        )
     elif args.command == "stats":
         cmd_stats(args.log_path)
     elif args.command == "benchmark":

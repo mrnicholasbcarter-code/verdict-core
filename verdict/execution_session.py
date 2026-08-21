@@ -338,10 +338,10 @@ class ExecutionSession:
         step = self._find_step(step_id)
         if step.status in {"completed", "failed"}:
             raise ExecutionSessionError(f"step {step_id!r} already {step.status}")
+        # A committed idempotent/reversible step already landed its durable effect on an
+        # earlier attempt; it skips re-committing below and finalizes normally.
         if step.committed and step.side_effect_kind == "irreversible":
             raise ExecutionSessionError(f"irreversible step {step_id!r} already committed")
-        # if committed and idempotent/reversible: the durable effect already
-        # landed on an earlier attempt; skip re-committing and finalize below.
         if model_id is not None:
             self.model_id = model_id
         if not step.committed and step.side_effect_kind != "read-only":

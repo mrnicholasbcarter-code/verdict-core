@@ -278,7 +278,6 @@ class TestReceiptChainIntegrity:
         DurableEvidenceStore(":memory:")
         # The store creates immutable decision snapshots
         # Events are append-only
-        pass
 
 
 class TestContractualBoundaries:

@@ -526,11 +526,26 @@ class RufloAdapter:
         return self._capability_manifest
 
     def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Invoke the configured transport, whether it's a RufloTransport or a bare callable."""
-        if isinstance(self._transport, RufloTransport):
-            return getattr(self._transport, method)(params)  # type: ignore[no-any-return]
-        assert self._transport is not None
-        return self._transport({"method": method, "params": params})
+        """Send one request through the configured transport.
+
+        Accepts either a :class:`RufloTransport` (method-per-operation) or a bare
+        callable taking a ``{"method": ..., "params": ...}`` envelope, so both the
+        real transports and the test doubles share one call path.
+        """
+        transport = self._transport
+        if transport is None:
+            raise RufloUnavailableError("no transport configured")
+        if isinstance(transport, RufloTransport):
+            operations: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+                "submit": transport.submit,
+                "status": transport.status,
+                "control": transport.control,
+                "result": transport.result,
+            }
+            if method not in operations:
+                raise RufloUnavailableError(f"unsupported transport method: {method!r}")
+            return operations[method](params)
+        return transport({"method": method, "params": params})
 
     def submit(
         self,
