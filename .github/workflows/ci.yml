@@ -99,6 +99,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install --upgrade "setuptools>=83.0.0"
           python -m pip install bandit pip-audit
           python -m pip install -e ".[dev,server]"
       - name: Run Bandit Security Check

@@ -7,6 +7,7 @@ def test_security_workflow_has_non_advisory_audits_and_secret_hygiene_gate():
     ci_workflow = Path(".github/workflows/ci.yml").read_text()
     assert "- name: Run pip-audit\n        run: uv run pip-audit --local" in workflow
     assert "- name: Run bandit\n        run: uv run bandit -r verdict -ll -s B108" in workflow
+    assert 'python -m pip install --upgrade "setuptools>=83.0.0"' in ci_workflow
     assert (
         "- name: Run dependency audit\n        run: python -m pip_audit --local --skip-editable"
         in ci_workflow
