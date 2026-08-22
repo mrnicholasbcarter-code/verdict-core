@@ -92,8 +92,8 @@ def test_release_workflow_is_the_only_npm_publication_authority():
     contracts_workflow = _workflow("npm-publish-contracts.yml")
     client_workflow = _workflow("npm-publish-client.yml")
 
-    assert "npm publish release-assets/bodanglin-verdict-contracts-" in release_workflow
-    assert "npm publish release-assets/bodanglin-verdict-client-" in release_workflow
+    assert "npm publish ./release-assets/bodanglin-verdict-contracts-" in release_workflow
+    assert "npm publish ./release-assets/bodanglin-verdict-client-" in release_workflow
     assert "environment: pypi" in release_workflow
     assert "NODE_AUTH_TOKEN" not in release_workflow
     assert "npm install --global npm@11.5.1" in release_workflow
@@ -102,6 +102,14 @@ def test_release_workflow_is_the_only_npm_publication_authority():
         assert "workflow_dispatch:" in workflow
         assert "release:" not in workflow
         assert "npm publish" not in workflow
+
+
+def test_release_workflow_publishes_npm_tarballs_as_local_paths():
+    workflow = _workflow("release.yml")
+
+    assert "npm publish ./release-assets/bodanglin-verdict-contracts-" in workflow
+    assert "npm publish ./release-assets/bodanglin-verdict-client-" in workflow
+    assert "npm publish release-assets/" not in workflow
 
 
 def test_release_workflow_requires_one_synchronized_version():
