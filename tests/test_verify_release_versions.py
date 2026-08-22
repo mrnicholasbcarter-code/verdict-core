@@ -6,6 +6,12 @@ from pathlib import Path
 SCRIPT = Path("scripts/verify_release_versions.py")
 
 
+def test_verifier_has_no_python_311_only_tomllib_dependency():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "tomllib" not in source
+
+
 def _write_candidate(root: Path, *, python: str, contracts: str, client: str) -> None:
     (root / "contracts").mkdir()
     (root / "verdict/client-sdk").mkdir(parents=True)

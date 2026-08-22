@@ -8,8 +8,6 @@ import json
 import re
 from pathlib import Path
 
-import tomllib
-
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
@@ -20,12 +18,25 @@ def _json(path: Path) -> dict[str, object]:
     return value
 
 
+def _project_version(path: Path) -> str:
+    source = path.read_text(encoding="utf-8")
+    project = re.search(r"^\[project\]\s*$", source, re.MULTILINE)
+    if project is None:
+        raise SystemExit(f"missing [project] table: {path}")
+    remainder = source[project.end() :]
+    following_table = re.search(r"^\[", remainder, re.MULTILINE)
+    project_table = remainder[: following_table.start()] if following_table else remainder
+    version = re.search(r'^version\s*=\s*["\']([^"\']+)["\']\s*$', project_table, re.MULTILINE)
+    if version is None:
+        raise SystemExit(f"missing project version: {path}")
+    return version.group(1)
+
+
 def verify(root: Path, tag: str) -> str:
-    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     contracts = _json(root / "contracts/package.json")
     client = _json(root / "verdict/client-sdk/package.json")
     versions = {
-        "python": project["project"]["version"],
+        "python": _project_version(root / "pyproject.toml"),
         "contracts": contracts["version"],
         "client": client["version"],
     }
@@ -59,7 +70,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         version = verify(args.root.resolve(), args.tag)
-    except (KeyError, OSError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+    except (KeyError, OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"cannot verify release versions: {exc}") from exc
     print(f"verified synchronized release version: {version}")
 
