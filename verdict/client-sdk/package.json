@@ -1,6 +1,6 @@
 {
   "name": "@bodanglin/verdict-client",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "TypeScript HTTP client for Verdict Core REST API",
   "license": "MIT",
   "type": "module",
@@ -22,28 +22,28 @@
     "build": "tsc",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts",
+    "lint": "tsc --noEmit",
     "verify:package": "npm run build && node scripts/verify-package.mjs"
   },
   "peerDependencies": {
-    "@bodanglin/verdict-contracts": "^0.1.0"
+    "@bodanglin/verdict-contracts": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@bodanglin/verdict-contracts": "^0.1.0",
+    "@bodanglin/verdict-contracts": "^0.2.0",
     "typescript": "~5.6.0",
-    "vitest": "^1.6.1"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=18"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/verdict/verdict-core.git"
+    "url": "git+https://github.com/mrnicholasbcarter-code/verdict-core.git"
   },
-  "homepage": "https://github.com/verdict/verdict-core#readme",
+  "homepage": "https://github.com/mrnicholasbcarter-code/verdict-core#readme",
   "bugs": {
-    "url": "https://github.com/verdict/verdict-core/issues"
+    "url": "https://github.com/mrnicholasbcarter-code/verdict-core/issues"
   },
   "publishConfig": {
     "access": "public"

@@ -8,6 +8,7 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       contents: write
       packages: write
@@ -31,6 +32,11 @@ jobs:
           cache: npm
           cache-dependency-path: contracts/package-lock.json
 
+      - name: Install npm with trusted-publishing support
+        run: |
+          npm install --global npm@11.5.1
+          npm --version | grep -E '^11\.(5\.[1-9]|[6-9]\.|[1-9][0-9]\.)'
+
       - name: Install Hatch
         run: python -m pip install hatch twine
 
@@ -42,6 +48,35 @@ jobs:
 
       - name: Install dependencies (Node)
         run: npm ci --workspaces
+
+      - name: Verify synchronized release versions
+        run: python3 scripts/verify_release_versions.py --tag "$GITHUB_REF_NAME"
+
+      - name: Preflight immutable publication targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          npm ping
+          if npm view "@bodanglin/verdict-contracts@$version" version >/dev/null 2>&1; then
+            echo "npm contracts version $version already exists" >&2
+            exit 1
+          fi
+          if npm view "@bodanglin/verdict-client@$version" version >/dev/null 2>&1; then
+            echo "npm client version $version already exists" >&2
+            exit 1
+          fi
+          pypi_status="$(curl --silent --output /dev/null --write-out '%{http_code}' "https://pypi.org/pypi/verdict-core/$version/json")"
+          if [ "$pypi_status" != "404" ]; then
+            echo "PyPI version preflight returned HTTP $pypi_status for $version" >&2
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "GitHub release $GITHUB_REF_NAME already exists" >&2
+            exit 1
+          fi
 
       - name: Run Python tests
         run: uv run pytest tests/ --ignore=tests/test_vcr_fallback.py -x -q
@@ -75,18 +110,16 @@ jobs:
       - name: Build TypeScript packages
         run: npm run build --workspaces
 
-      - name: Verify npm packages
+      - name: Build npm release assets
         run: |
-          cd contracts && npm pack --dry-run
-          cd ../verdict/client-sdk && npm pack --dry-run
+          npm pack --workspace @bodanglin/verdict-contracts --pack-destination release-assets
+          npm pack --workspace @bodanglin/verdict-client --pack-destination release-assets
 
       - name: Publish to npm
         if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
         run: |
-          cd contracts && npm publish --access public --provenance
-          cd ../verdict/client-sdk && npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          npm publish release-assets/bodanglin-verdict-contracts-*.tgz --access public --provenance
+          npm publish release-assets/bodanglin-verdict-client-*.tgz --access public --provenance
 
       - name: Publish Python package to PyPI
         if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
@@ -105,3 +138,12 @@ jobs:
             --verify-tag \
             --generate-notes \
             --title "$GITHUB_REF_NAME"
+
+      - name: Record partial-publication recovery guidance
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Release recovery"
+            echo "If publication failed after any registry write, stop and follow docs/release-recovery.md."
+            echo "Never overwrite an immutable version or blindly rerun this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
