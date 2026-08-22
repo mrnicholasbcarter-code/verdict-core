@@ -1,10 +1,10 @@
-name: Publish Python Package to PyPI
+name: Validate Python Package Candidate
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag to publish
+        description: Existing version tag to validate
         required: true
         type: string
 
@@ -36,23 +36,3 @@ jobs:
 
     - name: Check distribution metadata
       run: python3 -m pip install twine --user && python3 -m twine check dist/*
-
-  publish-to-pypi:
-    name: Publish Python 📦 to PyPI
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/verdict-core
-    permissions:
-      id-token: write  # IMPORTANT: mandatory for trusted publishing
-      contents: read
-    steps:
-    - name: Download all the dists
-      uses: actions/download-artifact@v8
-      with:
-        name: python-package-distributions
-        path: dist/
-        
-    - name: Publish distribution 📦 to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1

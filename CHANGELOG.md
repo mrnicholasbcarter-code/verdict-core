@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-22
+
+### Added
+- Credential-free accepted and denied flagship quickstart journey.
+- Attested, immutable Python and npm release candidate workflow.
+
+### Changed
+- Corrected client package repository metadata and package-content verification.
+- Consolidated npm, PyPI, and GitHub release publication behind one tag workflow.
+
 ### Added
 - Comprehensive test suites with 100% coverage
 - GitHub Actions CI/CD pipeline with CodeQL security scanning
