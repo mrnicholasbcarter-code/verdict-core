@@ -81,6 +81,9 @@ jobs:
       - name: Run Python tests
         run: uv run pytest tests/ --ignore=tests/test_vcr_fallback.py -x -q
 
+      - name: Build TypeScript packages
+        run: npm run build --workspaces
+
       - name: Run TypeScript tests
         run: npm test --workspaces
 
@@ -106,9 +109,6 @@ jobs:
           if [ -n "${{ steps.attest-python.outputs.bundle-path }}" ]; then
             cp "${{ steps.attest-python.outputs.bundle-path }}" release-assets/python-distribution-provenance.intoto.jsonl
           fi
-
-      - name: Build TypeScript packages
-        run: npm run build --workspaces
 
       - name: Build npm release assets
         run: |

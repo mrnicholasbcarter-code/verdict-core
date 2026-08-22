@@ -34,6 +34,16 @@ def test_release_workflow_caches_the_root_workspace_lockfile():
     assert Path("package-lock.json").is_file()
 
 
+def test_release_workflow_builds_typescript_workspaces_before_testing_them():
+    workflow = _workflow("release.yml")
+
+    build_step = "- name: Build TypeScript packages"
+    test_step = "- name: Run TypeScript tests"
+    assert workflow.count(build_step) == 1
+    assert workflow.count(test_step) == 1
+    assert workflow.index(build_step) < workflow.index(test_step)
+
+
 def test_release_workflow_builds_and_attests_python_artifacts_with_oidc():
     workflow = _workflow("release.yml")
     assert "hatch build" in workflow
