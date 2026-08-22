@@ -26,6 +26,14 @@ def test_release_workflow_has_no_py_pi_token_publisher():
     assert "PYPI_API_TOKEN" not in workflow
 
 
+def test_release_workflow_caches_the_root_workspace_lockfile():
+    workflow = _workflow("release.yml")
+
+    assert "cache-dependency-path: package-lock.json" in workflow
+    assert "cache-dependency-path: contracts/package-lock.json" not in workflow
+    assert Path("package-lock.json").is_file()
+
+
 def test_release_workflow_builds_and_attests_python_artifacts_with_oidc():
     workflow = _workflow("release.yml")
     assert "hatch build" in workflow
