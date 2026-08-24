@@ -66,3 +66,7 @@ docs/proof/private_*
 .ruvector/
 .verdict-memory-mission/
 scripts/demo-results.json
+
+# Local packet store (runtime state, not source)
+.verdict/packets/
+.verdict/receipts.db*

@@ -416,7 +416,11 @@ def compose_candidate_evidence(
                 observed_at=observed_at,
                 ttl_seconds=ttl_seconds,
                 source=item.source or report.source,
-                freshness_seconds=item.freshness_seconds,
+                # Live gateways with slight clock skew report observations a
+                # fraction of a second in the future; that is fresh now.
+                freshness_seconds=max(0.0, item.freshness_seconds)
+                if item.freshness_seconds is not None
+                else None,
                 quota_remaining_pct=quota,
                 headroom_pct=headroom,
             )
