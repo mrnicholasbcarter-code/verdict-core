@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -565,6 +566,10 @@ def run_packet_autodev(
                 reason = f"artifact touches files outside owned paths: {list(outside)}"
             verified = not outside and getattr(result, "outcome", "") == "applied"
             if verified:
+                # The venv's editable-install .pth pins `verdict` to the
+                # checkout the venv was created in; without this override the
+                # isolated attempt worktree silently verifies the wrong tree.
+                env = {**os.environ, "PYTHONPATH": str(attempt_repo)}
                 checked = verification_runner(
                     list(packet.verification["argv"]),
                     cwd=str(attempt_repo),
@@ -572,6 +577,7 @@ def run_packet_autodev(
                     check=False,
                     capture_output=True,
                     text=True,
+                    env=env,
                 )
                 verified = checked.returncode == 0
                 if not verified:
