@@ -239,7 +239,10 @@ class PatchExecutor:
         return extract_content(body), usage
 
     def _git_apply(self, diff: str, *, check_only: bool) -> subprocess.CompletedProcess[str]:
-        args = ["git", "apply", "--whitespace=nowarn"]
+        # Models frequently emit hunks with miscounted context lines;
+        # --recount lets git recompute counts from the actual hunk body
+        # instead of rejecting the whole patch as corrupt.
+        args = ["git", "apply", "--whitespace=nowarn", "--recount"]
         if check_only:
             args.append("--check")
         args.append("-")
@@ -308,6 +311,49 @@ def build_unit_prompt(unit: WorkUnit, repo_root: str | Path) -> str:
     return "\n".join(sections)
 
 
+_HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _recount_hunks(diff: str) -> str:
+    """Rewrite hunk headers with counts recomputed from actual hunk bodies.
+
+    Models routinely emit miscounted ``@@ -a,b +c,d @@`` headers; git rejects
+    those as corrupt even when every line of the change itself is correct.
+    Trailing pure-context blank lines are dropped because models also add a
+    phantom EOF newline context that no file contains.
+    """
+    lines = diff.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        match = _HUNK_RE.match(lines[i])
+        if match is None:
+            out.append(lines[i])
+            i += 1
+            continue
+        body: list[str] = []
+        j = i + 1
+        while (
+            j < len(lines)
+            and _HUNK_RE.match(lines[j]) is None
+            and not lines[j].startswith(("--- ", "+++ ", "diff --git "))
+        ):
+            body.append(lines[j])
+            j += 1
+        while body and body[-1].strip() == "":
+            body.pop()
+        old = sum(1 for line in body if not line.startswith("+"))
+        new = sum(1 for line in body if not line.startswith("-"))
+        out.append(
+            f"@@ -{match.group(1)},{old} +{match.group(3)},{new} @@"
+        )
+        out.extend(body)
+        i = j
+    return "\n".join(out) + "\n"
+
+
 def extract_diff(content: str) -> str:
     """Pull a unified diff out of a model response, tolerating a code fence."""
     if not isinstance(content, str) or not content.strip():
@@ -318,7 +364,7 @@ def extract_diff(content: str) -> str:
         text = fenced.group(1).strip()
     if not ("--- " in text and "+++ " in text) and "diff --git" not in text:
         raise PatchExecutorError("model response is not a unified diff")
-    return text if text.endswith("\n") else text + "\n"
+    return _recount_hunks(text)
 
 
 def parse_patch_paths(diff: str) -> tuple[str, ...]:
