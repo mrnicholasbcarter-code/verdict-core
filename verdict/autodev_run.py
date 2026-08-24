@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -320,6 +321,17 @@ def _replay_attempt(attempt_repo: Path, repo: Path) -> None:
             ["git", "-C", str(repo), "apply", "--whitespace=nowarn", "-"],
             input=diff, capture_output=True, text=True, check=True,
         )
+    # `git diff` never contains untracked files; a worker-created test file was
+    # verified in the attempt and must not silently vanish on replay.
+    untracked = subprocess.run(
+        ["git", "-C", str(attempt_repo), "ls-files", "--others", "--exclude-standard"],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    for relpath in untracked:
+        source = attempt_repo / relpath
+        target = repo / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
 
 
 def _route_is_admitted(route: Mapping[str, Any] | None, *, fallback: bool = False) -> bool:
