@@ -192,3 +192,10 @@ Patch substance: `check_headroom` returns `None` (unknown) instead of fabricatin
 4. **Clock-skew freshness crash**: gateway observations fractionally in the future raised `freshness_seconds must be non-negative`; clamped to 0 (earlier commit `660c854`).
 
 Limitations: usage token values are redacted at the receipt layer so cost is recorded as present-but-unreadable here; quota/headroom remain UNKNOWN because the gateway does not expose them; attempt latency recorded (~56 ms executor overhead) excludes full inference wall-clock.
+
+Post-artifact full suite: 1,511 passed, 2 failed — both failures
+(`tests/test_golden_path.py::test_timeout_is_bounded_and_denies`,
+`::test_changed_path_outside_declared_boundary_denies`) reproduce
+identically at merge-base `762335ee` and are pre-existing on main,
+unrelated to this branch. The three headroom tests asserting the old
+fail-open contract were reconciled in `bb7c7c1`.
