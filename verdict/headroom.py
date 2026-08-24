@@ -1,5 +1,7 @@
 """Provider quota and headroom checks."""
 
+__all__ = ['check_headroom']
+
 from verdict.models import ProviderConfig
 
 
@@ -11,7 +13,6 @@ def check_headroom(model_id: str, provider_name: str, config: ProviderConfig) ->
     """
     # When no headroom endpoint is configured, we cannot determine capacity.
     # Return None (unknown) instead of fabricating 100% headroom.
-    # the provider's /api/usage or ratelimit headers to verify capacity.
     if config.headroom_endpoint is None:
         return None
 
