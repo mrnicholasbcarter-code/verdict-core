@@ -12,7 +12,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from verdict.availability import AvailabilityCandidate, AvailabilityReport, AvailabilityState
+from verdict.availability import (
+    AvailabilityCandidate,
+    AvailabilityReport,
+    AvailabilityState,
+    is_opaque_route_id,
+)
 from verdict.eligibility import EligibilityGate
 from verdict.gateway_adapter_runtime import (
     AdapterFailureSignal,
@@ -453,14 +458,8 @@ def _route_from_candidate(
 
 
 def _opaque_route(value: str) -> bool:
-    normalized = value.strip().lower()
-    return normalized.startswith(("auto/", "combo/", "router/", "virtual/")) or normalized in {
-        "auto",
-        "combo",
-        "default",
-        "router",
-        "virtual",
-    }
+    """Delegate to the single shared, gateway-neutral opaque-route rule."""
+    return is_opaque_route_id(value)
 
 
 def _merge_probe(

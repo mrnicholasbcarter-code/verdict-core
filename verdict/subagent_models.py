@@ -16,13 +16,13 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from verdict.availability import (
     AvailabilityReport,
-    AvailabilityState,
     CandidateRequirements,
     OmniRouteAvailabilityAdapter,
+    is_opaque_route_id,
 )
 from verdict.availability_cache import AvailabilityCache
 from verdict.eligibility import EligibilityGate
@@ -100,6 +100,16 @@ SUBAGENT_DIVERSITY_EXCLUSIONS: dict[str, set[str]] = {
     "oracle": {"worker", "reviewer"},
     "worker": {"reviewer", "oracle"},
 }
+
+
+def _model_family(model_id: str) -> str:
+    """Family key used for diversity exclusion: the id namespace, lowercased.
+
+    Derived from the id itself so it stays valid across gateways; it must not
+    read a gateway-specific provider/``owned_by`` field.
+    """
+    return model_id.strip().lower().split("/", 1)[0]
+
 
 
 @dataclass
@@ -218,23 +228,21 @@ class SubagentModelSelector:
                 f"Unknown role: {role}. Valid: {list(SUBAGENT_ROLE_REQUIREMENTS.keys())}"
             )
 
-        # Apply diversity exclusions
-        if diversity_from:
-            diversity_exclusions = set()
-            for model_id in diversity_from:
-                # Extract family prefix (e.g., "anthropic/claude" from "anthropic/claude-3-opus")
-                if "/" in model_id:
-                    diversity_exclusions.add(model_id.split("/", 1)[0] + "/*")
-            if diversity_exclusions:
-                requirements = replace(
-                    requirements,
-                    deny_models=frozenset(set(requirements.deny_models) | diversity_exclusions),
-                )
+        # Diversity exclusion is a *narrowing* applied after eligibility, never a
+        # rewrite of the requirements handed to the adapter. The previous form
+        # injected synthetic "family/*" wildcards into deny_models, which is
+        # matched exactly against model.id upstream and therefore never fired.
+        excluded_families = {
+            _model_family(model_id) for model_id in (diversity_from or []) if "/" in model_id
+        }
 
         # 1. Get full availability report ONCE (adapter evaluates all models)
         report = self.availability_cache.source(requirements)
 
-        # 2. Build fast O(1) lookup dict from the report
+        # 2. The adapter's deterministic eligibility verdict is authoritative.
+        #    AC-1.5: nothing excluded here may be restored by ranking, reputation,
+        #    or a second locally re-derived admission test.
+        eligible_ids = {c.model.id for c in report.eligible}
         candidates_by_id = {c.model.id: c for c in report.candidates}
 
         def fast_lookup(model_id: str) -> AvailabilityReport:
@@ -247,13 +255,11 @@ class SubagentModelSelector:
                     freshness_seconds=None,
                     errors=("not found",),
                 )
-            state = c.state
-            admitted_states = {
-                AvailabilityState.ELIGIBLE,
-                AvailabilityState.READY,
-                AvailabilityState.DEGRADED,
-            }
-            eligible = (c,) if state in admitted_states else ()
+            # Honour the report's own eligible set rather than re-deriving it
+            # from the raw state. Re-deriving ignored required capabilities,
+            # deny/allow policy, protected mode, and allow_degraded, and so
+            # readmitted candidates the eligibility pass had already excluded.
+            eligible = (c,) if c.model.id in eligible_ids else ()
             return AvailabilityReport(
                 candidates=(c,),
                 eligible=eligible,
@@ -271,9 +277,20 @@ class SubagentModelSelector:
             allow_unverified_in_dev=self.eligibility_gate.allow_unverified_in_dev,
         )
 
+        # 3b. Narrow to concrete, diversity-permitted routes BEFORE admission.
+        # A selection must be a concrete route the gateway actually serves;
+        # `is_opaque_route_id` is the single shared, gateway-neutral rule also
+        # used by autodev_routing, and tests id shape only (spec 272 D-005).
+        concrete = [
+            c
+            for c in report.eligible
+            if not is_opaque_route_id(c.model.id)
+            and _model_family(c.model.id) not in excluded_families
+        ]
+
         # 4. Apply eligibility gate with fast O(1) lookup
         eligible_result = fast_gate.evaluate(
-            [c.model for c in report.candidates], protected=protected, dev_mode=dev_mode
+            [c.model for c in concrete], protected=protected, dev_mode=dev_mode
         )
 
         admitted = eligible_result.admitted

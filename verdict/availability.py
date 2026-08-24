@@ -389,6 +389,26 @@ def _capability_mapping(rows: Any) -> Mapping[str, frozenset[str]]:
     return result
 
 
+OPAQUE_ROUTE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
+OPAQUE_ROUTE_IDS = frozenset({"auto", "combo", "default", "router", "virtual"})
+
+
+def is_opaque_route_id(model_id: str) -> bool:
+    """True when an id names a gateway resolver alias rather than a concrete route.
+
+    Gateway-neutral by construction: this tests the *shape of the id* against
+    well-known resolver-alias conventions shared by OmniRoute, OpenRouter and
+    similar gateways. It must never branch on a gateway-specific field such as
+    ``owned_by``/``provider``, which would be gateway detection rather than the
+    capability negotiation required by spec 272 D-005.
+
+    An adapter that can positively declare a route opaque should exclude it at
+    the adapter boundary; this is the baseline used when no such facet exists.
+    """
+    normalized = model_id.strip().lower()
+    return normalized.startswith(OPAQUE_ROUTE_PREFIXES) or normalized in OPAQUE_ROUTE_IDS
+
+
 def normalize_catalog(rows: Any, capabilities: Any = None) -> list[ModelInfo]:
     """Normalize common OmniRoute/OpenAI catalog envelopes without trusting them live."""
     capability_map = _capability_mapping(capabilities)
