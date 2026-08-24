@@ -199,3 +199,34 @@ Post-artifact full suite: 1,511 passed, 2 failed — both failures
 identically at merge-base `762335ee` and are pre-existing on main,
 unrelated to this branch. The three headroom tests asserting the old
 fail-open contract were reconciled in `bb7c7c1`.
+
+## T043 — Forced single-fallback demonstration (LIVE-PROVEN, 2026-08-24)
+
+Driver: direct `run_packet_autodev` invocation (CLI does not wire
+`refresh_fallback`); packet `headroom-fallback-t043b`, source commit
+`d816d1e`'s parent tree state captured via `capture_source_binding` at run time.
+
+Scenario per frozen Demonstration C: the primary route's `base_url` pointed at a
+closed local port (`http://127.0.0.1:9/v1`) — a safe, fully reversible induction
+touching no repository path. The failure was classified `worker_failed`
+(transport error, connection refused). `refresh_fallback` then re-observed LIVE
+gateway evidence for the fallback route; the evidence digest refreshed from the
+pre-run observation.
+
+| Field | Value |
+|---|---|
+| Packet | `.verdict/packets/headroom-fallback-t043b.json` (v2 over seed) |
+| Work unit | open micro-unit: explicit `__all__` in `verdict/headroom.py`; trusted gate proven RED pre-inference |
+| Attempt 1 | requested/actual `cc/claude-haiku-4-5-20251001` @ unreachable endpoint → classified `worker_failed` |
+| Fallback refresh | fresh live evidence digest `sha256:2a55d45489aef3802...` observed after classification |
+| Attempt 2 | same cc/* subscription route against live gateway → applied, verified=True |
+| Receipt chain | `before_inference rcpt-1660fe6e` → attempt 1 (`worker_failed`, unverified) → attempt 2 (verified) → terminal `completed rcpt-22acdc7b` |
+| Clean scope | attempt 1 ran in its own disposable worktree and was removed before attempt 2; no first-attempt change leaked (attempt 1 produced zero file changes) |
+| Terminal bound | loop bound `index < 2` + fallback only permitted at index 0; admission check additionally refuses any non-`cc/`-prefixed fallback route (verified True) |
+| Verification | trusted argv exit 0 in attempt scope; independent post-replay `pytest -q tests/test_headroom.py`: 2 passed |
+| Artifact | committed as `d816d1e` (`__all__ = ['check_headroom']` + dangling comment removed) |
+| Quota/headroom | UNKNOWN (gateway exposes none); usage redacted at receipt layer |
+
+Exactly one fallback appears in the receipt chain (AC-1.8, AC-1.13). Focused
+gates post-artifact: 18 passed (headroom + public helpers + omniroute edge
+cases), 15 passed (`test_autodev_operational_loop.py`).
