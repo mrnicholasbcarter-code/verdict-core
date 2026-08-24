@@ -38,6 +38,10 @@ SUBAGENT_ROLE_REQUIREMENTS: dict[str, CandidateRequirements] = {
         budget_remaining=0.50,
         max_concurrency=8,
         allow_degraded=True,  # speed over perfection
+        # Low-stakes recon may run on a route whose headroom was never
+        # observed. Stated explicitly so it is a choice, not a side effect
+        # of allow_degraded.
+        allow_unmeasured_evidence=True,
         estimated_tokens=4000,
         estimated_cost=0.10,
     ),
@@ -88,6 +92,7 @@ SUBAGENT_ROLE_REQUIREMENTS: dict[str, CandidateRequirements] = {
         budget_remaining=2.00,
         max_concurrency=4,
         allow_degraded=True,
+        allow_unmeasured_evidence=True,  # low-stakes delegation, see "scout"
         estimated_tokens=10000,
         estimated_cost=0.25,
     ),
