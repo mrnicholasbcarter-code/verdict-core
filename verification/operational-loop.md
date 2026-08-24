@@ -230,3 +230,13 @@ pre-run observation.
 Exactly one fallback appears in the receipt chain (AC-1.8, AC-1.13). Focused
 gates post-artifact: 18 passed (headroom + public helpers + omniroute edge
 cases), 15 passed (`test_autodev_operational_loop.py`).
+
+## T044 — Phase D promotion gate
+
+### Gates from final source state (`00519b1`, 2026-08-24)
+
+| Gate | Result |
+|---|---|
+| Full suite | 1,511 passed, 2 failed — both failures are `test_golden_path.py::test_timeout_is_bounded_and_denies` and `::test_changed_path_outside_declared_boundary_denies`, proven pre-existing at merge-base `762335ee` |
+| Lint (`ruff check .`) | All checks passed |
+| Strict type-check (`mypy --strict verdict/`) | Success: no issues in 116 source files |
