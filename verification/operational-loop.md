@@ -164,3 +164,31 @@ ruff check .
 mypy --strict verdict/
 uv run pytest -q
 ```
+
+## T042 — US1 live exit demonstration (LIVE-PROVEN, 2026-08-24T18:02Z)
+
+One command (`verdict.cli autodev packet execute --packet .verdict/packets/headroom-unknown-r8.json --repo . --allow-live --json`) performed a real bounded repository edit through a concrete non-primary route with independent verification. Terminal state `completed`, proof level `live-proven`.
+
+| Field | Value |
+|---|---|
+| Source commit | `5695afec` (branch `feat/verdict-operational-loop`) |
+| Packet | `.verdict/packets/headroom-unknown-r8.json` (`headroom-unknown-r8`, v2 over seed via `parent_integrity_digest`) |
+| Requested route | `claude/claude-haiku-4-5-20251001` @ `omniroute-local` (`http://127.0.0.1:20128/v1`, protocol `openai.chat`) — concrete non-primary route; no `auto/*` resolver involved |
+| Evidence digest | `sha256:7c4e2b5da19cffed7...` (fresh source-linked observation, ttl 300 s, quota/headroom explicitly UNKNOWN) |
+| Changed paths | `verdict/headroom.py`, `tests/test_headroom.py` (both inside owned set) |
+| Artifact digest | `sha256:6783ce91cdcfe73c34722ff856028e8c46e554ff3cf353aaddaa3c0b6fc602d7` — recomputed from replayed tree matches receipt exactly |
+| Verification | trusted argv (`.venv/bin/pytest -q tests/test_headroom.py`) run in isolated attempt worktree outside the worker: exit 0, 2 passed; re-run green in target tree post-replay |
+| Checkpoints | `before_inference` = `rcpt-4e7fa65888bb4ad4be04d111e7423d6f`; terminal = `rcpt-7667f360f13740efa8b4adc1463f69f5` |
+| Usage / quota | token counts observed but REDACTED in receipt per redaction authority; quota/headroom UNKNOWN (gateway exposes none) |
+| Fallbacks used | 0 of max 1 |
+
+Patch substance: `check_headroom` returns `None` (unknown) instead of fabricating `100.0` when no headroom endpoint exists, plus new tests asserting the unknown case.
+
+### Defects found and fixed by the live demonstration
+
+1. **Corrupt model patches rejected wholesale** (`5f8b804`): both gemini-2.5-flash and claude-haiku emitted miscounted hunk headers / phantom EOF context; `extract_diff` now recounts hunks from actual bodies before `git apply`.
+2. **Verification tested the wrong tree** (`a323473`): the venv editable-install `.pth` pinned `verdict` to the main checkout, so the isolated attempt worktree silently verified unpatched code. Fixed with `PYTHONPATH=<attempt_repo>` on the verification subprocess.
+3. **Untracked attempt files dropped on replay** (`5695afe`): `git diff HEAD` excludes new files, so a worker-created test file was verified in scope then lost on replay. Replay now copies untracked attempt files.
+4. **Clock-skew freshness crash**: gateway observations fractionally in the future raised `freshness_seconds must be non-negative`; clamped to 0 (earlier commit `660c854`).
+
+Limitations: usage token values are redacted at the receipt layer so cost is recorded as present-but-unreadable here; quota/headroom remain UNKNOWN because the gateway does not expose them; attempt latency recorded (~56 ms executor overhead) excludes full inference wall-clock.

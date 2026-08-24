@@ -3,15 +3,16 @@
 from verdict.models import ProviderConfig
 
 
-def check_headroom(model_id: str, provider_name: str, config: ProviderConfig) -> tuple[bool, float]:
+def check_headroom(model_id: str, provider_name: str, config: ProviderConfig) -> tuple[bool, float] | None:
     """Check if a model has capacity.
 
-    Returns (is_available, headroom_pct).
-    If no headroom endpoint is configured, defaults to fail-open (True, 100.0).
+    Returns (is_available, headroom_pct) or None if headroom cannot be determined.
+    If no headroom endpoint is configured, returns None (unknown/unavailable).
     """
-    # Fail-open implementation. In a production environment, this queries
+    # When no headroom endpoint is configured, we cannot determine capacity.
+    # Return None (unknown) instead of fabricating 100% headroom.
     # the provider's /api/usage or ratelimit headers to verify capacity.
     if config.headroom_endpoint is None:
-        return True, 100.0
+        return None
 
-    return True, 100.0
+    return None
