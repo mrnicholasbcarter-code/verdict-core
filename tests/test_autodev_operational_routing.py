@@ -152,6 +152,42 @@ def test_candidate_evidence_preserves_observed_capability_and_freshness() -> Non
     assert evidence.evidence_source == "fixture-probe"
 
 
+def test_admission_record_emits_primary_role_from_capability_not_brand() -> None:
+    branded = _evidence(
+        requested_alias="cc/claude-sonnet-5",
+        route=_route("cc/claude-sonnet-5", route_id="branded"),
+        capabilities={"tools": "observed"},
+    )
+    primary = _evidence(
+        requested_alias="alt/subscription",
+        route=_route("alt/subscription", route_id="primary-route"),
+        capabilities={"tools": "observed", "primary_subscription": "observed"},
+    )
+
+    branded_record = branded.to_admission_record(admitted=True)
+    primary_record = primary.to_admission_record(admitted=True)
+
+    assert branded_record["primary"] is False
+    assert branded_record["requested_identity"] == "cc/claude-sonnet-5"
+    assert branded_record["evidence_digest"].startswith("sha256:")
+    assert primary_record["primary"] is True
+    assert primary_record["requested_identity"] == "alt/subscription"
+
+    from verdict.autodev_run import _route_is_admitted, designated_primary_fallback
+
+    assert _route_is_admitted(branded_record, fallback=True) is False
+    assert _route_is_admitted(primary_record, fallback=True) is True
+
+    designated = designated_primary_fallback(
+        "alt/subscription",
+        evidence_digest=primary_record["evidence_digest"],
+        actual_identity="alt/subscription-served",
+    )
+    assert designated["primary"] is True
+    assert designated["requested_identity"] == "alt/subscription"
+    assert _route_is_admitted(designated, fallback=True) is True
+
+
 def test_requested_alias_is_distinct_from_resolved_and_actual_route_identity() -> None:
     actual = _route("alternative/served-v2", route_id="served-route")
     evidence = _evidence(route=_route(), actual_route=actual)

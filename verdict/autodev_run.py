@@ -55,7 +55,7 @@ from verdict.work_unit import WorkUnit, normalize_owned_path
 # No model name is hardcoded as policy: the default executor route is resolved
 # dynamically from live gateway availability + the eligibility gate. This
 # constant is only the last-resort fallback when no gateway is reachable.
-DEFAULT_EXECUTOR_MODEL = "cc/claude-sonnet-5"
+DEFAULT_EXECUTOR_MODEL = "unresolved/executor"
 
 
 def _resolve_default_executor_model() -> str:
@@ -375,6 +375,31 @@ def _replay_attempt(attempt_repo: Path, repo: Path) -> None:
         target = repo / relpath
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+
+
+def designated_primary_fallback(
+    route_id: str,
+    *,
+    evidence_digest: str,
+    actual_identity: str | None = None,
+    admitted: bool = True,
+) -> dict[str, Any]:
+    """Build the one allowed primary-subscription fallback record.
+
+    The caller designates which live route currently occupies that role.
+    The record always carries ``primary=True``; brand prefixes are not used.
+    """
+    if not route_id.strip():
+        raise ValueError("primary fallback requires a concrete route identity")
+    if not evidence_digest.startswith("sha256:"):
+        raise ValueError("primary fallback requires source-linked evidence digest")
+    return {
+        "requested_identity": route_id,
+        "actual_identity": actual_identity or route_id,
+        "admitted": admitted,
+        "evidence_digest": evidence_digest,
+        "primary": True,
+    }
 
 
 def _route_is_admitted(route: Mapping[str, Any] | None, *, fallback: bool = False) -> bool:
@@ -1129,5 +1154,6 @@ __all__ = [
     "collect_ruff_evidence",
     "compile_packet_context",
     "compile_worker_context",
+    "designated_primary_fallback",
     "run_autodev",
 ]

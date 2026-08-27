@@ -7,6 +7,8 @@ remain unknown unless an existing surface or the actual response supplies them.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -124,6 +126,28 @@ class CandidateEvidence:
         current = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         observed = self.observed_at.astimezone(timezone.utc)
         return observed <= current <= observed + timedelta(seconds=self.ttl_seconds)
+
+    def to_admission_record(
+        self, *, admitted: bool, primary: bool | None = None
+    ) -> dict[str, Any]:
+        """Emit the admission dict consumed by packet execute / fallback.
+
+        ``primary`` is the primary-subscription *role*. It is inferred from the
+        ``primary_subscription`` capability unless the caller sets it explicitly.
+        Brand prefixes are never consulted.
+        """
+        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        digest = "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        actual = self.actual_route or self.route
+        if primary is None:
+            primary = self.capability_status("primary_subscription") == "observed"
+        return {
+            "requested_identity": self.requested_alias,
+            "actual_identity": actual.model_id,
+            "admitted": admitted,
+            "evidence_digest": digest,
+            "primary": bool(primary),
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {

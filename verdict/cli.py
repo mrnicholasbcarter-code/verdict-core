@@ -865,6 +865,8 @@ def cmd_autodev_packet_execute(
     output_json: bool = False,
     allow_live: bool = False,
     resume: bool = False,
+    primary_fallback: str | None = None,
+    prefer_non_primary: bool = False,
 ) -> None:
     """Execute or resume one bounded packet work unit through an admitted route.
 
@@ -872,7 +874,7 @@ def cmd_autodev_packet_execute(
     produce a completed proof class here; only independent trusted verification
     decides success.
     """
-    from verdict.autodev_run import run_packet_autodev
+    from verdict.autodev_run import designated_primary_fallback, run_packet_autodev
     from verdict.execution_packet import (
         ExecutionPacketStore,
         UnsupportedSchemaVersionError,
@@ -900,10 +902,37 @@ def cmd_autodev_packet_execute(
         raise SystemExit(1) from exc
 
     route = dict(packet.route_attempts[-1]) if packet.route_attempts else {}
+    if prefer_non_primary and route.get("primary") is True:
+        message = (
+            "first attempt must use a concrete non-primary route; "
+            "the supplied admitted route occupies the primary-subscription role"
+        )
+        if output_json:
+            print(json.dumps({"error": message, "missing": "non-primary admitted route"}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    fallback_route = None
+    if primary_fallback:
+        digest = str(route.get("evidence_digest") or "")
+        actual = primary_fallback
+        for attempt in packet.route_attempts:
+            requested = str(attempt.get("requested_identity") or "")
+            served = str(attempt.get("actual_identity") or "")
+            if primary_fallback in {requested, served}:
+                digest = str(attempt.get("evidence_digest") or digest)
+                actual = served or primary_fallback
+                break
+        fallback_route = designated_primary_fallback(
+            primary_fallback,
+            evidence_digest=digest,
+            actual_identity=actual,
+        )
     report = run_packet_autodev(
         packet,
         Path(repo).expanduser().resolve(),
         admitted_route=route,
+        fallback_route=fallback_route,
         resume=resume,
     )
     completed_class = "live-proven" if report.terminal_state == "completed" else "not-completed"
@@ -2152,6 +2181,16 @@ def main() -> None:
                 action="store_true",
                 help="consent: executes through the gateway and edits the working tree",
             )
+            action_p.add_argument(
+                "--prefer-non-primary",
+                action="store_true",
+                help="first attempt must use a concrete non-primary admitted route",
+            )
+            action_p.add_argument(
+                "--primary-fallback",
+                default=None,
+                help="concrete route that currently occupies the primary-subscription role",
+            )
 
     golden_p = subparsers.add_parser(
         "autodev-golden-path",
@@ -2483,6 +2522,8 @@ def main() -> None:
                     output_json=args.json,
                     allow_live=getattr(args, "allow_live", False),
                     resume=True,
+                    primary_fallback=getattr(args, "primary_fallback", None),
+                    prefer_non_primary=getattr(args, "prefer_non_primary", False),
                 )
             else:
                 cmd_autodev_packet(

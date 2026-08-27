@@ -222,7 +222,7 @@ pre-run observation.
 | Attempt 2 | same cc/* subscription route against live gateway → applied, verified=True |
 | Receipt chain | `before_inference rcpt-1660fe6e` → attempt 1 (`worker_failed`, unverified) → attempt 2 (verified) → terminal `completed rcpt-22acdc7b` |
 | Clean scope | attempt 1 ran in its own disposable worktree and was removed before attempt 2; no first-attempt change leaked (attempt 1 produced zero file changes) |
-| Terminal bound | loop bound `index < 2` + fallback only permitted at index 0; admission check additionally refuses any non-`cc/`-prefixed fallback route (verified True) |
+| Terminal bound | loop bound `index < 2` + fallback only permitted at index 0; at this SHA fallback admission also required a `cc/`/`cx/` prefix (historical). HEAD `326d6ae`+ replaces that with the `primary` evidence role |
 | Verification | trusted argv exit 0 in attempt scope; independent post-replay `pytest -q tests/test_headroom.py`: 2 passed |
 | Artifact | committed as `d816d1e` (`__all__ = ['check_headroom']` + dangling comment removed) |
 | Quota/headroom | UNKNOWN (gateway exposes none); usage redacted at receipt layer |
@@ -341,17 +341,31 @@ Full promotion gates after the eligibility identity fix:
 | Lint (`uv run ruff check .`) | All checks passed |
 | Strict type-check (`uv run mypy --strict verdict/`) | Success: no issues in 116 source files |
 
-Independent adversarial review: `/home/nick/dev/specs/272-operational-routing-loop/.sdd/t044-review.md`.
-Reviewing identity is the closeout Grok agent (different family than the T042/T043
-implementer). Same-session implementer+reviewer for *this* closeout delta is a
-recorded limitation, not full independence.
+Independent adversarial review of HEAD `0d7a22b`:
+`/home/nick/dev/specs/272-operational-routing-loop/.sdd/t044-review.md` (FAIL).
+Re-review of HEAD `326d6ae`:
+`/home/nick/dev/specs/272-operational-routing-loop/.sdd/t044-rereview.md`
+(grok-4.5; HIGH-1/2/3 reconciled; residual HIGH was unwired `primary` fallback).
+
+### T044 mechanical gates at `326d6ae` (controller-verified 2026-08-27)
+
+| Gate | Result |
+|---|---|
+| Full suite `uv run pytest -q` | **1541 passed**, 1 Starlette deprecation warning |
+| `uv run ruff check .` | All checks passed |
+| `uv run mypy --strict verdict/` | Success, 116 source files |
+
+Operator (not an agent during T042/T043) later set
+`taskRouting.enabled=false` and `detectionEnabled=false` via
+`PUT /api/settings/task-routing`.
 
 ### Limitations
 
 - Live HTTP catalog listing was flaky; T032 live candidate enumeration is
   fail-closed empty, not a populated live evidence set.
-- `taskRouting.detectionEnabled` was observed `true`; this closeout did not
-  change it. `taskRouting.enabled` remained `false`.
+- Closeout observed `taskRouting.detectionEnabled=true` while `enabled=false`.
+  Operator restored both to `false` after closeout. That is out-of-band, not
+  an in-demo agent mutation.
 - MCP `omniroute_check_quota` returns `percentRemaining: 100` with
   `quotaTotal: null`. That is **not** copied into Verdict evidence; CLI and the
   adapter treat omitted quota as UNKNOWN.
