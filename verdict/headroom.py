@@ -1,8 +1,10 @@
 """Provider quota and headroom checks."""
 
-__all__ = ['check_headroom', 'headroom_is_unknown']
+__all__ = ['UNKNOWN_HEADROOM', 'check_headroom', 'headroom_is_unknown']
 
 from verdict.models import ProviderConfig
+
+UNKNOWN_HEADROOM: tuple[bool, float] | None = None
 
 
 def check_headroom(model_id: str, provider_name: str, config: ProviderConfig) -> tuple[bool, float] | None:

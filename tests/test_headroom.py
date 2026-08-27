@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from verdict.headroom import check_headroom, headroom_is_unknown
+from verdict.headroom import UNKNOWN_HEADROOM, check_headroom, headroom_is_unknown
 from verdict.models import ProviderConfig
 
 
@@ -39,3 +39,8 @@ def test_headroom_is_unknown_available():
 def test_headroom_is_unknown_unavailable():
     """headroom_is_unknown returns False for unavailable capacity tuple."""
     assert headroom_is_unknown((False, 100.0)) is False
+
+
+def test_unknown_headroom_sentinel():
+    """UNKNOWN_HEADROOM is the unknown sentinel treated as unknown by headroom_is_unknown."""
+    assert headroom_is_unknown(UNKNOWN_HEADROOM) is True

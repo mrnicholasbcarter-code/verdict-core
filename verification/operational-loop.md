@@ -598,3 +598,19 @@ Parent of this text is worktree `feat/verdict-operational-loop` after
 `eed215c`. OmniRoute `3.8.49` (MCP health). `taskRouting.enabled=false`,
 `detectionEnabled=false` (`GET /api/settings` before and after r12, no writes).
 — LIVE-PROVEN for this window.
+
+## Live execute r13 — UNKNOWN_HEADROOM (LIVE-PROVEN)
+
+Packet `headroom-unknown-r13` integrity
+`sha256:b1d1cf82858ad286ef5a04dd1bcd2e87c22808b3278b4d517b9d07788b7cf291`,
+source commit `0823e98`. Command: `verdict autodev packet execute --allow-live
+--prefer-non-primary --primary-fallback claude/claude-haiku-4-5-20251001`.
+
+| Field | Value | Proof |
+|---|---|---|
+| Terminal | `completed`, `proof_level=live-proven`, `fallback_count=0` | LIVE-PROVEN |
+| First route | requested `kimi-coding/kimi-for-coding` → actual `kimi-for-coding`, `primary=false` | LIVE-PROVEN |
+| worker_self_report | `{outcome: applied, role: advisory}` seq 60 `rcpt` | LIVE-PROVEN |
+| trusted_verification | `{decided: true, role: deciding}`, `verified=true` | LIVE-PROVEN |
+| Artifact | `UNKNOWN_HEADROOM` exported in `__all__`; test `test_unknown_headroom_sentinel` | LIVE-PROVEN |
+| Settings | `enabled=false`, `detectionEnabled=false` after execute, no writes | LIVE-PROVEN |
