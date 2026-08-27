@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -103,6 +104,19 @@ class AdapterDescriptor:
     status: AdapterStatus | None = None
     formats: tuple[str, ...] = ()
     boundary: str = "canonical-manifest"
+    # CTX-002 remainder (issue #287): optional declared freshness window for
+    # records this provider produces. None means no staleness policy is
+    # declared, which must fail open — never treated as always-stale.
+    ttl_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.ttl_seconds is not None and (
+            not isinstance(self.ttl_seconds, (int, float))
+            or isinstance(self.ttl_seconds, bool)
+            or not math.isfinite(self.ttl_seconds)
+            or self.ttl_seconds <= 0
+        ):
+            raise ValueError("ttl_seconds must be a finite positive number")
 
     @property
     def effective_status(self) -> AdapterStatus:
