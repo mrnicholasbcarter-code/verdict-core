@@ -773,6 +773,21 @@ def _probe_state(obs: RuntimeObservation) -> tuple[AvailabilityState, str] | Non
 def normalize_observation(
     model: ModelInfo, observation: RuntimeObservation, *, now: datetime | None = None
 ) -> AvailabilityCandidate:
+    """Apply conservative precedence to contradictory runtime signals, then attach
+    the raw token headroom so :func:`select_capable_candidates` can apply the
+    affordability floor (FR-029) without every caller pre-computing it."""
+    candidate = _normalize_observation_state(model, observation, now=now)
+    obs = _raw_observation(observation)
+    if obs.token_headroom is None:
+        return candidate
+    return replace(
+        candidate, normalized={**candidate.normalized, "token_headroom": obs.token_headroom}
+    )
+
+
+def _normalize_observation_state(
+    model: ModelInfo, observation: RuntimeObservation, *, now: datetime | None = None
+) -> AvailabilityCandidate:
     """Apply conservative precedence to contradictory runtime signals."""
     current = _now(now)
     obs = _raw_observation(observation)
@@ -1001,10 +1016,25 @@ def select_capable_candidates(
     return sorted(result, key=lambda x: (x.model.capability_tier, x.model.id))
 
 
+def _affordable(item: AvailabilityCandidate, requirements: CandidateRequirements) -> bool:
+    """FR-029: observed capacity below the estimated unit cost excludes; unobserved does not.
+
+    Lives in the shared admission primitive rather than a specific runtime-observation
+    call site, so every caller of :func:`select_capable_candidates` gets the floor for
+    free instead of needing to pre-apply it.
+    """
+    if requirements.estimated_tokens is None:
+        return True
+    headroom = item.normalized.get("token_headroom")
+    return headroom is None or headroom >= requirements.estimated_tokens
+
+
 def _candidate_is_eligible(
     item: AvailabilityCandidate, requirements: CandidateRequirements
 ) -> bool:
     if _policy_reason(item, requirements):
+        return False
+    if not _affordable(item, requirements):
         return False
     return _availability_state_is_eligible(item, requirements)
 
