@@ -334,7 +334,10 @@ def test_context_receipt_units_are_autodev_owned_paths_without_chat(repo: Path) 
     assert context
     payload = context[0]
     assert payload["compiled_prompt"] == "[REDACTED]"
-    assert payload["omissions"] == []
+    # FR-032: "prior verified outcomes" has no deterministic default location, so
+    # its absence is a named limitation, not a silently-treated-complete omission.
+    omission_ids = {item["unit_id"] for item in payload["omissions"]}
+    assert omission_ids == {"autodev:limitation:prior_verified_outcomes"}
     decisions = payload["context_receipt"]["decisions"]
     unit_ids = [item["unit_id"] for item in decisions]
     assert all(uid.startswith("autodev:") for uid in unit_ids)

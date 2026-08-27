@@ -144,6 +144,7 @@ def compile_worker_context(
     relevant_examples: Sequence[str],
     governing_docs: Sequence[str],
     symbol_relationship: str | None = None,
+    prior_verified_outcomes: Sequence[str] = (),
     token_budget: int = 4096,
 ) -> ContextPack:
     """Compile the bounded deterministic context package for one worker.
@@ -183,6 +184,12 @@ def compile_worker_context(
     )
     add("examples", "relevant_examples", relevant_examples, "urn:verdict:autodev:relevant_examples")
     add("policy", "governing_docs", governing_docs, "urn:verdict:autodev:governing_docs")
+    add(
+        "memory",
+        "prior_verified_outcomes",
+        prior_verified_outcomes,
+        "urn:verdict:autodev:prior_verified_outcomes",
+    )
     if symbol_relationship is not None:
         add(
             "evidence",
@@ -299,6 +306,7 @@ def compile_packet_context(
     governing_doc_paths: Sequence[str] = (),
     relevant_example_paths: Sequence[str] = (),
     symbol_relationship: str | None = None,
+    prior_verified_outcomes: Sequence[str] = (),
     token_budget: int = 4096,
     store: ReceiptStore | None = None,
     family_id: str | None = None,
@@ -356,8 +364,29 @@ def compile_packet_context(
         relevant_examples=(*examples.values(), verification),
         governing_docs=tuple(governing_docs.values()),
         symbol_relationship=symbol_relationship,
+        prior_verified_outcomes=tuple(prior_verified_outcomes),
         token_budget=token_budget,
     )
+    if not prior_verified_outcomes:
+        # FR-032 (2026-08-27 clarification): this category has no deterministic
+        # default location, so it may stay caller-supplied-only, but that gap
+        # must be named rather than silently treated as complete.
+        pack = replace(
+            pack,
+            decisions=(
+                *pack.decisions,
+                ContextDecision(
+                    unit_id="autodev:limitation:prior_verified_outcomes",
+                    action="exclude",
+                    reason=(
+                        "prior verified outcomes has no deterministic default location; "
+                        "this run received none from the caller"
+                    ),
+                    input_tokens=0,
+                    output_tokens=0,
+                ),
+            ),
+        )
     if source_omissions:
         # A source the worker was meant to receive but did not is recorded, never dropped:
         # the package must state what is missing and why (FR-032).

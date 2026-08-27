@@ -389,3 +389,35 @@ def test_governing_adrs_are_discovered_by_default(tmp_path: Path) -> None:
     adr.write_text("# ADR-001\n\nGOVERNING_RATIONALE_MARKER\n", encoding="utf-8")
     pack = autodev_run.compile_packet_context(_packet(repo), repo, token_budget=4096)
     assert "GOVERNING_RATIONALE_MARKER" in pack.compiled_prompt
+
+
+def test_prior_verified_outcomes_absence_is_a_named_limitation(tmp_path: Path) -> None:
+    """FR-032: a category with no deterministic default location (prior verified
+    outcomes) may stay caller-supplied, but that gap must be named explicitly
+    rather than silently treated as complete.
+    """
+    repo = _context_repo(tmp_path)
+    pack = autodev_run.compile_packet_context(_packet(repo), repo, token_budget=4096)
+    limitations = {
+        decision.unit_id: decision.reason
+        for decision in pack.decisions
+        if decision.action == "exclude"
+    }
+    reason = limitations.get("autodev:limitation:prior_verified_outcomes")
+    assert reason is not None, limitations
+    assert "no deterministic default location" in reason
+
+
+def test_prior_verified_outcomes_included_when_caller_supplies_it(tmp_path: Path) -> None:
+    repo = _context_repo(tmp_path)
+    pack = autodev_run.compile_packet_context(
+        _packet(repo),
+        repo,
+        token_budget=4096,
+        prior_verified_outcomes=("unit X passed trusted verification on 2026-08-27",),
+    )
+    assert "unit X passed trusted verification" in pack.compiled_prompt
+    assert not any(
+        d.unit_id == "autodev:limitation:prior_verified_outcomes" and d.action == "exclude"
+        for d in pack.decisions
+    )
