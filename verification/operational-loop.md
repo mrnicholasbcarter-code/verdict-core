@@ -556,17 +556,24 @@ No chat-transcript unit, no unrelated repository paths. Token pack **1462 / 4096
 
 Live r10 attempt receipts (`rcpt-fdd7322…`, `rcpt-0201894…`) store `verified` as the
 deciding bit and do **not** contain a separate `worker_self_report` object
-(LIVE-PROVEN gap on those rows).
+(historical LIVE-PROVEN gap on those rows).
 
-Shipped `run_packet_autodev` now persists both on every attempt receipt:
-
-- `worker_self_report.outcome` + `role=advisory`
-- `trusted_verification.decided` + `role=deciding`
-
-Trusted argv still overwrites `verified`. Fixture
+Shipped `run_packet_autodev` persists both on every attempt receipt. Fixture
 `test_worker_self_report_is_advisory_when_trusted_verification_fails` proves
 `outcome=applied` cannot complete when verification fails. — SOURCE-ONLY /
-FIXTURE-ONLY until a new live execute writes post-change rows.
+FIXTURE-ONLY for that contract.
+
+Live packet `headroom-unknown-r12` at commit `eed215c` (dirty digest
+`sha256:232f54acbb8c36c1275c81b6ee1621fe211fa7793c8f1183451c7f3b767c4a93`,
+integrity `sha256:578c0933406e2bf430bf6473176d3bac4a91ef76947d0e25675e1aad408c4e72`)
+wrote the fields on both attempts. — LIVE-PROVEN
+
+| Attempt | Requested | worker_self_report | trusted_verification | Notes |
+|---|---|---|---|---|
+| 1 | `kimi-coding/kimi-for-coding` (`primary=false`) | `{outcome: error, role: advisory}` | `{decided: false, role: deciding}` | HTTP 503 during gateway restart |
+| 2 | `claude/claude-haiku-4-5-20251001` (`primary=true`) | `{outcome: rejected, role: advisory}` | `{decided: false, role: deciding}` | `git apply --check` failed; usage 3304/3203/6507 kept |
+
+Terminal `truthful_failure`, `fallback_count=1`, no third route. Changed files `[]` both attempts; working tree unchanged. Context `1655 / 4096`, `compiled_prompt=[REDACTED]`. Settings `enabled=false`, `detectionEnabled=false` after execute; no writes. Receipts: context `rcpt` seq 53; before_inference `rcpt-484fbf8b5c3e4ba8852fc3185fbbd37f`; terminal `rcpt-234bd6b324584479952f8cf22cc23561`.
 
 ### Admission composition (T044 MEDIUM residual)
 
@@ -588,6 +595,6 @@ Phase 1 live-proof claims.
 ## Residual closeout — post-`9401cad` source (CHK004/014/016)
 
 Parent of this text is worktree `feat/verdict-operational-loop` after
-`9401cad`. OmniRoute after operator restart: version `3.8.49` (MCP health),
-`taskRouting.enabled=false`, `detectionEnabled=false` (`GET /api/settings`,
-no writes). — LIVE-PROVEN for this window.
+`eed215c`. OmniRoute `3.8.49` (MCP health). `taskRouting.enabled=false`,
+`detectionEnabled=false` (`GET /api/settings` before and after r12, no writes).
+— LIVE-PROVEN for this window.
