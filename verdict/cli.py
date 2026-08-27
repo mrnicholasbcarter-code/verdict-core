@@ -993,6 +993,10 @@ def cmd_autodev_packet_execute(
         catalog_rows=catalog_rows,
         probe_transport=probe_transport,
         canary_state=canary_state,
+        # FR-037: the CLI is the real production entry, so red-green is required
+        # here by default. A resume legitimately re-verifies prior work and may
+        # find it already green, so the requirement is scoped to fresh attempts.
+        require_red_green=not resume,
     )
     family_url = str(route.get("base_url") or base_url or DEFAULT_BASE_URL)
     payload = packet_family_run_payload(packet, report, family_url)

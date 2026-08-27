@@ -260,3 +260,33 @@ def test_same_kept_set_whether_or_not_the_gateway_declares_a_free_facet() -> Non
     # the facet is used when present: a declared-free id ranks ahead of UNKNOWN
     assert facet_rich[0] == "oc/a"
     assert facet_free[0] == "oc/c:free"
+
+
+def test_pool_alias_leaf_free_detected_in_any_segment() -> None:
+    """FR-035: 'free' occupying any segment of the identifier counts as an alias.
+
+    Prior check only rejected an id whose *entire* leaf equals 'free'
+    (e.g. 'openrouter/free'), missing a leaf that merely contains a 'free'
+    segment among others, such as 'openrouter/pool/free/v2'.
+    """
+    from verdict.free_route_harvest import _pool_alias
+
+    assert _pool_alias("openrouter/free")
+    assert _pool_alias("openrouter/pool/free/v2")
+    assert not _pool_alias("openrouter/text-embed:free")
+    assert not _pool_alias("oc/model-that-is-free-tier")
+
+
+def test_pick_best_live_recognizes_adapter_declared_free_without_suffix() -> None:
+    """FR-034/036: an adapter/probe may declare an id free without a ':free' suffix.
+
+    `pick_best_live` previously only recognized the `:free` substring, so a
+    facet-declared free identity without that suffix could never be picked.
+    """
+    from verdict.free_route_harvest import pick_best_live
+
+    observations = [
+        {"model_id": "vendor/model-a", "availability_state": "ready", "latency_ms": 50.0},
+        {"model_id": "vendor/model-b:free", "availability_state": "ready", "latency_ms": 900.0},
+    ]
+    assert pick_best_live(observations, free_ids={"vendor/model-a"}) == "vendor/model-a"

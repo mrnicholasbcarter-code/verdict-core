@@ -79,7 +79,17 @@ def free_status(row: Mapping[str, Any], free_ids: Collection[str] | None = None)
 
 
 def _pool_alias(model_id: str) -> bool:
-    return model_id.rsplit("/", 1)[-1].lower() == "free"
+    """FR-035: 'free' occupying any path segment of the identifier counts as an alias.
+
+    Prior check only rejected an id whose entire leaf equaled 'free', missing an id
+    like 'openrouter/pool/free/v2' whose alias segment is not the leaf. A non-terminal
+    segment equal to 'free' is always an alias. The terminal segment is compared whole,
+    with its ``:tier`` suffix intact: a real model may itself be named 'free' and carry
+    a ':free' tier suffix ('slow/free:free'), which is concrete, not the resolver alias
+    'openrouter/free'.
+    """
+    segments = model_id.lower().split("/")
+    return "free" in segments[:-1] or segments[-1] == "free"
 
 
 def _capabilities_ok(row: Mapping[str, Any], need: TaskNeed) -> bool:
@@ -176,12 +186,20 @@ def first_execute_need(*, catalog_n: int, keep_n: int) -> int:
     return min(keep_n, max(want, 3))
 
 
-def pick_best_live(observations: Sequence[Mapping[str, Any]]) -> str | None:
+def pick_best_live(
+    observations: Sequence[Mapping[str, Any]], free_ids: Collection[str] | None = None
+) -> str | None:
+    """Lowest-latency ready identity that is free, by id shape or adapter declaration.
+
+    ``free_ids`` lets a gateway-negotiated facet (FR-034/FR-038) recognize a free
+    identity that carries no ``:free`` suffix; without it, only the id shape is used.
+    """
     best_id: str | None = None
     best_ms = math.inf
     for row in observations:
         model_id = str(row.get("model_id") or "")
-        if ":free" not in model_id.lower():
+        is_free = ":free" in model_id.lower() or (free_ids is not None and model_id in free_ids)
+        if not is_free:
             continue
         if str(row.get("availability_state") or "").lower() != "ready":
             continue

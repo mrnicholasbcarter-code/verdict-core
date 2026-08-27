@@ -1708,3 +1708,76 @@ def test_net_savings_is_positive_when_delegation_dominates() -> None:
         frontier_tokens=100,
     )
     assert report["net_savings_tokens"] == 2400
+
+
+def test_cli_packet_execute_requires_red_green_by_default(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-037: the real production entry point enforces red-green, not an opt-in flag."""
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["require_red_green"] = kwargs.get("require_red_green")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-redgreen"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        catalog_rows=[
+            {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}}
+        ],
+        probe_transport=lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        },
+    )
+    assert seen["require_red_green"] is True
+
+
+def test_cli_packet_execute_resume_does_not_require_red_green(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resume legitimately re-verifies prior work; it must not be blocked as already-green."""
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["require_red_green"] = kwargs.get("require_red_green")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-resume-rg"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        resume=True,
+        catalog_rows=[
+            {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}}
+        ],
+        probe_transport=lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        },
+    )
+    assert seen["require_red_green"] is False
