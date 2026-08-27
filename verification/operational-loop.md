@@ -748,3 +748,5 @@ T034 admission-inventory refresh (including fallback re-floor) is commit `dbebed
 At that SHA: `uv run ruff check` on touched modules passed; `uv run mypy --strict` on `verdict/autodev_run.py` `verdict/autodev_routing.py` `verdict/free_route_harvest.py` passed; `uv run pytest -q` **1586 passed**.
 
 T072 CLI `--canary` pass-through and inactive-canary baseline restore is commit `a68c6de80d560190c5624d8a18271046def99536`. At that SHA: `uv run ruff check` passed; `uv run mypy --strict verdict/autodev_run.py` passed; `uv run pytest -q` **1590 passed**.
+
+T073 truthful `improvement` (chosen trusted wins vs baseline) is commit `44e6032`. Independent US4-C/D execute-path review: SATISFIED (`.sdd/us4-cd-execute-canary-review.md`).
