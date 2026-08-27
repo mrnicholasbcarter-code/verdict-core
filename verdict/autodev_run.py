@@ -201,6 +201,37 @@ def compile_worker_context(
     return replace(pack, created_at=0.0)
 
 
+def _require_failing_criterion(
+    repo: Path, packet: ExecutionPacket, *, verification_runner: Any
+) -> None:
+    """Refuse a unit whose acceptance criterion is not red before the change (FR-037).
+
+    Runs before any gateway request. A criterion that already passes cannot demonstrate
+    the work happened, and one that cannot execute is not a criterion at all — dispatching
+    either spends a worker on a unit whose completion could never be proven.
+    """
+    argv = [str(arg) for arg in packet.verification["argv"]]
+    try:
+        baseline = verification_runner(
+            argv,
+            cwd=str(repo),
+            timeout=packet.verification["timeout_seconds"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(repo)},
+        )
+    except OSError as exc:
+        raise AutodevError(
+            f"acceptance criterion is not executable, so red-green cannot be shown: {exc}"
+        ) from exc
+    if baseline.returncode == 0:
+        raise AutodevError(
+            "acceptance criterion is already passing before the change; "
+            "a red-green criterion is required before dispatching a worker"
+        )
+
+
 def discover_governing_docs(repo: Path, *, limit: int = 4) -> tuple[str, ...]:
     """Governing decision records for a repository, newest identifier first (FR-032).
 
@@ -820,8 +851,13 @@ def run_packet_autodev(
     probe_transport: Any = None,
     candidate_routes: Sequence[Mapping[str, Any]] | None = None,
     canary_state: Mapping[str, Any] | None = None,
+    require_red_green: bool = False,
 ) -> PacketAutodevReport:
     """Run one admitted packet task in a clean worktree, with one fallback."""
+    if require_red_green:
+        _require_failing_criterion(
+            Path(repo_path).resolve(), packet, verification_runner=verification_runner
+        )
     pending_keep: list[str] = []
     if (
         catalog_rows is not None

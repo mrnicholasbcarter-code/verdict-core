@@ -1568,3 +1568,39 @@ def test_compare_execution_topologies_uses_trusted_labels_and_allows_no_benefit(
     assert cheaper_better["benefit"] is True
     assert cheaper_better["multi_success"] == 2
     assert cheaper_better["multi_tokens"] == 10
+
+
+def test_execute_refuses_a_unit_whose_criterion_already_passes(repo: Path) -> None:
+    """FR-037: a criterion that is green before the change proves nothing.
+
+    Dispatching such a unit spends a worker to 'satisfy' a test that was already
+    passing, and the run would report completed without evidence the work happened.
+    """
+    from verdict.autodev_run import AutodevError
+
+    # The criterion passes against the unchanged source: nothing is left to prove.
+    already_green = _Verifier("before\n")
+    with pytest.raises(AutodevError, match="already passing"):
+        run_packet_autodev(
+            _packet(repo),
+            repo,
+            admitted_route=_route("free/cheap", "gateway/free-v1"),
+            executor_factory=_Factory([{"content": "after\n"}]),
+            store=ReceiptStore(":memory:"),
+            verification_runner=already_green,
+            require_red_green=True,
+        )
+
+
+def test_execute_proceeds_when_criterion_is_red_before_the_change(repo: Path) -> None:
+    """FR-037: a genuinely red criterion is dispatched and must still reach completed."""
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        require_red_green=True,
+    )
+    assert report.terminal_state == "completed"
