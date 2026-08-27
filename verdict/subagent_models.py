@@ -116,7 +116,6 @@ def _model_family(model_id: str) -> str:
     return model_id.strip().lower().split("/", 1)[0]
 
 
-
 @dataclass
 class SubagentModelSelector:
     """

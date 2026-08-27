@@ -102,13 +102,13 @@ class _Adapter:
 
     def normalize_failure(self, signal: AdapterFailureSignal) -> NormalizedFailure:
         if signal.status_code == 429:
-            return NormalizedFailure(NormalizedFailureClass.RATE_LIMIT, retryable=True, status_code=429)
+            return NormalizedFailure(
+                NormalizedFailureClass.RATE_LIMIT, retryable=True, status_code=429
+            )
         if signal.timed_out:
             return NormalizedFailure(NormalizedFailureClass.TIMEOUT, retryable=True)
         return NormalizedFailure(
-            NormalizedFailureClass.AUTHENTICATION,
-            retryable=False,
-            status_code=signal.status_code,
+            NormalizedFailureClass.AUTHENTICATION, retryable=False, status_code=signal.status_code
         )
 
 
@@ -217,8 +217,7 @@ def test_eligibility_is_applied_before_advisory_ranking() -> None:
         availability=AvailabilityState.QUOTA_EXHAUSTED,
     )
     admitted = _evidence(
-        requested_alias="alternative/ready",
-        route=_route("alt/ready", route_id="route-ready"),
+        requested_alias="alternative/ready", route=_route("alt/ready", route_id="route-ready")
     )
     ranked: list[str] = []
 
@@ -235,22 +234,18 @@ def test_eligibility_is_applied_before_advisory_ranking() -> None:
 
 def test_retry_safety_requires_idempotency_and_pre_byte_state() -> None:
     routing = _routing()
-    rate_limited = NormalizedFailure(NormalizedFailureClass.RATE_LIMIT, retryable=True, status_code=429)
+    rate_limited = NormalizedFailure(
+        NormalizedFailureClass.RATE_LIMIT, retryable=True, status_code=429
+    )
 
     safe = routing.normalize_retry_safety(
-        rate_limited,
-        idempotency_key="idem-1",
-        byte_state=ByteState.PRE_BYTES,
+        rate_limited, idempotency_key="idem-1", byte_state=ByteState.PRE_BYTES
     )
     unsafe_without_key = routing.normalize_retry_safety(
-        rate_limited,
-        idempotency_key=None,
-        byte_state=ByteState.PRE_BYTES,
+        rate_limited, idempotency_key=None, byte_state=ByteState.PRE_BYTES
     )
     unsafe_after_bytes = routing.normalize_retry_safety(
-        rate_limited,
-        idempotency_key="idem-1",
-        byte_state=ByteState.BYTES_EMITTED,
+        rate_limited, idempotency_key="idem-1", byte_state=ByteState.BYTES_EMITTED
     )
 
     assert safe.retryable is True
@@ -263,15 +258,11 @@ def test_retry_safety_requires_idempotency_and_pre_byte_state() -> None:
 
 def test_non_transient_failure_is_never_normalized_as_retryable() -> None:
     failure = NormalizedFailure(
-        NormalizedFailureClass.AUTHENTICATION,
-        retryable=False,
-        status_code=401,
+        NormalizedFailureClass.AUTHENTICATION, retryable=False, status_code=401
     )
 
     result = _routing().normalize_retry_safety(
-        failure,
-        idempotency_key="idem-1",
-        byte_state=ByteState.PRE_BYTES,
+        failure, idempotency_key="idem-1", byte_state=ByteState.PRE_BYTES
     )
 
     assert result.retryable is False
@@ -281,13 +272,17 @@ def test_non_transient_failure_is_never_normalized_as_retryable() -> None:
 def _report(*candidates: AvailabilityCandidate) -> AvailabilityReport:
     return AvailabilityReport(
         candidates=tuple(candidates),
-        eligible=tuple(candidate for candidate in candidates if candidate.state is AvailabilityState.ELIGIBLE),
+        eligible=tuple(
+            candidate for candidate in candidates if candidate.state is AvailabilityState.ELIGIBLE
+        ),
         source="omniroute",
         freshness_seconds=2.0,
     )
 
 
-def test_composes_candidate_evidence_from_availability_report_without_inventing_optional_facets() -> None:
+def test_composes_candidate_evidence_from_availability_report_without_inventing_optional_facets() -> (
+    None
+):
     candidate = AvailabilityCandidate(
         model=ModelInfo(
             id="alternative/ready",
@@ -393,9 +388,7 @@ def _probe(model_id: str = "alternative/ready") -> ProbeObservation:
 def test_live_adapter_discovers_concrete_routes_from_existing_availability_surface() -> None:
     candidate = AvailabilityCandidate(
         model=ModelInfo(
-            id="alternative/ready",
-            provider="alternative",
-            capabilities=frozenset({"chat"}),
+            id="alternative/ready", provider="alternative", capabilities=frozenset({"chat"})
         ),
         state=AvailabilityState.ELIGIBLE,
         source="omniroute-runtime",
@@ -404,16 +397,11 @@ def test_live_adapter_discovers_concrete_routes_from_existing_availability_surfa
     )
     surface = _AvailabilitySurface(_report(candidate))
     adapter = _routing().OpenAICompatibleEvidenceAdapter(
-        surface,
-        gateway_id="omniroute-local",
-        protocol="openai.chat",
-        ttl_seconds=60,
+        surface, gateway_id="omniroute-local", protocol="openai.chat", ttl_seconds=60
     )
 
     evidence = adapter.observe(
-        requested_alias="alternative/ready",
-        observed_at=NOW,
-        probes={"alternative/ready": _probe()},
+        requested_alias="alternative/ready", observed_at=NOW, probes={"alternative/ready": _probe()}
     )
 
     assert surface.calls == 1
@@ -467,8 +455,7 @@ def test_live_adapter_attests_only_actual_identity_present_in_response_metadata(
         ),
     )
     unavailable = adapter.attest(
-        request,
-        AdapterResponseMetadata("request-live-1", {"request_id": "upstream-request-9"}),
+        request, AdapterResponseMetadata("request-live-1", {"request_id": "upstream-request-9"})
     )
 
     assert observed.resolved_route.model_id == "alternative/ready"
@@ -495,6 +482,7 @@ def test_live_adapter_normalizes_failures_without_retrying_authentication() -> N
     assert auth == NormalizedFailure(
         NormalizedFailureClass.AUTHENTICATION, retryable=False, status_code=401
     )
+
 
 # --- Clarified requirements (AC-0.10): qualification is fresh source-linked
 # capability evidence only; name/tier/reputation/self-report never qualify. ---
@@ -635,8 +623,7 @@ def test_openai_served_model_is_attested_distinct_from_requested_alias() -> None
     )
 
     attested = adapter.attest(
-        request,
-        AdapterResponseMetadata("request-live-served", {"model": "alternative/served-v2"}),
+        request, AdapterResponseMetadata("request-live-served", {"model": "alternative/served-v2"})
     )
 
     assert attested.requested_alias == "alternative/ready"

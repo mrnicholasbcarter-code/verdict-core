@@ -311,11 +311,15 @@ def _packet_event(store: ReceiptStore, payload: dict[str, Any], *, key: str | No
 def _attempt_files(repo: Path) -> tuple[str, ...]:
     tracked = subprocess.run(
         ["git", "-C", str(repo), "diff", "--name-only", "--relative"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.splitlines()
     untracked = subprocess.run(
         ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.splitlines()
     return tuple(sorted(set(tracked + untracked)))
 
@@ -335,7 +339,9 @@ def _make_attempt_worktree(repo: Path, commit: str) -> Path:
     path.rmdir()
     subprocess.run(
         ["git", "-C", str(repo), "worktree", "add", "--detach", str(path), commit],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return path
 
@@ -349,28 +355,32 @@ def _remove_attempt_worktree(repo: Path, attempt_repo: Path) -> None:
         check=False,
     )
     subprocess.run(
-        ["git", "-C", str(repo), "worktree", "prune"],
-        capture_output=True,
-        text=True,
-        check=False,
+        ["git", "-C", str(repo), "worktree", "prune"], capture_output=True, text=True, check=False
     )
 
 
 def _replay_attempt(attempt_repo: Path, repo: Path) -> None:
     diff = subprocess.run(
         ["git", "-C", str(attempt_repo), "diff", "--binary", "HEAD"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     if diff:
         subprocess.run(
             ["git", "-C", str(repo), "apply", "--whitespace=nowarn", "-"],
-            input=diff, capture_output=True, text=True, check=True,
+            input=diff,
+            capture_output=True,
+            text=True,
+            check=True,
         )
     # `git diff` never contains untracked files; a worker-created test file was
     # verified in the attempt and must not silently vanish on replay.
     untracked = subprocess.run(
         ["git", "-C", str(attempt_repo), "ls-files", "--others", "--exclude-standard"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.split()
     for relpath in untracked:
         source = attempt_repo / relpath
@@ -533,7 +543,10 @@ def run_packet_autodev(
         if record.payload.get("packet_id") == packet.packet_id
     ]
     if resume:
-        terminal = next((r.payload.get("terminal_state") for r in records if r.payload.get("terminal_state")), None)
+        terminal = next(
+            (r.payload.get("terminal_state") for r in records if r.payload.get("terminal_state")),
+            None,
+        )
         if terminal in {"completed", "truthful_failure", "drifted"}:
             checkpoints = {
                 str(record.payload["checkpoint"]): record.receipt_id
@@ -557,10 +570,20 @@ def run_packet_autodev(
             )
 
     current = capture_source_binding(
-        repo, repository=str(packet.source["repository"]), lock_paths=tuple(packet.source["lock_digests"])
+        repo,
+        repository=str(packet.source["repository"]),
+        lock_paths=tuple(packet.source["lock_digests"]),
     )
     if dict(current) != dict(packet.source):
-        _packet_event(ledger, {"packet_id": packet.packet_id, "terminal_state": "drifted", "reason": "source binding mismatch"}, key=f"packet:{packet.packet_id}:drifted")
+        _packet_event(
+            ledger,
+            {
+                "packet_id": packet.packet_id,
+                "terminal_state": "drifted",
+                "reason": "source binding mismatch",
+            },
+            key=f"packet:{packet.packet_id}:drifted",
+        )
         return PacketAutodevReport("drifted")
     if not _route_is_admitted(admitted_route):
         _packet_event(
@@ -622,7 +645,12 @@ def run_packet_autodev(
     unit = _packet_work_unit(packet, context.compiled_prompt)
 
     checkpoint = _packet_event(
-        ledger, {"packet_id": packet.packet_id, "checkpoint": "before_inference", "state": "attempt_started"},
+        ledger,
+        {
+            "packet_id": packet.packet_id,
+            "checkpoint": "before_inference",
+            "state": "attempt_started",
+        },
         key=f"packet:{packet.packet_id}:before-inference",
     )
     checkpoints = {"before_inference": checkpoint}
@@ -692,12 +720,7 @@ def run_packet_autodev(
                 latency_ms=int(getattr(result, "latency_ms", 0)),
             )
             failure_class = classify_failure(provisional)
-            attempt = PacketAttempt(
-                **{
-                    **provisional.__dict__,
-                    "failure_class": failure_class,
-                }
-            )
+            attempt = PacketAttempt(**{**provisional.__dict__, "failure_class": failure_class})
             attempts.append(attempt)
             _packet_event(
                 ledger,
@@ -709,14 +732,8 @@ def run_packet_autodev(
                     "changed_files": list(attempt.changed_files),
                     "artifact_digest": attempt.artifact_digest,
                     "verified": verified,
-                    "worker_self_report": {
-                        "outcome": worker_outcome,
-                        "role": "advisory",
-                    },
-                    "trusted_verification": {
-                        "decided": verified,
-                        "role": "deciding",
-                    },
+                    "worker_self_report": {"outcome": worker_outcome, "role": "advisory"},
+                    "trusted_verification": {"decided": verified, "role": "deciding"},
                     "reason": reason,
                     "failure_class": failure_class,
                     "usage": attempt.usage.to_dict(),
@@ -766,7 +783,9 @@ def run_packet_autodev(
             _remove_attempt_worktree(repo, attempt_repo)
 
         if index == 0 and failure_class is not None:
-            refreshed = refresh_fallback(attempt) if refresh_fallback is not None else fallback_route
+            refreshed = (
+                refresh_fallback(attempt) if refresh_fallback is not None else fallback_route
+            )
             composer = getattr(refreshed, "to_admission_record", None)
             if callable(composer):
                 refreshed = composer(admitted=True)

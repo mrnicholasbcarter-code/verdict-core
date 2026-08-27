@@ -64,10 +64,7 @@ class _StubIntelligence:
 
 def _selector(candidates, eligible):
     report = AvailabilityReport(
-        candidates=tuple(candidates),
-        eligible=tuple(eligible),
-        source="test",
-        freshness_seconds=1.0,
+        candidates=tuple(candidates), eligible=tuple(eligible), source="test", freshness_seconds=1.0
     )
 
     def source(requirements: CandidateRequirements) -> AvailabilityReport:
@@ -117,8 +114,7 @@ def test_degraded_candidate_admitted_only_when_report_says_eligible():
 
 
 @pytest.mark.parametrize(
-    "model_id",
-    ["auto", "auto/coding", "combo/anything", "router/x", "virtual/y", "default"],
+    "model_id", ["auto", "auto/coding", "combo/anything", "router/x", "virtual/y", "default"]
 )
 def test_opaque_resolver_aliases_are_excluded_even_when_eligible(model_id):
     """Opaque routing is denied for protected work regardless of gateway verdict."""

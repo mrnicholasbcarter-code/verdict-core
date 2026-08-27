@@ -177,13 +177,7 @@ def test_packet_and_transition_receipts_are_idempotent_and_secret_free() -> None
 
 def test_machine_readable_schema_accepts_canonical_packet() -> None:
     packet = ExecutionPacket.from_dict(packet_payload())
-    schema_path = (
-        Path(__file__).parents[1]
-        / "specs"
-        / "272-operational-routing-loop"
-        / "contracts"
-        / "execution-packet.schema.json"
-    )
+    schema_path = Path(__file__).parents[1] / "schemas" / "execution-packet.v1.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     assert list(Draft202012Validator(schema).iter_errors(packet.to_dict())) == []

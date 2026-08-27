@@ -8,12 +8,7 @@ from typing import Any
 
 import pytest
 
-from verdict.autodev_run import (
-    AUTODEV_SCOPE,
-    DEFAULT_EXECUTOR_MODEL,
-    AutodevError,
-    run_autodev,
-)
+from verdict.autodev_run import AUTODEV_SCOPE, DEFAULT_EXECUTOR_MODEL, AutodevError, run_autodev
 from verdict.decomposer import (
     DEFAULT_ORCHESTRATOR_MODEL,
     Decomposer,

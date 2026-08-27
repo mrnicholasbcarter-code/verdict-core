@@ -100,11 +100,7 @@ class CandidateEvidence:
         if not self.source.strip():
             raise GatewayAdapterError("source must be non-empty")
         object.__setattr__(self, "capabilities", dict(self.capabilities))
-        object.__setattr__(
-            self,
-            "field_freshness",
-            dict(self.field_freshness or {}),
-        )
+        object.__setattr__(self, "field_freshness", dict(self.field_freshness or {}))
         object.__setattr__(self, "conflicts", tuple(dict(item) for item in self.conflicts))
         if self.freshness_seconds is not None and (
             isinstance(self.freshness_seconds, bool) or self.freshness_seconds < 0
@@ -127,16 +123,16 @@ class CandidateEvidence:
         observed = self.observed_at.astimezone(timezone.utc)
         return observed <= current <= observed + timedelta(seconds=self.ttl_seconds)
 
-    def to_admission_record(
-        self, *, admitted: bool, primary: bool | None = None
-    ) -> dict[str, Any]:
+    def to_admission_record(self, *, admitted: bool, primary: bool | None = None) -> dict[str, Any]:
         """Emit the admission dict consumed by packet execute / fallback.
 
         ``primary`` is the primary-subscription *role*. It is inferred from the
         ``primary_subscription`` capability unless the caller sets it explicitly.
         Brand prefixes are never consulted.
         """
-        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        payload = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
         digest = "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
         actual = self.actual_route or self.route
         if primary is None:
@@ -332,9 +328,7 @@ class OpenAICompatibleEvidenceAdapter:
         else:
             failure_class = NormalizedFailureClass.UNKNOWN
         return NormalizedFailure(
-            failure_class=failure_class,
-            retryable=failure_class in _TRANSIENT,
-            status_code=status,
+            failure_class=failure_class, retryable=failure_class in _TRANSIENT, status_code=status
         )
 
 
@@ -407,8 +401,14 @@ def select_eligible_route(
         dev_mode=False,
     )
     admitted_models = {model.id for model in result.admitted}
-    eligible = [candidate for candidate in candidate_list if candidate.route.model_id in admitted_models]
-    excluded = [candidate.requested_alias for candidate in candidate_list if candidate.route.model_id not in admitted_models]
+    eligible = [
+        candidate for candidate in candidate_list if candidate.route.model_id in admitted_models
+    ]
+    excluded = [
+        candidate.requested_alias
+        for candidate in candidate_list
+        if candidate.route.model_id not in admitted_models
+    ]
     if not eligible:
         raise ValueError("no eligible route; exclusions: " + ", ".join(excluded))
     selected = max(eligible, key=ranker or (lambda _candidate: 0.0))
@@ -441,9 +441,7 @@ def compose_candidate_evidence(
         headroom = item.headroom_pct
         if headroom is None:
             headroom = _optional_percentage(normalized.get("headroom_pct"))
-        freshness = (
-            max(0.0, item.freshness_seconds) if item.freshness_seconds is not None else None
-        )
+        freshness = max(0.0, item.freshness_seconds) if item.freshness_seconds is not None else None
         evidence.append(
             CandidateEvidence(
                 requested_alias=requested_alias,
@@ -471,9 +469,7 @@ def compose_candidate_evidence(
 
 
 def attest_response(
-    adapter: ResponseAttestationAdapter,
-    request: Any,
-    response: AdapterResponseMetadata,
+    adapter: ResponseAttestationAdapter, request: Any, response: AdapterResponseMetadata
 ) -> RouteIdentityAttestation:
     """Return the adapter's response-bound requested/resolved/actual identity."""
     attestation = adapter.attest(request, response)
@@ -499,9 +495,7 @@ def _opaque_route(value: str) -> bool:
     return is_opaque_route_id(value)
 
 
-def _merge_probe(
-    evidence: CandidateEvidence, probe: ProbeObservation | None
-) -> CandidateEvidence:
+def _merge_probe(evidence: CandidateEvidence, probe: ProbeObservation | None) -> CandidateEvidence:
     if probe is None or probe.model_id != evidence.route.model_id:
         return evidence
     capabilities = dict(evidence.capabilities)
@@ -514,11 +508,7 @@ def _merge_probe(
         capabilities=capabilities,
         observed_at=max(evidence.observed_at, probe.observed_at),
         ttl_seconds=evidence.ttl_seconds,
-        source=(
-            f"{evidence.source}+verdict:probe"
-            if probe.status == "ready"
-            else evidence.source
-        ),
+        source=(f"{evidence.source}+verdict:probe" if probe.status == "ready" else evidence.source),
         freshness_seconds=evidence.freshness_seconds,
         quota_remaining_pct=evidence.quota_remaining_pct,
         headroom_pct=evidence.headroom_pct,
@@ -615,10 +605,7 @@ def _optional_percentage(value: Any) -> float | None:
 
 
 def normalize_retry_safety(
-    failure: NormalizedFailure,
-    *,
-    idempotency_key: str | None,
-    byte_state: ByteState,
+    failure: NormalizedFailure, *, idempotency_key: str | None, byte_state: ByteState
 ) -> RetryDecision:
     """Normalize retryability using failure class, idempotency, and byte state."""
     if failure.failure_class not in _TRANSIENT or not failure.retryable:

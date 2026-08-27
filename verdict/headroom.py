@@ -1,13 +1,15 @@
 """Provider quota and headroom checks."""
 
-__all__ = ['UNKNOWN_HEADROOM', 'check_headroom', 'headroom_is_unknown']
+__all__ = ["UNKNOWN_HEADROOM", "check_headroom", "headroom_is_unknown"]
 
 from verdict.models import ProviderConfig
 
 UNKNOWN_HEADROOM: tuple[bool, float] | None = None
 
 
-def check_headroom(model_id: str, provider_name: str, config: ProviderConfig) -> tuple[bool, float] | None:
+def check_headroom(
+    model_id: str, provider_name: str, config: ProviderConfig
+) -> tuple[bool, float] | None:
     """Check if a model has capacity.
 
     Returns (is_available, headroom_pct) or None if headroom cannot be determined.

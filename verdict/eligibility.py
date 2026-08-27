@@ -39,9 +39,7 @@ class EligibilityVerdict(str, Enum):
 # CandidateRequirements.allow_degraded (and allow_unmeasured_evidence) in
 # _availability_state_is_eligible(). This prevents the gate from overriding
 # role-level policy (see subagent_models.py role flags).
-_ADMITTED_STATES = frozenset(
-    {AvailabilityState.ELIGIBLE, AvailabilityState.READY}
-)
+_ADMITTED_STATES = frozenset({AvailabilityState.ELIGIBLE, AvailabilityState.READY})
 
 
 @dataclass(frozen=True)

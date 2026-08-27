@@ -23,7 +23,9 @@ def test_check_headroom_unimplemented_endpoint():
 
     result = check_headroom("model-id", "provider-name", config)
 
-    assert result is None, "Unimplemented endpoint should return unknown (None), not fabricated capacity"
+    assert result is None, (
+        "Unimplemented endpoint should return unknown (None), not fabricated capacity"
+    )
 
 
 def test_headroom_is_unknown_none():

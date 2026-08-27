@@ -181,9 +181,7 @@ def test_openai_transport_sends_session_id_header() -> None:
         return Response()
 
     transport = openai_probe_transport(
-        "http://127.0.0.1:20128/v1",
-        opener=opener,
-        session_id="verdict-operational-loop",
+        "http://127.0.0.1:20128/v1", opener=opener, session_id="verdict-operational-loop"
     )
     transport("runtime/model", ProbePolicy().payload("runtime/model"), 0.1)
 

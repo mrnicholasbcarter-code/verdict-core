@@ -911,7 +911,11 @@ def cmd_autodev_packet_execute(
             "the supplied admitted route occupies the primary-subscription role"
         )
         if output_json:
-            print(json.dumps({"error": message, "missing": "non-primary admitted route"}, sort_keys=True))
+            print(
+                json.dumps(
+                    {"error": message, "missing": "non-primary admitted route"}, sort_keys=True
+                )
+            )
         else:
             console.print(f"[bold red]{message}[/bold red]")
         raise SystemExit(1)
@@ -927,9 +931,7 @@ def cmd_autodev_packet_execute(
                 actual = served or primary_fallback
                 break
         fallback_route = designated_primary_fallback(
-            primary_fallback,
-            evidence_digest=digest,
-            actual_identity=actual,
+            primary_fallback, evidence_digest=digest, actual_identity=actual
         )
     report = run_packet_autodev(
         packet,

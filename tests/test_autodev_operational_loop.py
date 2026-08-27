@@ -21,7 +21,9 @@ from verdict.patch_executor import PatchAttempt
 from verdict.receipt_store import ReceiptStore
 
 
-def _completed(command: list[str], code: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:
+def _completed(
+    command: list[str], code: int = 0, stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(command, code, "", stderr)
 
 
@@ -43,7 +45,9 @@ def _packet(repo: Path) -> ExecutionPacket:
         packet_version=1,
         story_id="US1",
         story_version="1",
-        source=capture_source_binding(repo, repository="git@example.test:verdict.git", lock_paths=()),
+        source=capture_source_binding(
+            repo, repository="git@example.test:verdict.git", lock_paths=()
+        ),
         intent={
             "goal": "Change one owned file through a verified packet run.",
             "non_goals": ["Plan work.", "Change unowned files."],
@@ -148,10 +152,14 @@ class _Verifier:
         root = Path(kwargs["cwd"])
         self.calls.append(root)
         observed = (root / "owned.txt").read_text(encoding="utf-8")
-        return _completed(command, 0 if observed == self.expected else 1, "unexpected owned content")
+        return _completed(
+            command, 0 if observed == self.expected else 1, "unexpected owned content"
+        )
 
 
-def test_packet_source_drift_stops_before_any_inference_and_emits_a_drift_receipt(repo: Path) -> None:
+def test_packet_source_drift_stops_before_any_inference_and_emits_a_drift_receipt(
+    repo: Path,
+) -> None:
     packet = _packet(repo)
     (repo / "owned.txt").write_text("changed after packet binding\n", encoding="utf-8")
     factory = _Factory([{}])
@@ -172,7 +180,9 @@ def test_packet_source_drift_stops_before_any_inference_and_emits_a_drift_receip
     assert any(record.payload.get("terminal_state") == "drifted" for record in receipts)
 
 
-def test_validated_packet_checkpoints_before_inference_and_attributes_a_real_patch(repo: Path) -> None:
+def test_validated_packet_checkpoints_before_inference_and_attributes_a_real_patch(
+    repo: Path,
+) -> None:
     packet = _packet(repo)
     factory = _Factory([{"content": "after\n"}])
     verifier = _Verifier("after\n")
@@ -275,7 +285,11 @@ def test_packet_receipts_keep_budget_usage_and_authority_without_prompts(repo: P
     )
     assert report.terminal_state == "completed"
 
-    context = [row for row in store.query_receipts(scope="operational-loop") if row.receipt_type == "context"]
+    context = [
+        row
+        for row in store.query_receipts(scope="operational-loop")
+        if row.receipt_type == "context"
+    ]
     assert context, "expected a compiled context receipt"
     payload = context[0].payload
     assert payload["token_budget"] == 4096 or isinstance(payload["token_budget"], int)
@@ -326,9 +340,7 @@ def test_context_receipt_units_are_autodev_owned_paths_without_chat(repo: Path) 
     assert owned <= set(packet.authority["owned_paths"])
 
 
-def test_packet_execute_receipt_keeps_advisory_self_report_off_the_deciding_bit(
-    repo: Path,
-) -> None:
+def test_packet_execute_receipt_keeps_advisory_self_report_off_the_deciding_bit(repo: Path) -> None:
     """Shipped attempt receipts store advisory worker outcome beside trusted verification."""
     packet = _packet(repo)
     store = ReceiptStore(":memory:")
@@ -354,7 +366,9 @@ def test_packet_execute_receipt_keeps_advisory_self_report_off_the_deciding_bit(
     assert payload["verified"] is True
 
 
-def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_replayed(repo: Path) -> None:
+def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_replayed(
+    repo: Path,
+) -> None:
     packet = _packet(repo)
     factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
     verifier = _Verifier("after\n")
@@ -409,11 +423,7 @@ def test_ineligible_fallback_is_not_invoked_after_a_failed_attempt(repo: Path) -
         packet,
         repo,
         admitted_route=_route("free/cheap", "gateway/free-v1"),
-        fallback_route=_route(
-            "cc/claude-sonnet-5",
-            "anthropic/sonnet-served",
-            admitted=False,
-        ),
+        fallback_route=_route("cc/claude-sonnet-5", "anthropic/sonnet-served", admitted=False),
         executor_factory=factory,
         store=ReceiptStore(":memory:"),
         verification_runner=_Verifier("after\n"),
@@ -470,7 +480,9 @@ def test_source_drift_during_inference_stops_before_verified_patch_replay(repo: 
     assert (repo / "owned.txt").read_text(encoding="utf-8") == "before\n"
 
 
-def test_completed_packet_restart_resumes_without_reexecuting_or_duplicate_transition(repo: Path) -> None:
+def test_completed_packet_restart_resumes_without_reexecuting_or_duplicate_transition(
+    repo: Path,
+) -> None:
     packet = _packet(repo)
     factory = _Factory([{"content": "after\n"}])
     store = ReceiptStore(":memory:")
@@ -525,7 +537,8 @@ def test_receipts_redact_raw_provider_payloads_and_truthfully_preserve_failure(r
 
     assert report.terminal_state == "truthful_failure"
     persisted = json.dumps(
-        [record.payload for record in store.query_receipts(scope="operational-loop")], sort_keys=True
+        [record.payload for record in store.query_receipts(scope="operational-loop")],
+        sort_keys=True,
     )
     for raw in ("private patch prompt", "private model completion", "secret-token"):
         assert raw not in persisted
@@ -574,6 +587,7 @@ def test_default_executor_builds_a_real_patch_executor_from_route_and_context(re
     assert seen["unit"].verification_command == ("verify-owned",)
     assert "Change one owned file through a verified packet run." in seen["unit"].context
 
+
 # --- Clarified requirements: capability-aware handoff (AC-0.9/AC-0.10) and
 # blocked-resumable state when no qualified worker exists (AC-0.11). ---
 from verdict.autodev_routing import CandidateEvidence  # noqa: E402
@@ -585,10 +599,7 @@ from verdict.gateway_adapters import AdapterRouteIdentity  # noqa: E402
 
 
 def _worker_evidence(
-    alias: str,
-    *,
-    capabilities: Mapping[str, str] | None = None,
-    fresh: bool = True,
+    alias: str, *, capabilities: Mapping[str, str] | None = None, fresh: bool = True
 ) -> CandidateEvidence:
     from datetime import datetime, timedelta, timezone
 
@@ -596,8 +607,11 @@ def _worker_evidence(
     return CandidateEvidence(
         requested_alias=alias,
         route=AdapterRouteIdentity(
-            gateway_id="omniroute", route_id=f"route:{alias}", provider="gateway",
-            model_id=alias.split("/")[-1], protocol="openai-compatible"
+            gateway_id="omniroute",
+            route_id=f"route:{alias}",
+            provider="gateway",
+            model_id=alias.split("/")[-1],
+            protocol="openai-compatible",
         ),
         availability="eligible",
         capabilities=dict(capabilities or {"patch": "observed", "test": "observed"}),
@@ -634,11 +648,7 @@ def test_handoff_requires_fresh_source_linked_capability_evidence(repo: Path) ->
 
 
 def test_fallback_admission_uses_primary_role_not_brand_prefix() -> None:
-    primary = _route(
-        "openrouter/stealth/ox-alpha",
-        "openrouter/stealth/ox-alpha",
-        primary=True,
-    )
+    primary = _route("openrouter/stealth/ox-alpha", "openrouter/stealth/ox-alpha", primary=True)
     branded_non_primary = _route("cc/claude-sonnet-5", "anthropic/sonnet-served")
     assert _route_is_admitted(primary, fallback=True) is True
     assert _route_is_admitted(branded_non_primary, fallback=True) is False
@@ -657,9 +667,7 @@ def test_incumbent_worker_without_required_capability_hands_off_with_preserved_s
     report = run_packet_autodev(
         packet,
         repo,
-        admitted_route=_handoff_route(
-            "other/qualified", required_capabilities=["patch", "test"]
-        ),
+        admitted_route=_handoff_route("other/qualified", required_capabilities=["patch", "test"]),
         executor_factory=factory,
         store=store,
         verification_runner=_Verifier("after\n"),
@@ -759,16 +767,11 @@ def test_refresh_fallback_composes_primary_from_candidate_evidence(repo: Path) -
     packet = _packet(repo)
     factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
     branded = _worker_evidence(
-        "cc/claude-sonnet-5",
-        capabilities={"patch": "observed", "test": "observed"},
+        "cc/claude-sonnet-5", capabilities={"patch": "observed", "test": "observed"}
     )
     primary = _worker_evidence(
         "alt/subscription",
-        capabilities={
-            "patch": "observed",
-            "test": "observed",
-            "primary_subscription": "observed",
-        },
+        capabilities={"patch": "observed", "test": "observed", "primary_subscription": "observed"},
     )
 
     branded_report = run_packet_autodev(

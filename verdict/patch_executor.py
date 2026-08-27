@@ -309,17 +309,13 @@ class PatchExecutor:
         try:
             response = self._transport(self.config.model, payload, self.config.timeout_seconds)
         except Exception as exc:  # transport failures are an executor outcome, not a crash
-            raise self._route_failure(
-                f"transport error: {type(exc).__name__}: {exc}"
-            ) from exc
+            raise self._route_failure(f"transport error: {type(exc).__name__}: {exc}") from exc
 
         if not isinstance(response, Mapping):
             raise self._route_failure("transport returned a non-object response")
         status = response.get("status_code")
         if isinstance(status, int) and not 200 <= status < 300:
-            raise self._route_failure(
-                f"provider returned HTTP {status}", status_code=status
-            )
+            raise self._route_failure(f"provider returned HTTP {status}", status_code=status)
         body = response.get("body")
         if not isinstance(body, Mapping):
             raise self._route_failure(
@@ -452,9 +448,7 @@ def _recount_hunks(diff: str) -> str:
             body.pop()
         old = sum(1 for line in body if not line.startswith("+"))
         new = sum(1 for line in body if not line.startswith("-"))
-        out.append(
-            f"@@ -{match.group(1)},{old} +{match.group(3)},{new} @@"
-        )
+        out.append(f"@@ -{match.group(1)},{old} +{match.group(3)},{new} @@")
         out.extend(body)
         i = j
     return "\n".join(out) + "\n"

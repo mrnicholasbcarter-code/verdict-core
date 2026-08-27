@@ -335,9 +335,7 @@ class ExecutionPacket:
 
     def __post_init__(self) -> None:
         if self.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
-            raise UnsupportedSchemaVersionError(
-                self.schema_version, SUPPORTED_SCHEMA_VERSIONS
-            )
+            raise UnsupportedSchemaVersionError(self.schema_version, SUPPORTED_SCHEMA_VERSIONS)
         for name in ("packet_id", "story_id", "story_version", "next_safe_action"):
             object.__setattr__(self, name, _text(getattr(self, name), name))
         object.__setattr__(

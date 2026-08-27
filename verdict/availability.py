@@ -1025,10 +1025,7 @@ def _availability_state_is_eligible(
         item.state is AvailabilityState.DEGRADED
         and requirements.allow_degraded
         and not requirements.protected
-        and (
-            requirements.allow_unmeasured_evidence
-            or not _degraded_for_absent_evidence(item)
-        )
+        and (requirements.allow_unmeasured_evidence or not _degraded_for_absent_evidence(item))
     ):
         return True
     return (

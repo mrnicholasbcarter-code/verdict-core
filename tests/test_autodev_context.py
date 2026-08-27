@@ -41,9 +41,7 @@ def _compile_context(**overrides: Any) -> Any:
         "repository_instructions": (
             "Keep files under the repository source and tests directories.",
         ),
-        "relevant_examples": (
-            "tests/test_headroom.py::test_absent_endpoint_is_unknown",
-        ),
+        "relevant_examples": ("tests/test_headroom.py::test_absent_endpoint_is_unknown",),
         "governing_docs": (
             "specs/272-operational-routing-loop/spec.md",
             "ADR-010: missing hard evidence fails closed",
@@ -117,8 +115,7 @@ def test_worker_context_records_omissions_when_token_budget_is_exhausted() -> No
     assert pack.used_tokens <= 48
     assert pack.truncated_count > 0
     assert any(
-        decision.action == "exclude"
-        and decision.reason == "input_budget_exhausted"
+        decision.action == "exclude" and decision.reason == "input_budget_exhausted"
         for decision in pack.decisions
     )
 
@@ -130,9 +127,7 @@ def _packet(repo: Path) -> ExecutionPacket:
         story_id="US1",
         story_version="1",
         source=capture_source_binding(
-            repo,
-            repository="git@example.test:verdict.git",
-            lock_paths=(),
+            repo, repository="git@example.test:verdict.git", lock_paths=()
         ),
         intent={
             "goal": "Represent unavailable provider headroom as unknown.",

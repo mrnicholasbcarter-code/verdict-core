@@ -260,9 +260,7 @@ def test_default_openai_transport_sends_operational_loop_session_header(
     monkeypatch.setattr("verdict.patch_executor.urllib.request.urlopen", opener)
 
     executor = PatchExecutor(
-        repo,
-        PatchExecutorConfig(model="cheap/model"),
-        runner=RecordingRunner(),
+        repo, PatchExecutorConfig(model="cheap/model"), runner=RecordingRunner()
     )
     attempt = executor.execute_unit(_unit())
 
