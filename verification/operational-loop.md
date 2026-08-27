@@ -636,3 +636,199 @@ Requested `ollama/minimax-m3` → actual `minimax-m3`. Terminal `completed`,
 `trusted_verification={decided:true, role:deciding}`. Artifact: assert
 `UNKNOWN_HEADROOM is None`. Operator-named other live 9router ids (`grid/code-prime`,
 `grid/gemini-pro-latest`, `oc/laguna-s-2.1-free`, `oc/hy3-free`) were not re-run.
+
+## T053b — same-digest r20 pair (LIVE-PROVEN helper input)
+
+Packet `.verdict/packets/headroom-unknown-r20.json` integrity
+`sha256:b16e4f7732829fa1a09ce0167e36936fc26cb117a59f731ae1121f3f13b71e9d`
+(HEAD `4138e50` + dirty US2 overlay). Route `ollama/minimax-m3`, `primary=false`.
+OmniRoute `3.8.49`, `taskRouting.enabled=false`, `detectionEnabled=false` (GET `/api/settings`, no writes).
+Receipts namespaced by `family_id` so resume does not skip the second family.
+
+| Axis | Family A `:20128` | Family B `:20129` | Claim |
+|---|---|---|---|
+| Digest | `sha256:b16e4f77…` | same | LIVE-PROVEN |
+| Terminal | `truthful_failure`, `fallback_count=0`, `resumed=false` | `truthful_failure`, `fallback_count=0`, `resumed=false` | LIVE-PROVEN |
+| Actual identity | `ollama/minimax-m3` | `minimax-m3` | LIVE-PROVEN |
+| Failure | HTTP 429 | worker `diff names no files` / `rejected` | LIVE-PROVEN |
+| worker_self_report | `{outcome:error, role:advisory}` | `{outcome:rejected, role:advisory}` | LIVE-PROVEN |
+| trusted_verification | deciding false | deciding false | LIVE-PROVEN |
+| Quota / headroom | UNKNOWN | UNKNOWN | LIVE-PROVEN; **no parity claimed** |
+| `compare_family_runs` | pair_id `sha256:5adf7ffa…`, `parity_claimed=false` | — | SOURCE-ONLY helper on live JSON |
+
+r13 vs r17 remain different packets (historical). r18/r19 were superseded (resume leak, then source drift).
+
+## T053 — family A r13 vs family B r17 (PARTIAL: terminals LIVE-PROVEN, same-digest pair later closed in T053b)
+
+Same owned unit (`UNKNOWN_HEADROOM`). Distinct families:
+`http://127.0.0.1:20128/v1` (OmniRoute) vs `http://127.0.0.1:20129/v1` (9router).
+
+| Axis | Family A r13 | Family B r17 | Claim |
+|---|---|---|---|
+| Packet integrity | `sha256:b1d1cf82858ad286ef5a04dd1bcd2e87c22808b3278b4d517b9d07788b7cf291` | `sha256:634cd5f675e76dd3e46eba43ef05b4079c1c92089c4c216d9eac9b0d99844f08` | **not the same digest** — source-bound packets from different commits; helper `compare_family_runs` refuses this pair. Same-digest pairing is SOURCE-ONLY in `test_compare_family_runs_refuses_digest_mismatch_and_same_url`. |
+| Terminal | `completed`, `fallback_count=0` | `completed`, `fallback_count=0` | LIVE-PROVEN both ≤ 1 |
+| Requested → actual | `kimi-coding/kimi-for-coding` → `kimi-for-coding` | `ollama/minimax-m3` → `minimax-m3` | LIVE-PROVEN concrete non-combo |
+| worker_self_report | advisory | advisory | LIVE-PROVEN |
+| trusted_verification | deciding, verified | deciding, verified | LIVE-PROVEN |
+| Quota / headroom | UNKNOWN | UNKNOWN | LIVE-PROVEN; **no parity claimed** |
+
+r15 on family B was `truthful_failure` (`fallback_count=0`) and is not treated as parity with r13. Redaction allowlist unchanged; no raw prompt/completion/credential in those receipts.
+
+## T061 — US3 fixture context ablation (SOURCE-ONLY)
+
+`context_ablation_payload` in `verdict/autodev_run.py` pairs two `ContextPack` digests for one packet. Fixture `tests/test_autodev_context.py::test_context_ablation_payload_requires_distinct_digests_and_blocks_denied_paths` plus extra-symbol ablation: same packet integrity, distinct context digests, denied `verdict/cli.py` refused in evidence units, `success_delta=UNKNOWN` until trusted verification bools are supplied. No RAG vendor.
+
+Proof: SOURCE-ONLY / FIXTURE-ONLY. `uv run pytest -q tests/test_autodev_context.py` — 9 passed.
+US3-D: `compile_packet_context` skips `denied_paths` on read; `context_ablation_payload` inventories unowned evidence paths instead of hardcoding `unowned_paths_present=False`.
+
+## T061b — US3 live cheaper-route ablation (LIVE-PROVEN, no-change)
+
+Packet `headroom-unknown-r21` integrity
+`sha256:9fd1dc4756d05074b082cf806a7cd708a0df6be313b9deceb5cda3fb8b76cc1b`.
+Family B `http://127.0.0.1:20129/v1`, concrete `ollama/minimax-m3` → `minimax-m3`.
+OmniRoute `3.8.49`, `taskRouting.enabled=false`, `detectionEnabled=false` (GET, no writes).
+`:20128` catalog also answered this window; ablation executed on B.
+
+| Leg | Context | Terminal | Trusted | Worker (advisory) |
+|---|---|---|---|---|
+| A | digest `sha256:5c9b8778…`, no extra symbol | `truthful_failure`, `fallback_count=0`, `resumed=false` | deciding false | `diff names no files` / rejected |
+| B | digest `sha256:3ce160b6…`, symbol `UNKNOWN_HEADROOM -> test_unknown_headroom_sentinel` | `truthful_failure`, `fallback_count=0`, `resumed=false` | deciding false | `model response is not a unified diff` / rejected |
+
+`context_ablation_payload` `success_delta=unchanged` (`verified_a=false`, `verified_b=false`). Distinct context digests, same packet digest. Extra symbol did **not** change trusted success. LIVE-PROVEN truthful no-change on one cheaper/alternative route. US3 exit signal met.
+
+## T034 / T039 PARTIAL residual (receipt reuse, no new live execute)
+
+Inspected `.verdict/receipts.db` operational-loop rows including r12 seq 53–56, r17 seq 72–74, r21 seq 96–98. No new mutating execute: worktree is dirty vs frozen packet source bindings.
+
+### T034 — EligibilityGate sole admission floor
+
+- SOURCE-ONLY / FIXTURE-ONLY: `run_packet_autodev` now calls `packet_admission_inventory` → `select_eligible_route` / `EligibilityGate` and persists `admitted_ids` and `ranked_ids` on attempt receipts. `test_packet_execute_receipt_ranked_ids_are_subset_of_gate_admitted` proves `quota_exhausted` ids stay out of `admitted_ids` and `ranked_ids ⊆ admitted_ids`.
+- LIVE receipts (r12/r17/r21) predate this emit and still only carry `route.admitted`. — remains ⚠️PARTIAL until a clean-source live execute persists the inventory.
+
+### T039 — checkpoints, identities, digest, verification, quota/headroom
+
+Present on live receipts (LIVE-PROVEN reuse):
+
+| Field | r12 seq 54–56 | r17 seq 72–74 |
+|---|---|---|
+| checkpoint `before_inference` | yes | yes |
+| requested vs actual identity | requested `claude/claude-haiku-4-5-20251001` vs actual `claude-haiku-4-5-20251001` (attempt 2) | requested `ollama/minimax-m3` vs actual `minimax-m3` |
+| artifact_digest | `sha256:e3b0c442…` (empty tree) | `sha256:8bc5bd6c…` |
+| trusted_verification | deciding false / false | deciding true |
+| usage | attempt 2 3304/3203/6507 | 5318/861/6179 |
+| latency_ms | 124715 / 27243 | 10803 |
+| terminal | truthful_failure (seq after 56) | completed |
+
+Absent on those live rows: explicit `quota` / `headroom` keys (prose already treated omitted gateway quota as UNKNOWN). Shipped `run_packet_autodev.emit` now stamps `quota=UNKNOWN` and `headroom=UNKNOWN` on checkpoints, attempts, and terminals via `unobserved_quota_headroom()`. Fixtures: attempt receipt, completed terminal, and `before_inference` checkpoint all assert both keys.
+
+Kill-resume isolation (SOURCE-ONLY): `test_kill_after_checkpoint_resumes_without_duplicate_transition` kills after `before_inference`, resumes, and proves a single checkpoint receipt id. Same-digest context puts on resume suppress `ReceiptConflictError` instead of duplicating.
+
+Do **not** invent quota/headroom from MCP `percentRemaining: 100` + `quotaTotal: null`. That pair is unobserved; receipts stay `UNKNOWN`.
+
+## Live execute r22 — T039 quota/headroom keys + T034 inventory (LIVE-PROVEN)
+
+Packet `.verdict/packets/headroom-unknown-r22.json` integrity
+`sha256:2daf2f46c21d9cde6e2f205e402e5fcbb60b19ec338c49da0f49995772491297`,
+HEAD `4138e50`, dirty digest `sha256:6a0cfe7646ab4…`. Command:
+`uv run verdict autodev packet execute --packet .verdict/packets/headroom-unknown-r22.json --repo . --allow-live --prefer-non-primary --primary-fallback claude/claude-haiku-4-5-20251001 --json`.
+
+OmniRoute `3.8.49`. `taskRouting.enabled=false`, `detectionEnabled=false` after execute (`GET /api/settings`, no writes). CLI JSON: `quota=UNKNOWN`, `headroom=UNKNOWN`, `terminal_state=truthful_failure`, `fallback_count=1`.
+
+| seq | kind | quota / headroom | other |
+|---|---|---|---|
+| 99 | context `rcpt-a4d27f1b…` | (context row) | units: autodev objective/instructions/acceptance/authority/non_goals + owned `tests/test_headroom.py`, `verdict/headroom.py` + relevant_examples; `compiled_prompt=[REDACTED]`; 1753/4096; no chat |
+| 100 | `before_inference` `rcpt-52f29dff…` | UNKNOWN / UNKNOWN | |
+| 101 | attempt 1 `rcpt-a9b1794e…` | UNKNOWN / UNKNOWN | requested `kimi-coding/kimi-for-coding` actual `kimi-for-coding`; `worker_self_report.role=advisory`; `trusted_verification.role=deciding` decided false; `admitted_ids`/`ranked_ids`=`[kimi-coding/kimi-for-coding]` |
+| 102 | attempt 2 `rcpt-02ff90fc…` | UNKNOWN / UNKNOWN | requested `claude/claude-haiku-4-5-20251001` actual `claude-haiku-4-5-20251001`; advisory rejected / deciding false; inventory still the pre-fallback kimi set |
+| 103 | terminal `rcpt-c9352937…` | UNKNOWN / UNKNOWN | `truthful_failure` |
+
+T039 live keys: **LIVE-PROVEN**. T034 live inventory: **LIVE-PROVEN** on attempt 1 (`ranked_ids ⊆ admitted_ids`). r22 attempt 2 still lists only the pre-fallback kimi set (code at execute time). Shipped path now re-runs `packet_admission_inventory` when a primary fallback is appended (`test_fallback_attempt_receipt_refreshes_admission_inventory`). CHK014 r22 pack has no chat units. CHK016 r22 attempts store advisory beside deciding.
+
+T034 admission-inventory refresh (including fallback re-floor) is commit `dbebed29ced3314daad45c52848703655c315c31` on `feat/verdict-operational-loop`.
+At that SHA: `uv run ruff check` on touched modules passed; `uv run mypy --strict` on `verdict/autodev_run.py` `verdict/autodev_routing.py` `verdict/free_route_harvest.py` passed; `uv run pytest -q` **1586 passed**.
+
+T072 CLI `--canary` pass-through and inactive-canary baseline restore is commit `a68c6de80d560190c5624d8a18271046def99536`. At that SHA: `uv run ruff check` passed; `uv run mypy --strict verdict/autodev_run.py` passed; `uv run pytest -q` **1590 passed**.
+
+T073 truthful `improvement` (chosen trusted wins vs baseline) is commit `44e6032`. Independent US4-C/D execute-path review: SATISFIED (`.sdd/us4-cd-execute-canary-review.md`).
+
+## Phase 6 P0/P1/P4/P9 — observed free-ness, context disclosure, affordability, negotiated facets
+
+Commits `5e3454c`, `3f31746`, `ef3a895`, `f541322` on `feat/verdict-operational-loop`.
+
+**Live catalog harvest (LIVE-PROVEN).** OmniRoute `127.0.0.1:20128`, `GET /v1/models`, read-only;
+task-routing/detection untouched.
+
+| Measure | Before | After |
+|---|---|---|
+| Catalog rows | 5451 | 5451 |
+| KEEP (free/concrete/compatible, chat+tools, 8192 budget) | — | 4414 |
+| Positively-free ranked first | — | 91 |
+| `UNKNOWN` cost, kept and probe-eligible | — | 4323 |
+| Resolver aliases admitted | `bzl/auto:free`, `bazaarlink/auto:free` | 0 |
+| wait-need before first execute | — | 1104 |
+
+The 9router family at `:20129` (265 rows) was used only as a second, facet-free gateway to prove
+portability; OmniRoute `:20128` is the operational gateway.
+
+**FR-036 (observed free-ness).** `free_status()` returns `free` / `paid` / `UNKNOWN`. **0 of 265**
+rows at `:20129` and no rows at `:20128` carry a usable `pricing` field, so the previous
+"exclude only on positive price" rule admitted everything as free without evidence. `UNKNOWN`
+now stays kept and probe-eligible but never outranks a positively-free identity.
+
+**FR-035 (alias suffix).** `is_opaque_route_id` strips a tier suffix before matching the leaf, so
+`bzl/auto:free` is refused while `cx/codex-auto-review` and `oc/automatic-speech` remain concrete.
+
+**FR-032 (context disclosure).** Governing ADRs are discovered from `docs/adr` via the shipped
+`documentation_preflight._is_adr_path`; a caller-requested source that cannot be read becomes a
+`ContextDecision(action="exclude")` with `absent:` or `unreadable:`. Denied paths and absent default
+probes are deliberately not omissions.
+
+**FR-029 (affordability).** Observed remaining capacity below the unit's estimated cost excludes;
+unobserved capacity stays `UNKNOWN` and never excludes.
+
+**FR-038 (negotiated facets).** `session_memory`, `free_tier_catalog`, `provider_stats`, and
+`quota_headroom` are `AdapterCapability` values resolving supported/unsupported/unknown in both
+schema copies. Conformance: the facet-rich and facet-free kept sets are identical
+(`{oc/a, oc/b, oc/c:free}`); the facet only changes ordering.
+
+Proof class: **LIVE-PROVEN** for the catalog harvest measures above; **FIXTURE-ONLY** for
+affordability and facet negotiation (no live quota facet was observed).
+
+Decision record: `docs/adr/ADR-027-observed-free-status-and-context-omissions.md`.
+
+## US5 T075–T077 — topology compare (FIXTURE-ONLY)
+
+HEAD `98f35f39ffbbe067897b33642b9c1b8d3ffe2851` plus dirty
+`sha256:e8f1c0671d31d4e82a219ac789d7bae923299fa1dd695ebad3b3f9b61a0f7f67`
+(`verdict/autodev_run.py`, `tests/test_autodev_operational_loop.py`).
+
+`compare_execution_topologies(single, multi)` labels only from `trusted_verification` with `role != advisory` and `decided is True`. Worker self-report cannot produce `multi_success`. `benefit` is true only when `multi_success > single_success` and `multi_tokens <= single_tokens`. Same-success or higher multi tokens is truthful no-benefit.
+
+Proof class: **FIXTURE-ONLY**. No live multi-vs-single execute; US5 exit signal (verified live benefit) remains **MISSING**.
+
+T077: `uv run ruff check` on those two files passed; `uv run mypy --strict verdict/autodev_run.py` passed; focused pytest 55 passed (topology compare + operational routing/context/headroom/eligibility/harvest).
+
+## T076 — CHK116/CHK117 recheck against the final phase-6/7 diff
+
+HEAD `2e6ef7761b887cb6c16c799095246f88cfd15b25`, worktree clean. Diff range
+`98f35f39ffbbe067897b33642b9c1b8d3ffe2851..HEAD` (17 files, +1426/-35).
+
+**CHK116 (no credential/endpoint in a committed artifact).** `git diff` searched for
+`api_key\s*=`, `secret\s*=`, `password\s*=`, `Bearer <token>`, and `sk-<token>` literals,
+excluding declared env-var names (`OMNI_API_KEY`, `OMNIROUTE_API_KEY`, `OPENAI_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`) and dataclass field declarations (`api_key: str`). **Zero matches.**
+Searched for hardcoded external hostnames (`https?://…`), excluding `127.0.0.1`/`localhost`
+and doc-scheme URNs. **Zero matches.** Result: **SATISFIED** for this diff range.
+
+**CHK117 (no destructive/production side effect in the live demonstration).** The phase-6/7
+live proofs in this file are read-only `GET /v1/models` calls against OmniRoute `:20128` and
+9router `:20129` — no state mutation. One out-of-band, non-demonstration action occurred this
+session: a `POST /api/combos` created a routing combo (`combo/free-coding`) for interactive
+subagent tooling, unrelated to the Verdict feature's execution path and not part of any cited
+proof above. It created a new named combo; it did not delete, disable, or alter an existing
+provider, key, or setting, and `taskRouting.enabled=false`/`detectionEnabled=false` were
+unaffected. Disclosed here per the evidence-disclosure principle rather than omitted. Result:
+**SATISFIED** for the feature's own live demonstration; the tooling action is named, not hidden.
+
+Independent reviewer: this recheck is implementer-authored evidence, not a self-tick of
+CHK116/CHK117 — those checkbox markers in `checklists/security.md` remain reviewer-owned.

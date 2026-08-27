@@ -331,6 +331,8 @@ class ExecutionPacket:
     proof_level: ProofLevel = ProofLevel.UNKNOWN
     parent_integrity_digest: str | None = None
     executing_model: str | None = field(default=None, compare=False)
+    pair_id: str | None = field(default=None, compare=False)
+    adapter_id: str | None = field(default=None, compare=False)
     schema_version: str = EXECUTION_PACKET_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -352,6 +354,10 @@ class ExecutionPacket:
             object.__setattr__(
                 self, "executing_model", _text(self.executing_model, "executing_model")
             )
+        if self.pair_id is not None:
+            object.__setattr__(self, "pair_id", _text(self.pair_id, "pair_id"))
+        if self.adapter_id is not None:
+            object.__setattr__(self, "adapter_id", _text(self.adapter_id, "adapter_id"))
         normalized = _normalize_sections(
             source=self.source,
             intent=self.intent,
@@ -438,7 +444,12 @@ class ExecutionPacket:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {**self._integrity_payload(), "integrity_digest": self.integrity_digest}
+        payload = {**self._integrity_payload(), "integrity_digest": self.integrity_digest}
+        if self.pair_id is not None:
+            payload["pair_id"] = self.pair_id
+        if self.adapter_id is not None:
+            payload["adapter_id"] = self.adapter_id
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ExecutionPacket:
@@ -466,7 +477,13 @@ class ExecutionPacket:
                 "next_safe_action",
                 "proof_level",
             },
-            optional={"parent_integrity_digest", "executing_model", "integrity_digest"},
+            optional={
+                "parent_integrity_digest",
+                "executing_model",
+                "integrity_digest",
+                "pair_id",
+                "adapter_id",
+            },
             field_name="execution_packet",
         )
         expected = payload.pop("integrity_digest", None)
@@ -491,6 +508,8 @@ class ExecutionPacket:
             proof_level=payload["proof_level"],
             parent_integrity_digest=payload.get("parent_integrity_digest"),
             executing_model=payload.get("executing_model"),
+            pair_id=payload.get("pair_id"),
+            adapter_id=payload.get("adapter_id"),
             schema_version=payload["schema_version"],
         )
         if (

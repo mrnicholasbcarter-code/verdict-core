@@ -867,6 +867,12 @@ def cmd_autodev_packet_execute(
     resume: bool = False,
     primary_fallback: str | None = None,
     prefer_non_primary: bool = False,
+    base_url: str | None = None,
+    catalog_rows: Any = None,
+    probe_transport: Any = None,
+    canary_path: str | None = None,
+    delegation: str | None = None,
+    undelegable_reason: str | None = None,
 ) -> None:
     """Execute or resume one bounded packet work unit through an admitted route.
 
@@ -877,7 +883,13 @@ def cmd_autodev_packet_execute(
     composes ``primary`` from ``to_admission_record`` when refresh returns
     evidence.
     """
-    from verdict.autodev_run import designated_primary_fallback, run_packet_autodev
+    from verdict.autodev_run import (
+        AutodevError,
+        designated_primary_fallback,
+        packet_family_run_payload,
+        refuse_opaque_family_route,
+        run_packet_autodev,
+    )
     from verdict.execution_packet import (
         ExecutionPacketStore,
         UnsupportedSchemaVersionError,
@@ -905,6 +917,28 @@ def cmd_autodev_packet_execute(
         raise SystemExit(1) from exc
 
     route = dict(packet.route_attempts[-1]) if packet.route_attempts else {}
+    if base_url:
+        route["base_url"] = base_url
+    try:
+        refuse_opaque_family_route(route)
+    except AutodevError as exc:
+        if output_json:
+            print(json.dumps({"error": str(exc)}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    if delegation is None:
+        # FR-031: the production entry point refuses an unclassified unit by
+        # default rather than silently skipping the delegation floor.
+        message = (
+            "a delegation classification ('legwork' or 'decision') is required "
+            "before dispatch; pass --delegation to classify this unit"
+        )
+        if output_json:
+            print(json.dumps({"error": message, "missing": "delegation"}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
     if prefer_non_primary and route.get("primary") is True:
         message = (
             "first attempt must use a concrete non-primary route; "
@@ -933,31 +967,133 @@ def cmd_autodev_packet_execute(
         fallback_route = designated_primary_fallback(
             primary_fallback, evidence_digest=digest, actual_identity=actual
         )
+    if catalog_rows is None and not str(route.get("requested_identity") or "").strip():
+        import urllib.request
+
+        from verdict.free_route_harvest import catalog_rows_from_payload
+
+        family_url = str(route.get("base_url") or base_url or DEFAULT_BASE_URL).rstrip("/")
+        request = urllib.request.Request(
+            family_url + "/models", headers={"Accept": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310
+                catalog_rows = catalog_rows_from_payload(
+                    json.loads(response.read().decode("utf-8"))
+                )
+        except Exception:
+            catalog_rows = []
+        if probe_transport is None:
+            from verdict.probes import openai_probe_transport
+
+            probe_transport = openai_probe_transport(family_url, api_key=_read_omniroute_token())
+    canary_state = None
+    if canary_path:
+        loaded = json.loads(Path(canary_path).expanduser().resolve().read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            message = "canary JSON must be an object"
+            if output_json:
+                print(json.dumps({"error": message}, sort_keys=True))
+            else:
+                console.print(f"[bold red]{message}[/bold red]")
+            raise SystemExit(1)
+        canary_state = loaded
     report = run_packet_autodev(
         packet,
         Path(repo).expanduser().resolve(),
         admitted_route=route,
         fallback_route=fallback_route,
         resume=resume,
+        catalog_rows=catalog_rows,
+        probe_transport=probe_transport,
+        canary_state=canary_state,
+        # FR-037: the CLI is the real production entry, so red-green is required
+        # here by default. A resume legitimately re-verifies prior work and may
+        # find it already green, so the requirement is scoped to fresh attempts.
+        require_red_green=not resume,
+        delegation=delegation,
+        undelegable_reason=undelegable_reason,
     )
-    completed_class = "live-proven" if report.terminal_state == "completed" else "not-completed"
-    payload = {
-        "terminal_state": report.terminal_state,
-        "proof_level": completed_class,
-        "resumed": report.resumed,
-        "fallback_count": report.fallback_count,
-        "checkpoints": report.checkpoints,
-        "receipt_ids": list(report.receipt_ids),
-    }
+    family_url = str(route.get("base_url") or base_url or DEFAULT_BASE_URL)
+    payload = packet_family_run_payload(packet, report, family_url)
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         console.print(
-            f"[bold]{report.terminal_state}[/bold] ({completed_class}) "
+            f"[bold]{report.terminal_state}[/bold] ({payload['proof_level']}) "
             f"fallbacks={report.fallback_count} checkpoints={len(report.checkpoints)}"
         )
     if report.terminal_state != "completed":
         raise SystemExit(1)
+
+
+def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) -> None:
+    """Dump an advisory shadow-learning JSON report. Does not call EligibilityGate."""
+    from verdict.autodev_run import shadow_learning_report
+
+    payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and "episodes" in payload:
+        episodes = payload["episodes"]
+    else:
+        episodes = payload
+    if not isinstance(episodes, list):
+        message = "shadow episodes JSON must be a list or an object with episodes"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    report = shadow_learning_report(episodes)
+    print(json.dumps(report, indent=2, sort_keys=True))
+
+
+def cmd_autodev_packet_canary(
+    episodes_path: str, admitted_path: str, *, output_json: bool = False
+) -> None:
+    """Dump an explicit bounded canary choice. Does not call EligibilityGate."""
+    from verdict.autodev_run import apply_shadow_canary, shadow_learning_report
+
+    if not episodes_path or not admitted_path:
+        message = "canary apply requires --episodes and --admitted"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and "episodes" in payload:
+        episodes = payload["episodes"]
+    else:
+        episodes = payload
+    admitted = json.loads(Path(admitted_path).expanduser().resolve().read_text(encoding="utf-8"))
+    if not isinstance(episodes, list) or not isinstance(admitted, list):
+        message = "canary requires an episodes list and an admitted identity list"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    report = shadow_learning_report(episodes)
+    print(
+        json.dumps(
+            apply_shadow_canary([str(item) for item in admitted], report), indent=2, sort_keys=True
+        )
+    )
+
+
+def cmd_autodev_packet_canary_rollback(state_path: str, *, output_json: bool = False) -> None:
+    """Restore the pre-canary baseline choice. Does not call EligibilityGate."""
+    from verdict.autodev_run import rollback_shadow_canary
+
+    state = json.loads(Path(state_path).expanduser().resolve().read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        message = "canary rollback requires a canary state object"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    print(json.dumps(rollback_shadow_canary(state), indent=2, sort_keys=True))
 
 
 def cmd_autodev_packet(
@@ -967,6 +1103,8 @@ def cmd_autodev_packet(
     source_path: str | None = None,
     model: str | None = None,
     output_json: bool = False,
+    family_a_path: str | None = None,
+    family_b_path: str | None = None,
 ) -> None:
     """Create or inspect a portable packet without granting execution authority."""
 
@@ -997,6 +1135,28 @@ def cmd_autodev_packet(
             if model is None:
                 raise ExecutionPacketError("packet resume requires --model")
             packet = store.resume(path, executing_model=model)
+        elif action == "compare":
+            from verdict.autodev_run import AutodevError, compare_family_runs
+
+            if family_a_path is None or family_b_path is None:
+                raise ExecutionPacketError("packet compare requires --a and --b")
+            packet = store.validate(path)
+            family_a = json.loads(Path(family_a_path).expanduser().read_text(encoding="utf-8"))
+            family_b = json.loads(Path(family_b_path).expanduser().read_text(encoding="utf-8"))
+            if not isinstance(family_a, dict) or not isinstance(family_b, dict):
+                raise ExecutionPacketError("family run JSON must be an object")
+            try:
+                data = compare_family_runs(family_a, family_b, packet=packet)
+            except AutodevError as exc:
+                raise ExecutionPacketError(str(exc)) from exc
+            if output_json:
+                print(json.dumps(data, indent=2, sort_keys=True))
+            else:
+                console.print(
+                    f"[bold]{data['pair_id']}[/bold] parity={data['parity_claimed']} "
+                    f"unknown={len(data['unknown_facets'])}"
+                )
+            return
         else:
             raise ExecutionPacketError(f"unsupported packet action: {action}")
     except UnsupportedSchemaVersionError as exc:
@@ -2196,6 +2356,50 @@ def main() -> None:
                 default=None,
                 help="concrete route that currently occupies the primary-subscription role",
             )
+            action_p.add_argument(
+                "--base-url",
+                dest="packet_base_url",
+                default=None,
+                help="override gateway family base URL for this packet run",
+            )
+            action_p.add_argument(
+                "--canary",
+                dest="canary_path",
+                default=None,
+                help="JSON canary state; chosen applies only among admitted_ids",
+            )
+            action_p.add_argument(
+                "--delegation",
+                choices=["legwork", "decision"],
+                default=None,
+                help=(
+                    "required classification for this unit; a decision must also "
+                    "carry --undelegable-reason"
+                ),
+            )
+            action_p.add_argument(
+                "--undelegable-reason",
+                dest="undelegable_reason",
+                default=None,
+                help="capability that makes a --delegation decision unable to run non-primary",
+            )
+    shadow_p = packet_actions.add_parser(
+        "shadow", help="Dump advisory shadow-learning JSON without calling eligibility"
+    )
+    shadow_p.add_argument("--episodes", required=True, help="JSON list of trusted episodes")
+    shadow_p.add_argument("--json", action="store_true")
+    canary_p = packet_actions.add_parser(
+        "canary", help="Dump explicit bounded canary choice or rollback without eligibility"
+    )
+    canary_p.add_argument("--episodes", help="JSON list of trusted episodes")
+    canary_p.add_argument("--admitted", help="JSON list of already-admitted identities")
+    canary_p.add_argument("--rollback", help="JSON canary state to restore baseline")
+    canary_p.add_argument("--json", action="store_true")
+    compare_p = packet_actions.add_parser("compare", help="Compare two family-run JSON objects")
+    compare_p.add_argument("--packet", required=True)
+    compare_p.add_argument("--json", action="store_true")
+    compare_p.add_argument("--a", dest="family_a_path", required=True)
+    compare_p.add_argument("--b", dest="family_b_path", required=True)
 
     golden_p = subparsers.add_parser(
         "autodev-golden-path",
@@ -2520,7 +2724,14 @@ def main() -> None:
         cmd_route(args.task, args.criticality, args.terse)
     elif args.command == "autodev":
         if args.autodev_action == "packet":
-            if args.packet_action == "execute":
+            if args.packet_action == "shadow":
+                cmd_autodev_packet_shadow(args.episodes, output_json=args.json)
+            elif args.packet_action == "canary":
+                if args.rollback:
+                    cmd_autodev_packet_canary_rollback(args.rollback, output_json=args.json)
+                else:
+                    cmd_autodev_packet_canary(args.episodes, args.admitted, output_json=args.json)
+            elif args.packet_action == "execute":
                 cmd_autodev_packet_execute(
                     args.packet,
                     getattr(args, "repo", "."),
@@ -2529,6 +2740,10 @@ def main() -> None:
                     resume=True,
                     primary_fallback=getattr(args, "primary_fallback", None),
                     prefer_non_primary=getattr(args, "prefer_non_primary", False),
+                    base_url=getattr(args, "packet_base_url", None),
+                    canary_path=getattr(args, "canary_path", None),
+                    delegation=getattr(args, "delegation", None),
+                    undelegable_reason=getattr(args, "undelegable_reason", None),
                 )
             else:
                 cmd_autodev_packet(
@@ -2537,6 +2752,8 @@ def main() -> None:
                     source_path=getattr(args, "source_path", None),
                     model=getattr(args, "model", None),
                     output_json=args.json,
+                    family_a_path=getattr(args, "family_a_path", None),
+                    family_b_path=getattr(args, "family_b_path", None),
                 )
         else:
             if not args.objective:

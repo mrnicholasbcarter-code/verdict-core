@@ -1194,3 +1194,101 @@ def test_cmd_memory_masterdocs_accepted_import_reports_canonical_status_and_writ
         assert len(hits) == 1
         assert hits[0].key.startswith("docs/readme.md#chunk-")
         assert hits[0].trust == "imported-unverified"
+
+
+def test_cmd_packet_shadow_dumps_json_without_calling_eligibility_gate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.eligibility import EligibilityGate
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("shadow dump must not call EligibilityGate")
+
+    monkeypatch.setattr(EligibilityGate, "evaluate", boom)
+    episodes = tmp_path / "episodes.json"
+    episodes.write_text(
+        json.dumps(
+            [
+                {
+                    "packet_integrity_digest": "sha256:" + "33" * 32,
+                    "actual_identity": "cheap/a",
+                    "worker_self_report": {"outcome": "applied", "role": "advisory"},
+                    "trusted_verification": {"decided": True, "role": "deciding"},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cli.cmd_autodev_packet_shadow(str(episodes), output_json=True)
+    report = json.loads(capsys.readouterr().out)
+    assert report["admission_unchanged"] is True
+    assert report["labeled_from"] == "trusted_verification"
+    assert report["advisory_ranking"][0]["identity"] == "cheap/a"
+    assert report["advisory_ranking"][0]["wins"] == 1
+    assert report["episode_count"] == 1
+
+
+def test_cmd_packet_canary_is_explicit_bounded_and_rollback_restores_baseline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.eligibility import EligibilityGate
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("canary dump must not call EligibilityGate")
+
+    monkeypatch.setattr(EligibilityGate, "evaluate", boom)
+    digest = "sha256:" + "cd" * 32
+    episodes = tmp_path / "episodes.json"
+    episodes.write_text(
+        json.dumps(
+            [
+                {
+                    "packet_integrity_digest": digest,
+                    "actual_identity": "b/2",
+                    "trusted_verification": {"decided": True, "role": "deciding"},
+                },
+                {
+                    "packet_integrity_digest": digest,
+                    "actual_identity": "b/2",
+                    "trusted_verification": {"decided": True, "role": "deciding"},
+                },
+                {
+                    "packet_integrity_digest": digest,
+                    "actual_identity": "a/1",
+                    "trusted_verification": {"decided": False, "role": "deciding"},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    admitted = tmp_path / "admitted.json"
+    admitted.write_text(json.dumps(["a/1", "b/2"]), encoding="utf-8")
+    cli.cmd_autodev_packet_canary(str(episodes), str(admitted), output_json=True)
+    canary = json.loads(capsys.readouterr().out)
+    assert canary["active"] is True
+    assert canary["chosen"] == "b/2"
+    assert canary["baseline"] == "a/1"
+    assert canary["admission_unchanged"] is True
+    state = tmp_path / "canary.json"
+    state.write_text(json.dumps(canary), encoding="utf-8")
+    cli.cmd_autodev_packet_canary_rollback(str(state), output_json=True)
+    rolled = json.loads(capsys.readouterr().out)
+    assert rolled["active"] is False
+    assert rolled["chosen"] == "a/1"
+    assert rolled["baseline"] == "a/1"
+
+
+def test_cmd_packet_canary_refuses_missing_apply_paths(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.eligibility import EligibilityGate
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("canary dump must not call EligibilityGate")
+
+    monkeypatch.setattr(EligibilityGate, "evaluate", boom)
+    with pytest.raises(SystemExit) as exited:
+        cli.cmd_autodev_packet_canary(None, None, output_json=True)  # type: ignore[arg-type]
+    assert exited.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "episodes" in payload["error"]

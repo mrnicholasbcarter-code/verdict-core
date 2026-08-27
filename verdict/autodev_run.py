@@ -29,11 +29,13 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from verdict.context_pack import (
+    ContextDecision,
     ContextPack,
     ContextPackCompiler,
     ContextPlan,
@@ -49,7 +51,7 @@ from verdict.patch_executor import (
     PatchExecutorConfig,
     TokenUsage,
 )
-from verdict.receipt_store import ReceiptStore
+from verdict.receipt_store import ReceiptConflictError, ReceiptStore
 from verdict.work_unit import WorkUnit, normalize_owned_path
 
 # No model name is hardcoded as policy: the default executor route is resolved
@@ -142,6 +144,7 @@ def compile_worker_context(
     relevant_examples: Sequence[str],
     governing_docs: Sequence[str],
     symbol_relationship: str | None = None,
+    prior_verified_outcomes: Sequence[str] = (),
     token_budget: int = 4096,
 ) -> ContextPack:
     """Compile the bounded deterministic context package for one worker.
@@ -181,6 +184,12 @@ def compile_worker_context(
     )
     add("examples", "relevant_examples", relevant_examples, "urn:verdict:autodev:relevant_examples")
     add("policy", "governing_docs", governing_docs, "urn:verdict:autodev:governing_docs")
+    add(
+        "memory",
+        "prior_verified_outcomes",
+        prior_verified_outcomes,
+        "urn:verdict:autodev:prior_verified_outcomes",
+    )
     if symbol_relationship is not None:
         add(
             "evidence",
@@ -199,6 +208,96 @@ def compile_worker_context(
     return replace(pack, created_at=0.0)
 
 
+def _enforce_delegation_floor(
+    delegation: str | None,
+    admitted_route: Mapping[str, Any],
+    candidate_routes: Sequence[Mapping[str, Any]] | None,
+    *,
+    undelegable_reason: str | None,
+) -> None:
+    """Legwork must not spend subscription capacity when a free route is admitted (FR-031).
+
+    This is a floor, not a preference: the whole point of delegating is that scarce paid
+    frontier capacity is reserved for units that genuinely need it. A unit classified as a
+    decision may use a primary route, but must name the capability that made it undelegable
+    so the choice is auditable rather than self-granted.
+    """
+    if delegation is None:
+        return
+    if delegation == "decision":
+        if not (undelegable_reason or "").strip():
+            raise AutodevError(
+                "a unit classified as a decision must name the capability that makes it "
+                "undelegable before it may consume primary-subscription capacity"
+            )
+        return
+    if delegation != "legwork":
+        raise AutodevError(f"unknown delegation classification: {delegation!r}")
+    if not admitted_route.get("primary"):
+        return
+    alternatives = [
+        str(route.get("requested_identity") or route.get("actual_identity") or "")
+        for route in candidate_routes or ()
+        if route.get("admitted", True) and not route.get("primary")
+    ]
+    if alternatives:
+        raise AutodevError(
+            "delegable legwork may not consume primary-subscription capacity while "
+            f"qualified non-primary routes are admitted: {sorted(filter(None, alternatives))}"
+        )
+
+
+def _require_failing_criterion(
+    repo: Path, packet: ExecutionPacket, *, verification_runner: Any
+) -> None:
+    """Refuse a unit whose acceptance criterion is not red before the change (FR-037).
+
+    Runs before any gateway request. A criterion that already passes cannot demonstrate
+    the work happened, and one that cannot execute is not a criterion at all — dispatching
+    either spends a worker on a unit whose completion could never be proven.
+    """
+    argv = [str(arg) for arg in packet.verification["argv"]]
+    try:
+        baseline = verification_runner(
+            argv,
+            cwd=str(repo),
+            timeout=packet.verification["timeout_seconds"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(repo)},
+        )
+    except OSError as exc:
+        raise AutodevError(
+            f"acceptance criterion is not executable, so red-green cannot be shown: {exc}"
+        ) from exc
+    if baseline.returncode == 0:
+        raise AutodevError(
+            "acceptance criterion is already passing before the change; "
+            "a red-green criterion is required before dispatching a worker"
+        )
+
+
+def discover_governing_docs(repo: Path, *, limit: int = 4) -> tuple[str, ...]:
+    """Governing decision records for a repository, newest identifier first (FR-032).
+
+    Reuses the shipped ADR predicate in :mod:`verdict.documentation_preflight` rather than
+    inventing a second notion of what counts as authoritative. Bounded because the compiler
+    budget, not this function, decides what finally fits.
+    """
+    from verdict.documentation_preflight import _is_adr_path
+
+    root = repo / "docs" / "adr"
+    if not root.is_dir():
+        return ()
+    found = sorted(
+        (path for path in root.rglob("*.md") if _is_adr_path(path)),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    return tuple(str(path.relative_to(repo)) for path in found[:limit])
+
+
 def compile_packet_context(
     packet: ExecutionPacket,
     repo_path: str | Path,
@@ -207,8 +306,10 @@ def compile_packet_context(
     governing_doc_paths: Sequence[str] = (),
     relevant_example_paths: Sequence[str] = (),
     symbol_relationship: str | None = None,
+    prior_verified_outcomes: Sequence[str] = (),
     token_budget: int = 4096,
     store: ReceiptStore | None = None,
+    family_id: str | None = None,
 ) -> ContextPack:
     """Compile and optionally receipt the deterministic worker input for a packet.
 
@@ -217,22 +318,41 @@ def compile_packet_context(
     no placeholder content or whole-repository scan enters the worker prompt.
     """
     repo = Path(repo_path).resolve()
+    denied_paths = {
+        normalize_owned_path(str(path)) for path in packet.authority.get("denied_paths", ())
+    }
+    denied_names = {PurePosixPath(path).name for path in denied_paths}
 
-    def read_selected(paths: Sequence[str]) -> dict[str, str]:
+    source_omissions: list[tuple[str, str]] = []
+
+    def read_selected(paths: Sequence[str], *, requested: bool = True) -> dict[str, str]:
+        """Read sources, disclosing why any caller-requested one is missing (FR-032).
+
+        ``requested`` distinguishes a source the caller named — whose absence is a broken
+        promise the worker must be told about — from a default probe such as ``AGENTS.md``,
+        whose absence in a repository that has none carries no information.
+        """
         selected: dict[str, str] = {}
         for raw_path in paths:
             normalized = normalize_owned_path(raw_path)
+            if normalized in denied_paths or PurePosixPath(normalized).name in denied_names:
+                continue  # authority boundary, not a retrieval failure
             target = repo / normalized
             try:
                 selected[normalized] = target.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
+            except FileNotFoundError:
+                if requested:
+                    source_omissions.append((normalized, "absent: no such file"))
+            except UnicodeDecodeError:
+                source_omissions.append((normalized, "unreadable: not valid utf-8"))
+            except OSError as exc:
+                source_omissions.append((normalized, f"unreadable: {exc.strerror or 'os error'}"))
         return selected
 
     owned_source = read_selected(tuple(str(path) for path in packet.authority["owned_paths"]))
-    instructions = read_selected(repository_instruction_paths)
+    instructions = read_selected(repository_instruction_paths, requested=False)
     examples = read_selected(relevant_example_paths)
-    governing_docs = read_selected(governing_doc_paths)
+    governing_docs = read_selected(governing_doc_paths or discover_governing_docs(repo))
     verification = "\n".join(str(arg) for arg in packet.verification["argv"])
     pack = compile_worker_context(
         objective=str(packet.intent["goal"]),
@@ -244,30 +364,315 @@ def compile_packet_context(
         relevant_examples=(*examples.values(), verification),
         governing_docs=tuple(governing_docs.values()),
         symbol_relationship=symbol_relationship,
+        prior_verified_outcomes=tuple(prior_verified_outcomes),
         token_budget=token_budget,
     )
-    if store is not None:
-        store.put_receipt(
-            "context",
-            "operational-loop",
-            {
-                "packet_id": packet.packet_id,
-                "context_digest": pack.digest,
-                "context_receipt": pack.receipt.to_dict(),
-                "compiled_prompt": pack.compiled_prompt,
-                "used_tokens": pack.used_tokens,
-                "token_budget": pack.token_budget,
-                "omissions": [
-                    decision.to_dict()
-                    for decision in pack.decisions
-                    if decision.action == "exclude"
-                ],
-            },
-            provenance={"source": "verdict.autodev_run", "authority": "compiled"},
-            idempotency_key=f"packet-context:{packet.packet_id}:{pack.digest}",
-            allowlist=_PACKET_RECEIPT_ALLOWLIST,
+    if not prior_verified_outcomes:
+        # FR-032 (2026-08-27 clarification): this category has no deterministic
+        # default location, so it may stay caller-supplied-only, but that gap
+        # must be named rather than silently treated as complete.
+        pack = replace(
+            pack,
+            decisions=(
+                *pack.decisions,
+                ContextDecision(
+                    unit_id="autodev:limitation:prior_verified_outcomes",
+                    action="exclude",
+                    reason=(
+                        "prior verified outcomes has no deterministic default location; "
+                        "this run received none from the caller"
+                    ),
+                    input_tokens=0,
+                    output_tokens=0,
+                ),
+            ),
         )
+    if source_omissions:
+        # A source the worker was meant to receive but did not is recorded, never dropped:
+        # the package must state what is missing and why (FR-032).
+        pack = replace(
+            pack,
+            decisions=(
+                *pack.decisions,
+                *(
+                    ContextDecision(
+                        unit_id=f"autodev:source:{path}",
+                        action="exclude",
+                        reason=reason,
+                        input_tokens=0,
+                        output_tokens=0,
+                    )
+                    for path, reason in source_omissions
+                ),
+            ),
+        )
+    if store is not None:
+        with suppress(ReceiptConflictError):
+            store.put_receipt(
+                "context",
+                "operational-loop",
+                {
+                    "packet_id": packet.packet_id,
+                    "family_id": family_id,
+                    "context_digest": pack.digest,
+                    "context_receipt": pack.receipt.to_dict(),
+                    "compiled_prompt": pack.compiled_prompt,
+                    "used_tokens": pack.used_tokens,
+                    "token_budget": pack.token_budget,
+                    "omissions": [
+                        decision.to_dict()
+                        for decision in pack.decisions
+                        if decision.action == "exclude"
+                    ],
+                },
+                provenance={"source": "verdict.autodev_run", "authority": "compiled"},
+                idempotency_key=f"packet-context:{packet.packet_id}:{family_id or '-'}:{pack.digest}",
+                allowlist=_PACKET_RECEIPT_ALLOWLIST,
+            )
     return pack
+
+
+def _owned_path_names(packet: ExecutionPacket) -> set[str]:
+    names: set[str] = set()
+    for path in packet.authority.get("owned_paths", ()):
+        text = str(path).strip()
+        if not text:
+            continue
+        names.add(text)
+        names.add(PurePosixPath(text).name)
+    return names
+
+
+def _inventory_unowned_paths(packet: ExecutionPacket, packs: Sequence[ContextPack]) -> list[str]:
+    owned = _owned_path_names(packet)
+    denied = [str(path) for path in packet.authority.get("denied_paths", ()) if str(path).strip()]
+    found: list[str] = []
+
+    def add(item: str) -> None:
+        if item and item not in found:
+            found.append(item)
+
+    for pack in packs:
+        authority_text = ""
+        for unit in pack.units:
+            if unit.key == "authority":
+                authority_text = unit.content
+                continue
+            if str(unit.slot_type) not in {"evidence", "examples"}:
+                continue
+            candidates: list[str] = []
+            if unit.source_uri and not unit.source_uri.startswith("urn:"):
+                candidates.append(unit.source_uri)
+            if unit.key.startswith("owned_source:"):
+                candidates.append(unit.key.removeprefix("owned_source:"))
+            for candidate in candidates:
+                name = PurePosixPath(candidate).name
+                if candidate in owned or name in owned:
+                    continue
+                add(name or candidate)
+        prompt = pack.compiled_prompt
+        if authority_text:
+            prompt = prompt.replace(authority_text, "")
+        for path in denied:
+            base = PurePosixPath(path).name
+            if path in prompt or (base and base in prompt):
+                add(path)
+    return found
+
+
+def context_ablation_payload(
+    packet: ExecutionPacket,
+    pack_a: ContextPack,
+    pack_b: ContextPack,
+    *,
+    trusted_verified_a: bool | None = None,
+    trusted_verified_b: bool | None = None,
+) -> dict[str, Any]:
+    """Paired context packs for one packet; denied paths and identical digests refuse."""
+    if pack_a.digest == pack_b.digest:
+        raise AutodevError("ablation requires distinct context digests")
+    denied = tuple(str(path) for path in packet.authority.get("denied_paths", ()))
+    denied_names = {PurePosixPath(path).name for path in denied if path}
+    for pack in (pack_a, pack_b):
+        for unit in pack.units:
+            if str(unit.slot_type) not in {"evidence", "examples"}:
+                continue
+            haystack = f"{unit.key}\n{unit.source_uri or ''}\n{unit.content}"
+            if any(path and path in haystack for path in (*denied, *denied_names)):
+                raise AutodevError("context pack contains denied or unowned paths")
+    unowned_paths = _inventory_unowned_paths(packet, (pack_a, pack_b))
+    left, right = sorted((pack_a.digest, pack_b.digest))
+    material = json.dumps(
+        {"a": left, "b": right, "digest": packet.integrity_digest},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    def _leg(pack: ContextPack) -> dict[str, Any]:
+        return {
+            "context_digest": pack.digest,
+            "used_tokens": pack.used_tokens,
+            "token_budget": pack.token_budget,
+            "omission_count": pack.truncated_count,
+        }
+
+    if trusted_verified_a is None or trusted_verified_b is None:
+        delta = "UNKNOWN"
+    elif trusted_verified_a == trusted_verified_b:
+        delta = "unchanged"
+    elif trusted_verified_b and not trusted_verified_a:
+        delta = "improved"
+    else:
+        delta = "regressed"
+    return {
+        "pair_id": "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest(),
+        "packet_integrity_digest": packet.integrity_digest,
+        "pack_a": _leg(pack_a),
+        "pack_b": _leg(pack_b),
+        "unowned_paths": unowned_paths,
+        "unowned_paths_present": bool(unowned_paths),
+        "verified_a": trusted_verified_a,
+        "verified_b": trusted_verified_b,
+        "success_delta": delta,
+    }
+
+
+def shadow_learning_report(episodes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Advisory ranking from trusted verification labels only."""
+    counts: dict[str, dict[str, Any]] = {}
+    labeled = 0
+    bindings: set[str] = set()
+    for episode in episodes:
+        digest = str(episode.get("packet_integrity_digest") or "")
+        if digest:
+            bindings.add(digest)
+    source_binding = next(iter(sorted(bindings))) if len(bindings) == 1 else None
+    for episode in episodes:
+        if (
+            source_binding is None
+            or str(episode.get("packet_integrity_digest") or "") != source_binding
+        ):
+            continue
+        trusted = episode.get("trusted_verification")
+        if not isinstance(trusted, Mapping) or trusted.get("role") == "advisory":
+            continue
+        decided = trusted.get("decided")
+        if not isinstance(decided, bool):
+            continue
+        labeled += 1
+        identity = str(episode.get("actual_identity") or episode.get("requested_identity") or "")
+        bucket = counts.setdefault(identity, {"identity": identity, "losses": 0, "wins": 0})
+        if decided:
+            bucket["wins"] += 1
+        else:
+            bucket["losses"] += 1
+    ranking = sorted(
+        counts.values(),
+        key=lambda item: (-int(item["wins"]), int(item["losses"]), str(item["identity"])),
+    )
+    return {
+        "admission_unchanged": True,
+        "advisory_ranking": ranking,
+        "episode_count": labeled,
+        "labeled_from": "trusted_verification",
+        "source_binding": source_binding,
+    }
+
+
+def net_savings_report(
+    attempts: Sequence[Mapping[str, Any]], *, frontier_tokens: int
+) -> dict[str, Any]:
+    """Net extension of paid capacity: free tokens used minus frontier overhead (FR-033).
+
+    Counting only what ran non-primary and ignoring what the frontier spent
+    orchestrating and validating it would let a net loss report as a saving.
+    """
+
+    def _tokens(row: Mapping[str, Any]) -> int:
+        usage = row.get("usage")
+        if not isinstance(usage, Mapping):
+            return 0
+        return int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
+
+    non_primary = sum(_tokens(a) for a in attempts if not a.get("primary"))
+    primary = sum(_tokens(a) for a in attempts if a.get("primary"))
+    return {
+        "non_primary_tokens": non_primary,
+        "primary_tokens": primary,
+        "frontier_tokens": frontier_tokens,
+        "net_savings_tokens": non_primary - frontier_tokens,
+    }
+
+
+def compare_execution_topologies(
+    single: Sequence[Mapping[str, Any]], multi: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Trusted-label compare. Benefit only if multi wins more and does not cost more tokens."""
+
+    def _tally(rows: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
+        success = 0
+        tokens = 0
+        for row in rows:
+            trusted = row.get("trusted_verification")
+            if (
+                isinstance(trusted, Mapping)
+                and trusted.get("role") != "advisory"
+                and trusted.get("decided") is True
+            ):
+                success += 1
+            usage = row.get("usage")
+            if isinstance(usage, Mapping):
+                with suppress(TypeError, ValueError):
+                    tokens += int(usage.get("total_tokens") or 0)
+        return success, tokens
+
+    single_success, single_tokens = _tally(single)
+    multi_success, multi_tokens = _tally(multi)
+    return {
+        "single_success": single_success,
+        "multi_success": multi_success,
+        "single_tokens": single_tokens,
+        "multi_tokens": multi_tokens,
+        "benefit": multi_success > single_success and multi_tokens <= single_tokens,
+        "labeled_from": "trusted_verification",
+    }
+
+
+def apply_shadow_canary(admitted: Sequence[str], report: Mapping[str, Any]) -> dict[str, Any]:
+    """Pick the top advisory identity that is already admitted. Does not change the gate."""
+    baseline = admitted[0] if admitted else ""
+    allowed = set(admitted)
+    chosen = baseline
+    picked = False
+    wins: dict[str, int] = {}
+    for row in report.get("advisory_ranking") or ():
+        if not isinstance(row, Mapping):
+            continue
+        identity = str(row.get("identity") or "")
+        wins[identity] = int(row.get("wins") or 0)
+        if not picked and identity in allowed:
+            chosen = identity
+            picked = True
+    improvement = chosen != baseline and wins.get(chosen, 0) > wins.get(baseline, 0)
+    return {
+        "active": True,
+        "admission_unchanged": True,
+        "baseline": baseline,
+        "chosen": chosen,
+        "improvement": improvement,
+    }
+
+
+def rollback_shadow_canary(canary: Mapping[str, Any]) -> dict[str, Any]:
+    """Restore the pre-canary baseline choice."""
+    baseline = str(canary.get("baseline") or "")
+    return {
+        "active": False,
+        "admission_unchanged": True,
+        "baseline": baseline,
+        "chosen": baseline,
+        "improvement": False,
+    }
 
 
 @dataclass(frozen=True)
@@ -533,14 +938,105 @@ def run_packet_autodev(
     classify_failure: Callable[[PacketAttempt], str | None] = _default_failure_class,
     resume: bool = False,
     worker_evidence: Mapping[str, Any] | None = None,
+    token_budget: int = 4096,
+    symbol_relationship: str | None = None,
+    catalog_rows: Sequence[Mapping[str, Any]] | None = None,
+    probe_transport: Any = None,
+    candidate_routes: Sequence[Mapping[str, Any]] | None = None,
+    canary_state: Mapping[str, Any] | None = None,
+    require_red_green: bool = False,
+    delegation: str | None = None,
+    undelegable_reason: str | None = None,
+    frontier_review: Callable[[PacketAttempt], str | None] | None = None,
 ) -> PacketAutodevReport:
     """Run one admitted packet task in a clean worktree, with one fallback."""
+    _enforce_delegation_floor(
+        delegation, admitted_route, candidate_routes, undelegable_reason=undelegable_reason
+    )
+    if require_red_green:
+        _require_failing_criterion(
+            Path(repo_path).resolve(), packet, verification_runner=verification_runner
+        )
+    pending_keep: list[str] = []
+    if (
+        catalog_rows is not None
+        and probe_transport is not None
+        and not str(admitted_route.get("requested_identity") or "").strip()
+    ):
+        from verdict.free_route_harvest import harvest_live_route
+
+        harvested = harvest_live_route(catalog_rows, probe_transport)
+        pending_keep = [str(item) for item in harvested.get("pending_keep") or ()]
+        admitted_route = {**harvested, **{k: v for k, v in admitted_route.items() if v}}
+        if candidate_routes is None and harvested.get("candidate_routes"):
+            candidate_routes = list(harvested["candidate_routes"])
+    from verdict.autodev_routing import packet_admission_inventory
+
+    floor_routes = list(candidate_routes) if candidate_routes is not None else [admitted_route]
+    try:
+        admission_inventory = packet_admission_inventory(floor_routes)
+    except ValueError:
+        admission_inventory = {"admitted_ids": [], "ranked_ids": []}
+    if canary_state:
+        admitted = set(admission_inventory.get("admitted_ids") or ())
+        overlay = str(
+            (
+                canary_state.get("chosen")
+                if canary_state.get("active") is True
+                else canary_state.get("baseline")
+            )
+            or ""
+        )
+        if overlay in admitted:
+            match = next(
+                (
+                    route
+                    for route in floor_routes
+                    if str(route.get("actual_identity") or "") == overlay
+                    or str(route.get("requested_identity") or "") == overlay
+                ),
+                None,
+            )
+            if match is not None:
+                admitted_route = {**admitted_route, **dict(match)}
+
+    def drain_remaining() -> None:
+        if pending_keep and probe_transport is not None:
+            from verdict.free_route_harvest import drain_keep_probes
+
+            drain_keep_probes(pending_keep, probe_transport)
+
     repo = Path(repo_path).resolve()
     ledger = store or ReceiptStore(repo / ".verdict" / "receipts.db")
+    from verdict.autodev_routing import family_from_base_url
+
+    family_id = family_from_base_url(
+        str(admitted_route.get("base_url") or DEFAULT_BASE_URL)
+    ).family_id
+    pack_tag = json.dumps(
+        {"symbol": symbol_relationship or "", "token_budget": token_budget},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    def emit(payload: dict[str, Any], *, key: str | None = None) -> str:
+        from verdict.autodev_routing import unobserved_quota_headroom
+
+        stamped = {
+            **unobserved_quota_headroom(),
+            **payload,
+            "family_id": family_id,
+            "pack_tag": pack_tag,
+        }
+        namespaced = None if key is None else f"{key}:{family_id}:{pack_tag}"
+        return _packet_event(ledger, stamped, key=namespaced)
+
     records = [
         record
         for record in ledger.query_receipts(scope="operational-loop")
         if record.payload.get("packet_id") == packet.packet_id
+        and record.payload.get("family_id") == family_id
+        and record.payload.get("pack_tag") == pack_tag
     ]
     if resume:
         terminal = next(
@@ -575,8 +1071,7 @@ def run_packet_autodev(
         lock_paths=tuple(packet.source["lock_digests"]),
     )
     if dict(current) != dict(packet.source):
-        _packet_event(
-            ledger,
+        emit(
             {
                 "packet_id": packet.packet_id,
                 "terminal_state": "drifted",
@@ -586,13 +1081,12 @@ def run_packet_autodev(
         )
         return PacketAutodevReport("drifted")
     if not _route_is_admitted(admitted_route):
-        _packet_event(
-            ledger,
+        emit(
             {
                 "packet_id": packet.packet_id,
                 "terminal_state": "no_eligible_route",
                 "reason": "route was not admitted or was opaque",
-            },
+            }
         )
         return PacketAutodevReport("no_eligible_route")
 
@@ -611,8 +1105,7 @@ def run_packet_autodev(
             "intent_acceptance": packet.intent["acceptance"],
         }
         if report_qual["qualified"]:
-            _packet_event(
-                ledger,
+            emit(
                 {
                     "event": "handoff",
                     "packet_id": packet.packet_id,
@@ -631,9 +1124,7 @@ def run_packet_autodev(
                 "resumable": True,
                 "integrity_digest": packet.integrity_digest,
             }
-            receipt_id = _packet_event(
-                ledger, blocked_payload, key=f"packet:{packet.packet_id}:blocked"
-            )
+            receipt_id = emit(blocked_payload, key=f"packet:{packet.packet_id}:blocked")
             return PacketAutodevReport(
                 "blocked_no_qualified_worker",
                 checkpoints={},
@@ -641,11 +1132,17 @@ def run_packet_autodev(
                 receipt_ids=(receipt_id,),
             )
 
-    context = compile_packet_context(packet, repo, store=ledger)
+    context = compile_packet_context(
+        packet,
+        repo,
+        store=ledger,
+        family_id=family_id,
+        token_budget=token_budget,
+        symbol_relationship=symbol_relationship,
+    )
     unit = _packet_work_unit(packet, context.compiled_prompt)
 
-    checkpoint = _packet_event(
-        ledger,
+    checkpoint = emit(
         {
             "packet_id": packet.packet_id,
             "checkpoint": "before_inference",
@@ -698,6 +1195,23 @@ def run_packet_autodev(
                 verified = checked.returncode == 0
                 if not verified:
                     reason = f"verification exited {checked.returncode}"
+            if verified and frontier_review is not None:
+                # Reject-only (FR-013): a review may only turn a pass into a failure by
+                # naming a reason. It can never manufacture success from a failed attempt,
+                # and trusted verification remains the sole decider of a pass.
+                rejection = frontier_review(
+                    PacketAttempt(
+                        str(route.get("requested_identity", "")),
+                        str(route.get("actual_identity", "")),
+                        (),
+                        "",
+                        verified,
+                        reason,
+                    )
+                )
+                if rejection:
+                    verified = False
+                    reason = rejection
             changed_owned = tuple(sorted(set(changed) & set(owned)))
             requested_identity = str(
                 route.get("requested_identity", getattr(result, "model", "unknown"))
@@ -722,10 +1236,12 @@ def run_packet_autodev(
             failure_class = classify_failure(provisional)
             attempt = PacketAttempt(**{**provisional.__dict__, "failure_class": failure_class})
             attempts.append(attempt)
-            _packet_event(
-                ledger,
+            from verdict.autodev_routing import unobserved_quota_headroom
+
+            emit(
                 {
                     "packet_id": packet.packet_id,
+                    "packet_integrity_digest": packet.integrity_digest,
                     "attempt": index + 1,
                     "requested_identity": attempt.requested_identity,
                     "actual_identity": attempt.actual_identity,
@@ -739,7 +1255,10 @@ def run_packet_autodev(
                     "usage": attempt.usage.to_dict(),
                     "latency_ms": attempt.latency_ms,
                     "route": dict(route),
-                },
+                    "admitted_ids": list(admission_inventory["admitted_ids"]),
+                    "ranked_ids": list(admission_inventory["ranked_ids"]),
+                    **unobserved_quota_headroom(),
+                }
             )
             if verified:
                 replay_source = capture_source_binding(
@@ -748,8 +1267,8 @@ def run_packet_autodev(
                     lock_paths=tuple(packet.source["lock_digests"]),
                 )
                 if dict(replay_source) != dict(packet.source):
-                    receipt_id = _packet_event(
-                        ledger,
+                    drain_remaining()
+                    receipt_id = emit(
                         {
                             "packet_id": packet.packet_id,
                             "terminal_state": "drifted",
@@ -766,8 +1285,8 @@ def run_packet_autodev(
                         receipt_ids=(receipt_id,),
                     )
                 _replay_attempt(attempt_repo, repo)
-                receipt_id = _packet_event(
-                    ledger,
+                drain_remaining()
+                receipt_id = emit(
                     {"packet_id": packet.packet_id, "terminal_state": "completed"},
                     key=f"packet:{packet.packet_id}:terminal",
                 )
@@ -793,10 +1312,12 @@ def run_packet_autodev(
                 assert refreshed is not None
                 routes.append(refreshed)
                 fallback_count = 1
+                with suppress(ValueError):
+                    admission_inventory = packet_admission_inventory(routes)
         index += 1
 
-    receipt_id = _packet_event(
-        ledger,
+    drain_remaining()
+    receipt_id = emit(
         {"packet_id": packet.packet_id, "terminal_state": "truthful_failure"},
         key=f"packet:{packet.packet_id}:terminal",
     )
@@ -812,6 +1333,104 @@ def run_packet_autodev(
 
 class AutodevError(RuntimeError):
     """Raised when a run cannot proceed."""
+
+
+def refuse_opaque_family_route(route: Mapping[str, Any]) -> None:
+    """Family runs require a concrete route, not auto/combo aliases."""
+    from verdict.availability import is_opaque_route_id
+
+    identities = (
+        str(route.get("requested_identity") or ""),
+        str(route.get("actual_identity") or ""),
+    )
+    if any(value and is_opaque_route_id(value) for value in identities):
+        raise AutodevError("family run refuses opaque auto/combo identities")
+    if str(route.get("owned_by") or "").strip().lower() == "combo":
+        raise AutodevError("family run refuses owned_by=combo identities")
+
+
+def packet_family_run_payload(
+    packet: ExecutionPacket, report: PacketAutodevReport, base_url: str
+) -> dict[str, Any]:
+    """Paired-family JSON: same packet digest, family taken from base_url."""
+    from verdict.autodev_routing import family_from_base_url, unobserved_quota_headroom
+
+    family = family_from_base_url(base_url)
+    attempt = report.attempts[-1] if report.attempts else None
+    return {
+        "packet_integrity_digest": packet.integrity_digest,
+        "family_id": family.family_id,
+        "base_url": family.base_url,
+        "adapter_id": family.adapter_id,
+        "adapter_version": family.adapter_version,
+        "protocol": family.protocol,
+        "terminal_state": report.terminal_state,
+        "fallback_count": report.fallback_count,
+        "receipt_ids": list(report.receipt_ids),
+        "requested_identity": "" if attempt is None else attempt.requested_identity,
+        "actual_identity": "" if attempt is None else attempt.actual_identity,
+        "proof_level": "live-proven" if report.terminal_state == "completed" else "not-completed",
+        **unobserved_quota_headroom(),
+        "resumed": report.resumed,
+        "checkpoints": report.checkpoints,
+    }
+
+
+_FAMILY_LEG_KEYS = (
+    "family_id",
+    "base_url",
+    "adapter_id",
+    "adapter_version",
+    "protocol",
+    "terminal_state",
+    "fallback_count",
+    "receipt_ids",
+    "requested_identity",
+    "actual_identity",
+    "proof_level",
+    "quota",
+    "headroom",
+)
+
+
+def compare_family_runs(
+    family_a: Mapping[str, Any],
+    family_b: Mapping[str, Any],
+    *,
+    packet: ExecutionPacket | None = None,
+) -> dict[str, Any]:
+    """Compare two family-run JSON objects; refuse digest mismatch or same URL."""
+    digest_a = str(family_a.get("packet_integrity_digest") or "")
+    digest_b = str(family_b.get("packet_integrity_digest") or "")
+    if not digest_a or digest_a != digest_b:
+        raise AutodevError("paired family runs require the same packet_integrity_digest")
+    if packet is not None and packet.integrity_digest != digest_a:
+        raise AutodevError("pair digest does not match packet")
+    url_a = str(family_a.get("base_url") or "")
+    url_b = str(family_b.get("base_url") or "")
+    if not url_a or url_a == url_b:
+        raise AutodevError("paired family runs require distinct base_url values")
+    for leg in (family_a, family_b):
+        if int(leg.get("fallback_count") or 0) > 1:
+            raise AutodevError("paired family runs require fallback_count <= 1")
+    unknown: list[dict[str, Any]] = []
+    for name in ("quota", "headroom"):
+        status_a = str(family_a.get(name) or "UNKNOWN")
+        status_b = str(family_b.get(name) or "UNKNOWN")
+        if status_a != "observed" or status_b != "observed":
+            unknown.append({"facet": name, "family_a": status_a, "family_b": status_b})
+    left, right = sorted((url_a, url_b))
+    material = json.dumps(
+        {"a": left, "b": right, "digest": digest_a}, separators=(",", ":"), sort_keys=True
+    )
+    return {
+        "pair_id": "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest(),
+        "packet_integrity_digest": digest_a,
+        "family_a": {key: family_a.get(key) for key in _FAMILY_LEG_KEYS},
+        "family_b": {key: family_b.get(key) for key in _FAMILY_LEG_KEYS},
+        "unknown_facets": unknown,
+        "parity_claimed": not unknown,
+    }
 
 
 @dataclass(frozen=True)
@@ -1185,9 +1804,14 @@ __all__ = [
     "AutodevError",
     "AutodevReport",
     "UnitOutcome",
+    "apply_shadow_canary",
     "collect_ruff_evidence",
+    "compare_execution_topologies",
     "compile_packet_context",
     "compile_worker_context",
+    "context_ablation_payload",
     "designated_primary_fallback",
+    "rollback_shadow_canary",
     "run_autodev",
+    "shadow_learning_report",
 ]

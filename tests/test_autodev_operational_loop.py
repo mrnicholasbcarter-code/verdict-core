@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,9 @@ from typing import Any
 import pytest
 
 from verdict.autodev_run import run_packet_autodev
-from verdict.execution_packet import ExecutionPacket, capture_source_binding
+from verdict.cli import cmd_autodev_packet_execute
+from verdict.execution_packet import ExecutionPacket, ExecutionPacketStore, capture_source_binding
+from verdict.free_route_harvest import TaskNeed, first_execute_need, keep_free_compatible
 from verdict.patch_executor import PatchAttempt
 from verdict.receipt_store import ReceiptStore
 
@@ -331,7 +334,10 @@ def test_context_receipt_units_are_autodev_owned_paths_without_chat(repo: Path) 
     assert context
     payload = context[0]
     assert payload["compiled_prompt"] == "[REDACTED]"
-    assert payload["omissions"] == []
+    # FR-032: "prior verified outcomes" has no deterministic default location, so
+    # its absence is a named limitation, not a silently-treated-complete omission.
+    omission_ids = {item["unit_id"] for item in payload["omissions"]}
+    assert omission_ids == {"autodev:limitation:prior_verified_outcomes"}
     decisions = payload["context_receipt"]["decisions"]
     unit_ids = [item["unit_id"] for item in decisions]
     assert all(uid.startswith("autodev:") for uid in unit_ids)
@@ -364,6 +370,202 @@ def test_packet_execute_receipt_keeps_advisory_self_report_off_the_deciding_bit(
     assert payload["trusted_verification"]["role"] == "deciding"
     assert payload["trusted_verification"]["decided"] is True
     assert payload["verified"] is True
+    assert payload["packet_integrity_digest"] == packet.integrity_digest
+    assert payload["quota"] == "UNKNOWN"
+    assert payload["headroom"] == "UNKNOWN"
+    assert set(payload["ranked_ids"]) <= set(payload["admitted_ids"])
+    assert (
+        payload["requested_identity"] in payload["admitted_ids"]
+        or payload["actual_identity"] in payload["admitted_ids"]
+    )
+
+
+def test_packet_execute_receipt_ranked_ids_are_subset_of_gate_admitted(repo: Path) -> None:
+    """Shipped attempt receipts persist EligibilityGate inventory; ranked ⊆ admitted."""
+    packet = _packet(repo)
+    store = ReceiptStore(":memory:")
+    cheap = _route("free/cheap", "gateway/free-v1", availability_state="eligible")
+    dead = _route("paid/dead", "paid/dead", availability_state="quota_exhausted")
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=cheap,
+        candidate_routes=(dead, cheap),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    attempts = [
+        row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("attempt") == 1
+    ]
+    assert attempts
+    payload = attempts[0]
+    assert "paid/dead" not in payload["admitted_ids"]
+    assert "gateway/free-v1" in payload["admitted_ids"]
+    assert set(payload["ranked_ids"]) <= set(payload["admitted_ids"])
+    assert payload["ranked_ids"]
+    assert (
+        payload["requested_identity"] in payload["ranked_ids"]
+        or payload["actual_identity"] in payload["ranked_ids"]
+    )
+
+
+def test_fallback_attempt_receipt_refreshes_admission_inventory(repo: Path) -> None:
+    packet = _packet(repo)
+    store = ReceiptStore(":memory:")
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        fallback_route=_route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True),
+        executor_factory=_Factory([{"content": "wrong\n"}, {"content": "after\n"}]),
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    by_attempt = {
+        row.payload["attempt"]: row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("attempt")
+    }
+    assert "gateway/free-v1" in by_attempt[1]["admitted_ids"]
+    assert "anthropic/sonnet-served" in by_attempt[2]["admitted_ids"]
+    assert set(by_attempt[2]["ranked_ids"]) <= set(by_attempt[2]["admitted_ids"])
+
+
+def test_packet_execute_applies_canary_chosen_only_among_admitted_ids(repo: Path) -> None:
+    """T071: canary overlay picks among EligibilityGate admitted_ids; outsiders are ignored."""
+    packet = _packet(repo)
+    cheap = _route("free/cheap", "gateway/free-v1", availability_state="eligible")
+    other = _route("oc/hy3-free", "oc/hy3-free", availability_state="eligible")
+    dead = _route("paid/dead", "paid/dead", availability_state="quota_exhausted")
+    store = ReceiptStore(":memory:")
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=cheap,
+        candidate_routes=(cheap, other, dead),
+        canary_state={
+            "active": True,
+            "baseline": "gateway/free-v1",
+            "chosen": "oc/hy3-free",
+            "admission_unchanged": True,
+        },
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    assert report.attempts[0].actual_identity == "oc/hy3-free"
+    payload = next(
+        row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("attempt") == 1
+    )
+    assert "oc/hy3-free" in payload["admitted_ids"]
+    assert "paid/dead" not in payload["admitted_ids"]
+    assert set(payload["ranked_ids"]) <= set(payload["admitted_ids"])
+
+
+def test_packet_execute_ignores_canary_chosen_outside_admitted_ids(repo: Path) -> None:
+    cheap = _route("free/cheap", "gateway/free-v1", availability_state="eligible")
+    dead = _route("paid/dead", "paid/dead", availability_state="quota_exhausted")
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=cheap,
+        candidate_routes=(cheap, dead),
+        canary_state={
+            "active": True,
+            "baseline": "gateway/free-v1",
+            "chosen": "paid/dead",
+            "admission_unchanged": True,
+        },
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    assert report.attempts[0].actual_identity == "gateway/free-v1"
+
+
+def test_packet_execute_inactive_canary_restores_baseline_among_admitted(repo: Path) -> None:
+    """US4-D: inactive/rollback canary restores baseline, not chosen."""
+    cheap = _route("free/cheap", "gateway/free-v1", availability_state="eligible")
+    other = _route("oc/hy3-free", "oc/hy3-free", availability_state="eligible")
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=other,
+        candidate_routes=(cheap, other),
+        canary_state={
+            "active": False,
+            "baseline": "gateway/free-v1",
+            "chosen": "oc/hy3-free",
+            "admission_unchanged": True,
+        },
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    assert report.attempts[0].actual_identity == "gateway/free-v1"
+
+
+def test_cli_packet_execute_forwards_canary_json_into_run(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["canary_state"] = kwargs.get("canary_state")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-canary"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    canary = tmp_path.parent / f"{tmp_path.name}-canary.json"
+    canary.write_text(
+        json.dumps(
+            {
+                "active": True,
+                "baseline": "gateway/free-v1",
+                "chosen": "oc/hy3-free",
+                "admission_unchanged": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        delegation="legwork",
+        canary_path=str(canary),
+        catalog_rows=[
+            {"id": "oc/hy3-free", "owned_by": "openrouter", "capabilities": {"chat": True}},
+            {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}},
+        ],
+        probe_transport=lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        },
+    )
+    captured = capsys.readouterr()
+    del captured
+    assert seen["canary_state"]["chosen"] == "oc/hy3-free"
+    assert seen["canary_state"]["active"] is True
 
 
 def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_replayed(
@@ -510,6 +712,65 @@ def test_completed_packet_restart_resumes_without_reexecuting_or_duplicate_trans
     assert resumed.resumed is True
     assert len(factory.executors) == 1
     assert resumed.checkpoints == first.checkpoints
+    terminals = [
+        row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("terminal_state") == "completed"
+    ]
+    assert terminals
+    assert terminals[0]["quota"] == "UNKNOWN"
+    assert terminals[0]["headroom"] == "UNKNOWN"
+
+
+def test_kill_after_checkpoint_resumes_without_duplicate_transition(repo: Path) -> None:
+    """T039: mid-run kill after before_inference resumes without duplicating that checkpoint."""
+    packet = _packet(repo)
+    store = ReceiptStore(":memory:")
+
+    class _KillFactory:
+        def __call__(
+            self, *, attempt_repo: Path, route: Mapping[str, Any], packet: ExecutionPacket
+        ) -> _WritingExecutor:
+            del attempt_repo, route, packet
+            raise RuntimeError("killed-mid-run")
+
+    with pytest.raises(RuntimeError, match="killed-mid-run"):
+        run_packet_autodev(
+            packet,
+            repo,
+            admitted_route=_route("free/cheap", "gateway/free-v1"),
+            executor_factory=_KillFactory(),
+            store=store,
+            verification_runner=_Verifier("after\n"),
+        )
+
+    before = [
+        row
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("checkpoint") == "before_inference"
+    ]
+    assert len(before) == 1
+    assert before[0].payload["quota"] == "UNKNOWN"
+    assert before[0].payload["headroom"] == "UNKNOWN"
+
+    resumed = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=store,
+        verification_runner=_Verifier("after\n"),
+        resume=True,
+    )
+    assert resumed.terminal_state == "completed"
+    after = [
+        row
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("checkpoint") == "before_inference"
+    ]
+    assert len(after) == 1
+    assert after[0].receipt_id == before[0].receipt_id
+    assert resumed.checkpoints["before_inference"] == before[0].receipt_id
 
 
 def test_receipts_redact_raw_provider_payloads_and_truthfully_preserve_failure(repo: Path) -> None:
@@ -816,3 +1077,811 @@ def test_packet_executor_uses_route_base_url(repo: Path) -> None:
     )
     assert executor.config.base_url == "http://127.0.0.1:20129/v1"
     assert executor.config.model == "openrouter/poolside/laguna-xs-2.1:free"
+
+
+def test_paired_family_runs_share_packet_digest_and_emit_unknown_quota(repo: Path) -> None:
+    from verdict.autodev_run import packet_family_run_payload
+
+    packet = _packet(repo)
+    digest = packet.integrity_digest
+    payloads = []
+    for url in ("http://127.0.0.1:20128/v1", "http://127.0.0.1:20129/v1"):
+        report = run_packet_autodev(
+            packet,
+            repo,
+            admitted_route=_route("free/cheap", "gateway/free-v1", base_url=url),
+            executor_factory=_Factory([{"content": "after\n"}]),
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+        )
+        payloads.append(packet_family_run_payload(packet, report, url))
+    assert payloads[0]["packet_integrity_digest"] == digest
+    assert payloads[1]["packet_integrity_digest"] == digest
+    assert payloads[0]["family_id"] != payloads[1]["family_id"]
+    assert payloads[0]["base_url"] != payloads[1]["base_url"]
+    assert payloads[0]["quota"] == "UNKNOWN"
+    assert payloads[0]["headroom"] == "UNKNOWN"
+    assert payloads[0]["requested_identity"] == "free/cheap"
+    assert payloads[0]["actual_identity"] == "gateway/free-v1"
+
+
+def test_family_route_refuses_auto_and_combo_owned_by() -> None:
+    from verdict.autodev_run import AutodevError, refuse_opaque_family_route
+
+    refuse_opaque_family_route({"requested_identity": "ollama/minimax-m3"})
+    with pytest.raises(AutodevError):
+        refuse_opaque_family_route({"requested_identity": "auto/best"})
+    with pytest.raises(AutodevError):
+        refuse_opaque_family_route({"requested_identity": "gopus", "owned_by": "combo"})
+
+
+def test_pair_overlay_does_not_change_packet_integrity(repo: Path) -> None:
+    packet = _packet(repo)
+    overlaid = ExecutionPacket.from_dict(
+        {**packet.to_dict(), "pair_id": "pair-1", "adapter_id": "openai-compatible"}
+    )
+    assert overlaid.integrity_digest == packet.integrity_digest
+    assert overlaid.pair_id == "pair-1"
+    assert overlaid.adapter_id == "openai-compatible"
+
+
+def test_compare_family_runs_refuses_digest_mismatch_and_same_url(repo: Path) -> None:
+    from verdict.autodev_run import AutodevError, compare_family_runs, packet_family_run_payload
+
+    packet = _packet(repo)
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+    a = packet_family_run_payload(packet, report, "http://127.0.0.1:20128/v1")
+    b = packet_family_run_payload(packet, report, "http://127.0.0.1:20129/v1")
+    compared = compare_family_runs(a, b, packet=packet)
+    assert compared["packet_integrity_digest"] == packet.integrity_digest
+    assert compared["pair_id"].startswith("sha256:")
+    assert compared["family_a"]["base_url"] != compared["family_b"]["base_url"]
+    assert compared["parity_claimed"] is False
+    assert {item["facet"] for item in compared["unknown_facets"]} >= {"quota", "headroom"}
+    assert a["adapter_id"] == "openai-compatible"
+    with pytest.raises(AutodevError):
+        compare_family_runs(a, {**b, "packet_integrity_digest": "sha256:" + "0" * 64})
+    with pytest.raises(AutodevError):
+        compare_family_runs(a, {**b, "base_url": a["base_url"]})
+
+
+def test_resume_does_not_skip_a_second_family(repo: Path) -> None:
+    packet = _packet(repo)
+    store = ReceiptStore(":memory:")
+    factory = _Factory([{"content": "after\n"}, {"content": "after\n"}, {"content": "after\n"}])
+    first = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route(
+            "free/cheap", "gateway/free-v1", base_url="http://127.0.0.1:20128/v1"
+        ),
+        executor_factory=factory,
+        store=store,
+        verification_runner=_Verifier("after\n"),
+        resume=True,
+    )
+    second = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route(
+            "free/cheap", "gateway/free-v1", base_url="http://127.0.0.1:20129/v1"
+        ),
+        executor_factory=factory,
+        store=store,
+        verification_runner=_Verifier("after\n"),
+        resume=True,
+    )
+    replay = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route(
+            "free/cheap", "gateway/free-v1", base_url="http://127.0.0.1:20128/v1"
+        ),
+        executor_factory=factory,
+        store=store,
+        verification_runner=_Verifier("after\n"),
+        resume=True,
+    )
+    assert first.resumed is False
+    assert first.terminal_state == "completed"
+    assert second.resumed is False
+    assert second.terminal_state in {"completed", "drifted", "truthful_failure"}
+    assert replay.resumed is True
+    assert replay.terminal_state == "completed"
+
+
+def test_resume_does_not_skip_a_second_context_pack(repo: Path) -> None:
+    packet = _packet(repo)
+    store = ReceiptStore(":memory:")
+    factory = _Factory([{"content": "wrong\n"}, {"content": "wrong\n"}])
+    first = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route(
+            "free/cheap", "gateway/free-v1", base_url="http://127.0.0.1:20129/v1"
+        ),
+        executor_factory=factory,
+        store=store,
+        verification_runner=_Verifier("after\n"),
+        resume=True,
+        symbol_relationship=None,
+    )
+    second = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route(
+            "free/cheap", "gateway/free-v1", base_url="http://127.0.0.1:20129/v1"
+        ),
+        executor_factory=factory,
+        store=store,
+        verification_runner=_Verifier("after\n"),
+        resume=True,
+        symbol_relationship="owned.txt -> verify-owned",
+    )
+    assert first.resumed is False
+    assert second.resumed is False
+    assert first.context_digest != second.context_digest
+    assert first.terminal_state == "truthful_failure"
+    assert second.terminal_state == "truthful_failure"
+
+
+def test_packet_execute_probes_all_keep_then_picks_best_live_not_first_ready(repo: Path) -> None:
+    """Shipped packet execute: KEEP filter → ProbeRunner(all KEEP) → wait need → min-latency LIVE."""
+    chat = {"chat": True, "tools": True}
+    rows: list[dict[str, Any]] = [
+        {"id": "slow/free:free", "owned_by": "openrouter", "capabilities": chat},
+        {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": chat},
+        {
+            "id": "paid/gpt-4o",
+            "owned_by": "openai",
+            "capabilities": chat,
+            "pricing": {"prompt": 2.5},
+        },
+        {"id": "auto/best-free", "owned_by": "combo", "capabilities": chat},
+        {"id": "gopus", "owned_by": "combo", "capabilities": chat},
+        {"id": "openrouter/free", "owned_by": "openrouter", "capabilities": chat},
+        {
+            "id": "openrouter/text-embed:free",
+            "owned_by": "openrouter",
+            "capabilities": {"embedding": True},
+        },
+        {"id": "combo/coding", "owned_by": "combo", "capabilities": chat},
+    ]
+    rows.extend(
+        {"id": f"openrouter/extra-{i}:free", "owned_by": "openrouter", "capabilities": chat}
+        for i in range(18)
+    )
+    keep = keep_free_compatible(rows, TaskNeed(chat=True))
+    assert len(keep) == 20
+
+    probed: list[str] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout: float) -> dict[str, Any]:
+        del payload, timeout
+        probed.append(model_id)
+        if model_id.startswith("openrouter/extra-"):
+            return {"status_code": 429, "body": {}}
+        if model_id == "slow/free:free":
+            time.sleep(0.05)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        }
+
+    class _RecordingFactory(_Factory):
+        def __init__(self, writers: list[dict[str, str]]) -> None:
+            super().__init__(writers)
+            self.routes: list[dict[str, Any]] = []
+
+        def __call__(
+            self, *, attempt_repo: Path, route: Mapping[str, Any], packet: ExecutionPacket
+        ) -> _WritingExecutor:
+            self.routes.append(dict(route))
+            return super().__call__(attempt_repo=attempt_repo, route=route, packet=packet)
+
+    factory = _RecordingFactory([{"content": "after\n"}])
+    store = ReceiptStore(":memory:")
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route={},
+        catalog_rows=rows,
+        probe_transport=transport,
+        executor_factory=factory,
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+
+    assert probed == keep
+    assert "paid/gpt-4o" not in probed
+    assert "auto/best-free" not in probed
+    assert "openrouter/free" not in probed
+    assert report.terminal_state == "completed"
+    assert factory.routes[0]["requested_identity"] == "fast/free:free"
+    assert report.attempts[0].requested_identity == "fast/free:free"
+    attempts = [
+        row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("attempt") == 1
+    ]
+    assert attempts
+    admitted_ids = attempts[0]["admitted_ids"]
+    ranked_ids = attempts[0]["ranked_ids"]
+    assert "fast/free:free" in admitted_ids
+    assert "slow/free:free" in admitted_ids
+    assert not any(item.startswith("openrouter/extra-") for item in admitted_ids)
+    assert set(ranked_ids) <= set(admitted_ids)
+
+
+def test_packet_execute_starts_at_need_then_drains_remaining_keep(repo: Path) -> None:
+    """First execute waits for need, not full KEEP; remainder is probed after execute starts."""
+    chat = {"chat": True, "tools": True}
+    rows: list[dict[str, Any]] = [
+        {"id": "slow/free:free", "owned_by": "openrouter", "capabilities": chat},
+        {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": chat},
+        {
+            "id": "paid/gpt-4o",
+            "owned_by": "openai",
+            "capabilities": chat,
+            "pricing": {"prompt": 2.5},
+        },
+    ]
+    rows.extend(
+        {"id": f"openrouter/extra-{i}:free", "owned_by": "openrouter", "capabilities": chat}
+        for i in range(18)
+    )
+    keep = keep_free_compatible(rows, TaskNeed(chat=True))
+    need = first_execute_need(catalog_n=len(rows), keep_n=len(keep))
+    assert need < len(keep)
+
+    probed: list[str] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout: float) -> dict[str, Any]:
+        del payload, timeout
+        probed.append(model_id)
+        if model_id.startswith("openrouter/extra-"):
+            return {"status_code": 429, "body": {}}
+        if model_id == "slow/free:free":
+            time.sleep(0.05)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        }
+
+    class _RecordingFactory(_Factory):
+        def __init__(self, writers: list[dict[str, str]]) -> None:
+            super().__init__(writers)
+            self.probed_at_execute = 0
+            self.routes: list[dict[str, Any]] = []
+
+        def __call__(
+            self, *, attempt_repo: Path, route: Mapping[str, Any], packet: ExecutionPacket
+        ) -> _WritingExecutor:
+            self.probed_at_execute = len(probed)
+            self.routes.append(dict(route))
+            return super().__call__(attempt_repo=attempt_repo, route=route, packet=packet)
+
+    factory = _RecordingFactory([{"content": "after\n"}])
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route={},
+        catalog_rows=rows,
+        probe_transport=transport,
+        executor_factory=factory,
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+
+    assert factory.probed_at_execute >= need
+    assert factory.probed_at_execute < len(keep)
+    assert probed == keep
+    assert report.terminal_state == "completed"
+    assert factory.routes[0]["requested_identity"] == "fast/free:free"
+
+
+def test_cli_packet_execute_without_named_model_forwards_catalog_into_harvest(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chat = {"chat": True, "tools": True}
+    rows: list[dict[str, Any]] = [
+        {"id": "slow/free:free", "owned_by": "openrouter", "capabilities": chat},
+        {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": chat},
+        {
+            "id": "paid/gpt-4o",
+            "owned_by": "openai",
+            "capabilities": chat,
+            "pricing": {"prompt": 2.5},
+        },
+    ]
+    probed: list[str] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout: float) -> dict[str, Any]:
+        del payload, timeout
+        probed.append(model_id)
+        if model_id == "slow/free:free":
+            time.sleep(0.05)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        }
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["catalog_rows"] = kwargs.get("catalog_rows")
+        seen["probe_transport"] = kwargs.get("probe_transport")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+
+    packets = tmp_path.parent / f"{tmp_path.name}-packets"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        delegation="legwork",
+        catalog_rows=rows,
+        probe_transport=transport,
+    )
+    captured = capsys.readouterr()
+    assert probed == ["slow/free:free", "fast/free:free"]
+    assert seen["catalog_rows"] == rows
+    assert "fast/free:free" in captured.out
+
+
+def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chat = {"chat": True, "tools": True}
+    rows: list[dict[str, Any]] = [
+        {"id": "slow/free:free", "owned_by": "openrouter", "capabilities": chat},
+        {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": chat},
+    ]
+    probed: list[str] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout: float) -> dict[str, Any]:
+        del payload, timeout
+        probed.append(model_id)
+        if model_id == "slow/free:free":
+            time.sleep(0.05)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        }
+
+    class _Catalog:
+        def __enter__(self) -> _Catalog:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        def read(self) -> bytes:
+            return json.dumps({"object": "list", "data": rows}).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: _Catalog())
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-catalog"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        delegation="legwork",
+        probe_transport=transport,
+    )
+    captured = capsys.readouterr()
+    assert probed == ["slow/free:free", "fast/free:free"]
+    assert "fast/free:free" in captured.out
+
+
+def test_compare_execution_topologies_uses_trusted_labels_and_allows_no_benefit() -> None:
+    from verdict.autodev_run import compare_execution_topologies
+
+    single = [
+        {
+            "topology": "single",
+            "worker_self_report": {"outcome": "applied", "role": "advisory"},
+            "trusted_verification": {"decided": True, "role": "deciding"},
+            "usage": {"total_tokens": 10},
+        }
+    ]
+    multi = [
+        {
+            "topology": "multi",
+            "worker_self_report": {"outcome": "applied", "role": "advisory"},
+            "trusted_verification": {"decided": True, "role": "deciding"},
+            "usage": {"total_tokens": 12},
+        },
+        {
+            "topology": "multi",
+            "worker_self_report": {"outcome": "applied", "role": "advisory"},
+            "trusted_verification": {"decided": True, "role": "deciding"},
+            "usage": {"total_tokens": 8},
+        },
+    ]
+    report = compare_execution_topologies(single, multi)
+    assert report["labeled_from"] == "trusted_verification"
+    assert report["single_success"] == 1
+    assert report["multi_success"] == 2
+    assert report["single_tokens"] == 10
+    assert report["multi_tokens"] == 20
+    assert report["benefit"] is False
+
+    ignored = compare_execution_topologies(
+        single,
+        [
+            {
+                "topology": "multi",
+                "worker_self_report": {"outcome": "applied", "role": "advisory"},
+                "trusted_verification": {"decided": True, "role": "advisory"},
+                "usage": {"total_tokens": 1},
+            }
+        ],
+    )
+    assert ignored["multi_success"] == 0
+    assert ignored["benefit"] is False
+
+    cheaper_better = compare_execution_topologies(
+        [
+            {
+                "trusted_verification": {"decided": True, "role": "deciding"},
+                "usage": {"total_tokens": 20},
+            }
+        ],
+        [
+            {
+                "trusted_verification": {"decided": True, "role": "deciding"},
+                "usage": {"total_tokens": 4},
+            },
+            {
+                "trusted_verification": {"decided": True, "role": "deciding"},
+                "usage": {"total_tokens": 6},
+            },
+        ],
+    )
+    assert cheaper_better["benefit"] is True
+    assert cheaper_better["multi_success"] == 2
+    assert cheaper_better["multi_tokens"] == 10
+
+
+def test_execute_refuses_a_unit_whose_criterion_already_passes(repo: Path) -> None:
+    """FR-037: a criterion that is green before the change proves nothing.
+
+    Dispatching such a unit spends a worker to 'satisfy' a test that was already
+    passing, and the run would report completed without evidence the work happened.
+    """
+    from verdict.autodev_run import AutodevError
+
+    # The criterion passes against the unchanged source: nothing is left to prove.
+    already_green = _Verifier("before\n")
+    with pytest.raises(AutodevError, match="already passing"):
+        run_packet_autodev(
+            _packet(repo),
+            repo,
+            admitted_route=_route("free/cheap", "gateway/free-v1"),
+            executor_factory=_Factory([{"content": "after\n"}]),
+            store=ReceiptStore(":memory:"),
+            verification_runner=already_green,
+            require_red_green=True,
+        )
+
+
+def test_execute_proceeds_when_criterion_is_red_before_the_change(repo: Path) -> None:
+    """FR-037: a genuinely red criterion is dispatched and must still reach completed."""
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        require_red_green=True,
+    )
+    assert report.terminal_state == "completed"
+
+
+def test_delegable_unit_refuses_primary_while_a_free_route_is_admitted(repo: Path) -> None:
+    """FR-031: legwork must not spend subscription capacity when free is available.
+
+    This is the whole economic thesis: a unit whose requirements any admitted
+    non-primary identity satisfies has no business consuming a paid frontier seat.
+    """
+    from verdict.autodev_run import AutodevError
+
+    primary_route = {**_route("paid/frontier", "gateway/paid-v1"), "primary": True}
+    with pytest.raises(AutodevError, match="delegable"):
+        run_packet_autodev(
+            _packet(repo),
+            repo,
+            admitted_route=primary_route,
+            candidate_routes=[primary_route, _route("free/cheap", "gateway/free-v1")],
+            executor_factory=_Factory([{"content": "after\n"}]),
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+            delegation="legwork",
+        )
+
+
+def test_decision_unit_may_use_primary_and_records_the_deciding_capability(repo: Path) -> None:
+    """FR-031: a reserved decision may spend primary, but must name why it is undelegable."""
+    primary_route = {**_route("paid/frontier", "gateway/paid-v1"), "primary": True}
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=primary_route,
+        candidate_routes=[primary_route, _route("free/cheap", "gateway/free-v1")],
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        delegation="decision",
+        undelegable_reason="requires cross-repository interface judgment",
+    )
+    assert report.terminal_state == "completed"
+
+
+def test_frontier_review_can_reject_a_verified_attempt(repo: Path) -> None:
+    """FR-013/FR-007: frontier review may only reject, never manufacture success.
+
+    Trusted verification passing is necessary but the review is a second, distinct
+    check; a rejection must still surface as a truthful non-completed terminal.
+    """
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        frontier_review=lambda attempt: "does not match acceptance criterion wording",
+    )
+    assert report.terminal_state != "completed"
+    assert report.attempts[-1].reason == "does not match acceptance criterion wording"
+
+
+def test_frontier_review_cannot_promote_a_failed_verification(repo: Path) -> None:
+    """A reviewer approving a failed attempt must not turn it into success."""
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "wrong\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        frontier_review=lambda attempt: None,
+    )
+    assert report.terminal_state != "completed"
+
+
+def test_net_savings_accounting_can_be_negative(repo: Path) -> None:
+    """FR-033: savings must be net of frontier overhead, or the claim is fiction.
+
+    A run whose frontier orchestration/validation cost more tokens than the free
+    worker used shows a negative net, not a green number that hides the loss.
+    """
+    from verdict.autodev_run import net_savings_report
+
+    report = net_savings_report(
+        attempts=[
+            {"primary": False, "usage": {"prompt_tokens": 40, "completion_tokens": 10}},
+            {"primary": True, "usage": {"prompt_tokens": 100, "completion_tokens": 50}},
+        ],
+        frontier_tokens=500,
+    )
+    assert report["non_primary_tokens"] == 50
+    assert report["primary_tokens"] == 150
+    assert report["frontier_tokens"] == 500
+    assert report["net_savings_tokens"] == -450
+    assert report["net_savings_tokens"] < 0
+
+
+def test_net_savings_is_positive_when_delegation_dominates() -> None:
+    from verdict.autodev_run import net_savings_report
+
+    report = net_savings_report(
+        attempts=[{"primary": False, "usage": {"prompt_tokens": 2000, "completion_tokens": 500}}],
+        frontier_tokens=100,
+    )
+    assert report["net_savings_tokens"] == 2400
+
+
+def test_cli_packet_execute_requires_red_green_by_default(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-037: the real production entry point enforces red-green, not an opt-in flag."""
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["require_red_green"] = kwargs.get("require_red_green")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-redgreen"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        delegation="legwork",
+        catalog_rows=[
+            {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}}
+        ],
+        probe_transport=lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        },
+    )
+    assert seen["require_red_green"] is True
+
+
+def test_cli_packet_execute_resume_does_not_require_red_green(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resume legitimately re-verifies prior work; it must not be blocked as already-green."""
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["require_red_green"] = kwargs.get("require_red_green")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-resume-rg"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        resume=True,
+        delegation="legwork",
+        catalog_rows=[
+            {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}}
+        ],
+        probe_transport=lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        },
+    )
+    assert seen["require_red_green"] is False
+
+
+def test_cli_packet_execute_refuses_unclassified_unit_by_default(
+    repo: Path, tmp_path: Path
+) -> None:
+    """FR-031: the production entry point refuses dispatch with no delegation classification."""
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-no-delegation"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    with pytest.raises(SystemExit):
+        cmd_autodev_packet_execute(str(path), str(repo), output_json=True, allow_live=True)
+
+
+def test_cli_packet_execute_forwards_delegation_to_run(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["delegation"] = kwargs.get("delegation")
+        seen["undelegable_reason"] = kwargs.get("undelegable_reason")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-delegation-fwd"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        delegation="decision",
+        undelegable_reason="requires cross-repository judgment",
+        catalog_rows=[
+            {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}}
+        ],
+        probe_transport=lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        },
+    )
+    assert seen["delegation"] == "decision"
+    assert seen["undelegable_reason"] == "requires cross-repository judgment"
+
+
+def test_cli_argv_execute_passes_delegation_flag_through_to_dispatch(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """FR-031: --delegation must be a real, parseable argv flag on `packet execute`,
+    or the CLI-default enforcement (T081k) is unreachable from an actual shell command.
+    """
+    import verdict.cli as cli
+
+    seen: dict[str, Any] = {}
+
+    def fake_execute(*args: Any, **kwargs: Any) -> None:
+        seen["delegation"] = kwargs.get("delegation")
+        seen["undelegable_reason"] = kwargs.get("undelegable_reason")
+
+    monkeypatch.setattr(cli, "cmd_autodev_packet_execute", fake_execute)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-argv-delegation"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "verdict",
+            "autodev",
+            "packet",
+            "execute",
+            "--packet",
+            str(path),
+            "--repo",
+            str(repo),
+            "--allow-live",
+            "--json",
+            "--delegation",
+            "decision",
+            "--undelegable-reason",
+            "requires cross-repository judgment",
+        ],
+    )
+    cli.main()
+    assert seen["delegation"] == "decision"
+    assert seen["undelegable_reason"] == "requires cross-repository judgment"
