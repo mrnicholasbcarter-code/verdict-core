@@ -716,6 +716,7 @@ def run_packet_autodev(
     catalog_rows: Sequence[Mapping[str, Any]] | None = None,
     probe_transport: Any = None,
     candidate_routes: Sequence[Mapping[str, Any]] | None = None,
+    canary_state: Mapping[str, Any] | None = None,
 ) -> PacketAutodevReport:
     """Run one admitted packet task in a clean worktree, with one fallback."""
     pending_keep: list[str] = []
@@ -738,6 +739,21 @@ def run_packet_autodev(
         admission_inventory = packet_admission_inventory(floor_routes)
     except ValueError:
         admission_inventory = {"admitted_ids": [], "ranked_ids": []}
+    if canary_state and canary_state.get("active") is True:
+        chosen = str(canary_state.get("chosen") or "")
+        admitted = set(admission_inventory.get("admitted_ids") or ())
+        if chosen in admitted:
+            match = next(
+                (
+                    route
+                    for route in floor_routes
+                    if str(route.get("actual_identity") or "") == chosen
+                    or str(route.get("requested_identity") or "") == chosen
+                ),
+                None,
+            )
+            if match is not None:
+                admitted_route = {**admitted_route, **dict(match)}
 
     def drain_remaining() -> None:
         if pending_keep and probe_transport is not None:

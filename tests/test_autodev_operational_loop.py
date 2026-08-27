@@ -371,9 +371,10 @@ def test_packet_execute_receipt_keeps_advisory_self_report_off_the_deciding_bit(
     assert payload["quota"] == "UNKNOWN"
     assert payload["headroom"] == "UNKNOWN"
     assert set(payload["ranked_ids"]) <= set(payload["admitted_ids"])
-    assert payload["requested_identity"] in payload["admitted_ids"] or payload[
-        "actual_identity"
-    ] in payload["admitted_ids"]
+    assert (
+        payload["requested_identity"] in payload["admitted_ids"]
+        or payload["actual_identity"] in payload["admitted_ids"]
+    )
 
 
 def test_packet_execute_receipt_ranked_ids_are_subset_of_gate_admitted(repo: Path) -> None:
@@ -403,9 +404,10 @@ def test_packet_execute_receipt_ranked_ids_are_subset_of_gate_admitted(repo: Pat
     assert "gateway/free-v1" in payload["admitted_ids"]
     assert set(payload["ranked_ids"]) <= set(payload["admitted_ids"])
     assert payload["ranked_ids"]
-    assert payload["requested_identity"] in payload["ranked_ids"] or payload[
-        "actual_identity"
-    ] in payload["ranked_ids"]
+    assert (
+        payload["requested_identity"] in payload["ranked_ids"]
+        or payload["actual_identity"] in payload["ranked_ids"]
+    )
 
 
 def test_fallback_attempt_receipt_refreshes_admission_inventory(repo: Path) -> None:
@@ -429,6 +431,62 @@ def test_fallback_attempt_receipt_refreshes_admission_inventory(repo: Path) -> N
     assert "gateway/free-v1" in by_attempt[1]["admitted_ids"]
     assert "anthropic/sonnet-served" in by_attempt[2]["admitted_ids"]
     assert set(by_attempt[2]["ranked_ids"]) <= set(by_attempt[2]["admitted_ids"])
+
+
+def test_packet_execute_applies_canary_chosen_only_among_admitted_ids(repo: Path) -> None:
+    """T071: canary overlay picks among EligibilityGate admitted_ids; outsiders are ignored."""
+    packet = _packet(repo)
+    cheap = _route("free/cheap", "gateway/free-v1", availability_state="eligible")
+    other = _route("oc/hy3-free", "oc/hy3-free", availability_state="eligible")
+    dead = _route("paid/dead", "paid/dead", availability_state="quota_exhausted")
+    store = ReceiptStore(":memory:")
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=cheap,
+        candidate_routes=(cheap, other, dead),
+        canary_state={
+            "active": True,
+            "baseline": "gateway/free-v1",
+            "chosen": "oc/hy3-free",
+            "admission_unchanged": True,
+        },
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    assert report.attempts[0].actual_identity == "oc/hy3-free"
+    payload = next(
+        row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("attempt") == 1
+    )
+    assert "oc/hy3-free" in payload["admitted_ids"]
+    assert "paid/dead" not in payload["admitted_ids"]
+    assert set(payload["ranked_ids"]) <= set(payload["admitted_ids"])
+
+
+def test_packet_execute_ignores_canary_chosen_outside_admitted_ids(repo: Path) -> None:
+    cheap = _route("free/cheap", "gateway/free-v1", availability_state="eligible")
+    dead = _route("paid/dead", "paid/dead", availability_state="quota_exhausted")
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=cheap,
+        candidate_routes=(cheap, dead),
+        canary_state={
+            "active": True,
+            "baseline": "gateway/free-v1",
+            "chosen": "paid/dead",
+            "admission_unchanged": True,
+        },
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    assert report.attempts[0].actual_identity == "gateway/free-v1"
 
 
 def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_replayed(

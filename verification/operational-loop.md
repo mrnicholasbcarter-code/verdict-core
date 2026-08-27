@@ -743,3 +743,6 @@ OmniRoute `3.8.49`. `taskRouting.enabled=false`, `detectionEnabled=false` after 
 | 103 | terminal `rcpt-c9352937…` | UNKNOWN / UNKNOWN | `truthful_failure` |
 
 T039 live keys: **LIVE-PROVEN**. T034 live inventory: **LIVE-PROVEN** on attempt 1 (`ranked_ids ⊆ admitted_ids`). r22 attempt 2 still lists only the pre-fallback kimi set (code at execute time). Shipped path now re-runs `packet_admission_inventory` when a primary fallback is appended (`test_fallback_attempt_receipt_refreshes_admission_inventory`). CHK014 r22 pack has no chat units. CHK016 r22 attempts store advisory beside deciding.
+
+T034 admission-inventory refresh (including fallback re-floor) is commit `dbebed29ced3314daad45c52848703655c315c31` on `feat/verdict-operational-loop`.
+At that SHA: `uv run ruff check` on touched modules passed; `uv run mypy --strict` on `verdict/autodev_run.py` `verdict/autodev_routing.py` `verdict/free_route_harvest.py` passed; `uv run pytest -q` **1586 passed** (captured `{SCRATCH}/pytest-full.txt`).
