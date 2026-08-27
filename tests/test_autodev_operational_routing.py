@@ -522,3 +522,90 @@ def test_qualification_requires_every_transition_capability_fresh() -> None:
     )
     assert report["qualified"] is True
     assert report["unsatisfied_capabilities"] == []
+
+
+def test_catalog_and_runtime_conflicts_are_preserved_not_merged() -> None:
+    candidate = AvailabilityCandidate(
+        model=ModelInfo(
+            id="alternative/ready",
+            provider="alternative",
+            capabilities=frozenset({"chat", "tools"}),
+            context_window=200_000,
+        ),
+        state=AvailabilityState.ELIGIBLE,
+        source="omniroute-runtime",
+        freshness_seconds=2.0,
+        headroom_pct=None,
+        normalized={
+            "quota_remaining_pct": None,
+            "catalog": {
+                "context_window": 200_000,
+                "capabilities": ["chat", "tools"],
+                "freshness_seconds": 3600.0,
+            },
+            "runtime": {
+                "context_window": 128_000,
+                "capabilities": ["chat"],
+                "freshness_seconds": 2.0,
+            },
+        },
+    )
+    route = _route("alternative/ready", route_id="route-ready")
+
+    evidence = _routing().compose_candidate_evidence(
+        _report(candidate),
+        {"alternative/ready": route},
+        requested_alias="alternative/alias",
+        observed_at=NOW,
+        ttl_seconds=60,
+    )
+
+    assert len(evidence) == 1
+    fields = {item["field"] for item in evidence[0].conflicts}
+    assert "context_window" in fields
+    assert "capabilities" in fields
+    context = next(item for item in evidence[0].conflicts if item["field"] == "context_window")
+    assert context["catalog_value"] == 200_000
+    assert context["runtime_value"] == 128_000
+    assert context["catalog_freshness_seconds"] == 3600.0
+    assert context["runtime_freshness_seconds"] == 2.0
+    serialized = evidence[0].to_dict()
+    assert serialized["conflicts"]
+    assert serialized["field_freshness"]["quota_remaining_pct"] is None
+    assert serialized["field_freshness"]["headroom_pct"] is None
+    assert serialized["quota_remaining_pct"] is None
+    assert serialized["headroom_pct"] is None
+
+
+def test_openai_served_model_is_attested_distinct_from_requested_alias() -> None:
+    candidate = AvailabilityCandidate(
+        model=ModelInfo(id="alternative/ready", provider="alternative"),
+        state=AvailabilityState.ELIGIBLE,
+        source="omniroute-runtime",
+    )
+    adapter = _routing().OpenAICompatibleEvidenceAdapter(
+        _AvailabilitySurface(_report(candidate)),
+        gateway_id="omniroute-local",
+        protocol="openai.chat",
+    )
+    adapter.observe(requested_alias="alternative/ready", observed_at=NOW)
+    request = adapter.translate(
+        AdapterRequest(
+            request_id="request-live-served",
+            protocol="openai.chat",
+            requested_alias="alternative/ready",
+            payload={"messages": []},
+        )
+    )
+
+    attested = adapter.attest(
+        request,
+        AdapterResponseMetadata("request-live-served", {"model": "alternative/served-v2"}),
+    )
+
+    assert attested.requested_alias == "alternative/ready"
+    assert attested.resolved_route.model_id == "alternative/ready"
+    assert attested.actual_route is not None
+    assert attested.actual_route.model_id == "alternative/served-v2"
+    assert attested.actual_route.model_id != attested.requested_alias
+    assert attested.source == "response-metadata:served-model"

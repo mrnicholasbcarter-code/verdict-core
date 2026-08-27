@@ -14,9 +14,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from verdict.autodev_run import DEFAULT_EXECUTOR_MODEL
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
-from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL
 from verdict.gate import Gate
 from verdict.models import ModelInfo, ProviderConfig, TaskSpec
 from verdict.patch_executor import DEFAULT_BASE_URL
@@ -773,8 +771,8 @@ def cmd_autodev(
     objective: str,
     repo: str,
     *,
-    orchestrator_model: str,
-    executor_model: str,
+    orchestrator_model: str | None,
+    executor_model: str | None,
     base_url: str,
     output_json: bool = False,
     allow_live: bool = False,
@@ -787,9 +785,16 @@ def cmd_autodev(
     consent via ``--allow-live``.  ``--dry-run`` shows the plan and its measured
     cost without executing any unit.
     """
-    from verdict.autodev_run import collect_ruff_evidence, run_autodev
+    from verdict.autodev_run import (
+        _resolve_default_executor_model,
+        _resolve_default_orchestrator_model,
+        collect_ruff_evidence,
+        run_autodev,
+    )
     from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
 
+    orchestrator_model = orchestrator_model or _resolve_default_orchestrator_model()
+    executor_model = executor_model or _resolve_default_executor_model()
     repo_path = Path(repo).resolve()
     if not allow_live:
         message = (
@@ -2106,13 +2111,13 @@ def main() -> None:
     autodev_p.add_argument("--repo", default=".", help="Repository to work in (default: .)")
     autodev_p.add_argument(
         "--orchestrator-model",
-        default=DEFAULT_ORCHESTRATOR_MODEL,
-        help=f"Model that decomposes and plans (default: {DEFAULT_ORCHESTRATOR_MODEL})",
+        default=None,
+        help="Model that decomposes and plans (default: resolved from live gateway availability)",
     )
     autodev_p.add_argument(
         "--executor-model",
-        default=DEFAULT_EXECUTOR_MODEL,
-        help=f"Cheap route that executes units (default: {DEFAULT_EXECUTOR_MODEL})",
+        default=None,
+        help="Cheap route that executes units (default: resolved from live gateway availability)",
     )
     autodev_p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OpenAI-compatible gateway")
     autodev_p.add_argument("--json", action="store_true", help="Emit the machine-readable report")

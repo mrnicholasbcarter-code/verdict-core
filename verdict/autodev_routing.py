@@ -75,6 +75,8 @@ class CandidateEvidence:
     quota_remaining_pct: float | None = None
     headroom_pct: float | None = None
     actual_route: AdapterRouteIdentity | None = None
+    field_freshness: Mapping[str, float | None] | None = None
+    conflicts: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.requested_alias.strip():
@@ -96,6 +98,12 @@ class CandidateEvidence:
         if not self.source.strip():
             raise GatewayAdapterError("source must be non-empty")
         object.__setattr__(self, "capabilities", dict(self.capabilities))
+        object.__setattr__(
+            self,
+            "field_freshness",
+            dict(self.field_freshness or {}),
+        )
+        object.__setattr__(self, "conflicts", tuple(dict(item) for item in self.conflicts))
         if self.freshness_seconds is not None and (
             isinstance(self.freshness_seconds, bool) or self.freshness_seconds < 0
         ):
@@ -132,6 +140,8 @@ class CandidateEvidence:
             "freshness_seconds": self.freshness_seconds,
             "quota_remaining_pct": self.quota_remaining_pct,
             "headroom_pct": self.headroom_pct,
+            "field_freshness": dict(self.field_freshness or {}),
+            "conflicts": [dict(item) for item in self.conflicts],
         }
 
 
@@ -268,12 +278,7 @@ class OpenAICompatibleEvidenceAdapter:
         )
         if resolved is None:
             raise GatewayAdapterError("requested alias was not discovered")
-        actual = _actual_route(response.metadata)
-        source = (
-            "response-metadata:actual-route"
-            if actual is not None
-            else "response-metadata:actual-route-unavailable"
-        )
+        actual, source = _actual_route(response.metadata, resolved=resolved)
         return RouteIdentityAttestation(
             request_id=request.request_id,
             requested_alias=request.requested_alias,
@@ -412,6 +417,9 @@ def compose_candidate_evidence(
         headroom = item.headroom_pct
         if headroom is None:
             headroom = _optional_percentage(normalized.get("headroom_pct"))
+        freshness = (
+            max(0.0, item.freshness_seconds) if item.freshness_seconds is not None else None
+        )
         evidence.append(
             CandidateEvidence(
                 requested_alias=requested_alias,
@@ -423,11 +431,16 @@ def compose_candidate_evidence(
                 source=item.source or report.source,
                 # Live gateways with slight clock skew report observations a
                 # fraction of a second in the future; that is fresh now.
-                freshness_seconds=max(0.0, item.freshness_seconds)
-                if item.freshness_seconds is not None
-                else None,
+                freshness_seconds=freshness,
                 quota_remaining_pct=quota,
                 headroom_pct=headroom,
+                field_freshness={
+                    "availability": freshness,
+                    "capabilities": freshness,
+                    "quota_remaining_pct": freshness if quota is not None else None,
+                    "headroom_pct": freshness if headroom is not None else None,
+                },
+                conflicts=_conflicts_from_normalized(normalized, freshness),
             )
         )
     return tuple(evidence)
@@ -486,21 +499,75 @@ def _merge_probe(
         quota_remaining_pct=evidence.quota_remaining_pct,
         headroom_pct=evidence.headroom_pct,
         actual_route=evidence.actual_route,
+        field_freshness=evidence.field_freshness,
+        conflicts=evidence.conflicts,
     )
 
 
-def _actual_route(metadata: Mapping[str, Any]) -> AdapterRouteIdentity | None:
+def _actual_route(
+    metadata: Mapping[str, Any], *, resolved: AdapterRouteIdentity | None = None
+) -> tuple[AdapterRouteIdentity | None, str]:
     value = metadata.get("actual_route")
     if isinstance(value, Mapping):
         try:
-            return AdapterRouteIdentity.from_dict(value)
+            return AdapterRouteIdentity.from_dict(value), "response-metadata:actual-route"
         except GatewayAdapterError:
-            return None
+            pass
 
-    # Generic OpenAI bodies often expose only the served model.  That is useful
-    # metadata, but it cannot prove the provider/connection/route identity, so
-    # the richer actual route deliberately remains unknown.
-    return None
+    served = metadata.get("model")
+    if isinstance(served, str) and served.strip() and resolved is not None:
+        try:
+            return (
+                AdapterRouteIdentity(
+                    gateway_id=resolved.gateway_id,
+                    route_id=served,
+                    provider=resolved.provider,
+                    model_id=served,
+                    protocol=resolved.protocol,
+                ),
+                "response-metadata:served-model",
+            )
+        except GatewayAdapterError:
+            return None, "response-metadata:actual-route-unavailable"
+    return None, "response-metadata:actual-route-unavailable"
+
+
+def _conflicts_from_normalized(
+    normalized: Mapping[str, Any], runtime_freshness: float | None
+) -> tuple[dict[str, Any], ...]:
+    catalog = normalized.get("catalog")
+    runtime = normalized.get("runtime")
+    if not isinstance(catalog, Mapping) or not isinstance(runtime, Mapping):
+        return ()
+    catalog_freshness = _optional_freshness(catalog.get("freshness_seconds"))
+    runtime_freshness_value = _optional_freshness(runtime.get("freshness_seconds"))
+    if runtime_freshness_value is None:
+        runtime_freshness_value = runtime_freshness
+    conflicts: list[dict[str, Any]] = []
+    shared = set(catalog) & set(runtime)
+    shared.discard("freshness_seconds")
+    for field_name in sorted(shared):
+        catalog_value = catalog[field_name]
+        runtime_value = runtime[field_name]
+        if catalog_value != runtime_value:
+            conflicts.append(
+                {
+                    "field": field_name,
+                    "catalog_value": catalog_value,
+                    "runtime_value": runtime_value,
+                    "catalog_freshness_seconds": catalog_freshness,
+                    "runtime_freshness_seconds": runtime_freshness_value,
+                }
+            )
+    return tuple(conflicts)
+
+
+def _optional_freshness(value: Any) -> float | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0:
+        return None
+    return float(value)
 
 
 def _model_for_evidence(candidate: CandidateEvidence) -> Any:

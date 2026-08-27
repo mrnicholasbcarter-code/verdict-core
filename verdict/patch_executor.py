@@ -8,6 +8,13 @@ Containment is structural rather than detected after the fact.
 
 Token counts come from the provider's ``usage`` block.  When a response omits
 it, that is recorded as unknown rather than estimated.
+
+Every call also emits a :class:`RouteObservation` to an optional observer.  This
+is the only place a *use-time* fact about a route enters Verdict (issue #272
+DEF-8): a pre-flight probe shows a route that was reachable, while this shows the
+route that was actually invoked.  The distinction the observation preserves is
+the load-bearing one — a route that refused is evidence about the route, whereas
+a model that answered badly is not.
 """
 
 from __future__ import annotations
@@ -16,7 +23,7 @@ import re
 import subprocess
 import time
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -60,6 +67,51 @@ class PatchExecutorConfig:
 
 
 @dataclass(frozen=True)
+class RouteObservation:
+    """A use-time fact about one route, observed on a real call.
+
+    ``outcome`` is ``ok`` or ``route_failure``.  Only a transport failure or a
+    provider-level refusal is a ``route_failure``; a model that returned an
+    unusable diff answered fine and is *not* recorded as one, because admitting
+    a route and liking its output are different questions.
+
+    ``resolved_model`` is the identity the provider itself reported on the
+    response (Layer-2 R5).  Comparing it against ``model`` is the only check
+    that can catch a gateway silently serving a route other than the one
+    selected, and it works on any OpenAI-compatible endpoint.
+    """
+
+    model: str
+    outcome: str
+    reason: str = ""
+    status_code: int | None = None
+    resolved_model: str | None = None
+
+    @property
+    def failed(self) -> bool:
+        return self.outcome == "route_failure"
+
+    @property
+    def identity_mismatch(self) -> bool:
+        """True when the provider answered as a model other than the one selected."""
+        return self.resolved_model is not None and self.resolved_model != self.model
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "outcome": self.outcome,
+            "reason": self.reason,
+            "status_code": self.status_code,
+            "resolved_model": self.resolved_model,
+            "identity_mismatch": self.identity_mismatch,
+        }
+
+
+RouteObserver = Callable[[RouteObservation], None]
+"""Callback invoked once per executed call with the observed route fact."""
+
+
+@dataclass(frozen=True)
 class TokenUsage:
     """Measured token counts, or ``reported=False`` when the provider omitted them."""
 
@@ -96,6 +148,7 @@ class PatchAttempt:
     changed_files: tuple[str, ...] = ()
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
+    resolved_model: str | None = None
 
     @property
     def applied(self) -> bool:
@@ -110,6 +163,7 @@ class PatchAttempt:
             "changed_files": list(self.changed_files),
             "usage": self.usage.to_dict(),
             "latency_ms": self.latency_ms,
+            "resolved_model": self.resolved_model,
         }
 
 
@@ -123,6 +177,7 @@ class PatchExecutor:
         *,
         transport: ProbeTransport | None = None,
         runner: Any = subprocess.run,
+        observer: RouteObserver | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         if not (self.repo_root / ".git").exists():
@@ -135,9 +190,12 @@ class PatchExecutor:
             max_response_bytes=config.max_response_bytes,
         )
         self._runner = runner
+        self._observer = observer
+        self._last_observation: RouteObservation | None = None
 
     def execute_unit(self, unit: WorkUnit) -> PatchAttempt:
         """Request a patch for ``unit`` and apply it if it stays in bounds."""
+        self._last_observation = None
         started = time.monotonic()
         try:
             content, usage = self._request_patch(unit)
@@ -200,6 +258,7 @@ class PatchExecutor:
         usage: TokenUsage | None = None,
         started: float,
     ) -> PatchAttempt:
+        observation = self._last_observation
         return PatchAttempt(
             unit_id=unit.unit_id,
             model=self.config.model,
@@ -208,7 +267,30 @@ class PatchExecutor:
             changed_files=changed_files,
             usage=usage or TokenUsage(),
             latency_ms=int((time.monotonic() - started) * 1000),
+            resolved_model=None if observation is None else observation.resolved_model,
         )
+
+    def _observe(self, observation: RouteObservation) -> None:
+        """Hand one use-time route fact to the observer, if one is installed.
+
+        Exceptions are deliberately not caught: an observer that cannot record a
+        route failure is a defect the run should surface, not swallow.
+        """
+        self._last_observation = observation
+        if self._observer is not None:
+            self._observer(observation)
+
+    def _route_failure(self, reason: str, *, status_code: int | None = None) -> PatchExecutorError:
+        """Record a use-time route failure and return the error to raise."""
+        self._observe(
+            RouteObservation(
+                model=self.config.model,
+                outcome="route_failure",
+                reason=reason,
+                status_code=status_code,
+            )
+        )
+        return PatchExecutorError(reason)
 
     def _request_patch(self, unit: WorkUnit) -> tuple[str, TokenUsage]:
         """Return the raw model text and its measured usage, or raise on transport failure."""
@@ -224,16 +306,36 @@ class PatchExecutor:
         try:
             response = self._transport(self.config.model, payload, self.config.timeout_seconds)
         except Exception as exc:  # transport failures are an executor outcome, not a crash
-            raise PatchExecutorError(f"transport error: {type(exc).__name__}: {exc}") from exc
+            raise self._route_failure(
+                f"transport error: {type(exc).__name__}: {exc}"
+            ) from exc
 
         if not isinstance(response, Mapping):
-            raise PatchExecutorError("transport returned a non-object response")
+            raise self._route_failure("transport returned a non-object response")
         status = response.get("status_code")
         if isinstance(status, int) and not 200 <= status < 300:
-            raise PatchExecutorError(f"provider returned HTTP {status}")
+            raise self._route_failure(
+                f"provider returned HTTP {status}", status_code=status
+            )
         body = response.get("body")
         if not isinstance(body, Mapping):
-            raise PatchExecutorError("provider response body is not an object")
+            raise self._route_failure(
+                "provider response body is not an object",
+                status_code=status if isinstance(status, int) else None,
+            )
+
+        # The call reached a provider and it answered. Whatever the content turns
+        # out to be, the route itself is good, so this is an ``ok`` observation
+        # even when the diff is later rejected.
+        resolved = body.get("model")
+        self._observe(
+            RouteObservation(
+                model=self.config.model,
+                outcome="ok",
+                status_code=status if isinstance(status, int) else None,
+                resolved_model=resolved if isinstance(resolved, str) else None,
+            )
+        )
 
         usage = parse_usage(body.get("usage"))
         return extract_content(body), usage
@@ -281,6 +383,7 @@ class BoundUnitExecutor:
                 replace(executor.config, model=model, timeout_seconds=timeout_seconds),
                 transport=executor._transport,
                 runner=executor._runner,
+                observer=executor._observer,
             )
         return executor.execute_unit(self.unit)
 
@@ -447,6 +550,8 @@ __all__ = [
     "PatchExecutor",
     "PatchExecutorConfig",
     "PatchExecutorError",
+    "RouteObservation",
+    "RouteObserver",
     "TokenUsage",
     "build_unit_prompt",
     "extract_content",

@@ -29,7 +29,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -52,8 +52,40 @@ from verdict.patch_executor import (
 from verdict.receipt_store import ReceiptStore
 from verdict.work_unit import WorkUnit, normalize_owned_path
 
+# No model name is hardcoded as policy: the default executor route is resolved
+# dynamically from live gateway availability + the eligibility gate. This
+# constant is only the last-resort fallback when no gateway is reachable.
 DEFAULT_EXECUTOR_MODEL = "cc/claude-sonnet-5"
+
+
+def _resolve_default_executor_model() -> str:
+    """Resolve the cheap-executor route from live gateway evidence, fail-open to the fallback."""
+    try:
+        from verdict.subagent_models import select_model_for_role
+
+        model = select_model_for_role("scout", dev_mode=True)
+        if model is not None and model.id:
+            return model.id
+    except Exception:
+        pass
+    return DEFAULT_EXECUTOR_MODEL
+
+
+def _resolve_default_orchestrator_model() -> str:
+    """Resolve the orchestrator route from live gateway evidence, fail-open to the fallback."""
+    try:
+        from verdict.subagent_models import select_model_for_role
+
+        model = select_model_for_role("oracle", dev_mode=True)
+        if model is not None and model.id:
+            return model.id
+    except Exception:
+        pass
+    return DEFAULT_ORCHESTRATOR_MODEL
+
+
 AUTODEV_SCOPE = "autodev"
+_STABLE_CONTEXT_OBSERVED_AT = "1970-01-01T00:00:00Z"
 # Measured token counts, not secrets: without this the receipt store's
 # ``token``/``prompt``/``completion`` key patterns redact the very numbers the
 # expensive/cheap split is supposed to be evidence for.
@@ -87,6 +119,8 @@ def _worker_context_unit(
         trust="caller-provided",
         authority="execution-request",
         sensitivity="standard",
+        observed_at=_STABLE_CONTEXT_OBSERVED_AT,
+        created_at=0.0,
     )
 
 
@@ -152,8 +186,10 @@ def compile_worker_context(
         plan_id="autodev:worker-context",
         candidate_id="autodev-worker",
         token_budget=token_budget,
+        created_at=_STABLE_CONTEXT_OBSERVED_AT,
     )
-    return ContextPackCompiler(default_token_budget=token_budget).compile_units(units, plan)
+    pack = ContextPackCompiler(default_token_budget=token_budget).compile_units(units, plan)
+    return replace(pack, created_at=0.0)
 
 
 def compile_packet_context(
@@ -595,9 +631,19 @@ def run_packet_autodev(
                 if not verified:
                     reason = f"verification exited {checked.returncode}"
             changed_owned = tuple(sorted(set(changed) & set(owned)))
+            requested_identity = str(
+                route.get("requested_identity", getattr(result, "model", "unknown"))
+            )
+            served = getattr(result, "resolved_model", None)
+            if isinstance(served, str) and served.strip():
+                actual_identity = served
+            else:
+                actual_identity = str(
+                    route.get("actual_identity", getattr(result, "model", "unknown"))
+                )
             provisional = PacketAttempt(
-                str(route.get("requested_identity", getattr(result, "model", "unknown"))),
-                str(route.get("actual_identity", getattr(result, "model", "unknown"))),
+                requested_identity,
+                actual_identity,
                 changed_owned,
                 _attempt_digest(attempt_repo, changed_owned),
                 verified,
@@ -829,8 +875,8 @@ def run_autodev(
     objective: str,
     repo_path: str | Path,
     *,
-    orchestrator_model: str = DEFAULT_ORCHESTRATOR_MODEL,
-    executor_model: str = DEFAULT_EXECUTOR_MODEL,
+    orchestrator_model: str | None = None,
+    executor_model: str | None = None,
     base_url: str = DEFAULT_BASE_URL,
     api_key: str | None = None,
     store: ReceiptStore | None = None,
@@ -841,6 +887,9 @@ def run_autodev(
     runner: Any = subprocess.run,
 ) -> AutodevReport:
     """Decompose ``objective``, execute each unit, verify it, and record it."""
+    # Model routes resolve from live gateway availability, never a hardcoded name.
+    executor_model = executor_model or _resolve_default_executor_model()
+    orchestrator_model = orchestrator_model or _resolve_default_orchestrator_model()
     repo = Path(repo_path).resolve()
     if not (repo / ".git").exists():
         raise AutodevError(f"not a git repository: {repo}")

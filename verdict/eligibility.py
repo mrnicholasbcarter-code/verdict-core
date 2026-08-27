@@ -35,8 +35,12 @@ class EligibilityVerdict(str, Enum):
 
 
 # States that admit a candidate into the pre-ranking eligible set.
+# DEGRADED is intentionally omitted here; its admission is controlled by
+# CandidateRequirements.allow_degraded (and allow_unmeasured_evidence) in
+# _availability_state_is_eligible(). This prevents the gate from overriding
+# role-level policy (see subagent_models.py role flags).
 _ADMITTED_STATES = frozenset(
-    {AvailabilityState.ELIGIBLE, AvailabilityState.READY, AvailabilityState.DEGRADED}
+    {AvailabilityState.ELIGIBLE, AvailabilityState.READY}
 )
 
 
@@ -89,15 +93,26 @@ class EligibilityResult:
         }
 
 
+def _eligible_identity(candidate: Any) -> str | None:
+    """Return a model id from an adapter-eligible entry without inventing identity."""
+    if isinstance(candidate, str):
+        return candidate or None
+    model = getattr(candidate, "model", None)
+    model_id = getattr(model, "id", None)
+    if isinstance(model_id, str) and model_id:
+        return model_id
+    item_id = getattr(candidate, "id", None)
+    if isinstance(item_id, str) and item_id:
+        return item_id
+    return None
+
+
 def _state_for(report: AvailabilityReport | None, model_id: str) -> tuple[str, str]:
     """Return (state, source) for a model from its cached report."""
     if report is None:
         return ("unknown", "cache")
     for candidate in report.candidates:
-        if (
-            candidate.model.id == model_id
-            or candidate.model.id.split("/", 1)[-1] == model_id.split("/", 1)[-1]
-        ):
+        if candidate.model.id == model_id:
             return (candidate.state.value, candidate.source)
     # Candidate absent from the report entirely -> treat as unknown (fail-closed
     # for protected work; the router may still admit unverified in dev mode).
@@ -177,6 +192,23 @@ class EligibilityGate:
 
         report = self.availability_source(model_id)
         state, source = _state_for(report, model_id)
+
+        # If the adapter has already deemed this candidate eligible (present in
+        # report.eligible), respect that decision. The adapter evaluates
+        # allow_degraded, allow_unmeasured_evidence, protected, etc., and its
+        # verdict is authoritative per AC-1.5 / spec 272.
+        if report is not None:
+            for candidate in report.eligible:
+                if _eligible_identity(candidate) == model_id:
+                    return EligibilityRecord(
+                        model_id=model_id,
+                        provider=provider,
+                        admitted=True,
+                        verdict=EligibilityVerdict.ELIGIBLE,
+                        state=state,
+                        source=source,
+                        reason="adapter eligibility verdict",
+                    )
 
         if state in _ADMITTED_STATES:
             return EligibilityRecord(

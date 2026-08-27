@@ -204,3 +204,46 @@ def test_explain_per_model_carries_eligibility(monkeypatch: Any) -> None:
     body = resp.json()
     assert body["eligibility"]["model_id"] == "a/1"
     assert body["eligible"] is True
+
+
+def test_degraded_is_not_auto_admitted_unless_adapter_eligible_set_includes_it() -> None:
+    degraded = _candidate("aa/degraded", "degraded")
+    report = AvailabilityReport((degraded,), (), "cache", 60)
+    cache = AvailabilityCache(source=lambda: report, ttl_seconds=60, stale_window_seconds=30)
+    cache.get("aa/degraded")
+    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=False)
+    candidates = [ModelInfo(id="aa/degraded", provider="aa", capability_tier=2)]
+
+    excluded = gate.evaluate(candidates, protected=True, dev_mode=False)
+    assert [model.id for model in excluded.admitted] == []
+    assert excluded.records[0].admitted is False
+
+    admitted_report = AvailabilityReport((degraded,), (degraded,), "cache", 60)
+    admitted_cache = AvailabilityCache(
+        source=lambda: admitted_report, ttl_seconds=60, stale_window_seconds=30
+    )
+    admitted_cache.get("aa/degraded")
+    admitted_gate = EligibilityGate(
+        admitted_cache.get, protected_fail_closed=True, allow_unverified_in_dev=False
+    )
+    included = admitted_gate.evaluate(candidates, protected=True, dev_mode=False)
+    assert [model.id for model in included.admitted] == ["aa/degraded"]
+    assert included.records[0].reason == "adapter eligibility verdict"
+
+
+def test_eligibility_matches_exact_model_id_not_provider_suffix() -> None:
+    sibling = _candidate("alt/model", "eligible")
+    report = AvailabilityReport((sibling,), (sibling,), "cache", 60)
+    cache = AvailabilityCache(source=lambda: report, ttl_seconds=60, stale_window_seconds=30)
+    cache.get("other/model")
+    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=False)
+
+    result = gate.evaluate(
+        [ModelInfo(id="other/model", provider="other", capability_tier=2)],
+        protected=True,
+        dev_mode=False,
+    )
+
+    assert result.admitted == []
+    assert result.records[0].state == "unknown"
+    assert result.records[0].admitted is False

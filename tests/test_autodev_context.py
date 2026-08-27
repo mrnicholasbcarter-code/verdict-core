@@ -87,6 +87,14 @@ def test_worker_context_contains_contract_sections_and_provenance() -> None:
     assert pack.receipt.verify(pack)
 
 
+def test_worker_context_is_byte_identical_across_two_runs_on_the_same_inputs() -> None:
+    first = _compile_context()
+    second = _compile_context()
+    assert first.digest == second.digest
+    assert first.canonical_json() == second.canonical_json()
+    assert first.compiled_prompt == second.compiled_prompt
+
+
 def test_worker_context_omits_optional_symbol_relationship_without_placeholder() -> None:
     """No symbol relationship is invented when deterministic discovery has none."""
     pack = _compile_context(symbol_relationship=None)
@@ -210,6 +218,17 @@ def test_packet_context_is_compiled_from_owned_repository_inputs_and_persisted(
     assert "Gateway routing remains disabled." in pack.compiled_prompt
     assert "uv\nrun\npytest" in pack.compiled_prompt
     assert pack.receipt.verify(pack)
+    again = autodev_run.compile_packet_context(
+        packet,
+        tmp_path,
+        repository_instruction_paths=("AGENTS.md",),
+        governing_doc_paths=("specs/routing.md",),
+        relevant_example_paths=("tests/test_headroom.py",),
+        symbol_relationship="check_headroom -> test_missing_is_unknown",
+        token_budget=1024,
+    )
+    assert again.digest == pack.digest
+    assert again.canonical_json() == pack.canonical_json()
     receipts = store.query_receipts(scope="operational-loop")
     assert len(receipts) == 1
     payload: Mapping[str, Any] = receipts[0].payload

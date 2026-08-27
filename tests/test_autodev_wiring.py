@@ -8,8 +8,19 @@ from typing import Any
 
 import pytest
 
-from verdict.autodev_run import AUTODEV_SCOPE, AutodevError, run_autodev
-from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
+from verdict.autodev_run import (
+    AUTODEV_SCOPE,
+    DEFAULT_EXECUTOR_MODEL,
+    AutodevError,
+    run_autodev,
+)
+from verdict.decomposer import (
+    DEFAULT_ORCHESTRATOR_MODEL,
+    Decomposer,
+    DecompositionConfig,
+    DecompositionError,
+)
+from verdict.models import ModelInfo
 from verdict.patch_executor import PatchExecutor, PatchExecutorConfig
 from verdict.receipt_store import ReceiptStore
 
@@ -285,3 +296,40 @@ def test_missing_provider_usage_is_reported_as_unknown(repo: Path) -> None:
 
     assert report.unreported_units == ("fix-a",)
     assert "not estimated" in report.summary()
+
+
+def test_default_routes_resolve_from_live_selector_not_hardcoded_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from verdict.autodev_run import (
+        _resolve_default_executor_model,
+        _resolve_default_orchestrator_model,
+    )
+
+    def fake_select(role: str, **kwargs: Any) -> ModelInfo:
+        del kwargs
+        model_id = "alt/live-executor" if role == "scout" else "alt/live-orchestrator"
+        return ModelInfo(id=model_id, provider="alt")
+
+    monkeypatch.setattr("verdict.subagent_models.select_model_for_role", fake_select)
+    assert _resolve_default_executor_model() == "alt/live-executor"
+    assert _resolve_default_orchestrator_model() == "alt/live-orchestrator"
+    assert _resolve_default_executor_model() != DEFAULT_EXECUTOR_MODEL
+    assert _resolve_default_orchestrator_model() != DEFAULT_ORCHESTRATOR_MODEL
+
+
+def test_default_routes_fall_back_when_live_selector_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from verdict.autodev_run import (
+        _resolve_default_executor_model,
+        _resolve_default_orchestrator_model,
+    )
+
+    def boom(role: str, **kwargs: Any) -> ModelInfo:
+        del role, kwargs
+        raise RuntimeError("gateway unavailable")
+
+    monkeypatch.setattr("verdict.subagent_models.select_model_for_role", boom)
+    assert _resolve_default_executor_model() == DEFAULT_EXECUTOR_MODEL
+    assert _resolve_default_orchestrator_model() == DEFAULT_ORCHESTRATOR_MODEL

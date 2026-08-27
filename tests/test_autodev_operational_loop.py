@@ -202,6 +202,46 @@ def test_validated_packet_checkpoints_before_inference_and_attributes_a_real_pat
     assert (repo / "owned.txt").read_text(encoding="utf-8") == "after\n"
 
 
+def test_use_time_served_identity_is_recorded_distinct_from_requested_alias(repo: Path) -> None:
+    packet = _packet(repo)
+
+    class _UseTimeExecutor(_WritingExecutor):
+        def execute_packet_unit(self, **kwargs: Any) -> PatchAttempt:
+            attempt = super().execute_packet_unit(**kwargs)
+            return PatchAttempt(
+                unit_id=attempt.unit_id,
+                model=attempt.model,
+                outcome=attempt.outcome,
+                reason=attempt.reason,
+                changed_files=attempt.changed_files,
+                resolved_model="provider/served-v2",
+            )
+
+    class _UseTimeFactory(_Factory):
+        def __call__(
+            self, *, attempt_repo: Path, route: Mapping[str, Any], packet: ExecutionPacket
+        ) -> _UseTimeExecutor:
+            del route, packet
+            writer = _UseTimeExecutor(attempt_repo, **next(self.writers))
+            self.executors.append(writer)
+            self.attempt_roots.append(attempt_repo)
+            return writer
+
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap-alias", "preflight/guess"),
+        executor_factory=_UseTimeFactory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+
+    assert report.terminal_state == "completed"
+    assert report.attempts[0].requested_identity == "free/cheap-alias"
+    assert report.attempts[0].actual_identity == "provider/served-v2"
+    assert report.attempts[0].actual_identity != report.attempts[0].requested_identity
+
+
 def test_out_of_bounds_artifact_is_not_replayed_and_ends_in_truthful_failure(repo: Path) -> None:
     packet = _packet(repo)
     factory = _Factory([{"path": "escape.txt", "content": "leaked\n"}])

@@ -11,6 +11,7 @@ from verdict.patch_executor import (
     PatchExecutor,
     PatchExecutorConfig,
     PatchExecutorError,
+    RouteObservation,
     build_unit_prompt,
     extract_diff,
     parse_patch_paths,
@@ -50,10 +51,18 @@ def _unit(owned: tuple[str, ...] = ("owned.py",)) -> WorkUnit:
     )
 
 
-def _response(content: str, *, usage: dict[str, int] | None = None, status: int = 200) -> Any:
+def _response(
+    content: str,
+    *,
+    usage: dict[str, int] | None = None,
+    status: int = 200,
+    model: str | None = None,
+) -> Any:
     body: dict[str, Any] = {"choices": [{"message": {"content": content}}]}
     if usage is not None:
         body["usage"] = usage
+    if model is not None:
+        body["model"] = model
     return {"status_code": status, "body": body}
 
 
@@ -247,6 +256,61 @@ def test_api_key_is_never_placed_in_the_prompt(repo: Path) -> None:
 
 def test_fenced_diff_is_unwrapped() -> None:
     assert extract_diff(f"```diff\n{IN_BOUNDS_DIFF}```").startswith("diff --git")
+
+
+def test_observer_records_requested_alias_distinct_from_served_identity(repo: Path) -> None:
+    runner = RecordingRunner()
+    seen: list[RouteObservation] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return _response(IN_BOUNDS_DIFF, model="provider/served-v2")
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/alias"),
+        transport=transport,
+        runner=runner,
+        observer=seen.append,
+    )
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied
+    assert attempt.model == "cheap/alias"
+    assert attempt.resolved_model == "provider/served-v2"
+    assert len(seen) == 1
+    assert seen[0].model == "cheap/alias"
+    assert seen[0].resolved_model == "provider/served-v2"
+    assert seen[0].outcome == "ok"
+    assert seen[0].identity_mismatch is True
+    payload = seen[0].to_dict()
+    assert payload["model"] != payload["resolved_model"]
+    assert payload["identity_mismatch"] is True
+
+
+def test_observer_records_transport_failure_without_inventing_served_identity(repo: Path) -> None:
+    runner = RecordingRunner()
+    seen: list[RouteObservation] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        raise TimeoutError("upstream timed out")
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/alias"),
+        transport=transport,
+        runner=runner,
+        observer=seen.append,
+    )
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "error"
+    assert len(seen) == 1
+    assert seen[0].failed is True
+    assert seen[0].resolved_model is None
+    assert seen[0].identity_mismatch is False
+    assert "TimeoutError" in seen[0].reason
 
 
 def test_parse_patch_paths_ignores_dev_null_and_strips_prefixes() -> None:
