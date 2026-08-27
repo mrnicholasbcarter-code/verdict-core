@@ -371,3 +371,164 @@ Operator (not an agent during T042/T043) later set
   adapter treat omitted quota as UNKNOWN.
 - T035–T038/T040 do not repeat a second live repository-mutating execute in this
   closeout; they bind T042/T043 live artifacts plus current-source regressions.
+
+## Live execute 2026-08-27 — current-source packet (not 5695afec)
+
+Implementation parent: `012ea4d` (`fix(272): send X-Session-Id on OpenAI chat completions`)
+on `feat/verdict-operational-loop`. This demonstration does **not** reuse the
+T042 packet bound to `5695afec`. Adaptive-state snapshot deletions were restored
+and were not committed.
+
+Proof classification for this section: **LIVE-PROVEN** unless a row says
+otherwise.
+
+### CHK001/CHK002 — source binding and dirty-digest recompute
+
+Recorded immediately before packet create and live execute, working tree clean
+except gitignored packet/receipt files:
+
+| Field | Value | Proof |
+|---|---|---|
+| Commit | `012ea4d6ff8525a5889d858aae5b8bcbb4c4aaf4` | LIVE-PROVEN |
+| Branch | `feat/verdict-operational-loop` | LIVE-PROVEN |
+| `capture_worktree_digest` pass 1 | `sha256:ec81c6c13ee91d073a43bb482fd6af9660472361228ca753bcc6057fabc7c0ce` | LIVE-PROVEN |
+| `capture_worktree_digest` pass 2 | `sha256:ec81c6c13ee91d073a43bb482fd6af9660472361228ca753bcc6057fabc7c0ce` | LIVE-PROVEN (identical recompute) |
+| Packet `source.dirty_digest` | same digest | LIVE-PROVEN |
+| Porcelain-v1 `-z` SHA-256 (empty status) | `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` twice | LIVE-PROVEN |
+| `uv.lock` | `sha256:218ea7f760ffb24d7892a2673051fc002ded9d1b0d8ea4fcf5aef23ca99027a1` | LIVE-PROVEN |
+
+### Gateway observation (settings not mutated)
+
+| Field | Observation | Proof |
+|---|---|---|
+| OmniRoute version | `3.8.49` via MCP `omniroute_get_health` | LIVE-PROVEN |
+| `GET /api/settings` `taskRouting.enabled` | `false` | LIVE-PROVEN |
+| `taskRouting.detectionEnabled` | `false` | LIVE-PROVEN |
+| Settings writes | none | LIVE-PROVEN |
+| `omniroute quota` | `No quota information available.` | LIVE-PROVEN UNKNOWN |
+| HTTP `GET /v1/models` | timed out, 0 bytes | LIVE-PROVEN (catalog flaky) |
+| MCP catalog | `gemini/gemini-2.5-flash` listed; chat POST later 404 | LIVE-PROVEN conflict retained |
+| Quota/headroom in Verdict evidence | omitted / `None` | LIVE-PROVEN UNKNOWN |
+
+Re-read after execute: `enabled=false`, `detectionEnabled=false`. Unchanged.
+
+### X-Session-Id
+
+`PatchExecutor` default `session_id` is `verdict-operational-loop`.
+`openai_probe_transport` sends `X-Session-Id` on `POST .../chat/completions`.
+SOURCE-ONLY for the unit tests; LIVE-PROVEN that live OpenAI-compatible calls
+from this session used that header on probe/completions (`X-Session-Id:
+verdict-operational-loop`).
+
+### CHK021 — second fallback refused (LIVE-PROVEN)
+
+Packet `.verdict/packets/headroom-second-fallback-r1.json`
+(`headroom-second-fallback-r1`, integrity
+`sha256:62b9618038363ee4c5861ddbe01e099b3c5ad88e3a82bbebb05e1c97173d123e`),
+bound to `012ea4d` / dirty digest above.
+
+First admitted route: concrete non-primary `gemini/gemini-2.5-flash` at
+`http://127.0.0.1:9/v1` (connection refused). `refresh_fallback` designated
+`claude/claude-haiku-4-5-20251001` with `primary=True` and the same dead
+base URL. The loop admitted **one** fallback. A second fallback was not
+appended even though `refresh_fallback` remained willing (`refresh_calls`
+length 1). Terminal `truthful_failure`. Owned files unchanged.
+
+| Attempt | Requested | Class | Reason |
+|---|---|---|---|
+| 1 | `gemini/gemini-2.5-flash` (`primary=false`) | `worker_failed` | `URLError` connection refused |
+| 2 | `claude/claude-haiku-4-5-20251001` (`primary=true`) | `worker_failed` | `URLError` connection refused |
+| 3 | refused | terminal bound `index < 2` | no third route |
+
+Receipts: before_inference `rcpt-5444431550974da5a0a313d6895bba74`; terminal
+`rcpt-a2e9e2f06527465e87b4563eabc89ab2`.
+
+### CHK026/CHK027/token_budget/authority/usage — post-`1a78b51` live rows
+
+Inspected `.verdict/receipts.db` scope `operational-loop` after execute.
+
+Packet `headroom-unknown-r9` (gemini 404 then haiku patch-apply failure) already
+kept:
+
+- context `token_budget=4096`, `used_tokens=1462`, `compiled_prompt=[REDACTED]`
+- context unit `autodev:authority` included; provenance `authority=compiled`
+- attempt usage integers not redacted (haiku `prompt_tokens=2877`,
+  `completion_tokens=1764`, `total_tokens=4641`)
+- provenance `authority=observed` on execution rows
+
+Packet `headroom-unknown-r10` (completed) kept the same fields plus usage on
+both attempts (see table below). Nested `context_receipt.decisions[].input_tokens`
+remain `[REDACTED]` (not on `_PACKET_RECEIPT_ALLOWLIST`); that is named, not
+omitted.
+
+### Completed work-unit execute (LIVE-PROVEN)
+
+One command:
+
+```text
+uv run verdict autodev packet execute --packet .verdict/packets/headroom-unknown-r10.json --repo . --allow-live --prefer-non-primary --primary-fallback claude/claude-haiku-4-5-20251001 --json
+```
+
+Packet `.verdict/packets/headroom-unknown-r10.json` (`headroom-unknown-r10`,
+integrity `sha256:9cb80296c0b74547deecc9f2411665eb6d194ce21b0ab60977982be25291e564`).
+Evidence digest `sha256:8b75c55151434b2da31a94decadbb9c466ee11ab9160eab62f1b13124d46234a`.
+`--primary-fallback` stamped `primary=True` for
+`claude/claude-haiku-4-5-20251001`. First admitted route was concrete
+non-primary `kimi-coding/kimi-for-coding` (`primary=false`). No `auto/*`.
+
+| Field | Value |
+|---|---|
+| Terminal | `completed`, proof_level `live-proven` |
+| Fallbacks used | 1 of max 1 |
+| Context | digest `sha256:db5f9a88b248336e6deaae4e23cc1298e735033626321e020dafd3e24668ae19`; **1462 / 4096** tokens |
+| Attempt 1 | requested `kimi-coding/kimi-for-coding` → actual `kimi-for-coding`; `identity` fields distinct; `worker_failed` (`git apply --check`); usage 2358/491/2849; isolated worktree; zero leaked files |
+| Attempt 2 | requested `claude/claude-haiku-4-5-20251001` → actual `claude-haiku-4-5-20251001`; `primary=true`; verified=true; usage 2877/4294/7171 |
+| Changed paths | `verdict/headroom.py`, `tests/test_headroom.py` only |
+| Artifact receipt digest | `sha256:d5bdcddd1391ff1bb8015ef16404ef5c76e79c48f59fcc4fcb847ed236973f38` |
+| Checkpoints | `before_inference=rcpt-0a4825ac881f4e91a78889382b8c4cf6`; terminal `rcpt-1f07d2b0cae74dcb8281cc0d9c33b6b1` |
+| Verification | trusted argv `.venv/bin/pytest -q tests/test_headroom.py` in attempt tree: 5 passed |
+| Quota/headroom | UNKNOWN |
+
+Patch substance: `headroom_is_unknown(result)` is True iff `result is None`;
+`__all__` exports it beside `check_headroom`; tests cover None / `(True, 0.0)` /
+`(False, 100.0)`. Post-replay operator stripped one W293 docstring blank-line
+space so ruff stays green; that is not a second worker attempt.
+
+Prior r9 (same source binding): first route `gemini/gemini-2.5-flash` HTTP 404
+while MCP catalog listed it as available — catalog vs runtime conflict preserved
+in this record, not merged. Haiku then produced an un-applicable patch; terminal
+`truthful_failure`.
+
+### CHK024 — resume idempotency (LIVE-PROVEN)
+
+Immediate replay of the same CLI command on the completed r10 packet:
+
+```text
+resumed=true, terminal_state=completed, proof_level=live-proven
+fallback_count=0
+checkpoints.before_inference=rcpt-0a4825ac881f4e91a78889382b8c4cf6
+receipt_ids = the same five ids, no new rows
+```
+
+Receipt count stayed 5. No second `before_inference`, no duplicate terminal
+row, no additional attempt, no extra fallback.
+
+### Focused gates after the live patch
+
+```text
+uv run pytest -q tests/test_headroom.py tests/test_patch_executor.py tests/test_probes.py tests/test_autodev_operational_loop.py
+# 73 passed
+uv run ruff check verdict/headroom.py tests/test_headroom.py verdict/probes.py verdict/patch_executor.py
+# All checks passed
+```
+
+### Limitations (this window)
+
+- HTTP catalog GET timed out; MCP catalog and chat POST disagreed for
+  `gemini/gemini-2.5-flash` (404).
+- First successful worker was the designated primary-subscription fallback after
+  the non-primary kimi patch failed `git apply --check`.
+- Context-pack `used_tokens` (1462) stayed under `token_budget` (4096); provider
+  `usage.total_tokens` on the fallback call (7171) is a different meter and is
+  recorded, not treated as the pack budget.
+- Nested context-decision `input_tokens`/`output_tokens` remain redacted.

@@ -1,6 +1,6 @@
 """Provider quota and headroom checks."""
 
-__all__ = ['check_headroom']
+__all__ = ['check_headroom', 'headroom_is_unknown']
 
 from verdict.models import ProviderConfig
 
@@ -17,3 +17,12 @@ def check_headroom(model_id: str, provider_name: str, config: ProviderConfig) ->
         return None
 
     return None
+
+
+def headroom_is_unknown(result: tuple[bool, float] | None) -> bool:
+    """Check if headroom result is unknown.
+
+    Returns True only when result is None (unknown capacity).
+    Returns False for any valid tuple (whether available or not).
+    """
+    return result is None
