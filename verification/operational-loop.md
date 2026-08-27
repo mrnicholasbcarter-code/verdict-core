@@ -807,3 +807,28 @@ HEAD `98f35f39ffbbe067897b33642b9c1b8d3ffe2851` plus dirty
 Proof class: **FIXTURE-ONLY**. No live multi-vs-single execute; US5 exit signal (verified live benefit) remains **MISSING**.
 
 T077: `uv run ruff check` on those two files passed; `uv run mypy --strict verdict/autodev_run.py` passed; focused pytest 55 passed (topology compare + operational routing/context/headroom/eligibility/harvest).
+
+## T076 — CHK116/CHK117 recheck against the final phase-6/7 diff
+
+HEAD `2e6ef7761b887cb6c16c799095246f88cfd15b25`, worktree clean. Diff range
+`98f35f39ffbbe067897b33642b9c1b8d3ffe2851..HEAD` (17 files, +1426/-35).
+
+**CHK116 (no credential/endpoint in a committed artifact).** `git diff` searched for
+`api_key\s*=`, `secret\s*=`, `password\s*=`, `Bearer <token>`, and `sk-<token>` literals,
+excluding declared env-var names (`OMNI_API_KEY`, `OMNIROUTE_API_KEY`, `OPENAI_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`) and dataclass field declarations (`api_key: str`). **Zero matches.**
+Searched for hardcoded external hostnames (`https?://…`), excluding `127.0.0.1`/`localhost`
+and doc-scheme URNs. **Zero matches.** Result: **SATISFIED** for this diff range.
+
+**CHK117 (no destructive/production side effect in the live demonstration).** The phase-6/7
+live proofs in this file are read-only `GET /v1/models` calls against OmniRoute `:20128` and
+9router `:20129` — no state mutation. One out-of-band, non-demonstration action occurred this
+session: a `POST /api/combos` created a routing combo (`combo/free-coding`) for interactive
+subagent tooling, unrelated to the Verdict feature's execution path and not part of any cited
+proof above. It created a new named combo; it did not delete, disable, or alter an existing
+provider, key, or setting, and `taskRouting.enabled=false`/`detectionEnabled=false` were
+unaffected. Disclosed here per the evidence-disclosure principle rather than omitted. Result:
+**SATISFIED** for the feature's own live demonstration; the tooling action is named, not hidden.
+
+Independent reviewer: this recheck is implementer-authored evidence, not a self-tick of
+CHK116/CHK117 — those checkbox markers in `checklists/security.md` remain reviewer-owned.
