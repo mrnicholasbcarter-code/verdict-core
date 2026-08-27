@@ -262,6 +262,40 @@ def test_out_of_bounds_artifact_is_not_replayed_and_ends_in_truthful_failure(rep
     assert (repo / "escape.txt").read_text(encoding="utf-8") == "private\n"
 
 
+def test_packet_receipts_keep_budget_usage_and_authority_without_prompts(repo: Path) -> None:
+    packet = _packet(repo)
+    store = ReceiptStore(":memory:")
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+
+    context = [row for row in store.query_receipts(scope="operational-loop") if row.receipt_type == "context"]
+    assert context, "expected a compiled context receipt"
+    payload = context[0].payload
+    assert payload["token_budget"] == 4096 or isinstance(payload["token_budget"], int)
+    assert isinstance(payload["used_tokens"], int)
+    assert payload["compiled_prompt"] == "[REDACTED]"
+    assert context[0].provenance.get("authority") == "compiled"
+
+    attempts = [
+        row
+        for row in store.query_receipts(scope="operational-loop")
+        if row.receipt_type == "execution" and "usage" in row.payload
+    ]
+    assert attempts
+    usage = attempts[0].payload["usage"]
+    assert usage["prompt_tokens"] != "[REDACTED]"
+    assert usage["completion_tokens"] != "[REDACTED]"
+    assert usage["total_tokens"] != "[REDACTED]"
+    assert attempts[0].provenance.get("authority") == "observed"
+
+
 def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_replayed(repo: Path) -> None:
     packet = _packet(repo)
     factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
@@ -271,7 +305,7 @@ def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_re
         packet,
         repo,
         admitted_route=_route("free/cheap", "gateway/free-v1"),
-        fallback_route=_route("cc/claude-sonnet-5", "anthropic/sonnet-served"),
+        fallback_route=_route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True),
         executor_factory=factory,
         store=ReceiptStore(":memory:"),
         verification_runner=verifier,
@@ -297,7 +331,7 @@ def test_second_fallback_is_denied_after_one_clean_failed_fallback(repo: Path) -
         packet,
         repo,
         admitted_route=_route("free/cheap", "gateway/free-v1"),
-        fallback_route=_route("cc/claude-sonnet-5", "anthropic/sonnet-served"),
+        fallback_route=_route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True),
         executor_factory=factory,
         store=ReceiptStore(":memory:"),
         verification_runner=_Verifier("after\n"),
@@ -340,7 +374,7 @@ def test_fallback_requires_a_classified_clean_failure(repo: Path) -> None:
         packet,
         repo,
         admitted_route=_route("free/cheap", "gateway/free-v1"),
-        fallback_route=_route("cc/claude-sonnet-5", "anthropic/sonnet-served"),
+        fallback_route=_route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True),
         executor_factory=factory,
         store=ReceiptStore(":memory:"),
         verification_runner=_Verifier("after\n"),
@@ -539,6 +573,18 @@ def test_handoff_requires_fresh_source_linked_capability_evidence(repo: Path) ->
         "admitted": True,
     }
     assert _route_is_admitted(evidence_digest_absent) is False
+
+
+def test_fallback_admission_uses_primary_role_not_brand_prefix() -> None:
+    primary = _route(
+        "openrouter/stealth/ox-alpha",
+        "openrouter/stealth/ox-alpha",
+        primary=True,
+    )
+    branded_non_primary = _route("cc/claude-sonnet-5", "anthropic/sonnet-served")
+    assert _route_is_admitted(primary, fallback=True) is True
+    assert _route_is_admitted(branded_non_primary, fallback=True) is False
+    assert _route_is_admitted(branded_non_primary, fallback=False) is True
 
 
 def test_incumbent_worker_without_required_capability_hands_off_with_preserved_state(

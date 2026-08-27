@@ -123,6 +123,24 @@ def _allowed(path: str, key: str, allowlist: set[str]) -> bool:
     return path in allowlist or key in allowlist
 
 
+def _key_matches_parts(name: str, parts: tuple[str, ...]) -> bool:
+    """Match sensitive parts on whole key segments, not arbitrary substrings.
+
+    ``auth`` matches ``auth`` and ``api_auth``, not ``authority``.
+    ``token`` matches ``token``, ``token_budget``, and ``tokens``.
+    """
+    lower = name.lower().replace("-", "_")
+    segments = [segment for segment in lower.split("_") if segment]
+    for part in parts:
+        if lower == part:
+            return True
+        if part in segments:
+            return True
+        if any(segment == f"{part}s" for segment in segments):
+            return True
+    return False
+
+
 def _redact_value(value: Any, *, path: str, allowlist: set[str]) -> Any:
     if isinstance(value, dict):
         result: dict[str, Any] = {}
@@ -131,9 +149,8 @@ def _redact_value(value: Any, *, path: str, allowlist: set[str]) -> Any:
                 raise TypeError("receipt payload object keys must be strings")
             name = str(key)
             child_path = f"{path}.{name}" if path else name
-            lower = name.lower().replace("-", "_")
-            protected = any(part in lower for part in _SENSITIVE_KEY_PARTS)
-            raw = any(part in lower for part in _RAW_KEY_PARTS)
+            protected = _key_matches_parts(name, _SENSITIVE_KEY_PARTS)
+            raw = _key_matches_parts(name, _RAW_KEY_PARTS)
             if (protected or raw) and not _allowed(child_path, name, allowlist):
                 result[name] = _REDACTED
             else:

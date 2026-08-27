@@ -90,6 +90,11 @@ _STABLE_CONTEXT_OBSERVED_AT = "1970-01-01T00:00:00Z"
 # ``token``/``prompt``/``completion`` key patterns redact the very numbers the
 # expensive/cheap split is supposed to be evidence for.
 _USAGE_ALLOWLIST = ("usage.prompt_tokens", "usage.completion_tokens", "usage.total_tokens")
+_PACKET_RECEIPT_ALLOWLIST = (
+    *_USAGE_ALLOWLIST,
+    "token_budget",
+    "used_tokens",
+)
 
 
 def _context_text(value: Any) -> str:
@@ -258,6 +263,7 @@ def compile_packet_context(
             },
             provenance={"source": "verdict.autodev_run", "authority": "compiled"},
             idempotency_key=f"packet-context:{packet.packet_id}:{pack.digest}",
+            allowlist=_PACKET_RECEIPT_ALLOWLIST,
         )
     return pack
 
@@ -295,6 +301,7 @@ def _packet_event(store: ReceiptStore, payload: dict[str, Any], *, key: str | No
         payload,
         provenance={"source": "verdict.autodev_run", "authority": "observed"},
         idempotency_key=key,
+        allowlist=_PACKET_RECEIPT_ALLOWLIST,
     )
     return record.receipt_id
 
@@ -382,7 +389,11 @@ def _route_is_admitted(route: Mapping[str, Any] | None, *, fallback: bool = Fals
     resolved = str(route.get("actual_identity", requested))
     if any(value.startswith("auto/") for value in (requested, resolved)):
         return False
-    return not fallback or requested.startswith(("cc/", "cx/"))
+    # Fallback must occupy the primary-subscription *role* from evidence.
+    # Brand prefixes are observations, never admission policy (AC-P.1).
+    if fallback:
+        return route.get("primary") is True
+    return True
 
 
 def _default_failure_class(attempt: PacketAttempt) -> str | None:
