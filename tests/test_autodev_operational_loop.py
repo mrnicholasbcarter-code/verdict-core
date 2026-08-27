@@ -1498,3 +1498,73 @@ def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
     captured = capsys.readouterr()
     assert probed == ["slow/free:free", "fast/free:free"]
     assert "fast/free:free" in captured.out
+
+
+def test_compare_execution_topologies_uses_trusted_labels_and_allows_no_benefit() -> None:
+    from verdict.autodev_run import compare_execution_topologies
+
+    single = [
+        {
+            "topology": "single",
+            "worker_self_report": {"outcome": "applied", "role": "advisory"},
+            "trusted_verification": {"decided": True, "role": "deciding"},
+            "usage": {"total_tokens": 10},
+        }
+    ]
+    multi = [
+        {
+            "topology": "multi",
+            "worker_self_report": {"outcome": "applied", "role": "advisory"},
+            "trusted_verification": {"decided": True, "role": "deciding"},
+            "usage": {"total_tokens": 12},
+        },
+        {
+            "topology": "multi",
+            "worker_self_report": {"outcome": "applied", "role": "advisory"},
+            "trusted_verification": {"decided": True, "role": "deciding"},
+            "usage": {"total_tokens": 8},
+        },
+    ]
+    report = compare_execution_topologies(single, multi)
+    assert report["labeled_from"] == "trusted_verification"
+    assert report["single_success"] == 1
+    assert report["multi_success"] == 2
+    assert report["single_tokens"] == 10
+    assert report["multi_tokens"] == 20
+    assert report["benefit"] is False
+
+    ignored = compare_execution_topologies(
+        single,
+        [
+            {
+                "topology": "multi",
+                "worker_self_report": {"outcome": "applied", "role": "advisory"},
+                "trusted_verification": {"decided": True, "role": "advisory"},
+                "usage": {"total_tokens": 1},
+            }
+        ],
+    )
+    assert ignored["multi_success"] == 0
+    assert ignored["benefit"] is False
+
+    cheaper_better = compare_execution_topologies(
+        [
+            {
+                "trusted_verification": {"decided": True, "role": "deciding"},
+                "usage": {"total_tokens": 20},
+            }
+        ],
+        [
+            {
+                "trusted_verification": {"decided": True, "role": "deciding"},
+                "usage": {"total_tokens": 4},
+            },
+            {
+                "trusted_verification": {"decided": True, "role": "deciding"},
+                "usage": {"total_tokens": 6},
+            },
+        ],
+    )
+    assert cheaper_better["benefit"] is True
+    assert cheaper_better["multi_success"] == 2
+    assert cheaper_better["multi_tokens"] == 10

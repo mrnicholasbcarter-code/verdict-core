@@ -750,3 +750,15 @@ At that SHA: `uv run ruff check` on touched modules passed; `uv run mypy --stric
 T072 CLI `--canary` pass-through and inactive-canary baseline restore is commit `a68c6de80d560190c5624d8a18271046def99536`. At that SHA: `uv run ruff check` passed; `uv run mypy --strict verdict/autodev_run.py` passed; `uv run pytest -q` **1590 passed**.
 
 T073 truthful `improvement` (chosen trusted wins vs baseline) is commit `44e6032`. Independent US4-C/D execute-path review: SATISFIED (`.sdd/us4-cd-execute-canary-review.md`).
+
+## US5 T075–T077 — topology compare (FIXTURE-ONLY)
+
+HEAD `98f35f39ffbbe067897b33642b9c1b8d3ffe2851` plus dirty
+`sha256:e8f1c0671d31d4e82a219ac789d7bae923299fa1dd695ebad3b3f9b61a0f7f67`
+(`verdict/autodev_run.py`, `tests/test_autodev_operational_loop.py`).
+
+`compare_execution_topologies(single, multi)` labels only from `trusted_verification` with `role != advisory` and `decided is True`. Worker self-report cannot produce `multi_success`. `benefit` is true only when `multi_success > single_success` and `multi_tokens <= single_tokens`. Same-success or higher multi tokens is truthful no-benefit.
+
+Proof class: **FIXTURE-ONLY**. No live multi-vs-single execute; US5 exit signal (verified live benefit) remains **MISSING**.
+
+T077: `uv run ruff check` on those two files passed; `uv run mypy --strict verdict/autodev_run.py` passed; focused pytest 55 passed (topology compare + operational routing/context/headroom/eligibility/harvest).

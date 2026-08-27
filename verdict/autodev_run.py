@@ -427,6 +427,40 @@ def shadow_learning_report(episodes: Sequence[Mapping[str, Any]]) -> dict[str, A
     }
 
 
+def compare_execution_topologies(
+    single: Sequence[Mapping[str, Any]], multi: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Trusted-label compare. Benefit only if multi wins more and does not cost more tokens."""
+
+    def _tally(rows: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
+        success = 0
+        tokens = 0
+        for row in rows:
+            trusted = row.get("trusted_verification")
+            if (
+                isinstance(trusted, Mapping)
+                and trusted.get("role") != "advisory"
+                and trusted.get("decided") is True
+            ):
+                success += 1
+            usage = row.get("usage")
+            if isinstance(usage, Mapping):
+                with suppress(TypeError, ValueError):
+                    tokens += int(usage.get("total_tokens") or 0)
+        return success, tokens
+
+    single_success, single_tokens = _tally(single)
+    multi_success, multi_tokens = _tally(multi)
+    return {
+        "single_success": single_success,
+        "multi_success": multi_success,
+        "single_tokens": single_tokens,
+        "multi_tokens": multi_tokens,
+        "benefit": multi_success > single_success and multi_tokens <= single_tokens,
+        "labeled_from": "trusted_verification",
+    }
+
+
 def apply_shadow_canary(admitted: Sequence[str], report: Mapping[str, Any]) -> dict[str, Any]:
     """Pick the top advisory identity that is already admitted. Does not change the gate."""
     baseline = admitted[0] if admitted else ""
@@ -1567,6 +1601,7 @@ __all__ = [
     "UnitOutcome",
     "apply_shadow_canary",
     "collect_ruff_evidence",
+    "compare_execution_topologies",
     "compile_packet_context",
     "compile_worker_context",
     "context_ablation_payload",
