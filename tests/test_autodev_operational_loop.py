@@ -1676,3 +1676,35 @@ def test_frontier_review_cannot_promote_a_failed_verification(repo: Path) -> Non
         frontier_review=lambda attempt: None,
     )
     assert report.terminal_state != "completed"
+
+
+def test_net_savings_accounting_can_be_negative(repo: Path) -> None:
+    """FR-033: savings must be net of frontier overhead, or the claim is fiction.
+
+    A run whose frontier orchestration/validation cost more tokens than the free
+    worker used shows a negative net, not a green number that hides the loss.
+    """
+    from verdict.autodev_run import net_savings_report
+
+    report = net_savings_report(
+        attempts=[
+            {"primary": False, "usage": {"prompt_tokens": 40, "completion_tokens": 10}},
+            {"primary": True, "usage": {"prompt_tokens": 100, "completion_tokens": 50}},
+        ],
+        frontier_tokens=500,
+    )
+    assert report["non_primary_tokens"] == 50
+    assert report["primary_tokens"] == 150
+    assert report["frontier_tokens"] == 500
+    assert report["net_savings_tokens"] == -450
+    assert report["net_savings_tokens"] < 0
+
+
+def test_net_savings_is_positive_when_delegation_dominates() -> None:
+    from verdict.autodev_run import net_savings_report
+
+    report = net_savings_report(
+        attempts=[{"primary": False, "usage": {"prompt_tokens": 2000, "completion_tokens": 500}}],
+        frontier_tokens=100,
+    )
+    assert report["net_savings_tokens"] == 2400

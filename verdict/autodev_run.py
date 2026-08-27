@@ -550,6 +550,31 @@ def shadow_learning_report(episodes: Sequence[Mapping[str, Any]]) -> dict[str, A
     }
 
 
+def net_savings_report(
+    attempts: Sequence[Mapping[str, Any]], *, frontier_tokens: int
+) -> dict[str, Any]:
+    """Net extension of paid capacity: free tokens used minus frontier overhead (FR-033).
+
+    Counting only what ran non-primary and ignoring what the frontier spent
+    orchestrating and validating it would let a net loss report as a saving.
+    """
+
+    def _tokens(row: Mapping[str, Any]) -> int:
+        usage = row.get("usage")
+        if not isinstance(usage, Mapping):
+            return 0
+        return int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
+
+    non_primary = sum(_tokens(a) for a in attempts if not a.get("primary"))
+    primary = sum(_tokens(a) for a in attempts if a.get("primary"))
+    return {
+        "non_primary_tokens": non_primary,
+        "primary_tokens": primary,
+        "frontier_tokens": frontier_tokens,
+        "net_savings_tokens": non_primary - frontier_tokens,
+    }
+
+
 def compare_execution_topologies(
     single: Sequence[Mapping[str, Any]], multi: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
