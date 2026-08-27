@@ -751,6 +751,51 @@ T072 CLI `--canary` pass-through and inactive-canary baseline restore is commit 
 
 T073 truthful `improvement` (chosen trusted wins vs baseline) is commit `44e6032`. Independent US4-C/D execute-path review: SATISFIED (`.sdd/us4-cd-execute-canary-review.md`).
 
+## Phase 6 P0/P1/P4/P9 — observed free-ness, context disclosure, affordability, negotiated facets
+
+Commits `5e3454c`, `3f31746`, `ef3a895`, `f541322` on `feat/verdict-operational-loop`.
+
+**Live catalog harvest (LIVE-PROVEN).** OmniRoute `127.0.0.1:20128`, `GET /v1/models`, read-only;
+task-routing/detection untouched.
+
+| Measure | Before | After |
+|---|---|---|
+| Catalog rows | 5451 | 5451 |
+| KEEP (free/concrete/compatible, chat+tools, 8192 budget) | — | 4414 |
+| Positively-free ranked first | — | 91 |
+| `UNKNOWN` cost, kept and probe-eligible | — | 4323 |
+| Resolver aliases admitted | `bzl/auto:free`, `bazaarlink/auto:free` | 0 |
+| wait-need before first execute | — | 1104 |
+
+The 9router family at `:20129` (265 rows) was used only as a second, facet-free gateway to prove
+portability; OmniRoute `:20128` is the operational gateway.
+
+**FR-036 (observed free-ness).** `free_status()` returns `free` / `paid` / `UNKNOWN`. **0 of 265**
+rows at `:20129` and no rows at `:20128` carry a usable `pricing` field, so the previous
+"exclude only on positive price" rule admitted everything as free without evidence. `UNKNOWN`
+now stays kept and probe-eligible but never outranks a positively-free identity.
+
+**FR-035 (alias suffix).** `is_opaque_route_id` strips a tier suffix before matching the leaf, so
+`bzl/auto:free` is refused while `cx/codex-auto-review` and `oc/automatic-speech` remain concrete.
+
+**FR-032 (context disclosure).** Governing ADRs are discovered from `docs/adr` via the shipped
+`documentation_preflight._is_adr_path`; a caller-requested source that cannot be read becomes a
+`ContextDecision(action="exclude")` with `absent:` or `unreadable:`. Denied paths and absent default
+probes are deliberately not omissions.
+
+**FR-029 (affordability).** Observed remaining capacity below the unit's estimated cost excludes;
+unobserved capacity stays `UNKNOWN` and never excludes.
+
+**FR-038 (negotiated facets).** `session_memory`, `free_tier_catalog`, `provider_stats`, and
+`quota_headroom` are `AdapterCapability` values resolving supported/unsupported/unknown in both
+schema copies. Conformance: the facet-rich and facet-free kept sets are identical
+(`{oc/a, oc/b, oc/c:free}`); the facet only changes ordering.
+
+Proof class: **LIVE-PROVEN** for the catalog harvest measures above; **FIXTURE-ONLY** for
+affordability and facet negotiation (no live quota facet was observed).
+
+Decision record: `docs/adr/ADR-027-observed-free-status-and-context-omissions.md`.
+
 ## US5 T075–T077 — topology compare (FIXTURE-ONLY)
 
 HEAD `98f35f39ffbbe067897b33642b9c1b8d3ffe2851` plus dirty

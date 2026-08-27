@@ -49,6 +49,13 @@ class AdapterCapability(str, Enum):
     CANCELLATION = "cancellation"
     FAILURE_NORMALIZATION = "failure_normalization"
     TELEMETRY = "telemetry"
+    # Optional facets beyond the OpenAI-compatible baseline. Some gateways expose them
+    # and others do not, so each is negotiated rather than assumed and must never affect
+    # admission or terminal outcome (FR-038).
+    SESSION_MEMORY = "session_memory"
+    FREE_TIER_CATALOG = "free_tier_catalog"
+    PROVIDER_STATS = "provider_stats"
+    QUOTA_HEADROOM = "quota_headroom"
 
 
 class CapabilitySupport(str, Enum):

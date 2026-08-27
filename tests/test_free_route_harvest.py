@@ -244,3 +244,19 @@ def test_unobserved_capacity_never_excludes() -> None:
     rows = [_row("oc/unobserved:free")]
     keep = keep_free_compatible(rows, TaskNeed(chat=True, token_budget=8000), remaining_tokens={})
     assert keep == ["oc/unobserved:free"]
+
+
+def test_same_kept_set_whether_or_not_the_gateway_declares_a_free_facet() -> None:
+    """FR-038 conformance: an optional facet may reorder, never change admission.
+
+    A gateway exposing a free-tier catalog (OmniRoute) and one exposing nothing must
+    admit the same identities, or Verdict would be locked to a single vendor.
+    """
+    rows = [_row("oc/a"), _row("oc/b"), _row("oc/c:free")]
+    need = TaskNeed(chat=True)
+    facet_rich = keep_free_compatible(rows, need, free_ids={"oc/a"})
+    facet_free = keep_free_compatible(rows, need)
+    assert set(facet_rich) == set(facet_free) == {"oc/a", "oc/b", "oc/c:free"}
+    # the facet is used when present: a declared-free id ranks ahead of UNKNOWN
+    assert facet_rich[0] == "oc/a"
+    assert facet_free[0] == "oc/c:free"
