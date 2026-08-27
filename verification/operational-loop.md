@@ -624,3 +624,5 @@ Concrete non-combo `openrouter/poolside/laguna-xs-2.1:free` (served
 Attempt 1: `worker_self_report={outcome:error, role:advisory}`,
 `trusted_verification={decided:false, role:deciding}`, reason `provider choice
 contains no text content`. US2 allows truthful failure on the second family.
+
+OpenRouter on 9router is not a usable worker for this unit (empty completion). Follow-up r16 `cerebras/llama-3.3-70b` on the same `base_url` was catalog-listed then `HTTP 404` on chat — catalog vs runtime conflict, fail-closed, `fallback_count=0`. — LIVE-PROVEN
