@@ -158,6 +158,39 @@ def test_malformed_http_status_is_not_ready():
     assert result.error_class == "malformed_response"
 
 
+def test_openai_transport_sends_session_id_header() -> None:
+    captured: dict[str, str] = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, limit):
+            del limit
+            return b'{"choices":[{"message":{"content":"OK"}}]}'
+
+    def opener(request, timeout):
+        del timeout
+        captured["session"] = request.get_header("X-session-id")
+        captured["url"] = request.full_url
+        return Response()
+
+    transport = openai_probe_transport(
+        "http://127.0.0.1:20128/v1",
+        opener=opener,
+        session_id="verdict-operational-loop",
+    )
+    transport("runtime/model", ProbePolicy().payload("runtime/model"), 0.1)
+
+    assert captured["url"].endswith("/chat/completions")
+    assert captured["session"] == "verdict-operational-loop"
+
+
 def test_openai_transport_preserves_http_error_classification():
     def opener(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", hdrs=None, fp=None)

@@ -233,6 +233,44 @@ def test_prompt_names_the_boundary_and_the_verification_command(repo: Path) -> N
     assert "secrets.env" not in prompt  # unowned files are never shown
 
 
+def test_default_openai_transport_sends_operational_loop_session_header(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, str] = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, limit):
+            del limit
+            return b'{"choices":[{"message":{"content":"not-a-diff"}}],"model":"served"}'
+
+    def opener(request, timeout):
+        del timeout
+        captured["session"] = request.get_header("X-session-id")
+        captured["url"] = request.full_url
+        return Response()
+
+    monkeypatch.setattr("verdict.patch_executor.urllib.request.urlopen", opener)
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model"),
+        runner=RecordingRunner(),
+    )
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert captured["url"].endswith("/chat/completions")
+    assert captured["session"] == "verdict-operational-loop"
+
+
 def test_api_key_is_never_placed_in_the_prompt(repo: Path) -> None:
     runner = RecordingRunner()
     seen: list[Mapping[str, Any]] = []

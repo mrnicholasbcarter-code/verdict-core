@@ -32,6 +32,7 @@ from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.work_unit import WorkUnit, WorkUnitError, normalize_owned_path
 
 DEFAULT_BASE_URL = "http://localhost:20128/v1"
+DEFAULT_SESSION_ID = "verdict-operational-loop"
 
 _FENCE_RE = re.compile(r"```(?:diff|patch)?\s*\n(.*?)(?:\n```|\Z)", re.DOTALL)
 _DIFF_HEADER_RE = re.compile(r"^(?:---|\+\+\+)\s+(\S+)", re.MULTILINE)
@@ -64,6 +65,7 @@ class PatchExecutorConfig:
     max_tokens: int = 4096
     temperature: float = 0.0
     max_response_bytes: int = 1_048_576
+    session_id: str = DEFAULT_SESSION_ID
 
 
 @dataclass(frozen=True)
@@ -188,6 +190,7 @@ class PatchExecutor:
             api_key=config.api_key,
             opener=urllib.request.urlopen,
             max_response_bytes=config.max_response_bytes,
+            session_id=config.session_id,
         )
         self._runner = runner
         self._observer = observer
@@ -544,6 +547,7 @@ def load_patch_executor(
 
 __all__ = [
     "DEFAULT_BASE_URL",
+    "DEFAULT_SESSION_ID",
     "SYSTEM_PROMPT",
     "BoundUnitExecutor",
     "PatchAttempt",
