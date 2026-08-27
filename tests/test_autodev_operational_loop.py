@@ -296,6 +296,64 @@ def test_packet_receipts_keep_budget_usage_and_authority_without_prompts(repo: P
     assert attempts[0].provenance.get("authority") == "observed"
 
 
+def test_context_receipt_units_are_autodev_owned_paths_without_chat(repo: Path) -> None:
+    """Shipped compile path records only autodev units and owned sources (DEF-5 / CHK014)."""
+    packet = _packet(repo)
+    store = ReceiptStore(":memory:")
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    context = [
+        row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.receipt_type == "context"
+    ]
+    assert context
+    payload = context[0]
+    assert payload["compiled_prompt"] == "[REDACTED]"
+    assert payload["omissions"] == []
+    decisions = payload["context_receipt"]["decisions"]
+    unit_ids = [item["unit_id"] for item in decisions]
+    assert all(uid.startswith("autodev:") for uid in unit_ids)
+    assert not any("chat" in uid or "transcript" in uid for uid in unit_ids)
+    owned = {uid.split("owned_source:", 1)[-1] for uid in unit_ids if "owned_source:" in uid}
+    assert owned <= set(packet.authority["owned_paths"])
+
+
+def test_packet_execute_receipt_keeps_advisory_self_report_off_the_deciding_bit(
+    repo: Path,
+) -> None:
+    """Shipped attempt receipts store advisory worker outcome beside trusted verification."""
+    packet = _packet(repo)
+    store = ReceiptStore(":memory:")
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    attempts = [
+        row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("attempt") == 1
+    ]
+    assert attempts
+    payload = attempts[0]
+    assert payload["worker_self_report"]["role"] == "advisory"
+    assert payload["trusted_verification"]["role"] == "deciding"
+    assert payload["trusted_verification"]["decided"] is True
+    assert payload["verified"] is True
+
+
 def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_replayed(repo: Path) -> None:
     packet = _packet(repo)
     factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
