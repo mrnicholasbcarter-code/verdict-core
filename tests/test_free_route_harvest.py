@@ -6,6 +6,7 @@ from verdict.free_route_harvest import (
     TaskNeed,
     catalog_rows_from_payload,
     first_execute_need,
+    harvest_live_route,
     keep_free_compatible,
     pick_best_live,
 )
@@ -144,6 +145,61 @@ def test_keep_drops_opaque_alias_in_any_namespace() -> None:
         _row("kr/claude-sonnet-4.5", owned_by="kr", capabilities={"thinking": False}),
     ]
     assert keep_free_compatible(rows, TaskNeed(chat=True)) == ["kr/claude-sonnet-4.5"]
+
+
+def test_no_alias_or_combo_survives_live_catalog_shapes() -> None:
+    """FR-035: an alias in any segment is never selectable, whatever the catalog claims.
+
+    Shapes taken from the live gateway catalog: `kr/auto` advertises a 200k context and
+    `gopus`/`co` are bare combo entries. Rich advertised capability must not rescue them.
+    """
+    rows = [
+        _row("kr/auto", owned_by="kr", capabilities={"tools": True}, context_length=200_000),
+        _row("kr/auto-thinking", owned_by="kr", capabilities={"tools": True}),
+        _row("gopus", owned_by="combo", capabilities={"tools": True}),
+        _row("co", owned_by="combo", capabilities={"tools": True}),
+        _row("auto/best", capabilities={"tools": True}),
+        _row("openrouter/pool/real-model:free", capabilities={"tools": True}),
+    ]
+    keep = keep_free_compatible(rows, TaskNeed(chat=True, tools=True))
+    assert keep == ["openrouter/pool/real-model:free"]
+
+
+def test_catalog_alone_never_yields_an_executable_route() -> None:
+    """FR-034: with no probe evidence, harvest admits nothing for execution."""
+    rows = [_row("openrouter/real:free", capabilities={"tools": True})]
+
+    def dead_transport(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        del model_id, payload, timeout
+        return {"status_code": 503, "body": {}}
+
+    assert harvest_live_route(rows, dead_transport, TaskNeed(chat=True)) == {}
+
+
+def test_free_status_is_unknown_when_no_facet_and_no_marker() -> None:
+    """FR-036: absent pricing is not evidence of free. Live catalogs omit pricing entirely."""
+    from verdict.free_route_harvest import free_status
+
+    assert free_status(_row("oc/plain-model")) == "UNKNOWN"
+    assert free_status(_row("oc/model:free")) == "free"
+    assert free_status(_row("paid/gpt", pricing={"prompt": 2.5})) == "paid"
+
+
+def test_free_status_uses_adapter_facet_when_supplied() -> None:
+    """A gateway that positively declares free-ness beats id-shape inference."""
+    from verdict.free_route_harvest import free_status
+
+    assert free_status(_row("oc/plain"), free_ids={"oc/plain"}) == "free"
+    # facet present but silent about this id: still UNKNOWN, never assumed free
+    assert free_status(_row("oc/other"), free_ids={"oc/plain"}) == "UNKNOWN"
+
+
+def test_positively_free_ids_are_preferred_over_unknown() -> None:
+    """FR-036: UNKNOWN stays probe-eligible but must not outrank a positively-free id."""
+    rows = [_row("oc/unknown-cost"), _row("oc/known:free")]
+    keep = keep_free_compatible(rows, TaskNeed(chat=True))
+    assert keep == ["oc/known:free", "oc/unknown-cost"]
+    assert set(keep) == {"oc/known:free", "oc/unknown-cost"}
 
 
 def test_catalog_rows_from_payload_reads_openai_data_list() -> None:

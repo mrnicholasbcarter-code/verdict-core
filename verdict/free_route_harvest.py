@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,6 +60,23 @@ def _positive_price(pricing: object) -> bool:
     return False
 
 
+def free_status(row: Mapping[str, Any], free_ids: Collection[str] | None = None) -> str:
+    """Free-ness from an adapter facet or the id, never from a missing price (FR-036).
+
+    Live catalogs omit ``pricing`` on every row, so its absence carries no information.
+    ``free_ids`` is whatever the negotiated gateway adapter positively declared free; a
+    gateway that declares nothing leaves every unmarked id ``UNKNOWN``.
+    """
+    model_id = str(row.get("id") or "")
+    if free_ids is not None and model_id in free_ids:
+        return "free"
+    if _positive_price(row.get("pricing")):
+        return "paid"
+    if ":free" in model_id.lower():
+        return "free"
+    return "UNKNOWN"
+
+
 def _pool_alias(model_id: str) -> bool:
     return model_id.rsplit("/", 1)[-1].lower() == "free"
 
@@ -109,8 +126,16 @@ def catalog_rows_from_payload(payload: object) -> list[Mapping[str, Any]]:
     return [row for row in raw if isinstance(row, Mapping) and isinstance(row.get("id"), str)]
 
 
-def keep_free_compatible(rows: Sequence[Mapping[str, Any]], need: TaskNeed) -> list[str]:
-    kept: list[str] = []
+def keep_free_compatible(
+    rows: Sequence[Mapping[str, Any]], need: TaskNeed, free_ids: Collection[str] | None = None
+) -> list[str]:
+    """Kept identities, positively-free first then UNKNOWN-cost (FR-036).
+
+    UNKNOWN stays kept and probe-eligible — a gateway that declares nothing about price
+    must not empty the catalog — but it never outranks an identity known to be free.
+    """
+    free_first: list[str] = []
+    unknown: list[str] = []
     for row in rows:
         model_id = str(row.get("id") or "").strip()
         if not model_id:
@@ -119,12 +144,13 @@ def keep_free_compatible(rows: Sequence[Mapping[str, Any]], need: TaskNeed) -> l
             continue
         if str(row.get("owned_by") or "").strip().lower() == "combo":
             continue
-        if _positive_price(row.get("pricing")):
+        status = free_status(row, free_ids)
+        if status == "paid":
             continue
         if not _capabilities_ok(row, need) or not _context_ok(row, need):
             continue
-        kept.append(model_id)
-    return kept
+        (free_first if status == "free" else unknown).append(model_id)
+    return free_first + unknown
 
 
 def first_execute_need(*, catalog_n: int, keep_n: int) -> int:
