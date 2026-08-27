@@ -249,8 +249,7 @@ def test_context_ablation_payload_requires_distinct_digests_and_blocks_denied_pa
     packet = _packet(tmp_path)
     pack_a = _compile_context(token_budget=512)
     pack_b = _compile_context(
-        token_budget=48,
-        owned_source={"verdict/headroom.py": "source line " * 400},
+        token_budget=48, owned_source={"verdict/headroom.py": "source line " * 400}
     )
     payload = context_ablation_payload(packet, pack_a, pack_b)
     assert payload["packet_integrity_digest"] == packet.integrity_digest
@@ -278,7 +277,9 @@ def test_context_ablation_extra_symbol_unit_does_not_read_denied_paths(tmp_path:
     subprocess.run(["git", "commit", "-qm", "initial"], cwd=tmp_path, check=True)
     packet = _packet(tmp_path)
     pack_a = _compile_context(symbol_relationship=None)
-    pack_b = _compile_context(symbol_relationship="headroom.py:provider_headroom -> test_headroom.py")
+    pack_b = _compile_context(
+        symbol_relationship="headroom.py:provider_headroom -> test_headroom.py"
+    )
     payload = context_ablation_payload(packet, pack_a, pack_b)
     assert payload["pack_a"]["context_digest"] != payload["pack_b"]["context_digest"]
     assert payload["unowned_paths_present"] is False
@@ -317,10 +318,7 @@ def test_compile_packet_context_skips_denied_paths_on_read(tmp_path: Path) -> No
     repo = _context_repo(tmp_path)
     packet = _packet(repo)
     pack = autodev_run.compile_packet_context(
-        packet,
-        repo,
-        governing_doc_paths=("verdict/cli.py", "AGENTS.md"),
-        token_budget=1024,
+        packet, repo, governing_doc_paths=("verdict/cli.py", "AGENTS.md"), token_budget=1024
     )
     assert "DENIED_SECRET_MARKER" not in pack.compiled_prompt
     assert "Keep owned paths only." in pack.compiled_prompt
@@ -338,3 +336,56 @@ def test_context_ablation_inventories_unowned_basenames(tmp_path: Path) -> None:
     leaked = _compile_context(owned_source={"verdict/cli.py": "secret\n"})
     with pytest.raises(AutodevError):
         context_ablation_payload(packet, pack_a, leaked)
+
+
+def test_unretrievable_context_source_is_recorded_as_an_omission(tmp_path: Path) -> None:
+    """FR-032: a source that could not be read must be an explicit omission.
+
+    Previously ``read_selected`` swallowed OSError/UnicodeDecodeError, so a missing ADR
+    was indistinguishable from one that does not exist. A weak model given a package with
+    silently-dropped governing context has no way to know what it is missing.
+    """
+    repo = _context_repo(tmp_path)
+    packet = _packet(repo)
+    pack = autodev_run.compile_packet_context(
+        packet, repo, governing_doc_paths=("docs/adr/ADR-999-does-not-exist.md",), token_budget=1024
+    )
+    omissions = {
+        decision.unit_id: decision.reason
+        for decision in pack.decisions
+        if decision.action == "exclude"
+    }
+    assert any("ADR-999" in unit_id for unit_id in omissions), omissions
+    reason = next(r for u, r in omissions.items() if "ADR-999" in u)
+    assert "absent" in reason.lower()
+
+
+def test_unreadable_source_omission_is_distinguishable_from_absent(tmp_path: Path) -> None:
+    """FR-032: 'absent' and 'unreadable' are different failures and must not collapse."""
+    repo = _context_repo(tmp_path)
+    binary = repo / "docs" / "binary.md"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"\xff\xfe\x00\x00not utf8")
+    packet = _packet(repo)
+    pack = autodev_run.compile_packet_context(
+        packet, repo, governing_doc_paths=("docs/binary.md",), token_budget=1024
+    )
+    reasons = {d.unit_id: d.reason for d in pack.decisions if d.action == "exclude"}
+    reason = next((r for u, r in reasons.items() if "binary.md" in u), None)
+    assert reason is not None, reasons
+    assert "unreadable" in reason.lower()
+
+
+def test_governing_adrs_are_discovered_by_default(tmp_path: Path) -> None:
+    """FR-032: the ADR slot must not be empty just because no caller named paths.
+
+    The delegation thesis rests on a weak model receiving decision rationale it cannot
+    infer from source alone. Defaulting governing_doc_paths to () meant that slot was
+    always empty in production.
+    """
+    repo = _context_repo(tmp_path)
+    adr = repo / "docs" / "adr" / "ADR-001-example-decision.md"
+    adr.parent.mkdir(parents=True, exist_ok=True)
+    adr.write_text("# ADR-001\n\nGOVERNING_RATIONALE_MARKER\n", encoding="utf-8")
+    pack = autodev_run.compile_packet_context(_packet(repo), repo, token_budget=4096)
+    assert "GOVERNING_RATIONALE_MARKER" in pack.compiled_prompt

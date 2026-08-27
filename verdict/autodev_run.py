@@ -35,6 +35,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from verdict.context_pack import (
+    ContextDecision,
     ContextPack,
     ContextPackCompiler,
     ContextPlan,
@@ -200,6 +201,26 @@ def compile_worker_context(
     return replace(pack, created_at=0.0)
 
 
+def discover_governing_docs(repo: Path, *, limit: int = 4) -> tuple[str, ...]:
+    """Governing decision records for a repository, newest identifier first (FR-032).
+
+    Reuses the shipped ADR predicate in :mod:`verdict.documentation_preflight` rather than
+    inventing a second notion of what counts as authoritative. Bounded because the compiler
+    budget, not this function, decides what finally fits.
+    """
+    from verdict.documentation_preflight import _is_adr_path
+
+    root = repo / "docs" / "adr"
+    if not root.is_dir():
+        return ()
+    found = sorted(
+        (path for path in root.rglob("*.md") if _is_adr_path(path)),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    return tuple(str(path.relative_to(repo)) for path in found[:limit])
+
+
 def compile_packet_context(
     packet: ExecutionPacket,
     repo_path: str | Path,
@@ -224,23 +245,36 @@ def compile_packet_context(
     }
     denied_names = {PurePosixPath(path).name for path in denied_paths}
 
-    def read_selected(paths: Sequence[str]) -> dict[str, str]:
+    source_omissions: list[tuple[str, str]] = []
+
+    def read_selected(paths: Sequence[str], *, requested: bool = True) -> dict[str, str]:
+        """Read sources, disclosing why any caller-requested one is missing (FR-032).
+
+        ``requested`` distinguishes a source the caller named — whose absence is a broken
+        promise the worker must be told about — from a default probe such as ``AGENTS.md``,
+        whose absence in a repository that has none carries no information.
+        """
         selected: dict[str, str] = {}
         for raw_path in paths:
             normalized = normalize_owned_path(raw_path)
             if normalized in denied_paths or PurePosixPath(normalized).name in denied_names:
-                continue
+                continue  # authority boundary, not a retrieval failure
             target = repo / normalized
             try:
                 selected[normalized] = target.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
+            except FileNotFoundError:
+                if requested:
+                    source_omissions.append((normalized, "absent: no such file"))
+            except UnicodeDecodeError:
+                source_omissions.append((normalized, "unreadable: not valid utf-8"))
+            except OSError as exc:
+                source_omissions.append((normalized, f"unreadable: {exc.strerror or 'os error'}"))
         return selected
 
     owned_source = read_selected(tuple(str(path) for path in packet.authority["owned_paths"]))
-    instructions = read_selected(repository_instruction_paths)
+    instructions = read_selected(repository_instruction_paths, requested=False)
     examples = read_selected(relevant_example_paths)
-    governing_docs = read_selected(governing_doc_paths)
+    governing_docs = read_selected(governing_doc_paths or discover_governing_docs(repo))
     verification = "\n".join(str(arg) for arg in packet.verification["argv"])
     pack = compile_worker_context(
         objective=str(packet.intent["goal"]),
@@ -254,6 +288,25 @@ def compile_packet_context(
         symbol_relationship=symbol_relationship,
         token_budget=token_budget,
     )
+    if source_omissions:
+        # A source the worker was meant to receive but did not is recorded, never dropped:
+        # the package must state what is missing and why (FR-032).
+        pack = replace(
+            pack,
+            decisions=(
+                *pack.decisions,
+                *(
+                    ContextDecision(
+                        unit_id=f"autodev:source:{path}",
+                        action="exclude",
+                        reason=reason,
+                        input_tokens=0,
+                        output_tokens=0,
+                    )
+                    for path, reason in source_omissions
+                ),
+            ),
+        )
     if store is not None:
         with suppress(ReceiptConflictError):
             store.put_receipt(
