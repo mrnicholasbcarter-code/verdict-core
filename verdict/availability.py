@@ -417,11 +417,15 @@ def is_opaque_route_id(model_id: str) -> bool:
     The alias may occupy any segment: gateways namespace their resolvers
     (``kr/auto``, ``kr/auto-thinking``), so matching only a leading prefix would
     admit the alias as if it were a concrete route.
+
+    A tier suffix does not make an alias concrete. ``bzl/auto:free`` observed on a
+    live catalog is still a resolver whose served identity is unknown in advance,
+    so the suffix is stripped before the leaf is matched.
     """
     normalized = model_id.strip().lower()
     if normalized.startswith(OPAQUE_ROUTE_PREFIXES) or normalized in OPAQUE_ROUTE_IDS:
         return True
-    leaf = normalized.rsplit("/", 1)[-1]
+    leaf = normalized.rsplit("/", 1)[-1].split(":", 1)[0]
     return leaf in OPAQUE_ROUTE_IDS or any(
         leaf.startswith(f"{alias}-") for alias in OPAQUE_ROUTE_IDS
     )

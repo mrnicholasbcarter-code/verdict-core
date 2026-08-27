@@ -202,8 +202,45 @@ def test_positively_free_ids_are_preferred_over_unknown() -> None:
     assert set(keep) == {"oc/known:free", "oc/unknown-cost"}
 
 
+def test_free_marker_does_not_rescue_an_opaque_alias() -> None:
+    """FR-035: `bzl/auto:free` is still a resolver alias. Found live on OmniRoute :20128.
+
+    The alias leaf carried a `:free` suffix, so leaf-based alias detection missed it and a
+    combo route was admitted as if it were a concrete free model.
+    """
+    rows = [
+        _row("bzl/auto:free", capabilities={"tools": True}),
+        _row("bazaarlink/auto:free", capabilities={"tools": True}),
+        _row("bzl/auto-thinking:free", capabilities={"tools": True}),
+        _row("bzl/qwen/qwen3.7-flash:free", capabilities={"tools": True}),
+    ]
+    assert keep_free_compatible(rows, TaskNeed(chat=True)) == ["bzl/qwen/qwen3.7-flash:free"]
+
+
 def test_catalog_rows_from_payload_reads_openai_data_list() -> None:
     rows = catalog_rows_from_payload(
         {"object": "list", "data": [{"id": "oc/hy3:free"}, {"id": "paid/gpt"}]}
     )
     assert [row["id"] for row in rows] == ["oc/hy3:free", "paid/gpt"]
+
+
+def test_affordability_excludes_route_that_cannot_finish_the_unit() -> None:
+    """FR-029: observed capacity below the unit's estimated cost is an admission floor.
+
+    Having *some* capacity is not evidence a route can finish the work; the whole point of
+    the estimate is that a route which dies mid-unit wastes the attempt.
+    """
+    rows = [_row("oc/tiny-left:free"), _row("oc/plenty:free")]
+    keep = keep_free_compatible(
+        rows,
+        TaskNeed(chat=True, token_budget=8000),
+        remaining_tokens={"oc/tiny-left:free": 100, "oc/plenty:free": 50_000},
+    )
+    assert keep == ["oc/plenty:free"]
+
+
+def test_unobserved_capacity_never_excludes() -> None:
+    """FR-029/SC-008: no observation means UNKNOWN, which must not exclude."""
+    rows = [_row("oc/unobserved:free")]
+    keep = keep_free_compatible(rows, TaskNeed(chat=True, token_budget=8000), remaining_tokens={})
+    assert keep == ["oc/unobserved:free"]

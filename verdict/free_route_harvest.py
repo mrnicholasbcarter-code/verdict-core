@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from verdict.availability import is_opaque_route_id
+from verdict.headroom import affordability
 from verdict.probes import ProbeBudget, ProbePolicy, ProbeRunner, ProbeTransport
 
 
@@ -127,12 +128,19 @@ def catalog_rows_from_payload(payload: object) -> list[Mapping[str, Any]]:
 
 
 def keep_free_compatible(
-    rows: Sequence[Mapping[str, Any]], need: TaskNeed, free_ids: Collection[str] | None = None
+    rows: Sequence[Mapping[str, Any]],
+    need: TaskNeed,
+    free_ids: Collection[str] | None = None,
+    remaining_tokens: Mapping[str, int] | None = None,
 ) -> list[str]:
     """Kept identities, positively-free first then UNKNOWN-cost (FR-036).
 
     UNKNOWN stays kept and probe-eligible — a gateway that declares nothing about price
     must not empty the catalog — but it never outranks an identity known to be free.
+
+    ``remaining_tokens`` is whatever capacity the gateway actually disclosed. An identity
+    with observed capacity below the unit's estimated cost is excluded (FR-029); an
+    identity with no observation stays eligible and is recorded ``UNKNOWN``.
     """
     free_first: list[str] = []
     unknown: list[str] = []
@@ -148,6 +156,13 @@ def keep_free_compatible(
         if status == "paid":
             continue
         if not _capabilities_ok(row, need) or not _context_ok(row, need):
+            continue
+        if (
+            remaining_tokens is not None
+            and not affordability(
+                estimated_tokens=need.token_budget, remaining_tokens=remaining_tokens.get(model_id)
+            ).admitted
+        ):
             continue
         (free_first if status == "free" else unknown).append(model_id)
     return free_first + unknown
