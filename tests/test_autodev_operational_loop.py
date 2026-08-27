@@ -1843,3 +1843,45 @@ def test_cli_packet_execute_forwards_delegation_to_run(
     )
     assert seen["delegation"] == "decision"
     assert seen["undelegable_reason"] == "requires cross-repository judgment"
+
+
+def test_cli_argv_execute_passes_delegation_flag_through_to_dispatch(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """FR-031: --delegation must be a real, parseable argv flag on `packet execute`,
+    or the CLI-default enforcement (T081k) is unreachable from an actual shell command.
+    """
+    import verdict.cli as cli
+
+    seen: dict[str, Any] = {}
+
+    def fake_execute(*args: Any, **kwargs: Any) -> None:
+        seen["delegation"] = kwargs.get("delegation")
+        seen["undelegable_reason"] = kwargs.get("undelegable_reason")
+
+    monkeypatch.setattr(cli, "cmd_autodev_packet_execute", fake_execute)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-argv-delegation"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "verdict",
+            "autodev",
+            "packet",
+            "execute",
+            "--packet",
+            str(path),
+            "--repo",
+            str(repo),
+            "--allow-live",
+            "--json",
+            "--delegation",
+            "decision",
+            "--undelegable-reason",
+            "requires cross-repository judgment",
+        ],
+    )
+    cli.main()
+    assert seen["delegation"] == "decision"
+    assert seen["undelegable_reason"] == "requires cross-repository judgment"

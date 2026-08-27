@@ -2368,6 +2368,21 @@ def main() -> None:
                 default=None,
                 help="JSON canary state; chosen applies only among admitted_ids",
             )
+            action_p.add_argument(
+                "--delegation",
+                choices=["legwork", "decision"],
+                default=None,
+                help=(
+                    "required classification for this unit; a decision must also "
+                    "carry --undelegable-reason"
+                ),
+            )
+            action_p.add_argument(
+                "--undelegable-reason",
+                dest="undelegable_reason",
+                default=None,
+                help="capability that makes a --delegation decision unable to run non-primary",
+            )
     shadow_p = packet_actions.add_parser(
         "shadow", help="Dump advisory shadow-learning JSON without calling eligibility"
     )
@@ -2727,6 +2742,8 @@ def main() -> None:
                     prefer_non_primary=getattr(args, "prefer_non_primary", False),
                     base_url=getattr(args, "packet_base_url", None),
                     canary_path=getattr(args, "canary_path", None),
+                    delegation=getattr(args, "delegation", None),
+                    undelegable_reason=getattr(args, "undelegable_reason", None),
                 )
             else:
                 cmd_autodev_packet(
