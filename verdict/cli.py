@@ -871,6 +871,8 @@ def cmd_autodev_packet_execute(
     catalog_rows: Any = None,
     probe_transport: Any = None,
     canary_path: str | None = None,
+    delegation: str | None = None,
+    undelegable_reason: str | None = None,
 ) -> None:
     """Execute or resume one bounded packet work unit through an admitted route.
 
@@ -925,6 +927,18 @@ def cmd_autodev_packet_execute(
         else:
             console.print(f"[bold red]{exc}[/bold red]")
         raise SystemExit(1) from exc
+    if delegation is None:
+        # FR-031: the production entry point refuses an unclassified unit by
+        # default rather than silently skipping the delegation floor.
+        message = (
+            "a delegation classification ('legwork' or 'decision') is required "
+            "before dispatch; pass --delegation to classify this unit"
+        )
+        if output_json:
+            print(json.dumps({"error": message, "missing": "delegation"}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
     if prefer_non_primary and route.get("primary") is True:
         message = (
             "first attempt must use a concrete non-primary route; "
@@ -997,6 +1011,8 @@ def cmd_autodev_packet_execute(
         # here by default. A resume legitimately re-verifies prior work and may
         # find it already green, so the requirement is scoped to fresh attempts.
         require_red_green=not resume,
+        delegation=delegation,
+        undelegable_reason=undelegable_reason,
     )
     family_url = str(route.get("base_url") or base_url or DEFAULT_BASE_URL)
     payload = packet_family_run_payload(packet, report, family_url)

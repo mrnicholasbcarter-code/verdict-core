@@ -545,6 +545,7 @@ def test_cli_packet_execute_forwards_canary_json_into_run(
         str(repo),
         output_json=True,
         allow_live=True,
+        delegation="legwork",
         canary_path=str(canary),
         catalog_rows=[
             {"id": "oc/hy3-free", "owned_by": "openrouter", "capabilities": {"chat": True}},
@@ -1438,6 +1439,7 @@ def test_cli_packet_execute_without_named_model_forwards_catalog_into_harvest(
         str(repo),
         output_json=True,
         allow_live=True,
+        delegation="legwork",
         catalog_rows=rows,
         probe_transport=transport,
     )
@@ -1493,7 +1495,12 @@ def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
     packets.mkdir()
     path = ExecutionPacketStore(packets).create(_packet(repo))
     cmd_autodev_packet_execute(
-        str(path), str(repo), output_json=True, allow_live=True, probe_transport=transport
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        delegation="legwork",
+        probe_transport=transport,
     )
     captured = capsys.readouterr()
     assert probed == ["slow/free:free", "fast/free:free"]
@@ -1732,6 +1739,7 @@ def test_cli_packet_execute_requires_red_green_by_default(
         str(repo),
         output_json=True,
         allow_live=True,
+        delegation="legwork",
         catalog_rows=[
             {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}}
         ],
@@ -1769,6 +1777,7 @@ def test_cli_packet_execute_resume_does_not_require_red_green(
         output_json=True,
         allow_live=True,
         resume=True,
+        delegation="legwork",
         catalog_rows=[
             {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}}
         ],
@@ -1781,3 +1790,53 @@ def test_cli_packet_execute_resume_does_not_require_red_green(
         },
     )
     assert seen["require_red_green"] is False
+
+
+def test_cli_packet_execute_refuses_unclassified_unit_by_default(
+    repo: Path, tmp_path: Path
+) -> None:
+    """FR-031: the production entry point refuses dispatch with no delegation classification."""
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-no-delegation"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    with pytest.raises(SystemExit):
+        cmd_autodev_packet_execute(str(path), str(repo), output_json=True, allow_live=True)
+
+
+def test_cli_packet_execute_forwards_delegation_to_run(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["delegation"] = kwargs.get("delegation")
+        seen["undelegable_reason"] = kwargs.get("undelegable_reason")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-delegation-fwd"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        delegation="decision",
+        undelegable_reason="requires cross-repository judgment",
+        catalog_rows=[
+            {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}}
+        ],
+        probe_transport=lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        },
+    )
+    assert seen["delegation"] == "decision"
+    assert seen["undelegable_reason"] == "requires cross-repository judgment"
