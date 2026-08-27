@@ -510,11 +510,40 @@ def extract_content(body: Mapping[str, Any]) -> str:
     if not isinstance(first, Mapping):
         raise PatchExecutorError("provider choice is not an object")
     message = first.get("message")
-    if isinstance(message, Mapping) and isinstance(message.get("content"), str):
-        return str(message["content"])
-    if isinstance(first.get("text"), str):
-        return str(first["text"])
+    text = _message_text(message if isinstance(message, Mapping) else None, first)
+    if text:
+        return text
     raise PatchExecutorError("provider choice contains no text content")
+
+
+def _message_text(message: Mapping[str, Any] | None, choice: Mapping[str, Any]) -> str:
+    if message is not None:
+        joined = _join_content(message.get("content"))
+        if joined:
+            return joined
+        for key in ("reasoning", "reasoning_content"):
+            joined = _join_content(message.get(key))
+            if joined:
+                return joined
+    if isinstance(choice.get("text"), str) and choice["text"]:
+        return str(choice["text"])
+    return ""
+
+
+def _join_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str) and item:
+                parts.append(item)
+            elif isinstance(item, Mapping):
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+        return "".join(parts)
+    return ""
 
 
 def _tail(text: str, limit: int = 400) -> str:

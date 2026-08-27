@@ -13,6 +13,7 @@ from verdict.patch_executor import (
     PatchExecutorError,
     RouteObservation,
     build_unit_prompt,
+    extract_content,
     extract_diff,
     parse_patch_paths,
 )
@@ -288,6 +289,19 @@ def test_api_key_is_never_placed_in_the_prompt(repo: Path) -> None:
     assert attempt.applied
     assert "sk-should-never-appear" not in str(seen)
     assert "sk-should-never-appear" not in str(attempt.to_dict())
+
+
+def test_extract_content_joins_list_and_reasoning_parts() -> None:
+    listed = extract_content(
+        {"choices": [{"message": {"content": [{"type": "text", "text": "hello"}]}}]}
+    )
+    assert listed == "hello"
+    reasoned = extract_content(
+        {"choices": [{"message": {"content": [], "reasoning": "think then answer"}}]}
+    )
+    assert reasoned == "think then answer"
+    with pytest.raises(PatchExecutorError, match="no text content"):
+        extract_content({"choices": [{"message": {"content": []}}]})
 
 
 def test_fenced_diff_is_unwrapped() -> None:

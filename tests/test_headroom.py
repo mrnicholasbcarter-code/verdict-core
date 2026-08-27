@@ -45,4 +45,5 @@ def test_headroom_is_unknown_unavailable():
 
 def test_unknown_headroom_sentinel():
     """UNKNOWN_HEADROOM is the unknown sentinel treated as unknown by headroom_is_unknown."""
+    assert UNKNOWN_HEADROOM is None, "UNKNOWN_HEADROOM must be None, not a fabricated tuple"
     assert headroom_is_unknown(UNKNOWN_HEADROOM) is True

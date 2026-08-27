@@ -614,3 +614,25 @@ source commit `0823e98`. Command: `verdict autodev packet execute --allow-live
 | trusted_verification | `{decided: true, role: deciding}`, `verified=true` | LIVE-PROVEN |
 | Artifact | `UNKNOWN_HEADROOM` exported in `__all__`; test `test_unknown_headroom_sentinel` | LIVE-PROVEN |
 | Settings | `enabled=false`, `detectionEnabled=false` after execute, no writes | LIVE-PROVEN |
+
+## Live execute r15 — family B 9router `:20129` (LIVE-PROVEN)
+
+Same work unit, `base_url=http://127.0.0.1:20129/v1`, packet `headroom-unknown-r15`
+integrity `sha256:3509b14320a312ed802915ac645726a7d3daf8197a4bafde57545149aeaf4ecb`.
+Concrete non-combo `openrouter/poolside/laguna-xs-2.1:free` (served
+`poolside/laguna-xs-2.1:free`). Terminal `truthful_failure`, `fallback_count=0`.
+Attempt 1: `worker_self_report={outcome:error, role:advisory}`,
+`trusted_verification={decided:false, role:deciding}`, reason `provider choice
+contains no text content`. US2 allows truthful failure on the second family.
+
+OpenRouter on 9router is not a usable worker for this unit (empty completion). Follow-up r16 `cerebras/llama-3.3-70b` on the same `base_url` was catalog-listed then `HTTP 404` on chat — catalog vs runtime conflict, fail-closed, `fallback_count=0`. — LIVE-PROVEN
+
+## Live execute r17 — family B `ollama/minimax-m3` (LIVE-PROVEN)
+
+`base_url=http://127.0.0.1:20129/v1`. Packet `headroom-unknown-r17` integrity
+`sha256:634cd5f675e76dd3e46eba43ef05b4079c1c92089c4c216d9eac9b0d99844f08`.
+Requested `ollama/minimax-m3` → actual `minimax-m3`. Terminal `completed`,
+`fallback_count=0`. Seq 73 `worker_self_report={outcome:applied, role:advisory}`,
+`trusted_verification={decided:true, role:deciding}`. Artifact: assert
+`UNKNOWN_HEADROOM is None`. Operator-named other live 9router ids (`grid/code-prime`,
+`grid/gemini-pro-latest`, `oc/laguna-s-2.1-free`, `oc/hy3-free`) were not re-run.

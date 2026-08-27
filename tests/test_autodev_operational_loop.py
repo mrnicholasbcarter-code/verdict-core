@@ -801,3 +801,18 @@ def test_refresh_fallback_composes_primary_from_candidate_evidence(repo: Path) -
         "free/cheap",
         "alt/subscription",
     ]
+
+
+def test_packet_executor_uses_route_base_url(repo: Path) -> None:
+    from verdict.autodev_run import _default_packet_executor_factory
+
+    route = _route(
+        "openrouter/poolside/laguna-xs-2.1:free",
+        "openrouter/poolside/laguna-xs-2.1:free",
+        base_url="http://127.0.0.1:20129/v1",
+    )
+    executor = _default_packet_executor_factory(
+        attempt_repo=repo, route=route, packet=_packet(repo)
+    )
+    assert executor.config.base_url == "http://127.0.0.1:20129/v1"
+    assert executor.config.model == "openrouter/poolside/laguna-xs-2.1:free"
