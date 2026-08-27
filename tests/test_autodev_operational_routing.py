@@ -208,6 +208,10 @@ def test_missing_quota_and_headroom_are_explicit_unknown_values() -> None:
     assert serialized["quota_remaining_pct"] is None
     assert serialized["headroom_pct"] is None
     assert 100.0 not in (serialized["quota_remaining_pct"], serialized["headroom_pct"])
+    from verdict.autodev_routing import unobserved_quota_headroom
+
+    fake_full = _evidence(quota_remaining_pct=100.0, headroom_pct=100.0)
+    assert unobserved_quota_headroom(fake_full) == {"quota": "UNKNOWN", "headroom": "UNKNOWN"}
 
 
 def test_eligibility_is_applied_before_advisory_ranking() -> None:

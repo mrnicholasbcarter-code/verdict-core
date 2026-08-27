@@ -11,6 +11,7 @@ These tests prove the AC:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import verdict.intelligence as intel
@@ -247,3 +248,177 @@ def test_eligibility_matches_exact_model_id_not_provider_suffix() -> None:
     assert result.admitted == []
     assert result.records[0].state == "unknown"
     assert result.records[0].admitted is False
+
+
+def test_shadow_learning_uses_trusted_labels_and_leaves_gate_unchanged() -> None:
+    from verdict.autodev_run import shadow_learning_report
+
+    digest = "sha256:" + "11" * 32
+    episodes = [
+        {
+            "packet_integrity_digest": digest,
+            "actual_identity": "cheap/a",
+            "worker_self_report": {"outcome": "applied", "role": "advisory"},
+            "trusted_verification": {"decided": False, "role": "deciding"},
+        },
+        {
+            "packet_integrity_digest": digest,
+            "actual_identity": "cheap/a",
+            "worker_self_report": {"outcome": "error", "role": "advisory"},
+            "trusted_verification": {"decided": True, "role": "deciding"},
+        },
+    ]
+    shadow = shadow_learning_report(episodes)
+    assert shadow["labeled_from"] == "trusted_verification"
+    assert shadow["advisory_ranking"][0]["wins"] == 1
+    assert shadow["advisory_ranking"][0]["losses"] == 1
+    assert shadow["admission_unchanged"] is True
+
+    report = _report(("a/1", "eligible"), ("b/2", "denied"))
+    cache = _cache(report)
+    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
+    candidates = [
+        ModelInfo(id="a/1", provider="a", capability_tier=2),
+        ModelInfo(id="b/2", provider="b", capability_tier=2),
+    ]
+    before = {m.id for m in gate.evaluate(candidates, dev_mode=True).admitted}
+    _ = shadow_learning_report(episodes)
+    after = {m.id for m in gate.evaluate(candidates, dev_mode=True).admitted}
+    assert before == after == {"a/1"}
+    import verdict.eligibility as eligibility_mod
+
+    assert "shadow_learning_report" not in Path(eligibility_mod.__file__).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_shadow_report_binds_packet_digest_and_ignores_self_report_only() -> None:
+    from verdict.autodev_run import shadow_learning_report
+
+    digest = "sha256:" + "ab" * 32
+    labeled = shadow_learning_report(
+        [
+            {
+                "packet_integrity_digest": digest,
+                "actual_identity": "a/1",
+                "worker_self_report": {"outcome": "error", "role": "advisory"},
+                "trusted_verification": {"decided": True, "role": "deciding"},
+            }
+        ]
+    )
+    assert labeled["source_binding"] == digest
+    assert labeled["episode_count"] == 1
+    ignored = shadow_learning_report(
+        [
+            {
+                "packet_integrity_digest": digest,
+                "actual_identity": "a/1",
+                "worker_self_report": {"outcome": "applied", "role": "advisory"},
+                "trusted_verification": {"decided": True, "role": "advisory"},
+            },
+            {
+                "packet_integrity_digest": digest,
+                "actual_identity": "a/1",
+                "worker_self_report": {"outcome": "applied", "role": "advisory"},
+            },
+        ]
+    )
+    assert ignored["episode_count"] == 0
+    assert ignored["advisory_ranking"] == []
+    assert ignored["source_binding"] == digest
+
+
+def test_shadow_canary_is_bounded_and_rollback_restores_baseline_choice() -> None:
+    from verdict.autodev_run import (
+        apply_shadow_canary,
+        rollback_shadow_canary,
+        shadow_learning_report,
+    )
+
+    admitted = ("a/1", "b/2")
+    digest = "sha256:" + "22" * 32
+    report = shadow_learning_report(
+        [
+            {
+                "packet_integrity_digest": digest,
+                "actual_identity": "b/2",
+                "trusted_verification": {"decided": True, "role": "deciding"},
+            },
+            {
+                "packet_integrity_digest": digest,
+                "actual_identity": "b/2",
+                "trusted_verification": {"decided": True, "role": "deciding"},
+            },
+            {
+                "packet_integrity_digest": digest,
+                "actual_identity": "a/1",
+                "trusted_verification": {"decided": False, "role": "deciding"},
+            },
+        ]
+    )
+    canary = apply_shadow_canary(admitted, report)
+    assert canary["chosen"] == "b/2"
+    assert canary["baseline"] == "a/1"
+    assert canary["active"] is True
+    rolled = rollback_shadow_canary(canary)
+    assert rolled["chosen"] == "a/1"
+    assert rolled["active"] is False
+    gate = EligibilityGate(
+        _cache(_report(("a/1", "eligible"), ("b/2", "eligible"))).get,
+        protected_fail_closed=True,
+        allow_unverified_in_dev=True,
+    )
+    candidates = [
+        ModelInfo(id="a/1", provider="a", capability_tier=2),
+        ModelInfo(id="b/2", provider="b", capability_tier=2),
+    ]
+    before = {m.id for m in gate.evaluate(candidates, dev_mode=True).admitted}
+    _ = apply_shadow_canary(admitted, report)
+    after = {m.id for m in gate.evaluate(candidates, dev_mode=True).admitted}
+    assert before == after == {"a/1", "b/2"}
+
+
+def test_shadow_canary_does_not_require_a_vendor_brand() -> None:
+    from verdict.autodev_run import apply_shadow_canary, shadow_learning_report
+
+    admitted = ("oc/hy3-free", "local/llama")
+    report = shadow_learning_report(
+        [
+            {
+                "packet_integrity_digest": "sha256:" + "ef" * 32,
+                "actual_identity": "local/llama",
+                "trusted_verification": {"decided": True, "role": "deciding"},
+            }
+        ]
+    )
+    canary = apply_shadow_canary(admitted, report)
+    assert canary["chosen"] == "local/llama"
+    assert canary["baseline"] == "oc/hy3-free"
+
+
+def test_shadow_does_not_rank_episodes_without_a_single_packet_digest() -> None:
+    from verdict.autodev_run import shadow_learning_report
+
+    unbound = shadow_learning_report(
+        [{"actual_identity": "a/1", "trusted_verification": {"decided": True, "role": "deciding"}}]
+    )
+    assert unbound["episode_count"] == 0
+    assert unbound["advisory_ranking"] == []
+    assert unbound["source_binding"] is None
+    mixed = shadow_learning_report(
+        [
+            {
+                "packet_integrity_digest": "sha256:" + "aa" * 32,
+                "actual_identity": "a/1",
+                "trusted_verification": {"decided": True, "role": "deciding"},
+            },
+            {
+                "packet_integrity_digest": "sha256:" + "bb" * 32,
+                "actual_identity": "b/2",
+                "trusted_verification": {"decided": True, "role": "deciding"},
+            },
+        ]
+    )
+    assert mixed["episode_count"] == 0
+    assert mixed["advisory_ranking"] == []
+    assert mixed["source_binding"] is None

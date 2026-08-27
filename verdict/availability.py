@@ -1254,6 +1254,17 @@ class OmniRouteAvailabilityAdapter:
                 )
                 continue
             value = runtime_value(model)
+            if not mapping and "runtime" not in self.transport_capabilities:
+                states.append(
+                    AvailabilityCandidate(
+                        model,
+                        AvailabilityState.UNKNOWN,
+                        ("health unknown",),
+                        source="catalog",
+                        freshness_seconds=0.0,
+                    )
+                )
+                continue
             states.append(normalize_observation(model, _raw_observation(value), now=current))
         # Request capacity and concurrency are hard runtime gates, not ranking hints.
         for index, item in enumerate(states):
@@ -1309,7 +1320,8 @@ class OmniRouteAvailabilityAdapter:
         freshness = max(
             (x.freshness_seconds for x in states if x.freshness_seconds is not None), default=None
         )
-        source = next((x.source for x in states if x.source != "unknown"), "omniroute")
+        default_source = "catalog" if "runtime" not in self.transport_capabilities else "omniroute"
+        source = next((x.source for x in states if x.source != "unknown"), default_source)
         return AvailabilityReport(tuple(states), tuple(eligible), source, freshness, tuple(errors))
 
     check = evaluate

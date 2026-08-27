@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from verdict.availability import (
     AvailabilityCandidate,
@@ -60,6 +61,39 @@ class AvailabilitySurface(Protocol):
     """Existing availability/health/probe projection used by the live adapter."""
 
     def evaluate(self, *, now: datetime | None = None) -> AvailabilityReport: ...
+
+
+@dataclass(frozen=True)
+class GatewayFamily:
+    """A gateway family is a distinct base URL, not a brand or combo alias."""
+
+    family_id: str
+    base_url: str
+    adapter_id: str = "openai-compatible"
+    adapter_version: str = "1"
+    protocol: str = "openai-compatible-chat"
+
+
+def family_from_base_url(base_url: str) -> GatewayFamily:
+    url = base_url.strip().rstrip("/")
+    netloc = urlsplit(url).netloc
+    if not netloc:
+        raise GatewayAdapterError("base_url must include a host")
+    return GatewayFamily(family_id=netloc, base_url=url)
+
+
+def unobserved_quota_headroom(
+    evidence: CandidateEvidence | None = None, *, quota_total: float | None = None
+) -> dict[str, str]:
+    """Omitted quota/headroom stay UNKNOWN; never invent 100% from a null total."""
+    if quota_total is None:
+        return {"quota": "UNKNOWN", "headroom": "UNKNOWN"}
+    quota = None if evidence is None else evidence.quota_remaining_pct
+    headroom = None if evidence is None else evidence.headroom_pct
+    return {
+        "quota": "UNKNOWN" if quota is None else "observed",
+        "headroom": "UNKNOWN" if headroom is None else "observed",
+    }
 
 
 @dataclass(frozen=True)
@@ -171,6 +205,8 @@ class RouteSelection:
 
     selected: CandidateEvidence
     exclusion_reasons: tuple[str, ...] = ()
+    admitted_ids: tuple[str, ...] = ()
+    ranked_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -412,7 +448,60 @@ def select_eligible_route(
     if not eligible:
         raise ValueError("no eligible route; exclusions: " + ", ".join(excluded))
     selected = max(eligible, key=ranker or (lambda _candidate: 0.0))
-    return RouteSelection(selected=selected, exclusion_reasons=tuple(excluded))
+    admitted_ids = tuple(candidate.route.model_id for candidate in eligible)
+    ranked_ids = (
+        selected.route.model_id,
+        *(
+            candidate.route.model_id
+            for candidate in eligible
+            if candidate.route.model_id != selected.route.model_id
+        ),
+    )
+    return RouteSelection(
+        selected=selected,
+        exclusion_reasons=tuple(excluded),
+        admitted_ids=admitted_ids,
+        ranked_ids=ranked_ids,
+    )
+
+
+def evidence_from_packet_route(route: Mapping[str, Any]) -> CandidateEvidence:
+    """Build gate evidence from a packet-execute route mapping."""
+    requested = str(route.get("requested_identity") or "").strip()
+    actual = str(route.get("actual_identity") or requested).strip()
+    if not actual:
+        raise ValueError("packet route missing identity")
+    provider = str(route.get("provider") or "").strip()
+    if not provider:
+        provider = actual.split("/", 1)[0] if "/" in actual else "unknown"
+    state_raw = str(route.get("availability_state") or "").strip().lower()
+    if state_raw:
+        availability = AvailabilityState(state_raw)
+    elif route.get("admitted") is True:
+        availability = AvailabilityState.ELIGIBLE
+    else:
+        availability = AvailabilityState.UNKNOWN
+    return CandidateEvidence(
+        requested_alias=requested or actual,
+        route=AdapterRouteIdentity(
+            gateway_id=str(route.get("gateway_id") or "packet"),
+            route_id=str(route.get("route_id") or actual),
+            provider=provider,
+            model_id=actual,
+            protocol=str(route.get("protocol") or "openai.chat"),
+        ),
+        availability=availability,
+        capabilities={"chat": "observed"},
+        observed_at=datetime.now(timezone.utc),
+        ttl_seconds=60,
+        source="packet-execute",
+    )
+
+
+def packet_admission_inventory(routes: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+    """Run EligibilityGate then rank; return ids for packet-execute receipts."""
+    selection = select_eligible_route([evidence_from_packet_route(route) for route in routes])
+    return {"admitted_ids": list(selection.admitted_ids), "ranked_ids": list(selection.ranked_ids)}
 
 
 def compose_candidate_evidence(
@@ -625,6 +714,8 @@ __all__ = [
     "attest_response",
     "compose_candidate_evidence",
     "discover_concrete_routes",
+    "evidence_from_packet_route",
     "normalize_retry_safety",
+    "packet_admission_inventory",
     "select_eligible_route",
 ]
