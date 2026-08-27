@@ -1604,3 +1604,42 @@ def test_execute_proceeds_when_criterion_is_red_before_the_change(repo: Path) ->
         require_red_green=True,
     )
     assert report.terminal_state == "completed"
+
+
+def test_delegable_unit_refuses_primary_while_a_free_route_is_admitted(repo: Path) -> None:
+    """FR-031: legwork must not spend subscription capacity when free is available.
+
+    This is the whole economic thesis: a unit whose requirements any admitted
+    non-primary identity satisfies has no business consuming a paid frontier seat.
+    """
+    from verdict.autodev_run import AutodevError
+
+    primary_route = {**_route("paid/frontier", "gateway/paid-v1"), "primary": True}
+    with pytest.raises(AutodevError, match="delegable"):
+        run_packet_autodev(
+            _packet(repo),
+            repo,
+            admitted_route=primary_route,
+            candidate_routes=[primary_route, _route("free/cheap", "gateway/free-v1")],
+            executor_factory=_Factory([{"content": "after\n"}]),
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+            delegation="legwork",
+        )
+
+
+def test_decision_unit_may_use_primary_and_records_the_deciding_capability(repo: Path) -> None:
+    """FR-031: a reserved decision may spend primary, but must name why it is undelegable."""
+    primary_route = {**_route("paid/frontier", "gateway/paid-v1"), "primary": True}
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=primary_route,
+        candidate_routes=[primary_route, _route("free/cheap", "gateway/free-v1")],
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        delegation="decision",
+        undelegable_reason="requires cross-repository interface judgment",
+    )
+    assert report.terminal_state == "completed"

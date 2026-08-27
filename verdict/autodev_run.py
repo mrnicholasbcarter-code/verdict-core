@@ -201,6 +201,45 @@ def compile_worker_context(
     return replace(pack, created_at=0.0)
 
 
+def _enforce_delegation_floor(
+    delegation: str | None,
+    admitted_route: Mapping[str, Any],
+    candidate_routes: Sequence[Mapping[str, Any]] | None,
+    *,
+    undelegable_reason: str | None,
+) -> None:
+    """Legwork must not spend subscription capacity when a free route is admitted (FR-031).
+
+    This is a floor, not a preference: the whole point of delegating is that scarce paid
+    frontier capacity is reserved for units that genuinely need it. A unit classified as a
+    decision may use a primary route, but must name the capability that made it undelegable
+    so the choice is auditable rather than self-granted.
+    """
+    if delegation is None:
+        return
+    if delegation == "decision":
+        if not (undelegable_reason or "").strip():
+            raise AutodevError(
+                "a unit classified as a decision must name the capability that makes it "
+                "undelegable before it may consume primary-subscription capacity"
+            )
+        return
+    if delegation != "legwork":
+        raise AutodevError(f"unknown delegation classification: {delegation!r}")
+    if not admitted_route.get("primary"):
+        return
+    alternatives = [
+        str(route.get("requested_identity") or route.get("actual_identity") or "")
+        for route in candidate_routes or ()
+        if route.get("admitted", True) and not route.get("primary")
+    ]
+    if alternatives:
+        raise AutodevError(
+            "delegable legwork may not consume primary-subscription capacity while "
+            f"qualified non-primary routes are admitted: {sorted(filter(None, alternatives))}"
+        )
+
+
 def _require_failing_criterion(
     repo: Path, packet: ExecutionPacket, *, verification_runner: Any
 ) -> None:
@@ -852,8 +891,13 @@ def run_packet_autodev(
     candidate_routes: Sequence[Mapping[str, Any]] | None = None,
     canary_state: Mapping[str, Any] | None = None,
     require_red_green: bool = False,
+    delegation: str | None = None,
+    undelegable_reason: str | None = None,
 ) -> PacketAutodevReport:
     """Run one admitted packet task in a clean worktree, with one fallback."""
+    _enforce_delegation_floor(
+        delegation, admitted_route, candidate_routes, undelegable_reason=undelegable_reason
+    )
     if require_red_green:
         _require_failing_criterion(
             Path(repo_path).resolve(), packet, verification_runner=verification_runner
