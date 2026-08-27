@@ -1,6 +1,14 @@
 """Provider quota and headroom checks."""
 
-__all__ = ["UNKNOWN_HEADROOM", "check_headroom", "headroom_is_unknown"]
+__all__ = [
+    "UNKNOWN_HEADROOM",
+    "Affordability",
+    "affordability",
+    "check_headroom",
+    "headroom_is_unknown",
+]
+
+from dataclasses import dataclass
 
 from verdict.models import ProviderConfig
 
@@ -21,6 +29,36 @@ def check_headroom(
         return None
 
     return None
+
+
+@dataclass(frozen=True)
+class Affordability:
+    """Whether observed capacity can finish a unit of the estimated size (FR-029)."""
+
+    admitted: bool
+    state: str
+    reason: str
+
+
+def affordability(*, estimated_tokens: int | None, remaining_tokens: int | None) -> Affordability:
+    """Admission floor: exclude only on observed capacity below the estimated unit cost.
+
+    Unobserved capacity, or an unestimated unit, yields ``UNKNOWN`` and never excludes —
+    the gateway exposing no quota is the normal case, and inventing a number to exclude on
+    would violate the observed-only rule (FR-015).
+    """
+    if estimated_tokens is None or remaining_tokens is None:
+        return Affordability(True, "UNKNOWN", "no observed capacity or no cost estimate")
+    if remaining_tokens < estimated_tokens:
+        return Affordability(
+            False,
+            "insufficient",
+            f"observed remaining {remaining_tokens} tokens "
+            f"cannot complete estimated {estimated_tokens}",
+        )
+    return Affordability(
+        True, "sufficient", f"observed remaining {remaining_tokens} >= estimated {estimated_tokens}"
+    )
 
 
 def headroom_is_unknown(result: tuple[bool, float] | None) -> bool:

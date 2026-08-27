@@ -15,8 +15,37 @@ from verdict.probes import ProbeBudget, ProbePolicy, ProbeRunner, ProbeTransport
 
 @dataclass(frozen=True)
 class TaskNeed:
+    """Capability predicates derived from one work unit (FR-030)."""
+
     chat: bool = False
     min_context: int | None = None
+    tools: bool = False
+    modality: str | None = None
+    token_budget: int | None = None
+
+    @property
+    def context_floor(self) -> int | None:
+        """Largest stated context requirement: explicit floor or the unit's token budget."""
+        floors = [value for value in (self.min_context, self.token_budget) if value]
+        return max(floors) if floors else None
+
+    def required_capabilities(self) -> tuple[str, ...]:
+        names = []
+        if self.chat:
+            names.append("chat")
+        if self.tools:
+            names.append("tools")
+        if self.modality:
+            names.append(self.modality)
+        return tuple(names)
+
+
+MODALITIES = frozenset({"chat", "completion", "embedding", "vision", "audio", "image"})
+
+# Live catalogs describe text generation by omission: they enumerate extras
+# (tools/vision/reasoning) and never state `chat`. Only a row that positively
+# declares a different modality can be treated as stating chat's absence.
+NON_CHAT_MODALITIES = frozenset({"embedding", "image", "audio"})
 
 
 def _positive_price(pricing: object) -> bool:
@@ -35,23 +64,36 @@ def _pool_alias(model_id: str) -> bool:
     return model_id.rsplit("/", 1)[-1].lower() == "free"
 
 
-def _chat_ok(row: Mapping[str, Any], need: TaskNeed) -> bool:
-    if not need.chat:
-        return True
+def _capabilities_ok(row: Mapping[str, Any], need: TaskNeed) -> bool:
+    """Stated absence of a required capability excludes; an omitted one fails open.
+
+    A capabilities map that names any modality enumerates them exhaustively, so a
+    required modality missing from it is a stated absence. Feature flags such as
+    tool calling are not enumerated that way and fail open when unstated.
+    """
     caps = row.get("capabilities")
     if not isinstance(caps, Mapping):
         return True  # omit → fail-open
-    return bool(caps.get("chat"))
+    for name in need.required_capabilities():
+        stated = caps.get(name)
+        if stated is None:
+            if name == "chat" and any(caps.get(other) for other in NON_CHAT_MODALITIES):
+                return False  # positively declares a different modality
+            continue  # unstated → fail-open
+        if not stated:
+            return False
+    return True
 
 
 def _context_ok(row: Mapping[str, Any], need: TaskNeed) -> bool:
-    if need.min_context is None:
+    floor = need.context_floor
+    if floor is None:
         return True
     raw = row.get("context_length")
     if raw is None:
         return True  # omit → fail-open
     try:
-        return int(raw) >= need.min_context
+        return int(raw) >= floor
     except (TypeError, ValueError):
         return True
 
@@ -79,7 +121,7 @@ def keep_free_compatible(rows: Sequence[Mapping[str, Any]], need: TaskNeed) -> l
             continue
         if _positive_price(row.get("pricing")):
             continue
-        if not _chat_ok(row, need) or not _context_ok(row, need):
+        if not _capabilities_ok(row, need) or not _context_ok(row, need):
             continue
         kept.append(model_id)
     return kept

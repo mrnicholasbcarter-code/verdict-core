@@ -81,6 +81,71 @@ def test_pick_best_live_is_min_latency_free_not_first_ready() -> None:
     assert pick_best_live(observations) == "fast/free:free"
 
 
+def test_keep_excludes_stated_missing_tool_calling_when_unit_requires_it() -> None:
+    """FR-030: predicates come from the unit. Stated absence excludes; omission fails open."""
+    rows = [
+        _row("oc/no-tools:free", capabilities={"chat": True, "tools": False}),
+        _row("oc/has-tools:free", capabilities={"chat": True, "tools": True}),
+        _row("oc/unstated:free", capabilities={"chat": True}),
+    ]
+    keep = keep_free_compatible(rows, TaskNeed(chat=True, tools=True))
+    assert keep == ["oc/has-tools:free", "oc/unstated:free"]
+
+
+def test_keep_without_tool_requirement_keeps_non_tool_routes() -> None:
+    """A unit that needs no tools must not have tool calling imposed on it."""
+    rows = [_row("oc/no-tools:free", capabilities={"chat": True, "tools": False})]
+    assert keep_free_compatible(rows, TaskNeed(chat=True)) == ["oc/no-tools:free"]
+
+
+def test_keep_uses_token_budget_as_context_floor() -> None:
+    """FR-030: the unit's declared token budget is the context predicate."""
+    rows = [
+        _row("oc/tiny:free", capabilities=CHAT, context_length=2048),
+        _row("oc/roomy:free", capabilities=CHAT, context_length=200_000),
+    ]
+    keep = keep_free_compatible(rows, TaskNeed(chat=True, token_budget=8192))
+    assert keep == ["oc/roomy:free"]
+
+
+def test_keep_excludes_stated_missing_modality_when_unit_requires_it() -> None:
+    rows = [
+        _row("oc/text-only:free", capabilities={"chat": True, "vision": False}),
+        _row("oc/sees:free", capabilities={"chat": True, "vision": True}),
+    ]
+    keep = keep_free_compatible(rows, TaskNeed(chat=True, modality="vision"))
+    assert keep == ["oc/sees:free"]
+
+
+def test_keep_retains_real_catalog_free_rows_that_never_state_chat() -> None:
+    """Live catalogs advertise tools/vision/reasoning but no `chat` key. Those are the
+    free models the whole harvest exists to find; an absent `chat` must never drop them."""
+    row = _row(
+        "openrouter/inclusionai/ling-3.0-flash:free",
+        capabilities={
+            "vision": False,
+            "pdf": False,
+            "audioInput": False,
+            "tools": True,
+            "reasoning": True,
+            "contextWindow": 128_000,
+        },
+        context_length=128_000,
+    )
+    keep = keep_free_compatible([row], TaskNeed(chat=True, tools=True, token_budget=8192))
+    assert keep == ["openrouter/inclusionai/ling-3.0-flash:free"]
+
+
+def test_keep_drops_opaque_alias_in_any_namespace() -> None:
+    """`kr/auto` is a gateway resolver alias, not a concrete route (FR-008)."""
+    rows = [
+        _row("kr/auto", owned_by="kr", capabilities={"thinking": False}),
+        _row("kr/auto-thinking", owned_by="kr", capabilities={"thinking": True}),
+        _row("kr/claude-sonnet-4.5", owned_by="kr", capabilities={"thinking": False}),
+    ]
+    assert keep_free_compatible(rows, TaskNeed(chat=True)) == ["kr/claude-sonnet-4.5"]
+
+
 def test_catalog_rows_from_payload_reads_openai_data_list() -> None:
     rows = catalog_rows_from_payload(
         {"object": "list", "data": [{"id": "oc/hy3:free"}, {"id": "paid/gpt"}]}
