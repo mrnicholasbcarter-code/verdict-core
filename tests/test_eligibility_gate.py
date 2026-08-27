@@ -360,9 +360,11 @@ def test_shadow_canary_is_bounded_and_rollback_restores_baseline_choice() -> Non
     assert canary["chosen"] == "b/2"
     assert canary["baseline"] == "a/1"
     assert canary["active"] is True
+    assert canary["improvement"] is True
     rolled = rollback_shadow_canary(canary)
     assert rolled["chosen"] == "a/1"
     assert rolled["active"] is False
+    assert rolled.get("improvement") is False
     gate = EligibilityGate(
         _cache(_report(("a/1", "eligible"), ("b/2", "eligible"))).get,
         protected_fail_closed=True,
@@ -376,6 +378,30 @@ def test_shadow_canary_is_bounded_and_rollback_restores_baseline_choice() -> Non
     _ = apply_shadow_canary(admitted, report)
     after = {m.id for m in gate.evaluate(candidates, dev_mode=True).admitted}
     assert before == after == {"a/1", "b/2"}
+
+
+def test_canary_reports_truthful_no_improvement_when_chosen_is_baseline() -> None:
+    from verdict.autodev_run import apply_shadow_canary, shadow_learning_report
+
+    digest = "sha256:" + "44" * 32
+    report = shadow_learning_report(
+        [
+            {
+                "packet_integrity_digest": digest,
+                "actual_identity": "a/1",
+                "trusted_verification": {"decided": True, "role": "deciding"},
+            },
+            {
+                "packet_integrity_digest": digest,
+                "actual_identity": "b/2",
+                "trusted_verification": {"decided": False, "role": "deciding"},
+            },
+        ]
+    )
+    canary = apply_shadow_canary(("a/1", "b/2"), report)
+    assert canary["chosen"] == "a/1"
+    assert canary["baseline"] == "a/1"
+    assert canary["improvement"] is False
 
 
 def test_shadow_canary_does_not_require_a_vendor_brand() -> None:

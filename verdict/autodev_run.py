@@ -432,20 +432,36 @@ def apply_shadow_canary(admitted: Sequence[str], report: Mapping[str, Any]) -> d
     baseline = admitted[0] if admitted else ""
     allowed = set(admitted)
     chosen = baseline
+    picked = False
+    wins: dict[str, int] = {}
     for row in report.get("advisory_ranking") or ():
         if not isinstance(row, Mapping):
             continue
         identity = str(row.get("identity") or "")
-        if identity in allowed:
+        wins[identity] = int(row.get("wins") or 0)
+        if not picked and identity in allowed:
             chosen = identity
-            break
-    return {"active": True, "admission_unchanged": True, "baseline": baseline, "chosen": chosen}
+            picked = True
+    improvement = chosen != baseline and wins.get(chosen, 0) > wins.get(baseline, 0)
+    return {
+        "active": True,
+        "admission_unchanged": True,
+        "baseline": baseline,
+        "chosen": chosen,
+        "improvement": improvement,
+    }
 
 
 def rollback_shadow_canary(canary: Mapping[str, Any]) -> dict[str, Any]:
     """Restore the pre-canary baseline choice."""
     baseline = str(canary.get("baseline") or "")
-    return {"active": False, "admission_unchanged": True, "baseline": baseline, "chosen": baseline}
+    return {
+        "active": False,
+        "admission_unchanged": True,
+        "baseline": baseline,
+        "chosen": baseline,
+        "improvement": False,
+    }
 
 
 @dataclass(frozen=True)
