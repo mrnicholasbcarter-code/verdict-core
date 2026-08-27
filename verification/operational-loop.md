@@ -240,3 +240,120 @@ cases), 15 passed (`test_autodev_operational_loop.py`).
 | Full suite | 1,511 passed, 2 failed — both failures are `test_golden_path.py::test_timeout_is_bounded_and_denies` and `::test_changed_path_outside_declared_boundary_denies`, proven pre-existing at merge-base `762335ee` |
 | Lint (`ruff check .`) | All checks passed |
 | Strict type-check (`mypy --strict verdict/`) | Success: no issues in 116 source files |
+
+Those mechanical gates are **stale**. They bound `00519b1` on 2026-08-24 and did
+not include an independent adversarial review. Closeout evidence below replaces
+them as the current T044 record.
+
+## Closeout 2026-08-27 — remaining LIVE-PROVEN binding
+
+Implementation commit: `daf55e8` on `feat/verdict-operational-loop`
+(`feat(272): record use-time route identity and freeze worker context`).
+Parent: `0d7a22b46eee5cd8f80ebdadadff0457195229dd`. Dirty snapshot digest of the
+closeout working tree immediately before that commit
+(`git status --porcelain=v1 -z --untracked-files=all`):
+`sha256:1cd10be98f05d66da1cad527c27c4981b75b0c8264a7f5348f3bb22f3f73c097`.
+Adaptive-state snapshot deletions were restored and were not part of this
+digest or any commit.
+
+### Live gateway observation (do not mutate settings)
+
+Recorded 2026-08-27T02:53–03:10Z. Task-routing and detection were **not**
+changed by this closeout.
+
+| Field | Observation | Proof |
+|---|---|---|
+| OmniRoute version | `3.8.49` via MCP `omniroute_get_health` | LIVE-PROVEN |
+| `taskRouting.enabled` | `false` (parsed from `GET /api/settings` `taskRouting` JSON string, first successful read) | LIVE-PROVEN |
+| `taskRouting.detectionEnabled` | `true` on that same read (historical T003 recorded `false`) | LIVE-PROVEN, **concern** |
+| Quota CLI | `omniroute quota` → `No quota information available.` | LIVE-PROVEN UNKNOWN |
+| HTTP `GET /v1/models` | Intermittent: 200 in 17 ms, later 10–30 s timeouts with 0 bytes | LIVE-PROVEN |
+| Adapter `observe()` | `OpenAICompatibleEvidenceAdapter` over `OmniRouteAvailabilityAdapter` returned 0 candidates; report errors `('catalog transport: timeout',)`; no quota/headroom fabricated | LIVE-PROVEN fail-closed |
+| Chat completions | `POST http://127.0.0.1:20128/v1/chat/completions` reachable | LIVE-PROVEN |
+
+### T032 — live evidence adapter (LIVE-PROVEN with limitation)
+
+The thin adapter in `verdict/autodev_routing.py` composes the existing
+availability surface and leaves omitted optional facets `None` (unknown).
+Focused fixtures pass. Live `observe()` against the HTTP catalog timed out and
+returned an empty candidate set rather than inventing quota or headroom.
+`omniroute quota` independently reports no quota data, so quota/headroom remain
+`UNKNOWN`. Limitation: a populated live candidate list could not be collected
+in this window because `GET /v1/models` was unreliable.
+
+### T033 — requested vs actual identity (LIVE-PROVEN)
+
+Use-time observation via `PatchExecutor` + `RouteObservation` against the live
+gateway, disposable git repo, no worktree mutation:
+
+| Field | Value |
+|---|---|
+| Requested alias | `kimi-coding/kimi-k2.5` |
+| Actual served identity | `kimi-k2.5` (`body.model`) |
+| Observation outcome | `ok` (HTTP 200) |
+| `identity_mismatch` | `true` (fields kept distinct) |
+| Attempt outcome | `rejected` (non-diff content; route still `ok`) |
+| Quota/headroom | UNKNOWN (not present on the response; CLI has no quota data) |
+
+Catalog vs runtime conflicts are retained on `CandidateEvidence.conflicts` with
+per-field freshness (fixture-proven; no live catalog/runtime conflict payload
+was available because catalog GET timed out).
+
+### T035 — deterministic worker context (LIVE-PROVEN composition + SOURCE identity)
+
+`compile_worker_context` now freezes plan/unit/pack timestamps so two runs on
+the same inputs are byte-identical. Digest
+`sha256:f5bc5745017b8df95287ecd4450ba667e62ae2a64fb4f143a0ef508dbfc38889`
+reproduced twice (242 tokens / 4096). T042 already compiled this seam on a live
+execute (`5695afec`).
+
+### T036–T038, T040 — live packet loop (LIVE-PROVEN via T042/T043, re-verified)
+
+These paths did not change in substance. Existing live demonstrations remain
+valid under AC-P.4 (proof binds to source identity and trusted verification,
+not to the executing model):
+
+| Task | Live evidence | Current SHA regression |
+|---|---|---|
+| T036 drift abort before inference | T042 packet/source binding; fixture `test_autodev_operational_loop.py` | 16 passed |
+| T037 isolated execute + owned-path reject | T042 real patch; T043 clean attempt worktrees | 16 passed |
+| T038 trusted verification outside worker | T042 `.venv/bin/pytest -q tests/test_headroom.py` exit 0, 2 passed | `tests/test_headroom.py` 2 passed |
+| T040 one fallback then terminal bound | T043 exactly one fallback, second refused | 16 passed |
+
+### T044 — Phase D gates from this closeout source (LIVE-PROVEN mechanical)
+
+Required closeout commands:
+
+```text
+uv run pytest -q tests/test_autodev_operational_routing.py tests/test_autodev_operational_loop.py tests/test_autodev_context.py tests/test_headroom.py tests/test_execution_packet.py tests/test_execution_packet_security.py
+# 65 passed (later 66 after context identity test)
+uv run ruff check verdict/autodev_run.py verdict/autodev_routing.py verdict/eligibility.py verdict/patch_executor.py verdict/cli.py
+# All checks passed
+uv run mypy --strict verdict/autodev_run.py verdict/autodev_routing.py verdict/eligibility.py verdict/patch_executor.py
+# Success: no issues found in 4 source files
+```
+
+Full promotion gates after the eligibility identity fix:
+
+| Gate | Result |
+|---|---|
+| Full suite (`uv run pytest -q`) | 1537 passed, 1 warning (Starlette TestClient deprecation). The two `test_golden_path.py` failures recorded at `00519b1` no longer reproduce. |
+| Lint (`uv run ruff check .`) | All checks passed |
+| Strict type-check (`uv run mypy --strict verdict/`) | Success: no issues in 116 source files |
+
+Independent adversarial review: `/home/nick/dev/specs/272-operational-routing-loop/.sdd/t044-review.md`.
+Reviewing identity is the closeout Grok agent (different family than the T042/T043
+implementer). Same-session implementer+reviewer for *this* closeout delta is a
+recorded limitation, not full independence.
+
+### Limitations
+
+- Live HTTP catalog listing was flaky; T032 live candidate enumeration is
+  fail-closed empty, not a populated live evidence set.
+- `taskRouting.detectionEnabled` was observed `true`; this closeout did not
+  change it. `taskRouting.enabled` remained `false`.
+- MCP `omniroute_check_quota` returns `percentRemaining: 100` with
+  `quotaTotal: null`. That is **not** copied into Verdict evidence; CLI and the
+  adapter treat omitted quota as UNKNOWN.
+- T035–T038/T040 do not repeat a second live repository-mutating execute in this
+  closeout; they bind T042/T043 live artifacts plus current-source regressions.
