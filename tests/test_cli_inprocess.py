@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from verdict import cli
+from verdict.execution_packet import ExecutionPacket
 from verdict.provider_detection import DetectedProvider, DetectionResult
 
 
@@ -199,6 +200,95 @@ def test_omniroute_management_requests_use_configured_endpoint(
 
     assert cli._omniroute_api_request("GET", "/api/provider-nodes") == {"ok": True}
     assert seen == ["http://127.0.0.1:24000/management/api/provider-nodes"]
+
+
+def _packet_file(tmp_path: Path) -> Path:
+    payload = {
+        "schema_version": "1",
+        "packet_id": "packet-cli",
+        "packet_version": 1,
+        "story_id": "US1",
+        "story_version": "1",
+        "source": {
+            "repository": "git@example/repo",
+            "worktree": str(tmp_path),
+            "commit": "a" * 40,
+            "branch": "feature/test",
+            "dirty_digest": "sha256:" + "a" * 64,
+            "lock_digests": {},
+        },
+        "intent": {
+            "goal": "Do one bounded task.",
+            "non_goals": [],
+            "acceptance": ["Focused verification passes."],
+            "limitations": [],
+        },
+        "authority": {
+            "owned_paths": ["a.py"],
+            "denied_paths": [],
+            "tools": ["read"],
+            "network": False,
+            "max_spend_usd": 0,
+            "max_concurrency": 1,
+            "max_attempts": 1,
+            "destructive": False,
+            "production": False,
+        },
+        "verification": {"argv": ["pytest", "a.py"], "timeout_seconds": 30},
+        "decisions": [],
+        "context_refs": [],
+        "tasks": [
+            {"task_id": "T1", "description": "Work.", "status": "pending", "dependencies": []}
+        ],
+        "route_attempts": [],
+        "failure_history": [],
+        "transitions": [],
+        "checkpoint_refs": [],
+        "receipt_refs": [],
+        "next_safe_action": "Run the test.",
+        "proof_level": "source-only",
+    }
+    path = tmp_path / "packet.json"
+    path.write_text(json.dumps(ExecutionPacket.from_dict(payload).to_dict()), encoding="utf-8")
+    return path
+
+
+def test_autodev_packet_inspect_validate_and_resume_are_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _packet_file(tmp_path)
+    before = path.read_bytes()
+
+    for action, extra in (
+        ("inspect", []),
+        ("validate", []),
+        ("resume", ["--model", "cc/claude-sonnet-5"]),
+    ):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["verdict", "autodev", "packet", action, "--packet", str(path), "--json", *extra],
+        )
+        cli.main()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["packet_id"] == "packet-cli"
+        assert payload["integrity_digest"].startswith("sha256:")
+
+    assert path.read_bytes() == before
+
+
+def test_autodev_packet_create_refuses_existing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _packet_file(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["verdict", "autodev", "packet", "create", "--packet", str(path), "--from", str(path)],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 1
 
 
 def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:

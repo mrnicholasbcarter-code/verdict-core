@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/execution-packet.v1.json",
+  "title": "Verdict Execution Packet v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "packet_id", "packet_version", "story_id", "story_version",
+    "source", "intent", "authority", "verification", "decisions", "context_refs",
+    "tasks", "route_attempts", "failure_history", "transitions", "checkpoint_refs",
+    "receipt_refs", "next_safe_action", "proof_level", "parent_integrity_digest",
+    "integrity_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "packet_id": {"$ref": "#/$defs/text"},
+    "packet_version": {"type": "integer", "minimum": 1},
+    "story_id": {"$ref": "#/$defs/text"},
+    "story_version": {"$ref": "#/$defs/text"},
+    "source": {"$ref": "#/$defs/source"},
+    "intent": {"$ref": "#/$defs/intent"},
+    "authority": {"$ref": "#/$defs/authority"},
+    "verification": {"$ref": "#/$defs/verification"},
+    "decisions": {"type": "array", "items": {"$ref": "#/$defs/reference"}},
+    "context_refs": {"type": "array", "items": {"$ref": "#/$defs/context_reference"}},
+    "tasks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/task"}},
+    "route_attempts": {"type": "array", "items": {"type": "object"}},
+    "failure_history": {"type": "array", "items": {"type": "object"}},
+    "transitions": {"type": "array", "items": {"$ref": "#/$defs/transition"}},
+    "checkpoint_refs": {"$ref": "#/$defs/strings"},
+    "receipt_refs": {"$ref": "#/$defs/strings"},
+    "next_safe_action": {"$ref": "#/$defs/text"},
+    "proof_level": {"$ref": "#/$defs/proof"},
+    "parent_integrity_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "integrity_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "strings": {"type": "array", "items": {"$ref": "#/$defs/text"}, "uniqueItems": true},
+    "proof": {"enum": ["live-proven", "source-only", "fixture-only", "partial", "missing", "unknown"]},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "worktree", "commit", "branch", "dirty_digest", "lock_digests"],
+      "properties": {
+        "repository": {"$ref": "#/$defs/text"}, "worktree": {"$ref": "#/$defs/text"},
+        "commit": {"$ref": "#/$defs/text"}, "branch": {"$ref": "#/$defs/text"},
+        "dirty_digest": {"$ref": "#/$defs/digest"},
+        "lock_digests": {"type": "object", "additionalProperties": {"$ref": "#/$defs/digest"}}
+      }
+    },
+    "intent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["goal", "non_goals", "acceptance", "limitations"],
+      "properties": {
+        "goal": {"$ref": "#/$defs/text"}, "non_goals": {"$ref": "#/$defs/strings"},
+        "acceptance": {"$ref": "#/$defs/strings"}, "limitations": {"$ref": "#/$defs/strings"}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["owned_paths", "denied_paths", "tools", "network", "max_spend_usd", "max_concurrency", "max_attempts", "destructive", "production"],
+      "properties": {
+        "owned_paths": {"$ref": "#/$defs/strings"}, "denied_paths": {"$ref": "#/$defs/strings"},
+        "tools": {"$ref": "#/$defs/strings"}, "network": {"type": "boolean"},
+        "max_spend_usd": {"type": "number", "minimum": 0},
+        "max_concurrency": {"type": "integer", "minimum": 1},
+        "max_attempts": {"type": "integer", "minimum": 1},
+        "destructive": {"type": "boolean"}, "production": {"type": "boolean"}
+      }
+    },
+    "verification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["argv", "timeout_seconds"],
+      "properties": {"argv": {"$ref": "#/$defs/strings"}, "timeout_seconds": {"type": "integer", "minimum": 1}}
+    },
+    "reference": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "digest"],
+      "properties": {"ref": {"$ref": "#/$defs/text"}, "digest": {"$ref": "#/$defs/digest"}}
+    },
+    "context_reference": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "digest", "proof_level"],
+      "properties": {"ref": {"$ref": "#/$defs/text"}, "digest": {"$ref": "#/$defs/digest"}, "proof_level": {"$ref": "#/$defs/proof"}}
+    },
+    "task": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "description", "status", "dependencies"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/text"}, "description": {"$ref": "#/$defs/text"},
+        "status": {"enum": ["pending", "active", "blocked", "completed", "failed", "uncertain"]},
+        "dependencies": {"$ref": "#/$defs/strings"}
+      }
+    },
+    "transition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transition_id", "task_id", "from_state", "to_state", "reason", "evidence_refs", "side_effect_kind", "committed"],
+      "properties": {
+        "transition_id": {"$ref": "#/$defs/text"}, "task_id": {"$ref": "#/$defs/text"},
+        "from_state": {"$ref": "#/$defs/task/properties/status"},
+        "to_state": {"$ref": "#/$defs/task/properties/status"},
+        "reason": {"$ref": "#/$defs/text"}, "evidence_refs": {"$ref": "#/$defs/strings"},
+        "side_effect_kind": {"enum": ["read-only", "reversible", "irreversible"]},
+        "committed": {"type": "boolean"}
+      }
+    }
+  }
+}

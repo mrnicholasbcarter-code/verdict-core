@@ -4,16 +4,15 @@ from verdict.headroom import check_headroom
 from verdict.models import ModelInfo, ProviderConfig
 
 
-def test_headroom_failures_are_bounded_and_fail_open() -> None:
-    # Health/headroom failures are bounded and never turn unknown into ready
-    # Check that even with an invalid endpoint, check_headroom returns True, 100.0 (fail-open)
-    available, pct = check_headroom(
+def test_headroom_failures_are_bounded_and_report_unknown() -> None:
+    # Health/headroom failures are bounded: unknown capacity is reported as
+    # unknown (None), never fabricated as ready/100%.
+    result = check_headroom(
         "model",
         "provider",
         ProviderConfig(base_url="https://provider.example", headroom_endpoint="/bad-endpoint"),
     )
-    assert available is True
-    assert pct == 100.0
+    assert result is None
 
 
 def test_stale_row_cached_discovery(monkeypatch) -> None:

@@ -14,9 +14,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from verdict.autodev_run import DEFAULT_EXECUTOR_MODEL
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
-from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL
 from verdict.gate import Gate
 from verdict.models import ModelInfo, ProviderConfig, TaskSpec
 from verdict.patch_executor import DEFAULT_BASE_URL
@@ -773,8 +771,8 @@ def cmd_autodev(
     objective: str,
     repo: str,
     *,
-    orchestrator_model: str,
-    executor_model: str,
+    orchestrator_model: str | None,
+    executor_model: str | None,
     base_url: str,
     output_json: bool = False,
     allow_live: bool = False,
@@ -787,9 +785,16 @@ def cmd_autodev(
     consent via ``--allow-live``.  ``--dry-run`` shows the plan and its measured
     cost without executing any unit.
     """
-    from verdict.autodev_run import collect_ruff_evidence, run_autodev
+    from verdict.autodev_run import (
+        _resolve_default_executor_model,
+        _resolve_default_orchestrator_model,
+        collect_ruff_evidence,
+        run_autodev,
+    )
     from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
 
+    orchestrator_model = orchestrator_model or _resolve_default_orchestrator_model()
+    executor_model = executor_model or _resolve_default_executor_model()
     repo_path = Path(repo).resolve()
     if not allow_live:
         message = (
@@ -851,6 +856,177 @@ def cmd_autodev(
         console.print(report.summary())
     if report.failed:
         sys.exit(1)
+
+
+def cmd_autodev_packet_execute(
+    packet_path: str,
+    repo: str,
+    *,
+    output_json: bool = False,
+    allow_live: bool = False,
+    resume: bool = False,
+    primary_fallback: str | None = None,
+    prefer_non_primary: bool = False,
+) -> None:
+    """Execute or resume one bounded packet work unit through an admitted route.
+
+    A dry-run, mock, decomposition-only, or unverified response can never
+    produce a completed proof class here; only independent trusted verification
+    decides success. ``--primary-fallback`` is the operator designation path
+    when no CandidateEvidence object is supplied; ``run_packet_autodev``
+    composes ``primary`` from ``to_admission_record`` when refresh returns
+    evidence.
+    """
+    from verdict.autodev_run import designated_primary_fallback, run_packet_autodev
+    from verdict.execution_packet import (
+        ExecutionPacketStore,
+        UnsupportedSchemaVersionError,
+        schema_refusal_receipt,
+    )
+
+    if not allow_live:
+        message = "packet execute calls live routes and edits the working tree; pass --allow-live"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(2)
+
+    path = Path(packet_path).expanduser().resolve()
+    store = ExecutionPacketStore(path.parent)
+    try:
+        packet = store.validate(path)
+    except UnsupportedSchemaVersionError as exc:
+        receipt = schema_refusal_receipt(exc)
+        if output_json:
+            print(json.dumps(receipt, sort_keys=True))
+        else:
+            console.print(f"[bold red]refused before any gateway request: {exc}[/bold red]")
+        raise SystemExit(1) from exc
+
+    route = dict(packet.route_attempts[-1]) if packet.route_attempts else {}
+    if prefer_non_primary and route.get("primary") is True:
+        message = (
+            "first attempt must use a concrete non-primary route; "
+            "the supplied admitted route occupies the primary-subscription role"
+        )
+        if output_json:
+            print(
+                json.dumps(
+                    {"error": message, "missing": "non-primary admitted route"}, sort_keys=True
+                )
+            )
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    fallback_route = None
+    if primary_fallback:
+        digest = str(route.get("evidence_digest") or "")
+        actual = primary_fallback
+        for attempt in packet.route_attempts:
+            requested = str(attempt.get("requested_identity") or "")
+            served = str(attempt.get("actual_identity") or "")
+            if primary_fallback in {requested, served}:
+                digest = str(attempt.get("evidence_digest") or digest)
+                actual = served or primary_fallback
+                break
+        fallback_route = designated_primary_fallback(
+            primary_fallback, evidence_digest=digest, actual_identity=actual
+        )
+    report = run_packet_autodev(
+        packet,
+        Path(repo).expanduser().resolve(),
+        admitted_route=route,
+        fallback_route=fallback_route,
+        resume=resume,
+    )
+    completed_class = "live-proven" if report.terminal_state == "completed" else "not-completed"
+    payload = {
+        "terminal_state": report.terminal_state,
+        "proof_level": completed_class,
+        "resumed": report.resumed,
+        "fallback_count": report.fallback_count,
+        "checkpoints": report.checkpoints,
+        "receipt_ids": list(report.receipt_ids),
+    }
+    if output_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        console.print(
+            f"[bold]{report.terminal_state}[/bold] ({completed_class}) "
+            f"fallbacks={report.fallback_count} checkpoints={len(report.checkpoints)}"
+        )
+    if report.terminal_state != "completed":
+        raise SystemExit(1)
+
+
+def cmd_autodev_packet(
+    action: str,
+    packet_path: str,
+    *,
+    source_path: str | None = None,
+    model: str | None = None,
+    output_json: bool = False,
+) -> None:
+    """Create or inspect a portable packet without granting execution authority."""
+
+    from verdict.execution_packet import (
+        ExecutionPacket,
+        ExecutionPacketError,
+        ExecutionPacketStore,
+        UnsupportedSchemaVersionError,
+        schema_refusal_receipt,
+    )
+
+    path = Path(packet_path).expanduser().resolve()
+    store = ExecutionPacketStore(path.parent)
+    try:
+        if action == "create":
+            if source_path is None:
+                raise ExecutionPacketError("packet create requires --from")
+            source = Path(source_path).expanduser().resolve()
+            payload = json.loads(source.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ExecutionPacketError("packet source JSON must be an object")
+            created = ExecutionPacket.from_dict(payload)
+            store.create(created, path)
+            packet = created
+        elif action in {"inspect", "validate"}:
+            packet = store.validate(path)
+        elif action == "resume":
+            if model is None:
+                raise ExecutionPacketError("packet resume requires --model")
+            packet = store.resume(path, executing_model=model)
+        else:
+            raise ExecutionPacketError(f"unsupported packet action: {action}")
+    except UnsupportedSchemaVersionError as exc:
+        receipt = schema_refusal_receipt(exc)
+        if output_json:
+            print(json.dumps(receipt, sort_keys=True))
+        else:
+            console.print(
+                f"[bold red]refused {receipt['encountered_schema_version']!r} — "
+                f"supported: {', '.join(receipt['supported_schema_versions'])} "
+                f"(no gateway request issued)[/bold red]"
+            )
+        raise SystemExit(1) from exc
+    except (ExecutionPacketError, OSError, ValueError) as exc:
+        if output_json:
+            print(json.dumps({"error": str(exc)}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+
+    data = packet.to_dict()
+    if model is not None and action == "resume":
+        data["executing_model"] = model
+    if output_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+    else:
+        console.print(
+            f"[bold]{packet.packet_id}[/bold] v{packet.packet_version} "
+            f"{packet.proof_level.value}\nnext: {packet.next_safe_action}"
+        )
 
 
 def cmd_autodev_golden_path(
@@ -1965,17 +2141,17 @@ def main() -> None:
     autodev_p = subparsers.add_parser(
         "autodev", help="Decompose an objective, execute each unit on a cheap route, and verify"
     )
-    autodev_p.add_argument("--objective", required=True, help="What the run must accomplish")
+    autodev_p.add_argument("--objective", help="What the run must accomplish")
     autodev_p.add_argument("--repo", default=".", help="Repository to work in (default: .)")
     autodev_p.add_argument(
         "--orchestrator-model",
-        default=DEFAULT_ORCHESTRATOR_MODEL,
-        help=f"Model that decomposes and plans (default: {DEFAULT_ORCHESTRATOR_MODEL})",
+        default=None,
+        help="Model that decomposes and plans (default: resolved from live gateway availability)",
     )
     autodev_p.add_argument(
         "--executor-model",
-        default=DEFAULT_EXECUTOR_MODEL,
-        help=f"Cheap route that executes units (default: {DEFAULT_EXECUTOR_MODEL})",
+        default=None,
+        help="Cheap route that executes units (default: resolved from live gateway availability)",
     )
     autodev_p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OpenAI-compatible gateway")
     autodev_p.add_argument("--json", action="store_true", help="Emit the machine-readable report")
@@ -1992,6 +2168,34 @@ def main() -> None:
     autodev_p.add_argument(
         "--dry-run", action="store_true", help="Show the plan and its cost without executing"
     )
+    packet_p = autodev_p.add_subparsers(dest="autodev_action")
+    packet_root = packet_p.add_parser("packet", help="Portable packet operations")
+    packet_actions = packet_root.add_subparsers(dest="packet_action", required=True)
+    for action in ("create", "inspect", "validate", "resume", "execute"):
+        action_p = packet_actions.add_parser(action)
+        action_p.add_argument("--packet", required=True)
+        action_p.add_argument("--json", action="store_true")
+        if action == "create":
+            action_p.add_argument("--from", dest="source_path", required=True)
+        if action == "resume":
+            action_p.add_argument("--model", required=True)
+        if action == "execute":
+            action_p.add_argument("--repo", required=True)
+            action_p.add_argument(
+                "--allow-live",
+                action="store_true",
+                help="consent: executes through the gateway and edits the working tree",
+            )
+            action_p.add_argument(
+                "--prefer-non-primary",
+                action="store_true",
+                help="first attempt must use a concrete non-primary admitted route",
+            )
+            action_p.add_argument(
+                "--primary-fallback",
+                default=None,
+                help="concrete route that currently occupies the primary-subscription role",
+            )
 
     golden_p = subparsers.add_parser(
         "autodev-golden-path",
@@ -2315,17 +2519,39 @@ def main() -> None:
     elif args.command == "route":
         cmd_route(args.task, args.criticality, args.terse)
     elif args.command == "autodev":
-        cmd_autodev(
-            args.objective,
-            args.repo,
-            orchestrator_model=args.orchestrator_model,
-            executor_model=args.executor_model,
-            base_url=args.base_url,
-            output_json=args.json,
-            allow_live=args.allow_live,
-            no_mechanical=args.no_mechanical,
-            dry_run=args.dry_run,
-        )
+        if args.autodev_action == "packet":
+            if args.packet_action == "execute":
+                cmd_autodev_packet_execute(
+                    args.packet,
+                    getattr(args, "repo", "."),
+                    output_json=args.json,
+                    allow_live=getattr(args, "allow_live", False),
+                    resume=True,
+                    primary_fallback=getattr(args, "primary_fallback", None),
+                    prefer_non_primary=getattr(args, "prefer_non_primary", False),
+                )
+            else:
+                cmd_autodev_packet(
+                    args.packet_action,
+                    args.packet,
+                    source_path=getattr(args, "source_path", None),
+                    model=getattr(args, "model", None),
+                    output_json=args.json,
+                )
+        else:
+            if not args.objective:
+                parser.error("verdict autodev requires --objective unless using packet operations")
+            cmd_autodev(
+                args.objective,
+                args.repo,
+                orchestrator_model=args.orchestrator_model,
+                executor_model=args.executor_model,
+                base_url=args.base_url,
+                output_json=args.json,
+                allow_live=args.allow_live,
+                no_mechanical=args.no_mechanical,
+                dry_run=args.dry_run,
+            )
     elif args.command == "autodev-golden-path":
         cmd_autodev_golden_path(
             args.objective,

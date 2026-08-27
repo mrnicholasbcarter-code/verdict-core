@@ -22,14 +22,26 @@ provider omitted usage are counted separately rather than estimated.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import shutil
 import subprocess
+import tempfile
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from verdict.context_pack import (
+    ContextPack,
+    ContextPackCompiler,
+    ContextPlan,
+    ContextUnit,
+    SlotType,
+)
 from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL, Decomposer, DecompositionConfig
+from verdict.execution_packet import ExecutionPacket, capture_source_binding
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
     PatchAttempt,
@@ -40,12 +52,762 @@ from verdict.patch_executor import (
 from verdict.receipt_store import ReceiptStore
 from verdict.work_unit import WorkUnit, normalize_owned_path
 
-DEFAULT_EXECUTOR_MODEL = "cc/claude-sonnet-5"
+# No model name is hardcoded as policy: the default executor route is resolved
+# dynamically from live gateway availability + the eligibility gate. This
+# constant is only the last-resort fallback when no gateway is reachable.
+DEFAULT_EXECUTOR_MODEL = "unresolved/executor"
+
+
+def _resolve_default_executor_model() -> str:
+    """Resolve the cheap-executor route from live gateway evidence, fail-open to the fallback."""
+    try:
+        from verdict.subagent_models import select_model_for_role
+
+        model = select_model_for_role("scout", dev_mode=True)
+        if model is not None and model.id:
+            return model.id
+    except Exception:
+        pass
+    return DEFAULT_EXECUTOR_MODEL
+
+
+def _resolve_default_orchestrator_model() -> str:
+    """Resolve the orchestrator route from live gateway evidence, fail-open to the fallback."""
+    try:
+        from verdict.subagent_models import select_model_for_role
+
+        model = select_model_for_role("oracle", dev_mode=True)
+        if model is not None and model.id:
+            return model.id
+    except Exception:
+        pass
+    return DEFAULT_ORCHESTRATOR_MODEL
+
+
 AUTODEV_SCOPE = "autodev"
+_STABLE_CONTEXT_OBSERVED_AT = "1970-01-01T00:00:00Z"
 # Measured token counts, not secrets: without this the receipt store's
 # ``token``/``prompt``/``completion`` key patterns redact the very numbers the
 # expensive/cheap split is supposed to be evidence for.
 _USAGE_ALLOWLIST = ("usage.prompt_tokens", "usage.completion_tokens", "usage.total_tokens")
+_PACKET_RECEIPT_ALLOWLIST = (
+    *_USAGE_ALLOWLIST,
+    "token_budget",
+    "used_tokens",
+    "worker_self_report.outcome",
+    "trusted_verification.decided",
+)
+
+
+def _context_text(value: Any) -> str:
+    """Render request values in a stable, prompt-safe representation."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        return json.dumps(dict(value), sort_keys=True, separators=(",", ":"))
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return "\n".join(_context_text(item) for item in value)
+    return str(value)
+
+
+def _worker_context_unit(
+    *, unit_id: str, slot_type: str, key: str, content: str, source_uri: str
+) -> ContextUnit:
+    """Create a source-attributed unit for the deterministic worker pack."""
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return ContextUnit(
+        unit_id=unit_id,
+        slot_type=cast(SlotType, slot_type),
+        key=key,
+        content=content,
+        source_uri=source_uri,
+        source_digest=f"sha256:{digest}",
+        revision="request",
+        trust="caller-provided",
+        authority="execution-request",
+        sensitivity="standard",
+        observed_at=_STABLE_CONTEXT_OBSERVED_AT,
+        created_at=0.0,
+    )
+
+
+def compile_worker_context(
+    *,
+    objective: str,
+    non_goals: Sequence[str],
+    acceptance: Sequence[str],
+    authority: Mapping[str, Any],
+    owned_source: Mapping[str, str],
+    repository_instructions: Sequence[str],
+    relevant_examples: Sequence[str],
+    governing_docs: Sequence[str],
+    symbol_relationship: str | None = None,
+    token_budget: int = 4096,
+) -> ContextPack:
+    """Compile the bounded deterministic context package for one worker.
+
+    This is deliberately a composition seam over :class:`ContextPackCompiler`:
+    it does no retrieval, decomposition, or model-specific formatting.  Each
+    request field becomes a source-attributed unit and the compiler owns
+    ordering, sanitization, budgeting, and omission decisions.
+    """
+    units: list[ContextUnit] = []
+
+    def add(slot_type: str, key: str, content: Any, source_uri: str) -> None:
+        rendered = _context_text(content)
+        if not rendered.strip():
+            return
+        units.append(
+            _worker_context_unit(
+                unit_id=f"autodev:{key}",
+                slot_type=slot_type,
+                key=key,
+                content=rendered,
+                source_uri=source_uri,
+            )
+        )
+
+    add("instructions", "objective", objective, "urn:verdict:autodev:objective")
+    add("policy", "non_goals", non_goals, "urn:verdict:autodev:non_goals")
+    add("policy", "acceptance", acceptance, "urn:verdict:autodev:acceptance")
+    add("policy", "authority", authority, "urn:verdict:autodev:authority")
+    for path, source in owned_source.items():
+        add("evidence", f"owned_source:{path}", source, path)
+    add(
+        "instructions",
+        "repository_instructions",
+        repository_instructions,
+        "urn:verdict:autodev:repository_instructions",
+    )
+    add("examples", "relevant_examples", relevant_examples, "urn:verdict:autodev:relevant_examples")
+    add("policy", "governing_docs", governing_docs, "urn:verdict:autodev:governing_docs")
+    if symbol_relationship is not None:
+        add(
+            "evidence",
+            "symbol_relationship",
+            symbol_relationship,
+            "urn:verdict:autodev:symbol_relationship",
+        )
+
+    plan = ContextPlan(
+        plan_id="autodev:worker-context",
+        candidate_id="autodev-worker",
+        token_budget=token_budget,
+        created_at=_STABLE_CONTEXT_OBSERVED_AT,
+    )
+    pack = ContextPackCompiler(default_token_budget=token_budget).compile_units(units, plan)
+    return replace(pack, created_at=0.0)
+
+
+def compile_packet_context(
+    packet: ExecutionPacket,
+    repo_path: str | Path,
+    *,
+    repository_instruction_paths: Sequence[str] = ("AGENTS.md",),
+    governing_doc_paths: Sequence[str] = (),
+    relevant_example_paths: Sequence[str] = (),
+    symbol_relationship: str | None = None,
+    token_budget: int = 4096,
+    store: ReceiptStore | None = None,
+) -> ContextPack:
+    """Compile and optionally receipt the deterministic worker input for a packet.
+
+    Retrieval is intentionally bounded to explicit packet-owned paths and
+    caller-selected repository documents. Missing optional documents are omitted;
+    no placeholder content or whole-repository scan enters the worker prompt.
+    """
+    repo = Path(repo_path).resolve()
+
+    def read_selected(paths: Sequence[str]) -> dict[str, str]:
+        selected: dict[str, str] = {}
+        for raw_path in paths:
+            normalized = normalize_owned_path(raw_path)
+            target = repo / normalized
+            try:
+                selected[normalized] = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+        return selected
+
+    owned_source = read_selected(tuple(str(path) for path in packet.authority["owned_paths"]))
+    instructions = read_selected(repository_instruction_paths)
+    examples = read_selected(relevant_example_paths)
+    governing_docs = read_selected(governing_doc_paths)
+    verification = "\n".join(str(arg) for arg in packet.verification["argv"])
+    pack = compile_worker_context(
+        objective=str(packet.intent["goal"]),
+        non_goals=tuple(str(value) for value in packet.intent["non_goals"]),
+        acceptance=tuple(str(value) for value in packet.intent["acceptance"]),
+        authority=packet.authority,
+        owned_source=owned_source,
+        repository_instructions=tuple(instructions.values()),
+        relevant_examples=(*examples.values(), verification),
+        governing_docs=tuple(governing_docs.values()),
+        symbol_relationship=symbol_relationship,
+        token_budget=token_budget,
+    )
+    if store is not None:
+        store.put_receipt(
+            "context",
+            "operational-loop",
+            {
+                "packet_id": packet.packet_id,
+                "context_digest": pack.digest,
+                "context_receipt": pack.receipt.to_dict(),
+                "compiled_prompt": pack.compiled_prompt,
+                "used_tokens": pack.used_tokens,
+                "token_budget": pack.token_budget,
+                "omissions": [
+                    decision.to_dict()
+                    for decision in pack.decisions
+                    if decision.action == "exclude"
+                ],
+            },
+            provenance={"source": "verdict.autodev_run", "authority": "compiled"},
+            idempotency_key=f"packet-context:{packet.packet_id}:{pack.digest}",
+            allowlist=_PACKET_RECEIPT_ALLOWLIST,
+        )
+    return pack
+
+
+@dataclass(frozen=True)
+class PacketAttempt:
+    """Redacted, source-bound result of one isolated worker attempt."""
+
+    requested_identity: str
+    actual_identity: str
+    changed_files: tuple[str, ...] = ()
+    artifact_digest: str = ""
+    verified: bool = False
+    reason: str = ""
+    failure_class: str | None = None
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    latency_ms: int = 0
+
+
+@dataclass(frozen=True)
+class PacketAutodevReport:
+    terminal_state: str
+    attempts: tuple[PacketAttempt, ...] = ()
+    fallback_count: int = 0
+    checkpoints: dict[str, str] = field(default_factory=dict)
+    resumed: bool = False
+    context_digest: str | None = None
+    receipt_ids: tuple[str, ...] = ()
+
+
+def _packet_event(store: ReceiptStore, payload: dict[str, Any], *, key: str | None = None) -> str:
+    record = store.put_receipt(
+        "execution",
+        "operational-loop",
+        payload,
+        provenance={"source": "verdict.autodev_run", "authority": "observed"},
+        idempotency_key=key,
+        allowlist=_PACKET_RECEIPT_ALLOWLIST,
+    )
+    return record.receipt_id
+
+
+def _attempt_files(repo: Path) -> tuple[str, ...]:
+    tracked = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--name-only", "--relative"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    untracked = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    return tuple(sorted(set(tracked + untracked)))
+
+
+def _attempt_digest(repo: Path, paths: tuple[str, ...]) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.encode())
+        candidate = repo / path
+        if candidate.is_file():
+            digest.update(candidate.read_bytes())
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _make_attempt_worktree(repo: Path, commit: str) -> Path:
+    path = Path(tempfile.mkdtemp(prefix="verdict-autodev-attempt-"))
+    path.rmdir()
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "--detach", str(path), commit],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return path
+
+
+def _remove_attempt_worktree(repo: Path, attempt_repo: Path) -> None:
+    """Remove a disposable attempt and its Git registration."""
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "remove", "--force", str(attempt_repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "prune"], capture_output=True, text=True, check=False
+    )
+
+
+def _replay_attempt(attempt_repo: Path, repo: Path) -> None:
+    diff = subprocess.run(
+        ["git", "-C", str(attempt_repo), "diff", "--binary", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    if diff:
+        subprocess.run(
+            ["git", "-C", str(repo), "apply", "--whitespace=nowarn", "-"],
+            input=diff,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    # `git diff` never contains untracked files; a worker-created test file was
+    # verified in the attempt and must not silently vanish on replay.
+    untracked = subprocess.run(
+        ["git", "-C", str(attempt_repo), "ls-files", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    for relpath in untracked:
+        source = attempt_repo / relpath
+        target = repo / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+
+
+def designated_primary_fallback(
+    route_id: str,
+    *,
+    evidence_digest: str,
+    actual_identity: str | None = None,
+    admitted: bool = True,
+) -> dict[str, Any]:
+    """Build the one allowed primary-subscription fallback record.
+
+    The caller designates which live route currently occupies that role.
+    The record always carries ``primary=True``; brand prefixes are not used.
+    """
+    if not route_id.strip():
+        raise ValueError("primary fallback requires a concrete route identity")
+    if not evidence_digest.startswith("sha256:"):
+        raise ValueError("primary fallback requires source-linked evidence digest")
+    return {
+        "requested_identity": route_id,
+        "actual_identity": actual_identity or route_id,
+        "admitted": admitted,
+        "evidence_digest": evidence_digest,
+        "primary": True,
+    }
+
+
+def _route_is_admitted(route: Mapping[str, Any] | None, *, fallback: bool = False) -> bool:
+    if route is None or route.get("admitted") is not True:
+        return False
+    # Fresh source-linked evidence digest is part of admission; a bare
+    # identity or a self-report alone never qualifies (AC-0.10).
+    evidence_digest = str(route.get("evidence_digest", ""))
+    if not evidence_digest.startswith("sha256:"):
+        return False
+    requested = str(route.get("requested_identity", ""))
+    resolved = str(route.get("actual_identity", requested))
+    if any(value.startswith("auto/") for value in (requested, resolved)):
+        return False
+    # Fallback must occupy the primary-subscription *role* from evidence.
+    # Brand prefixes are observations, never admission policy (AC-P.1).
+    if fallback:
+        return route.get("primary") is True
+    return True
+
+
+def _default_failure_class(attempt: PacketAttempt) -> str | None:
+    if attempt.verified:
+        return None
+    if "outside owned paths" in attempt.reason:
+        return "policy_boundary"
+    if attempt.reason.startswith("verification exited"):
+        return "verification_failed"
+    if attempt.reason:
+        return "worker_failed"
+    return "unknown_failure"
+
+
+def _packet_work_unit(packet: ExecutionPacket, context_prompt: str) -> WorkUnit:
+    task = packet.tasks[0]
+    return WorkUnit(
+        unit_id=str(task["task_id"]),
+        objective=str(task["description"]),
+        owned_files=tuple(str(path) for path in packet.authority["owned_paths"]),
+        verification_command=tuple(str(arg) for arg in packet.verification["argv"]),
+        context=context_prompt,
+    )
+
+
+def _default_packet_executor_factory(
+    *, attempt_repo: Path, route: Mapping[str, Any], packet: ExecutionPacket
+) -> PatchExecutor:
+    del packet
+    requested = str(route.get("requested_identity", route.get("model", "")))
+    if not requested:
+        raise AutodevError("admitted route has no requested model identity")
+    return PatchExecutor(
+        attempt_repo,
+        PatchExecutorConfig(
+            model=requested,
+            base_url=str(route.get("base_url", DEFAULT_BASE_URL)),
+            api_key=cast(str | None, route.get("api_key")),
+            timeout_seconds=float(route.get("timeout_seconds", 120.0)),
+        ),
+    )
+
+
+def worker_capability_report(
+    required_capabilities: Sequence[str],
+    candidate: Mapping[str, Any],
+    evidence_by_worker: Mapping[str, Any],
+    now: Any,
+) -> dict[str, Any]:
+    """Classify one handoff candidate strictly on fresh source-linked evidence.
+
+    Name, model tier, reputation, historical ranking, and self-report never
+    establish qualification (AC-0.10); only fresh evidence objects carrying a
+    source link can.
+    """
+    alias = str(candidate.get("handoff_to") or candidate.get("requested_identity") or "")
+    evidence = evidence_by_worker.get(alias)
+    checked = [
+        {"worker": alias, "evidence_source": getattr(evidence, "source", None), "fresh": None}
+    ]
+    unsatisfied: list[str] = []
+    if evidence is None:
+        unsatisfied.extend(required_capabilities)
+        for name in ("name", "tier", "reputation", "ranking"):
+            if name in candidate:
+                checked.append({"rejected_input": name, "value": "<redacted>"})
+        return {
+            "qualified": False,
+            "worker": alias,
+            "unsatisfied_capabilities": sorted(set(unsatisfied)),
+            "evidence_checked": checked,
+        }
+    capabilities = dict(getattr(evidence, "capabilities", {}))
+    fresh = bool(evidence.is_fresh(now))
+    if not fresh:
+        unsatisfied.append("freshness")
+    checked[0]["fresh"] = fresh
+    for capability in required_capabilities:
+        status = capabilities.get(capability, "unknown")
+        if status != "observed":
+            unsatisfied.append(capability)
+    return {
+        "qualified": not unsatisfied,
+        "worker": alias,
+        "unsatisfied_capabilities": sorted(set(unsatisfied)),
+        "evidence_checked": checked,
+    }
+
+
+def run_packet_autodev(
+    packet: ExecutionPacket,
+    repo_path: str | Path,
+    *,
+    admitted_route: Mapping[str, Any],
+    executor_factory: Any = _default_packet_executor_factory,
+    store: ReceiptStore | None = None,
+    verification_runner: Any = subprocess.run,
+    fallback_route: Mapping[str, Any] | None = None,
+    refresh_fallback: Callable[[PacketAttempt], Any] | None = None,
+    classify_failure: Callable[[PacketAttempt], str | None] = _default_failure_class,
+    resume: bool = False,
+    worker_evidence: Mapping[str, Any] | None = None,
+) -> PacketAutodevReport:
+    """Run one admitted packet task in a clean worktree, with one fallback."""
+    repo = Path(repo_path).resolve()
+    ledger = store or ReceiptStore(repo / ".verdict" / "receipts.db")
+    records = [
+        record
+        for record in ledger.query_receipts(scope="operational-loop")
+        if record.payload.get("packet_id") == packet.packet_id
+    ]
+    if resume:
+        terminal = next(
+            (r.payload.get("terminal_state") for r in records if r.payload.get("terminal_state")),
+            None,
+        )
+        if terminal in {"completed", "truthful_failure", "drifted"}:
+            checkpoints = {
+                str(record.payload["checkpoint"]): record.receipt_id
+                for record in records
+                if "checkpoint" in record.payload
+            }
+            context_digest = next(
+                (
+                    str(record.payload["context_digest"])
+                    for record in records
+                    if "context_digest" in record.payload
+                ),
+                None,
+            )
+            return PacketAutodevReport(
+                str(terminal),
+                checkpoints=checkpoints,
+                resumed=True,
+                context_digest=context_digest,
+                receipt_ids=tuple(record.receipt_id for record in records),
+            )
+
+    current = capture_source_binding(
+        repo,
+        repository=str(packet.source["repository"]),
+        lock_paths=tuple(packet.source["lock_digests"]),
+    )
+    if dict(current) != dict(packet.source):
+        _packet_event(
+            ledger,
+            {
+                "packet_id": packet.packet_id,
+                "terminal_state": "drifted",
+                "reason": "source binding mismatch",
+            },
+            key=f"packet:{packet.packet_id}:drifted",
+        )
+        return PacketAutodevReport("drifted")
+    if not _route_is_admitted(admitted_route):
+        _packet_event(
+            ledger,
+            {
+                "packet_id": packet.packet_id,
+                "terminal_state": "no_eligible_route",
+                "reason": "route was not admitted or was opaque",
+            },
+        )
+        return PacketAutodevReport("no_eligible_route")
+
+    required_capabilities = tuple(str(c) for c in admitted_route.get("required_capabilities", ()))
+    handoff_to = admitted_route.get("handoff_to")
+    if handoff_to:
+        from datetime import datetime as _dt
+
+        report_qual = worker_capability_report(
+            required_capabilities, dict(admitted_route), dict(worker_evidence or {}), _dt.now()
+        )
+        preserved = {
+            "packet_id": packet.packet_id,
+            "packet_version": packet.packet_version,
+            "authority": packet.authority,
+            "intent_acceptance": packet.intent["acceptance"],
+        }
+        if report_qual["qualified"]:
+            _packet_event(
+                ledger,
+                {
+                    "event": "handoff",
+                    "packet_id": packet.packet_id,
+                    "to_worker": report_qual["worker"],
+                    "integrity_digest": packet.integrity_digest,
+                    "preserved": preserved,
+                },
+                key=f"packet:{packet.packet_id}:handoff",
+            )
+        else:
+            blocked_payload = {
+                "packet_id": packet.packet_id,
+                "terminal_state": "blocked_no_qualified_worker",
+                "unsatisfied_capabilities": report_qual["unsatisfied_capabilities"],
+                "evidence_checked": report_qual["evidence_checked"],
+                "resumable": True,
+                "integrity_digest": packet.integrity_digest,
+            }
+            receipt_id = _packet_event(
+                ledger, blocked_payload, key=f"packet:{packet.packet_id}:blocked"
+            )
+            return PacketAutodevReport(
+                "blocked_no_qualified_worker",
+                checkpoints={},
+                context_digest=None,
+                receipt_ids=(receipt_id,),
+            )
+
+    context = compile_packet_context(packet, repo, store=ledger)
+    unit = _packet_work_unit(packet, context.compiled_prompt)
+
+    checkpoint = _packet_event(
+        ledger,
+        {
+            "packet_id": packet.packet_id,
+            "checkpoint": "before_inference",
+            "state": "attempt_started",
+        },
+        key=f"packet:{packet.packet_id}:before-inference",
+    )
+    checkpoints = {"before_inference": checkpoint}
+    owned = tuple(str(path) for path in packet.authority["owned_paths"])
+    attempts: list[PacketAttempt] = []
+    routes: list[Mapping[str, Any]] = [admitted_route]
+    fallback_count = 0
+    index = 0
+    while index < len(routes) and index < 2:
+        route = routes[index]
+        attempt_repo = _make_attempt_worktree(repo, str(packet.source["commit"]))
+        try:
+            executor = executor_factory(attempt_repo=attempt_repo, route=route, packet=packet)
+            if hasattr(executor, "execute_packet_unit"):
+                result = executor.execute_packet_unit(
+                    packet=packet,
+                    checkpoint_id=checkpoint,
+                    route=route,
+                    context_prompt=context.compiled_prompt,
+                )
+            else:
+                result = executor.execute_unit(unit)
+            changed = _attempt_files(attempt_repo)
+            outside = tuple(sorted(set(changed) - set(owned)))
+            reason = str(getattr(result, "reason", ""))
+            if outside:
+                reason = f"artifact touches files outside owned paths: {list(outside)}"
+            worker_outcome = str(getattr(result, "outcome", "") or "unknown")
+            worker_claimed_applied = not outside and worker_outcome == "applied"
+            verified = worker_claimed_applied
+            if verified:
+                # The venv's editable-install .pth pins `verdict` to the
+                # checkout the venv was created in; without this override the
+                # isolated attempt worktree silently verifies the wrong tree.
+                env = {**os.environ, "PYTHONPATH": str(attempt_repo)}
+                checked = verification_runner(
+                    list(packet.verification["argv"]),
+                    cwd=str(attempt_repo),
+                    timeout=packet.verification["timeout_seconds"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                verified = checked.returncode == 0
+                if not verified:
+                    reason = f"verification exited {checked.returncode}"
+            changed_owned = tuple(sorted(set(changed) & set(owned)))
+            requested_identity = str(
+                route.get("requested_identity", getattr(result, "model", "unknown"))
+            )
+            served = getattr(result, "resolved_model", None)
+            if isinstance(served, str) and served.strip():
+                actual_identity = served
+            else:
+                actual_identity = str(
+                    route.get("actual_identity", getattr(result, "model", "unknown"))
+                )
+            provisional = PacketAttempt(
+                requested_identity,
+                actual_identity,
+                changed_owned,
+                _attempt_digest(attempt_repo, changed_owned),
+                verified,
+                reason,
+                usage=getattr(result, "usage", TokenUsage()),
+                latency_ms=int(getattr(result, "latency_ms", 0)),
+            )
+            failure_class = classify_failure(provisional)
+            attempt = PacketAttempt(**{**provisional.__dict__, "failure_class": failure_class})
+            attempts.append(attempt)
+            _packet_event(
+                ledger,
+                {
+                    "packet_id": packet.packet_id,
+                    "attempt": index + 1,
+                    "requested_identity": attempt.requested_identity,
+                    "actual_identity": attempt.actual_identity,
+                    "changed_files": list(attempt.changed_files),
+                    "artifact_digest": attempt.artifact_digest,
+                    "verified": verified,
+                    "worker_self_report": {"outcome": worker_outcome, "role": "advisory"},
+                    "trusted_verification": {"decided": verified, "role": "deciding"},
+                    "reason": reason,
+                    "failure_class": failure_class,
+                    "usage": attempt.usage.to_dict(),
+                    "latency_ms": attempt.latency_ms,
+                    "route": dict(route),
+                },
+            )
+            if verified:
+                replay_source = capture_source_binding(
+                    repo,
+                    repository=str(packet.source["repository"]),
+                    lock_paths=tuple(packet.source["lock_digests"]),
+                )
+                if dict(replay_source) != dict(packet.source):
+                    receipt_id = _packet_event(
+                        ledger,
+                        {
+                            "packet_id": packet.packet_id,
+                            "terminal_state": "drifted",
+                            "reason": "source changed before verified patch replay",
+                        },
+                        key=f"packet:{packet.packet_id}:replay-drifted",
+                    )
+                    return PacketAutodevReport(
+                        "drifted",
+                        tuple(attempts),
+                        fallback_count,
+                        checkpoints,
+                        context_digest=context.digest,
+                        receipt_ids=(receipt_id,),
+                    )
+                _replay_attempt(attempt_repo, repo)
+                receipt_id = _packet_event(
+                    ledger,
+                    {"packet_id": packet.packet_id, "terminal_state": "completed"},
+                    key=f"packet:{packet.packet_id}:terminal",
+                )
+                return PacketAutodevReport(
+                    "completed",
+                    tuple(attempts),
+                    fallback_count,
+                    checkpoints,
+                    context_digest=context.digest,
+                    receipt_ids=(receipt_id,),
+                )
+        finally:
+            _remove_attempt_worktree(repo, attempt_repo)
+
+        if index == 0 and failure_class is not None:
+            refreshed = (
+                refresh_fallback(attempt) if refresh_fallback is not None else fallback_route
+            )
+            composer = getattr(refreshed, "to_admission_record", None)
+            if callable(composer):
+                refreshed = composer(admitted=True)
+            if _route_is_admitted(refreshed, fallback=True):
+                assert refreshed is not None
+                routes.append(refreshed)
+                fallback_count = 1
+        index += 1
+
+    receipt_id = _packet_event(
+        ledger,
+        {"packet_id": packet.packet_id, "terminal_state": "truthful_failure"},
+        key=f"packet:{packet.packet_id}:terminal",
+    )
+    return PacketAutodevReport(
+        "truthful_failure",
+        tuple(attempts),
+        fallback_count,
+        checkpoints,
+        context_digest=context.digest,
+        receipt_ids=(receipt_id,),
+    )
 
 
 class AutodevError(RuntimeError):
@@ -183,8 +945,8 @@ def run_autodev(
     objective: str,
     repo_path: str | Path,
     *,
-    orchestrator_model: str = DEFAULT_ORCHESTRATOR_MODEL,
-    executor_model: str = DEFAULT_EXECUTOR_MODEL,
+    orchestrator_model: str | None = None,
+    executor_model: str | None = None,
     base_url: str = DEFAULT_BASE_URL,
     api_key: str | None = None,
     store: ReceiptStore | None = None,
@@ -195,6 +957,9 @@ def run_autodev(
     runner: Any = subprocess.run,
 ) -> AutodevReport:
     """Decompose ``objective``, execute each unit, verify it, and record it."""
+    # Model routes resolve from live gateway availability, never a hardcoded name.
+    executor_model = executor_model or _resolve_default_executor_model()
+    orchestrator_model = orchestrator_model or _resolve_default_orchestrator_model()
     repo = Path(repo_path).resolve()
     if not (repo / ".git").exists():
         raise AutodevError(f"not a git repository: {repo}")
@@ -421,5 +1186,8 @@ __all__ = [
     "AutodevReport",
     "UnitOutcome",
     "collect_ruff_evidence",
+    "compile_packet_context",
+    "compile_worker_context",
+    "designated_primary_fallback",
     "run_autodev",
 ]
