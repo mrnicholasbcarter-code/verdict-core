@@ -739,16 +739,23 @@ def run_packet_autodev(
         admission_inventory = packet_admission_inventory(floor_routes)
     except ValueError:
         admission_inventory = {"admitted_ids": [], "ranked_ids": []}
-    if canary_state and canary_state.get("active") is True:
-        chosen = str(canary_state.get("chosen") or "")
+    if canary_state:
         admitted = set(admission_inventory.get("admitted_ids") or ())
-        if chosen in admitted:
+        overlay = str(
+            (
+                canary_state.get("chosen")
+                if canary_state.get("active") is True
+                else canary_state.get("baseline")
+            )
+            or ""
+        )
+        if overlay in admitted:
             match = next(
                 (
                     route
                     for route in floor_routes
-                    if str(route.get("actual_identity") or "") == chosen
-                    or str(route.get("requested_identity") or "") == chosen
+                    if str(route.get("actual_identity") or "") == overlay
+                    or str(route.get("requested_identity") or "") == overlay
                 ),
                 None,
             )

@@ -870,6 +870,7 @@ def cmd_autodev_packet_execute(
     base_url: str | None = None,
     catalog_rows: Any = None,
     probe_transport: Any = None,
+    canary_path: str | None = None,
 ) -> None:
     """Execute or resume one bounded packet work unit through an admitted route.
 
@@ -972,6 +973,17 @@ def cmd_autodev_packet_execute(
             from verdict.probes import openai_probe_transport
 
             probe_transport = openai_probe_transport(family_url, api_key=_read_omniroute_token())
+    canary_state = None
+    if canary_path:
+        loaded = json.loads(Path(canary_path).expanduser().resolve().read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            message = "canary JSON must be an object"
+            if output_json:
+                print(json.dumps({"error": message}, sort_keys=True))
+            else:
+                console.print(f"[bold red]{message}[/bold red]")
+            raise SystemExit(1)
+        canary_state = loaded
     report = run_packet_autodev(
         packet,
         Path(repo).expanduser().resolve(),
@@ -980,6 +992,7 @@ def cmd_autodev_packet_execute(
         resume=resume,
         catalog_rows=catalog_rows,
         probe_transport=probe_transport,
+        canary_state=canary_state,
     )
     family_url = str(route.get("base_url") or base_url or DEFAULT_BASE_URL)
     payload = packet_family_run_payload(packet, report, family_url)
@@ -2329,6 +2342,12 @@ def main() -> None:
                 default=None,
                 help="override gateway family base URL for this packet run",
             )
+            action_p.add_argument(
+                "--canary",
+                dest="canary_path",
+                default=None,
+                help="JSON canary state; chosen applies only among admitted_ids",
+            )
     shadow_p = packet_actions.add_parser(
         "shadow", help="Dump advisory shadow-learning JSON without calling eligibility"
     )
@@ -2687,6 +2706,7 @@ def main() -> None:
                     primary_fallback=getattr(args, "primary_fallback", None),
                     prefer_non_primary=getattr(args, "prefer_non_primary", False),
                     base_url=getattr(args, "packet_base_url", None),
+                    canary_path=getattr(args, "canary_path", None),
                 )
             else:
                 cmd_autodev_packet(

@@ -489,6 +489,81 @@ def test_packet_execute_ignores_canary_chosen_outside_admitted_ids(repo: Path) -
     assert report.attempts[0].actual_identity == "gateway/free-v1"
 
 
+def test_packet_execute_inactive_canary_restores_baseline_among_admitted(repo: Path) -> None:
+    """US4-D: inactive/rollback canary restores baseline, not chosen."""
+    cheap = _route("free/cheap", "gateway/free-v1", availability_state="eligible")
+    other = _route("oc/hy3-free", "oc/hy3-free", availability_state="eligible")
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=other,
+        candidate_routes=(cheap, other),
+        canary_state={
+            "active": False,
+            "baseline": "gateway/free-v1",
+            "chosen": "oc/hy3-free",
+            "admission_unchanged": True,
+        },
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+    assert report.terminal_state == "completed"
+    assert report.attempts[0].actual_identity == "gateway/free-v1"
+
+
+def test_cli_packet_execute_forwards_canary_json_into_run(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["canary_state"] = kwargs.get("canary_state")
+        kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
+        kwargs.setdefault("verification_runner", _Verifier("after\n"))
+        kwargs.setdefault("store", ReceiptStore(":memory:"))
+        return run_packet_autodev(*args, **kwargs)
+
+    monkeypatch.setattr("verdict.autodev_run.run_packet_autodev", fake_run)
+    packets = tmp_path.parent / f"{tmp_path.name}-packets-canary"
+    packets.mkdir()
+    path = ExecutionPacketStore(packets).create(_packet(repo))
+    canary = tmp_path.parent / f"{tmp_path.name}-canary.json"
+    canary.write_text(
+        json.dumps(
+            {
+                "active": True,
+                "baseline": "gateway/free-v1",
+                "chosen": "oc/hy3-free",
+                "admission_unchanged": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cmd_autodev_packet_execute(
+        str(path),
+        str(repo),
+        output_json=True,
+        allow_live=True,
+        canary_path=str(canary),
+        catalog_rows=[
+            {"id": "oc/hy3-free", "owned_by": "openrouter", "capabilities": {"chat": True}},
+            {"id": "fast/free:free", "owned_by": "openrouter", "capabilities": {"chat": True}},
+        ],
+        probe_transport=lambda model_id, payload, timeout: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        },
+    )
+    captured = capsys.readouterr()
+    del captured
+    assert seen["canary_state"]["chosen"] == "oc/hy3-free"
+    assert seen["canary_state"]["active"] is True
+
+
 def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_replayed(
     repo: Path,
 ) -> None:
