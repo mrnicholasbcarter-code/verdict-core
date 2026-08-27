@@ -614,3 +614,13 @@ source commit `0823e98`. Command: `verdict autodev packet execute --allow-live
 | trusted_verification | `{decided: true, role: deciding}`, `verified=true` | LIVE-PROVEN |
 | Artifact | `UNKNOWN_HEADROOM` exported in `__all__`; test `test_unknown_headroom_sentinel` | LIVE-PROVEN |
 | Settings | `enabled=false`, `detectionEnabled=false` after execute, no writes | LIVE-PROVEN |
+
+## Live execute r15 — family B 9router `:20129` (LIVE-PROVEN)
+
+Same work unit, `base_url=http://127.0.0.1:20129/v1`, packet `headroom-unknown-r15`
+integrity `sha256:3509b14320a312ed802915ac645726a7d3daf8197a4bafde57545149aeaf4ecb`.
+Concrete non-combo `openrouter/poolside/laguna-xs-2.1:free` (served
+`poolside/laguna-xs-2.1:free`). Terminal `truthful_failure`, `fallback_count=0`.
+Attempt 1: `worker_self_report={outcome:error, role:advisory}`,
+`trusted_verification={decided:false, role:deciding}`, reason `provider choice
+contains no text content`. US2 allows truthful failure on the second family.
