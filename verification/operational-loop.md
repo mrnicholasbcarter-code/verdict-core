@@ -626,3 +626,13 @@ Attempt 1: `worker_self_report={outcome:error, role:advisory}`,
 contains no text content`. US2 allows truthful failure on the second family.
 
 OpenRouter on 9router is not a usable worker for this unit (empty completion). Follow-up r16 `cerebras/llama-3.3-70b` on the same `base_url` was catalog-listed then `HTTP 404` on chat — catalog vs runtime conflict, fail-closed, `fallback_count=0`. — LIVE-PROVEN
+
+## Live execute r17 — family B `ollama/minimax-m3` (LIVE-PROVEN)
+
+`base_url=http://127.0.0.1:20129/v1`. Packet `headroom-unknown-r17` integrity
+`sha256:634cd5f675e76dd3e46eba43ef05b4079c1c92089c4c216d9eac9b0d99844f08`.
+Requested `ollama/minimax-m3` → actual `minimax-m3`. Terminal `completed`,
+`fallback_count=0`. Seq 73 `worker_self_report={outcome:applied, role:advisory}`,
+`trusted_verification={decided:true, role:deciding}`. Artifact: assert
+`UNKNOWN_HEADROOM is None`. Operator-named other live 9router ids (`grid/code-prime`,
+`grid/gemini-pro-latest`, `oc/laguna-s-2.1-free`, `oc/hy3-free`) were not re-run.
