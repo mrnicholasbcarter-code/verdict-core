@@ -1643,3 +1643,36 @@ def test_decision_unit_may_use_primary_and_records_the_deciding_capability(repo:
         undelegable_reason="requires cross-repository interface judgment",
     )
     assert report.terminal_state == "completed"
+
+
+def test_frontier_review_can_reject_a_verified_attempt(repo: Path) -> None:
+    """FR-013/FR-007: frontier review may only reject, never manufacture success.
+
+    Trusted verification passing is necessary but the review is a second, distinct
+    check; a rejection must still surface as a truthful non-completed terminal.
+    """
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        frontier_review=lambda attempt: "does not match acceptance criterion wording",
+    )
+    assert report.terminal_state != "completed"
+    assert report.attempts[-1].reason == "does not match acceptance criterion wording"
+
+
+def test_frontier_review_cannot_promote_a_failed_verification(repo: Path) -> None:
+    """A reviewer approving a failed attempt must not turn it into success."""
+    report = run_packet_autodev(
+        _packet(repo),
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "wrong\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        frontier_review=lambda attempt: None,
+    )
+    assert report.terminal_state != "completed"

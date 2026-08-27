@@ -893,6 +893,7 @@ def run_packet_autodev(
     require_red_green: bool = False,
     delegation: str | None = None,
     undelegable_reason: str | None = None,
+    frontier_review: Callable[[PacketAttempt], str | None] | None = None,
 ) -> PacketAutodevReport:
     """Run one admitted packet task in a clean worktree, with one fallback."""
     _enforce_delegation_floor(
@@ -1140,6 +1141,23 @@ def run_packet_autodev(
                 verified = checked.returncode == 0
                 if not verified:
                     reason = f"verification exited {checked.returncode}"
+            if verified and frontier_review is not None:
+                # Reject-only (FR-013): a review may only turn a pass into a failure by
+                # naming a reason. It can never manufacture success from a failed attempt,
+                # and trusted verification remains the sole decider of a pass.
+                rejection = frontier_review(
+                    PacketAttempt(
+                        str(route.get("requested_identity", "")),
+                        str(route.get("actual_identity", "")),
+                        (),
+                        "",
+                        verified,
+                        reason,
+                    )
+                )
+                if rejection:
+                    verified = False
+                    reason = rejection
             changed_owned = tuple(sorted(set(changed) & set(owned)))
             requested_identity = str(
                 route.get("requested_identity", getattr(result, "model", "unknown"))
