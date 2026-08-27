@@ -663,3 +663,80 @@ def test_worker_capability_report_rejects_non_evidence_qualification() -> None:
     now = datetime.now(timezone.utc)
     named = {"requested_alias": "big/tier", "reputation": 0.99}
     assert worker_capability_report(["patch"], named, {}, now)["qualified"] is False
+
+
+def test_worker_self_report_is_advisory_when_trusted_verification_fails(repo: Path) -> None:
+    """Worker outcome=applied cannot complete the packet when trusted argv fails."""
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}])
+    store = ReceiptStore(":memory:")
+
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=factory,
+        store=store,
+        verification_runner=_Verifier("after\n"),
+    )
+
+    assert report.terminal_state == "truthful_failure"
+    assert report.attempts[0].verified is False
+    attempts = [
+        row.payload
+        for row in store.query_receipts(scope="operational-loop")
+        if row.payload.get("attempt") == 1
+    ]
+    assert attempts
+    payload = attempts[0]
+    assert payload["verified"] is False
+    assert payload["worker_self_report"]["outcome"] == "applied"
+    assert payload["worker_self_report"]["role"] == "advisory"
+    assert payload["trusted_verification"]["decided"] is False
+    assert payload["trusted_verification"]["role"] == "deciding"
+
+
+def test_refresh_fallback_composes_primary_from_candidate_evidence(repo: Path) -> None:
+    """Production fallback admission uses CandidateEvidence.to_admission_record."""
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    branded = _worker_evidence(
+        "cc/claude-sonnet-5",
+        capabilities={"patch": "observed", "test": "observed"},
+    )
+    primary = _worker_evidence(
+        "alt/subscription",
+        capabilities={
+            "patch": "observed",
+            "test": "observed",
+            "primary_subscription": "observed",
+        },
+    )
+
+    branded_report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=_Factory([{"content": "wrong\n"}, {"content": "after\n"}]),
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        refresh_fallback=lambda _attempt: branded,
+    )
+    assert branded_report.fallback_count == 0
+    assert branded_report.terminal_state == "truthful_failure"
+
+    report = run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_route("free/cheap", "gateway/free-v1"),
+        executor_factory=factory,
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+        refresh_fallback=lambda _attempt: primary,
+    )
+    assert report.fallback_count == 1
+    assert report.terminal_state == "completed"
+    assert [attempt.requested_identity for attempt in report.attempts] == [
+        "free/cheap",
+        "alt/subscription",
+    ]

@@ -525,10 +525,69 @@ uv run ruff check verdict/headroom.py tests/test_headroom.py verdict/probes.py v
 ### Limitations (this window)
 
 - HTTP catalog GET timed out; MCP catalog and chat POST disagreed for
-  `gemini/gemini-2.5-flash` (404).
+  `gemini/gemini-2.5-flash` (404). — LIVE-PROVEN
 - First successful worker was the designated primary-subscription fallback after
-  the non-primary kimi patch failed `git apply --check`.
+  the non-primary kimi patch failed `git apply --check`. — LIVE-PROVEN
 - Context-pack `used_tokens` (1462) stayed under `token_budget` (4096); provider
   `usage.total_tokens` on the fallback call (7171) is a different meter and is
-  recorded, not treated as the pack budget.
-- Nested context-decision `input_tokens`/`output_tokens` remain redacted.
+  recorded, not treated as the pack budget. — LIVE-PROVEN
+- Nested context-decision `input_tokens`/`output_tokens` remain redacted. — LIVE-PROVEN
+
+### CHK014 — live r10 worker pack inventory (LIVE-PROVEN)
+
+Inspected `.verdict/receipts.db` context receipt `rcpt-8f4ea3f1fad741f1bf59b76c782d1b1f`
+(`packet-context:headroom-unknown-r10:sha256:db5f9a88…`). `compiled_prompt=[REDACTED]`.
+`omissions=[]`. Included units only:
+
+| unit_id | action |
+|---|---|
+| `autodev:objective` | include |
+| `autodev:repository_instructions` | include |
+| `autodev:acceptance` | include |
+| `autodev:authority` | include |
+| `autodev:non_goals` | include |
+| `autodev:owned_source:tests/test_headroom.py` | include |
+| `autodev:owned_source:verdict/headroom.py` | include |
+| `autodev:relevant_examples` | include |
+
+No chat-transcript unit, no unrelated repository paths. Token pack **1462 / 4096**.
+
+### CHK016 — advisory worker self-report beside trusted verification
+
+Live r10 attempt receipts (`rcpt-fdd7322…`, `rcpt-0201894…`) store `verified` as the
+deciding bit and do **not** contain a separate `worker_self_report` object
+(LIVE-PROVEN gap on those rows).
+
+Shipped `run_packet_autodev` now persists both on every attempt receipt:
+
+- `worker_self_report.outcome` + `role=advisory`
+- `trusted_verification.decided` + `role=deciding`
+
+Trusted argv still overwrites `verified`. Fixture
+`test_worker_self_report_is_advisory_when_trusted_verification_fails` proves
+`outcome=applied` cannot complete when verification fails. — SOURCE-ONLY /
+FIXTURE-ONLY until a new live execute writes post-change rows.
+
+### Admission composition (T044 MEDIUM residual)
+
+Live CLI path remains operator `--primary-fallback` → `designated_primary_fallback`
+(LIVE-PROVEN at `012ea4d` / r10). Production `run_packet_autodev` now calls
+`CandidateEvidence.to_admission_record` when `refresh_fallback` returns evidence.
+Brand-only evidence cannot admit as fallback
+(`test_refresh_fallback_composes_primary_from_candidate_evidence`). — SOURCE-ONLY /
+FIXTURE-ONLY for the evidence composer; operator designation remains the sole
+live-proven composition path.
+
+### CHK004 leftover unlabeled historical sections (limitation)
+
+The following earlier sections are **not** rewritten to one-label-per-claim:
+Current state, Pre-US1, US1 red-test ledger, T042/T043 2026-08-24 narratives.
+They remain mixed recovery-era prose. This closeout does not treat them as
+Phase 1 live-proof claims.
+
+## Residual closeout — post-`9401cad` source (CHK004/014/016)
+
+Parent of this text is worktree `feat/verdict-operational-loop` after
+`9401cad`. OmniRoute after operator restart: version `3.8.49` (MCP health),
+`taskRouting.enabled=false`, `detectionEnabled=false` (`GET /api/settings`,
+no writes). — LIVE-PROVEN for this window.

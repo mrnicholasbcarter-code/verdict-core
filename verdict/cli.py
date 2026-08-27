@@ -872,7 +872,10 @@ def cmd_autodev_packet_execute(
 
     A dry-run, mock, decomposition-only, or unverified response can never
     produce a completed proof class here; only independent trusted verification
-    decides success.
+    decides success. ``--primary-fallback`` is the operator designation path
+    when no CandidateEvidence object is supplied; ``run_packet_autodev``
+    composes ``primary`` from ``to_admission_record`` when refresh returns
+    evidence.
     """
     from verdict.autodev_run import designated_primary_fallback, run_packet_autodev
     from verdict.execution_packet import (

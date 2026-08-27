@@ -94,6 +94,8 @@ _PACKET_RECEIPT_ALLOWLIST = (
     *_USAGE_ALLOWLIST,
     "token_budget",
     "used_tokens",
+    "worker_self_report.outcome",
+    "trusted_verification.decided",
 )
 
 
@@ -517,7 +519,7 @@ def run_packet_autodev(
     store: ReceiptStore | None = None,
     verification_runner: Any = subprocess.run,
     fallback_route: Mapping[str, Any] | None = None,
-    refresh_fallback: Callable[[PacketAttempt], Mapping[str, Any] | None] | None = None,
+    refresh_fallback: Callable[[PacketAttempt], Any] | None = None,
     classify_failure: Callable[[PacketAttempt], str | None] = _default_failure_class,
     resume: bool = False,
     worker_evidence: Mapping[str, Any] | None = None,
@@ -648,7 +650,9 @@ def run_packet_autodev(
             reason = str(getattr(result, "reason", ""))
             if outside:
                 reason = f"artifact touches files outside owned paths: {list(outside)}"
-            verified = not outside and getattr(result, "outcome", "") == "applied"
+            worker_outcome = str(getattr(result, "outcome", "") or "unknown")
+            worker_claimed_applied = not outside and worker_outcome == "applied"
+            verified = worker_claimed_applied
             if verified:
                 # The venv's editable-install .pth pins `verdict` to the
                 # checkout the venv was created in; without this override the
@@ -705,6 +709,14 @@ def run_packet_autodev(
                     "changed_files": list(attempt.changed_files),
                     "artifact_digest": attempt.artifact_digest,
                     "verified": verified,
+                    "worker_self_report": {
+                        "outcome": worker_outcome,
+                        "role": "advisory",
+                    },
+                    "trusted_verification": {
+                        "decided": verified,
+                        "role": "deciding",
+                    },
                     "reason": reason,
                     "failure_class": failure_class,
                     "usage": attempt.usage.to_dict(),
@@ -755,6 +767,9 @@ def run_packet_autodev(
 
         if index == 0 and failure_class is not None:
             refreshed = refresh_fallback(attempt) if refresh_fallback is not None else fallback_route
+            composer = getattr(refreshed, "to_admission_record", None)
+            if callable(composer):
+                refreshed = composer(admitted=True)
             if _route_is_admitted(refreshed, fallback=True):
                 assert refreshed is not None
                 routes.append(refreshed)
