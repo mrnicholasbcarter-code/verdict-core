@@ -746,3 +746,5 @@ T039 live keys: **LIVE-PROVEN**. T034 live inventory: **LIVE-PROVEN** on attempt
 
 T034 admission-inventory refresh (including fallback re-floor) is commit `dbebed29ced3314daad45c52848703655c315c31` on `feat/verdict-operational-loop`.
 At that SHA: `uv run ruff check` on touched modules passed; `uv run mypy --strict` on `verdict/autodev_run.py` `verdict/autodev_routing.py` `verdict/free_route_harvest.py` passed; `uv run pytest -q` **1586 passed**.
+
+T072 CLI `--canary` pass-through and inactive-canary baseline restore is commit `a68c6de80d560190c5624d8a18271046def99536`. At that SHA: `uv run ruff check` passed; `uv run mypy --strict verdict/autodev_run.py` passed; `uv run pytest -q` **1590 passed**.
