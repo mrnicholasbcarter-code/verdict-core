@@ -290,3 +290,27 @@ def test_pick_best_live_recognizes_adapter_declared_free_without_suffix() -> Non
         {"model_id": "vendor/model-b:free", "availability_state": "ready", "latency_ms": 900.0},
     ]
     assert pick_best_live(observations, free_ids={"vendor/model-a"}) == "vendor/model-a"
+
+
+def test_quota_facet_only_removes_insufficient_capacity_never_adds_a_member() -> None:
+    """FR-038: quota_headroom evidence changes admission only through the FR-029
+    affordability floor. Supplying it can remove an identity that is genuinely
+    below the unit's cost, but must never admit an identity that other checks
+    already excluded, and must never exclude one with sufficient or unobserved capacity.
+    """
+    rows = [
+        _row("oc/affordable:free", capabilities=CHAT),
+        _row("oc/too-small:free", capabilities=CHAT),
+        _row("oc/unobserved:free", capabilities=CHAT),
+        _row("paid/gpt-4o", capabilities=CHAT, pricing={"prompt": 2.5}),
+    ]
+    need = TaskNeed(chat=True, token_budget=8_000)
+    without_quota = set(keep_free_compatible(rows, need))
+    with_quota = set(
+        keep_free_compatible(
+            rows, need, remaining_tokens={"oc/affordable:free": 50_000, "oc/too-small:free": 100}
+        )
+    )
+    assert with_quota <= without_quota  # never adds a member
+    assert without_quota - with_quota == {"oc/too-small:free"}  # only the insufficient one drops
+    assert "paid/gpt-4o" not in with_quota  # a floor cannot rescue an already-paid exclusion
