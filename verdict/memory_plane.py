@@ -56,6 +56,10 @@ class MemorySearchResult:
     record: MemoryRecord
     score: float
     rank: int
+    # CTX-002 remainder (issue #287): True when this record's age exceeds its
+    # provider's declared TTL. False when fresh or when the provider declares
+    # no TTL (absence fails open, never treated as stale).
+    stale: bool = False
 
 
 class MemoryPlane:
@@ -359,8 +363,25 @@ class MemoryPlane:
         ]
 
     def search_ranked(
-        self, query: str, *, namespace: str | None = None, scope: str = "default", limit: int = 10
+        self,
+        query: str,
+        *,
+        namespace: str | None = None,
+        scope: str = "default",
+        limit: int = 10,
+        ttl_lookup: Mapping[str, float] | None = None,
+        now: float | None = None,
     ) -> list[MemorySearchResult]:
+        """Retrieve ranked results, annotating staleness against ``ttl_lookup``.
+
+        ``ttl_lookup`` maps a record's ``source`` to its provider's declared TTL
+        in seconds (CTX-002 remainder, issue #287). A source absent from the
+        mapping, or an omitted ``ttl_lookup`` entirely, fails open: the result
+        is never marked stale. Staleness is computed from the record's own
+        ``created_at``; this method never calls out to an adapter registry or
+        any other live source (FR-004) — the caller resolves the lookup mapping
+        itself, from whatever registry it already holds.
+        """
         if not query.strip() or limit <= 0:
             return []
         terms = [term.replace('"', "") for term in query.split() if term.replace('"', "")]
@@ -381,10 +402,16 @@ class MemoryPlane:
             "m.record_id ASC LIMIT ?"
         )
         rows = self._db.execute(query, params).fetchall()
-        return [
-            MemorySearchResult(self._from_row(row), float(row["rank_score"]), index + 1)
-            for index, row in enumerate(rows)
-        ]
+        current = time.time() if now is None else now
+        results = []
+        for index, row in enumerate(rows):
+            record = self._from_row(row)
+            ttl = None if ttl_lookup is None else ttl_lookup.get(record.source)
+            stale = ttl is not None and (current - record.created_at) > ttl
+            results.append(
+                MemorySearchResult(record, float(row["rank_score"]), index + 1, stale=stale)
+            )
+        return results
 
     def list_namespaces(self, *, scope: str = "default") -> list[str]:
         rows = self._db.execute(
