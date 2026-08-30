@@ -16,9 +16,7 @@ from verdict.live_routing import (
 )
 
 DEFAULT_GATEWAY = "http://localhost:20128/v1"
-NAMED_CHECK_PROMPT = (
-    'Reply with only this JSON object and nothing else: {"golden_path":"ok"}'
-)
+NAMED_CHECK_PROMPT = 'Reply with only this JSON object and nothing else: {"golden_path":"ok"}'
 
 
 def _client(*, timeout: float = 8.0) -> httpx.Client:

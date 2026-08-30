@@ -87,7 +87,9 @@ def run_live_routing(
     if not checker_passed and last_error == "live_surface_blocked":
         raise LiveSurfaceBlocked("named check could not execute on the live surface")
     if not checker_passed:
-        raise LiveRoutingError("exhausted", "no remaining qualified identity passed the named check")
+        raise LiveRoutingError(
+            "exhausted", "no remaining qualified identity passed the named check"
+        )
     receipt = GoldenPathReceipt(
         unit_id=unit_id,
         endpoint=base_url,
@@ -98,7 +100,11 @@ def run_live_routing(
         checker_passed=True,
         catalog_captured_at=captured.isoformat(),
     )
-    return {"explanation": explanation, "receipt": receipt.to_dict(), "captured_at": captured.isoformat()}
+    return {
+        "explanation": explanation,
+        "receipt": receipt.to_dict(),
+        "captured_at": captured.isoformat(),
+    }
 
 
 def utc_now() -> datetime:

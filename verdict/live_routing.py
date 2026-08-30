@@ -17,14 +17,7 @@ COST_RANK = {"local": 0, "free": 1, "cheaper": 2, "paid": 3}
 OPAQUE_PREFIXES = ("auto/", "auto:", "openrouter/auto")
 CostClass = Literal["local", "free", "cheaper", "paid"]
 DropReason = Literal[
-    "policy",
-    "health",
-    "capability",
-    "unclassified",
-    "stale",
-    "opaque_mix",
-    "cost",
-    "quota",
+    "policy", "health", "capability", "unclassified", "stale", "opaque_mix", "cost", "quota"
 ]
 
 
@@ -137,7 +130,9 @@ class GoldenPathReceipt:
             "error": self.error,
         }
         if self.degraded:
-            raise LiveRoutingError("live_surface_blocked", "fixture catalog cannot emit a pass receipt")
+            raise LiveRoutingError(
+                "live_surface_blocked", "fixture catalog cannot emit a pass receipt"
+            )
         return payload
 
 
@@ -158,10 +153,16 @@ def cost_class_from_row(row: MappingLike) -> CostClass | None:
     explicit = row.get("cost_class")
     if not explicit and isinstance(nested, dict):
         explicit = nested.get("cost_class")
-    if explicit in COST_RANK:
+    if isinstance(explicit, str) and explicit in COST_RANK:
         return explicit  # type: ignore[return-value]
     owned = row.get("owned_by")
-    if isinstance(owned, str) and owned.lower() in {"ollama", "lmstudio", "vllm", "llamacpp", "local"}:
+    if isinstance(owned, str) and owned.lower() in {
+        "ollama",
+        "lmstudio",
+        "vllm",
+        "llamacpp",
+        "local",
+    }:
         return "local"
     pricing = row.get("pricing")
     if isinstance(pricing, dict):
@@ -188,7 +189,8 @@ def identity_from_row(
     freshness_seconds: int = DEFAULT_CATALOG_FRESHNESS_SECONDS,
 ) -> ConcreteIdentity:
     identity_id = str(row.get("id") or "")
-    caps = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
+    raw_caps = row.get("capabilities")
+    caps: dict[str, Any] = raw_caps if isinstance(raw_caps, dict) else {}
     modalities = row.get("modalities")
     if isinstance(modalities, list):
         mods: tuple[str, ...] | None = tuple(str(item) for item in modalities)
@@ -203,7 +205,9 @@ def identity_from_row(
     tools = caps.get("tools")
     if tools is None and isinstance(caps.get("tool_calling"), bool):
         tools = caps.get("tool_calling")
-    provider = row.get("owned_by") or (identity_id.split("/")[0] if "/" in identity_id else "unknown")
+    provider = row.get("owned_by") or (
+        identity_id.split("/")[0] if "/" in identity_id else "unknown"
+    )
     return ConcreteIdentity(
         identity_id=identity_id,
         provider_id=str(provider),
@@ -241,7 +245,7 @@ def classify_identities(
             reason = "unclassified"
         elif identity.provider_id in exhausted:
             reason = "quota"
-        status = "dropped" if reason else "kept"
+        status: Literal["kept", "dropped"] = "dropped" if reason else "kept"
         out.append(Candidate(identity.identity_id, status, reason, identity=identity))
     by_id = {item.identity_id: item for item in identities}
     for mix in mixes:
@@ -299,7 +303,9 @@ def explain(candidates: Sequence[Candidate], selection: RouteSelection | None) -
     return {
         "kept": [item.ref for item in candidates if item.status == "kept"],
         "dropped": [
-            {"id": item.ref, "reason": item.reason} for item in candidates if item.status == "dropped"
+            {"id": item.ref, "reason": item.reason}
+            for item in candidates
+            if item.status == "dropped"
         ],
         "chosen": chosen_id,
         "paid_used": None if selection is None else selection.paid_used,
@@ -326,6 +332,4 @@ def named_check_passes(body: str) -> bool:
         parsed = json.loads(body.strip())
     except json.JSONDecodeError:
         return False
-    return parsed == NAMED_CHECK_OBJECT
-
-
+    return bool(parsed == NAMED_CHECK_OBJECT)

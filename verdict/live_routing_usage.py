@@ -48,7 +48,9 @@ def _claude_token() -> str | None:
     return None
 
 
-def _fetch_json(url: str, token: str, *, extra_headers: dict[str, str] | None = None) -> dict[str, Any] | None:
+def _fetch_json(
+    url: str, token: str, *, extra_headers: dict[str, str] | None = None
+) -> dict[str, Any] | None:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if extra_headers:
         headers.update(extra_headers)
@@ -132,8 +134,10 @@ def _xai_snapshot() -> UsageSnapshot | None:
     if remaining is None:
         remaining = payload.get("balance")
     try:
-        left = float(remaining)
+        left = float(remaining) if remaining is not None else None
     except (TypeError, ValueError):
+        return UsageSnapshot("xai", "env", None, None, None, False)
+    if left is None:
         return UsageSnapshot("xai", "env", None, None, None, False)
     return UsageSnapshot("xai", "env", None, left, None, left <= 0)
 
