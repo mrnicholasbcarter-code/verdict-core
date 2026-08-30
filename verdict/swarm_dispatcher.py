@@ -23,6 +23,19 @@ from verdict.router import select_best_model
 from verdict.swarm_contracts import SwarmTaskEnvelope
 
 
+class _BoundView:
+    """Attribute view over a mapping so effective_bounds can read dict limits."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self._payload[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
 @dataclass
 class FanOutLimiter:
     """
@@ -118,7 +131,7 @@ class SwarmDispatcher:
         # Fan-out and backpressure
         self.fan_out = fan_out_limiter or FanOutLimiter(
             max_concurrent=policy.max_concurrency,
-            max_queue_depth=100,
+            max_queue_depth=policy.max_queue_depth,
             backpressure_timeout=policy.timeout_seconds,
         )
 
@@ -380,6 +393,8 @@ class SwarmDispatchPolicy:
 
     # Swarm envelope reference
     envelope: Any = None  # SwarmTaskEnvelope
+    narrowing_limits: tuple[Any, ...] = ()
+    _max_queue_depth: int = field(default=100, init=False, repr=False)
 
     # Budget enforcement
     enforce_budget: bool = True
@@ -388,26 +403,96 @@ class SwarmDispatchPolicy:
 
     def __post_init__(self) -> None:
         if self.envelope is not None:
-            # Derive policy from envelope if not explicitly set
-            if self.base_policy.max_budget is None and self.envelope.budget is not None:
-                object.__setattr__(self.base_policy, "max_budget", self.envelope.budget.max_usd)
-            if (
-                self.base_policy.required_capabilities is None
-                and self.envelope.required_capabilities
-            ):
+            bounds = self.effective_bounds(self.envelope, *self.narrowing_limits)
+            max_concurrency = bounds["max_concurrency"]
+            timeout_ms = bounds["timeout_ms"]
+            if max_concurrency is None or timeout_ms is None:
+                raise ValueError("effective dispatcher bounds must be finite")
+            object.__setattr__(self.base_policy, "max_concurrency", int(max_concurrency))
+            object.__setattr__(self.base_policy, "timeout_seconds", timeout_ms / 1000.0)
+            if bounds["max_usd"] is not None:
+                object.__setattr__(self.base_policy, "max_budget", bounds["max_usd"])
+            object.__setattr__(self, "_max_queue_depth", int(bounds["max_queue_depth"] or 1))
+            required = set(self.base_policy.required_capabilities)
+            for source in (self.envelope, *self.narrowing_limits):
+                if source is None:
+                    continue
+                caps = getattr(source, "required_capabilities", None)
+                if caps:
+                    required |= set(caps)
+            if required:
                 object.__setattr__(
                     self.base_policy,
                     "required_capabilities",
-                    frozenset(self.envelope.required_capabilities),
+                    frozenset(required),
                 )
-            if self.base_policy.max_concurrency == 1 and self.envelope.max_parallelism:
-                object.__setattr__(
-                    self.base_policy, "max_concurrency", self.envelope.max_parallelism
-                )
-            if self.base_policy.timeout_seconds == 30.0 and self.envelope.timeout_ms:
-                object.__setattr__(
-                    self.base_policy, "timeout_seconds", self.envelope.timeout_ms / 1000.0
-                )
+
+    @classmethod
+    def from_swarm_bounds(
+        cls,
+        envelope: Any,
+        *,
+        swarm: Any | None = None,
+        role: Any | None = None,
+        slice_limit: Any | None = None,
+        base_policy: DispatchPolicy | None = None,
+    ) -> SwarmDispatchPolicy:
+        """Build policy from a validated envelope plus swarm/role/slice bounds."""
+        narrowing: list[Any] = []
+        for source in (swarm, role, slice_limit):
+            if source is None:
+                continue
+            narrowing.append(source if not isinstance(source, dict) else _BoundView(source))
+        kwargs: dict[str, Any] = {
+            "envelope": envelope,
+            "narrowing_limits": tuple(narrowing),
+        }
+        if base_policy is not None:
+            kwargs["base_policy"] = base_policy
+        return cls(**kwargs)
+
+    def effective_bounds(
+        self, envelope: Any, *narrowing_limits: Any
+    ) -> dict[str, float | int | None]:
+        """Return strict minimum bounds across envelope, optional owners, and dispatcher policy."""
+        sources = (envelope, *narrowing_limits)
+        concurrency = [self.base_policy.max_concurrency]
+        # The envelope is authoritative when the base policy retains its
+        # compatibility default of one and the envelope explicitly widens it.
+        if self.base_policy.max_concurrency == 1 and getattr(envelope, "max_parallelism", None):
+            concurrency = []
+        timeout_ms = [self.base_policy.timeout_seconds * 1000.0]
+        queue_depths = [100]
+        budgets: list[float] = []
+        for source in sources:
+            if source is None:
+                continue
+            concurrency_value = getattr(
+                source, "max_concurrency", getattr(source, "max_parallelism", None)
+            )
+            if concurrency_value is not None:
+                concurrency.append(int(concurrency_value))
+            timeout_value = getattr(source, "timeout_ms", None)
+            if timeout_value is None and hasattr(source, "timeout_seconds"):
+                timeout_value = float(source.timeout_seconds) * 1000.0
+            if timeout_value is not None:
+                timeout_ms.append(float(timeout_value))
+            queue_depth = getattr(source, "max_queue_depth", None)
+            if queue_depth is not None:
+                queue_depths.append(int(queue_depth))
+            budget = getattr(source, "budget", None)
+            amount = getattr(budget, "max_usd", None)
+            if amount is not None and amount > 0:
+                budgets.append(float(amount))
+            amount = getattr(source, "max_budget", None)
+            if amount is not None and amount > 0:
+                budgets.append(float(amount))
+        return {
+            "max_concurrency": min(concurrency),
+            "timeout_ms": min(timeout_ms),
+            "max_usd": min(budgets) if budgets else None,
+            "max_queue_depth": min(queue_depths),
+        }
 
     @property
     def required_capabilities(self) -> frozenset[str]:
@@ -424,6 +509,10 @@ class SwarmDispatchPolicy:
     @property
     def timeout_seconds(self) -> float:
         return self.base_policy.timeout_seconds
+
+    @property
+    def max_queue_depth(self) -> int:
+        return self._max_queue_depth
 
     @property
     def verification_required(self) -> bool:
@@ -480,3 +569,39 @@ def dispatch_swarm_task(
 def create_swarm_dispatch_policy(envelope: Any) -> SwarmDispatchPolicy:
     """Factory for creating swarm dispatch policy from envelope."""
     return SwarmDispatchPolicy(envelope=envelope)
+
+
+def dispatch_governed_swarm(
+    spec_payload: Any,
+    *,
+    envelope: SwarmTaskEnvelope,
+    snapshot: AvailabilitySnapshot,
+    dispatcher: Any | None = None,
+    adapter: Any | None = None,
+    role: Any | None = None,
+    slice_limit: Any | None = None,
+    now: datetime | None = None,
+) -> Any:
+    """
+    Validate a SwarmSpec before any dispatcher or adapter interaction.
+
+    Invalid specs fail closed and never reach dispatch/submit call sites.
+    """
+    from verdict.swarm_governance import SwarmSpec
+
+    if isinstance(spec_payload, SwarmSpec):
+        validated = spec_payload
+    else:
+        validated = SwarmSpec.from_dict(dict(spec_payload))
+
+    policy = SwarmDispatchPolicy.from_swarm_bounds(
+        envelope,
+        swarm=validated,
+        role=role,
+        slice_limit=slice_limit,
+    )
+    active_dispatcher = dispatcher if dispatcher is not None else SwarmDispatcher(policy=policy)
+    result = active_dispatcher.dispatch(snapshot, now)
+    if adapter is not None:
+        adapter.submit(validated)
+    return result

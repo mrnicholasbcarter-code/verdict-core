@@ -13,9 +13,12 @@ This module defines versioned contracts for lower-tier swarm tasks:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import tempfile
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -371,3 +374,111 @@ def build_swarm_task_envelope(
 def create_task_attempt(task_id: str, attempt: int = 1) -> SwarmTaskAttempt:
     """Factory for creating task attempts."""
     return SwarmTaskAttempt(task_id=task_id)
+
+
+def _canonical_envelope_value(value: Any) -> Any:
+    if isinstance(value, Contract):
+        return _canonical_envelope_value(value.to_dict())
+    if hasattr(value, "to_dict"):
+        return _canonical_envelope_value(value.to_dict())
+    if isinstance(value, Mapping):
+        return {str(key): _canonical_envelope_value(item) for key, item in sorted(value.items())}
+    if isinstance(value, (tuple, list, frozenset, set)):
+        items = [_canonical_envelope_value(item) for item in value]
+        return sorted(
+            items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+        )
+    return value
+
+
+def capture_envelope_digest(envelope: SwarmTaskEnvelope) -> str:
+    """Capture an immutable canonical digest for a validated task envelope."""
+    payload = _canonical_envelope_value(envelope)
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return f"sha256:{digest}"
+
+
+def approved_envelope_bounds(envelope: SwarmTaskEnvelope) -> dict[str, Any]:
+    """Return the authoritative bound snapshot linked to an envelope."""
+    budget = envelope.budget
+    budget_payload: dict[str, Any] | None
+    if budget is None:
+        budget_payload = None
+    elif hasattr(budget, "to_dict"):
+        budget_payload = dict(budget.to_dict())
+    elif isinstance(budget, Mapping):
+        budget_payload = dict(budget)
+    else:
+        budget_payload = None
+    return {
+        "allowed_paths": list(envelope.allowed_paths),
+        "required_capabilities": list(envelope.required_capabilities),
+        "max_parallelism": int(envelope.max_parallelism),
+        "timeout_ms": int(envelope.timeout_ms),
+        "max_iterations": int(envelope.max_iterations),
+        "max_attempts": int(envelope.max_attempts),
+        "budget": budget_payload,
+    }
+
+
+def reject_weakened_bounds(
+    approved: Mapping[str, Any], proposed: Mapping[str, Any]
+) -> None:
+    """Reject any proposed bound that is weaker than the approved envelope snapshot."""
+    numeric_keys = ("max_parallelism", "timeout_ms", "max_iterations", "max_attempts")
+    for key in numeric_keys:
+        if key not in proposed:
+            continue
+        try:
+            approved_value = float(approved[key])
+            proposed_value = float(proposed[key])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ContractValidationError(f"invalid bound: {key}") from exc
+        if proposed_value > approved_value:
+            raise ContractValidationError(f"cannot weaken {key}")
+
+    for key in ("allowed_paths", "required_capabilities"):
+        if key not in proposed:
+            continue
+        approved_set = set(approved.get(key) or ())
+        proposed_set = set(proposed.get(key) or ())
+        if not proposed_set.issubset(approved_set):
+            raise ContractValidationError(f"cannot weaken {key}")
+
+    if "budget" in proposed and proposed["budget"] is not None:
+        approved_budget = approved.get("budget") or {}
+        proposed_budget = proposed["budget"]
+        if not isinstance(proposed_budget, Mapping):
+            raise ContractValidationError("invalid bound: budget")
+        for key in ("max_usd", "max_tokens", "max_latency_ms"):
+            if key not in proposed_budget:
+                continue
+            approved_cap = float(approved_budget.get(key) or 0)
+            proposed_cap = float(proposed_budget.get(key) or 0)
+            if approved_cap > 0 and proposed_cap > approved_cap:
+                raise ContractValidationError(f"cannot weaken budget.{key}")
+
+
+def validate_envelope_link(
+    envelope: SwarmTaskEnvelope,
+    envelope_digest: str | None,
+    *,
+    proposed_bounds: Mapping[str, Any] | None = None,
+) -> str:
+    """
+    Validate an immutable envelope link.
+
+    Missing or mismatched digests and any weakened bounds fail closed.
+    """
+    if not isinstance(envelope_digest, str) or not envelope_digest.strip():
+        raise ContractValidationError("envelope_digest is required")
+    captured = capture_envelope_digest(envelope)
+    if envelope_digest != captured:
+        raise ContractValidationError("envelope_digest does not match envelope")
+    if proposed_bounds is not None:
+        reject_weakened_bounds(approved_envelope_bounds(envelope), proposed_bounds)
+    return captured

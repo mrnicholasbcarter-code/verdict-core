@@ -38,6 +38,7 @@ build.log
 # Scratch patch scripts at the repo root only — not package modules such as
 # verdict/patch_executor.py, which an unanchored rule silently excluded.
 /patch_*.py
+# Feature modules are source files and must remain tracked.
 *.bak
 .coverage
 coverage.xml
