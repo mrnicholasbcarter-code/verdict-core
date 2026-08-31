@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -450,13 +451,14 @@ def main(argv: list[str] | None = None) -> int:
         execute=not args.no_execute,
         mock=args.mock,
     )
-    rendered = json.dumps(summary, indent=2, sort_keys=True) if args.json else format_human(summary)
-    # The summary has already passed through strip_secrets at the system boundary.
-    print(rendered)  # nosec B322
-    if not args.json:
-        print("\n--- json ---")
+    if args.json:
+        rendered = json.dumps(summary, indent=2, sort_keys=True)
+    else:
+        rendered = format_human(summary)
         trailer = {key: value for key, value in summary.items() if key != "decisions"}
-        print(json.dumps(trailer, indent=2, sort_keys=True))  # nosec B322
+        rendered += "\n\n--- json ---\n" + json.dumps(trailer, indent=2, sort_keys=True)
+    # The summary has already passed through strip_secrets at the system boundary.
+    sys.stdout.write(rendered + "\n")
     return 0 if summary.get("status") == "completed" else 2
 
 
