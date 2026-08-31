@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 
@@ -47,7 +48,10 @@ def test_release_workflow_builds_typescript_workspaces_before_testing_them():
 def test_release_workflow_builds_and_attests_python_artifacts_with_oidc():
     workflow = _workflow("release.yml")
     assert "hatch build" in workflow
-    assert "actions/attest-build-provenance@v2" in workflow
+    # Pinned to a release tag, but deliberately not to one exact version: a
+    # dependency bump must not fail this test. What matters is that the
+    # attestation step runs and is not on a moving ref.
+    assert re.search(r"actions/attest-build-provenance@v\d+(?:\.\d+)*\b", workflow)
     assert "attestations: write" in workflow
     assert "id-token: write" in workflow
     assert "subject-path: dist/" in workflow
