@@ -246,19 +246,17 @@ def run_routing_demo(
                 "mode": mode,
                 "status": "blocked",
                 "reason": getattr(exc, "code", "live_surface_blocked"),
-                "message": str(exc),
                 "request_count": 0,
                 "wall_clock_ms": int((time.perf_counter() - started) * 1000),
             }
         )
-    except (httpx.HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:
+    except (httpx.HTTPError, OSError, ValueError, json.JSONDecodeError):
         return strip_secrets(
             {
                 "schema_version": SCHEMA_VERSION,
                 "mode": mode,
                 "status": "blocked",
                 "reason": "live_surface_blocked",
-                "message": str(exc),
                 "request_count": 0,
                 "wall_clock_ms": int((time.perf_counter() - started) * 1000),
             }
@@ -457,8 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         rendered = format_human(summary)
         trailer = {key: value for key, value in summary.items() if key != "decisions"}
         rendered += "\n\n--- json ---\n" + json.dumps(trailer, indent=2, sort_keys=True)
-    # The summary has already passed through strip_secrets at the system boundary.
-    sys.stdout.write(rendered + "\n")  # lgtm[py/clear-text-logging-sensitive-data]
+    sys.stdout.write(rendered + "\n")
     return 0 if summary.get("status") == "completed" else 2
 
 
