@@ -324,7 +324,7 @@ def strip_secrets(payload: dict[str, Any]) -> dict[str, Any]:
         if key in {"prompt", "completion", "messages", "tool_arguments"}:
             continue
         clean[key] = value
-    return clean
+    return json.loads(json.dumps(clean))
 
 
 def named_check_passes(body: str) -> bool:
