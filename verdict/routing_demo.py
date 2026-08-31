@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -424,6 +423,33 @@ def format_human(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _public_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "adaptive_ranker",
+        "avg_latency_ms",
+        "baseline_cost_usd",
+        "baseline_definition",
+        "catalog_captured_at",
+        "cost_comparison_usd",
+        "decisions",
+        "execute_attempts",
+        "mode",
+        "pricing_observed_at",
+        "pricing_source",
+        "quality_metric",
+        "reason",
+        "request_count",
+        "routed_cost_usd",
+        "savings_pct",
+        "savings_usd",
+        "schema_version",
+        "status",
+        "success_rate",
+        "wall_clock_ms",
+    }
+    return {key: summary[key] for key in sorted(allowed & summary.keys())}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verdict 100-request routing demo")
     parser.add_argument("--gateway", default=DEFAULT_GATEWAY)
@@ -450,12 +476,9 @@ def main(argv: list[str] | None = None) -> int:
         mock=args.mock,
     )
     if args.json:
-        rendered = json.dumps(summary, indent=2, sort_keys=True)
+        print(json.dumps(_public_summary(summary), indent=2, sort_keys=True))
     else:
-        rendered = format_human(summary)
-        trailer = {key: value for key, value in summary.items() if key != "decisions"}
-        rendered += "\n\n--- json ---\n" + json.dumps(trailer, indent=2, sort_keys=True)
-    sys.stdout.write(rendered + "\n")
+        print(format_human(_public_summary(summary)))
     return 0 if summary.get("status") == "completed" else 2
 
 
