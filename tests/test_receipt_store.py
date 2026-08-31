@@ -16,6 +16,46 @@ def test_redact_sensitive_dict() -> None:
     assert redacted["nested"]["safe"] == 42
 
 
+def test_authority_is_not_treated_as_a_credential() -> None:
+    redacted = redact_sensitive_dict(
+        {"authority": "compiled", "authorization": "Bearer secret", "auth": "x"}
+    )
+    assert redacted["authority"] == "compiled"
+    assert redacted["authorization"] == "[REDACTED]"
+    assert redacted["auth"] == "[REDACTED]"
+
+
+def test_token_budget_is_kept_only_when_allowlisted() -> None:
+    payload = {
+        "token_budget": 4096,
+        "used_tokens": 242,
+        "compiled_prompt": "do the unit",
+        "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+    }
+    blocked = redact_sensitive_dict(payload)
+    assert blocked["token_budget"] == "[REDACTED]"
+    assert blocked["used_tokens"] == "[REDACTED]"
+    assert blocked["compiled_prompt"] == "[REDACTED]"
+    assert blocked["usage"]["prompt_tokens"] == "[REDACTED]"
+
+    kept = redact_sensitive_dict(
+        payload,
+        allowlist=(
+            "token_budget",
+            "used_tokens",
+            "usage.prompt_tokens",
+            "usage.completion_tokens",
+            "usage.total_tokens",
+        ),
+    )
+    assert kept["token_budget"] == 4096
+    assert kept["used_tokens"] == 242
+    assert kept["compiled_prompt"] == "[REDACTED]"
+    assert kept["usage"]["prompt_tokens"] == 10
+    assert kept["usage"]["completion_tokens"] == 4
+    assert kept["usage"]["total_tokens"] == 14
+
+
 def test_receipt_store_put_get_and_query() -> None:
     store = ReceiptStore(":memory:")
 

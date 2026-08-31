@@ -195,7 +195,26 @@ def test_missing_runtime_operation_is_reported_as_typed_transport_error():
         MappingOmniRouteTransport({"catalog": {"data": [{"id": "p/model", "provider": "p"}]}})
     ).evaluate(now=NOW)
     assert report.errors == ("runtime: expected one of runtime, get_runtime",)
+    assert [c.model.id for c in report.candidates] == ["p/model"]
+    assert report.candidates[0].state is AvailabilityState.UNKNOWN
     assert report.eligible == ()
+    assert report.source == "catalog"
+
+
+def test_catalog_only_openai_compatible_gateway_does_not_require_omniroute_runtime():
+    """Family B / any OpenAI-compatible /v1/models surface: extras optional."""
+    transport = MappingOmniRouteTransport(
+        {"list_models": {"object": "list", "data": [{"id": "grid/code-prime"}]}}
+    )
+    closed = OmniRouteAvailabilityAdapter(transport).evaluate(now=NOW)
+    assert [c.model.id for c in closed.candidates] == ["grid/code-prime"]
+    assert closed.candidates[0].state is AvailabilityState.UNKNOWN
+    assert closed.source == "catalog"
+    assert closed.eligible == ()
+    opted = OmniRouteAvailabilityAdapter(transport).evaluate(
+        CandidateRequirements(unknown_is_eligible=True), now=NOW
+    )
+    assert [c.model.id for c in opted.eligible] == ["grid/code-prime"]
 
 
 def test_hard_policy_filters_budget_concurrency_and_capability():
@@ -485,14 +504,40 @@ def test_missing_estimated_request_headroom_requires_degraded_opt_in() -> None:
     )
 
     default = adapter.evaluate(CandidateRequirements(estimated_tokens=100), now=NOW)
-    opted_in = adapter.evaluate(
+    # allow_degraded alone no longer admits an UNMEASURED candidate: it means
+    # "an observed shortfall is acceptable", not "no observation is acceptable".
+    degraded_only = adapter.evaluate(
         CandidateRequirements(estimated_tokens=100, allow_degraded=True), now=NOW
+    )
+    opted_in = adapter.evaluate(
+        CandidateRequirements(
+            estimated_tokens=100, allow_degraded=True, allow_unmeasured_evidence=True
+        ),
+        now=NOW,
     )
 
     assert default.candidates[0].state is AvailabilityState.DEGRADED
     assert default.candidates[0].reasons == ("token headroom unknown",)
     assert default.eligible == ()
+    assert degraded_only.eligible == ()
     assert [candidate.model.id for candidate in opted_in.eligible] == ["p/model"]
+
+
+def test_observed_degradation_still_admitted_by_allow_degraded_alone() -> None:
+    """Splitting the flag must not break genuine observed-degradation admission."""
+    adapter = OmniRouteAvailabilityAdapter(
+        StaticOmniRouteTransport(
+            {"data": [{"id": "p/model", "provider": "p"}]},
+            {"p/model": {"observed_at": NOW.isoformat(), "health": "degraded"}},
+        )
+    )
+
+    report = adapter.evaluate(CandidateRequirements(allow_degraded=True), now=NOW)
+
+    assert report.candidates[0].state is AvailabilityState.DEGRADED
+    # Reasons describe something actually observed, not an absent measurement.
+    assert not all(r.endswith("unknown") for r in report.candidates[0].reasons)
+    assert [candidate.model.id for candidate in report.eligible] == ["p/model"]
 
 
 def test_missing_estimated_cost_headroom_fails_closed() -> None:

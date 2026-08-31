@@ -218,3 +218,36 @@ def test_allowed_degraded_explanation_preserves_runtime_state() -> None:
     assert explain_candidates([state], requirements) == [
         {"model": "p/model", "state": "degraded", "rejected": False, "reason": "health degraded"}
     ]
+
+
+def test_select_capable_candidates_applies_affordability_floor_directly() -> None:
+    """FR-029: the shared admission helper must not depend on a caller to pre-apply
+    the token-affordability floor. A caller building `AvailabilityCandidate` states
+    directly (bypassing the runtime-observation preprocessing loop) must still get
+    the floor for free from `select_capable_candidates` itself.
+    """
+    affordable = normalize_observation(
+        ModelInfo(id="p/affordable", provider="p", capability_tier=2),
+        RuntimeObservation(
+            observed_at=NOW, source="fixture", health="healthy", token_headroom=10_000
+        ),
+        now=NOW,
+    )
+    too_small = normalize_observation(
+        ModelInfo(id="p/too-small", provider="p", capability_tier=2),
+        RuntimeObservation(observed_at=NOW, source="fixture", health="healthy", token_headroom=100),
+        now=NOW,
+    )
+    unobserved = normalize_observation(
+        ModelInfo(id="p/unobserved", provider="p", capability_tier=2),
+        RuntimeObservation(observed_at=NOW, source="fixture", health="healthy"),
+        now=NOW,
+    )
+    requirements = CandidateRequirements(estimated_tokens=8_000)
+    eligible_ids = {
+        c.model.id
+        for c in select_capable_candidates([affordable, too_small, unobserved], requirements)
+    }
+    assert "p/too-small" not in eligible_ids
+    assert "p/affordable" in eligible_ids
+    assert "p/unobserved" in eligible_ids

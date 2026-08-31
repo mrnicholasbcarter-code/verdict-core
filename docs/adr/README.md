@@ -54,6 +54,7 @@ superseded by a later record rather than edited away.
 | [024](ADR-024-cross-repo-compatibility-gate.md) — Cross-repo compatibility gate | A compatibility manifest plus a fail-closed gate CLI guards cross-repo contract drift. | Partially implemented |
 | [025](ADR-025-node-envelope-enforcement.md) — Node envelope enforcement | `verdict-node` enforces the same `ExecutionEnvelope` invariants as core. | Proposed |
 | [026](ADR-026-responses-compatibility-boundary.md) — Responses compatibility boundary | A versioned compatibility rule applies immediately before the HTTP Responses transport. | Accepted |
+| [027](ADR-027-observed-free-status-and-context-omissions.md) — Observed free status and context omissions | Free status is observed (`free`/`paid`/`UNKNOWN`), never inferred from a missing price; a requested context source that could not be read is disclosed with a reason. | Accepted |
 
 ## Ecosystem decision trail
 

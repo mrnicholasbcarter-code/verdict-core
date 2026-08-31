@@ -1,0 +1,12 @@
+{
+  "block_reason": null,
+  "conclusion": "lift",
+  "cost_class": "free",
+  "endpoint": "http://localhost:20128/v1",
+  "identity_id": "kc/kilo-auto/free",
+  "omissions": [],
+  "pack_digest": "sha256:d5fe6aa1c70cb995dd9a2b674121bffd789ec47549441e313ca4103778682e29",
+  "packed_passed": true,
+  "schema_version": "context-intelligence/v1",
+  "unaided_passed": false
+}

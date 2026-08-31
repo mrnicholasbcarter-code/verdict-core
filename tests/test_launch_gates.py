@@ -1,3 +1,4 @@
+import re
 import subprocess
 from pathlib import Path
 
@@ -43,12 +44,25 @@ def test_security_workflow_has_non_advisory_audits_and_secret_hygiene_gate():
     assert _credential_gate_passes_for_tracked_files(workflow)
 
 
+def _uses_pinned_version(reference: str, workflow: str) -> bool:
+    """The gate must be present and pinned to a release tag, not a moving ref.
+
+    The exact version is deliberately not asserted: dependency bumps are expected
+    and must not require editing this test. `@main`/`@master`/a bare ref is what
+    this rejects.
+    """
+    pattern = re.escape(reference) + r"@v\d+(?:\.\d+)*\b"
+    return re.search(pattern, workflow) is not None
+
+
 def test_codeql_and_osv_remain_required_security_gates():
     codeql = Path(".github/workflows/codeql.yml").read_text()
     security = Path(".github/workflows/security.yml").read_text()
-    assert "github/codeql-action/init@v4" in codeql
-    assert "github/codeql-action/analyze@v4" in codeql
-    assert "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.5.0" in security
+    assert _uses_pinned_version("github/codeql-action/init", codeql)
+    assert _uses_pinned_version("github/codeql-action/analyze", codeql)
+    assert _uses_pinned_version(
+        "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml", security
+    )
     assert "continue-on-error" not in codeql + security
     assert "if: false" not in codeql + security
     assert "if: ${{ false }}" not in codeql + security

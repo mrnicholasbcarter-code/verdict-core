@@ -11,7 +11,9 @@ from verdict.patch_executor import (
     PatchExecutor,
     PatchExecutorConfig,
     PatchExecutorError,
+    RouteObservation,
     build_unit_prompt,
+    extract_content,
     extract_diff,
     parse_patch_paths,
 )
@@ -50,10 +52,18 @@ def _unit(owned: tuple[str, ...] = ("owned.py",)) -> WorkUnit:
     )
 
 
-def _response(content: str, *, usage: dict[str, int] | None = None, status: int = 200) -> Any:
+def _response(
+    content: str,
+    *,
+    usage: dict[str, int] | None = None,
+    status: int = 200,
+    model: str | None = None,
+) -> Any:
     body: dict[str, Any] = {"choices": [{"message": {"content": content}}]}
     if usage is not None:
         body["usage"] = usage
+    if model is not None:
+        body["model"] = model
     return {"status_code": status, "body": body}
 
 
@@ -224,6 +234,42 @@ def test_prompt_names_the_boundary_and_the_verification_command(repo: Path) -> N
     assert "secrets.env" not in prompt  # unowned files are never shown
 
 
+def test_default_openai_transport_sends_operational_loop_session_header(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, str] = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, limit):
+            del limit
+            return b'{"choices":[{"message":{"content":"not-a-diff"}}],"model":"served"}'
+
+    def opener(request, timeout):
+        del timeout
+        captured["session"] = request.get_header("X-session-id")
+        captured["url"] = request.full_url
+        return Response()
+
+    monkeypatch.setattr("verdict.patch_executor.urllib.request.urlopen", opener)
+
+    executor = PatchExecutor(
+        repo, PatchExecutorConfig(model="cheap/model"), runner=RecordingRunner()
+    )
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert captured["url"].endswith("/chat/completions")
+    assert captured["session"] == "verdict-operational-loop"
+
+
 def test_api_key_is_never_placed_in_the_prompt(repo: Path) -> None:
     runner = RecordingRunner()
     seen: list[Mapping[str, Any]] = []
@@ -245,8 +291,76 @@ def test_api_key_is_never_placed_in_the_prompt(repo: Path) -> None:
     assert "sk-should-never-appear" not in str(attempt.to_dict())
 
 
+def test_extract_content_joins_list_and_reasoning_parts() -> None:
+    listed = extract_content(
+        {"choices": [{"message": {"content": [{"type": "text", "text": "hello"}]}}]}
+    )
+    assert listed == "hello"
+    reasoned = extract_content(
+        {"choices": [{"message": {"content": [], "reasoning": "think then answer"}}]}
+    )
+    assert reasoned == "think then answer"
+    with pytest.raises(PatchExecutorError, match="no text content"):
+        extract_content({"choices": [{"message": {"content": []}}]})
+
+
 def test_fenced_diff_is_unwrapped() -> None:
     assert extract_diff(f"```diff\n{IN_BOUNDS_DIFF}```").startswith("diff --git")
+
+
+def test_observer_records_requested_alias_distinct_from_served_identity(repo: Path) -> None:
+    runner = RecordingRunner()
+    seen: list[RouteObservation] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return _response(IN_BOUNDS_DIFF, model="provider/served-v2")
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/alias"),
+        transport=transport,
+        runner=runner,
+        observer=seen.append,
+    )
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied
+    assert attempt.model == "cheap/alias"
+    assert attempt.resolved_model == "provider/served-v2"
+    assert len(seen) == 1
+    assert seen[0].model == "cheap/alias"
+    assert seen[0].resolved_model == "provider/served-v2"
+    assert seen[0].outcome == "ok"
+    assert seen[0].identity_mismatch is True
+    payload = seen[0].to_dict()
+    assert payload["model"] != payload["resolved_model"]
+    assert payload["identity_mismatch"] is True
+
+
+def test_observer_records_transport_failure_without_inventing_served_identity(repo: Path) -> None:
+    runner = RecordingRunner()
+    seen: list[RouteObservation] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        raise TimeoutError("upstream timed out")
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/alias"),
+        transport=transport,
+        runner=runner,
+        observer=seen.append,
+    )
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "error"
+    assert len(seen) == 1
+    assert seen[0].failed is True
+    assert seen[0].resolved_model is None
+    assert seen[0].identity_mismatch is False
+    assert "TimeoutError" in seen[0].reason
 
 
 def test_parse_patch_paths_ignores_dev_null_and_strips_prefixes() -> None:
