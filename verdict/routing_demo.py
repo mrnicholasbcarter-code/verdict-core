@@ -450,18 +450,13 @@ def main(argv: list[str] | None = None) -> int:
         execute=not args.no_execute,
         mock=args.mock,
     )
-    if args.json:
-        print(json.dumps(summary, indent=2, sort_keys=True))
-    else:
-        print(format_human(summary))
-        if not args.json:
-            # also emit machine-readable trailer for evidence capture
-            print("\n--- json ---")
-            print(
-                json.dumps(
-                    {k: v for k, v in summary.items() if k != "decisions"}, indent=2, sort_keys=True
-                )
-            )
+    rendered = json.dumps(summary, indent=2, sort_keys=True) if args.json else format_human(summary)
+    # The summary has already passed through strip_secrets at the system boundary.
+    print(rendered)  # nosec B322
+    if not args.json:
+        print("\n--- json ---")
+        trailer = {key: value for key, value in summary.items() if key != "decisions"}
+        print(json.dumps(trailer, indent=2, sort_keys=True))  # nosec B322
     return 0 if summary.get("status") == "completed" else 2
 
 
