@@ -1,0 +1,97 @@
+name: Acceptance Gates
+
+# The release acceptance gates in ACCEPTANCE_GATES.md, checked against evidence
+# this job generates. It is deliberately not a pull-request check: it reports
+# launch readiness, which is expected to be incomplete before launch, and a red
+# result here must not block ordinary development. It runs on demand, weekly,
+# and on every published release, where a non-passing gate is a real blocker.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server,dashboard]"
+
+      - name: Create the evidence directory
+        run: rm -rf evidence evidence_bundle && mkdir -p evidence
+
+      # --- Evidence generation ------------------------------------------------
+      # A failure here must not abort the run. A missing artifact is exactly what
+      # the verifier exists to report; letting a crashed producer kill the job
+      # would turn "no evidence" into "no answer". The verifier step below is the
+      # one that decides the outcome, and it is not advisory.
+
+      - name: Run the test suite (G1.x-G3.x evidence)
+        continue-on-error: true
+        run: pytest tests/ -q --junitxml=evidence/pytest_results.xml
+
+      - name: Record the benchmark (G6.2 evidence)
+        continue-on-error: true
+        run: python scripts/benchmark.py --output evidence/benchmark_results.json
+
+      - name: Record the flagship demo (G7.2 evidence)
+        continue-on-error: true
+        run: python scripts/flagship_demo.py > evidence/flagship_demo_output.json
+
+      - name: Record the quickstart (G7.1 evidence)
+        continue-on-error: true
+        run: python scripts/quickstart.py 2>&1 | tee evidence/quickstart_test.log
+
+      - name: Record the committed-credential scan (G5.4 evidence)
+        continue-on-error: true
+        run: |
+          git ls-files -z | python3 -c '
+          import re, sys
+          allowed = {".env.memory.example"}
+          pattern = re.compile(
+              r"(^|/)(\.env(rc|([._-].*)?)?|[^/]*\.env|.*\.(pem|key|crt|cer|p12|pfx)"
+              r"|id_(rsa|dsa|ecdsa|ed25519))$",
+              re.I,
+          )
+          paths = (p.decode("utf-8", "surrogateescape") for p in sys.stdin.buffer.read().split(b"\0"))
+          blocked = [p for p in paths if p and p not in allowed and pattern.search(p)]
+          print("blocked:", blocked if blocked else "(none)")
+          raise SystemExit(bool(blocked))
+          ' | tee evidence/secrets_scan_results.txt
+
+      - name: Build the evidence bundle (G6.3 evidence)
+        continue-on-error: true
+        run: python scripts/evidence_bundle.py --evidence-dir evidence --output-dir evidence_bundle
+
+      # --- Report and verify. Neither of these is advisory. --------------------
+
+      - name: Generate the gate report
+        run: python scripts/generate_gates_report.py --evidence-dir evidence
+
+      - name: Upload the evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: acceptance-gate-evidence
+          path: |
+            evidence/
+            evidence_bundle/
+          retention-days: 30
+
+      - name: Verify the acceptance gates
+        run: python scripts/verify_gates.py --evidence-dir evidence --json
