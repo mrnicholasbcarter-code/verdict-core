@@ -458,6 +458,7 @@ def main(argv: list[str] | None = None) -> int:
         trailer = {key: value for key, value in summary.items() if key != "decisions"}
         rendered += "\n\n--- json ---\n" + json.dumps(trailer, indent=2, sort_keys=True)
     # The summary has already passed through strip_secrets at the system boundary.
+    # codeql[py/clear-text-logging-sensitive-data]
     sys.stdout.write(rendered + "\n")
     return 0 if summary.get("status") == "completed" else 2
 
