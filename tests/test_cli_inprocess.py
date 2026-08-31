@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from verdict import cli
+from verdict.execution_packet import ExecutionPacket
 from verdict.provider_detection import DetectedProvider, DetectionResult
 
 
@@ -199,6 +200,95 @@ def test_omniroute_management_requests_use_configured_endpoint(
 
     assert cli._omniroute_api_request("GET", "/api/provider-nodes") == {"ok": True}
     assert seen == ["http://127.0.0.1:24000/management/api/provider-nodes"]
+
+
+def _packet_file(tmp_path: Path) -> Path:
+    payload = {
+        "schema_version": "1",
+        "packet_id": "packet-cli",
+        "packet_version": 1,
+        "story_id": "US1",
+        "story_version": "1",
+        "source": {
+            "repository": "git@example/repo",
+            "worktree": str(tmp_path),
+            "commit": "a" * 40,
+            "branch": "feature/test",
+            "dirty_digest": "sha256:" + "a" * 64,
+            "lock_digests": {},
+        },
+        "intent": {
+            "goal": "Do one bounded task.",
+            "non_goals": [],
+            "acceptance": ["Focused verification passes."],
+            "limitations": [],
+        },
+        "authority": {
+            "owned_paths": ["a.py"],
+            "denied_paths": [],
+            "tools": ["read"],
+            "network": False,
+            "max_spend_usd": 0,
+            "max_concurrency": 1,
+            "max_attempts": 1,
+            "destructive": False,
+            "production": False,
+        },
+        "verification": {"argv": ["pytest", "a.py"], "timeout_seconds": 30},
+        "decisions": [],
+        "context_refs": [],
+        "tasks": [
+            {"task_id": "T1", "description": "Work.", "status": "pending", "dependencies": []}
+        ],
+        "route_attempts": [],
+        "failure_history": [],
+        "transitions": [],
+        "checkpoint_refs": [],
+        "receipt_refs": [],
+        "next_safe_action": "Run the test.",
+        "proof_level": "source-only",
+    }
+    path = tmp_path / "packet.json"
+    path.write_text(json.dumps(ExecutionPacket.from_dict(payload).to_dict()), encoding="utf-8")
+    return path
+
+
+def test_autodev_packet_inspect_validate_and_resume_are_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _packet_file(tmp_path)
+    before = path.read_bytes()
+
+    for action, extra in (
+        ("inspect", []),
+        ("validate", []),
+        ("resume", ["--model", "cc/claude-sonnet-5"]),
+    ):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["verdict", "autodev", "packet", action, "--packet", str(path), "--json", *extra],
+        )
+        cli.main()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["packet_id"] == "packet-cli"
+        assert payload["integrity_digest"].startswith("sha256:")
+
+    assert path.read_bytes() == before
+
+
+def test_autodev_packet_create_refuses_existing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _packet_file(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["verdict", "autodev", "packet", "create", "--packet", str(path), "--from", str(path)],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 1
 
 
 def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:
@@ -1104,3 +1194,101 @@ def test_cmd_memory_masterdocs_accepted_import_reports_canonical_status_and_writ
         assert len(hits) == 1
         assert hits[0].key.startswith("docs/readme.md#chunk-")
         assert hits[0].trust == "imported-unverified"
+
+
+def test_cmd_packet_shadow_dumps_json_without_calling_eligibility_gate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.eligibility import EligibilityGate
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("shadow dump must not call EligibilityGate")
+
+    monkeypatch.setattr(EligibilityGate, "evaluate", boom)
+    episodes = tmp_path / "episodes.json"
+    episodes.write_text(
+        json.dumps(
+            [
+                {
+                    "packet_integrity_digest": "sha256:" + "33" * 32,
+                    "actual_identity": "cheap/a",
+                    "worker_self_report": {"outcome": "applied", "role": "advisory"},
+                    "trusted_verification": {"decided": True, "role": "deciding"},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cli.cmd_autodev_packet_shadow(str(episodes), output_json=True)
+    report = json.loads(capsys.readouterr().out)
+    assert report["admission_unchanged"] is True
+    assert report["labeled_from"] == "trusted_verification"
+    assert report["advisory_ranking"][0]["identity"] == "cheap/a"
+    assert report["advisory_ranking"][0]["wins"] == 1
+    assert report["episode_count"] == 1
+
+
+def test_cmd_packet_canary_is_explicit_bounded_and_rollback_restores_baseline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.eligibility import EligibilityGate
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("canary dump must not call EligibilityGate")
+
+    monkeypatch.setattr(EligibilityGate, "evaluate", boom)
+    digest = "sha256:" + "cd" * 32
+    episodes = tmp_path / "episodes.json"
+    episodes.write_text(
+        json.dumps(
+            [
+                {
+                    "packet_integrity_digest": digest,
+                    "actual_identity": "b/2",
+                    "trusted_verification": {"decided": True, "role": "deciding"},
+                },
+                {
+                    "packet_integrity_digest": digest,
+                    "actual_identity": "b/2",
+                    "trusted_verification": {"decided": True, "role": "deciding"},
+                },
+                {
+                    "packet_integrity_digest": digest,
+                    "actual_identity": "a/1",
+                    "trusted_verification": {"decided": False, "role": "deciding"},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    admitted = tmp_path / "admitted.json"
+    admitted.write_text(json.dumps(["a/1", "b/2"]), encoding="utf-8")
+    cli.cmd_autodev_packet_canary(str(episodes), str(admitted), output_json=True)
+    canary = json.loads(capsys.readouterr().out)
+    assert canary["active"] is True
+    assert canary["chosen"] == "b/2"
+    assert canary["baseline"] == "a/1"
+    assert canary["admission_unchanged"] is True
+    state = tmp_path / "canary.json"
+    state.write_text(json.dumps(canary), encoding="utf-8")
+    cli.cmd_autodev_packet_canary_rollback(str(state), output_json=True)
+    rolled = json.loads(capsys.readouterr().out)
+    assert rolled["active"] is False
+    assert rolled["chosen"] == "a/1"
+    assert rolled["baseline"] == "a/1"
+
+
+def test_cmd_packet_canary_refuses_missing_apply_paths(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.eligibility import EligibilityGate
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("canary dump must not call EligibilityGate")
+
+    monkeypatch.setattr(EligibilityGate, "evaluate", boom)
+    with pytest.raises(SystemExit) as exited:
+        cli.cmd_autodev_packet_canary(None, None, output_json=True)  # type: ignore[arg-type]
+    assert exited.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "episodes" in payload["error"]

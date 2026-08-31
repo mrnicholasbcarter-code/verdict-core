@@ -288,7 +288,7 @@ Full reference: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 | **Learning loop** | Outcome → advisory feedback | Optional intelligence adapters | In progress |
 | **Evidence ledger** | Durable, privacy-safe routing receipts | JSONL + signed manifests | Implemented; expanding |
 
-Design decisions live in **[docs/adr/](docs/adr/)** — 26 numbered records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more. The **[ADR index](docs/adr/README.md)** lists every record with its decision and current status.
+Portable governed-swarm contracts, the runtime adapter contract, and conformance procedure are documented in **[docs/guides/governed-swarm-implementation.md](docs/guides/governed-swarm-implementation.md)**. Design decisions live in **[docs/adr/](docs/adr/)** — 26 numbered records covering the evidence ledger, orchestrator boundary, fail-closed capability passports, consented probes, catalog qualification, gateway adapter contracts, and more. The **[ADR index](docs/adr/README.md)** lists every record with its decision and current status.
 
 Ecosystem-stories ADR trail ([verdict-ecosystem](https://github.com/mrnicholasbcarter-code/verdict-ecosystem) tracks the source stories):
 
@@ -296,7 +296,7 @@ Ecosystem-stories ADR trail ([verdict-ecosystem](https://github.com/mrnicholasbc
 |---|---|---|
 | PRO-001 — Provider receipts | [ADR-021](docs/adr/ADR-021-deterministic-provider-receipts.md) | Accepted (partial) |
 | CTX-002 — Context provider conformance | [ADR-022](docs/adr/ADR-022-context-provider-conformance.md) | Accepted (partial) |
-| SWARM-001 — Governed swarm supervision | [ADR-023](docs/adr/ADR-023-governed-swarm-supervision.md) | Accepted (partial) |
+| SWARM-001 — Governed swarm supervision | [ADR-023](docs/adr/ADR-023-governed-swarm-supervision.md) | Accepted — [implementation guide](docs/guides/governed-swarm-implementation.md) |
 | CON-001 — Cross-repo compatibility gate | [ADR-024](docs/adr/ADR-024-cross-repo-compatibility-gate.md) | Accepted (partial — verdict-core side only) |
 | NOD-002 — Node envelope enforcement | [ADR-025](docs/adr/ADR-025-node-envelope-enforcement.md) | Proposed |
 

@@ -94,6 +94,10 @@ class CandidateRequirements:
     max_concurrency: int | None = None
     unknown_is_eligible: bool = False
     allow_degraded: bool = False
+    # Distinct from allow_degraded: admits a candidate whose ONLY shortfall is
+    # that the evidence was never observed. Keeping these separate stops
+    # "we measured a problem" and "we measured nothing" sharing one switch.
+    allow_unmeasured_evidence: bool = False
     estimated_tokens: int | None = None
     estimated_cost: float | None = None
 
@@ -120,7 +124,12 @@ class CandidateRequirements:
             raise ValueError("estimated_cost must be a finite non-negative number")
         if any(
             type(value) is not bool
-            for value in (self.protected, self.unknown_is_eligible, self.allow_degraded)
+            for value in (
+                self.protected,
+                self.unknown_is_eligible,
+                self.allow_degraded,
+                self.allow_unmeasured_evidence,
+            )
         ):
             raise ValueError("candidate requirement flags must be booleans")
 
@@ -387,6 +396,39 @@ def _capability_mapping(rows: Any) -> Mapping[str, frozenset[str]]:
             continue
         result[row["id"]] = _capabilities(row)
     return result
+
+
+OPAQUE_ROUTE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
+OPAQUE_ROUTE_IDS = frozenset({"auto", "combo", "default", "router", "virtual"})
+
+
+def is_opaque_route_id(model_id: str) -> bool:
+    """True when an id names a gateway resolver alias rather than a concrete route.
+
+    Gateway-neutral by construction: this tests the *shape of the id* against
+    well-known resolver-alias conventions shared by OmniRoute, OpenRouter and
+    similar gateways. It must never branch on a gateway-specific field such as
+    ``owned_by``/``provider``, which would be gateway detection rather than the
+    capability negotiation required by spec 272 D-005.
+
+    An adapter that can positively declare a route opaque should exclude it at
+    the adapter boundary; this is the baseline used when no such facet exists.
+
+    The alias may occupy any segment: gateways namespace their resolvers
+    (``kr/auto``, ``kr/auto-thinking``), so matching only a leading prefix would
+    admit the alias as if it were a concrete route.
+
+    A tier suffix does not make an alias concrete. ``bzl/auto:free`` observed on a
+    live catalog is still a resolver whose served identity is unknown in advance,
+    so the suffix is stripped before the leaf is matched.
+    """
+    normalized = model_id.strip().lower()
+    if normalized.startswith(OPAQUE_ROUTE_PREFIXES) or normalized in OPAQUE_ROUTE_IDS:
+        return True
+    leaf = normalized.rsplit("/", 1)[-1].split(":", 1)[0]
+    return leaf in OPAQUE_ROUTE_IDS or any(
+        leaf.startswith(f"{alias}-") for alias in OPAQUE_ROUTE_IDS
+    )
 
 
 def normalize_catalog(rows: Any, capabilities: Any = None) -> list[ModelInfo]:
@@ -731,6 +773,21 @@ def _probe_state(obs: RuntimeObservation) -> tuple[AvailabilityState, str] | Non
 def normalize_observation(
     model: ModelInfo, observation: RuntimeObservation, *, now: datetime | None = None
 ) -> AvailabilityCandidate:
+    """Apply conservative precedence to contradictory runtime signals, then attach
+    the raw token headroom so :func:`select_capable_candidates` can apply the
+    affordability floor (FR-029) without every caller pre-computing it."""
+    candidate = _normalize_observation_state(model, observation, now=now)
+    obs = _raw_observation(observation)
+    if obs.token_headroom is None:
+        return candidate
+    return replace(
+        candidate, normalized={**candidate.normalized, "token_headroom": obs.token_headroom}
+    )
+
+
+def _normalize_observation_state(
+    model: ModelInfo, observation: RuntimeObservation, *, now: datetime | None = None
+) -> AvailabilityCandidate:
     """Apply conservative precedence to contradictory runtime signals."""
     current = _now(now)
     obs = _raw_observation(observation)
@@ -959,12 +1016,42 @@ def select_capable_candidates(
     return sorted(result, key=lambda x: (x.model.capability_tier, x.model.id))
 
 
+def _affordable(item: AvailabilityCandidate, requirements: CandidateRequirements) -> bool:
+    """FR-029: observed capacity below the estimated unit cost excludes; unobserved does not.
+
+    Lives in the shared admission primitive rather than a specific runtime-observation
+    call site, so every caller of :func:`select_capable_candidates` gets the floor for
+    free instead of needing to pre-apply it.
+    """
+    if requirements.estimated_tokens is None:
+        return True
+    headroom = item.normalized.get("token_headroom")
+    return headroom is None or headroom >= requirements.estimated_tokens
+
+
 def _candidate_is_eligible(
     item: AvailabilityCandidate, requirements: CandidateRequirements
 ) -> bool:
     if _policy_reason(item, requirements):
         return False
+    if not _affordable(item, requirements):
+        return False
     return _availability_state_is_eligible(item, requirements)
+
+
+def _degraded_for_absent_evidence(item: AvailabilityCandidate) -> bool:
+    """True when a candidate is DEGRADED only because evidence was missing.
+
+    Reasons ending in ``unknown`` mean the observation never happened. Genuine
+    degradation (unhealthy provider, half-open circuit, an observed shortfall)
+    carries other reasons and is unaffected.
+
+    Frozen agreement, export lines 16675-16676: missing *optional* evidence
+    lowers confidence, missing *required* evidence excludes the candidate.
+    Admitting an unmeasured candidate is therefore a deliberate, separately
+    declared choice -- see ``CandidateRequirements.allow_unmeasured_evidence``.
+    """
+    return bool(item.reasons) and all(reason.endswith("unknown") for reason in item.reasons)
 
 
 def _availability_state_is_eligible(
@@ -981,6 +1068,7 @@ def _availability_state_is_eligible(
         item.state is AvailabilityState.DEGRADED
         and requirements.allow_degraded
         and not requirements.protected
+        and (requirements.allow_unmeasured_evidence or not _degraded_for_absent_evidence(item))
     ):
         return True
     return (
@@ -1209,6 +1297,17 @@ class OmniRouteAvailabilityAdapter:
                 )
                 continue
             value = runtime_value(model)
+            if not mapping and "runtime" not in self.transport_capabilities:
+                states.append(
+                    AvailabilityCandidate(
+                        model,
+                        AvailabilityState.UNKNOWN,
+                        ("health unknown",),
+                        source="catalog",
+                        freshness_seconds=0.0,
+                    )
+                )
+                continue
             states.append(normalize_observation(model, _raw_observation(value), now=current))
         # Request capacity and concurrency are hard runtime gates, not ranking hints.
         for index, item in enumerate(states):
@@ -1264,7 +1363,8 @@ class OmniRouteAvailabilityAdapter:
         freshness = max(
             (x.freshness_seconds for x in states if x.freshness_seconds is not None), default=None
         )
-        source = next((x.source for x in states if x.source != "unknown"), "omniroute")
+        default_source = "catalog" if "runtime" not in self.transport_capabilities else "omniroute"
+        source = next((x.source for x in states if x.source != "unknown"), default_source)
         return AvailabilityReport(tuple(states), tuple(eligible), source, freshness, tuple(errors))
 
     check = evaluate

@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from verdict.classifier import classify
-
 
 def _model_set(value: str | None) -> frozenset[str]:
     if not value:
@@ -46,35 +44,23 @@ def normalize_catalog(
         capabilities = row.get("capabilities", {})
         if not isinstance(capabilities, dict):
             capabilities = {}
-        is_claude = "claude" in model_id.lower()
-        is_gpt4 = "gpt-4" in model_id.lower()
-        is_gemini = "gemini" in model_id.lower()
-        provider_name = model_id.split("/")[0] if "/" in model_id.lower() else "unknown"
-        family = (
-            "claude"
-            if is_claude
-            else "gpt"
-            if "gpt" in model_id
-            else "gemini"
-            if is_gemini
-            else "unknown"
-        )
+        provider_name = row.get("owned_by")
+        if not isinstance(provider_name, str) or not provider_name:
+            provider_name = None
 
         normalized["verdict"] = {
             "eligible": True,
             "availability_state": "unknown",
             "capability_profile": {
-                "tier": classify(model_id),
-                "context": capabilities.get("context", 128000),
-                "tools": capabilities.get("tools", True),
-                "structured_output": capabilities.get("structured_output", True),
-                "vision": bool(
-                    capabilities.get("vision") or is_gpt4 or "claude-3" in model_id.lower()
-                ),
-                "streaming": capabilities.get("streaming", True),
-                "reasoning": "o1" in model_id.lower() or "-r1" in model_id.lower(),
+                "tier": None,
+                "context": capabilities.get("context"),
+                "tools": capabilities.get("tools"),
+                "structured_output": capabilities.get("structured_output"),
+                "vision": capabilities.get("vision"),
+                "streaming": capabilities.get("streaming"),
+                "reasoning": capabilities.get("reasoning"),
                 "provider": provider_name,
-                "model_family": family,
+                "model_family": capabilities.get("model_family"),
             },
         }
         rows.append(normalized)

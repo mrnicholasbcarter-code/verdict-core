@@ -91,17 +91,17 @@ def test_select_best_model_filters_runtime_state_before_quality_ranking(state: s
     assert alternatives == []
 
 
-def test_headroom_fails_open_without_endpoint() -> None:
-    available, pct = check_headroom(
+def test_headroom_unknown_without_endpoint() -> None:
+    result = check_headroom(
         "model", "provider", ProviderConfig(base_url="https://provider.example")
     )
 
-    assert available is True
-    assert pct == 100.0
+    assert result is None
 
 
 def test_headroom_placeholder_allows_configured_endpoint() -> None:
-    available, pct = check_headroom(
+    # The placeholder still cannot query capacity; it reports unknown, never 100%.
+    result = check_headroom(
         "model",
         "provider",
         ProviderConfig(
@@ -109,5 +109,4 @@ def test_headroom_placeholder_allows_configured_endpoint() -> None:
         ),
     )
 
-    assert available is True
-    assert pct == 100.0
+    assert result is None

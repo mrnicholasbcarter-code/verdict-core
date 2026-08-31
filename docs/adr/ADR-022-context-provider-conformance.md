@@ -1,7 +1,7 @@
 # ADR-022: Context Provider Conformance Suite
 
-**Status**: Accepted (partially implemented)
-**Date**: 2026-08-16
+**Status**: Accepted
+**Date**: 2026-08-16 (remainder closed 2026-08-27, issue #287)
 **Story**: [VERDICT-CTX-002](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/VERDICT-CTX-002.md) (verdict-ecosystem)
 
 ## Context
@@ -44,11 +44,34 @@ that pins these three properties as regression-tested contracts:
 
 - These three properties are now regression-tested; a future change that
   weakens any of them fails CI immediately.
-- This suite covers the fail-closed core of CTX-002, not its full acceptance
-  criteria. Multi-adapter staleness windows, TTL-based cache invalidation
-  across providers, and adapter-specific conformance (beyond
-  `masterdocs-sqlite`) remain open — tracked separately so this ADR does not
-  overstate completion.
 - Establishes the pattern (mirrors ADR-002's gate/orchestrator separation):
   retrieval intelligence proposes, it never silently substitutes for
   authorization or availability truth.
+
+## Remainder closed (issue #287, 2026-08-27)
+
+The two items this ADR originally left open are now closed:
+
+- **Multi-adapter staleness windows.** `AdapterDescriptor.ttl_seconds`
+  (optional, default `None`) declares a provider's freshness window.
+  `MemoryPlane.search_ranked(..., ttl_lookup=...)` annotates each result's
+  new `stale: bool` field by comparing the record's existing `created_at`
+  against the declared TTL — computed purely from already-recorded data,
+  never a live provider call. A provider with no declared TTL fails open:
+  its records are never marked stale. This is deliberately a read-time
+  annotation, not a background eviction process — it does not delete
+  records or interact with the existing hard `expires_at` exclusion, which
+  remains a separate, namespace-scoped write policy owned by
+  `verdict/memory_gate.py`.
+- **Conformance coverage beyond one adapter type.** The
+  explicit-unavailable-state guarantee is now proven, by a single
+  parametrized test enumerating the real registry
+  (`build_default_adapter_registry().list()`), against every adapter type
+  it ships. That enumeration discovered a fifth registered type,
+  `code-graph-manifest`, that neither this ADR nor issue #287 had named —
+  exactly the class of gap a hardcoded id list would have kept missing.
+  The `masterdocs-sqlite` legacy refusal is now asserted by test
+  (`test_masterdocs_sqlite_legacy_id_is_refused`), not only documented.
+  No per-adapter code change was needed: the existing outage-reporting
+  mechanism (`AdapterRegistry.declare_unavailable`) already generalized
+  correctly to every real adapter type without modification.

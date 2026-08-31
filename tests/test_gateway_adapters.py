@@ -209,3 +209,42 @@ def test_manifest_schema_accepts_canonical_payload() -> None:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     assert list(Draft202012Validator(schema).iter_errors(manifest().to_dict())) == []
+
+
+def test_optional_gateway_facets_are_negotiated_capabilities() -> None:
+    """FR-038: abilities beyond the OpenAI baseline are declared, not assumed.
+
+    Session memory, free-tier catalogs, and provider statistics exist on some gateways
+    (OmniRoute) and not others. They must resolve to supported/unsupported/unknown so a
+    gateway exposing none of them still works.
+    """
+    for name in ("session_memory", "free_tier_catalog", "provider_stats"):
+        assert AdapterCapability(name)
+
+
+def test_unsupported_optional_facet_is_not_admitted_and_does_not_raise() -> None:
+    """A gateway declaring an optional facet unsupported must simply skip it."""
+    current = manifest(
+        capabilities={
+            **{capability: CapabilitySupport.SUPPORTED for capability in AdapterCapability},
+            AdapterCapability.SESSION_MEMORY: CapabilitySupport.UNSUPPORTED,
+        }
+    )
+    negotiated = current.negotiate([AdapterCapability.SESSION_MEMORY])
+    assert negotiated.supported == ()
+    assert negotiated.unavailable == ("session_memory",)
+    assert negotiated.admitted is False
+
+
+def test_optional_facet_absent_from_manifest_reads_unknown_not_supported() -> None:
+    """A silent manifest means UNKNOWN. Verdict must never assume an ability exists."""
+    baseline = manifest(
+        capabilities={
+            capability: CapabilitySupport.SUPPORTED
+            for capability in AdapterCapability
+            if capability is not AdapterCapability.FREE_TIER_CATALOG
+        }
+    )
+    assert (
+        baseline.capability_status(AdapterCapability.FREE_TIER_CATALOG) is CapabilitySupport.UNKNOWN
+    )

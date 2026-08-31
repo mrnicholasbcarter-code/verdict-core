@@ -26,7 +26,11 @@
         "streaming": {"$ref": "#/$defs/support"},
         "cancellation": {"$ref": "#/$defs/support"},
         "failure_normalization": {"$ref": "#/$defs/support"},
-        "telemetry": {"$ref": "#/$defs/support"}
+        "telemetry": {"$ref": "#/$defs/support"},
+        "session_memory": {"$ref": "#/$defs/support"},
+        "free_tier_catalog": {"$ref": "#/$defs/support"},
+        "provider_stats": {"$ref": "#/$defs/support"},
+        "quota_headroom": {"$ref": "#/$defs/support"}
       }
     },
     "discovery": {
