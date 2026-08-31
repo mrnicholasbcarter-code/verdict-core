@@ -1,7 +1,8 @@
 # ADR-023: Governed Swarm Supervision
 
-**Status**: Accepted (partially implemented)
+**Status**: Accepted
 **Date**: 2026-08-16
+**Updated**: 2026-08-30
 **Story**: [VERDICT-SWARM-001](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/VERDICT-SWARM-001.md) (verdict-ecosystem)
 
 ## Context
@@ -49,10 +50,14 @@ live backend) and a real `RufloTransport` (subprocess or HTTP).
 - Swarm control commands (pause/resume/status) are now exercised against the
   adapter's real dispatch path, not only the fake/mock path — closing a gap
   that would otherwise only surface at first production use.
-- This ADR covers spec-to-envelope validation and control delegation, not
-  the full SWARM-001 surface: end-to-end multi-agent budget enforcement
-  under a live Ruflo backend and worker-side capability attestation remain
-  open, tracked separately.
+- Feature 274 completed the portable `swarm-spec/v1` / `swarm-runtime/v1`
+  surface in Core: immutable `SwarmSpec`/`SwarmSlice`, narrowing-only
+  supervisor controls, allowlisted `MissionEvidence`, and a Ruflo-compatible
+  runtime bridge over a deterministic fake transport.
+- Live Ruflo execution remains optional integration evidence and is not a
+  substitute for the deterministic Core + fake-transport conformance suite.
+- Worker-side capability attestation is still adapter-boundary only; Core
+  remains the policy authority.
 - `RufloAdapter._dispatch`'s dual-mode contract (RufloTransport vs. bare
   callable) is now an explicit, tested seam — any new transport type must
   satisfy one of the two shapes or extend `_dispatch` deliberately.
