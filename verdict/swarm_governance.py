@@ -1,106 +1,30 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import math
-import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, ClassVar, cast
+from dataclasses import dataclass, field, fields
+from typing import Any
 
-from verdict.contracts import Contract, ContractValidationError
+from verdict.contracts import ContractValidationError
 from verdict.swarm_contracts import (
     SwarmTaskBudget,
     SwarmTaskEnvelope,
     capture_envelope_digest,
     validate_envelope_link,
 )
-
-SWARM_SPEC_VERSION = "swarm-spec/v1"
-VALIDATOR_VERSION = "swarm-validator/v1"
-_ALLOWED_CONTROLS = frozenset({"pause", "resume", "cancel"})
-_SLICE_STATES = frozenset(
-    {
-        "pending",
-        "submitted",
-        "queued",
-        "running",
-        "paused",
-        "completed",
-        "failed",
-        "cancelled",
-        "timeout",
-        "rejected",
-    }
+from verdict.swarm_governance_base import ALLOWED_CONTROLS as _ALLOWED_CONTROLS
+from verdict.swarm_governance_base import SLICE_STATES as _SLICE_STATES
+from verdict.swarm_governance_base import (
+    SWARM_SPEC_VERSION,
+    VALIDATOR_VERSION,
+    GovernanceContract,
+    canonical_digest,
+    canonical_json,
 )
-_TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "timeout", "rejected"})
-_SENSITIVE = re.compile(
-    r"(?i)(?<![a-z0-9_])(api[_-]?key|password|secret|token|authorization|credential|private[_-]?key)(?![a-z0-9_])"
-)
-
-
-def _require_text(value: str, name: str, *, maximum: int | None = None) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ContractValidationError(f"{name} must be a non-empty string")
-    if maximum is not None and len(value) > maximum:
-        raise ContractValidationError(f"{name} must be at most {maximum} characters")
-    if _SENSITIVE.search(value):
-        raise ContractValidationError(f"{name} contains prohibited sensitive content")
-
-
-def _require_items(values: Sequence[str], name: str, *, non_empty: bool = True) -> None:
-    if non_empty and not values:
-        raise ContractValidationError(f"{name} must be non-empty")
-    if len(set(values)) != len(values):
-        raise ContractValidationError(f"{name} contains duplicate values")
-    for value in values:
-        _require_text(value, name)
-
-
-def _budget_dict(budget: Any) -> dict[str, Any]:
-    if hasattr(budget, "to_dict"):
-        payload = budget.to_dict()
-        return dict(cast(Mapping[str, Any], payload))
-    if isinstance(budget, Mapping):
-        return dict(budget)
-    return {}
-
-
-def _budget_cap(budget: Any, key: str) -> float:
-    value = getattr(budget, key, None)
-    if value is None and isinstance(budget, Mapping):
-        value = budget.get(key, 0)
-    try:
-        number = float(value or 0)
-    except (TypeError, ValueError) as exc:
-        raise ContractValidationError(f"budget.{key} must be finite") from exc
-    if not math.isfinite(number) or number < 0:
-        raise ContractValidationError(f"budget.{key} must be finite and non-negative")
-    return number
-
-
-def _canonical(value: Any) -> Any:
-    if isinstance(value, Contract):
-        return _canonical(value.to_dict())
-    if hasattr(value, "to_dict"):
-        return _canonical(value.to_dict())
-    if isinstance(value, Mapping):
-        return {str(key): _canonical(item) for key, item in sorted(value.items())}
-    if isinstance(value, (tuple, list, frozenset, set)):
-        items = [_canonical(item) for item in value]
-        return sorted(
-            items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
-        )
-    return value
-
-
-def canonical_json(value: Any) -> str:
-    return json.dumps(_canonical(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def canonical_digest(value: Any) -> str:
-    digest = hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
+from verdict.swarm_governance_base import budget_cap as _budget_cap
+from verdict.swarm_governance_base import canonical as _canonical
+from verdict.swarm_governance_base import contains_sensitive as _contains_sensitive
+from verdict.swarm_governance_base import require_items as _require_items
+from verdict.swarm_governance_base import require_text as _require_text
 
 
 @dataclass(frozen=True)
@@ -119,22 +43,6 @@ class GovernanceValidationError:
             "swarm_id": self.swarm_id,
             "correlation_id": self.correlation_id,
         }
-
-
-class GovernanceContract(Contract):
-    contract_version: ClassVar[str] = SWARM_SPEC_VERSION
-
-    def to_dict(self) -> dict[str, Any]:
-        if not is_dataclass(self):
-            raise TypeError("governance contracts must be dataclasses")
-        return {
-            item.name: _canonical(getattr(self, item.name)) if item.name != "spec" else None
-            for item in fields(cast(Any, self))
-            if item.name != "allowed_actions"
-        }
-
-    def digest(self) -> str:
-        return canonical_digest(self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -365,9 +273,10 @@ class SwarmSpec(GovernanceContract):
             raise ContractValidationError(
                 f"missing required field(s): {', '.join(sorted(missing))}"
             )
-        if _SENSITIVE.search(canonical_json(payload)):
+        if _contains_sensitive(canonical_json(payload)):
             raise ContractValidationError("governance input contains prohibited sensitive content")
         coerced = dict(payload)
+
         def _role(item: Any) -> SwarmRole:
             if isinstance(item, SwarmRole):
                 return item

@@ -425,9 +425,7 @@ def approved_envelope_bounds(envelope: SwarmTaskEnvelope) -> dict[str, Any]:
     }
 
 
-def reject_weakened_bounds(
-    approved: Mapping[str, Any], proposed: Mapping[str, Any]
-) -> None:
+def reject_weakened_bounds(approved: Mapping[str, Any], proposed: Mapping[str, Any]) -> None:
     """Reject any proposed bound that is weaker than the approved envelope snapshot."""
     numeric_keys = ("max_parallelism", "timeout_ms", "max_iterations", "max_attempts")
     for key in numeric_keys:

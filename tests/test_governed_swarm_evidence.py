@@ -7,28 +7,97 @@ from verdict.swarm_evidence import MissionEventType, MissionEvidence
 
 
 def test_lifecycle_conflict_projection_preserves_order_and_terminal() -> None:
-    evidence = MissionEvidence.create(ReceiptStore(), scope="swarm/demo", swarm_id="swarm-1", event_id="root", contract_version="swarm-spec/v1")
-    evidence.append(MissionEventType.DISPATCH_ADMITTED, event_id="dispatch", payload={"swarm_id": "swarm-1", "slice_id": "slice-1", "envelope_digest": "env-1", "state": "submitted"})
-    evidence.append(MissionEventType.STATUS_OBSERVED, event_id="running", payload={"swarm_id": "swarm-1", "slice_id": "slice-1", "envelope_digest": "env-1", "state": "running"})
-    evidence.append(MissionEventType.CONFLICT_RESOLVED, event_id="conflict", payload={"swarm_id": "swarm-1", "slice_id": "slice-1", "envelope_digest": "env-1", "policy_id": "policy", "policy_version": "v1", "candidate_digests": ["sha256:a", "sha256:b"], "selected_digest": "sha256:a", "tie_break": "lexical_digest", "decision_digest": "sha256:decision"})
-    evidence.append(MissionEventType.MISSION_COMPLETED, event_id="terminal", payload={"swarm_id": "swarm-1", "slice_id": "slice-1", "envelope_digest": "env-1", "state": "completed"})
+    evidence = MissionEvidence.create(
+        ReceiptStore(),
+        scope="swarm/demo",
+        swarm_id="swarm-1",
+        event_id="root",
+        contract_version="swarm-spec/v1",
+    )
+    evidence.append(
+        MissionEventType.DISPATCH_ADMITTED,
+        event_id="dispatch",
+        payload={
+            "swarm_id": "swarm-1",
+            "slice_id": "slice-1",
+            "envelope_digest": "env-1",
+            "state": "submitted",
+        },
+    )
+    evidence.append(
+        MissionEventType.STATUS_OBSERVED,
+        event_id="running",
+        payload={
+            "swarm_id": "swarm-1",
+            "slice_id": "slice-1",
+            "envelope_digest": "env-1",
+            "state": "running",
+        },
+    )
+    evidence.append(
+        MissionEventType.CONFLICT_RESOLVED,
+        event_id="conflict",
+        payload={
+            "swarm_id": "swarm-1",
+            "slice_id": "slice-1",
+            "envelope_digest": "env-1",
+            "policy_id": "policy",
+            "policy_version": "v1",
+            "candidate_digests": ["sha256:a", "sha256:b"],
+            "selected_digest": "sha256:a",
+            "tie_break": "lexical_digest",
+            "decision_digest": "sha256:decision",
+        },
+    )
+    evidence.append(
+        MissionEventType.MISSION_COMPLETED,
+        event_id="terminal",
+        payload={
+            "swarm_id": "swarm-1",
+            "slice_id": "slice-1",
+            "envelope_digest": "env-1",
+            "state": "completed",
+        },
+    )
 
     projection = evidence.projections()
 
-    assert [item["event_type"] for item in projection["lifecycle"]] == ["dispatch_admitted", "status_observed", "mission_completed"]
+    assert [item["event_type"] for item in projection["lifecycle"]] == [
+        "dispatch_admitted",
+        "status_observed",
+        "mission_completed",
+    ]
     assert projection["conflicts"][0]["payload"]["selected_digest"] == "sha256:a"
     assert projection["terminal"]["event_type"] == "mission_completed"
 
 
 def test_terminal_conflict_and_evidence_scope_validation() -> None:
-    evidence = MissionEvidence.create(ReceiptStore(), scope="swarm/demo", swarm_id="swarm-1", event_id="root", contract_version="swarm-spec/v1")
-    evidence.append(MissionEventType.MISSION_COMPLETED, event_id="terminal", payload={"state": "completed"})
+    evidence = MissionEvidence.create(
+        ReceiptStore(),
+        scope="swarm/demo",
+        swarm_id="swarm-1",
+        event_id="root",
+        contract_version="swarm-spec/v1",
+    )
+    evidence.append(
+        MissionEventType.MISSION_COMPLETED, event_id="terminal", payload={"state": "completed"}
+    )
 
     with pytest.raises(ReceiptConflictError):
-        evidence.append(MissionEventType.MISSION_FAILED, event_id="failed", payload={"state": "failed"})
+        evidence.append(
+            MissionEventType.MISSION_FAILED, event_id="failed", payload={"state": "failed"}
+        )
 
-    other = MissionEvidence.create(ReceiptStore(), scope="swarm/other", swarm_id="swarm-2", event_id="root-2", contract_version="swarm-spec/v1")
-    foreign = other.append(MissionEventType.STATUS_OBSERVED, event_id="foreign", payload={"state": "running"})
+    other = MissionEvidence.create(
+        ReceiptStore(),
+        scope="swarm/other",
+        swarm_id="swarm-2",
+        event_id="root-2",
+        contract_version="swarm-spec/v1",
+    )
+    foreign = other.append(
+        MissionEventType.STATUS_OBSERVED, event_id="foreign", payload={"state": "running"}
+    )
     with pytest.raises(ValueError, match="outside the mission scope"):
         evidence.evidence_ref(foreign)
 

@@ -51,10 +51,7 @@ def test_structured_failure_round_trips_and_marks_terminal_response() -> None:
     )
 
     response = RuntimeResponse(
-        request_id="req-1",
-        task_id="task-1",
-        state=RuntimeState.FAILED,
-        failure=failure,
+        request_id="req-1", task_id="task-1", state=RuntimeState.FAILED, failure=failure
     )
 
     assert RuntimeFailure.from_dict(failure.to_dict()) == failure
@@ -113,7 +110,12 @@ def test_runtime_module_keeps_governance_and_evidence_import_boundary() -> None:
 
 def test_governance_does_not_import_ruflo_transport() -> None:
     root = Path(__file__).resolve().parents[1] / "verdict"
-    forbidden = {"RufloAdapter", "RufloTransport", "verdict.ruflo_adapter", "verdict.ruflo_transport"}
+    forbidden = {
+        "RufloAdapter",
+        "RufloTransport",
+        "verdict.ruflo_adapter",
+        "verdict.ruflo_transport",
+    }
     for name in ("swarm_governance.py", "swarm_runtime.py", "swarm_evidence.py"):
         tree = ast.parse((root / name).read_text(encoding="utf-8"))
         imports = set()
@@ -186,7 +188,10 @@ def test_core_and_ruflo_structured_failure_categories() -> None:
         slice_id="slice-1",
         envelope_digest="sha256:abc",
         approved_bounds={"max_concurrency": 1, "tools": ["read_file"]},
-        verification_profile={"required_checks": ["pytest"], "required_evidence": ["swarm/demo:ev"]},
+        verification_profile={
+            "required_checks": ["pytest"],
+            "required_evidence": ["swarm/demo:ev"],
+        },
         allowed_controls=("pause",),
         metadata={"evidence_scope": "swarm/demo"},
     )

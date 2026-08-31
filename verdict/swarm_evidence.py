@@ -156,11 +156,25 @@ class MissionEvidence:
             event_type = record["payload"].get("event_type") or record.get("event_type")
             payload = dict(record["payload"])
             if event_type in _LIFECYCLE_EVENT_TYPES:
-                lifecycle.append({"receipt_id": record["receipt_id"], "event_type": event_type, "payload": payload})
+                lifecycle.append(
+                    {
+                        "receipt_id": record["receipt_id"],
+                        "event_type": event_type,
+                        "payload": payload,
+                    }
+                )
             if event_type == MissionEventType.CONFLICT_RESOLVED.value:
                 conflicts.append({"receipt_id": record["receipt_id"], "payload": payload})
-            if event_type in (MissionEventType.MISSION_COMPLETED.value, MissionEventType.MISSION_FAILED.value) and terminal is None:
-                terminal = {"receipt_id": record["receipt_id"], "event_type": event_type, "payload": payload}
+            if (
+                event_type
+                in (MissionEventType.MISSION_COMPLETED.value, MissionEventType.MISSION_FAILED.value)
+                and terminal is None
+            ):
+                terminal = {
+                    "receipt_id": record["receipt_id"],
+                    "event_type": event_type,
+                    "payload": payload,
+                }
         return {"lifecycle": lifecycle, "conflicts": conflicts, "terminal": terminal}
 
     def export(self) -> dict[str, Any]:

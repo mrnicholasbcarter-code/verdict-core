@@ -159,26 +159,16 @@ def test_envelope_link_and_narrowing_only_mutations() -> None:
             task, digest, proposed_bounds={**approved, "timeout_ms": task.timeout_ms + 1}
         )
     with pytest.raises(ContractValidationError, match="cannot weaken"):
+        validate_envelope_link(task, digest, proposed_bounds={**approved, "max_parallelism": 8})
+    with pytest.raises(ContractValidationError, match="cannot weaken"):
         validate_envelope_link(
-            task, digest, proposed_bounds={**approved, "max_parallelism": 8}
+            task, digest, proposed_bounds={**approved, "required_capabilities": ["edit", "deploy"]}
         )
     with pytest.raises(ContractValidationError, match="cannot weaken"):
         validate_envelope_link(
             task,
             digest,
-            proposed_bounds={**approved, "required_capabilities": ["edit", "deploy"]},
-        )
-    with pytest.raises(ContractValidationError, match="cannot weaken"):
-        validate_envelope_link(
-            task,
-            digest,
-            proposed_bounds={
-                **approved,
-                "allowed_paths": [
-                    *task.allowed_paths,
-                    "/tmp/escape",
-                ],
-            },
+            proposed_bounds={**approved, "allowed_paths": [*task.allowed_paths, "/tmp/escape"]},
         )
     with pytest.raises(ContractValidationError, match="cannot broaden"):
         SwarmSlice.from_spec(
@@ -195,10 +185,7 @@ def test_effective_concurrency_is_minimum_and_excess_is_backpressured() -> None:
     role_bounds = role(max_parallelism=2)
     task = envelope(max_parallelism=1)
     policy = SwarmDispatchPolicy.from_swarm_bounds(
-        task,
-        swarm=swarm,
-        role=role_bounds,
-        slice_limit={"max_concurrency": 4},
+        task, swarm=swarm, role=role_bounds, slice_limit={"max_concurrency": 4}
     )
     assert policy.max_concurrency == 1
     limiter = FanOutLimiter(max_concurrent=policy.max_concurrency, max_queue_depth=1)
@@ -218,9 +205,7 @@ def test_deterministic_runtime_lifecycle_and_deadline() -> None:
             current = self.status(task_id)
             deadline = deadline_at or self._now()
             return self._replace(
-                current,
-                cancel_deadline_at=deadline.isoformat(),
-                metadata={"reason": reason},
+                current, cancel_deadline_at=deadline.isoformat(), metadata={"reason": reason}
             )
 
     adapter = SilentCancelAdapter(now=lambda: now)

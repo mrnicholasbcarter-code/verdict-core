@@ -421,11 +421,7 @@ class SwarmDispatchPolicy:
                 if caps:
                     required |= set(caps)
             if required:
-                object.__setattr__(
-                    self.base_policy,
-                    "required_capabilities",
-                    frozenset(required),
-                )
+                object.__setattr__(self.base_policy, "required_capabilities", frozenset(required))
 
     @classmethod
     def from_swarm_bounds(
@@ -443,10 +439,7 @@ class SwarmDispatchPolicy:
             if source is None:
                 continue
             narrowing.append(source if not isinstance(source, dict) else _BoundView(source))
-        kwargs: dict[str, Any] = {
-            "envelope": envelope,
-            "narrowing_limits": tuple(narrowing),
-        }
+        kwargs: dict[str, Any] = {"envelope": envelope, "narrowing_limits": tuple(narrowing)}
         if base_policy is not None:
             kwargs["base_policy"] = base_policy
         return cls(**kwargs)
@@ -595,10 +588,7 @@ def dispatch_governed_swarm(
         validated = SwarmSpec.from_dict(dict(spec_payload))
 
     policy = SwarmDispatchPolicy.from_swarm_bounds(
-        envelope,
-        swarm=validated,
-        role=role,
-        slice_limit=slice_limit,
+        envelope, swarm=validated, role=role, slice_limit=slice_limit
     )
     active_dispatcher = dispatcher if dispatcher is not None else SwarmDispatcher(policy=policy)
     result = active_dispatcher.dispatch(snapshot, now)

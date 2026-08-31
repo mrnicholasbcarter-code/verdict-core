@@ -166,7 +166,9 @@ def test_verification_profile_requires_closed_required_proof() -> None:
 
 
 def test_role_verification_must_include_swarm_required_checks() -> None:
-    with pytest.raises(ContractValidationError, match="role verification must include swarm checks"):
+    with pytest.raises(
+        ContractValidationError, match="role verification must include swarm checks"
+    ):
         spec(
             verification=VerificationProfile(
                 profile_id="verify-sw",
@@ -194,14 +196,17 @@ def test_slice_links_to_spec_and_envelope_digest() -> None:
 
     assert slice_contract.envelope_digest == SwarmSlice.digest_envelope(task)
     assert slice_contract.to_dict()["spec"] is None
-    assert slice_contract.digest() == SwarmSlice.from_spec(
-        spec=swarm,
-        assignment_id="agent-1",
-        envelope=task,
-        verification=verification(),
-        evidence_root_id="receipt-root",
-        slice_id="slice-1",
-    ).digest()
+    assert (
+        slice_contract.digest()
+        == SwarmSlice.from_spec(
+            spec=swarm,
+            assignment_id="agent-1",
+            envelope=task,
+            verification=verification(),
+            evidence_root_id="receipt-root",
+            slice_id="slice-1",
+        ).digest()
+    )
 
 
 def test_slice_rejects_bad_links_and_broadened_envelope() -> None:
@@ -225,7 +230,7 @@ def test_slice_rejects_bad_links_and_broadened_envelope() -> None:
         SwarmSlice.from_spec(
             spec=swarm,
             assignment_id="agent-1",
-            envelope=envelope(allowed_paths=["/home/nick/dev/verdict-core" , "/workspace/extra"]),
+            envelope=envelope(allowed_paths=["/home/nick/dev/verdict-core", "/workspace/extra"]),
             verification=verification(),
             evidence_root_id="receipt-root",
         )
@@ -293,22 +298,12 @@ def test_envelope_link_captures_immutable_digest_and_rejects_weakened_bounds() -
 
     approved = approved_envelope_bounds(task)
     with pytest.raises(ContractValidationError, match="cannot weaken max_parallelism"):
-        validate_envelope_link(
-            task,
-            digest,
-            proposed_bounds={**approved, "max_parallelism": 2},
-        )
+        validate_envelope_link(task, digest, proposed_bounds={**approved, "max_parallelism": 2})
     with pytest.raises(ContractValidationError, match="cannot weaken timeout_ms"):
-        validate_envelope_link(
-            task,
-            digest,
-            proposed_bounds={**approved, "timeout_ms": 5000},
-        )
+        validate_envelope_link(task, digest, proposed_bounds={**approved, "timeout_ms": 5000})
     with pytest.raises(ContractValidationError, match="cannot weaken required_capabilities"):
         validate_envelope_link(
-            task,
-            digest,
-            proposed_bounds={**approved, "required_capabilities": ["edit", "deploy"]},
+            task, digest, proposed_bounds={**approved, "required_capabilities": ["edit", "deploy"]}
         )
 
 

@@ -165,9 +165,7 @@ class SwarmSupervisor:
         )
         raise SupervisorError(f"out_of_envelope: {reason}")
 
-    def _emit(
-        self, event_type: MissionEventType, task_id: str, payload: Mapping[str, Any]
-    ) -> None:
+    def _emit(self, event_type: MissionEventType, task_id: str, payload: Mapping[str, Any]) -> None:
         if self._evidence is None:
             return
         request = self._requests[task_id]
