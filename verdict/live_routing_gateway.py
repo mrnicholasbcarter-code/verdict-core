@@ -23,7 +23,7 @@ def _client(*, timeout: float = 8.0) -> httpx.Client:
     return httpx.Client(timeout=timeout)
 
 
-def _pricing_index(base_url: str) -> dict[str, dict[str, float]]:
+def fetch_pricing_index(base_url: str) -> dict[str, dict[str, float]]:
     root = base_url.rstrip("/")
     if root.endswith("/v1"):
         root = root[: -len("/v1")]
@@ -50,6 +50,9 @@ def _pricing_index(base_url: str) -> dict[str, dict[str, float]]:
     return index
 
 
+_pricing_index = fetch_pricing_index
+
+
 def fetch_models(
     base_url: str = DEFAULT_GATEWAY, *, freshness_seconds: int = 3600
 ) -> tuple[list[ConcreteIdentity], datetime]:
@@ -64,7 +67,7 @@ def fetch_models(
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise LiveSurfaceBlocked("catalog listing is not an OpenAI-compatible models list")
-    pricing = _pricing_index(base_url)
+    pricing = fetch_pricing_index(base_url)
     identities = []
     for row in rows:
         if not isinstance(row, dict) or not row.get("id"):
