@@ -79,23 +79,48 @@ evidence_bundle/
 
 ## CI Integration
 
-```yaml
-# .github/workflows/acceptance_gates.yml
-name: Acceptance Gates
-on: [push, pull_request]
-jobs:
-  gates:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run tests
-        run: pytest --junitxml=test_results.xml
-      - name: Run benchmarks
-        run: python scripts/benchmark.py --output benchmark_results.json
-      - name: Generate evidence bundle
-        run: python scripts/evidence_bundle.py
-      - name: Verify gates
-        run: python scripts/verify_gates.py --evidence-dir evidence_bundle/ --json
+`.github/workflows/acceptance-gates.yml` runs these gates against evidence it
+generates. It is not a pull-request check: launch readiness is expected to be
+incomplete before launch, and a non-passing gate must not block ordinary
+development. It runs on `workflow_dispatch`, weekly, and on every published
+release, where a non-passing gate is a real blocker.
+
+The pipeline is producers, then report, then verify:
+
+| Step | Produces | Gates it feeds |
+| --- | --- | --- |
+| `pytest tests/ --junitxml=evidence/pytest_results.xml` | `pytest_results.xml` | G1.1-G3.4 |
+| `scripts/benchmark.py --output evidence/benchmark_results.json` | `benchmark_results.json` | G6.2 |
+| `scripts/flagship_demo.py > evidence/flagship_demo_output.json` | `flagship_demo_output.json` | G7.2 |
+| `scripts/quickstart.py \| tee evidence/quickstart_test.log` | `quickstart_test.log` | G7.1 |
+| committed-credential scan `\| tee evidence/secrets_scan_results.txt` | `secrets_scan_results.txt` | G5.4 |
+| `scripts/evidence_bundle.py --evidence-dir evidence --output-dir evidence_bundle` | `evidence_manifest.json` | G6.3 |
+| `scripts/generate_gates_report.py --evidence-dir evidence` | `gates_status.json`, `notes/`, `derived/` | all |
+| `scripts/verify_gates.py --evidence-dir evidence --json` | the pass/fail decision | all |
+
+Every producer step is `continue-on-error: true` on purpose. A missing artifact
+is exactly what the verifier exists to report; letting a crashed producer abort
+the job would turn "no evidence" into "no answer". The report and verify steps
+are not advisory, so a non-passing gate fails the run.
+
+`scripts/generate_gates_report.py` decides each gate from evidence alone. A
+test-backed gate passes only when the named test is present in the JUnit report
+and every matching case passed; an artifact-backed gate passes only when its
+named file is a real regular file in the evidence directory; a derived gate
+(G4.1, G5.3, G6.4, G7.4) passes only when the repository content it inspects
+satisfies the documented condition. Everything else is `BLOCKED` (no evidence)
+or `FAIL` (evidence present and negative). It never upgrades a missing
+criterion, and it writes a `notes/<gate>.md` record of what it inspected so a
+blocked gate still cites real evidence instead of producing an unverifiable
+report.
+
+Reproduce the whole check locally:
+
+```bash
+mkdir -p evidence
+pytest tests/ -q --junitxml=evidence/pytest_results.xml
+python scripts/generate_gates_report.py --evidence-dir evidence
+python scripts/verify_gates.py --evidence-dir evidence --json
 ```
 
 ## Verification
@@ -104,10 +129,10 @@ The checked-in validator enforces the machine-readable report contract before
 any release decision is made:
 
 ```bash
-python scripts/verify_gates.py --evidence-dir evidence_bundle/ --json
+python scripts/verify_gates.py --evidence-dir evidence --json
 ```
 
-`evidence_bundle/gates_status.json` must contain schema version `1`, the
+`evidence/gates_status.json` must contain schema version `1`, the
 audited repository and commit, and exactly one entry for every `G1.1` through
 `G7.4` criterion. Each entry has a `PASS`, `FAIL`, or `BLOCKED` status and at
 least one evidence-root-relative regular-file evidence path. Missing, unknown,

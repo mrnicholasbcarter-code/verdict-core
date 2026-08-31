@@ -55,24 +55,26 @@ def main():
             print("✅ Flagship demo completed successfully!")
             import json
 
+            # The demo emits one entry per scenario, each with its own verdict.
             try:
                 demo_output = json.loads(result.stdout.strip())
-                print("\n📋 Demo Results:")
-                print(f"  Task: {demo_output['task_spec']['objective']}")
-                print(f"  Required capabilities: {demo_output['requirements']['required']}")
-                print(f"  Eligible candidates: {demo_output['eligible']}")
-                print(f"  Selected route: {demo_output['decision']['selected_route']}")
-                print(
-                    f"  Exclusions: {len(demo_output['decision']['exclusions'])} candidates rejected"
-                )
             except json.JSONDecodeError:
                 print(f"  Output: {result.stdout[:200]}...")
+                demo_output = {}
 
-            # Print exclusions with correct field names
-            print("\n📋 Exclusions:")
-            for excl in demo_output["decision"]["exclusions"]:
-                model_key = "model"  # Demo uses 'model' field
-                print(f"    - {excl.get(model_key, 'unknown')}: {excl.get('reason', 'no reason')}")
+            if demo_output:
+                print("\n📋 Demo Results:")
+                for scenario, payload in demo_output.items():
+                    verdict = payload.get("verdict", {})
+                    report = payload.get("report", {})
+                    decision = verdict.get("decision", "unknown")
+                    reason = verdict.get("reason", "no reason")
+                    print(f"  {scenario}: {decision} ({reason})")
+                    objective = report.get("objective")
+                    if objective:
+                        print(f"    Objective: {objective}")
+                    receipts = report.get("evidence_receipts", [])
+                    print(f"    Evidence receipts: {len(receipts)}")
         else:
             print(f"❌ Demo failed with exit code {result.returncode}")
             print(f"stderr: {result.stderr}")
