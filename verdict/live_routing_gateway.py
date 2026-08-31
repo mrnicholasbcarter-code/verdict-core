@@ -104,16 +104,18 @@ def probe_identity(base_url: str, identity_id: str) -> bool:
         return False
 
 
-def execute_named_check(base_url: str, identity_id: str) -> tuple[bool, str]:
+def execute_chat(
+    base_url: str,
+    identity_id: str,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int = 64,
+    timeout: float = 20.0,
+) -> str:
     url = urljoin(base_url.rstrip("/") + "/", "chat/completions")
     try:
-        response = _client(timeout=12.0).post(
-            url,
-            json={
-                "model": identity_id,
-                "messages": [{"role": "user", "content": NAMED_CHECK_PROMPT}],
-                "max_tokens": 64,
-            },
+        response = _client(timeout=timeout).post(
+            url, json={"model": identity_id, "messages": messages, "max_tokens": max_tokens}
         )
         response.raise_for_status()
         payload: dict[str, Any] = response.json()
@@ -121,7 +123,17 @@ def execute_named_check(base_url: str, identity_id: str) -> tuple[bool, str]:
         raise LiveSurfaceBlocked(f"execute failed: {exc}") from exc
     choices = payload.get("choices") or []
     if not choices:
-        return False, ""
+        return ""
     message = (choices[0] or {}).get("message") or {}
-    content = str(message.get("content") or "")
+    return str(message.get("content") or "")
+
+
+def execute_named_check(base_url: str, identity_id: str) -> tuple[bool, str]:
+    content = execute_chat(
+        base_url,
+        identity_id,
+        [{"role": "user", "content": NAMED_CHECK_PROMPT}],
+        max_tokens=64,
+        timeout=12.0,
+    )
     return named_check_passes(content), content
