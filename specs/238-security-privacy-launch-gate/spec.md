@@ -36,6 +36,8 @@ publish. What is missing is the part that turns those signals into a gate:
 | Software bill of materials | **Absent everywhere** | No SBOM is produced or published |
 | Build provenance | Produced on release in `verdict-core` | Not produced in `verdict-node` |
 | Dynamic checks | **Absent** | The optional server surface is never exercised adversarially |
+| Cross-repo policy gate | Command exists, fail-closed | Not wired into CI in either repo (ADR-024 half-done) |
+| Integrity of the gate's own tooling | No third-party step is pinned to an immutable revision | The publishing step tracks a moving branch |
 | Threat model | **Absent** | Gate G5.1 blocked |
 | Privacy policy, retention, erasure | **Absent** | Gate G5.2 blocked |
 | Telemetry egress guarantee | Believed to hold | Never asserted by a test |
@@ -44,6 +46,31 @@ The severity inconsistency is the sharpest of these: three different checks
 currently apply three different thresholds, so "no high findings" is true of
 some checks and unverified for others. A single stated policy, applied
 uniformly, is what makes the gate meaningful.
+
+## Clarifications
+
+### Session 2026-09-01
+
+- Q: When an operator asks to erase stored data, what happens to the
+  append-only evidence chain that references it? → A: Erasure removes payloads
+  from mutable stores; the evidence chain keeps only non-reversible references
+  (hashes, ids, decisions) and stays append-only. Those references are not
+  treated as personal data.
+- Q: How is the blocking severity policy shared between the two repositories
+  so they cannot silently diverge? → A: It becomes part of the existing
+  cross-repo compatibility contract, so `verdict compat check` fails on
+  divergence before merge. This requires completing the CI wiring and
+  downstream declaration that ADR-024 currently leaves open.
+- Q: What integrity requirement applies to the third-party tooling the gate
+  itself pulls in? → A: Every third-party step is pinned to an immutable
+  revision, and a check fails the build when any is unpinned or floating on a
+  mutable tag. Verified 2026-09-01: nothing is pinned that way today, and the
+  PyPI publishing step tracks a moving branch.
+- Q: Where are security exceptions recorded, and what makes one valid? → A: A
+  tracked file per repository with a validated schema — finding id,
+  justification, owner, expiry. A malformed or expired entry fails the gate
+  like an unwaived finding, and every active exception is copied into the
+  release evidence.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -113,8 +140,9 @@ guarantee is not reviewable.
 2. **Given** any telemetry or observability path, **When** it is exercised,
    **Then** no network egress is attempted, and a test fails if one is.
 3. **Given** a stored record, **When** the operator requests erasure, **Then**
-   the record and its derivatives become unrecoverable, and the documented
-   retention period is enforced without manual intervention.
+   its content becomes unrecoverable from every mutable store, the evidence
+   chain retains only a non-reversible reference and still verifies, and the
+   documented retention period is enforced without manual intervention.
 4. **Given** malformed or oversized input at the optional server surface,
    **When** it is submitted, **Then** the surface rejects it without crashing,
    without leaking internal detail, and without persisting the payload.
@@ -127,6 +155,12 @@ guarantee is not reviewable.
   produces `blocked`, never a pass.
 - A finding is disputed or has no fix available. The exception mechanism must
   absorb this without requiring the blocking threshold to be lowered globally.
+- An exception file entry is malformed, or its expiry has passed. Both cases
+  behave as if no exception existed, so a waiver cannot be obtained by
+  corrupting the record or by letting it go stale.
+- A pinned third-party step gains its own security advisory. The pin must be
+  updatable without weakening the pinning requirement, so the update path is
+  a new immutable revision rather than a temporary float.
 - A finding appears only in a development or documentation dependency that is
   never shipped. The gate must distinguish shipped from non-shipped
   dependencies rather than blocking a release over a test-only package.
@@ -137,6 +171,12 @@ guarantee is not reviewable.
   already-published artifacts as permission to skip re-verification.
 - The bill of materials cannot be generated for an artifact. That is a
   blocking condition, not a warning.
+- An erasure request names a record the evidence chain references. The payload
+  is erased from the mutable store; the chain keeps its non-reversible
+  reference and is not rewritten, so previously issued receipts still verify.
+- An erasure request names a record that does not exist, or one already
+  erased. The request succeeds without error and reports that nothing
+  remained, so erasure is safe to retry.
 
 ## Requirements *(mandatory)*
 
@@ -154,9 +194,30 @@ guarantee is not reviewable.
   those used only to build or test, and MUST apply the blocking policy to
   shipped dependencies. Findings in non-shipped dependencies MUST be reported
   without blocking.
-- **FR-005**: The project MUST provide a recorded exception mechanism carrying
-  a justification, an owner, and an expiry. An expired exception MUST have no
-  effect. Active exceptions MUST appear in the release evidence.
+- **FR-005**: The project MUST record exceptions in a tracked file in each
+  repository, validated against a schema. Each entry MUST carry the finding
+  identifier, a justification, an owner, and an expiry date.
+- **FR-005d**: A malformed exception entry MUST fail the gate exactly as an
+  unwaived finding does. An exception cannot be granted by writing an
+  unparseable record.
+- **FR-005e**: An expired exception MUST have no effect, and expiry MUST be
+  evaluated against the build's own clock rather than trusted from the record.
+- **FR-005f**: Every active exception MUST be copied into the release evidence
+  with its justification, owner, and expiry, so a reviewer sees what was
+  waived without reading the repository's history.
+
+### Functional Requirements — Integrity of the gate itself
+
+- **FR-005a**: Every third-party tool or automation step the gate invokes MUST
+  be pinned to an immutable revision. A mutable reference — a branch or a
+  movable tag — MUST NOT be used in any workflow that builds, verifies, or
+  publishes an artifact.
+- **FR-005b**: A check MUST fail the build when any third-party step is
+  unpinned, and it MUST name the offending step. The gate is held to the
+  standard it enforces.
+- **FR-005c**: The publishing step MUST be pinned like any other. It currently
+  tracks a moving branch, which is the highest-risk instance of this class and
+  MUST be remediated by this feature.
 
 ### Functional Requirements — Supply chain
 
@@ -187,8 +248,14 @@ guarantee is not reviewable.
   long, and how it is erased.
 - **FR-014**: The documented retention period MUST be enforced by the software
   rather than by operator discipline.
-- **FR-015**: An operator MUST be able to erase stored records and their
-  derivatives, and erasure MUST be verifiable.
+- **FR-015**: An operator MUST be able to erase stored records, and erasure
+  MUST be verifiable. Erasure removes payloads from mutable stores. The
+  evidence chain remains append-only and is never rewritten.
+- **FR-015a**: The evidence chain MUST retain only non-reversible references —
+  hashes, identifiers, and decision outcomes — for erased records. It MUST NOT
+  hold any value from which erased content can be reconstructed.
+- **FR-015b**: Erasure MUST NOT invalidate a previously issued receipt, and
+  chain verification MUST still succeed after any erasure.
 
 ### Functional Requirements — Documentation and review
 
@@ -212,23 +279,38 @@ guarantee is not reviewable.
   attestation for every published artifact.
 - **FR-022**: Neither repository may publish on the strength of the other's
   verification result. Each gates its own artifacts.
-- **FR-023**: The blocking severity policy MUST be expressed once and
-  referenced by both repositories, so the two cannot silently diverge.
+- **FR-023**: The blocking severity policy MUST be carried by the existing
+  cross-repo compatibility contract, so a divergence between the two
+  repositories fails the compatibility gate before merge rather than being
+  discovered later.
+- **FR-024**: The compatibility gate MUST run in the continuous integration of
+  both repositories. It exists today as a fail-closed command but is not wired
+  into any workflow, so this feature MUST complete that wiring and the
+  downstream declaration ADR-024 leaves open.
+- **FR-025**: A change to the blocking severity in one repository without the
+  corresponding change in the other MUST fail that gate, and the failure MUST
+  name both the expected and the declared threshold.
 
 ### Key Entities
 
 - **Finding**: An issue raised by a check. Carries a severity, a source check,
   an affected component, whether that component ships to users, and an
   identifier a reviewer can look up.
-- **Exception**: A recorded, expiring waiver for one finding. Carries a
-  justification, an owner, and an expiry date.
+- **Exception**: A recorded, expiring waiver for one finding, held in a
+  schema-validated tracked file. Carries the finding identifier, a
+  justification, an owner, and an expiry date. Malformed and expired entries
+  are both treated as absent.
 - **Severity policy**: The single stated threshold at or above which a finding
   blocks a release, shared by both repositories.
 - **Bill of materials**: The component inventory for one published artifact.
 - **Provenance attestation**: The verifiable link from a published artifact
   back to the source commit that produced it.
 - **Retention rule**: The category of stored data, its lifetime, and its
-  erasure method.
+  erasure method. Each rule declares whether its store is mutable (erasable)
+  or append-only (retains non-reversible references only).
+- **Non-reversible reference**: A hash, identifier, or decision outcome the
+  evidence chain retains for an erased record. It is not personal data and
+  cannot be used to reconstruct the erased content.
 
 ## Success Criteria *(mandatory)*
 
@@ -252,12 +334,19 @@ guarantee is not reviewable.
 - **SC-006**: No telemetry or observability path attempts network egress,
   asserted by a test that fails if one is introduced.
 - **SC-007**: Both repositories apply the identical blocking severity, and a
-  change to that policy in one repository without the other is detected before
-  merge.
+  change to that policy in one repository without the other fails the
+  compatibility gate before merge — demonstrated by a deliberate one-sided
+  change that is refused.
 - **SC-008**: Every documented retention period is enforced by the software,
   verified by a test that advances time and observes expiry.
+- **SC-010**: After erasure, the erased content is unrecoverable from every
+  mutable store, while evidence-chain verification still succeeds and every
+  previously issued receipt still verifies — demonstrated on the same record.
 - **SC-009**: The optional server surface survives the adversarial input set
   without crashing, disclosing internal detail, or persisting rejected input.
+- **SC-011**: Every third-party step in every workflow that builds, verifies,
+  or publishes is pinned to an immutable revision — 100%, verified by a check
+  that fails on the first exception.
 
 ## Assumptions
 
@@ -278,9 +367,22 @@ guarantee is not reviewable.
   never one commit, per the workspace repository-boundary rule.
 - **Existing non-advisory checks are retained.** Nothing already enforced is
   relaxed or made advisory to accommodate the new policy.
+- **The evidence chain stays append-only.** Erasure is a property of the
+  mutable stores, not of the chain. This preserves the guarantee VER-011
+  (#228) shipped — a receipt is worth something precisely because history
+  cannot be quietly rewritten — and it holds only because FR-011 already
+  forbids sensitive values from entering the chain in recoverable form.
 - **Scan results are evidence, not prose.** Every claim in this gate is backed
   by a regenerable artifact, consistent with how the acceptance-gate report
   already treats evidence.
+- **Scan cadence follows the existing security workflow.** It already runs on
+  pull request, on push, weekly, and on demand; the new checks join it rather
+  than introducing a separate schedule. Artifact-bound outputs — the bill of
+  materials and provenance — are produced at release, since there is no
+  artifact to describe before then.
+- **Exceptions are evaluated offline.** The exception record is a file in the
+  repository, so the gate never depends on a network service to decide whether
+  a finding is waived, and it continues to fail closed without connectivity.
 - **The acceptance-gate workflow remains a launch-readiness report, not a
   pull-request check.** This feature changes what it can report, not when it
   runs.
@@ -301,14 +403,21 @@ guarantee is not reviewable.
 
 - **Acceptance gates G5.1 and G5.2** (`ACCEPTANCE_GATES.md`) — the consumers
   of this feature's documentation artifacts.
+- **ADR-024 (cross-repo compatibility gate)** — status "Partially
+  Implemented". The manifest and the fail-closed command exist in
+  `verdict-core`; the downstream declaration and the CI wiring do not. FR-023
+  through FR-025 depend on that half being completed here, which is scope this
+  feature absorbs rather than inherits.
 - **The acceptance-gate report generator** — must cite the new artifacts as
   evidence once they exist.
 - **The release pipeline** — already produces provenance; this feature adds
   the bill of materials and the blocking policy to it.
 - **`verdict-node`** — the parity repository, gated separately.
 - Issue #238 records upstream dependencies on VER-008, VER-011, MEM-001, and
-  REL-001. Their status must be confirmed during planning; any that is
-  incomplete constrains sequencing rather than scope.
+  REL-001. Verified 2026-09-01: VER-008 (#225), VER-011 (#228), and MEM-001
+  (#229) are all closed. REL-001 has no tracked issue, but the release
+  pipeline it names is in place — provenance attestation, version
+  verification, and documented recovery. None of these constrains sequencing.
 
 ## Constitutional Alignment
 

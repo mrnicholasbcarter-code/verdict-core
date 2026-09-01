@@ -57,8 +57,39 @@ before the requirements were written, rather than left as markers:
   Assumptions, so the threshold can be revised without rewriting every
   requirement.
 
-### Open items for `/speckit-clarify`
+### Clarification session 2026-09-01
 
-- Issue #238 names upstream dependencies VER-008, VER-011, MEM-001, and
-  REL-001. Their completion status is unverified and affects sequencing, not
-  scope. Confirm before planning.
+Four questions asked and integrated. Each was verified against the code before
+being asked, so the options offered were real rather than hypothetical:
+
+1. **Erasure vs. append-only** — erasure clears mutable stores; the evidence
+   chain keeps non-reversible references and is never rewritten (FR-015,
+   FR-015a, FR-015b, SC-010). Resolved a direct contradiction between the
+   original FR-015 and the append-only design VER-011 shipped.
+2. **Cross-repo policy sharing** — the blocking severity joins the existing
+   compatibility contract (FR-023 through FR-025, SC-007). Verified that the
+   `verdict compat` command exists and fails closed but is wired into no
+   workflow, so this feature absorbs the half of ADR-024 still open.
+3. **Integrity of the gate's own tooling** — every third-party step pinned to
+   an immutable revision, enforced by a check (FR-005a through FR-005c,
+   SC-011). Verified that nothing is SHA-pinned today and that the PyPI
+   publishing step tracks a moving branch.
+4. **Exception mechanism** — schema-validated tracked file; malformed and
+   expired entries both behave as absent (FR-005, FR-005d through FR-005f).
+
+### Resolved without a question
+
+- Upstream dependencies from issue #238 were verified directly rather than
+  asked about: VER-008 (#225), VER-011 (#228), and MEM-001 (#229) are closed.
+  REL-001 has no tracked issue but its pipeline is in place. None constrains
+  sequencing.
+- Scan cadence was not asked; the existing security workflow already runs on
+  pull request, push, weekly, and on demand, and the new checks inherit it.
+
+### Deferred to `/speckit-plan`
+
+- Bill-of-materials format and the specific generator.
+- The concrete tool for dynamic verification of the server surface.
+- Continuous-integration time budget and whether the heavier checks run on
+  every pull request or only on the scheduled and release runs.
+- The exception file's concrete schema and location in each repository.
