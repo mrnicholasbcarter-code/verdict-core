@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/security-exceptions-1.json",
+  "title": "Security exception file",
+  "description": "Recorded, expiring waivers for security findings at or above the declared blocking severity. A file that fails this schema is treated as absent: every finding blocks, and the invalid file is itself reported.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "exceptions"],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "exceptions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/exception" }
+    }
+  },
+  "$defs": {
+    "exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "scope",
+        "rationale",
+        "approver",
+        "evidence",
+        "expires_on",
+        "affected_repositories"
+      ],
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier of the finding this waives. Must match the id the source check reports."
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the waiver covers, narrowly stated."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the risk is accepted."
+        },
+        "approver": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who accepted the risk."
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What was checked to justify acceptance."
+        },
+        "expires_on": {
+          "type": "string",
+          "format": "date",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Date the waiver lapses. On and after this date the finding blocks again with no further action."
+        },
+        "affected_repositories": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Repositories the waiver applies to."
+        }
+      }
+    }
+  }
+}
