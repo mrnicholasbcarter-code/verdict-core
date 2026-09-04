@@ -19,6 +19,7 @@ dependencies = [
     "httpx>=0.25",
     "PyYAML>=6.0",
     "rich>=13.0.0",
+    "defusedxml>=0.7.1",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -48,6 +49,7 @@ dev = [
     "types-PyYAML",
     "jsonschema>=4.23",
     "types-jsonschema>=4.23",
+    "types-defusedxml>=0.7.0",
     "code-review-graph>=2.3.7",
     "cyclonedx-bom>=4.6",
 ]

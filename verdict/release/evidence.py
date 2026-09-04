@@ -22,12 +22,13 @@ is checked for parity against it in `tests/security/test_evidence_schema_parity.
 from __future__ import annotations
 
 import json
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
+from xml.etree.ElementTree import Element
 
+import defusedxml.ElementTree as ET  # noqa: N817
 import jsonschema
 
 from verdict.release.waivers import Waiver
@@ -202,7 +203,7 @@ def memory_boundary_results_from_junit_xml(
     except (ET.ParseError, UnicodeDecodeError):
         return failed_results()
 
-    cases_by_module: dict[str, list[ET.Element]] = {module: [] for module in modules}
+    cases_by_module: dict[str, list[Element]] = {module: [] for module in modules}
     for case in root.iter("testcase"):
         classname = case.attrib.get("classname", "")
         for module in modules:
