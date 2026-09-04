@@ -1,0 +1,10 @@
+# ZAP baseline scan rule overrides for the dynamic-check gate (.github/workflows/security.yml).
+# Format: <rule id>	<action: IGNORE|INFO|WARN|FAIL>	(comment)
+#
+# 10049 (Storable and Cacheable Content / Non-Storable Content): the API now
+# sends Cache-Control: no-store on every response (verdict/api.py,
+# no_store_cache_headers), including the 404s ZAP's baseline spider always
+# probes for (/, /robots.txt, /sitemap.xml — none of which are real routes on
+# this control-plane API). The finding is a byproduct of doing the secure
+# thing, not a gap, so it is ignored rather than left to fail the gate.
+10049	IGNORE	(non-storable content on expected 404s; no-store is already applied)
