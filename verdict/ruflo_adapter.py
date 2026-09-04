@@ -25,6 +25,13 @@ from typing import Any
 
 from verdict.contracts import TaskSpec, WorkflowPlan
 from verdict.ruflo_transport import RufloTransport
+from verdict.swarm_runtime import (
+    SUPPORTED_RUNTIME_PROTOCOL_VERSIONS,
+    RuntimeFailure,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeState,
+)
 
 RUFLO_ADAPTER_PROTOCOL_VERSION = "rufl-adapter/v1"
 SUPPORTED_PROTOCOL_VERSIONS = ["rufl-adapter/v1"]
@@ -674,6 +681,194 @@ class RufloAdapter:
             return RufloResult.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Result retrieval failed: {e}") from e
+
+    def _governed_response(
+        self, request: RuntimeRequest, task_id: str, state: RuntimeState, **kwargs: Any
+    ) -> RuntimeResponse:
+        metadata = dict(kwargs.pop("metadata", {}) or {})
+        metadata.setdefault("observed_bounds", dict(request.approved_bounds))
+        metadata.setdefault("evidence_scope", request.metadata.get("evidence_scope"))
+        metadata.setdefault("verification_status", "pending")
+        kwargs.setdefault("protocol_version", request.protocol_version)
+        kwargs.setdefault("swarm_id", request.swarm_id)
+        kwargs.setdefault("slice_id", request.slice_id)
+        kwargs.setdefault("envelope_digest", request.envelope_digest)
+        kwargs.setdefault("operation_id", request.request_id)
+        kwargs.setdefault("evidence_ref", f"{request.metadata.get('evidence_scope')}:{task_id}")
+        return RuntimeResponse(request.request_id, task_id, state, metadata=metadata, **kwargs)
+
+    def submit_runtime(self, request: RuntimeRequest) -> RuntimeResponse:
+        """Submit a governed Core request without allowing Ruflo to change policy."""
+        if request.protocol_version not in SUPPORTED_RUNTIME_PROTOCOL_VERSIONS:
+            return RuntimeResponse(
+                request.request_id,
+                request.task_id,
+                RuntimeState.REJECTED,
+                protocol_version=request.protocol_version,
+                swarm_id=request.swarm_id,
+                slice_id=request.slice_id,
+                envelope_digest=request.envelope_digest,
+                failure=RuntimeFailure(
+                    "unsupported_version",
+                    "unsupported runtime protocol",
+                    category="unsupported_version",
+                ),
+            )
+        try:
+            task = TaskSpec(objective=request.objective, task_type="swarm")
+            submitted = self.submit(
+                task,
+                idempotency_key=request.request_id,
+                metadata={
+                    "swarm_id": request.swarm_id,
+                    "slice_id": request.slice_id,
+                    "envelope_digest": request.envelope_digest,
+                    "approved_bounds": dict(request.approved_bounds),
+                },
+            )
+            state = RuntimeState.QUEUED if submitted.accepted else RuntimeState.REJECTED
+            failure = (
+                None
+                if submitted.accepted
+                else RuntimeFailure(
+                    "submission_rejected",
+                    submitted.reason or "submission rejected",
+                    category="validation",
+                )
+            )
+            return self._governed_response(request, submitted.task_id, state, failure=failure)
+        except RufloAdapterError as exc:
+            return self._governed_response(
+                request,
+                request.task_id,
+                RuntimeState.FAILED,
+                failure=RuntimeFailure(
+                    exc.category, str(exc), category="unavailable", retryable=True
+                ),
+            )
+
+    def runtime_status(self, request: RuntimeRequest, task_id: str) -> RuntimeResponse:
+        try:
+            status = self.status(task_id, include_verification=True)
+            state = (
+                RuntimeState.TIMEOUT
+                if status.status == TaskStatus.TIMED_OUT
+                else RuntimeState(status.status.value)
+            )
+            failure = (
+                RuntimeFailure("runtime_failure", status.error, category="unavailable")
+                if status.error
+                else None
+            )
+            return self._governed_response(
+                request,
+                task_id,
+                state,
+                failure=failure,
+                metadata={"verification_results": status.verification_results},
+            )
+        except (ValueError, RufloAdapterError) as exc:
+            return self._governed_response(
+                request,
+                task_id,
+                RuntimeState.FAILED,
+                failure=RuntimeFailure(
+                    "malformed_response", str(exc), category="malformed_message"
+                ),
+            )
+
+    def runtime_control(
+        self, request: RuntimeRequest, task_id: str, action: str
+    ) -> RuntimeResponse:
+        if action not in request.allowed_controls:
+            return self._governed_response(
+                request,
+                task_id,
+                RuntimeState.FAILED,
+                failure=RuntimeFailure(
+                    "unauthorized_control",
+                    "control is not allowed",
+                    category="unauthorized_control",
+                ),
+            )
+        operation = {"pause": self.pause, "resume": self.resume, "cancel": self.cancel}[action]
+        try:
+            result = operation(task_id)
+            state = (
+                RuntimeState.TIMEOUT
+                if result.new_status == TaskStatus.TIMED_OUT
+                else RuntimeState(result.new_status.value)
+            )
+            failure = (
+                None
+                if result.success
+                else RuntimeFailure(
+                    "control_rejected",
+                    result.reason or "control rejected",
+                    category="unauthorized_control",
+                )
+            )
+            return self._governed_response(request, task_id, state, failure=failure)
+        except RufloAdapterError as exc:
+            return self._governed_response(
+                request,
+                task_id,
+                RuntimeState.FAILED,
+                failure=RuntimeFailure(
+                    exc.category, str(exc), category="unavailable", retryable=True
+                ),
+            )
+
+    def runtime_result(self, request: RuntimeRequest, task_id: str) -> RuntimeResponse:
+        try:
+            result = self.result(task_id)
+            state = (
+                RuntimeState.TIMEOUT
+                if result.status == TaskStatus.TIMED_OUT
+                else RuntimeState(result.status.value)
+            )
+            failure = (
+                None
+                if result.verification_passed
+                else RuntimeFailure(
+                    "verification_required",
+                    "required verification did not pass",
+                    category="verification",
+                )
+            )
+            verification_status = "passed" if result.verification_passed else "failed"
+            return self._governed_response(
+                request,
+                task_id,
+                state,
+                output={"artifacts": result.output_artifacts},
+                failure=failure,
+                metadata={"verification_status": verification_status},
+            )
+        except RufloAdapterError as exc:
+            return self._governed_response(
+                request,
+                task_id,
+                RuntimeState.FAILED,
+                failure=RuntimeFailure(
+                    exc.category, str(exc), category="unavailable", retryable=True
+                ),
+            )
+
+    def runtime_verify(self, request: RuntimeRequest, task_id: str) -> RuntimeResponse:
+        result = self.runtime_result(request, task_id)
+        if result.failure is not None:
+            return result
+        state = (
+            result.state if isinstance(result.state, RuntimeState) else RuntimeState(result.state)
+        )
+        return self._governed_response(
+            request,
+            task_id,
+            state,
+            output=result.output,
+            metadata={**dict(result.metadata), "verified": True, "verification_status": "passed"},
+        )
 
     def health_check(self) -> dict[str, Any]:
         """Health check endpoint for adapter."""

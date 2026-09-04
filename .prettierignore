@@ -4,7 +4,11 @@ dist-node/
 build/
 coverage/
 package-lock.json
+yarn.lock
+pnpm-lock.yaml
 *.min.js
+*.md
+*.jsonl
 .venv/
 __pycache__/
 *.egg-info/

@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from verdict.omniroute_catalog import DEFAULT_CATALOG_FRESHNESS_SECONDS
 
@@ -324,7 +324,7 @@ def strip_secrets(payload: dict[str, Any]) -> dict[str, Any]:
         if key in {"prompt", "completion", "messages", "tool_arguments"}:
             continue
         clean[key] = value
-    return clean
+    return cast(dict[str, Any], json.loads(json.dumps(clean)))
 
 
 def named_check_passes(body: str) -> bool:

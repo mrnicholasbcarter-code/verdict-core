@@ -23,7 +23,7 @@ def _client(*, timeout: float = 8.0) -> httpx.Client:
     return httpx.Client(timeout=timeout)
 
 
-def _pricing_index(base_url: str) -> dict[str, dict[str, float]]:
+def fetch_pricing_index(base_url: str) -> dict[str, dict[str, float]]:
     root = base_url.rstrip("/")
     if root.endswith("/v1"):
         root = root[: -len("/v1")]
@@ -50,6 +50,9 @@ def _pricing_index(base_url: str) -> dict[str, dict[str, float]]:
     return index
 
 
+_pricing_index = fetch_pricing_index
+
+
 def fetch_models(
     base_url: str = DEFAULT_GATEWAY, *, freshness_seconds: int = 3600
 ) -> tuple[list[ConcreteIdentity], datetime]:
@@ -64,7 +67,7 @@ def fetch_models(
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise LiveSurfaceBlocked("catalog listing is not an OpenAI-compatible models list")
-    pricing = _pricing_index(base_url)
+    pricing = fetch_pricing_index(base_url)
     identities = []
     for row in rows:
         if not isinstance(row, dict) or not row.get("id"):
@@ -101,16 +104,18 @@ def probe_identity(base_url: str, identity_id: str) -> bool:
         return False
 
 
-def execute_named_check(base_url: str, identity_id: str) -> tuple[bool, str]:
+def execute_chat(
+    base_url: str,
+    identity_id: str,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int = 64,
+    timeout: float = 20.0,
+) -> str:
     url = urljoin(base_url.rstrip("/") + "/", "chat/completions")
     try:
-        response = _client(timeout=12.0).post(
-            url,
-            json={
-                "model": identity_id,
-                "messages": [{"role": "user", "content": NAMED_CHECK_PROMPT}],
-                "max_tokens": 64,
-            },
+        response = _client(timeout=timeout).post(
+            url, json={"model": identity_id, "messages": messages, "max_tokens": max_tokens}
         )
         response.raise_for_status()
         payload: dict[str, Any] = response.json()
@@ -118,7 +123,17 @@ def execute_named_check(base_url: str, identity_id: str) -> tuple[bool, str]:
         raise LiveSurfaceBlocked(f"execute failed: {exc}") from exc
     choices = payload.get("choices") or []
     if not choices:
-        return False, ""
+        return ""
     message = (choices[0] or {}).get("message") or {}
-    content = str(message.get("content") or "")
+    return str(message.get("content") or "")
+
+
+def execute_named_check(base_url: str, identity_id: str) -> tuple[bool, str]:
+    content = execute_chat(
+        base_url,
+        identity_id,
+        [{"role": "user", "content": NAMED_CHECK_PROMPT}],
+        max_tokens=64,
+        timeout=12.0,
+    )
     return named_check_passes(content), content
