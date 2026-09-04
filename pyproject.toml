@@ -47,7 +47,9 @@ dev = [
     "vcrpy>=6.0.0",
     "types-PyYAML",
     "jsonschema>=4.23",
+    "types-jsonschema>=4.23",
     "code-review-graph>=2.3.7",
+    "cyclonedx-bom>=4.6",
 ]
 
 [project.scripts]

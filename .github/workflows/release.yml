@@ -110,6 +110,30 @@ jobs:
             cp "${{ steps.attest-python.outputs.bundle-path }}" release-assets/python-distribution-provenance.intoto.jsonl
           fi
 
+      - name: Record provenance evidence
+        id: provenance-evidence
+        continue-on-error: true
+        run: |
+          WHEEL_DIGEST=$(sha256sum dist/*.whl | head -1 | awk '{print $1}')
+          cat > provenance-evidence.json <<EOF
+          {
+            "subject_digest": "sha256:${WHEEL_DIGEST}",
+            "source_revision": "${{ github.sha }}",
+            "build_environment": "github-actions",
+            "predicate_type": "https://slsa.dev/provenance/v1",
+            "attestation_url": "${{ steps.attest-python.outputs.attestation-url }}"
+          }
+          EOF
+
+      - name: Upload provenance evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: provenance-evidence
+          path: provenance-evidence.json
+          retention-days: 30
+
       - name: Build npm release assets
         run: |
           npm pack --workspace @bodanglin/verdict-contracts --pack-destination release-assets

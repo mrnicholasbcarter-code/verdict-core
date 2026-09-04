@@ -52,7 +52,7 @@ class TestSwarmTelemetrySink:
         """Sink appends events as JSONL."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "telemetry.jsonl"
-            sink = SwarmTelemetrySink(path)
+            sink = SwarmTelemetrySink(path, consent_given=True)
 
             event = SwarmTelemetryEvent(
                 correlation_id="corr-1", event_type="task_assigned", task_id="task-1"
