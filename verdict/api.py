@@ -600,6 +600,14 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
     return cast(Response, await call_next(request))
 
 
+@app.middleware("http")
+async def no_store_cache_headers(request: Request, call_next: Any) -> Response:
+    """Mark every response non-cacheable; this is a routing control-plane API, never a static asset host."""
+    response = cast(Response, await call_next(request))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 class RouteRequest(BaseModel):
     task: str
     criticality: str = "medium"

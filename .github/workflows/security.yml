@@ -219,6 +219,7 @@ jobs:
           target: "http://127.0.0.1:8000"
           fail_action: true
           allow_issue_writing: false
+          rules_file_name: ".zap/rules.tsv"
 
       - name: Upload dynamic-check evidence
         if: always()
@@ -231,7 +232,7 @@ jobs:
 
       - name: Stop verdict API server
         if: always()
-        run: kill "$(cat uvicorn.pid)" 2>/dev/null || :
+        run: kill "$(cat uvicorn.pid)" 2>/dev/null || exit 0
 
   osv-security:
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.5.1
