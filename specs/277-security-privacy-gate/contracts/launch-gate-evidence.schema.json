@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict-core/schemas/launch-gate-evidence.schema.json",
+  "title": "LaunchGateEvidenceRecord",
+  "description": "Per-release aggregate evidence produced by the cross-repository security and privacy launch gate. See specs/277-security-privacy-gate/data-model.md for field rationale.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "release_ref",
+    "generated_at",
+    "sbom",
+    "provenance",
+    "dynamic_check",
+    "dependency_scan",
+    "sast",
+    "memory_boundary_tests",
+    "retention_erasure_test",
+    "telemetry_consent_test",
+    "overall_status",
+    "waivers"
+  ],
+  "properties": {
+    "release_ref": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "sbom": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/sbomArtifact" }
+    },
+    "provenance": { "$ref": "#/$defs/provenanceAttestation" },
+    "dynamic_check": { "$ref": "#/$defs/dynamicCheckResult" },
+    "dependency_scan": { "$ref": "#/$defs/checkResult" },
+    "sast": { "$ref": "#/$defs/checkResult" },
+    "memory_boundary_tests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/memoryBoundaryTestResult" }
+    },
+    "retention_erasure_test": { "$ref": "#/$defs/checkResult" },
+    "telemetry_consent_test": { "$ref": "#/$defs/checkResult" },
+    "overall_status": { "type": "string", "enum": ["pass", "blocked"] },
+    "waivers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/waiver" }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "title", "source_check", "waived"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "info"]
+        },
+        "title": { "type": "string" },
+        "source_check": { "type": "string" },
+        "waived": { "type": "boolean" }
+      }
+    },
+    "checkResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "findings"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pass", "failed", "unavailable", "degraded"]
+        },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "evidence_ref": { "type": "string" }
+      }
+    },
+    "sbomArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ecosystem",
+        "format",
+        "format_version",
+        "file_path",
+        "component_count",
+        "generation_status"
+      ],
+      "properties": {
+        "ecosystem": { "type": "string", "enum": ["python", "node"] },
+        "format": { "const": "CycloneDX" },
+        "format_version": { "type": "string" },
+        "file_path": { "type": "string" },
+        "component_count": { "type": "integer", "minimum": 0 },
+        "generation_status": { "type": "string", "enum": ["ok", "failed"] }
+      }
+    },
+    "provenanceAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject_digest",
+        "source_revision",
+        "build_environment",
+        "predicate_type",
+        "attestation_url"
+      ],
+      "properties": {
+        "subject_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "source_revision": { "type": "string", "minLength": 7 },
+        "build_environment": { "type": "string" },
+        "predicate_type": { "type": "string", "format": "uri" },
+        "attestation_url": { "type": "string" }
+      }
+    },
+    "dynamicCheckResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "scan_type", "findings", "status"],
+      "properties": {
+        "target": { "type": "string" },
+        "scan_type": { "const": "zap-baseline" },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pass", "blocked", "target_failed_to_start"]
+        }
+      }
+    },
+    "memoryBoundaryTestResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundary_module",
+        "pii_leak_detected",
+        "secret_leak_detected",
+        "status"
+      ],
+      "properties": {
+        "boundary_module": { "type": "string", "minLength": 1 },
+        "pii_leak_detected": { "type": "boolean" },
+        "secret_leak_detected": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["pass", "fail"] }
+      }
+    },
+    "waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "finding_id",
+        "reviewer",
+        "reason",
+        "recorded_at",
+        "is_emergency_approver"
+      ],
+      "properties": {
+        "scope": { "type": "string", "enum": ["finding", "gate_unavailable"] },
+        "finding_id": { "type": ["string", "null"] },
+        "reviewer": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "recorded_at": { "type": "string", "format": "date-time" },
+        "is_emergency_approver": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "scope": { "const": "finding" } } },
+          "then": { "required": ["finding_id"], "properties": { "finding_id": { "type": "string", "minLength": 1 } } }
+        },
+        {
+          "if": { "properties": { "scope": { "const": "gate_unavailable" } } },
+          "then": { "properties": { "is_emergency_approver": { "const": true }, "finding_id": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

@@ -29,7 +29,17 @@ _SECRET_KEY = re.compile(
 )
 _PROMPT_KEY = re.compile(r"(?:^|[_-])(prompt|messages|conversation|transcript)(?:$|[_-])", re.I)
 _SECRET_VALUE = re.compile(
-    r"(?i)(?:bearer\s+|basic\s+|sk-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9_]{8,}|xox[baprs]-[a-z0-9-]{8,})"
+    r"(?i)(?:bearer\s+[a-z0-9._~+/=-]+|basic\s+[a-z0-9._~+/=-]+|"
+    r"sk-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9_]{8,}|xox[baprs]-[a-z0-9-]{8,})"
+)
+_PII_VALUE = re.compile(
+    r"(?ix)(?:"
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
+    r"\b\d{3}-\d{2}-\d{4}\b|"
+    r"(?<!\w)\+\d{1,3}[-.\s]\d{3}[-.\s]\d{4}\b|"
+    r"(?<!\w)(?:\+\d{1,3}[-.\s]?)?(?:\(?\d{3}\)?[-.\s])\d{3}(?:[-.\s]\d{4})?\b|"
+    r"\b(?:\d[ -]?){13,19}\b"
+    r")"
 )
 
 
@@ -667,7 +677,8 @@ def _redact_value(value: Any, *, key: str = "") -> Any:
     if isinstance(value, tuple):
         return [_redact_value(item, key=key) for item in value]
     if isinstance(value, str):
-        return _SECRET_VALUE.sub("[REDACTED]", value)
+        redacted = _SECRET_VALUE.sub("[REDACTED]", value)
+        return _PII_VALUE.sub("[REDACTED]", redacted)
     return value
 
 

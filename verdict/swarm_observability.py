@@ -42,14 +42,21 @@ class SwarmTelemetryEvent:
 class SwarmTelemetrySink:
     """Thread-safe sink for swarm telemetry events."""
 
-    def __init__(self, output_path: Path | str, redact_sensitive: bool = True):
+    def __init__(
+        self, output_path: Path | str, redact_sensitive: bool = True, *, consent_given: bool = False
+    ):
+        if not isinstance(consent_given, bool):
+            raise TypeError("consent_given must be a boolean")
         self.output_path = Path(output_path)
         self.redact_sensitive = redact_sensitive
+        self.consent_given = consent_given
         self._lock = threading.Lock()
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
     def emit(self, event: SwarmTelemetryEvent) -> None:
-        """Emit a telemetry event."""
+        """Emit a telemetry event only after explicit consent."""
+        if not self.consent_given:
+            return
         line = event.to_jsonl()
         if self.redact_sensitive:
             line = self._redact(line)
@@ -439,9 +446,11 @@ class SwarmMetricsCollector:
             )
 
 
-def create_swarm_sink(output_dir: Path, run_id: str) -> SwarmTelemetrySink:
+def create_swarm_sink(
+    output_dir: Path, run_id: str, *, consent_given: bool = False
+) -> SwarmTelemetrySink:
     """Create a telemetry sink for a swarm run."""
-    return SwarmTelemetrySink(output_dir / f"telemetry-{run_id}.jsonl")
+    return SwarmTelemetrySink(output_dir / f"telemetry-{run_id}.jsonl", consent_given=consent_given)
 
 
 def create_explain_endpoint() -> dict[str, Any]:
