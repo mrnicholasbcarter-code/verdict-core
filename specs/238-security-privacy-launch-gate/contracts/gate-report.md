@@ -61,6 +61,32 @@ and before the non-advisory generator step.
 
 `.md` is already in the evidence bundle's allowed suffixes, so no bundle change is needed.
 
+## Clean-tree evidence ownership
+
+The final verification writes the pre/post `git status --short` comparison to
+`evidence/clean-tree-status.json`. That file is a separate evidence input and is included
+in the release bundle. It MUST NOT be recorded by manually editing `gates_status.json`:
+gate statuses remain computed exclusively by `scripts/generate_gates_report.py` and
+validated by `scripts/verify_gates.py`.
+
+## Pre-publication release contract
+
+`release.yml` has two authority domains:
+
+1. `verify-release` has read/preparation permissions. It builds the exact distributions,
+   generates every required evidence input and a source-SHA-bound
+   `compatibility-manifest-v2.json`, calls this report generator and verifier, and uploads one
+   `release-candidate` workflow artifact containing release assets, evidence, that manifest,
+   the source SHA, and canonical digests.
+2. `publish-release` alone has registry/OIDC write permissions. It declares
+   `needs: verify-release`, downloads that candidate, verifies its SHA and digests, performs
+   immutable-target preflight, attaches the canonical manifest and its digest to the immutable
+   GitHub release, and publishes without rebuilding or regenerating evidence.
+
+Any `FAIL`, `BLOCKED`, malformed report, missing evidence, digest mismatch, or failed
+preflight prevents the first registry write. The retrospective `release: published`
+acceptance-gates run is corroborating evidence only and cannot authorize publication.
+
 ## Report contract
 
 `gates_status.json` keeps its existing shape. The statuses this feature is expected to move:
@@ -71,6 +97,6 @@ and before the non-advisory generator step.
 | G5.2 privacy policy published | `BLOCKED` | `PASS` |
 | G5.3 supply-chain scans | `PASS` (4 needles) | `PASS` (extended needle set) |
 
-A gate whose evidence is genuinely unavailable is reported as `BLOCKED` or `UNAVAILABLE`.
+A gate whose evidence is genuinely unavailable is reported as `BLOCKED` (`scripts/verify_gates.py` accepts only `PASS`, `FAIL`, and `BLOCKED`).
 Constitution quality gate 6 forbids reporting an unknown as a pass, and this report is the
 place that rule is enforced in practice.

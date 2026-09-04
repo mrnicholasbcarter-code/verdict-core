@@ -37,9 +37,11 @@ construction, which is correct: they described a manifest with no policy in it.
 still running version-1 code rejects a version-2 manifest outright rather than reading it
 partially and proceeding without a policy.
 
-This satisfies FR-025 with the invariant that already exists. **No new rejection branch
-should be added for the "old reader, new manifest" case** — writing one would create a
-second, weaker path around a guard that already fails closed.
+This preserves the existing old-reader safety invariant. **No new rejection branch should
+be added for the "old reader, new manifest" case** — writing one would create a second,
+weaker path around a guard that already fails closed. FR-025 additionally requires a
+version-2 reader to compare the expected and declared blocking thresholds and reject a
+one-sided change while naming both values.
 
 The case that *does* need new code is the reverse: a version-2 reader encountering a
 `blocking_severity` it does not recognise. That is not "unknown, therefore allow"; the
@@ -53,6 +55,7 @@ reader cannot evaluate the policy and must refuse.
 | Version-2 reader, version-1 manifest | Reject. A manifest with no policy cannot gate a release. |
 | Version-2 reader, unrecognised `blocking_severity` | Reject. Do not fall back to a default. |
 | Version-2 reader, `security_policy` absent | Reject. Absence is not permission. |
+| Version-2 reader, declared threshold differs from the expected threshold | Reject and name both the expected and declared values. |
 | Hash mismatch | Reject, as in version 1. |
 
 ## Cross-repository parity

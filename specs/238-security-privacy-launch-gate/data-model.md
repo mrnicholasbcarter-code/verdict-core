@@ -54,7 +54,7 @@ A recorded, expiring waiver for one finding.
 | `rationale` | string | Required. Why the risk is accepted. |
 | `approver` | string | Required. |
 | `evidence` | string | Required. What was checked to justify acceptance. |
-| `expires_on` | date | Required. Compared against the run date. |
+| `expires_on` | date | Required. Compared against the independently supplied build clock; no timestamp from the exception record is trusted as the current time. |
 | `affected_repositories` | list of string | Required. Non-empty. |
 
 **Home**: a tracked file in each repository, validated against a schema

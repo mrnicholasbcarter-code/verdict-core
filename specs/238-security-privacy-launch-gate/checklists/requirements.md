@@ -86,10 +86,11 @@ being asked, so the options offered were real rather than hypothetical:
 - Scan cadence was not asked; the existing security workflow already runs on
   pull request, push, weekly, and on demand, and the new checks inherit it.
 
-### Deferred to `/speckit-plan`
+### Resolved by `/speckit-plan`
 
-- Bill-of-materials format and the specific generator.
-- The concrete tool for dynamic verification of the server surface.
-- Continuous-integration time budget and whether the heavier checks run on
-  every pull request or only on the scheduled and release runs.
-- The exception file's concrete schema and location in each repository.
+- Bill-of-materials format and generators: CycloneDX via pinned
+  `cyclonedx-bom` and `@cyclonedx/cyclonedx-npm` build-only tools.
+- Dynamic verification: in-process tests of the optional server surface.
+- Continuous-integration cadence: fast checks on pull requests; artifact-bound
+  checks on scheduled and release runs.
+- Exception storage: a schema-validated tracked file in each repository.

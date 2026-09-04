@@ -3,7 +3,7 @@
 **Feature Directory**: `specs/238-security-privacy-launch-gate`
 **Issue**: [#238](https://github.com/mrnicholasbcarter-code/verdict-core/issues/238) (LAUNCH-001, P0, area:security)
 **Created**: 2026-08-31
-**Status**: Draft — ready for `/speckit-clarify`
+**Status**: Draft — remediation applied; ready for `/speckit-analyze`
 **Repositories**: `verdict-core` (primary), `verdict-node` (parity)
 
 ## Overview
@@ -67,10 +67,11 @@ uniformly, is what makes the gate meaningful.
   mutable tag. Verified 2026-09-01: nothing is pinned that way today, and the
   PyPI publishing step tracks a moving branch.
 - Q: Where are security exceptions recorded, and what makes one valid? → A: A
-  tracked file per repository with a validated schema — finding id,
-  justification, owner, expiry. A malformed or expired entry fails the gate
-  like an unwaived finding, and every active exception is copied into the
-  release evidence.
+  tracked file per repository with a validated schema — `finding_id`, `scope`,
+  `rationale`, `approver`, `evidence`, `expires_on`, and
+  `affected_repositories`. A malformed or expired entry fails the gate like an
+  unwaived finding, and every active exception is copied into the release
+  evidence.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -92,7 +93,8 @@ every other artifact in this feature is documentation rather than enforcement.
    the advisory identifier, and the severity.
 2. **Given** the same advisory marked with a recorded, expiring exception,
    **When** a release is attempted, **Then** publication proceeds and the
-   exception appears in the release evidence with its justification and expiry.
+   exception appears in the release evidence with its `rationale`, `approver`,
+   and `expires_on` value.
 3. **Given** an expired exception, **When** a release is attempted, **Then**
    publication is refused exactly as if no exception existed.
 4. **Given** a clean tree, **When** a release is attempted, **Then**
@@ -195,16 +197,18 @@ guarantee is not reviewable.
   shipped dependencies. Findings in non-shipped dependencies MUST be reported
   without blocking.
 - **FR-005**: The project MUST record exceptions in a tracked file in each
-  repository, validated against a schema. Each entry MUST carry the finding
-  identifier, a justification, an owner, and an expiry date.
+  repository, validated against a schema. Each entry MUST carry the schema
+  fields `finding_id`, `scope`, `rationale`, `approver`, `evidence`,
+  `expires_on`, and `affected_repositories`, as defined by
+  [contracts/security-exceptions.schema.json](./contracts/security-exceptions.schema.json).
 - **FR-005d**: A malformed exception entry MUST fail the gate exactly as an
   unwaived finding does. An exception cannot be granted by writing an
   unparseable record.
 - **FR-005e**: An expired exception MUST have no effect, and expiry MUST be
   evaluated against the build's own clock rather than trusted from the record.
 - **FR-005f**: Every active exception MUST be copied into the release evidence
-  with its justification, owner, and expiry, so a reviewer sees what was
-  waived without reading the repository's history.
+  with its `rationale`, `approver`, and `expires_on`, so a reviewer sees
+  what was waived without reading the repository's history.
 
 ### Functional Requirements — Integrity of the gate itself
 
@@ -268,7 +272,9 @@ guarantee is not reviewable.
   be cited as evidence by the acceptance-gate report.
 - **FR-019**: A change to a trust boundary, a persistence format, or a
   provider or execution path MUST require review against the threat model
-  before merge.
+  before merge. A non-advisory pull-request check MUST detect those changed
+  paths and require an explicit checked threat-model-review attestation in the
+  pull-request body; absence of the attestation MUST fail the check.
 
 ### Functional Requirements — Cross-repository parity
 
@@ -297,9 +303,9 @@ guarantee is not reviewable.
   an affected component, whether that component ships to users, and an
   identifier a reviewer can look up.
 - **Exception**: A recorded, expiring waiver for one finding, held in a
-  schema-validated tracked file. Carries the finding identifier, a
-  justification, an owner, and an expiry date. Malformed and expired entries
-  are both treated as absent.
+  schema-validated tracked file. Carries `finding_id`, `scope`, `rationale`,
+  `approver`, `evidence`, `expires_on`, and `affected_repositories`. Malformed
+  and expired entries are both treated as absent.
 - **Severity policy**: The single stated threshold at or above which a finding
   blocks a release, shared by both repositories.
 - **Bill of materials**: The component inventory for one published artifact.
@@ -339,11 +345,11 @@ guarantee is not reviewable.
   change that is refused.
 - **SC-008**: Every documented retention period is enforced by the software,
   verified by a test that advances time and observes expiry.
+- **SC-009**: The optional server surface survives the adversarial input set
+  without crashing, disclosing internal detail, or persisting rejected input.
 - **SC-010**: After erasure, the erased content is unrecoverable from every
   mutable store, while evidence-chain verification still succeeds and every
   previously issued receipt still verifies — demonstrated on the same record.
-- **SC-009**: The optional server surface survives the adversarial input set
-  without crashing, disclosing internal detail, or persisting rejected input.
 - **SC-011**: Every third-party step in every workflow that builds, verifies,
   or publishes is pinned to an immutable revision — 100%, verified by a check
   that fails on the first exception.
@@ -361,10 +367,12 @@ guarantee is not reviewable.
   commits to and enforces by test. Inspection of the observability, gateway
   adapter, and suggestion paths found no direct outbound calls, so this
   formalizes and protects existing behavior rather than changing it.
-- **`verdict-core` lands first, `verdict-node` follows.** The severity policy
-  and the shared artifacts originate in `verdict-core`; the parity work is a
-  separate pull request in `verdict-node` that references them. The two are
-  never one commit, per the workspace repository-boundary rule.
+- **Delivery uses Core → Node → Core follow-up.** The severity policy and shared
+  artifacts originate in an initial `verdict-core` pull request. A separate
+  `verdict-node` pull request consumes the published contract. Only after Node
+  lands does a fresh Core follow-up pull request mark ADR-024 complete and bind
+  the cross-repository evidence. The three work units never share a commit or
+  writer, per the workspace repository-boundary rule.
 - **Existing non-advisory checks are retained.** Nothing already enforced is
   relaxed or made advisory to accommodate the new policy.
 - **The evidence chain stays append-only.** Erasure is a property of the

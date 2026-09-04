@@ -9,7 +9,7 @@ acceptance property end to end and can be run offline. Implementation belongs in
 ## Prerequisites
 
 ```bash
-uv sync --extra dev --extra server
+uv sync --extra dev --extra dashboard --extra server
 ```
 
 Run tools through the environment explicitly. In a worktree a bare `pytest` or `python3`
@@ -27,7 +27,7 @@ No scenario below requires network access, credentials, or a deployed service.
 Run before touching anything, so a later failure is attributable:
 
 ```bash
-uv run pytest -q
+./.venv/bin/pytest -q
 uv run --extra dev --extra dashboard --extra server ruff check .
 uv run --extra dev --extra dashboard --extra server ruff format --check .
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
@@ -58,9 +58,10 @@ Prove the gate refuses rather than warns.
    [contracts/gate-report.md](./contracts/gate-report.md).
 
 **Expected outcome**: a finding at or above the declared severity fails the run. A finding
-below it does not.
+below it does not. The refusal-path test must also prove that no PyPI, npm, or GitHub
+Release publish command was invoked.
 
-## Scenario 2 — one threshold, discoverable in one place (FR-003, SC-002)
+## Scenario 2 — one threshold, discoverable in one place (FR-002)
 
 ```bash
 uv run verdict compat manifest
@@ -107,6 +108,9 @@ Then inspect:
 
 - `evidence/THREAT_MODEL.md` and `evidence/PRIVACY_POLICY.md` are present as **real files**.
 - `evidence/gates_status.json` reports G5.1 and G5.2 as `PASS`.
+- A fixture pull-request event that changes a security-sensitive path fails
+  `scripts/check_threat_model_review.py` when the threat-model-review attestation is
+  unchecked and passes only when it is explicitly checked.
 
 **Expected outcome**: both gates move off `BLOCKED`. If the documents exist at the
 repository root but the gates still report `BLOCKED`, the copy step is missing — artifacts
@@ -155,8 +159,10 @@ it, which is the design error this scenario exists to catch.
 
 ## Scenario 8 — cross-repository parity (FR-020–FR-025)
 
-`verdict-core` first, `verdict-node` second, in separate pull requests. Never one commit
-across both repositories.
+Use three separately reviewed work units: initial `verdict-core`, then `verdict-node`, then
+a fresh `verdict-core` coherence follow-up that updates ADR-024 and binds the final evidence.
+Never share a commit or writer across repositories, and never reopen the merged Core feature
+branch for the follow-up.
 
 In `verdict-core`:
 
@@ -170,8 +176,10 @@ scripts — build, test, lint, typecheck, package verification. Do not invent sc
 read them from the manifest and report anything missing honestly.
 
 **Expected outcome**: a manifest carrying a policy the consumer cannot parse is rejected,
-not ignored. A version-1 reader rejects a version-2 manifest through the existing
-`schema_version` guard. See
+not ignored. A deliberate one-sided `blocking_severity` change is rejected with an error
+that names both the expected and declared thresholds. Each repository's workflow must
+gate its own artifacts and must not accept the other repository's result as evidence. A
+version-1 reader rejects a version-2 manifest through the existing `schema_version` guard. See
 [contracts/compatibility-manifest-v2.md](./contracts/compatibility-manifest-v2.md).
 
 ## What "done" looks like
