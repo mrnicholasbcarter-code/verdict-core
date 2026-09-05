@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from verdict import cli
 from verdict.execution_packet import ExecutionPacket
@@ -553,6 +555,8 @@ def test_cmd_setup_auto_and_sync_mock(
 
     # Assertions
     assert len(posted_nodes) == 1
+
+
     assert posted_nodes[0]["provider"] == "ollama"
     assert posted_nodes[0]["baseUrl"] == "http://localhost:11434/v1"
 
@@ -565,6 +569,81 @@ def test_cmd_setup_auto_and_sync_mock(
         cfg = yaml.safe_load(f)
     assert cfg["primary_model"] == "llama3"
     assert cfg["providers"]["ollama"]["base_url"] == "http://localhost:11434/v1"
+
+
+def test_cmd_setup_wires_detected_gateway_into_config_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T009/T010: a healthy detected gateway is written to config and env."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+
+    from verdict.provider_detection import DetectedProvider, DetectionResult, GatewayCandidate
+
+    import verdict.provider_detection as provider_detection
+
+    fake_result = DetectionResult(
+        centralized_routers=[
+            DetectedProvider(
+                id="omniroute",
+                name="OmniRoute",
+                type="centralized_router",
+                base_url="http://127.0.0.1:20128/v1",
+                server_running=True,
+            )
+        ]
+    )
+    monkeypatch.setattr(provider_detection, "detect_all_providers", lambda: fake_result)
+    monkeypatch.setattr(
+        provider_detection,
+        "probe_gateways",
+        lambda ports=None: [
+            GatewayCandidate(
+                host="127.0.0.1",
+                port=20128,
+                url="http://127.0.0.1:20128",
+                health_ok=True,
+                identity="omniroute",
+                display_name="OmniRoute",
+            )
+        ],
+    )
+
+    inputs = ["ollama", "1", "n"]
+
+    def mock_ask(*args, **kwargs):
+        if inputs:
+            return inputs.pop(0)
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(cli.Prompt, "ask", mock_ask)
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    cli.cmd_setup()
+
+    assert os.environ.get("OMNIROUTE_BASE_URL") == "http://127.0.0.1:20128"
+    config_path = tmp_path / ".config" / "verdict" / "verdict.yaml"
+    assert config_path.exists()
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved["gateway_url"] == "http://127.0.0.1:20128"
+
+
+def test_cmd_setup_prompts_on_malformed_existing_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T011: malformed existing verdict.yaml prompts before overwrite; 'n' aborts."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+    config_dir = tmp_path / ".config" / "verdict"
+    config_dir.mkdir(parents=True)
+    (config_dir / "verdict.yaml").write_text("not: valid: yaml: [")
+
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "n")
+
+    with pytest.raises(SystemExit):
+        cli.cmd_setup()
 
 
 def test_cmd_doctor_all_healthy(
