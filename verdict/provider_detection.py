@@ -83,18 +83,18 @@ CENTRALIZED_ROUTERS: dict[str, ServerInfo] = {
     "9router": {
         "repo": "1jehuang/9router",
         "description": "Local multi-provider router with OpenAI-compatible API",
-        "default_base_url": "http://localhost:20128/v1",
+        "default_base_url": "http://localhost:20129/v1",
         "models_endpoint": "/models",
-        "detect_running": lambda: _check_port(20128) or _check_port(20132),
+        "detect_running": lambda: _check_port(20129) or _check_port(20132),
         "install_hint": "npm install -g 9router",
         "github": "https://github.com/1jehuang/9router",
     },
     "omniroute": {
         "repo": "NeuronZero/omniroute",
         "description": "Universal LLM API router with load balancing",
-        "default_base_url": "http://localhost:20132/v1",
+        "default_base_url": "http://localhost:20128/v1",
         "models_endpoint": "/models",
-        "detect_running": lambda: _check_port(20132) or _check_port(20128),
+        "detect_running": lambda: _check_port(20128) or _check_port(20132),
         "install_hint": "npm install -g omniroute",
         "github": "https://github.com/NeuronZero/omniroute",
     },
@@ -108,6 +108,94 @@ CENTRALIZED_ROUTERS: dict[str, ServerInfo] = {
         "github": "https://openrouter.ai",
     },
 }
+
+# Alias retained for compatibility with external callers/tests that refer to
+# the centralized-router table by this name.
+PROVIDER_REGISTRY = CENTRALIZED_ROUTERS
+
+
+@dataclass
+class GatewayCandidate:
+    """A local gateway port that passed (or failed) the health-check protocol.
+
+    See specs/339-cli-setup-dx/contracts/gateway-health.md for the detection
+    protocol this implements (TCP connect -> /api/health -> /api/settings).
+    """
+
+    host: str
+    port: int
+    url: str
+    health_ok: bool
+    identity: str  # "omniroute" | "9router" | "unknown"
+    display_name: str
+
+
+_GATEWAY_PORT_LABELS: dict[int, tuple[str, str]] = {
+    20128: ("omniroute", "OmniRoute"),
+    20129: ("9router", "9router"),
+    20132: ("omniroute", "OmniRoute (alternate)"),
+}
+
+
+def probe_gateways(ports: list[int] | None = None) -> list[GatewayCandidate]:
+    """Probe local ports for a running gateway using the 3-step health protocol.
+
+    Step 1: TCP connect (500ms timeout) - unreachable ports are skipped entirely.
+    Step 2: GET /api/health (must return HTTP 200 + {"status": "ok"}) to confirm
+        the port is actually a gateway and not some other occupying service.
+    Step 3: GET /api/settings (best-effort) to refine the identity label via
+        runtimePorts.port; falls back to the static port->label table on any
+        failure.
+    """
+    if ports is None:
+        ports = [20128, 20129, 20132]
+
+    candidates: list[GatewayCandidate] = []
+    for port in ports:
+        if not _check_port(port):
+            continue
+
+        host = "127.0.0.1"
+        url = f"http://{host}:{port}"
+        identity, display_name = _GATEWAY_PORT_LABELS.get(port, ("unknown", "Unknown"))
+        health_ok = False
+
+        try:
+            resp = httpx.get(f"{url}/api/health", timeout=1.0)
+            if resp.status_code == 200:
+                body = resp.json()
+                if isinstance(body, dict) and body.get("status") == "ok":
+                    health_ok = True
+        except Exception:
+            health_ok = False
+
+        if not health_ok:
+            identity, display_name = "unknown", "Unknown (port in use)"
+        else:
+            try:
+                settings_resp = httpx.get(f"{url}/api/settings", timeout=1.0)
+                if settings_resp.status_code == 200:
+                    settings_body = settings_resp.json()
+                    reported_port = None
+                    if isinstance(settings_body, dict):
+                        reported_port = settings_body.get("runtimePorts", {}).get("port")
+                    if reported_port in _GATEWAY_PORT_LABELS:
+                        identity, display_name = _GATEWAY_PORT_LABELS[reported_port]
+            except Exception:
+                pass
+
+        candidates.append(
+            GatewayCandidate(
+                host=host,
+                port=port,
+                url=url,
+                health_ok=health_ok,
+                identity=identity,
+                display_name=display_name,
+            )
+        )
+
+    return candidates
 
 
 # Provider CLI detection patterns
@@ -371,17 +459,17 @@ def detect_centralized_routers() -> list[DetectedProvider]:
         server_running = False
 
         if router_id == "omniroute":
-            if _check_port(20132):
-                base_url = "http://localhost:20132/v1"
-                server_running = True
-            elif _check_port(20128):
+            if _check_port(20128):
                 base_url = "http://localhost:20128/v1"
+                server_running = True
+            elif _check_port(20132):
+                base_url = "http://localhost:20132/v1"
                 server_running = True
             else:
                 server_running = info["detect_running"]()
         elif router_id == "9router":
-            if _check_port(20128):
-                base_url = "http://localhost:20128/v1"
+            if _check_port(20129):
+                base_url = "http://localhost:20129/v1"
                 server_running = True
             elif _check_port(20132):
                 base_url = "http://localhost:20132/v1"
