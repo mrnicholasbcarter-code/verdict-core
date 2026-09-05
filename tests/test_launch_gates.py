@@ -111,10 +111,10 @@ def _matches_committed_credential_file(filename: str, workflow: str) -> bool:
 
 def _credential_gate_passes_for_tracked_files(workflow: str) -> bool:
     """Verify the checked-in gate accepts only the repository's approved paths."""
-    assert 'allowed = {".env.memory.example"}' in workflow
+    assert 'allowed = {".env.memory.example", ".env.example"}' in workflow
     assert "pattern.search(path)" in workflow
     command = "git ls-files -z | python3 -c " + repr(
-        "import re, sys; allowed={'.env.memory.example'}; pattern=re.compile(r'(^|/)(\\.env(rc|([._-].*)?)?|[^/]*\\.env|.*\\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$', re.I); paths=(path.decode('utf-8', 'surrogateescape') for path in sys.stdin.buffer.read().split(b'\\0')); blocked=[path for path in paths if path and path not in allowed and pattern.search(path)]; raise SystemExit(bool(blocked))"
+        "import re, sys; allowed={'.env.memory.example', '.env.example'}; pattern=re.compile(r'(^|/)(\\.env(rc|([._-].*)?)?|[^/]*\\.env|.*\\.(pem|key|crt|cer|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519))$', re.I); paths=(path.decode('utf-8', 'surrogateescape') for path in sys.stdin.buffer.read().split(b'\\0')); blocked=[path for path in paths if path and path not in allowed and pattern.search(path)]; raise SystemExit(bool(blocked))"
     )
     result = subprocess.run(
         ["bash", "-o", "pipefail", "-c", command], text=True, capture_output=True, check=False

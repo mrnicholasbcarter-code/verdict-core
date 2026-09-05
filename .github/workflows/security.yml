@@ -84,7 +84,7 @@ jobs:
           import re
           import sys
 
-          allowed = {".env.memory.example"}
+          allowed = {".env.memory.example", ".env.example"}
           pattern = re.compile(
               r"(^|/)(\.envrc([._-].*)?|\.env([._-].*)?|[^/]*\.env|.*\.(pem|key|crt|cer|der|p12|pfx)(\.[^/]*)?|id_(rsa|dsa|ecdsa|ed25519)(\.[^/]*)?)$",
               re.IGNORECASE,
