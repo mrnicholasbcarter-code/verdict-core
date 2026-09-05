@@ -1,88 +1,81 @@
 #!/usr/bin/env bash
-# verdict/install.sh — Universal installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/verdict/verdict-core/main/install.sh | bash
+# verdict-core/install.sh — self-contained, idempotent setup script.
+#
+# Quick start:
+#   bash <(curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh)
+# From a local checkout:
+#   bash install.sh
 
 set -euo pipefail
 
-REPO="verdict/verdict-core"
-INSTALL_DIR="${VERDICT_INSTALL_DIR:-$HOME/.verdict/bin}"
-VERSION="${VERDICT_VERSION:-latest}"
-GITHUB_API="https://api.github.com/repos/${REPO}"
-
-# Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_success() { echo -e "${GREEN}[✓]${NC} $*"; }
+log_success() { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# Detect platform
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
+# 1. Install verdict-core via pipx if available, else pip --user.
+if command -v verdict >/dev/null 2>&1; then
+  log_info "verdict is already installed ($(command -v verdict)); skipping install step."
+elif command -v pipx >/dev/null 2>&1; then
+  log_info "Installing verdict-core via pipx..."
+  pipx install verdict-core
+else
+  log_info "pipx not found; installing verdict-core via pip --user..."
+  pip install --user verdict-core
+fi
 
-case "$ARCH" in
-  x86_64) ARCH="amd64" ;;
-  aarch64|arm64) ARCH="arm64" ;;
-  *) log_error "Unsupported architecture: $ARCH"; exit 1 ;;
-esac
+# 2. Detect PATH: warn if the verdict binary still cannot be found.
+if ! command -v verdict >/dev/null 2>&1; then
+  log_warn "The 'verdict' command was not found on your PATH."
+  echo "Add ~/.local/bin to your PATH: export PATH=\$PATH:\$HOME/.local/bin"
+  export PATH="$PATH:$HOME/.local/bin"
+fi
 
-case "$OS" in
-  linux|darwin) ;;
-  *) log_error "Unsupported OS: $OS"; exit 1 ;;
-esac
+if ! command -v verdict >/dev/null 2>&1; then
+  log_error "verdict is still not on PATH after adding ~/.local/bin. Aborting."
+  exit 1
+fi
 
-# Get latest version if not specified
-if [[ "$VERSION" == "latest" ]]; then
-  log_info "Fetching latest release..."
-  VERSION=$(curl -fsSL "${GITHUB_API}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
-  if [[ -z "$VERSION" ]]; then
-    log_error "Failed to fetch latest version"
-    exit 1
+# 3. Probe known local gateway ports for a running OmniRoute/9router instance.
+GATEWAY_URL=""
+for port in 20128 20129; do
+  if curl -sf "http://localhost:${port}/api/health" >/dev/null 2>&1; then
+    GATEWAY_URL="http://localhost:${port}"
+    log_success "Detected a local gateway at ${GATEWAY_URL}"
+    break
   fi
-  log_info "Latest version: $VERSION"
+done
+
+if [[ -n "$GATEWAY_URL" ]]; then
+  export OMNIROUTE_BASE_URL="$GATEWAY_URL"
+else
+  log_warn "No local gateway found on ports 20128 or 20129."
 fi
 
-# Download and install
-TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-ASSET_NAME="verdict-${OS}-${ARCH}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET_NAME}"
-
-log_info "Downloading $ASSET_NAME from $DOWNLOAD_URL..."
-if ! curl -fsSL "$DOWNLOAD_URL" | tar -xz -C "$TMP_DIR"; then
-  log_error "Download failed. Release may not exist for ${OS}/${ARCH}."
-  log_info "Falling back to pipx install..."
-  if command -v pipx >/dev/null 2>&1; then
-    pipx install verdict-core
-    log_success "Installed via pipx"
-    exit 0
-  else
-    log_error "pipx not found. Please install pipx or download manually."
-    exit 1
-  fi
+# 4. Run setup: non-interactive if a gateway was detected, interactive otherwise.
+if [[ -n "${OMNIROUTE_BASE_URL:-}" ]]; then
+  log_info "Running: verdict setup --non-interactive"
+  verdict setup --non-interactive
+else
+  log_info "Running interactive setup: verdict setup"
+  verdict setup
 fi
 
-mkdir -p "$INSTALL_DIR"
-mv "$TMP_DIR/verdict" "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/verdict"
-
-log_success "verdict installed to $INSTALL_DIR"
-
-# PATH guidance
-if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-  log_warn "Add $INSTALL_DIR to your PATH:"
-  echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
-  echo ""
-  echo "  # For bash/zsh, add to ~/.bashrc or ~/.zshrc:"
-  echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
-  echo "  source ~/.bashrc"
+# 5. Verify the install.
+log_info "Running: verdict check"
+if verdict check; then
+  log_success "verdict check passed."
+else
+  log_error "verdict check failed. Review the output above."
+  exit 1
 fi
 
+# 6. Success message.
 echo ""
-log_success "Run: verdict route \"your task\""
+log_success "Verdict is ready. Try: verdict route 'your task here' --criticality medium"
