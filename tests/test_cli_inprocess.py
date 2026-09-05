@@ -423,8 +423,12 @@ def test_cmd_detect_reports_multiple_healthy_gateways(
         provider_detection,
         "probe_gateways",
         lambda: [
-            GatewayCandidate("127.0.0.1", 20128, "http://127.0.0.1:20128", True, "omniroute", "OmniRoute"),
-            GatewayCandidate("127.0.0.1", 20129, "http://127.0.0.1:20129", True, "9router", "9router"),
+            GatewayCandidate(
+                "127.0.0.1", 20128, "http://127.0.0.1:20128", True, "omniroute", "OmniRoute"
+            ),
+            GatewayCandidate(
+                "127.0.0.1", 20129, "http://127.0.0.1:20129", True, "9router", "9router"
+            ),
         ],
     )
 
@@ -604,7 +608,6 @@ def test_cmd_setup_auto_and_sync_mock(
     # Assertions
     assert len(posted_nodes) == 1
 
-
     assert posted_nodes[0]["provider"] == "ollama"
     assert posted_nodes[0]["baseUrl"] == "http://localhost:11434/v1"
 
@@ -627,9 +630,8 @@ def test_cmd_setup_wires_detected_gateway_into_config_and_env(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
 
-    from verdict.provider_detection import DetectedProvider, DetectionResult, GatewayCandidate
-
     import verdict.provider_detection as provider_detection
+    from verdict.provider_detection import DetectedProvider, DetectionResult, GatewayCandidate
 
     fake_result = DetectionResult(
         centralized_routers=[

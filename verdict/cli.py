@@ -1597,8 +1597,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                 issues_found.append(f"Failed to migrate config schema_version: {exc}")
         else:
             issues_found.append(
-                "Config written by an older Verdict version. "
-                "Run 'verdict doctor --fix' to migrate."
+                "Config written by an older Verdict version. Run 'verdict doctor --fix' to migrate."
             )
 
     # 1c. Config filename check (T016)
@@ -1613,9 +1612,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
             if fix:
                 try:
                     os.rename(legacy_config_path, config_path)
-                    console.print(
-                        f"  [green]✓[/] Renamed {legacy_config_path} -> {config_path}"
-                    )
+                    console.print(f"  [green]✓[/] Renamed {legacy_config_path} -> {config_path}")
                     fixed_issues.append("Config file is named 'config.yaml'")
                 except Exception as exc:
                     issues_found.append(f"Failed to rename config.yaml: {exc}")
@@ -1626,9 +1623,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                 )
 
     # 1d. Gateway reachability check (T015)
-    gateway_url = os.getenv("OMNIROUTE_BASE_URL") or (
-        config.get("gateway_url") if config else None
-    )
+    gateway_url = os.getenv("OMNIROUTE_BASE_URL") or (config.get("gateway_url") if config else None)
     if not gateway_url:
         issues_found.append(
             "No gateway URL configured. Run 'verdict detect' or set OMNIROUTE_BASE_URL."
@@ -2628,9 +2623,7 @@ def main() -> None:
     serve_p.add_argument(
         "--host", default=None, help="Bind address (anonymous mode must be loopback)"
     )
-    serve_p.add_argument(
-        "--dev", action="store_true", help="Enable hot-reload development mode"
-    )
+    serve_p.add_argument("--dev", action="store_true", help="Enable hot-reload development mode")
 
     # New: detect command
     detect_p = subparsers.add_parser("detect", help="Detect available LLM providers")
@@ -2900,9 +2893,7 @@ def main() -> None:
     simulate_p.add_argument("--model", dest="model_override", default=None, help="Model override")
     simulate_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
-    subparsers.add_parser(
-        "cost-report", help="Estimate token cost from routing decision history"
-    )
+    subparsers.add_parser("cost-report", help="Estimate token cost from routing decision history")
 
     args = parser.parse_args()
 
