@@ -6,39 +6,38 @@ that TypeScript rejects. Run from verdict-core root.
 """
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from verdict.contracts import ExecutionEnvelope, ContractValidationError
-
+from verdict.contracts import ContractValidationError, ExecutionEnvelope
 
 FIXTURES_DIR = Path(__file__).parent
 
 # Fixtures that should be REJECTED by both Python and TypeScript
 INVALID_FIXTURES = [
-    'invalid_missing_task_spec.json',
-    'invalid_empty_policy_digest.json',
-    'invalid_empty_evidence_id_item.json',
-    'invalid_wrong_type_task_spec.json',
-    'invalid_wrong_type_allowed_capabilities.json',
-    'invalid_wrong_type_execution_constraints.json',
-    'invalid_wrong_type_verification_requirements.json',
-    'invalid_unknown_field.json',
-    'invalid_task_spec_missing_objective.json',
-    'invalid_task_spec_empty_objective.json',
-    'invalid_empty_allowed_capability_item.json',
+    "invalid_missing_task_spec.json",
+    "invalid_empty_policy_digest.json",
+    "invalid_empty_evidence_id_item.json",
+    "invalid_wrong_type_task_spec.json",
+    "invalid_wrong_type_allowed_capabilities.json",
+    "invalid_wrong_type_execution_constraints.json",
+    "invalid_wrong_type_verification_requirements.json",
+    "invalid_unknown_field.json",
+    "invalid_task_spec_missing_objective.json",
+    "invalid_task_spec_empty_objective.json",
+    "invalid_empty_allowed_capability_item.json",
 ]
 
 # Fixtures that are ACCEPTED by both (empty arrays allowed)
 ALLOWED_EMPTY_ARRAY_FIXTURES = [
-    'invalid_empty_allowed_capabilities.json',
-    'invalid_empty_evidence_ids.json',
+    "invalid_empty_allowed_capabilities.json",
+    "invalid_empty_evidence_ids.json",
 ]
 
 # Valid fixture
-VALID_FIXTURE = 'valid_envelope.json'
+VALID_FIXTURE = "valid_envelope.json"
 
 
 def test_invalid_fixtures_rejected():
@@ -86,7 +85,9 @@ def test_allowed_empty_arrays():
             print(f"  {f}")
         return False
     else:
-        print(f"PASSED: All {len(ALLOWED_EMPTY_ARRAY_FIXTURES)} empty-array fixtures accepted by Python")
+        print(
+            f"PASSED: All {len(ALLOWED_EMPTY_ARRAY_FIXTURES)} empty-array fixtures accepted by Python"
+        )
         return True
 
 
@@ -97,15 +98,15 @@ def test_valid_fixture():
         envelope_data = json.load(f)
 
     try:
-        envelope = ExecutionEnvelope.from_dict(envelope_data)
-        print(f"PASSED: Valid fixture accepted by Python")
+        ExecutionEnvelope.from_dict(envelope_data)
+        print("PASSED: Valid fixture accepted by Python")
         return True
     except Exception as e:
         print(f"FAILED: Valid fixture rejected: {type(e).__name__}: {e}")
         return False
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     all_passed = True
     all_passed &= test_valid_fixture()
     all_passed &= test_invalid_fixtures_rejected()

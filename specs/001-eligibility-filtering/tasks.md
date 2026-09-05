@@ -84,10 +84,10 @@ No new setup required — extends the existing `verdict/eligibility.py` module i
 ## Phase 6: Polish & Cross-Cutting Concerns
 
 - [X] T011 [P] Run `specs/001-eligibility-filtering/quickstart.md` validation scenarios end-to-end
-- [ ] T012 Run full baseline: `uv run pytest -q`, `ruff check .`, `ruff format --check .`, `mypy verdict --strict` per CLAUDE.md verification section
-- [ ] T013 Update `specs/001-eligibility-filtering/spec.md` Status field from Draft to Implemented (or per project convention) once T001–T012 are green
+- [X] T012 Run full baseline: `uv run pytest -q`, `ruff check .`, `ruff format --check .`, `mypy verdict --strict` per CLAUDE.md verification section
+- [X] T013 Update `specs/001-eligibility-filtering/spec.md` Status field from Draft to Implemented (or per project convention) once T001–T012 are green
 
-**Phase 6 evidence (2026-09-05)**: T011 quickstart tests and manual scenarios passed; the full test suite passed (`1348 passed, 1 warning`), strict mypy passed (`108 source files`), the feature-scoped Ruff checks passed, the package build passed, and `git diff --check` passed. T012 remains open because the required repository-wide `ruff check .` and `ruff format --check .` are still blocked by unrelated pre-existing files under `.specify/`, `.worktrees/`, and `test_fixtures/envelopes/test_envelope_parity.py`; no unrelated files were changed. T013 remains open while T012 is not fully green, so `spec.md` correctly remains `Draft`.
+**Phase 6 evidence (2026-09-05, updated)**: T011 quickstart tests and manual scenarios passed. Full repository-wide baseline is green: `uv run pytest -q` (1348 passed, 1 warning), `ruff check .` (all checks passed), `ruff format --check .` (passed), `uv run --extra dev --extra dashboard --extra server mypy verdict --strict` (108 source files, no issues), `uv run python -m build` (sdist + wheel built), and `git diff --check` (clean). T012's prior blocker — repository-wide `ruff check .` / `ruff format --check .` failures in `test_fixtures/envelopes/test_envelope_parity.py` (unused import, import ordering, unused local, no-placeholder f-string, missing trailing newline, quote/line-length formatting) — is resolved; no unrelated files were changed. T013 is complete: `spec.md` Status updated from `Draft` to `Implemented`.
 
 ---
 
