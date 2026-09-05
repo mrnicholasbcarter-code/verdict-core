@@ -411,6 +411,54 @@ def test_cmd_detect_json_and_config(
     assert "Centralized router detected" in capsys.readouterr().out
 
 
+def test_cmd_detect_reports_multiple_healthy_gateways(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T018/T019: multiple healthy gateways are all listed with a selection hint."""
+    import verdict.provider_detection as provider_detection
+    from verdict.provider_detection import GatewayCandidate
+
+    monkeypatch.setattr(provider_detection, "detect_all_providers", lambda: DetectionResult())
+    monkeypatch.setattr(
+        provider_detection,
+        "probe_gateways",
+        lambda: [
+            GatewayCandidate("127.0.0.1", 20128, "http://127.0.0.1:20128", True, "omniroute", "OmniRoute"),
+            GatewayCandidate("127.0.0.1", 20129, "http://127.0.0.1:20129", True, "9router", "9router"),
+        ],
+    )
+
+    cli.cmd_detect(output_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["gateways"]) == 2
+    assert payload["gateways"][0]["identity"] == "omniroute"
+    assert payload["gateways"][0]["health_ok"] is True
+    assert "Multiple gateways found" in payload["message"]
+
+    cli.cmd_detect()
+    assert "Multiple gateways found" in capsys.readouterr().out
+
+
+def test_cmd_detect_reports_no_gateway_found(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T020: no healthy gateway yields an explicit message and exit code 0."""
+    import verdict.provider_detection as provider_detection
+
+    monkeypatch.setattr(provider_detection, "detect_all_providers", lambda: DetectionResult())
+    monkeypatch.setattr(provider_detection, "probe_gateways", lambda: [])
+
+    cli.cmd_detect(output_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["gateways"] == []
+    assert payload["message"] == "No local gateway found on ports 20128, 20129, 20132."
+
+    cli.cmd_detect()
+    out = capsys.readouterr().out
+    assert "No local gateway found on ports 20128, 20129, 20132." in out
+    assert "omniroute serve" in out
+
+
 def test_cmd_detect_exits_nonzero_on_detection_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import verdict.provider_detection as provider_detection
 
@@ -985,6 +1033,30 @@ def test_cmd_doctor_prints_env_example_pointer(
     cli.cmd_doctor()
     out = capsys.readouterr().out
     assert ".env.example" in out
+
+
+def test_serve_dev_flag_enables_reload_and_dev_profile(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T022: `verdict serve --dev` enables hot reload and the dev profile."""
+    import verdict.api as api_module
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        api_module,
+        "start_server",
+        lambda port, host, reload=False: calls.append(
+            {"port": port, "host": host, "reload": reload}
+        ),
+    )
+    monkeypatch.delenv("LLMGATE_AVAILABILITY_PROFILE", raising=False)
+    monkeypatch.setattr("sys.argv", ["verdict", "serve", "--dev"])
+
+    cli.main()
+
+    assert calls == [{"port": 8000, "host": None, "reload": True}]
+    assert os.environ.get("LLMGATE_AVAILABILITY_PROFILE") == "development"
+    assert "hot-reload enabled" in capsys.readouterr().out
 
 
 def test_cmd_catalog_fetches_and_reconciles_both_projections(

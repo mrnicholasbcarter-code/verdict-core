@@ -729,6 +729,7 @@ def cmd_detect(
             "centralized_routers": [],
             "cloud_apis": [],
             "custom_endpoints": [],
+            "gateways": [],
         }
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -743,9 +744,26 @@ def cmd_detect(
             detect_all_providers,
             format_detection_report,
             generate_verdict_config,
+            probe_gateways,
         )
 
         result = detect_all_providers()
+
+        # T018/T019/T020: HTTP-validated gateway detection (TCP + /api/health),
+        # replacing reliance on the TCP-only centralized-router heuristic for
+        # gateway selection purposes.
+        gateways = probe_gateways()
+        healthy_gateways = [g for g in gateways if g.health_ok]
+        no_gateway_message = "No local gateway found on ports 20128, 20129, 20132."
+        multi_gateway_message = (
+            "Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the above to select it."
+        )
+        gateway_message = None
+        if not healthy_gateways:
+            gateway_message = no_gateway_message
+        elif len(healthy_gateways) > 1:
+            gateway_message = multi_gateway_message
+
         if output_json:
             print(
                 json.dumps(
@@ -755,6 +773,8 @@ def cmd_detect(
                         "centralized_routers": [p.__dict__ for p in result.centralized_routers],
                         "cloud_apis": [p.__dict__ for p in result.cloud_apis],
                         "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
+                        "gateways": [g.__dict__ for g in gateways],
+                        "message": gateway_message,
                     },
                     indent=2,
                 )
@@ -764,6 +784,20 @@ def cmd_detect(
             print(yaml.dump(config, default_flow_style=False))
         else:
             console.print(format_detection_report(result, verbose=verbose))
+            console.print("\n[bold]Gateways (HTTP-validated):[/bold]")
+            if healthy_gateways:
+                for g in healthy_gateways:
+                    console.print(
+                        f"  [green]✓[/green] {g.display_name} ({g.identity}) at {g.url} "
+                        f"[dim](port {g.port})[/dim]"
+                    )
+                if len(healthy_gateways) > 1:
+                    console.print(f"[yellow]{multi_gateway_message}[/yellow]")
+            else:
+                console.print(f"[yellow]{no_gateway_message}[/yellow]")
+                console.print(
+                    "[dim]To start OmniRoute: npm install -g omniroute && omniroute serve[/dim]"
+                )
     except Exception as e:
         console.print(f"[bold red]Detection failed: {e}[/bold red]")
         import traceback
@@ -2594,6 +2628,9 @@ def main() -> None:
     serve_p.add_argument(
         "--host", default=None, help="Bind address (anonymous mode must be loopback)"
     )
+    serve_p.add_argument(
+        "--dev", action="store_true", help="Enable hot-reload development mode"
+    )
 
     # New: detect command
     detect_p = subparsers.add_parser("detect", help="Detect available LLM providers")
@@ -2970,7 +3007,13 @@ def main() -> None:
         try:
             from verdict.api import start_server
 
-            start_server(args.port, args.host)
+            if args.dev:
+                os.environ["LLMGATE_AVAILABILITY_PROFILE"] = "development"
+                console.print(
+                    "[bold cyan]🔥 Dev mode: hot-reload enabled "
+                    "(LLMGATE_AVAILABILITY_PROFILE=development)[/bold cyan]"
+                )
+            start_server(args.port, args.host, reload=args.dev)
         except ImportError:
             console.print("[bold red]❌ Server dependencies not found.[/bold red]")
             console.print("Please install the FastAPI server suite:")

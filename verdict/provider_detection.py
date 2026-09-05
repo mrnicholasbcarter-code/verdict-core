@@ -113,6 +113,10 @@ CENTRALIZED_ROUTERS: dict[str, ServerInfo] = {
 # the centralized-router table by this name.
 PROVIDER_REGISTRY = CENTRALIZED_ROUTERS
 
+# Convenience mapping referenced by specs/339-cli-setup-dx/quickstart.md's
+# FR-014 validation script.
+GATEWAY_PORTS = {"omniroute": 20128, "9router": 20129}
+
 
 @dataclass
 class GatewayCandidate:
