@@ -380,3 +380,35 @@ US1 story tasks || US2 story tasks || US4 story tasks
 - **No breaking changes**: All new subcommands are additive; no existing flags or commands are removed or renamed.
 - **Windows out of scope**: `install.sh` and `scripts/dev-start.sh` target bash/zsh on macOS and Linux only.
 - **#237 boundary**: This feature references `verdict init` as a dependency but does not implement it. Do not add `verdict init` code here.
+
+---
+
+## Issue Mirror
+
+| Task | Title | Issue URL |
+|------|-------|-----------|
+| T001 | Audit quickstart.sh — confirm config filename bug lines | https://github.com/mrnicholasbcarter-code/verdict-core/issues/401 |
+| T002 | Audit provider_detection.py — confirm swapped port label lines | https://github.com/mrnicholasbcarter-code/verdict-core/issues/402 |
+| T003 | Audit cli.py — locate cmd_cost_report and cost-report subparser insertion point | https://github.com/mrnicholasbcarter-code/verdict-core/issues/403 |
+| T004 | Fix quickstart.sh — write verdict.yaml not config.yaml (FR-012) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/404 |
+| T005 | Fix provider_detection.py — correct swapped OmniRoute/9router port labels (FR-014) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/405 |
+| T006 | Register cmd_cost_report as cost-report subcommand in cli.py main() (FR-013) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/406 |
+| T007 | Wire OMNIROUTE_BASE_URL autodetect fallback in _omniroute_api_request | https://github.com/mrnicholasbcarter-code/verdict-core/issues/407 |
+| T008 | [US1] Add GatewayCandidate dataclass and probe_gateways() to provider_detection.py | https://github.com/mrnicholasbcarter-code/verdict-core/issues/408 |
+| T009 | [US1] Wire gateway autodetection into setup wizard (FR-002, FR-003) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/409 |
+| T010 | [US1] Write gateway_url to config and set OMNIROUTE_BASE_URL in process (FR-008) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/410 |
+| T011 | [US1] Handle malformed verdict.yaml in setup — warn and offer overwrite | https://github.com/mrnicholasbcarter-code/verdict-core/issues/411 |
+| T012 | [US1] Create install.sh — idempotent copy-paste setup script (FR-001) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/412 |
+| T013 | [US1] Update README.md — add Quick Setup section with one-liner install command | https://github.com/mrnicholasbcarter-code/verdict-core/issues/413 |
+| T014 | [US2] Create .env.example — full env var reference (FR-009) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/414 |
+| T015 | [US2] Add gateway URL reachability check to verdict doctor (FR-010) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/415 |
+| T016 | [US2] Add config filename check to verdict doctor (FR-011) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/416 |
+| T017 | [US2] Add env var format validation to verdict doctor | https://github.com/mrnicholasbcarter-code/verdict-core/issues/417 |
+| T018 | [US3] Update verdict detect to use HTTP-validated GatewayCandidate list (FR-006, FR-007) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/418 |
+| T019 | [US3] Handle multiple gateways in verdict detect output (AC-2) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/419 |
+| T020 | [US3] Handle no gateway found in verdict detect (AC-3) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/420 |
+| T021 | [US4] Create scripts/dev-start.sh — contributor dev setup (FR-015) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/421 |
+| T022 | [US4] Add --dev flag to verdict serve for hot-reload mode | https://github.com/mrnicholasbcarter-code/verdict-core/issues/422 |
+| T023 | Add stale config version check to verdict doctor (Polish) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/423 |
+| T024 | Add .env.example reference to verdict doctor output (Polish) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/424 |
+| T025 | Run quickstart.md validation scenarios end-to-end (Polish) | https://github.com/mrnicholasbcarter-code/verdict-core/issues/425 |
