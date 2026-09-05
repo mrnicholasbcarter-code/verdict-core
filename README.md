@@ -4,7 +4,7 @@
 
 **Use the right AI model for every task—not the most expensive one.**
 
-Verdict is a local-first, policy-gated control plane for agent model selection. Task routing is explicit and opt-in; no provider or router is required for the offline proof paths.
+Verdict stretches your Claude Code Max, Codex Pro, 9router, and OmniRoute setup further by routing each task to the least expensive capable model, while reserving frontier models for work that truly needs them. Configure once, use more of what you already have, and keep your best-model usage under control.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -12,15 +12,17 @@ Verdict is a local-first, policy-gated control plane for agent model selection. 
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Status: active development](https://img.shields.io/badge/status-active%20development-orange.svg)](#project-status)
 
-[User journey](docs/USER_JOURNEY.md) · [Quickstart](#30-second-demo) · [Why it matters](#why-verdict) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[Quickstart](#30-second-demo) · [Why it matters](#why-verdict) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 </div>
+
+## The Problem
 
 ## Why Verdict?
 
 ### The problem it solves
 
-Agents may use frontier, hosted, or local providers, but Verdict does not assume that a catalog entry is reachable or qualified.
+Claude Code Max and Codex Pro give you access to excellent frontier models—but frontier usage is limited and expensive to burn on every action. At the same time, 9router and OmniRoute may already expose many capable alternatives: free models, low-cost models, fast models, and specialists.
 
 Verdict is the decision layer between your task and those providers:
 
@@ -68,14 +70,14 @@ Verdict Core is a **deterministic execution-policy control plane** that sits bet
 └─────────────────────────┬───────────────────────────────────────┘
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              EXPLICIT PROVIDER / ROUTE ADAPTERS                │
+│              OMNIROUTE (Intelligent Model Router)               │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
 │  │  19 Strategies│ │  Quota Guard │ │  Cost/Quality│            │
 │  └──────────────┘ └──────────────┘ └──────────────┘            │
 └─────────────────────────┬───────────────────────────────────────┘
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              MODEL PROVIDERS (operator-configured)              │
+│                    MODEL PROVIDERS (3500+ models)               │
 │  Anthropic • OpenAI • OpenRouter • Local • Custom              │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -117,34 +119,6 @@ Every exclusion carries a machine-readable reason and state (`capability_mismatc
 
 ---
 
-## Install → provider → route → mission → failover → replay
-
-Follow the [full user journey](docs/USER_JOURNEY.md) for the commands,
-evidence, and maturity limits. In short:
-
-```bash
-uv sync --extra dev
-verdict --help
-verdict detect --offline --json         # no-probe offline status; no prompt sent
-verdict quickstart --non-interactive --dry-run --json  # offline route proof
-```
-
-The mission, failover, and replay stages are also available as bounded offline
-proofs. They do not imply live provider availability or generated-output
-quality. Run the forced failover proof and reload the persisted session:
-
-```bash
-verdict failover-proof --memory-path /tmp/failover.db --json
-VERDICT_MEMORY_DB=/tmp/failover.db verdict replay <session-id> --json
-```
-
-Use `route` only as a local policy decision preview after configuring provider
-metadata; it does not send the prompt to a model:
-
-```bash
-verdict route "summarize this change" --criticality low --terse
-```
-
 ## Install
 
 ```bash
@@ -169,7 +143,7 @@ verdict detect           # discover available LLM providers on this machine
 ## Cost Demo
 
 ```bash
-# Run a fixture simulation; its numbers are not live-provider evidence
+# Run 100-task routing simulation showing 90% savings
 python scripts/demo-routing.py
 
 # Output shows:

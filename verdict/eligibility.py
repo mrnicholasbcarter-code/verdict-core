@@ -51,6 +51,7 @@ class EligibilityRecord:
     state: str
     source: str
     reason: str | None = None
+    confidence: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +64,7 @@ class EligibilityRecord:
             "state": self.state,
             "source": self.source,
             "reason": self.reason,
+            "confidence": self.confidence,
         }
 
 
@@ -87,6 +89,20 @@ class EligibilityResult:
             "records": [r.to_dict() for r in self.records],
             "exclusions": [r.to_dict() for r in self.exclusions],
         }
+
+
+def _confidence_for(state: str) -> float:
+    """Map a live-truth state to the FR-003 confidence score.
+
+    Fully healthy states (eligible/ready) score 1.0, degraded truth scores
+    0.5, and every other state (unknown/error/unavailable/etc.) scores 0.0 —
+    the value FR-003 treats as "cannot be established with confidence".
+    """
+    if state == AvailabilityState.DEGRADED.value:
+        return 0.5
+    if state in {AvailabilityState.ELIGIBLE.value, AvailabilityState.READY.value}:
+        return 1.0
+    return 0.0
 
 
 def _state_for(report: AvailabilityReport | None, model_id: str) -> tuple[str, str]:
@@ -165,6 +181,7 @@ class EligibilityGate:
                     state="unknown",
                     source="cache",
                     reason="protected work: availability cache not configured",
+                    confidence=0.0,
                 )
             return EligibilityRecord(
                 model_id=model_id,
@@ -173,10 +190,13 @@ class EligibilityGate:
                 verdict=EligibilityVerdict.ELIGIBLE,
                 state=model.availability_state,
                 source="catalog",
+                confidence=_confidence_for(model.availability_state),
             )
 
         report = self.availability_source(model_id)
         state, source = _state_for(report, model_id)
+
+        confidence = _confidence_for(state)
 
         if state in _ADMITTED_STATES:
             return EligibilityRecord(
@@ -186,11 +206,15 @@ class EligibilityGate:
                 verdict=EligibilityVerdict.ELIGIBLE,
                 state=state,
                 source=source,
+                confidence=confidence,
             )
 
         # Excluded by live truth.
         if state in {"unknown", "error", "unavailable", "timeout", "malformed", "unauthorized"}:
-            if protected and self.protected_fail_closed:
+            # FR-003: fail closed for protected work whenever confidence is 0.0
+            # (state cannot be established with confidence), not merely on the
+            # raw state string.
+            if protected and self.protected_fail_closed and confidence == 0.0:
                 return EligibilityRecord(
                     model_id=model_id,
                     provider=provider,
@@ -199,8 +223,11 @@ class EligibilityGate:
                     state=state,
                     source=source,
                     reason=f"protected work: live availability {state}",
+                    confidence=confidence,
                 )
             if dev_mode and self.allow_unverified_in_dev and not protected:
+                # FR-007: dev_mode is the per-request-type flag that permits a
+                # non-protected request to proceed on best-available info.
                 # Degraded/unknown in dev: admit but flag so ranking can prefer
                 # verified candidates.
                 return EligibilityRecord(
@@ -210,7 +237,11 @@ class EligibilityGate:
                     verdict=EligibilityVerdict.NOT_LIVE_ELIGIBLE,
                     state=state,
                     source=source,
-                    reason=f"dev mode admits unverified candidate ({state})",
+                    reason=(
+                        f"dev mode admits candidate on best-available info "
+                        f"({state}, confidence={confidence})"
+                    ),
+                    confidence=confidence,
                 )
             return EligibilityRecord(
                 model_id=model_id,
@@ -220,6 +251,7 @@ class EligibilityGate:
                 state=state,
                 source=source,
                 reason=f"live availability {state}",
+                confidence=confidence,
             )
 
         # Denied / quota_exhausted / rate_limited / locked_out / circuit_open /
@@ -232,4 +264,5 @@ class EligibilityGate:
             state=state,
             source=source,
             reason=f"candidate excluded: {state}",
+            confidence=confidence,
         )

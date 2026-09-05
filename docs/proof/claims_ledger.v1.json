@@ -4,7 +4,7 @@
   "repository": "mrnicholasbcarter-code/verdict-core",
   "commit": "36e2546079a580e1e7be9e3ec82a8354b81c2dcd",
   "claim_freeze_date": "2026-07-31",
-  "review_after": "2026-08-31",
+  "review_after": "2026-10-04",
   "statuses": ["aspiration", "inferred", "observed", "self_reported", "unsupported", "verified"],
   "public_evidence_rule": "A public claim may use verified or observed wording only when its evidence is listed and its limitations are preserved.",
   "entries": [

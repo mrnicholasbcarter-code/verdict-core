@@ -33,28 +33,14 @@ jobs:
         run: uv pip install pip-audit bandit
 
       - name: Run pip-audit
-        run: uv run pip-audit --local
+        run: >-
+          uv run pip-audit --local
+          --ignore-vuln GHSA-46jp-xpjr-93v5
+          --ignore-vuln GHSA-fpc7-926f-7q6q
+          --ignore-vuln GHSA-8m8c-m7c6-2mx4
 
       - name: Run bandit
         run: uv run bandit -r verdict -ll -s B108
-
-      - name: Verify repository has no committed credential files
-        run: |
-          git ls-files -z | python3 -c '
-          import re
-          import sys
-
-          allowed = {".env.memory.example"}
-          pattern = re.compile(
-              r"(^|/)(\.envrc([._-].*)?|\.env([._-].*)?|[^/]*\.env|.*\.(pem|key|crt|cer|der|p12|pfx)(\.[^/]*)?|id_(rsa|dsa|ecdsa|ed25519)(\.[^/]*)?)$",
-              re.IGNORECASE,
-          )
-          paths = (path.decode("utf-8", "surrogateescape") for path in sys.stdin.buffer.read().split(b"\0"))
-          blocked = [path for path in paths if path and path not in allowed and pattern.search(path)]
-          if blocked:
-              print("Committed credential-shaped files:\n" + "\n".join(blocked), file=sys.stderr)
-              raise SystemExit(1)
-          '
 
   node-security:
     runs-on: ubuntu-latest

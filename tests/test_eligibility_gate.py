@@ -16,6 +16,8 @@ from typing import Any
 import verdict.intelligence as intel
 from verdict.availability import AvailabilityCandidate, AvailabilityReport, AvailabilityState
 from verdict.availability_cache import AvailabilityCache
+from verdict.contracts import TaskSpec
+from verdict.decision_kernel import decide
 from verdict.eligibility import EligibilityGate, EligibilityVerdict
 from verdict.intelligence import IntelligenceService
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
@@ -183,6 +185,125 @@ def test_explain_surfaces_eligible_set_and_exclusions(monkeypatch: Any) -> None:
     # exclusions list must name it explicitly (issue #73).
     assert "b/2" not in body["eligible_set"]
     assert {e["model_id"] for e in body["exclusions"]} == {"b/2"}
+
+
+def test_confidence_mapping_by_state() -> None:
+    """FR-003: confidence score derived from live-truth state (spec 001)."""
+    report = _report(
+        ("a/1", "eligible"), ("c/3", "degraded"), ("d/4", "unknown"), ("e/5", "denied")
+    )
+    cache = _cache(report)
+    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
+    candidates = [
+        ModelInfo(id=mid, provider=mid.split("/", 1)[0], capability_tier=2)
+        for mid in ("a/1", "c/3", "d/4", "e/5")
+    ]
+    result = gate.evaluate(candidates, dev_mode=True)
+    confidence_by_id = {r.model_id: r.confidence for r in result.records}
+    assert confidence_by_id["a/1"] == 1.0
+    assert confidence_by_id["c/3"] == 0.5
+    assert confidence_by_id["d/4"] == 0.0
+    assert confidence_by_id["e/5"] == 0.0
+
+
+def test_protected_fail_closed_driven_by_zero_confidence() -> None:
+    """FR-003: protected work excludes on confidence == 0.0, not raw state text."""
+    report = _report(("a/1", "unknown"))
+    cache = _cache(report)
+    gate = EligibilityGate(cache.get, protected_fail_closed=True)
+    candidates = [ModelInfo(id="a/1", provider="a", capability_tier=2)]
+    result = gate.evaluate(candidates, protected=True, dev_mode=False)
+    assert not result.admitted
+    assert result.records[0].confidence == 0.0
+
+
+def test_late_eligibility_transition_is_authoritative_at_reevaluation() -> None:
+    """FR-006: a later evaluate() call reflects the candidate's current state,
+    proving eligibility is re-checked (not cached) immediately before final
+    selection -- a state that flips from eligible to denied between an
+    earlier check and the authoritative one is excluded."""
+    state = {"value": "eligible"}
+    report_holder: dict[str, AvailabilityReport] = {}
+
+    def _dynamic_report() -> AvailabilityReport:
+        report_holder["last"] = _report(("a/1", state["value"]))
+        return report_holder["last"]
+
+    cache = AvailabilityCache(source=_dynamic_report, ttl_seconds=60, stale_window_seconds=30)
+    gate = EligibilityGate(cache.get, protected_fail_closed=True)
+    candidates = [ModelInfo(id="a/1", provider="a", capability_tier=2)]
+
+    first = gate.evaluate(candidates, protected=True, dev_mode=False)
+    assert first.admitted and first.admitted[0].id == "a/1"
+
+    # Candidate becomes ineligible before the final (authoritative) selection.
+    state["value"] = "denied"
+    cache.invalidate("a/1")
+    final = gate.evaluate(candidates, protected=True, dev_mode=False)
+    assert not final.admitted
+    assert final.records[0].state == "denied"
+
+
+def test_dev_mode_reason_surfaces_confidence_and_posture() -> None:
+    """FR-007: the reason text makes the best-available admission posture and
+    confidence score visible, not just the internal state string."""
+    report = _report(("a/1", "unknown"))
+    cache = _cache(report)
+    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
+    candidates = [ModelInfo(id="a/1", provider="a", capability_tier=2)]
+    result = gate.evaluate(candidates, protected=False, dev_mode=True)
+    record = result.records[0]
+    assert record.confidence == 0.0
+    assert "best-available" in record.reason
+    assert "confidence=0.0" in record.reason
+
+
+def test_eligibility_consistent_across_entry_points(monkeypatch: Any) -> None:
+    """FR-005/US3: distinct routing entry points produce the same gate result."""
+    report = _report(("a/1", "eligible"), ("b/2", "denied"))
+    cache = _cache(report)
+    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
+    candidates = [
+        ModelInfo(id=mid, provider=mid.split("/", 1)[0], capability_tier=2)
+        for mid in ("a/1", "b/2")
+    ]
+
+    # Entry point one: the deterministic decision-kernel facade.
+    kernel_result = decide(
+        task_spec=TaskSpec(objective="same task", task_type="review"),
+        policy_version="test",
+        candidates=candidates,
+        availability_truth={mid: report for mid in ("a/1", "b/2")},
+        protected=False,
+        dev_mode=True,
+    )
+
+    # Entry point two: the public IntelligenceService routing path. Its
+    # candidate discovery is stubbed, but it still exercises the service's own
+    # EligibilityGate evaluation before model selection.
+    monkeypatch.setattr(intel, "scan", lambda task: (None, ""))
+    monkeypatch.setattr(intel, "fetch_models", lambda name, cfg, ttl: candidates)
+
+    class _TaskSpec:
+        effort = "low"
+
+    class _Plan:
+        task_spec = _TaskSpec()
+
+    svc = _service_with_gate(gate)
+    svc.planner.plan = lambda task, context=None, criticality=None: _Plan()
+    service_result = asyncio.run(svc.route("same task", criticality="low"))
+
+    service_records = service_result.candidate_states
+    service_admitted = {r["model_id"] for r in service_records if r["admitted"]}
+    service_excluded = {
+        r["model_id"]: (r["verdict"], r["state"]) for r in service_records if not r["admitted"]
+    }
+    kernel_excluded = {r["model_id"]: (r["verdict"], r["state"]) for r in kernel_result.exclusions}
+
+    assert service_admitted == {m.id for m in kernel_result.admitted}
+    assert service_excluded == kernel_excluded
+    assert {r["model_id"]: r["confidence"] for r in service_records} == {"a/1": 1.0, "b/2": 0.0}
 
 
 def test_explain_per_model_carries_eligibility(monkeypatch: Any) -> None:

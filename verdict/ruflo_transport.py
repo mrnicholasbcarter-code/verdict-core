@@ -100,14 +100,10 @@ class RufloSubprocessTransport(RufloTransport):
 
         # Parse JSON output
         try:
-            payload = json.loads(result.stdout)
+            data: dict[str, Any] = json.loads(result.stdout)
+            return data
         except json.JSONDecodeError as e:
             raise RufloTransportError(f"Invalid JSON from Ruflo: {result.stdout[:500]}") from e
-        if not isinstance(payload, dict):
-            raise RufloTransportError(
-                f"Ruflo response must be a JSON object, got {type(payload).__name__}"
-            )
-        return payload
 
     def submit(self, request: dict[str, Any]) -> dict[str, Any]:
         return self._run_ruflo(["task", "submit"], request)
@@ -187,14 +183,8 @@ class RufloHttpTransport(RufloTransport):
         try:
             response = await client.request(method, path, json=data)
             response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise RufloTransportError(
-                    f"Ruflo response must be a JSON object, got {type(payload).__name__}"
-                )
-            return payload
-        except RufloTransportError:
-            raise
+            result: dict[str, Any] = response.json()
+            return result
         except httpx.HTTPStatusError as e:
             raise RufloTransportError(f"HTTP {e.response.status_code}: {e.response.text}") from e
         except httpx.TimeoutException as e:

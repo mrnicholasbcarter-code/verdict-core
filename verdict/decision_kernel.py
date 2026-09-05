@@ -399,6 +399,11 @@ def decide(
         protected_fail_closed=protected,
         clock=clock,
     )
+    # FR-006 re-check point: this is the single, synchronous evaluate() call
+    # for the whole decision. Everything downstream (advisory reorder) may
+    # only reorder this admitted set -- it can never reintroduce an excluded
+    # candidate or admit one this call didn't -- so eligibility is always
+    # authoritative as of the moment immediately preceding final selection.
     eligibility: EligibilityResult = gate.evaluate(
         [c for c in capable], protected=protected, dev_mode=dev_mode, now=clock
     )

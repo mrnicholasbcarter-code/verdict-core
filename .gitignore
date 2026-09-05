@@ -35,9 +35,7 @@ coverage.xml
 Thumbs.db
 node_build.log
 build.log
-# Scratch patch scripts at the repo root only — not package modules such as
-# verdict/patch_executor.py, which an unanchored rule silently excluded.
-/patch_*.py
+patch_*.py
 *.bak
 .coverage
 coverage.xml
@@ -66,3 +64,11 @@ docs/proof/private_*
 .ruvector/
 .verdict-memory-mission/
 scripts/demo-results.json
+
+# Local workspace tooling and nested worktrees
+/.grok/
+/.openclaude/
+/.serena/
+/.specify/
+/.worktrees/
+/verdict-core-v1-*/

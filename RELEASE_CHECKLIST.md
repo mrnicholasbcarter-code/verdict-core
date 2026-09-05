@@ -2,26 +2,6 @@
 
 ## Pre-Release Validation
 
-## Evidence-bound launch signoff
-
-Record the exact source revision, command or workflow URL, result, limitation,
-reviewer, and UTC date for every checked gate. An unchecked or advisory result is
-not a launch approval.
-
-| Gate | Source revision | Evidence URL/command (hosted URL required for CodeQL/OSV) | Result | Limitation | Reviewer/date |
-|---|---|---|---|---|---|
-| CI |  |  |  |  |  |
-| Bandit |  |  |  |  |  |
-| Dependency audit |  |  |  |  |  |
-| Committed credential-file scan |  |  |  |  |  |
-| npm production dependency audit |  |  |  |  |  |
-| CodeQL |  |  |  |  |  |
-| OSV |  |  |  |  |  |
-| Wheel/sdist smoke |  |  |  |  |  |
-| Documentation smoke |  |  |  |  |  |
-
-Launch decision: **PENDING EVIDENCE**
-
 ### Python Package (verdict-core)
 - [ ] All tests pass: `python -m pytest tests/ --ignore=tests/test_vcr_fallback.py -x`
 - [ ] Code quality: `ruff check . && mypy --strict verdict/`

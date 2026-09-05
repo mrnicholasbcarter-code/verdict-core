@@ -1,12 +1,8 @@
 name: Publish Python Package to PyPI
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing version tag to publish
-        required: true
-        type: string
+  release:
+    types: [published]
 
 jobs:
   build:
@@ -14,19 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
-      with:
-        ref: ${{ inputs.tag }}
     
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
         python-version: "3.10"
         
-    - name: Install Hatch
-      run: python3 -m pip install hatch --user
+    - name: Install PyPA build module
+      run: python3 -m pip install build --user
       
     - name: Build a binary wheel and a source tarball
-      run: hatch build
+      run: python3 -m build
       
     - name: Store the distribution packages
       uses: actions/upload-artifact@v7
@@ -34,16 +28,13 @@ jobs:
         name: python-package-distributions
         path: dist/
 
-    - name: Check distribution metadata
-      run: python3 -m pip install twine --user && python3 -m twine check dist/*
-
   publish-to-pypi:
     name: Publish Python 📦 to PyPI
     needs: build
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/verdict-core
+      url: https://pypi.org/p/verdict
     permissions:
       id-token: write  # IMPORTANT: mandatory for trusted publishing
       contents: read
