@@ -158,19 +158,59 @@ def test_omniroute_token_does_not_inspect_home_or_private_paths(
     assert cli._read_omniroute_token() is None
 
 
-def test_omniroute_management_requests_require_configured_endpoint(
+def test_omniroute_management_requests_return_none_when_no_local_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """T007: with nothing on :20128/:20129, the request still fails gracefully."""
     import urllib.request
+    from urllib.error import URLError
 
     monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
     monkeypatch.setattr(
         urllib.request,
         "urlopen",
-        lambda *_args, **_kwargs: pytest.fail("must not open a default endpoint"),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(URLError("connection refused")),
     )
 
     assert cli._omniroute_api_request("GET", "/api/provider-nodes") is None
+
+
+def test_omniroute_management_requests_fall_back_to_local_gateway_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T007: OMNIROUTE_BASE_URL unset but a local gateway answers /api/health."""
+    import urllib.request
+
+    seen: list[str] = []
+
+    class Response:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self._body
+
+    def fake_urlopen(request: urllib.request.Request, *, timeout: float) -> Response:
+        url = str(request.full_url)
+        seen.append(url)
+        if url == "http://localhost:20128/api/health":
+            return Response(b'{"status": "ok"}')
+        if url == "http://localhost:20128/api/provider-nodes":
+            return Response(b'{"ok": true}')
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert cli._omniroute_api_request("GET", "/api/provider-nodes") == {"ok": True}
+    assert "http://localhost:20128/api/health" in seen
+    assert "http://localhost:20128/api/provider-nodes" in seen
 
 
 def test_omniroute_management_requests_use_configured_endpoint(
