@@ -1,0 +1,67 @@
+# verdict.yaml — Config File Contract
+# Feature: 339-cli-setup-dx
+# Date: 2026-09-05
+#
+# This is the contract for the user config file written and read by the CLI.
+# Path: ${XDG_CONFIG_HOME:-$HOME/.config}/verdict/verdict.yaml
+# (NOT config.yaml — see bug FR-012)
+
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: "Verdict Config"
+type: object
+additionalProperties: false
+
+properties:
+  primary_model:
+    type: string
+    description: "Primary model ID used for routing. Example: anthropic/claude-3-opus-20240229"
+    examples:
+      - "anthropic/claude-3-opus-20240229"
+      - "cc/claude-sonnet-5"
+
+  gateway_url:
+    type: ["string", "null"]
+    format: uri
+    description: >
+      Base URL of the local gateway (OmniRoute or 9router).
+      Set automatically by `verdict setup` when a gateway is detected.
+      Example: http://localhost:20128
+    examples:
+      - "http://localhost:20128"
+      - "http://localhost:20129"
+
+  log_path:
+    type: string
+    description: "Path to decision log JSONL file. May be relative (resolved from cwd)."
+    default: "verdict-decisions.jsonl"
+    examples:
+      - "verdict-decisions.jsonl"
+      - "/var/log/verdict/decisions.jsonl"
+
+  offline_mode:
+    type: boolean
+    description: "When true, skip all gateway probes and route offline only."
+    default: false
+
+  providers:
+    type: object
+    description: "Provider-level configuration overrides. Keys are provider IDs."
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      properties:
+        api_key:
+          type: string
+          description: "API key for this provider. WARNING: do not commit this file with keys set."
+        base_url:
+          type: ["string", "null"]
+          format: uri
+          description: "Override base URL for this provider."
+        timeout_ms:
+          type: integer
+          minimum: 100
+          maximum: 300000
+          description: "Request timeout in milliseconds."
+
+# Migration note: files named config.yaml (written by old quickstart.sh) are
+# invalid per this contract. `verdict doctor` will detect and offer to rename them.
