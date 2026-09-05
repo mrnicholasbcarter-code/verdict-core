@@ -46,14 +46,32 @@ def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None =
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    base_url = os.getenv("OMNIROUTE_BASE_URL")
-    if not base_url:
-        return None
-    url = base_url.rstrip("/") + "/" + path.lstrip("/")
-
     import json
     import urllib.request
     from urllib.error import URLError
+
+    base_url = os.getenv("OMNIROUTE_BASE_URL")
+    if not base_url:
+        # OMNIROUTE_BASE_URL is not wired into the environment even when a
+        # gateway is running locally. Fall back to a one-shot health probe of
+        # the known local gateway ports rather than giving up immediately.
+        for candidate_url in ("http://localhost:20128", "http://localhost:20129"):
+            try:
+                health_req = urllib.request.Request(
+                    candidate_url.rstrip("/") + "/api/health",
+                    headers={"Accept": "application/json"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    if isinstance(payload, dict) and payload.get("status") == "ok":
+                        base_url = candidate_url
+                        break
+            except (URLError, Exception):
+                continue
+        if not base_url:
+            return None
+    url = base_url.rstrip("/") + "/" + path.lstrip("/")
 
     data = json.dumps(body).encode("utf-8") if body is not None else None
     if data:
@@ -2711,6 +2729,10 @@ def main() -> None:
     simulate_p.add_argument("--model", dest="model_override", default=None, help="Model override")
     simulate_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    subparsers.add_parser(
+        "cost-report", help="Estimate token cost from routing decision history"
+    )
+
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -2892,6 +2914,8 @@ def main() -> None:
         )
     elif args.command == "failover-proof":
         cmd_failover_proof(memory_path=args.memory_path, output_json=args.json)
+    elif args.command == "cost-report":
+        cmd_cost_report()
     else:
         parser.print_help()
 
