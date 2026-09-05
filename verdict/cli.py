@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, NoReturn
@@ -1549,6 +1550,93 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                         )
                     else:
                         urls[url] = name
+
+    # 1b. Config schema version check (T023)
+    if config is not None and "schema_version" not in config:
+        if fix:
+            config["schema_version"] = 1
+            try:
+                with open(config_path, "w") as f:
+                    yaml.safe_dump(config, f, default_flow_style=False)
+                fixed_issues.append("Config written by an older Verdict version")
+            except Exception as exc:
+                issues_found.append(f"Failed to migrate config schema_version: {exc}")
+        else:
+            issues_found.append(
+                "Config written by an older Verdict version. "
+                "Run 'verdict doctor --fix' to migrate."
+            )
+
+    # 1c. Config filename check (T016)
+    legacy_config_path = os.path.join(config_dir, "config.yaml")
+    if os.path.exists(legacy_config_path):
+        if os.path.exists(config_path):
+            issues_found.append(
+                f"Both {legacy_config_path} and {config_path} exist. "
+                "Remove the unused one to avoid confusion."
+            )
+        else:
+            if fix:
+                try:
+                    os.rename(legacy_config_path, config_path)
+                    console.print(
+                        f"  [green]✓[/] Renamed {legacy_config_path} -> {config_path}"
+                    )
+                    fixed_issues.append("Config file is named 'config.yaml'")
+                except Exception as exc:
+                    issues_found.append(f"Failed to rename config.yaml: {exc}")
+            else:
+                issues_found.append(
+                    "Config file is named 'config.yaml' but must be 'verdict.yaml'. "
+                    f"Run: mv {legacy_config_path} {config_path}"
+                )
+
+    # 1d. Gateway reachability check (T015)
+    gateway_url = os.getenv("OMNIROUTE_BASE_URL") or (
+        config.get("gateway_url") if config else None
+    )
+    if not gateway_url:
+        issues_found.append(
+            "No gateway URL configured. Run 'verdict detect' or set OMNIROUTE_BASE_URL."
+        )
+    else:
+        try:
+            import urllib.request
+            from urllib.error import URLError
+
+            health_req = urllib.request.Request(
+                gateway_url.rstrip("/") + "/api/health",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
+                if resp.status != 200:
+                    raise URLError(f"status {resp.status}")
+        except Exception:
+            issues_found.append(
+                f"Gateway unreachable at {gateway_url}. "
+                "Run 'verdict detect' to find a running gateway."
+            )
+
+    # 1e. Env var format checks (T017)
+    omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")
+    if omniroute_base_url_env and not re.match(
+        r"^https?://[^/]+(:[0-9]+)?$", omniroute_base_url_env
+    ):
+        issues_found.append(
+            f"OMNIROUTE_BASE_URL has invalid format: '{omniroute_base_url_env}'. "
+            "Expected http://host:port (no trailing slash)."
+        )
+
+    openai_api_key_env = os.getenv("OPENAI_API_KEY")
+    if openai_api_key_env and not openai_api_key_env.startswith("sk-"):
+        issues_found.append("OPENAI_API_KEY appears invalid (expected prefix 'sk-').")
+
+    # 1f. Env var reference note (T024)
+    console.print(
+        "  [dim]See .env.example in the repository root for the full environment "
+        "variable reference.[/dim]"
+    )
 
     # 2. OmniRoute nodes check
     existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")

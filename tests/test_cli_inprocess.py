@@ -655,8 +655,10 @@ def test_cmd_doctor_all_healthy(
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text(
+        "schema_version: 1\n"
         "primary_model: anthropic/claude-3-opus-20240229\n"
         "log_path: route-log.jsonl\n"
+        "gateway_url: http://localhost:11434/v1\n"
         "providers:\n"
         "  ollama:\n"
         "    base_url: http://localhost:11434/v1\n"
@@ -669,6 +671,20 @@ def test_cmd_doctor_all_healthy(
         return None
 
     monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
+
+    # Mock gateway health probe (T015) so the configured gateway_url reports healthy.
+    import urllib.request
+
+    class _FakeHealthResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeHealthResp())
 
     import verdict.documentation_preflight as documentation_preflight
 
@@ -882,6 +898,93 @@ def test_cmd_doctor_issues_and_duplicates(
     assert "Duplicate host URL configured in verdict.yaml" in out
     assert "Duplicate node 'Ollama2'" in out
     assert "node2" in deleted_nodes
+
+
+def test_cmd_doctor_flags_legacy_config_filename_and_offers_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T016: config.yaml (not verdict.yaml) is flagged, and --fix renames it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
+
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert "must be 'verdict.yaml'" in out
+    assert (cfg_dir / "config.yaml").exists()
+    assert not (cfg_dir / "verdict.yaml").exists()
+
+    cli.cmd_doctor(fix=True)
+    out = capsys.readouterr().out
+    assert "Renamed" in out
+    assert not (cfg_dir / "config.yaml").exists()
+    assert (cfg_dir / "verdict.yaml").exists()
+
+
+def test_cmd_doctor_flags_invalid_env_var_formats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T017: malformed OMNIROUTE_BASE_URL / OPENAI_API_KEY are flagged."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:20128/")
+    monkeypatch.setenv("OPENAI_API_KEY", "not-a-valid-key")
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    import urllib.request
+    from urllib.error import URLError
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(URLError("connection refused")),
+    )
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert "OMNIROUTE_BASE_URL has invalid format" in out
+    assert "OPENAI_API_KEY appears invalid" in out
+
+
+def test_cmd_doctor_flags_missing_schema_version_and_fixes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T023: config without schema_version is flagged; --fix migrates it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert "older Verdict version" in out
+
+    cli.cmd_doctor(fix=True)
+    saved = yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
+    assert saved["schema_version"] == 1
+
+
+def test_cmd_doctor_prints_env_example_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T024: doctor always points users at .env.example."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert ".env.example" in out
 
 
 def test_cmd_catalog_fetches_and_reconciles_both_projections(
