@@ -2,6 +2,8 @@
 description: "Task list for live routing golden path"
 ---
 
+**SUPERSEDED (2026-09-05)**: See spec.md — this feature shipped to `origin/main` via PR #334 under `live_routing_*` naming. The `[X]` marks below do not reflect code present on this branch (verified: 0 golden_path/live_routing files exist here, 0 matching pytest collected). Do not build T027–T029 under the `golden_path_*` names without first reconciling against the merged `live_routing_usage.py`.
+
 # Tasks: Live Routing Golden Path
 
 **Input**: Design documents from `/specs/276-live-routing-golden-path/`

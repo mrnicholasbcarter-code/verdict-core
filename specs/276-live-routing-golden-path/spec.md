@@ -4,7 +4,9 @@
 
 **Created**: 2026-08-30
 
-**Status**: Draft
+**Status**: Superseded
+
+**Superseded note (2026-09-05)**: This feature was already implemented and merged to `origin/main` via PR #334 (merge commit `1b5bb0e`, branch `feat/276-live-routing-golden-path`), under different module names than this spec's tasks.md (`live_routing.py`, `live_routing_gateway.py`, `live_routing_run.py`, `live_routing_usage.py`, `tests/test_live_routing_classify.py`, `tests/test_live_routing_live.py` instead of the `golden_path_*` names below). That merge commit is not an ancestor of this checkpoint branch. The `[X]` marks on T001–T026/T030–T032 in tasks.md do not correspond to code on this branch — none of the named `golden_path_*` files exist here; verified via `uv run pytest -k "golden_path or live_routing" -q` (0 collected) and `git merge-base --is-ancestor 1b5bb0e HEAD` (not an ancestor). Do not implement T027–T029 (`golden_path_usage.py` cookie probes) under this spec's naming — reconcile against the already-shipped `live_routing_usage.py` on main first if that capability is still needed.
 
 **Input**: User-confirmed remaining product: prove live model discovery, probing, qualification, selection, explanation, and one real bounded execution against a live gateway or provider; preserve paid usage; fixture catalogs are rule tests only; portfolio career observation does not block.
 
