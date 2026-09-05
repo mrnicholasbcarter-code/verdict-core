@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-05
 
-**Status**: Draft
+**Status**: Implemented
 
 **Input**: User description: "Run spec-kit specify for the next item we need to finish. Use the current project context to identify the next unfinished item, then produce or update the feature specification accordingly."
 
