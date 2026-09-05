@@ -371,3 +371,64 @@ def test_generate_config_prefers_router_local_then_cloud() -> None:
 
     empty_config = pd.generate_verdict_config(DetectionResult())
     assert empty_config == {"primary_model": "anthropic/claude-3-opus-20240229", "providers": {}}
+
+
+def test_centralized_routers_port_labels_not_swapped():
+    """Regression test for the OmniRoute/9router port-label swap bug (T005)."""
+    omniroute = pd.CENTRALIZED_ROUTERS["omniroute"]
+    router9 = pd.CENTRALIZED_ROUTERS["9router"]
+    assert omniroute["default_base_url"] == "http://localhost:20128/v1"
+    assert router9["default_base_url"] == "http://localhost:20129/v1"
+
+
+def test_provider_registry_alias():
+    assert pd.PROVIDER_REGISTRY is pd.CENTRALIZED_ROUTERS
+
+
+def test_probe_gateways_no_ports_open(monkeypatch):
+    monkeypatch.setattr(pd, "_check_port", lambda port, host="127.0.0.1": False)
+    assert pd.probe_gateways() == []
+
+
+def test_probe_gateways_healthy_omniroute(monkeypatch):
+    monkeypatch.setattr(pd, "_check_port", lambda port, host="127.0.0.1": port == 20128)
+
+    class FakeResp:
+        def __init__(self, status_code, body):
+            self.status_code = status_code
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    def fake_get(url, timeout=1.0):
+        if url.endswith("/api/health"):
+            return FakeResp(200, {"status": "ok"})
+        if url.endswith("/api/settings"):
+            return FakeResp(200, {"runtimePorts": {"port": 20128}})
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(pd.httpx, "get", fake_get)
+    candidates = pd.probe_gateways()
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.port == 20128
+    assert candidate.health_ok is True
+    assert candidate.identity == "omniroute"
+    assert candidate.url == "http://127.0.0.1:20128"
+
+
+def test_probe_gateways_port_open_but_unhealthy(monkeypatch):
+    monkeypatch.setattr(pd, "_check_port", lambda port, host="127.0.0.1": port == 20132)
+
+    class FakeResp:
+        status_code = 500
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(pd.httpx, "get", lambda url, timeout=1.0: FakeResp())
+    candidates = pd.probe_gateways()
+    assert len(candidates) == 1
+    assert candidates[0].health_ok is False
+    assert candidates[0].identity == "unknown"

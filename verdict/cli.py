@@ -125,6 +125,28 @@ def cmd_setup(
         cmd_setup_plan(output_json=output_json)
         return
 
+    # If an existing config file is present but not valid YAML, warn before
+    # prompting the user for anything and let them opt out of overwriting it.
+    existing_config_dir = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
+    )
+    existing_config_path = os.path.join(existing_config_dir, "verdict.yaml")
+    if os.path.exists(existing_config_path):
+        try:
+            with open(existing_config_path) as f:
+                yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            console.print(
+                f"[yellow]⚠️  Existing config at {existing_config_path} is not valid YAML: {e}[/yellow]"
+            )
+            try:
+                overwrite = Prompt.ask("Overwrite it?", default="Y")
+            except (KeyboardInterrupt, EOFError):
+                overwrite = "n"
+            if not overwrite.lower().startswith("y"):
+                console.print("[yellow]Setup cancelled.[/yellow]")
+                sys.exit(1)
+
     # First, run auto-detection to show user what's available
     _print_detection_banner()
     detected_result = None
@@ -145,6 +167,30 @@ def cmd_setup(
 
     config: dict[str, Any] = {}
     use_auto = False
+
+    # Auto-detect a local gateway (OmniRoute/9router) and wire it into both
+    # the saved config and the current process environment so downstream
+    # calls (e.g. syncing provider nodes below) can reach it immediately.
+    try:
+        from verdict.provider_detection import probe_gateways
+
+        gateways = probe_gateways()
+        healthy_gateways = [g for g in gateways if g.health_ok]
+        if healthy_gateways:
+            selected_gateway = healthy_gateways[0]
+            config["gateway_url"] = selected_gateway.url
+            os.environ["OMNIROUTE_BASE_URL"] = selected_gateway.url
+            console.print(
+                f"\n[bold green]✓ Detected {selected_gateway.display_name} at "
+                f"{selected_gateway.url} — gateway URL saved to config.[/bold green]"
+            )
+            if len(healthy_gateways) > 1:
+                console.print(
+                    "[dim]Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the "
+                    "above to select a different one.[/dim]"
+                )
+    except Exception as e:
+        console.print(f"[yellow]Gateway detection skipped: {e}[/yellow]")
 
     running_providers = []
     if detected_result:
