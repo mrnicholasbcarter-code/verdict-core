@@ -2,9 +2,9 @@
   "schema_version": 1,
   "title": "Verdict Core public proof matrix",
   "repository": "mrnicholasbcarter-code/verdict-core",
-  "commit": "36e2546079a580e1e7be9e3ec82a8354b81c2dcd",
-  "claim_freeze_date": "2026-07-31",
-  "review_after": "2026-10-04",
+  "commit": "7dc87a36aaca702a8d7e3eb7bb9de27d9f84be7e",
+  "claim_freeze_date": "2026-09-06",
+  "review_after": "2026-10-06",
   "status_vocabulary": [
     "blocked",
     "not_started",

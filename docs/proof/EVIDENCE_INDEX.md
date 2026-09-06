@@ -9,8 +9,8 @@ what it deliberately refuses to claim.
 | Field | Value |
 | --- | --- |
 | Repository | `mrnicholasbcarter-code/verdict-core` |
-| Audited source commit | `36e2546079a580e1e7be9e3ec82a8354b81c2dcd` |
-| Freeze date | 2026-07-31 |
+| Audited source commit | `7dc87a36aaca702a8d7e3eb7bb9de27d9f84be7e` |
+| Freeze date | 2026-09-06 |
 | Matrix | [`proof_matrix.v1.json`](proof_matrix.v1.json) |
 | Claims ledger | [`claims_ledger.v1.json`](claims_ledger.v1.json) |
 | Redaction policy | [`REDACTION_POLICY.md`](REDACTION_POLICY.md) |
@@ -21,6 +21,11 @@ what it deliberately refuses to claim.
 
 - [Portfolio proof matrix](../portfolio/PORTFOLIO_PROOF_MATRIX.md) maps each
   audience to an evidence-backed project story and preserves limitations.
+- [Claims audit](CLAIMS_AUDIT_2026-09-06.md) records the current claim statuses,
+  evidence-path audit, and public-surface review for the application-ready
+  release boundary.
+- [v0.3.0 release boundary](RELEASE_BOUNDARY_0.3.0.md) defines what may be
+  claimed and what remains explicitly outside the candidate release.
 - [AI Gateway Assurance Audit](../portfolio/AI_GATEWAY_ASSURANCE_AUDIT.md)
   defines the scoped consulting offer, deliverables, exclusions, and safe
   contact path.

@@ -171,6 +171,7 @@ Python is the reference implementation. [verdict-node](https://github.com/mrnich
 | Architecture decisions | [`docs/adr/README.md`](docs/adr/README.md) |
 | Benchmarks and receipts | [`docs/benchmarks/`](docs/benchmarks/) |
 | Evidence index | [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md) |
+| Claims audit and v0.3.0 boundary | [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md) · [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md) |
 | Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Security policy | [`SECURITY.md`](SECURITY.md) |
 
