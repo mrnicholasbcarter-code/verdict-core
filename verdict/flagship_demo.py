@@ -118,10 +118,7 @@ def build_demo_result() -> dict[str, Any]:
         "eligible": [item.model.id for item in eligible],
         "candidates": explanation,
         "decision": decision.to_dict(),
-        "receipt": {
-            "receipt_id": "fixture:issue-35",
-            "mode": "deterministic_fixture",
-        },
+        "receipt": {"receipt_id": "fixture:issue-35", "mode": "deterministic_fixture"},
     }
 
 
