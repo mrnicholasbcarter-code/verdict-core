@@ -2,7 +2,9 @@
 
 # Verdict
 
-Verdict sits between your AI coding tools and the models they use. It stops expensive models from being used on simple tasks, and it only allows a costly model when the task needs it, your budget allows it, or your rules require it. Same task, same decision, with a written record of why a model was chosen or dropped.
+The LLM router that says no: cheapest qualified model, a named reason for every drop, a receipt for every decision.
+
+Verdict puts a fail-closed control plane between AI coding tools and the models they use. It applies hard eligibility gates before advisory ranking, so an excluded or unverified model cannot be restored by a downstream score.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -11,7 +13,7 @@ Verdict sits between your AI coding tools and the models they use. It stops expe
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Golden path](#golden-path) · [Claude Code gate](docs/guides/coding-agent-gate.md) · [vs LiteLLM](docs/guides/comparison.md) · [Unknown ≠ healthy](docs/guides/unknown-not-healthy.md) · [Quickstart](#quickstart) · [Verification](#verification) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation)
+[Quick start](#quick-start) · [Verification](#verification) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation)
 
 </div>
 
@@ -19,47 +21,69 @@ Verdict sits between your AI coding tools and the models they use. It stops expe
 
 ```bash
 pip install verdict-core
-verdict --help
 ```
 
-Python 3.10+. No API key is required for the offline proof paths under [Verification](#verification).
+Python 3.10+. The offline proof path needs no API key or gateway.
 
-Contributor checkout:
+## Quick start
+
+Run the credential-free fixture from an empty directory:
 
 ```bash
-uv sync --extra dev            # or: pip install -e ".[dev]"
-uv run python -m verdict --help
+verdict quickstart --non-interactive --dry-run
 ```
 
-Optional convenience installer (review the script first; Linux/macOS):
+The fixture makes one deterministic routing decision, selects `demo/frontier-tools`, and names every excluded candidate:
+
+```text
+Verdict credential-free quickstart
+===================================
+Selected route: demo/frontier-tools
+Excluded candidates: 3
+Receipt: fixture:issue-35 (deterministic_fixture)
+Status: PASS
+- demo/no-tools: missing capability: tools
+- demo/quota-empty: quota exhausted
+- demo/unverified: health unknown
+```
+
+It does not call a provider, read credentials, or write state. The executable source and regression tests are [`verdict/flagship_demo.py`](verdict/flagship_demo.py) and [`tests/test_flagship_demo.py`](tests/test_flagship_demo.py).
+
+For a contributor checkout:
+
+```bash
+uv sync --extra dev
+uv run python -m verdict quickstart --non-interactive --dry-run
+```
+
+Optional Linux/macOS installer (review the script first):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh | bash
 ```
 
-That script installs `verdict-core`, probes for a local gateway (OmniRoute/9router on ports `20128`/`20129`), runs `verdict setup`, and verifies with `verdict check`.
+The installer probes for a local gateway, runs setup, and verifies the installation. Live provider execution is separate from this credential-free proof path.
 
-## Golden path
+## Live gateway checks
 
-Offline (no gateway, no key):
-
-```bash
-pip install verdict-core
-verdict quickstart --non-interactive --dry-run
-```
-
-That fixture selects `demo/frontier-tools` and names every exclusion. It does not call a provider.
-
-Live, only if something answers on `http://localhost:20128`:
+Only run these when a compatible gateway is already running at `http://localhost:20128`:
 
 ```bash
 verdict detect --json
 verdict probe task-coding --base-url http://localhost:20128/v1 --allow-live-probe --json
 ```
 
-`detect` must show OmniRoute `server_running: true`. `probe` must return `status: ready` for a **named** model. `auto/*` ids are opaque and are not a live proof. `verdict catalog` against a thousands-row catalog can time out; that is **blocked**, not success.
+`detect` must show `server_running: true`. `probe` must return `status: ready` for a **named** model. `auto/*` IDs are opaque and are not live proof. A catalog timeout is `blocked`, not success. See [`docs/guides/golden-path.md`](docs/guides/golden-path.md) for the dated live observation and its limitations.
 
-Recorded 2026-09-06 on this machine: quickstart pass; OmniRoute HTTP 200; `task-coding` probe `ready`; full catalog qualification `TimeoutError` / `status: unknown`. Details: [`docs/guides/golden-path.md`](docs/guides/golden-path.md).
+## Cost comparison
+
+**Deterministic mock — no provider spend.**
+
+```bash
+uv run python -m verdict.routing_demo --mock
+```
+
+The current deterministic mock compares 100 requests using fixed Opus/Sonnet/Haiku price estimates against a class-aware route: approximately **$0.16 routed** versus **$0.52 baseline** in the recorded fixture. The implementation computes routed cost, baseline, and savings; see [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md) for the baseline definition and live/recorded limitations. These are estimates, not observed invoices.
 
 ## Problem
 
@@ -108,17 +132,17 @@ From a contributor checkout, prefix with `uv run python -m`. `simulate` forecast
 
 Every claim below is reproducible from a clean checkout.
 
-**Cost comparison — no provider spend.**
+**Cost comparison — deterministic mock, no provider spend.**
 
 ```bash
 uv run python -m verdict.routing_demo --mock
 ```
 
-100 deterministic requests against fixed Opus/Sonnet/Haiku prices versus a class-aware route. Last recorded run: routed **$0.16** vs baseline **$0.52**, a **69.2%** reduction, where the baseline is the costliest still-qualified identity per request. Prices are labeled estimates from Anthropic's published pricing, not observed invoices. See [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md) for the live mode and the recorded-replay path.
+The current deterministic mock compares 100 requests using fixed Opus/Sonnet/Haiku price estimates against a class-aware route: approximately **$0.16 routed** versus **$0.52 baseline** in the recorded fixture. The implementation computes routed cost, baseline, and savings; see [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md) for the baseline definition and live/recorded limitations. These are estimates, not observed invoices.
 
-**Context packing measurably lifts a cheaper model.**
+**Context packing — dated live observation, not offline proof.**
 
-The same cheaper identity answers one exact named check twice — unaided, then with a compiled `ContextPack`. Lift is claimed only when the unaided attempt fails and the packed attempt passes on that same identity. Recorded receipt: `kc/kilo-auto/free`, unaided `false`, packed `true`. See [`docs/benchmarks/context-lift.md`](docs/benchmarks/context-lift.md) and the sanitized receipt beside it.
+A recorded paired run asked the same cheaper identity one exact check twice — unaided, then with a compiled `ContextPack`. The recorded receipt reports `unaided=false`, `packed=true`, and `conclusion=lift`; the run required a compatible live gateway. See [`docs/benchmarks/context-lift.md`](docs/benchmarks/context-lift.md) and the sanitized receipt beside it. A blocked or skipped live run makes no lift claim.
 
 **Failover holds without a network.**
 
@@ -127,11 +151,11 @@ uv run python -m verdict failover-proof
 uv run python -m verdict replay <session>
 ```
 
-**Test and gate status.** 157 test modules; CI enforces a 70% coverage floor, `ruff check`, `ruff format --check`, `mypy verdict --strict`, CodeQL, and OSV scanning, none of them advisory. Evidence index: [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md). Release gates: [`ACCEPTANCE_GATES.md`](ACCEPTANCE_GATES.md).
+**Test and gate status.** CI runs the repository's test, lint, format, type, security, CodeQL, OSV, install, build, and contract-parity checks. The current public claim boundary and limitations are in [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md), [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md), and [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md).
 
 ## Architecture
 
-Decisions live in [`docs/adr/`](docs/adr/) — 29 numbered records, indexed in [`docs/adr/README.md`](docs/adr/README.md). Start with these:
+Decisions live in [`docs/adr/`](docs/adr/) — 30 numbered records, indexed in [`docs/adr/README.md`](docs/adr/README.md). Start with these:
 
 | Area | Record |
 | --- | --- |

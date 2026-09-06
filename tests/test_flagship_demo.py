@@ -67,8 +67,11 @@ def test_cli_output_ignores_provider_environment_variables() -> None:
 
 
 def test_packaged_demo_matches_source_wrapper() -> None:
-    assert run_demo() == build_demo_result()
-    assert "Status: PASS" in render_report(run_demo())
+    result = run_demo()
+    assert result == build_demo_result()
+    report = render_report(result)
+    assert "Receipt: fixture:issue-35 (deterministic_fixture)" in report
+    assert "Status: PASS" in report
 
 
 def test_trusted_change_report_demo_accepts_and_is_deterministic() -> None:

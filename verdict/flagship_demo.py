@@ -118,6 +118,10 @@ def build_demo_result() -> dict[str, Any]:
         "eligible": [item.model.id for item in eligible],
         "candidates": explanation,
         "decision": decision.to_dict(),
+        "receipt": {
+            "receipt_id": "fixture:issue-35",
+            "mode": "deterministic_fixture",
+        },
     }
 
 
@@ -153,6 +157,7 @@ def render_report(result: dict[str, Any]) -> str:
         f"Required capabilities: {', '.join(result['requirements']['required'])}",
         f"Selected route: {decision['selected_route']['runtime_id']}",
         f"Excluded candidates: {len(decision['exclusions'])}",
+        f"Receipt: {result['receipt']['receipt_id']} ({result['receipt']['mode']})",
         "Status: PASS",
     ]
     for exclusion in decision["exclusions"]:
