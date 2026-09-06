@@ -11,7 +11,7 @@ Verdict sits between your AI coding tools and the models they use. It stops expe
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Quickstart](#quickstart) · [Verification](#verification) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation)
+[Golden path](#golden-path) · [Quickstart](#quickstart) · [Verification](#verification) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation)
 
 </div>
 
@@ -38,6 +38,28 @@ curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core
 ```
 
 That script installs `verdict-core`, probes for a local gateway (OmniRoute/9router on ports `20128`/`20129`), runs `verdict setup`, and verifies with `verdict check`.
+
+## Golden path
+
+Offline (no gateway, no key):
+
+```bash
+pip install verdict-core
+verdict quickstart --non-interactive --dry-run
+```
+
+That fixture selects `demo/frontier-tools` and names every exclusion. It does not call a provider.
+
+Live, only if something answers on `http://localhost:20128`:
+
+```bash
+verdict detect --json
+verdict probe task-coding --base-url http://localhost:20128/v1 --allow-live-probe --json
+```
+
+`detect` must show OmniRoute `server_running: true`. `probe` must return `status: ready` for a **named** model. `auto/*` ids are opaque and are not a live proof. `verdict catalog` against a thousands-row catalog can time out; that is **blocked**, not success.
+
+Recorded 2026-09-06 on this machine: quickstart pass; OmniRoute HTTP 200; `task-coding` probe `ready`; full catalog qualification `TimeoutError` / `status: unknown`. Details: [`docs/guides/golden-path.md`](docs/guides/golden-path.md).
 
 ## Problem
 
@@ -141,6 +163,7 @@ Python is the reference implementation. [verdict-node](https://github.com/mrnich
 | Topic | Location |
 | --- | --- |
 | End-to-end walkthrough | [`docs/USER_JOURNEY.md`](docs/USER_JOURNEY.md) |
+| Golden path (install → live probe) | [`docs/guides/golden-path.md`](docs/guides/golden-path.md) |
 | Full CLI reference | [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) |
 | Architecture decisions | [`docs/adr/README.md`](docs/adr/README.md) |
 | Benchmarks and receipts | [`docs/benchmarks/`](docs/benchmarks/) |

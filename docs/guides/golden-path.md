@@ -1,11 +1,50 @@
-# Live routing golden path
+# Golden path
 
-Fetch a live OpenAI-compatible catalog (default OmniRoute `http://localhost:20128/v1`), classify from published specs and `/api/pricing`, select cheaper-first, and run the named check `{"golden_path":"ok"}` on a real identity.
+Run this after `pip install verdict-core`. If a live step cannot talk to the gateway, the result is **blocked**, not a pass.
 
-Fixture catalogs cannot emit a pass receipt. If the gateway is down, the result is `live_surface_blocked`, not success.
+## 1. Offline quickstart
 
 ```bash
-uv run python -m pytest -q tests/test_live_routing_classify.py tests/test_live_routing_live.py
+verdict quickstart --non-interactive --dry-run
 ```
 
-Usage probes read `~/.codex/auth.json` and `~/.claude/.credentials.json` when present. They never write those files and never put tokens on receipts. Cookie probes are a later phase (US6).
+Expected: selected route `demo/frontier-tools`. Named exclusions for missing tools, exhausted quota, and unknown health. No files written. No API key.
+
+## 2. See the local gateway
+
+```bash
+verdict detect --json
+```
+
+Look under `centralized_routers` / `gateways` for OmniRoute at `http://localhost:20128/v1` with `server_running: true`. If it is false, stop. Do not use fixture data as a live proof.
+
+## 3. Live probe (consent required)
+
+Probe a **named** model, not `auto/*`:
+
+```bash
+verdict probe task-coding \
+  --base-url http://localhost:20128/v1 \
+  --allow-live-probe \
+  --json
+```
+
+Expected when the gateway is healthy: `"ok": true`, `"status": "ready"`. Timeout or `degraded` means blocked.
+
+## 4. What is not this path
+
+- `verdict catalog --base-url http://127.0.0.1:20128` on a thousands-row catalog can time out (`status: unknown`). Treat that as blocked until it returns `passed: true`.
+- `verdict models` without a live catalog still shows the local config identity (often a single Anthropic floor). That is not a live catalog proof.
+- Cookie or browser-quota probes are a later feature. They are not required here.
+
+## Recorded run (2026-09-06)
+
+| Step | Result |
+|------|--------|
+| `pip install .` from `origin/main` `3cc8231` | pass |
+| `verdict quickstart --non-interactive --dry-run` | pass, `demo/frontier-tools` |
+| `GET http://localhost:20128/v1/models` | HTTP 200, 3167 ids |
+| `verdict detect` OmniRoute `server_running` | true |
+| `verdict probe task-coding --allow-live-probe` | ready |
+| `verdict probe auto/best-coding --allow-live-probe` | timeout / degraded (not a live proof) |
+| `verdict catalog --management` | TimeoutError, `passed: false`, `status: unknown` (blocked) |
