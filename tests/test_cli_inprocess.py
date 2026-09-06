@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from verdict import cli
 from verdict.execution_packet import ExecutionPacket
@@ -158,19 +160,59 @@ def test_omniroute_token_does_not_inspect_home_or_private_paths(
     assert cli._read_omniroute_token() is None
 
 
-def test_omniroute_management_requests_require_configured_endpoint(
+def test_omniroute_management_requests_return_none_when_no_local_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """T007: with nothing on :20128/:20129, the request still fails gracefully."""
     import urllib.request
+    from urllib.error import URLError
 
     monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
     monkeypatch.setattr(
         urllib.request,
         "urlopen",
-        lambda *_args, **_kwargs: pytest.fail("must not open a default endpoint"),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(URLError("connection refused")),
     )
 
     assert cli._omniroute_api_request("GET", "/api/provider-nodes") is None
+
+
+def test_omniroute_management_requests_fall_back_to_local_gateway_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T007: OMNIROUTE_BASE_URL unset but a local gateway answers /api/health."""
+    import urllib.request
+
+    seen: list[str] = []
+
+    class Response:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self._body
+
+    def fake_urlopen(request: urllib.request.Request, *, timeout: float) -> Response:
+        url = str(request.full_url)
+        seen.append(url)
+        if url == "http://localhost:20128/api/health":
+            return Response(b'{"status": "ok"}')
+        if url == "http://localhost:20128/api/provider-nodes":
+            return Response(b'{"ok": true}')
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert cli._omniroute_api_request("GET", "/api/provider-nodes") == {"ok": True}
+    assert "http://localhost:20128/api/health" in seen
+    assert "http://localhost:20128/api/provider-nodes" in seen
 
 
 def test_omniroute_management_requests_use_configured_endpoint(
@@ -369,6 +411,58 @@ def test_cmd_detect_json_and_config(
     assert "Centralized router detected" in capsys.readouterr().out
 
 
+def test_cmd_detect_reports_multiple_healthy_gateways(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T018/T019: multiple healthy gateways are all listed with a selection hint."""
+    import verdict.provider_detection as provider_detection
+    from verdict.provider_detection import GatewayCandidate
+
+    monkeypatch.setattr(provider_detection, "detect_all_providers", lambda: DetectionResult())
+    monkeypatch.setattr(
+        provider_detection,
+        "probe_gateways",
+        lambda: [
+            GatewayCandidate(
+                "127.0.0.1", 20128, "http://127.0.0.1:20128", True, "omniroute", "OmniRoute"
+            ),
+            GatewayCandidate(
+                "127.0.0.1", 20129, "http://127.0.0.1:20129", True, "9router", "9router"
+            ),
+        ],
+    )
+
+    cli.cmd_detect(output_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["gateways"]) == 2
+    assert payload["gateways"][0]["identity"] == "omniroute"
+    assert payload["gateways"][0]["health_ok"] is True
+    assert "Multiple gateways found" in payload["message"]
+
+    cli.cmd_detect()
+    assert "Multiple gateways found" in capsys.readouterr().out
+
+
+def test_cmd_detect_reports_no_gateway_found(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T020: no healthy gateway yields an explicit message and exit code 0."""
+    import verdict.provider_detection as provider_detection
+
+    monkeypatch.setattr(provider_detection, "detect_all_providers", lambda: DetectionResult())
+    monkeypatch.setattr(provider_detection, "probe_gateways", lambda: [])
+
+    cli.cmd_detect(output_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["gateways"] == []
+    assert payload["message"] == "No local gateway found on ports 20128, 20129, 20132."
+
+    cli.cmd_detect()
+    out = capsys.readouterr().out
+    assert "No local gateway found on ports 20128, 20129, 20132." in out
+    assert "omniroute serve" in out
+
+
 def test_cmd_detect_exits_nonzero_on_detection_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import verdict.provider_detection as provider_detection
 
@@ -513,6 +607,7 @@ def test_cmd_setup_auto_and_sync_mock(
 
     # Assertions
     assert len(posted_nodes) == 1
+
     assert posted_nodes[0]["provider"] == "ollama"
     assert posted_nodes[0]["baseUrl"] == "http://localhost:11434/v1"
 
@@ -527,6 +622,80 @@ def test_cmd_setup_auto_and_sync_mock(
     assert cfg["providers"]["ollama"]["base_url"] == "http://localhost:11434/v1"
 
 
+def test_cmd_setup_wires_detected_gateway_into_config_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T009/T010: a healthy detected gateway is written to config and env."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+
+    import verdict.provider_detection as provider_detection
+    from verdict.provider_detection import DetectedProvider, DetectionResult, GatewayCandidate
+
+    fake_result = DetectionResult(
+        centralized_routers=[
+            DetectedProvider(
+                id="omniroute",
+                name="OmniRoute",
+                type="centralized_router",
+                base_url="http://127.0.0.1:20128/v1",
+                server_running=True,
+            )
+        ]
+    )
+    monkeypatch.setattr(provider_detection, "detect_all_providers", lambda: fake_result)
+    monkeypatch.setattr(
+        provider_detection,
+        "probe_gateways",
+        lambda ports=None: [
+            GatewayCandidate(
+                host="127.0.0.1",
+                port=20128,
+                url="http://127.0.0.1:20128",
+                health_ok=True,
+                identity="omniroute",
+                display_name="OmniRoute",
+            )
+        ],
+    )
+
+    inputs = ["ollama", "1", "n"]
+
+    def mock_ask(*args, **kwargs):
+        if inputs:
+            return inputs.pop(0)
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(cli.Prompt, "ask", mock_ask)
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    cli.cmd_setup()
+
+    assert os.environ.get("OMNIROUTE_BASE_URL") == "http://127.0.0.1:20128"
+    config_path = tmp_path / ".config" / "verdict" / "verdict.yaml"
+    assert config_path.exists()
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved["gateway_url"] == "http://127.0.0.1:20128"
+
+
+def test_cmd_setup_prompts_on_malformed_existing_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T011: malformed existing verdict.yaml prompts before overwrite; 'n' aborts."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+    config_dir = tmp_path / ".config" / "verdict"
+    config_dir.mkdir(parents=True)
+    (config_dir / "verdict.yaml").write_text("not: valid: yaml: [")
+
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "n")
+
+    with pytest.raises(SystemExit):
+        cli.cmd_setup()
+
+
 def test_cmd_doctor_all_healthy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -536,8 +705,10 @@ def test_cmd_doctor_all_healthy(
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text(
+        "schema_version: 1\n"
         "primary_model: anthropic/claude-3-opus-20240229\n"
         "log_path: route-log.jsonl\n"
+        "gateway_url: http://localhost:11434/v1\n"
         "providers:\n"
         "  ollama:\n"
         "    base_url: http://localhost:11434/v1\n"
@@ -550,6 +721,20 @@ def test_cmd_doctor_all_healthy(
         return None
 
     monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
+
+    # Mock gateway health probe (T015) so the configured gateway_url reports healthy.
+    import urllib.request
+
+    class _FakeHealthResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeHealthResp())
 
     import verdict.documentation_preflight as documentation_preflight
 
@@ -763,6 +948,117 @@ def test_cmd_doctor_issues_and_duplicates(
     assert "Duplicate host URL configured in verdict.yaml" in out
     assert "Duplicate node 'Ollama2'" in out
     assert "node2" in deleted_nodes
+
+
+def test_cmd_doctor_flags_legacy_config_filename_and_offers_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T016: config.yaml (not verdict.yaml) is flagged, and --fix renames it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
+
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert "must be 'verdict.yaml'" in out
+    assert (cfg_dir / "config.yaml").exists()
+    assert not (cfg_dir / "verdict.yaml").exists()
+
+    cli.cmd_doctor(fix=True)
+    out = capsys.readouterr().out
+    assert "Renamed" in out
+    assert not (cfg_dir / "config.yaml").exists()
+    assert (cfg_dir / "verdict.yaml").exists()
+
+
+def test_cmd_doctor_flags_invalid_env_var_formats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T017: malformed OMNIROUTE_BASE_URL / OPENAI_API_KEY are flagged."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:20128/")
+    monkeypatch.setenv("OPENAI_API_KEY", "not-a-valid-key")
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    import urllib.request
+    from urllib.error import URLError
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(URLError("connection refused")),
+    )
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert "OMNIROUTE_BASE_URL has invalid format" in out
+    assert "OPENAI_API_KEY appears invalid" in out
+
+
+def test_cmd_doctor_flags_missing_schema_version_and_fixes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T023: config without schema_version is flagged; --fix migrates it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert "older Verdict version" in out
+
+    cli.cmd_doctor(fix=True)
+    saved = yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
+    assert saved["schema_version"] == 1
+
+
+def test_cmd_doctor_prints_env_example_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T024: doctor always points users at .env.example."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert ".env.example" in out
+
+
+def test_serve_dev_flag_enables_reload_and_dev_profile(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T022: `verdict serve --dev` enables hot reload and the dev profile."""
+    import verdict.api as api_module
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        api_module,
+        "start_server",
+        lambda port, host, reload=False: calls.append(
+            {"port": port, "host": host, "reload": reload}
+        ),
+    )
+    monkeypatch.delenv("LLMGATE_AVAILABILITY_PROFILE", raising=False)
+    monkeypatch.setattr("sys.argv", ["verdict", "serve", "--dev"])
+
+    cli.main()
+
+    assert calls == [{"port": 8000, "host": None, "reload": True}]
+    assert os.environ.get("LLMGATE_AVAILABILITY_PROFILE") == "development"
+    assert "hot-reload enabled" in capsys.readouterr().out
 
 
 def test_cmd_catalog_fetches_and_reconciles_both_projections(

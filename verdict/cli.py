@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, NoReturn
@@ -46,14 +47,32 @@ def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None =
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    base_url = os.getenv("OMNIROUTE_BASE_URL")
-    if not base_url:
-        return None
-    url = base_url.rstrip("/") + "/" + path.lstrip("/")
-
     import json
     import urllib.request
     from urllib.error import URLError
+
+    base_url = os.getenv("OMNIROUTE_BASE_URL")
+    if not base_url:
+        # OMNIROUTE_BASE_URL is not wired into the environment even when a
+        # gateway is running locally. Fall back to a one-shot health probe of
+        # the known local gateway ports rather than giving up immediately.
+        for candidate_url in ("http://localhost:20128", "http://localhost:20129"):
+            try:
+                health_req = urllib.request.Request(
+                    candidate_url.rstrip("/") + "/api/health",
+                    headers={"Accept": "application/json"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    if isinstance(payload, dict) and payload.get("status") == "ok":
+                        base_url = candidate_url
+                        break
+            except (URLError, Exception):
+                continue
+        if not base_url:
+            return None
+    url = base_url.rstrip("/") + "/" + path.lstrip("/")
 
     data = json.dumps(body).encode("utf-8") if body is not None else None
     if data:
@@ -107,6 +126,28 @@ def cmd_setup(
         cmd_setup_plan(output_json=output_json)
         return
 
+    # If an existing config file is present but not valid YAML, warn before
+    # prompting the user for anything and let them opt out of overwriting it.
+    existing_config_dir = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
+    )
+    existing_config_path = os.path.join(existing_config_dir, "verdict.yaml")
+    if os.path.exists(existing_config_path):
+        try:
+            with open(existing_config_path) as f:
+                yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            console.print(
+                f"[yellow]⚠️  Existing config at {existing_config_path} is not valid YAML: {e}[/yellow]"
+            )
+            try:
+                overwrite = Prompt.ask("Overwrite it?", default="Y")
+            except (KeyboardInterrupt, EOFError):
+                overwrite = "n"
+            if not overwrite.lower().startswith("y"):
+                console.print("[yellow]Setup cancelled.[/yellow]")
+                sys.exit(1)
+
     # First, run auto-detection to show user what's available
     _print_detection_banner()
     detected_result = None
@@ -127,6 +168,30 @@ def cmd_setup(
 
     config: dict[str, Any] = {}
     use_auto = False
+
+    # Auto-detect a local gateway (OmniRoute/9router) and wire it into both
+    # the saved config and the current process environment so downstream
+    # calls (e.g. syncing provider nodes below) can reach it immediately.
+    try:
+        from verdict.provider_detection import probe_gateways
+
+        gateways = probe_gateways()
+        healthy_gateways = [g for g in gateways if g.health_ok]
+        if healthy_gateways:
+            selected_gateway = healthy_gateways[0]
+            config["gateway_url"] = selected_gateway.url
+            os.environ["OMNIROUTE_BASE_URL"] = selected_gateway.url
+            console.print(
+                f"\n[bold green]✓ Detected {selected_gateway.display_name} at "
+                f"{selected_gateway.url} — gateway URL saved to config.[/bold green]"
+            )
+            if len(healthy_gateways) > 1:
+                console.print(
+                    "[dim]Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the "
+                    "above to select a different one.[/dim]"
+                )
+    except Exception as e:
+        console.print(f"[yellow]Gateway detection skipped: {e}[/yellow]")
 
     running_providers = []
     if detected_result:
@@ -664,6 +729,7 @@ def cmd_detect(
             "centralized_routers": [],
             "cloud_apis": [],
             "custom_endpoints": [],
+            "gateways": [],
         }
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -678,9 +744,26 @@ def cmd_detect(
             detect_all_providers,
             format_detection_report,
             generate_verdict_config,
+            probe_gateways,
         )
 
         result = detect_all_providers()
+
+        # T018/T019/T020: HTTP-validated gateway detection (TCP + /api/health),
+        # replacing reliance on the TCP-only centralized-router heuristic for
+        # gateway selection purposes.
+        gateways = probe_gateways()
+        healthy_gateways = [g for g in gateways if g.health_ok]
+        no_gateway_message = "No local gateway found on ports 20128, 20129, 20132."
+        multi_gateway_message = (
+            "Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the above to select it."
+        )
+        gateway_message = None
+        if not healthy_gateways:
+            gateway_message = no_gateway_message
+        elif len(healthy_gateways) > 1:
+            gateway_message = multi_gateway_message
+
         if output_json:
             print(
                 json.dumps(
@@ -690,6 +773,8 @@ def cmd_detect(
                         "centralized_routers": [p.__dict__ for p in result.centralized_routers],
                         "cloud_apis": [p.__dict__ for p in result.cloud_apis],
                         "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
+                        "gateways": [g.__dict__ for g in gateways],
+                        "message": gateway_message,
                     },
                     indent=2,
                 )
@@ -699,6 +784,20 @@ def cmd_detect(
             print(yaml.dump(config, default_flow_style=False))
         else:
             console.print(format_detection_report(result, verbose=verbose))
+            console.print("\n[bold]Gateways (HTTP-validated):[/bold]")
+            if healthy_gateways:
+                for g in healthy_gateways:
+                    console.print(
+                        f"  [green]✓[/green] {g.display_name} ({g.identity}) at {g.url} "
+                        f"[dim](port {g.port})[/dim]"
+                    )
+                if len(healthy_gateways) > 1:
+                    console.print(f"[yellow]{multi_gateway_message}[/yellow]")
+            else:
+                console.print(f"[yellow]{no_gateway_message}[/yellow]")
+                console.print(
+                    "[dim]To start OmniRoute: npm install -g omniroute && omniroute serve[/dim]"
+                )
     except Exception as e:
         console.print(f"[bold red]Detection failed: {e}[/bold red]")
         import traceback
@@ -1485,6 +1584,88 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                         )
                     else:
                         urls[url] = name
+
+    # 1b. Config schema version check (T023)
+    if config is not None and "schema_version" not in config:
+        if fix:
+            config["schema_version"] = 1
+            try:
+                with open(config_path, "w") as f:
+                    yaml.safe_dump(config, f, default_flow_style=False)
+                fixed_issues.append("Config written by an older Verdict version")
+            except Exception as exc:
+                issues_found.append(f"Failed to migrate config schema_version: {exc}")
+        else:
+            issues_found.append(
+                "Config written by an older Verdict version. Run 'verdict doctor --fix' to migrate."
+            )
+
+    # 1c. Config filename check (T016)
+    legacy_config_path = os.path.join(config_dir, "config.yaml")
+    if os.path.exists(legacy_config_path):
+        if os.path.exists(config_path):
+            issues_found.append(
+                f"Both {legacy_config_path} and {config_path} exist. "
+                "Remove the unused one to avoid confusion."
+            )
+        else:
+            if fix:
+                try:
+                    os.rename(legacy_config_path, config_path)
+                    console.print(f"  [green]✓[/] Renamed {legacy_config_path} -> {config_path}")
+                    fixed_issues.append("Config file is named 'config.yaml'")
+                except Exception as exc:
+                    issues_found.append(f"Failed to rename config.yaml: {exc}")
+            else:
+                issues_found.append(
+                    "Config file is named 'config.yaml' but must be 'verdict.yaml'. "
+                    f"Run: mv {legacy_config_path} {config_path}"
+                )
+
+    # 1d. Gateway reachability check (T015)
+    gateway_url = os.getenv("OMNIROUTE_BASE_URL") or (config.get("gateway_url") if config else None)
+    if not gateway_url:
+        issues_found.append(
+            "No gateway URL configured. Run 'verdict detect' or set OMNIROUTE_BASE_URL."
+        )
+    else:
+        try:
+            import urllib.request
+            from urllib.error import URLError
+
+            health_req = urllib.request.Request(
+                gateway_url.rstrip("/") + "/api/health",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
+                if resp.status != 200:
+                    raise URLError(f"status {resp.status}")
+        except Exception:
+            issues_found.append(
+                f"Gateway unreachable at {gateway_url}. "
+                "Run 'verdict detect' to find a running gateway."
+            )
+
+    # 1e. Env var format checks (T017)
+    omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")
+    if omniroute_base_url_env and not re.match(
+        r"^https?://[^/]+(:[0-9]+)?$", omniroute_base_url_env
+    ):
+        issues_found.append(
+            f"OMNIROUTE_BASE_URL has invalid format: '{omniroute_base_url_env}'. "
+            "Expected http://host:port (no trailing slash)."
+        )
+
+    openai_api_key_env = os.getenv("OPENAI_API_KEY")
+    if openai_api_key_env and not openai_api_key_env.startswith("sk-"):
+        issues_found.append("OPENAI_API_KEY appears invalid (expected prefix 'sk-').")
+
+    # 1f. Env var reference note (T024)
+    console.print(
+        "  [dim]See .env.example in the repository root for the full environment "
+        "variable reference.[/dim]"
+    )
 
     # 2. OmniRoute nodes check
     existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
@@ -2442,6 +2623,7 @@ def main() -> None:
     serve_p.add_argument(
         "--host", default=None, help="Bind address (anonymous mode must be loopback)"
     )
+    serve_p.add_argument("--dev", action="store_true", help="Enable hot-reload development mode")
 
     # New: detect command
     detect_p = subparsers.add_parser("detect", help="Detect available LLM providers")
@@ -2711,6 +2893,8 @@ def main() -> None:
     simulate_p.add_argument("--model", dest="model_override", default=None, help="Model override")
     simulate_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    subparsers.add_parser("cost-report", help="Estimate token cost from routing decision history")
+
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -2814,7 +2998,13 @@ def main() -> None:
         try:
             from verdict.api import start_server
 
-            start_server(args.port, args.host)
+            if args.dev:
+                os.environ["LLMGATE_AVAILABILITY_PROFILE"] = "development"
+                console.print(
+                    "[bold cyan]🔥 Dev mode: hot-reload enabled "
+                    "(LLMGATE_AVAILABILITY_PROFILE=development)[/bold cyan]"
+                )
+            start_server(args.port, args.host, reload=args.dev)
         except ImportError:
             console.print("[bold red]❌ Server dependencies not found.[/bold red]")
             console.print("Please install the FastAPI server suite:")
@@ -2892,6 +3082,8 @@ def main() -> None:
         )
     elif args.command == "failover-proof":
         cmd_failover_proof(memory_path=args.memory_path, output_json=args.json)
+    elif args.command == "cost-report":
+        cmd_cost_report()
     else:
         parser.print_help()
 

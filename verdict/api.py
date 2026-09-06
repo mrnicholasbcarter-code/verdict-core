@@ -1445,7 +1445,7 @@ async def route_task_alias(request: Request, req: RouteRequest) -> Response:
     return response
 
 
-def start_server(port: int = 8000, host: str | None = None) -> None:
+def start_server(port: int = 8000, host: str | None = None, reload: bool = False) -> None:
     """Boot the uvicorn server with explicit production security defaults."""
     import uvicorn
 
@@ -1470,4 +1470,9 @@ def start_server(port: int = 8000, host: str | None = None) -> None:
         kwargs["uds"] = unix_socket
     else:
         kwargs["host"] = configured_host
-    uvicorn.run(app, **kwargs)
+    if reload:
+        # uvicorn requires an import string (not an app object) for reload
+        # to work, since it needs to re-import the module on file changes.
+        uvicorn.run("verdict.api:app", reload=True, **kwargs)
+    else:
+        uvicorn.run(app, **kwargs)

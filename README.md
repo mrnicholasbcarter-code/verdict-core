@@ -15,6 +15,22 @@ Local-first, policy-gated control plane for LLM model selection. Routing is expl
 
 </div>
 
+## Quick Setup
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh)
+```
+
+From a local checkout:
+
+```bash
+bash install.sh
+```
+
+This installs `verdict-core`, probes for a local gateway (OmniRoute/9router on
+ports `20128`/`20129`), runs `verdict setup`, and verifies the install with
+`verdict check`.
+
 ## Problem
 
 An agent that sends every task to one frontier model pays frontier prices for work a cheaper model completes correctly, and it has no record of why any given call was made. Cost dashboards report the bill after the fact; they do not decide anything.

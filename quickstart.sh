@@ -25,7 +25,7 @@ echo "✅ Targeting Primary Model: $PRIMARY_MODEL"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/verdict"
 mkdir -p "$CONFIG_DIR"
 
-cat << YAML > "$CONFIG_DIR/config.yaml"
+cat << YAML > "$CONFIG_DIR/verdict.yaml"
 primary_model: "$PRIMARY_MODEL"
 log_path: "verdict-decisions.jsonl"
 providers:
@@ -42,7 +42,7 @@ providers:
     priority: 5
 YAML
 
-echo "✅ Created baseline config at $CONFIG_DIR/config.yaml"
+echo "✅ Created baseline config at $CONFIG_DIR/verdict.yaml"
 echo "📦 Installing $INSTALL_TARGET via pip..."
 
 if command -v pipx &> /dev/null; then
