@@ -2,9 +2,9 @@
   "schema_version": 1,
   "title": "Verdict Core public claims ledger",
   "repository": "mrnicholasbcarter-code/verdict-core",
-  "commit": "36e2546079a580e1e7be9e3ec82a8354b81c2dcd",
-  "claim_freeze_date": "2026-07-31",
-  "review_after": "2026-10-04",
+  "commit": "7dc87a36aaca702a8d7e3eb7bb9de27d9f84be7e",
+  "claim_freeze_date": "2026-09-06",
+  "review_after": "2026-10-06",
   "statuses": [
     "aspiration",
     "inferred",
@@ -31,7 +31,7 @@
         "test_ranker_cannot_reintroduce_excluded_candidate",
         "test_excluded_cannot_be_reintroduced"
       ],
-      "observed_date_range": "2026-07-31",
+      "observed_date_range": "2026-09-06",
       "metric_definition": "Ordering and exclusion invariants are defined by the named tests; no provider metric is asserted.",
       "authorship": "repository implementation and tests",
       "public": true,
@@ -42,7 +42,7 @@
       "falsification_test": "Attempt to reintroduce an excluded candidate through the ranker and assert the selected set remains gate-bounded.",
       "missing_evidence": "None for the local invariant; live gateway behavior is outside scope.",
       "downgrade_wording": "The local tests cover the eligibility/ranking invariant.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-002",
@@ -62,7 +62,7 @@
         "test_contradictory_and_malformed_observations_are_unknown_or_malformed",
         "test_refresh_failure_returns_explicit_unknown_not_stale"
       ],
-      "observed_date_range": "2026-07-31",
+      "observed_date_range": "2026-09-06",
       "metric_definition": "The behavior is a fail-closed contract over fixture observations and cache states, not a field availability percentage.",
       "authorship": "repository implementation and tests",
       "public": true,
@@ -73,7 +73,7 @@
       "falsification_test": "Feed stale, contradictory, malformed, or missing observations and assert the result is unknown or rejected.",
       "missing_evidence": "Current provider health evidence is intentionally not claimed.",
       "downgrade_wording": "The local availability adapter fails closed for the tested malformed and stale cases.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-003",
@@ -91,7 +91,7 @@
         "test_fresh_direct_negotiation_is_required_for_admission",
         "versioned runtime passport JSON schema"
       ],
-      "observed_date_range": "2026-07-31",
+      "observed_date_range": "2026-09-06",
       "metric_definition": "Admission is the boolean result of RuntimeCapabilityPassport.resolve/satisfies under the versioned contract.",
       "authorship": "repository implementation and tests",
       "public": true,
@@ -102,7 +102,7 @@
       "falsification_test": "Provide only declared, inferred, claimed, expired, or unsupported evidence and assert admission remains false.",
       "missing_evidence": "Protocol-specific handshakes and probes are separate adapters.",
       "downgrade_wording": "The passport contract prevents the tested non-direct evidence from authorizing admission.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-004",
@@ -118,7 +118,7 @@
         "build_runtime_compatibility_report",
         "test_order_and_digest_are_deterministic"
       ],
-      "observed_date_range": "2026-07-31",
+      "observed_date_range": "2026-09-06",
       "metric_definition": "Equivalent passport inputs, requirements, and timestamp produce the same canonical report and digest.",
       "authorship": "repository implementation and tests",
       "public": true,
@@ -129,7 +129,7 @@
       "falsification_test": "Compare reports with reordered mappings and with secret-bearing identity values; assert stable ordering and safe output.",
       "missing_evidence": "No live runtime discovery or protocol execution is included in this claim.",
       "downgrade_wording": "The matrix is a deterministic report over already-issued evidence.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-005",
@@ -147,7 +147,7 @@
         "source-checkout wrapper",
         "test_cli_output_is_reproducible_without_network_or_credentials"
       ],
-      "observed_date_range": "2026-07-31",
+      "observed_date_range": "2026-09-06",
       "metric_definition": "Two local subprocess runs produce identical output, and provider credential environment variables do not alter it.",
       "authorship": "repository implementation and tests",
       "public": true,
@@ -158,7 +158,7 @@
       "falsification_test": "Run the demo in an empty temporary directory with provider variables set and compare output.",
       "missing_evidence": "Live provider execution, adoption, and production readiness are not demonstrated.",
       "downgrade_wording": "The fixture demonstrates the local contract without network access or credentials.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-006",
@@ -180,7 +180,7 @@
         "test_reproducible_benchmark_report_is_deterministic_in_structure",
         "test_identical_inputs_produce_identical_manifest_and_bundle"
       ],
-      "observed_date_range": "2026-07-31",
+      "observed_date_range": "2026-09-06",
       "metric_definition": "The benchmark structure, fixture digest, manifest, and archive bytes are stable for identical local inputs.",
       "authorship": "repository implementation and tests",
       "public": true,
@@ -191,7 +191,7 @@
       "falsification_test": "Run the reproducibility tests twice and inspect that live-provider mode requires explicit opt-in.",
       "missing_evidence": "No live-provider quality or latency result is authorized.",
       "downgrade_wording": "The checked-in fixture harness is reproducible; it is not a live benchmark.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-007",
@@ -218,7 +218,7 @@
       "falsification_test": "Require fresh direct observations for a sample and verify that catalog membership alone cannot satisfy protected eligibility.",
       "missing_evidence": "Current liveness, authorization, quota, and route-level execution evidence.",
       "downgrade_wording": "The repository records a bounded historical catalog observation; it does not claim all rows are runnable.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-008",
@@ -238,7 +238,7 @@
         "restart, scope, export, and integrity tests",
         "code graph engine tests"
       ],
-      "observed_date_range": "2026-07-31",
+      "observed_date_range": "2026-09-06",
       "metric_definition": "No checked-in benchmark currently defines or reproduces the claimed latency or memory comparison.",
       "authorship": "repository components; quantified wording requires separate evidence",
       "public": true,
@@ -249,7 +249,7 @@
       "falsification_test": "Require a committed benchmark fixture with hardware, dataset, warmup, repetitions, baseline, raw results, and analysis before promotion.",
       "missing_evidence": "Controlled latency and memory benchmark artifacts.",
       "downgrade_wording": "Local-first memory components exist; performance claims remain unverified.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-009",
@@ -276,7 +276,7 @@
       "falsification_test": "Require the external repository, benchmark fixture, environment, raw results, and risk-event ledger with sensitive data redacted.",
       "missing_evidence": "Independent reproducible artifacts and provenance for every metric.",
       "downgrade_wording": "The figures are self-reported in the case study and are not release-gated evidence here.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-010",
@@ -294,7 +294,7 @@
         "pre-release validation",
         "bundle verifier"
       ],
-      "observed_date_range": "2026-07-31",
+      "observed_date_range": "2026-09-06",
       "metric_definition": "Production readiness requires a complete exact-head release evidence bundle, not only source tests or workflow definitions.",
       "authorship": "release policy and current proof matrix",
       "public": true,
@@ -305,7 +305,7 @@
       "falsification_test": "Run the complete release checklist against a tagged artifact and reject any missing or stale gate evidence.",
       "missing_evidence": "Complete tagged release, evidence bundle, gate report, and exact CI records.",
       "downgrade_wording": "The current checkout is a hardening candidate, not proof that every release gate has passed.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     },
     {
       "id": "CL-011",
@@ -337,7 +337,7 @@
       "falsification_test": "Introduce a known vulnerable dependency or secret-shaped value and confirm the security workflow fails the job.",
       "missing_evidence": "A completed CI run against a tagged release showing the gate actually blocking, and a verified dynamic (DAST) scan result.",
       "downgrade_wording": "The gate is wired and unit/integration tested locally; it has not yet been exercised end-to-end against a real release.",
-      "review_after": "2026-10-04"
+      "review_after": "2026-10-06"
     }
   ]
 }
