@@ -2332,6 +2332,29 @@ def cmd_hook(args: Any) -> None:
     from verdict.memory_plane import MemoryPlane
 
     hook_cmd = getattr(args, "hook_command", None)
+    if hook_cmd == "claude-gate":
+        base_url = getattr(args, "base_url", "http://127.0.0.1:20128")
+        try:
+            cmd_catalog(
+                base_url=base_url,
+                management=True,
+                expected_rows=0,
+                freshness_seconds=3600,
+                db_path=None,
+                probe=False,
+                probe_limit=1,
+                probe_timeout=1.0,
+                output_json=True,
+            )
+        except SystemExit as exc:
+            if exc.code not in (0, None):
+                print(
+                    "Verdict blocked: catalog not qualified. Unknown is not healthy.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2) from exc
+        return
+
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     plane = MemoryPlane(db_path)
     gate = MemoryGate(plane)
@@ -2863,6 +2886,15 @@ def main() -> None:
     hook_status_p = hook_sub.add_parser("status", help="Show hook and MCP registration status")
     hook_status_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     hook_status_p.add_argument("--db-path", default=None, help="Shared memory database path")
+    hook_gate_p = hook_sub.add_parser(
+        "claude-gate",
+        help="Fail-closed catalog check for Claude Code / Codex SessionStart hooks (exit 2 if blocked)",
+    )
+    hook_gate_p.add_argument(
+        "--base-url",
+        default="http://127.0.0.1:20128",
+        help="OmniRoute or OpenAI-compatible gateway base URL",
+    )
 
     run_p = subparsers.add_parser("run", help="Route a single prompt/task (alias of route)")
     run_p.add_argument("task", help="Task description or prompt text")

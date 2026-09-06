@@ -11,7 +11,7 @@ Verdict sits between your AI coding tools and the models they use. It stops expe
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Golden path](#golden-path) · [vs LiteLLM](docs/guides/comparison.md) · [Unknown ≠ healthy](docs/guides/unknown-not-healthy.md) · [Quickstart](#quickstart) · [Verification](#verification) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation)
+[Golden path](#golden-path) · [Claude Code gate](docs/guides/coding-agent-gate.md) · [vs LiteLLM](docs/guides/comparison.md) · [Unknown ≠ healthy](docs/guides/unknown-not-healthy.md) · [Quickstart](#quickstart) · [Verification](#verification) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation)
 
 </div>
 
@@ -155,7 +155,7 @@ Python is the reference implementation. [verdict-node](https://github.com/mrnich
 | `route` · `run` · `simulate` · `compare` | Route a task, or forecast it before any paid call |
 | `models` · `inspect` · `catalog` · `detect` · `probe` | Inspect the qualified catalog and provider liveness |
 | `replay` · `failover-proof` · `stats` · `benchmark` | Reproduce a recorded run and measure behavior |
-| `memory` · `hook` · `mcp` · `serve` · `ui` | Memory plane, lifecycle hooks, MCP server, local UI |
+| `memory` · `hook` · `mcp` · `serve` · `ui` | Memory plane, Claude Code gate (`verdict hook claude-gate`), MCP, local UI |
 | `compat` · `plan` · `runtime` · `uninstall` | Contract gate, dry-run plan, ownership, reversible removal |
 
 ## Documentation
@@ -166,6 +166,7 @@ Python is the reference implementation. [verdict-node](https://github.com/mrnich
 | Golden path (install → live probe) | [`docs/guides/golden-path.md`](docs/guides/golden-path.md) |
 | Unknown ≠ healthy (fail-closed drops) | [`docs/guides/unknown-not-healthy.md`](docs/guides/unknown-not-healthy.md) |
 | vs LiteLLM / OpenRouter / Portkey | [`docs/guides/comparison.md`](docs/guides/comparison.md) |
+| Claude Code / Codex / Cursor gate | [`docs/guides/coding-agent-gate.md`](docs/guides/coding-agent-gate.md) |
 | Full CLI reference | [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) |
 | Architecture decisions | [`docs/adr/README.md`](docs/adr/README.md) |
 | Benchmarks and receipts | [`docs/benchmarks/`](docs/benchmarks/) |
