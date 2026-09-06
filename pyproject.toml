@@ -9,7 +9,7 @@ artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json", "schemas
 [project]
 name = "verdict-core"
 version = "0.2.0"
-description = "Policy-gated, availability-aware LLM routing control plane — deterministic safety floors, quantitative-trading-grade execution, closed-loop telemetry."
+description = "Fail-closed LLM routing control plane: cheapest qualified model, named drop reasons, receipts."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
