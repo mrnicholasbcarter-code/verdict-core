@@ -79,6 +79,22 @@ def test_management_catalog_adds_provider_projection_and_version() -> None:
     assert report.snapshot.provider_counts == {"example": 1}
 
 
+def test_expected_row_count_zero_qualifies_any_well_formed_catalog() -> None:
+    rows = [_row(f"provider/model-{index}") for index in range(50)]
+    report = qualify_catalog(
+        _public(rows),
+        source_url="http://127.0.0.1:20128/v1/models",
+        captured_at=NOW,
+        now=NOW,
+        expected_row_count=0,
+    )
+    assert report.passed is True
+    assert report.status == "qualified"
+    assert report.snapshot is not None
+    assert report.snapshot.row_count == 50
+    assert report.snapshot.expected_row_count == 0
+
+
 def test_schema_drift_is_unknown_and_partial_catalog_is_not_healthy() -> None:
     drift = qualify_catalog(
         {"items": []}, source_url="https://example.test/models", captured_at=NOW, now=NOW

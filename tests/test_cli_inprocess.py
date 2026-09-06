@@ -1106,6 +1106,37 @@ def test_cmd_catalog_fetches_and_reconciles_both_projections(
     assert output["projection_reconciliation"]["passed"] is True
 
 
+def test_cmd_catalog_fetch_timeout_is_named_and_not_a_pass(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    def mock_urlopen(request: object, timeout: float) -> object:
+        del request
+        assert timeout >= 30
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
+    with pytest.raises(SystemExit) as exited:
+        cli.cmd_catalog(
+            base_url="https://example.test",
+            management=True,
+            expected_rows=0,
+            freshness_seconds=3600,
+            db_path=None,
+            probe=False,
+            probe_limit=1,
+            probe_timeout=1.0,
+            output_json=True,
+        )
+    assert exited.value.code == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["passed"] is False
+    assert output["status"] == "unknown"
+    assert "catalog_fetch_timeout" in output["errors"]
+    assert "TimeoutError" in output["errors"]
+
+
 def test_cmd_catalog_fails_closed_when_management_projection_is_unavailable(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
