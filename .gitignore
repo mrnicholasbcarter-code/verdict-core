@@ -71,3 +71,10 @@ scripts/demo-results.json
 # Local packet store (runtime state, not source)
 .verdict/packets/
 .verdict/receipts.db*
+
+# Agent-workspace artifacts — never part of the published project
+evidence/
+exports/
+discovery/
+.mcp.json
+CLAUDE.md.backup-*
