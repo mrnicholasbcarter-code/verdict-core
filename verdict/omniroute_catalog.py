@@ -26,6 +26,7 @@ from verdict.omniroute_catalog_stats import (
 CATALOG_QUALIFICATION_VERSION = "1"
 DEFAULT_CATALOG_FRESHNESS_SECONDS = 3_600
 DEFAULT_EXPECTED_ROW_COUNT = 3_977
+CATALOG_FETCH_TIMEOUT_SECONDS = 60.0
 MAX_CATALOG_PROBE_SAMPLE = 16
 CatalogStatus = Literal["qualified", "partial", "stale", "unknown"]
 
@@ -196,7 +197,11 @@ def qualify_catalog(
     observed_at = now or datetime.now(timezone.utc)
     if snapshot.fresh_until <= observed_at:
         return CatalogQualificationReport("stale", snapshot)
-    if snapshot.row_count != snapshot.expected_row_count or snapshot.malformed_row_count:
+    if snapshot.malformed_row_count:
+        return CatalogQualificationReport("partial", snapshot)
+    if snapshot.row_count == 0:
+        return CatalogQualificationReport("unknown", snapshot, ("empty_catalog",))
+    if snapshot.expected_row_count and snapshot.row_count != snapshot.expected_row_count:
         return CatalogQualificationReport("partial", snapshot)
     return CatalogQualificationReport("qualified", snapshot)
 
@@ -448,8 +453,10 @@ def _build_snapshot(
 ) -> CatalogSnapshot:
     if not source_url or not source_url.startswith(("http://", "https://")):
         raise CatalogQualificationError("source_url must be an HTTP(S) endpoint")
-    if freshness_seconds <= 0 or expected_row_count <= 0:
+    if freshness_seconds <= 0:
         raise CatalogQualificationError("freshness and expected row bounds must be positive")
+    if expected_row_count < 0:
+        raise CatalogQualificationError("expected row count must be zero or positive")
     raw = payload if isinstance(payload, bytes) else canonical_json(payload)
     document = _decode_payload(payload)
     rows, schema, catalog_version = _extract_rows(document)

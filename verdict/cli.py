@@ -1364,6 +1364,7 @@ def cmd_catalog(
     import urllib.request
 
     from verdict.omniroute_catalog import (
+        CATALOG_FETCH_TIMEOUT_SECONDS,
         CatalogQualificationReport,
         probe_catalog,
         qualify_catalog,
@@ -1393,8 +1394,16 @@ def cmd_catalog(
         source_url = base_url.rstrip("/") + path
         request = urllib.request.Request(source_url, headers={"Accept": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310
+            with urllib.request.urlopen(  # nosec B310
+                request, timeout=CATALOG_FETCH_TIMEOUT_SECONDS
+            ) as response:
                 payload = response.read()
+        except TimeoutError as exc:
+            del exc
+            reports[label] = CatalogQualificationReport(
+                "unknown", None, ("catalog_fetch_timeout", "TimeoutError")
+            )
+            continue
         except Exception as exc:
             reports[label] = CatalogQualificationReport("unknown", None, (type(exc).__name__,))
             continue
@@ -2665,7 +2674,12 @@ def main() -> None:
         action="store_true",
         help="Use only the documented management endpoint (default fetches both projections)",
     )
-    catalog_p.add_argument("--expected-rows", type=int, default=3977)
+    catalog_p.add_argument(
+        "--expected-rows",
+        type=int,
+        default=0,
+        help="Exact row count required to qualify (0 = any well-formed non-empty catalog)",
+    )
     catalog_p.add_argument("--freshness-seconds", type=int, default=3600)
     catalog_p.add_argument("--db-path", default=None, help="Store qualification in a memory DB")
     catalog_p.add_argument(

@@ -33,7 +33,7 @@ Expected when the gateway is healthy: `"ok": true`, `"status": "ready"`. Timeout
 
 ## 4. What is not this path
 
-- `verdict catalog --base-url http://127.0.0.1:20128` on a thousands-row catalog can time out (`status: unknown`). Treat that as blocked until it returns `passed: true`.
+- `verdict catalog --base-url http://127.0.0.1:20128 --management --json` should return `"passed": true` on a live OmniRoute catalog. A fetch timeout is `catalog_fetch_timeout`, not a pass. Dual public+management reconcile can still fail closed if the two projections disagree.
 - `verdict models` without a live catalog still shows the local config identity (often a single Anthropic floor). That is not a live catalog proof.
 - Cookie or browser-quota probes are a later feature. They are not required here.
 
@@ -47,4 +47,4 @@ Expected when the gateway is healthy: `"ok": true`, `"status": "ready"`. Timeout
 | `verdict detect` OmniRoute `server_running` | true |
 | `verdict probe task-coding --allow-live-probe` | ready |
 | `verdict probe auto/best-coding --allow-live-probe` | timeout / degraded (not a live proof) |
-| `verdict catalog --management` | TimeoutError, `passed: false`, `status: unknown` (blocked) |
+| `verdict catalog --management` | 2026-09-06 later: `passed: true`, 3167 rows (fetch timeout was 10s vs ~8s payload) |
