@@ -1137,6 +1137,25 @@ def test_cmd_catalog_fetch_timeout_is_named_and_not_a_pass(
     assert "TimeoutError" in output["errors"]
 
 
+def test_cmd_hook_claude_gate_exits_2_when_catalog_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import argparse
+
+    def mock_urlopen(request: object, timeout: float) -> object:
+        del request, timeout
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
+    args = argparse.Namespace(
+        hook_command="claude-gate",
+        base_url="http://127.0.0.1:20128",
+    )
+    with pytest.raises(SystemExit) as exited:
+        cli.cmd_hook(args)
+    assert exited.value.code == 2
+
+
 def test_cmd_catalog_fails_closed_when_management_projection_is_unavailable(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
