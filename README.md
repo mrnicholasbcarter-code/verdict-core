@@ -11,7 +11,7 @@ Verdict sits between your AI coding tools and the models they use. It stops expe
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Golden path](#golden-path) · [Unknown ≠ healthy](docs/guides/unknown-not-healthy.md) · [Quickstart](#quickstart) · [Verification](#verification) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation)
+[Golden path](#golden-path) · [vs LiteLLM](docs/guides/comparison.md) · [Unknown ≠ healthy](docs/guides/unknown-not-healthy.md) · [Quickstart](#quickstart) · [Verification](#verification) · [Architecture](#architecture) · [CLI](#cli-reference) · [Docs](#documentation)
 
 </div>
 
@@ -67,7 +67,7 @@ An agent that sends every task to one frontier model pays frontier prices for wo
 
 The usual fix — a router that scores models and picks a winner — moves the problem rather than solving it. A scorer can be overridden by a confident heuristic, so a stale, unqualified, or policy-excluded model can still be selected. When a run misbehaves there is no artifact showing which candidates existed, which were excluded, and on what grounds.
 
-Verdict is a control plane rather than a recommendation engine: advisory signals rank the candidates that survive the gates, and never restore one the gates removed. Unknown availability is not a pass — [Unknown ≠ healthy](docs/guides/unknown-not-healthy.md).
+Verdict is a control plane rather than a recommendation engine: advisory signals rank the candidates that survive the gates, and never restore one the gates removed. Unknown availability is not a pass — [Unknown ≠ healthy](docs/guides/unknown-not-healthy.md). LiteLLM, OpenRouter, and Portkey route or catalog; Verdict admits or blocks — [comparison](docs/guides/comparison.md).
 
 ## Solution
 
@@ -165,6 +165,7 @@ Python is the reference implementation. [verdict-node](https://github.com/mrnich
 | End-to-end walkthrough | [`docs/USER_JOURNEY.md`](docs/USER_JOURNEY.md) |
 | Golden path (install → live probe) | [`docs/guides/golden-path.md`](docs/guides/golden-path.md) |
 | Unknown ≠ healthy (fail-closed drops) | [`docs/guides/unknown-not-healthy.md`](docs/guides/unknown-not-healthy.md) |
+| vs LiteLLM / OpenRouter / Portkey | [`docs/guides/comparison.md`](docs/guides/comparison.md) |
 | Full CLI reference | [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) |
 | Architecture decisions | [`docs/adr/README.md`](docs/adr/README.md) |
 | Benchmarks and receipts | [`docs/benchmarks/`](docs/benchmarks/) |
