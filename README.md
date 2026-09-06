@@ -2,7 +2,7 @@
 
 # Verdict
 
-Local-first, policy-gated control plane for LLM model selection. Routing is explicit and opt-in; the offline proof paths need no provider and no router.
+Verdict sits between your AI coding tools and the models they use. It stops expensive models from being used on simple tasks, and it only allows a costly model when the task needs it, your budget allows it, or your rules require it. Same task, same decision, with a written record of why a model was chosen or dropped.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -15,21 +15,29 @@ Local-first, policy-gated control plane for LLM model selection. Routing is expl
 
 </div>
 
-## Quick Setup
+## Install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh)
+pip install verdict-core
+verdict --help
 ```
 
-From a local checkout:
+Python 3.10+. No API key is required for the offline proof paths under [Verification](#verification).
+
+Contributor checkout:
 
 ```bash
-bash install.sh
+uv sync --extra dev            # or: pip install -e ".[dev]"
+uv run python -m verdict --help
 ```
 
-This installs `verdict-core`, probes for a local gateway (OmniRoute/9router on
-ports `20128`/`20129`), runs `verdict setup`, and verifies the install with
-`verdict check`.
+Optional convenience installer (review the script first; Linux/macOS):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh | bash
+```
+
+That script installs `verdict-core`, probes for a local gateway (OmniRoute/9router on ports `20128`/`20129`), runs `verdict setup`, and verifies with `verdict check`.
 
 ## Problem
 
@@ -63,25 +71,16 @@ Four properties hold by construction:
 - **Opaque references are not candidates.** `auto/*`-style refs resolve to an unknown model at call time, so they are dropped rather than gambled on.
 - **An unreachable surface produces `blocked`, never a pass.** Fixture data cannot satisfy a live proof.
 
-## Install
-
-```bash
-uv sync --extra dev            # or: pip install -e ".[dev]"
-uv run python -m verdict --help
-```
-
-Python 3.10+. No API key, provider account, or network access is required for anything under [Verification](#verification).
-
 ## Quickstart
 
 ```bash
-uv run python -m verdict setup        # write local config
-uv run python -m verdict models       # qualified catalog with drop reasons
-uv run python -m verdict simulate "refactor the auth module"
-uv run python -m verdict route "refactor the auth module"
+verdict setup        # write local config
+verdict models       # qualified catalog with drop reasons
+verdict simulate "refactor the auth module"
+verdict route "refactor the auth module"
 ```
 
-`simulate` forecasts tokens, cost, risk, and model with no paid call. `route` executes.
+From a contributor checkout, prefix with `uv run python -m`. `simulate` forecasts tokens, cost, risk, and model with no paid call. `route` executes.
 
 ## Verification
 
@@ -106,11 +105,11 @@ uv run python -m verdict failover-proof
 uv run python -m verdict replay <session>
 ```
 
-**Test and gate status.** 138 test modules; CI enforces a 70% coverage floor, `ruff check`, `ruff format --check`, `mypy verdict --strict`, CodeQL, and OSV scanning, none of them advisory. Evidence index: [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md). Release gates: [`ACCEPTANCE_GATES.md`](ACCEPTANCE_GATES.md).
+**Test and gate status.** 157 test modules; CI enforces a 70% coverage floor, `ruff check`, `ruff format --check`, `mypy verdict --strict`, CodeQL, and OSV scanning, none of them advisory. Evidence index: [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md). Release gates: [`ACCEPTANCE_GATES.md`](ACCEPTANCE_GATES.md).
 
 ## Architecture
 
-Decisions live in [`docs/adr/`](docs/adr/) — 27 numbered records, indexed in [`docs/adr/README.md`](docs/adr/README.md). Start with these:
+Decisions live in [`docs/adr/`](docs/adr/) — 29 numbered records, indexed in [`docs/adr/README.md`](docs/adr/README.md). Start with these:
 
 | Area | Record |
 | --- | --- |
