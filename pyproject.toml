@@ -36,7 +36,7 @@ classifiers = [
 
 [project.optional-dependencies]
 server = ["fastapi>=0.141.1", "uvicorn>=0.52.4"]
-dashboard = ["streamlit>=1.30", "plotly>=5.18", "pandas>=2.3.3"]
+dashboard = ["streamlit>=1.63.0", "plotly>=5.18", "pandas>=2.3.3"]
 all = ["streamlit", "plotly", "pandas"]
 dev = [
     "pyopenssl>=26.4.0",
