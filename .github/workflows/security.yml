@@ -37,7 +37,7 @@ jobs:
 
       - name: Upload memory boundary evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: memory-boundary-results
           path: memory-boundary-results.xml
@@ -49,7 +49,7 @@ jobs:
 
       - name: Upload privacy evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: privacy-results
           path: privacy-results.xml
@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload pip-audit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pip-audit-results
           path: pip-audit-results.json
@@ -72,7 +72,7 @@ jobs:
 
       - name: Upload bandit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bandit-results
           path: bandit-results.json
@@ -116,7 +116,7 @@ jobs:
 
       - name: Upload npm audit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-audit-results
           path: npm-audit-results.json
@@ -142,7 +142,7 @@ jobs:
         run: uv run cyclonedx-py environment --output-reproducible -o sbom-python.cdx.json
 
       - name: Upload Python SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-python
           path: sbom-python.cdx.json
@@ -167,7 +167,7 @@ jobs:
         run: npx --no-install @cyclonedx/cyclonedx-npm --output-reproducible --spec-version 1.6 --omit dev --output-file sbom-node.cdx.json
 
       - name: Upload Node SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-node
           path: sbom-node.cdx.json
@@ -223,7 +223,7 @@ jobs:
 
       - name: Upload dynamic-check evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dynamic-check-results
           path: report_json.json
