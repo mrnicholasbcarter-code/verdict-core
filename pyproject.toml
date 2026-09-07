@@ -18,7 +18,7 @@ keywords = ["llm", "routing", "ai", "control-plane", "safety", "openai", "anthro
 dependencies = [
     "httpx>=0.25",
     "PyYAML>=6.0",
-    "rich>=13.0.0",
+    "rich>=15.0.0",
     "defusedxml>=0.7.1",
 ]
 classifiers = [
