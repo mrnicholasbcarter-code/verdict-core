@@ -51,7 +51,7 @@ dev = [
     "types-jsonschema>=4.23",
     "types-defusedxml>=0.7.0",
     "code-review-graph>=2.3.7",
-    "cyclonedx-bom>=4.6",
+    "cyclonedx-bom>=7.3.1",
 ]
 
 [project.scripts]
