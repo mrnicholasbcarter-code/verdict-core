@@ -6,7 +6,7 @@ opened and reproduced.
 
 | Audience | Proof asset | What it demonstrates | Boundary |
 | --- | --- | --- | --- |
-| Hiring manager | [Credential-free quickstart](../../README.md#run-the-credential-free-flagship-quickstart) | A deterministic local decision flow and explicit hard-gate exclusions | It is a fixture, not live provider execution |
+| Hiring manager | [Credential-free quickstart](../../README.md#run-the-credential-free-flagship-quickstart) and [Verdict case study](VERDICT_PROOF_CASE_STUDY.md) | A deterministic local decision flow, explicit hard-gate exclusions, and the engineering boundary | It is a fixture, not live provider execution |
 | Platform engineer | [Capability passports](../CAPABILITY_PASSPORTS.md) and [qualification reports](../QUALIFICATION_REPORTS.md) | Exact route identity, provenance, expiry, redaction, and fail-closed admission | A report projects existing evidence; it does not create live evidence |
 | Reliability/security reviewer | [Public evidence index](../proof/EVIDENCE_INDEX.md) | Traceability from claims to source, tests, schemas, and limitations | Release readiness remains partial until an exact tagged bundle exists |
 | AI platform client | [AI Gateway Assurance Audit](AI_GATEWAY_ASSURANCE_AUDIT.md) | A concrete review scope, deliverables, inputs, exclusions, and handoff | Customer-specific provider findings require customer-authorized evidence |

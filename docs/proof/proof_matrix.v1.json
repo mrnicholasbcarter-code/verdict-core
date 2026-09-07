@@ -4,7 +4,7 @@
   "repository": "mrnicholasbcarter-code/verdict-core",
   "commit": "7dc87a36aaca702a8d7e3eb7bb9de27d9f84be7e",
   "claim_freeze_date": "2026-09-06",
-  "review_after": "2026-10-06",
+  "review_after": "2026-10-07",
   "status_vocabulary": [
     "blocked",
     "not_started",
