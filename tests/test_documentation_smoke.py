@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
@@ -20,6 +22,22 @@ JOURNEY_COMMANDS = (
     "verdict failover-proof",
     "verdict replay",
 )
+README_REQUIRED_ORDER = (
+    "The LLM router that says no",
+    "## Install",
+    "## Quick start",
+    "Receipt: fixture:issue-35 (deterministic_fixture)",
+    "## Cost comparison",
+    "$0.16 routed",
+    "$0.52 baseline",
+    "## Architecture",
+)
+
+
+def _markdown_slug(heading: str) -> str:
+    value = heading.strip().lower()
+    value = re.sub(r"[^\w\s-]", "", value)
+    return re.sub(r"[\s-]+", "-", value).strip("-")
 
 
 def _isolated_env(tmp_path: Path) -> dict[str, str]:
@@ -86,6 +104,46 @@ def test_documented_commands_are_present_and_maturity_is_truthful() -> None:
         assert status in journey
     assert "3500+ models" not in readme
     assert "OMNIROUTE (Intelligent Model Router)" not in readme
+    assert "Deterministic mock — no provider spend." in readme
+    assert "These are estimates, not observed invoices." in readme
+    assert "Context packing — dated live observation, not offline proof." in readme
+    assert "A blocked or skipped live run makes no lift claim." in readme
+    assert "Deterministic mock — no provider spend." in readme
+    assert "These are estimates, not observed invoices." in readme
+    assert "Context packing — dated live observation, not offline proof." in readme
+    assert "A blocked or skipped live run makes no lift claim." in readme
+
+
+def test_readme_recruiter_path_is_ordered_and_local_links_resolve() -> None:
+    readme_path = Path("README.md")
+    readme = readme_path.read_text(encoding="utf-8")
+
+    offsets = [readme.index(marker) for marker in README_REQUIRED_ORDER]
+    assert offsets == sorted(offsets)
+
+    install_section = readme.split("## Install", 1)[1].split("## Quick start", 1)[0]
+    proof_section = readme.split("## Quick start", 1)[1].split("## Live gateway checks", 1)[0]
+    assert install_section.count("```bash") == 1
+    assert "pip install verdict-core" in install_section
+    assert "verdict quickstart --non-interactive --dry-run" in proof_section
+
+    markdown_links = re.findall(r"(?<!!)\[[^]]+\]\(([^)]+)\)", readme)
+    for destination in markdown_links:
+        if destination.startswith(("http://", "https://", "mailto:")):
+            continue
+        target_name, _, fragment = destination.partition("#")
+        target = readme_path if not target_name else readme_path.parent / unquote(target_name)
+        assert target.exists(), f"README link target does not exist: {destination}"
+        if fragment:
+            assert target.is_file(), f"README fragment target is not a file: {destination}"
+            target_text = target.read_text(encoding="utf-8")
+            headings = {
+                _markdown_slug(match.group(1))
+                for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", target_text, re.MULTILINE)
+            }
+            assert unquote(fragment).lower() in headings, (
+                f"README link fragment does not exist: {destination}"
+            )
 
 
 def test_detect_offline_does_not_use_discovery_seams(

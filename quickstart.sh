@@ -52,4 +52,5 @@ else
 fi
 
 echo "🚀 Verdict setup complete!"
-echo "Run 'verdict route \"hello world\"' to verify."
+echo "Running credential-free verification..."
+verdict quickstart --non-interactive --dry-run

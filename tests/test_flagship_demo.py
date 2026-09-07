@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -66,9 +67,21 @@ def test_cli_output_ignores_provider_environment_variables() -> None:
     assert baseline.stdout == with_env.stdout
 
 
-def test_packaged_demo_matches_source_wrapper() -> None:
-    assert run_demo() == build_demo_result()
-    assert "Status: PASS" in render_report(run_demo())
+def test_readme_quickstart_output_matches_packaged_report() -> None:
+    result = run_demo()
+    assert result == build_demo_result()
+    report = render_report(result)
+    assert "Receipt: fixture:issue-35 (deterministic_fixture)" in report
+    assert "Status: PASS" in report
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    match = re.search(
+        r"The fixture makes one deterministic routing decision.*?```text\n(.*?)```",
+        readme,
+        flags=re.DOTALL,
+    )
+    assert match is not None, "README quickstart output block is missing"
+    assert match.group(1) == report
 
 
 def test_trusted_change_report_demo_accepts_and_is_deterministic() -> None:
