@@ -1,0 +1,14 @@
+Script started on 2026-09-07 00:09:10+00:00 [COMMAND="verdict quickstart --non-interactive --dry-run" <not executed on terminal>]
+Verdict credential-free quickstart
+===================================
+Task: Add structured output to the invoice parser
+Required capabilities: structured_output, tools
+Selected route: demo/frontier-tools
+Excluded candidates: 3
+Receipt: fixture:issue-35 (deterministic_fixture)
+Status: PASS
+- demo/no-tools: missing capability: tools
+- demo/quota-empty: quota exhausted
+- demo/unverified: health unknown
+
+Script done on 2026-09-07 00:09:11+00:00 [COMMAND_EXIT_CODE="0"]

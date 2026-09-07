@@ -8,6 +8,12 @@
 
 **Input**: User story from GitHub issue #455: make Verdict understandable in a 90-second skim, provide a credential-free proof demo with named drop reasons and a receipt identifier, keep the quickstart script aligned, and remove stale public metadata.
 
+## Clarifications
+
+### Session 2026-09-06
+
+- Q: May this existing PR keep its Spec Kit records in `specs/455-recruiter-ready-readme/`, where the repository tooling already resolves them? → A: Keep the existing location. The user approved this story-specific exception to the workspace `.specify/specs/` convention.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Understand and run the flagship proof (Priority: P1)

@@ -38,6 +38,8 @@ The fixture makes one deterministic routing decision, selects `demo/frontier-too
 ```text
 Verdict credential-free quickstart
 ===================================
+Task: Add structured output to the invoice parser
+Required capabilities: structured_output, tools
 Selected route: demo/frontier-tools
 Excluded candidates: 3
 Receipt: fixture:issue-35 (deterministic_fixture)
@@ -47,7 +49,7 @@ Status: PASS
 - demo/unverified: health unknown
 ```
 
-It does not call a provider, read credentials, or write state. The executable source and regression tests are [`verdict/flagship_demo.py`](verdict/flagship_demo.py) and [`tests/test_flagship_demo.py`](tests/test_flagship_demo.py).
+It does not call a provider, read credentials, or write state. The executable source and regression tests are [`verdict/flagship_demo.py`](verdict/flagship_demo.py) and [`tests/test_flagship_demo.py`](tests/test_flagship_demo.py). The [terminal recording](docs/proof/issue-455-quickstart.typescript) captures this command from an isolated wheel installation.
 
 For a contributor checkout:
 
