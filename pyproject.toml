@@ -35,7 +35,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-server = ["fastapi>=0.109.0", "uvicorn>=0.27.0"]
+server = ["fastapi>=0.141.1", "uvicorn>=0.27.0"]
 dashboard = ["streamlit>=1.30", "plotly>=5.18", "pandas>=2.0"]
 all = ["streamlit", "plotly", "pandas"]
 dev = [
