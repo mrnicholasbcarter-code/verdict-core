@@ -12,10 +12,11 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from time import time
 from typing import Any, ClassVar, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 CONTEXT_SCHEMA_VERSION = "1"
 SlotType = Literal[
@@ -32,6 +33,9 @@ SlotType = Literal[
     "history",
 ]
 DecisionAction = Literal["include", "exclude", "transform"]
+ContextStatus = Literal[
+    "active", "observed", "stale", "superseded", "disputed", "missing", "unavailable"
+]
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*\S+"),
@@ -83,6 +87,15 @@ def _timestamp(value: Any, name: str) -> str:
     except ValueError as exc:
         raise ContextContractError(f"{name} must be an ISO-8601 timestamp") from exc
     return result
+
+
+def _safe_source_uri(value: str) -> str:
+    """Render provenance without exposing credentials or query secrets."""
+    parsed = urlsplit(value)
+    if parsed.scheme and parsed.netloc:
+        hostname = parsed.hostname or ""
+        return urlunsplit((parsed.scheme, hostname, parsed.path, "", ""))
+    return value.split("?", 1)[0].split("#", 1)[0]
 
 
 def _tuple_strings(value: Any, name: str) -> tuple[str, ...]:
@@ -242,6 +255,7 @@ class ContextUnit:
     revision: str = "unknown"
     span: Mapping[str, int] | None = None
     observed_at: str = field(default_factory=_now_iso)
+    retrieved_at: str | None = None
     valid_from: str | None = None
     valid_until: str | None = None
     trust: str = "unverified"
@@ -250,6 +264,7 @@ class ContextUnit:
     tenant_scope: str = "default"
     project_scope: str = "default"
     raw: bool = True
+    status: ContextStatus = "active"
     transform_lineage: tuple[str, ...] = ()
     token_count: int | None = None
     cache_key: str | None = None
@@ -275,6 +290,9 @@ class ContextUnit:
             raise ContextContractError("slot_type is invalid")
         _require_digest(self.source_digest, "source_digest")
         _timestamp(self.observed_at, "observed_at")
+        if self.retrieved_at is None:
+            object.__setattr__(self, "retrieved_at", self.observed_at)
+        _timestamp(self.retrieved_at, "retrieved_at")
         for name in ("valid_from", "valid_until"):
             value = getattr(self, name)
             if value is not None:
@@ -297,6 +315,16 @@ class ContextUnit:
             _require_string(self.cache_key, "cache_key")
         if not isinstance(self.raw, bool):
             raise ContextContractError("raw must be boolean")
+        if self.status not in {
+            "active",
+            "observed",
+            "stale",
+            "superseded",
+            "disputed",
+            "missing",
+            "unavailable",
+        }:
+            raise ContextContractError("status is invalid")
         if not 0 <= self.confidence <= 1:
             raise ContextContractError("confidence must be between 0 and 1")
         _tuple_strings(self.transform_lineage, "transform_lineage")
@@ -322,6 +350,7 @@ class ContextUnit:
             "revision": self.revision,
             "span": dict(self.span) if self.span is not None else None,
             "observed_at": self.observed_at,
+            "retrieved_at": self.retrieved_at,
             "valid_from": self.valid_from,
             "valid_until": self.valid_until,
             "trust": self.trust,
@@ -330,6 +359,7 @@ class ContextUnit:
             "tenant_scope": self.tenant_scope,
             "project_scope": self.project_scope,
             "raw": self.raw,
+            "status": self.status,
             "transform_lineage": list(self.transform_lineage),
             "token_count": self.effective_token_count,
             "cache_key": self.cache_key,
@@ -342,8 +372,13 @@ class ContextUnit:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ContextUnit:
+        # v1 artifacts written before lifecycle metadata was introduced remain
+        # readable with conservative defaults.
+        migrated = dict(value)
+        migrated.setdefault("retrieved_at", migrated.get("observed_at"))
+        migrated.setdefault("status", "active")
         payload = _strict(
-            value,
+            migrated,
             {
                 "schema_version",
                 "unit_id",
@@ -355,6 +390,7 @@ class ContextUnit:
                 "revision",
                 "span",
                 "observed_at",
+                "retrieved_at",
                 "valid_from",
                 "valid_until",
                 "trust",
@@ -363,6 +399,7 @@ class ContextUnit:
                 "tenant_scope",
                 "project_scope",
                 "raw",
+                "status",
                 "transform_lineage",
                 "token_count",
                 "cache_key",
@@ -677,6 +714,15 @@ class ContextPackCompiler:
         "examples": 8,
         "history": 9,
     }
+    _STATUS_PRECEDENCE: ClassVar[dict[str, int]] = {
+        "active": 0,
+        "observed": 1,
+        "stale": 2,
+        "superseded": 3,
+        "disputed": 4,
+        "missing": 5,
+        "unavailable": 6,
+    }
 
     def __init__(self, default_token_budget: int = 4096) -> None:
         self.default_token_budget = default_token_budget
@@ -686,13 +732,19 @@ class ContextPackCompiler:
         units: list[ContextUnit] | tuple[ContextUnit, ...],
         plan: ContextPlan,
         pack_id: str | None = None,
+        evaluation_at: str | None = None,
     ) -> ContextPack:
         if not isinstance(plan, ContextPlan):
             raise ContextContractError("plan must be a ContextPlan")
+        # Creation time is local observation metadata, not logical context
+        # identity. Normalize it at the compilation boundary so equivalent
+        # inputs from separate processes produce the same artifact.
+        normalized_units = tuple(replace(unit, created_at=0.0) for unit in units)
         sorted_units = sorted(
-            units,
+            normalized_units,
             key=lambda unit: (
                 self._PRECEDENCE.get(unit.slot_type, 99),
+                self._STATUS_PRECEDENCE[unit.status],
                 -unit.confidence,
                 -unit.created_at,
                 unit.key,
@@ -722,7 +774,10 @@ class ContextPackCompiler:
         decisions: list[ContextDecision] = []
         current_tokens = 0
         truncated = 0
-        now = datetime.now(timezone.utc)
+        evaluation_timestamp = evaluation_at or plan.created_at
+        now = datetime.fromisoformat(
+            _timestamp(evaluation_timestamp, "evaluation_at").replace("Z", "+00:00")
+        )
         for unit in sorted_units:
             safe, safety_reason = _safe_content(unit.content)
             if not safe:
@@ -731,6 +786,34 @@ class ContextPackCompiler:
                         unit.unit_id,
                         "exclude",
                         safety_reason,
+                        unit.effective_token_count,
+                        0,
+                        "not_applicable",
+                        unit.source_uri,
+                    )
+                )
+                truncated += 1
+                continue
+            if unit.status in {"missing", "unavailable"}:
+                decisions.append(
+                    ContextDecision(
+                        unit.unit_id,
+                        "exclude",
+                        f"source_{unit.status}",
+                        unit.effective_token_count,
+                        0,
+                        "not_applicable",
+                        unit.source_uri,
+                    )
+                )
+                truncated += 1
+                continue
+            if unit.status in {"superseded", "disputed", "stale"}:
+                decisions.append(
+                    ContextDecision(
+                        unit.unit_id,
+                        "exclude",
+                        f"claim_{unit.status}",
                         unit.effective_token_count,
                         0,
                         "not_applicable",
@@ -774,7 +857,10 @@ class ContextPackCompiler:
                 truncated += 1
                 continue
             content = sanitize_injection_patterns(unit.content)
-            header = f"[{unit.slot_type.upper()}:{unit.key} (source: {unit.source_uri})]"
+            header = (
+                f"[{unit.slot_type.upper()}:{unit.key} "
+                f"(source: {_safe_source_uri(unit.source_uri)})]"
+            )
             rendered = f"{header}\n{content}\n"
             cost = estimate_tokens(rendered)
             if current_tokens + cost > plan.input_token_budget:
@@ -834,7 +920,7 @@ class ContextPackCompiler:
             slots=tuple(included_slots),
             conflicts=tuple(conflicts),
             truncated_count=truncated,
-            created_at=time(),
+            created_at=max((unit.created_at for unit in sorted_units), default=0.0),
             plan_id=plan.plan_id,
             plan_digest=plan.digest,
             candidate_id=plan.candidate_id,
@@ -879,6 +965,7 @@ __all__ = [
     "ContextPackSlot",
     "ContextPlan",
     "ContextReceipt",
+    "ContextStatus",
     "ContextUnit",
     "DecisionAction",
     "SlotType",

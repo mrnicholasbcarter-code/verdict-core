@@ -369,4 +369,113 @@ describe("Contract Validation", () => {
       expect((parsed as ExecutionEnvelope).eligibility_decision).toEqual({ admitted: ["gpt-4"], reason: "test" });
     });
   });
+
+  describe("ContextPack", () => {
+    const unit = {
+      schema_version: "1",
+      unit_id: "unit-1",
+      slot_type: "memory",
+      key: "claim",
+      content: "verified context",
+      source_uri: "urn:source:1",
+      source_digest: `sha256:${"a".repeat(64)}`,
+      revision: "r1",
+      span: null,
+      observed_at: "2026-07-31T00:00:00Z",
+      retrieved_at: "2026-07-31T00:01:00Z",
+      valid_from: null,
+      valid_until: null,
+      trust: "verified",
+      authority: "observed",
+      sensitivity: "public",
+      tenant_scope: "default",
+      project_scope: "default",
+      raw: false,
+      status: "active",
+      transform_lineage: [],
+      token_count: 4,
+      cache_key: null,
+      confidence: 1,
+      created_at: 1,
+    };
+    const pack = {
+      schema_version: "1",
+      pack_id: "pack-1",
+      plan_id: "plan-1",
+      plan_digest: `sha256:${"b".repeat(64)}`,
+      candidate_id: "route-1",
+      tenant_scope: "default",
+      project_scope: "default",
+      compiled_prompt: "context",
+      used_tokens: 2,
+      token_budget: 10,
+      slots: [],
+      units: [unit],
+      conflicts: [],
+      decisions: [],
+      truncated_count: 0,
+      created_at: 1,
+      receipt_id: "receipt:pack-1",
+    };
+
+    it("parses lifecycle metadata and rejects unknown fields", () => {
+      const parsed = parseContract("context_pack", pack);
+      expect(parsed.units[0]?.retrieved_at).toBe("2026-07-31T00:01:00Z");
+      expect(parsed.units[0]?.status).toBe("active");
+      expect(() => parseContract("context_pack", { ...pack, unknown: true })).toThrow(
+        ContractValidationError,
+      );
+    });
+
+    it("migrates legacy units and enforces ISO timestamps", () => {
+      const legacyUnit = { ...unit };
+      delete (legacyUnit as Partial<typeof unit>).retrieved_at;
+      delete (legacyUnit as Partial<typeof unit>).status;
+      const parsed = parseContract("context_pack", {
+        ...pack,
+        units: [legacyUnit],
+      });
+      expect(parsed.units[0]?.retrieved_at).toBe(unit.observed_at);
+      expect(parsed.units[0]?.status).toBe("active");
+      expect(() =>
+        parseContract("context_pack", {
+          ...pack,
+          units: [{ ...unit, observed_at: "not-a-date" }],
+        }),
+      ).toThrow(ContractValidationError);
+    });
+
+    it("parses the full Python-compatible artifact", () => {
+      const artifact = {
+        schema_version: "1",
+        plan: {
+          schema_version: "1",
+          plan_id: "plan-1",
+          candidate_id: "route-1",
+          tenant_scope: "default",
+          project_scope: "default",
+          token_budget: 10,
+          input_token_budget: 10,
+          output_token_reserve: 0,
+          tool_token_reserve: 0,
+          required_slot_types: [],
+          retrieval_algorithm: "fixture",
+          retrieval_version: "1",
+          created_at: "2026-07-31T00:00:00Z",
+        },
+        unit,
+        pack,
+        receipt: {
+          schema_version: "1",
+          receipt_id: "receipt:pack-1",
+          plan_digest: `sha256:${"b".repeat(64)}`,
+          pack_digest: `sha256:${"c".repeat(64)}`,
+          decisions: [],
+          unresolved_uncertainties: [],
+          created_at: "2026-07-31T00:01:00Z",
+        },
+      };
+      expect(parseContract("context_pack_artifact", artifact).pack.pack_id).toBe("pack-1");
+    });
+  });
 });
