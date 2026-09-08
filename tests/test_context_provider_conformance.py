@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from verdict.memory_adapters import AdapterDescriptor, build_default_adapter_registry
+from verdict.memory_adapters import (
+    AdapterDescriptor,
+    build_default_adapter_registry,
+    hydrate_context_records,
+    load_context_records,
+)
 from verdict.memory_gate import AuthorityLevel, MemoryGate, MemoryWriteRequest
 from verdict.memory_plane import MemoryPlane, MemoryRecord
 
@@ -151,3 +156,65 @@ def test_staleness_uses_recorded_timestamp_not_live_probe(tmp_path, monkeypatch)
         plane.put(MemoryRecord("r1", "docs", "k1", "content here", "document", created_at=now))
         results = plane.search_ranked("content", ttl_lookup={"document": 60.0}, now=now)
         assert results[0].stale is False
+
+
+def test_hydration_emits_canonical_units_and_preserves_provenance() -> None:
+    record = MemoryRecord(
+        "r1",
+        "docs",
+        "claim",
+        "context",
+        "document",
+        created_at=1_000,
+        updated_at=1_000,
+        confidence=0.8,
+        provenance={"source_uri": "docs/guide.md", "observed_at": 1_000, "revision": "r7"},
+    )
+
+    result = hydrate_context_records(
+        [record], provider_id="fixture", search_mode="semantic", now=1_001
+    )
+
+    assert result.status == "available"
+    assert result.omissions == ()
+    unit = result.units[0]
+    assert unit.source_uri == "docs/guide.md"
+    assert unit.observed_at == "1970-01-01T00:16:40+00:00"
+    assert unit.revision == "r7"
+    assert unit.confidence == 0.8
+    assert unit.transform_lineage == ("provider:fixture", "search:semantic")
+
+
+def test_hydration_reports_malformed_and_stale_results() -> None:
+    stale = MemoryRecord(
+        "stale",
+        "docs",
+        "old",
+        "old context",
+        "document",
+        created_at=1_000,
+        updated_at=1_000,
+        expires_at=1_001,
+    )
+    malformed = {"record_id": "missing-required-fields"}
+
+    result = hydrate_context_records([stale, malformed], provider_id="fixture", now=1_002)
+
+    assert result.status == "available"
+    assert result.units[0].status == "stale"
+    assert result.omissions[0].status == "malformed"
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [(TimeoutError("provider took too long"), "timeout"), (ValueError("bad payload"), "malformed")],
+)
+def test_provider_failures_become_explicit_omissions(error: Exception, status: str) -> None:
+    def loader():
+        raise error
+
+    result = load_context_records(loader, provider_id="fixture")
+
+    assert result.status == status
+    assert result.units == ()
+    assert result.omissions[0].status == status

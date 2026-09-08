@@ -14,16 +14,24 @@ import os
 import re
 import stat
 import tempfile
-from collections.abc import Iterable, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
+
+from verdict.context_pack import ContextStatus, ContextUnit
+from verdict.memory_plane import MemoryRecord
 
 ADAPTER_PROTOCOL_VERSION = "1"
 MANIFEST_VERSION = "1"
 DEFAULT_MAX_BYTES = 1_048_576
 DEFAULT_MAX_RECORDS = 10_000
 AdapterStatus = Literal["available", "degraded", "unavailable", "unknown"]
+ProviderResultStatus = Literal[
+    "available", "degraded", "unavailable", "timeout", "malformed", "stale", "missing"
+]
 
 _SECRET_KEY = re.compile(
     r"(?:api[_-]?key|access[_-]?key|secret|password|passwd|token|credential|authorization|cookie)",
@@ -48,6 +56,149 @@ class MemoryAdapter(Protocol):
     def import_records(
         self, records: Iterable[Mapping[str, Any]], *, options: Mapping[str, Any]
     ) -> Mapping[str, Any]: ...
+
+
+@dataclass(frozen=True)
+class ContextOmission:
+    """Bounded, provider-neutral explanation for omitted context."""
+
+    provider_id: str
+    status: ProviderResultStatus
+    reason: str
+    source_uri: str | None = None
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "provider_id": self.provider_id,
+            "status": self.status,
+            "reason": self.reason,
+            "source_uri": self.source_uri,
+        }
+
+
+@dataclass(frozen=True)
+class ContextProviderResult:
+    """Canonical hydration result shared by every memory provider."""
+
+    provider_id: str
+    status: ProviderResultStatus
+    units: tuple[ContextUnit, ...] = ()
+    omissions: tuple[ContextOmission, ...] = ()
+    search_mode: str = "unspecified"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider_id": self.provider_id,
+            "status": self.status,
+            "search_mode": self.search_mode,
+            "units": [unit.to_dict() for unit in self.units],
+            "omissions": [omission.to_dict() for omission in self.omissions],
+        }
+
+
+def hydrate_context_records(
+    records: Iterable[Any],
+    *,
+    provider_id: str,
+    search_mode: str = "lexical",
+    max_units: int = 100,
+    now: float | None = None,
+) -> ContextProviderResult:
+    """Normalize provider records into bounded, provenance-aware context units."""
+    if not provider_id or not search_mode or max_units <= 0:
+        raise ValueError("provider_id, search_mode, and max_units must be valid")
+    evaluation_time = time.time() if now is None else now
+    units: list[ContextUnit] = []
+    omissions: list[ContextOmission] = []
+    for raw in records:
+        if len(units) >= max_units:
+            omissions.append(ContextOmission(provider_id, "missing", "result_limit_exceeded"))
+            break
+        try:
+            record = raw if isinstance(raw, MemoryRecord) else _memory_record_from_mapping(raw)
+            provenance = dict(record.provenance or {})
+            observed = provenance.get("observed_at", record.created_at)
+            if isinstance(observed, (int, float)):
+                observed_at = datetime.fromtimestamp(observed, tz=timezone.utc).isoformat()
+            elif isinstance(observed, str):
+                observed_at = observed
+            else:
+                raise ValueError("invalid observation timestamp")
+            digest = record.content_hash
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                digest = hashlib.sha256(record.content.encode("utf-8")).hexdigest()
+            unit_status: ContextStatus = (
+                "stale"
+                if record.expires_at is not None and record.expires_at <= evaluation_time
+                else "superseded"
+                if record.status == "superseded"
+                else "active"
+            )
+            units.append(
+                ContextUnit(
+                    unit_id=f"{provider_id}:{record.record_id}",
+                    slot_type="memory",
+                    key=record.key,
+                    content=record.content,
+                    source_uri=str(provenance.get("source_uri", f"memory:{record.record_id}")),
+                    source_digest=f"sha256:{digest}",
+                    revision=str(
+                        provenance.get("revision", record.updated_at or record.created_at)
+                    ),
+                    observed_at=observed_at,
+                    valid_until=(
+                        datetime.fromtimestamp(record.expires_at, tz=timezone.utc).isoformat()
+                        if record.expires_at is not None
+                        else None
+                    ),
+                    trust=record.trust,
+                    authority=record.authority,
+                    sensitivity=record.sensitivity,
+                    tenant_scope=str(provenance.get("tenant_scope", "default")),
+                    project_scope=str(provenance.get("project_scope", "default")),
+                    status=unit_status,
+                    confidence=record.confidence,
+                    transform_lineage=(f"provider:{provider_id}", f"search:{search_mode}"),
+                )
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            omissions.append(ContextOmission(provider_id, "malformed", _safe_error(exc)))
+    result_status: ProviderResultStatus = "malformed" if omissions and not units else "available"
+    return ContextProviderResult(
+        provider_id=provider_id,
+        status=result_status,
+        units=tuple(units),
+        omissions=tuple(omissions),
+        search_mode=search_mode,
+    )
+
+
+def load_context_records(
+    loader: Callable[[], Iterable[Any]],
+    *,
+    provider_id: str,
+    search_mode: str = "lexical",
+    max_units: int = 100,
+) -> ContextProviderResult:
+    """Execute a provider boundary and convert retrieval failures to omissions."""
+    try:
+        return hydrate_context_records(
+            loader(), provider_id=provider_id, search_mode=search_mode, max_units=max_units
+        )
+    except TimeoutError:
+        return ContextProviderResult(
+            provider_id,
+            "timeout",
+            omissions=(ContextOmission(provider_id, "timeout", "provider_timeout"),),
+            search_mode=search_mode,
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        return ContextProviderResult(
+            provider_id,
+            "malformed",
+            omissions=(ContextOmission(provider_id, "malformed", _safe_error(exc)),),
+            search_mode=search_mode,
+        )
 
 
 class LocalManifestAdapter:
