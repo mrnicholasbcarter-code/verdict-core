@@ -1,0 +1,32 @@
+{
+  "schema_version": "1",
+  "transitions": [],
+  "freshness_policies": [
+    {
+      "source_type": "fixture",
+      "ttl_seconds": 60,
+      "clock_skew_seconds": 5
+    }
+  ],
+  "claims": [
+    {
+      "schema_version": "1",
+      "claim_id": "claim-disputed",
+      "subject": "route",
+      "text_hash": "sha256:d5f3e4bb6d5b3444d4d3d2701d442fd9122b68fadd2f4efab7844200fefc9e40",
+      "status": "disputed",
+      "observed_at": "2026-09-08T07:00:00Z",
+      "verified_at": null,
+      "confidence": 0.4,
+      "source_type": "fixture",
+      "source_refs": [
+        {
+          "source_id": "source-fixture",
+          "digest": "sha256:f8d5e07b8c8c7c65354c0f46de0d6818e2e16d7fa8939bc57b44681bd33c5995",
+          "status": "verified"
+        }
+      ],
+      "evidence_refs": []
+    }
+  ]
+}
