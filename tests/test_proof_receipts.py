@@ -118,12 +118,7 @@ def test_tampering_any_protected_field_fails_closed(path: tuple[object, ...]) ->
 
 def test_raw_prompt_secrets_and_personal_data_never_enter_receipt() -> None:
     with pytest.raises(ProofReceiptError):
-        ProofReceipt(
-            **{
-                **_receipt().__dict__,
-                "request_id": "raw_prompt",
-            }
-        )
+        ProofReceipt(**{**_receipt().__dict__, "request_id": "raw_prompt"})
     serialized = _receipt().serialize()
     assert "raw_prompt" not in serialized
     assert "api_key" not in serialized
@@ -157,10 +152,7 @@ def test_missing_or_unavailable_evidence_never_passes(status: str) -> None:
 def test_claims_reference_evidence_and_preserve_superseded_history() -> None:
     evidence = EvidenceReference("evidence-1", canonical_hash({"probe": "ok"}))
     old = ClaimRecord(
-        "claim-old",
-        "superseded",
-        claim_hash("old route claim"),
-        evidence_refs=("evidence-1",),
+        "claim-old", "superseded", claim_hash("old route claim"), evidence_refs=("evidence-1",)
     )
     current = ClaimRecord(
         "claim-current",
@@ -170,11 +162,7 @@ def test_claims_reference_evidence_and_preserve_superseded_history() -> None:
         supersedes="claim-old",
     )
     receipt = ProofReceipt(
-        **{
-            **_receipt().__dict__,
-            "evidence": (evidence,),
-            "claims": (old, current),
-        }
+        **{**_receipt().__dict__, "evidence": (evidence,), "claims": (old, current)}
     )
     assert [claim["claim_id"] for claim in receipt.to_dict()["claims"]] == [
         "claim-old",

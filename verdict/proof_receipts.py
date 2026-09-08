@@ -16,11 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from verdict.provider_receipts import canonical_hash
-from verdict.receipt_verifier import (
-    SCHEMA_VERSION,
-    VerificationResult,
-    verify_serialized_receipt,
-)
+from verdict.receipt_verifier import SCHEMA_VERSION, VerificationResult, verify_serialized_receipt
 from verdict.security import fingerprint_text
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -351,11 +347,15 @@ def build_proof_receipt(**kwargs: Any) -> ProofReceipt:
     if "context_hash" not in kwargs and "context" in kwargs:
         kwargs["context_hash"] = canonical_hash(kwargs.pop("context"))
     if "input" in kwargs or "context" in kwargs:
-        raise ProofReceiptError("input/context may only be supplied when the corresponding hash is absent")
+        raise ProofReceiptError(
+            "input/context may only be supplied when the corresponding hash is absent"
+        )
     return ProofReceipt.issue(**kwargs)
 
 
-def build_receipt_manifest(receipts: tuple[ProofReceipt, ...] | list[ProofReceipt]) -> dict[str, Any]:
+def build_receipt_manifest(
+    receipts: tuple[ProofReceipt, ...] | list[ProofReceipt],
+) -> dict[str, Any]:
     """Build a deterministic portable manifest containing complete receipts."""
 
     if not receipts:

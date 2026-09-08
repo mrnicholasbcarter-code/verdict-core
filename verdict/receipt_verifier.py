@@ -128,9 +128,7 @@ def _validate_evidence(value: Any) -> tuple[int, list[str]]:
     for index, item in enumerate(value):
         try:
             entry = _required_object(
-                item,
-                f"evidence[{index}]",
-                {"evidence_id", "digest", "status"},
+                item, f"evidence[{index}]", {"evidence_id", "digest", "status"}
             )
             _string(entry["evidence_id"], f"evidence[{index}].evidence_id", identifier=True)
             _digest(entry["digest"], f"evidence[{index}].digest")
@@ -173,10 +171,7 @@ def _validate_receipt(value: Mapping[str, Any]) -> tuple[list[str], str | None, 
             raise ValueError("drop_reasons must be an array")
         for index, reason in enumerate(reasons):
             item = _required_object(
-                reason,
-                f"drop_reasons[{index}]",
-                {"candidate_id", "code"},
-                {"evidence_id"},
+                reason, f"drop_reasons[{index}]", {"candidate_id", "code"}, {"evidence_id"}
             )
             _string(item["candidate_id"], f"drop_reasons[{index}].candidate_id", identifier=True)
             _string(item["code"], f"drop_reasons[{index}].code", identifier=True)
@@ -192,9 +187,7 @@ def _validate_receipt(value: Mapping[str, Any]) -> tuple[list[str], str | None, 
             raise ValueError("source_references must be a non-empty array")
         for index, source in enumerate(sources):
             item = _required_object(
-                source,
-                f"source_references[{index}]",
-                {"source_id", "digest", "status"},
+                source, f"source_references[{index}]", {"source_id", "digest", "status"}
             )
             _string(item["source_id"], f"source_references[{index}].source_id", identifier=True)
             _digest(item["digest"], f"source_references[{index}].digest")
@@ -213,10 +206,7 @@ def _validate_receipt(value: Mapping[str, Any]) -> tuple[list[str], str | None, 
                 raise ValueError(f"drop_reasons[{index}] references unavailable evidence")
 
         timestamps = _required_object(
-            payload["timestamps"],
-            "timestamps",
-            {"created_at", "decision_at"},
-            {"verified_at"},
+            payload["timestamps"], "timestamps", {"created_at", "decision_at"}, {"verified_at"}
         )
         for name, timestamp in timestamps.items():
             _timestamp(timestamp, f"timestamps.{name}")
@@ -256,7 +246,9 @@ def _validate_receipt(value: Mapping[str, Any]) -> tuple[list[str], str | None, 
                 if item["supersedes"] not in claim_ids:
                     raise ValueError(f"claims[{index}] supersedes unavailable claim")
 
-        integrity = _required_object(payload["integrity"], "integrity", {"algorithm", "receipt_digest"})
+        integrity = _required_object(
+            payload["integrity"], "integrity", {"algorithm", "receipt_digest"}
+        )
         if integrity["algorithm"] != "sha256":
             raise ValueError("integrity.algorithm must be sha256")
         supplied = _digest(integrity["receipt_digest"], "integrity.receipt_digest")
@@ -277,7 +269,9 @@ def verify_serialized_receipt(value: Mapping[str, Any] | str | bytes) -> Verific
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         return VerificationResult(False, errors=(f"malformed receipt: {exc}",))
     errors, receipt_id, checked = _validate_receipt(payload)
-    return VerificationResult(not errors, receipt_id=receipt_id, errors=tuple(errors), checked_evidence=checked)
+    return VerificationResult(
+        not errors, receipt_id=receipt_id, errors=tuple(errors), checked_evidence=checked
+    )
 
 
 def verify_serialized_manifest(value: Mapping[str, Any] | str | bytes) -> VerificationResult:
@@ -285,7 +279,9 @@ def verify_serialized_manifest(value: Mapping[str, Any] | str | bytes) -> Verifi
 
     try:
         payload = _load(value)
-        manifest = _required_object(payload, "manifest", {"schema_version", "receipts", "manifest_digest"})
+        manifest = _required_object(
+            payload, "manifest", {"schema_version", "receipts", "manifest_digest"}
+        )
         if manifest["schema_version"] != SCHEMA_VERSION:
             raise ValueError("unsupported manifest schema_version")
         receipts = manifest["receipts"]
@@ -306,7 +302,9 @@ def verify_serialized_manifest(value: Mapping[str, Any] | str | bytes) -> Verifi
         checked += result.checked_evidence
         receipt_id = receipt_id or result.receipt_id
         errors.extend(f"receipts[{index}]: {error}" for error in result.errors)
-    return VerificationResult(not errors, receipt_id=receipt_id, errors=tuple(errors), checked_evidence=checked)
+    return VerificationResult(
+        not errors, receipt_id=receipt_id, errors=tuple(errors), checked_evidence=checked
+    )
 
 
 class IndependentReceiptVerifier:
