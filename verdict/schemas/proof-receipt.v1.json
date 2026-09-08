@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/proof-receipt.v1.json",
+  "title": "Verdict Privacy-Safe Proof Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_id",
+    "task_id",
+    "request_id",
+    "policy_version",
+    "input_hash",
+    "context_hash",
+    "eligible_candidates",
+    "selected_route",
+    "drop_reasons",
+    "source_references",
+    "evidence",
+    "timestamps",
+    "claims",
+    "integrity"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "selected_route": { "type": "null" }
+        }
+      },
+      "then": {
+        "properties": {
+          "drop_reasons": { "minItems": 1 }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "receipt_id": { "$ref": "#/$defs/identifier" },
+    "task_id": { "$ref": "#/$defs/identifier" },
+    "request_id": { "$ref": "#/$defs/identifier" },
+    "policy_version": { "$ref": "#/$defs/identifier" },
+    "input_hash": { "$ref": "#/$defs/digest" },
+    "context_hash": { "$ref": "#/$defs/digest" },
+    "eligible_candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "selected_route": {
+      "anyOf": [{ "$ref": "#/$defs/identifier" }, { "type": "null" }]
+    },
+    "drop_reasons": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/drop_reason" }
+    },
+    "source_references": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/source_reference" }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/evidence_reference" }
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["created_at", "decision_at"],
+      "properties": {
+        "created_at": { "type": "string", "format": "date-time" },
+        "decision_at": { "type": "string", "format": "date-time" },
+        "verified_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/claim" }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "receipt_digest"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "receipt_digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "verified": { "const": "verified" },
+    "drop_reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "code"],
+      "properties": {
+        "candidate_id": { "$ref": "#/$defs/identifier" },
+        "code": { "$ref": "#/$defs/identifier" },
+        "evidence_id": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "source_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "digest", "status"],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/identifier" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "status": { "$ref": "#/$defs/verified" }
+      }
+    },
+    "evidence_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "digest", "status"],
+      "properties": {
+        "evidence_id": { "$ref": "#/$defs/identifier" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "status": { "$ref": "#/$defs/verified" }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_id", "status", "claim_hash", "receipt_refs", "evidence_refs"],
+      "anyOf": [
+        { "properties": { "receipt_refs": { "minItems": 1 } } },
+        { "properties": { "evidence_refs": { "minItems": 1 } } }
+      ],
+      "properties": {
+        "claim_id": { "$ref": "#/$defs/identifier" },
+        "status": { "enum": ["active", "superseded", "disputed"] },
+        "claim_hash": { "$ref": "#/$defs/digest" },
+        "receipt_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "supersedes": { "$ref": "#/$defs/identifier" }
+      }
+    }
+  }
+}

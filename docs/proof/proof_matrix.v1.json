@@ -185,6 +185,21 @@
           "kind": "implementation"
         },
         {
+          "path": "verdict/proof_receipts.py",
+          "locator": "ProofReceipt and privacy-safe claim history",
+          "kind": "implementation"
+        },
+        {
+          "path": "verdict/receipt_verifier.py",
+          "locator": "dependency-free serialized receipt and manifest verifier",
+          "kind": "implementation"
+        },
+        {
+          "path": "verdict/schemas/proof-receipt.v1.json",
+          "locator": "strict versioned proof receipt schema",
+          "kind": "schema"
+        },
+        {
           "path": "docs/THREAT_MODEL_RECEIPTS.md",
           "locator": "threat model and retention boundary",
           "kind": "documentation"
@@ -195,13 +210,18 @@
           "kind": "test"
         },
         {
+          "path": "tests/test_proof_receipts.py",
+          "locator": "round-trip, field tamper, redaction, missing evidence, and independent verification",
+          "kind": "test"
+        },
+        {
           "path": "tests/test_security.py",
           "locator": "test_decision_logging_never_writes_full_prompt",
           "kind": "test"
         }
       ],
-      "verification": "pytest -q tests/test_durable_receipts.py tests/test_security.py tests/test_evidence.py",
-      "public_wording": "Receipt contracts support scoped durable evidence with redaction and integrity checks.",
+      "verification": "python -m pytest -q tests/test_proof_receipts.py tests/test_durable_receipts.py tests/test_security.py tests/test_evidence.py",
+      "public_wording": "Receipt contracts support scoped durable evidence, independent verification, claim history, redaction, and integrity checks.",
       "gap": "Operators still need deployment-specific retention, access-control, and key-management decisions."
     },
     {
