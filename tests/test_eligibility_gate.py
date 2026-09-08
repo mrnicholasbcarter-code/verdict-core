@@ -20,7 +20,7 @@ from verdict.availability_cache import AvailabilityCache
 from verdict.eligibility import EligibilityGate, EligibilityVerdict
 from verdict.intelligence import IntelligenceService
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
-from verdict.router import select_best_model
+from verdict.router import select_best_eligible_model, select_best_model
 
 
 def _candidate(model_id: str, state: str, tier: int = 2) -> AvailabilityCandidate:
@@ -99,6 +99,31 @@ def test_ranker_cannot_reintroduce_excluded_candidate() -> None:
     assert chosen is not None
     assert chosen.id == "a/1"  # never b/2 even though it is a "better" tier
     assert chosen.id != "b/2"
+
+
+def test_authoritative_selector_cannot_consume_raw_excluded_candidates() -> None:
+    report = _report(("a/1", "eligible"), ("b/2", "denied"))
+    cache = _cache(report)
+    gate = EligibilityGate(cache.get, protected_fail_closed=True)
+    candidates = [
+        ModelInfo(id="a/1", provider="a", capability_tier=2, quality_confidence=0.2),
+        ModelInfo(id="b/2", provider="b", capability_tier=0, quality_confidence=1.0),
+    ]
+    eligibility = gate.evaluate(candidates, dev_mode=True)
+
+    chosen, alternatives = select_best_eligible_model(
+        eligibility,
+        tier=3,
+        configs={
+            "a": ProviderConfig(base_url="https://a.example/v1"),
+            "b": ProviderConfig(base_url="https://b.example/v1", priority=10),
+        },
+    )
+
+    assert chosen is not None
+    assert chosen.id == "a/1"
+    assert alternatives == []
+    assert [record.model_id for record in eligibility.exclusions] == ["b/2"]
 
 
 def test_protected_work_fails_closed_when_truth_absent() -> None:

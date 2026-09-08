@@ -1,5 +1,6 @@
 """Core routing algorithm prioritizing quality, tier, and capability."""
 
+from verdict.eligibility import EligibilityResult
 from verdict.models import ModelInfo, ProviderConfig
 
 
@@ -30,7 +31,7 @@ def select_best_model(
                 else max(0.0, 1.0 - model.capability_tier / 3.0)
             ),
             model.capability_tier,
-            -configs[model.provider].priority,
+            -configs.get(model.provider, ProviderConfig()).priority,
             model.id,
         )
     )
@@ -38,3 +39,12 @@ def select_best_model(
     chosen = valid[0]
     alts = [m.id for m in valid[1:5]]
     return chosen, alts
+
+
+def select_best_eligible_model(
+    eligibility: EligibilityResult, tier: int, configs: dict[str, ProviderConfig]
+) -> tuple[ModelInfo | None, list[str]]:
+    """Rank only the authoritative set produced by :class:`EligibilityGate`."""
+    if not isinstance(eligibility, EligibilityResult):
+        raise TypeError("eligibility must be an EligibilityResult")
+    return select_best_model(eligibility.eligible, tier, configs)
