@@ -616,6 +616,21 @@ class ReceiptStore:
             if self._shared_conn is None:
                 conn.close()
 
+    def put_proof_receipt(self, receipt: Any, *, scope: str) -> ReceiptRecord:
+        """Persist a strict proof receipt through the canonical append-only store."""
+
+        from verdict.proof_receipts import ProofReceipt
+
+        if not isinstance(receipt, ProofReceipt):
+            raise TypeError("receipt must be a ProofReceipt")
+        return self.put_receipt(
+            "decision",
+            scope,
+            receipt.to_dict(),
+            receipt_id=receipt.receipt_id,
+            provenance={"source": "verdict.proof_receipts", "version": "1"},
+        )
+
     def append_event(
         self,
         parent_receipt_id: str,
