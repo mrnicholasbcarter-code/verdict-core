@@ -6,6 +6,7 @@ from verdict.memory_adapters import (
     AdapterDescriptor,
     build_default_adapter_registry,
     hydrate_context_records,
+    load_context_records,
 )
 from verdict.memory_gate import AuthorityLevel, MemoryGate, MemoryWriteRequest
 from verdict.memory_plane import MemoryPlane, MemoryRecord
@@ -202,3 +203,18 @@ def test_hydration_reports_malformed_and_stale_results() -> None:
     assert result.status == "available"
     assert result.units[0].status == "stale"
     assert result.omissions[0].status == "malformed"
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [(TimeoutError("provider took too long"), "timeout"), (ValueError("bad payload"), "malformed")],
+)
+def test_provider_failures_become_explicit_omissions(error: Exception, status: str) -> None:
+    def loader():
+        raise error
+
+    result = load_context_records(loader, provider_id="fixture")
+
+    assert result.status == status
+    assert result.units == ()
+    assert result.omissions[0].status == status

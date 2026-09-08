@@ -15,7 +15,7 @@ import re
 import stat
 import tempfile
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -171,6 +171,34 @@ def hydrate_context_records(
         omissions=tuple(omissions),
         search_mode=search_mode,
     )
+
+
+def load_context_records(
+    loader: Callable[[], Iterable[Any]],
+    *,
+    provider_id: str,
+    search_mode: str = "lexical",
+    max_units: int = 100,
+) -> ContextProviderResult:
+    """Execute a provider boundary and convert retrieval failures to omissions."""
+    try:
+        return hydrate_context_records(
+            loader(), provider_id=provider_id, search_mode=search_mode, max_units=max_units
+        )
+    except TimeoutError:
+        return ContextProviderResult(
+            provider_id,
+            "timeout",
+            omissions=(ContextOmission(provider_id, "timeout", "provider_timeout"),),
+            search_mode=search_mode,
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        return ContextProviderResult(
+            provider_id,
+            "malformed",
+            omissions=(ContextOmission(provider_id, "malformed", _safe_error(exc)),),
+            search_mode=search_mode,
+        )
 
 
 class LocalManifestAdapter:
