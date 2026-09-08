@@ -16,6 +16,7 @@
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "timestamp": {"type": "string", "format": "date-time"},
     "slot_type": {"enum": ["system", "receipt", "memory", "dynamic", "instructions", "policy", "state", "evidence", "tools", "examples", "history"]},
+    "context_status": {"enum": ["active", "observed", "stale", "superseded", "disputed", "missing", "unavailable"]},
     "context_plan": {
       "type": "object",
       "required": ["schema_version", "plan_id", "candidate_id", "tenant_scope", "project_scope", "token_budget", "input_token_budget", "output_token_reserve", "tool_token_reserve", "required_slot_types", "retrieval_algorithm", "retrieval_version", "created_at"],
@@ -35,8 +36,8 @@
       "properties": {
         "schema_version": {"const": "1"}, "unit_id": {"type": "string", "minLength": 1}, "slot_type": {"$ref": "#/$defs/slot_type"}, "key": {"type": "string", "minLength": 1}, "content": {"type": "string"},
         "source_uri": {"type": "string", "minLength": 1}, "source_digest": {"$ref": "#/$defs/digest"}, "revision": {"type": "string", "minLength": 1},
-        "span": {"type": ["object", "null"], "additionalProperties": {"type": "integer", "minimum": 0}}, "observed_at": {"$ref": "#/$defs/timestamp"}, "valid_from": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}, "valid_until": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
-        "trust": {"type": "string", "minLength": 1}, "authority": {"type": "string", "minLength": 1}, "sensitivity": {"type": "string", "minLength": 1}, "tenant_scope": {"type": "string", "minLength": 1}, "project_scope": {"type": "string", "minLength": 1}, "raw": {"type": "boolean"},
+        "span": {"type": ["object", "null"], "additionalProperties": {"type": "integer", "minimum": 0}},         "observed_at": {"$ref": "#/$defs/timestamp"}, "retrieved_at": {"$ref": "#/$defs/timestamp"}, "valid_from": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}, "valid_until": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "trust": {"type": "string", "minLength": 1}, "authority": {"type": "string", "minLength": 1}, "sensitivity": {"type": "string", "minLength": 1}, "tenant_scope": {"type": "string", "minLength": 1}, "project_scope": {"type": "string", "minLength": 1}, "raw": {"type": "boolean"}, "status": {"$ref": "#/$defs/context_status"},
         "transform_lineage": {"type": "array", "items": {"type": "string", "minLength": 1}}, "token_count": {"type": "integer", "minimum": 1}, "cache_key": {"type": ["string", "null"]}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "created_at": {"type": "number"}
       },
       "additionalProperties": false

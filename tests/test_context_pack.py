@@ -100,17 +100,21 @@ def _unit(
     tenant_scope: str = "tenant-a",
     project_scope: str = "project-a",
     valid_until: str | None = None,
+    status: str = "active",
+    key: str | None = None,
 ) -> ContextUnit:
     return ContextUnit(
         unit_id=unit_id,
         slot_type=slot_type,  # type: ignore[arg-type]
-        key=unit_id,
+        key=key or unit_id,
         content=content,
         source_uri=f"urn:fixture:{unit_id}",
         source_digest="sha256:" + "a" * 64,
         revision="r1",
         observed_at="2026-07-31T00:00:00Z",
+        retrieved_at="2026-07-31T00:01:00Z",
         valid_until=valid_until,
+        status=status,  # type: ignore[arg-type]
         trust="fixture",
         authority="observed",
         sensitivity="public",
@@ -172,6 +176,36 @@ def test_context_units_are_scope_safe_and_decisions_are_explicit() -> None:
     assert pack.receipt.verify(pack)
 
 
+def test_source_uri_provenance_is_redacted_in_prompt() -> None:
+    plan = ContextPlan(plan_id="uri-plan", candidate_id="route", token_budget=100)
+    unit = _unit(
+        "uri",
+        "public",
+        status="active",
+        tenant_scope="default",
+        project_scope="default",
+    )
+    unit = ContextUnit(
+        **{**unit.to_dict(), "source_uri": "https://user:secret@example.test/fact?token=secret#fragment"}
+    )
+
+    pack = ContextPackCompiler().compile_units([unit], plan)
+
+    assert "secret" not in pack.compiled_prompt
+    assert "https://example.test/fact" in pack.compiled_prompt
+
+
+def test_legacy_v1_units_migrate_lifecycle_defaults() -> None:
+    legacy = _unit("legacy", "old artifact").to_dict()
+    legacy.pop("retrieved_at")
+    legacy.pop("status")
+
+    restored = ContextUnit.from_dict(legacy)
+
+    assert restored.retrieved_at == restored.observed_at
+    assert restored.status == "active"
+
+
 def test_context_pack_round_trip_and_schema_are_canonical() -> None:
     plan = ContextPlan(plan_id="plan-3", candidate_id="route-3", token_budget=200)
     pack = ContextPackCompiler().compile_units(
@@ -196,3 +230,79 @@ def test_context_pack_round_trip_and_schema_are_canonical() -> None:
     tampered["compiled_prompt"] = "tampered"
     assert tampered["compiled_prompt"] != pack.compiled_prompt
     assert pack.receipt.verify(ContextPack.from_dict(tampered)) is False
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        ("superseded", "claim_superseded"),
+        ("disputed", "claim_disputed"),
+        ("stale", "claim_stale"),
+        ("missing", "source_missing"),
+        ("unavailable", "source_unavailable"),
+    ],
+)
+def test_context_statuses_are_fail_closed(status: str, reason: str) -> None:
+    plan = ContextPlan(plan_id="status-plan", candidate_id="route", token_budget=100)
+    pack = ContextPackCompiler().compile_units([_unit(status, "claim", status=status)], plan)
+
+    assert pack.units == ()
+    assert pack.decisions[-1].reason == reason
+
+
+def test_active_unit_wins_deterministically_over_superseded_duplicate() -> None:
+    plan = ContextPlan(
+        plan_id="precedence-plan",
+        candidate_id="route",
+        tenant_scope="tenant-a",
+        project_scope="project-a",
+        token_budget=100,
+    )
+    units = [
+        _unit("old", "old claim", status="superseded", key="claim"),
+        _unit("new", "new claim", status="active", key="claim"),
+    ]
+
+    pack = ContextPackCompiler().compile_units(units, plan)
+
+    assert [unit.unit_id for unit in pack.units] == ["new"]
+    decisions = {decision.unit_id: decision for decision in pack.decisions}
+    assert decisions["old"].reason == "claim_superseded"
+
+
+def test_equivalent_serialized_inputs_have_stable_pack_digest() -> None:
+    plan = ContextPlan(
+        plan_id="stable-plan",
+        candidate_id="route",
+        token_budget=100,
+        created_at="2026-07-31T00:00:00Z",
+    )
+    units = [_unit("stable", "same", status="active")]
+
+    first = ContextPackCompiler().compile_units(units, plan)
+    second = ContextPackCompiler().compile_units(tuple(units), plan)
+
+    assert first.canonical_json() == second.canonical_json()
+    assert first.digest == second.digest
+
+
+def test_expiration_evaluation_uses_plan_timestamp() -> None:
+    plan = ContextPlan(
+        plan_id="evaluation-plan",
+        candidate_id="route",
+        token_budget=100,
+        created_at="2026-07-31T00:00:00Z",
+    )
+    unit = _unit(
+        "future",
+        "stable",
+        valid_until="2026-08-01T00:00:00Z",
+        tenant_scope="default",
+        project_scope="default",
+    )
+
+    first = ContextPackCompiler().compile_units([unit], plan)
+    second = ContextPackCompiler().compile_units([unit], plan)
+
+    assert [item.unit_id for item in first.units] == ["future"]
+    assert first.digest == second.digest

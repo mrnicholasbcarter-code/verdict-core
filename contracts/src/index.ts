@@ -144,6 +144,152 @@ const nonEmptyString = z.string().trim().min(1);
 const nonNegativeNumber = z.number().finite().nonnegative();
 const nonNegativeInteger = z.number().int().nonnegative();
 
+const contextStatusSchema = z.enum([
+  'active',
+  'observed',
+  'stale',
+  'superseded',
+  'disputed',
+  'missing',
+  'unavailable',
+]);
+const contextSlotTypeSchema = z.enum([
+  'system',
+  'receipt',
+  'memory',
+  'dynamic',
+  'instructions',
+  'policy',
+  'state',
+  'evidence',
+  'tools',
+  'examples',
+  'history',
+]);
+const contextDigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const contextTimestampSchema = z.string().datetime({ offset: true });
+const contextUnitSchema = z
+  .object({
+    schema_version: schemaVersion,
+    unit_id: nonEmptyString,
+    slot_type: contextSlotTypeSchema,
+    key: nonEmptyString,
+    content: z.string(),
+    source_uri: nonEmptyString,
+    source_digest: contextDigestSchema,
+    revision: nonEmptyString,
+    span: z.record(z.string(), nonNegativeInteger).nullable(),
+    observed_at: contextTimestampSchema,
+    retrieved_at: contextTimestampSchema.optional(),
+    valid_from: contextTimestampSchema.nullable(),
+    valid_until: contextTimestampSchema.nullable(),
+    trust: nonEmptyString,
+    authority: nonEmptyString,
+    sensitivity: nonEmptyString,
+    tenant_scope: nonEmptyString,
+    project_scope: nonEmptyString,
+    raw: z.boolean(),
+    status: contextStatusSchema.optional(),
+    transform_lineage: z.array(nonEmptyString),
+    token_count: nonNegativeInteger.min(1),
+    cache_key: nullableString,
+    confidence: z.number().finite().min(0).max(1),
+    created_at: z.number().finite(),
+  })
+  .strict()
+  .transform(value => ({
+    ...value,
+    retrieved_at: value.retrieved_at ?? value.observed_at,
+    status: value.status ?? 'active',
+  }));
+const contextSlotSchema = z
+  .object({
+    slot_type: contextSlotTypeSchema,
+    key: nonEmptyString,
+    content: z.string(),
+    source: nonEmptyString,
+    confidence: z.number().finite().min(0).max(1),
+    sensitivity: z.string(),
+    created_at: z.number().finite(),
+    source_uri: nullableString,
+    source_digest: nullableString,
+    revision: z.string(),
+    tenant_scope: z.string(),
+    project_scope: z.string(),
+    valid_until: nullableString,
+  })
+  .strict();
+const contextDecisionSchema = z
+  .object({
+    schema_version: schemaVersion,
+    unit_id: nonEmptyString,
+    action: z.enum(['include', 'exclude', 'transform']),
+    reason: nonEmptyString,
+    input_tokens: nonNegativeInteger,
+    output_tokens: nonNegativeInteger,
+    fidelity: nonEmptyString,
+    reversible_ref: nullableString,
+  })
+  .strict();
+const contextPlanSchema = z
+  .object({
+    schema_version: schemaVersion,
+    plan_id: nonEmptyString,
+    candidate_id: nonEmptyString,
+    tenant_scope: nonEmptyString,
+    project_scope: nonEmptyString,
+    token_budget: nonNegativeInteger.min(1),
+    input_token_budget: nonNegativeInteger.min(1),
+    output_token_reserve: nonNegativeInteger,
+    tool_token_reserve: nonNegativeInteger,
+    required_slot_types: z.array(contextSlotTypeSchema),
+    retrieval_algorithm: nonEmptyString,
+    retrieval_version: nonEmptyString,
+    created_at: contextTimestampSchema,
+  })
+  .strict();
+const contextPackSchema = z
+  .object({
+    schema_version: schemaVersion,
+    pack_id: nonEmptyString,
+    plan_id: nullableString,
+    plan_digest: nullableString,
+    candidate_id: nullableString,
+    tenant_scope: z.string(),
+    project_scope: z.string(),
+    compiled_prompt: z.string(),
+    used_tokens: nonNegativeInteger,
+    token_budget: nonNegativeInteger.min(1),
+    slots: z.array(contextSlotSchema),
+    units: z.array(contextUnitSchema),
+    conflicts: z.array(jsonObject),
+    decisions: z.array(contextDecisionSchema),
+    truncated_count: nonNegativeInteger,
+    created_at: z.number().finite(),
+    receipt_id: nullableString,
+  })
+  .strict();
+const contextReceiptSchema = z
+  .object({
+    schema_version: schemaVersion,
+    receipt_id: nonEmptyString,
+    plan_digest: contextDigestSchema,
+    pack_digest: contextDigestSchema,
+    decisions: z.array(contextDecisionSchema),
+    unresolved_uncertainties: z.array(nonEmptyString),
+    created_at: contextTimestampSchema,
+  })
+  .strict();
+const contextPackArtifactSchema = z
+  .object({
+    schema_version: schemaVersion,
+    plan: contextPlanSchema,
+    unit: contextUnitSchema,
+    pack: contextPackSchema,
+    receipt: contextReceiptSchema,
+  })
+  .strict();
+
 export const evidenceAuthoritySchema = z.enum(['claimed', 'observed', 'verified', 'inferred']);
 export type EvidenceAuthority = z.output<typeof evidenceAuthoritySchema>;
 export const receiptKindSchema = z.enum([
@@ -750,6 +896,10 @@ const schemas = {
   SourceState: sourceStateSchema,
   trusted_change_report: trustedChangeReportSchema,
   TrustedChangeReport: trustedChangeReportSchema,
+  context_pack: contextPackSchema,
+  ContextPack: contextPackSchema,
+  context_pack_artifact: contextPackArtifactSchema,
+  ContextPackArtifact: contextPackArtifactSchema,
 } as const;
 
 export type ContractName = keyof typeof schemas;
@@ -775,6 +925,12 @@ export type EvidenceItem = z.output<typeof evidenceItemSchema>;
 export type SourceState = z.output<typeof sourceStateSchema>;
 export type TrustedChangeReport = z.output<typeof trustedChangeReportSchema>;
 export type EvidenceReceipt = z.output<typeof evidenceReceiptSchema>;
+export type ContextUnit = z.output<typeof contextUnitSchema>;
+export type ContextDecision = z.output<typeof contextDecisionSchema>;
+export type ContextPlan = z.output<typeof contextPlanSchema>;
+export type ContextPack = z.output<typeof contextPackSchema>;
+export type ContextReceipt = z.output<typeof contextReceiptSchema>;
+export type ContextPackArtifact = z.output<typeof contextPackArtifactSchema>;
 
 function errorCategory(error: ZodError, path: readonly (string | number)[]): ContractErrorCategory {
   const issue = error.issues[0];
