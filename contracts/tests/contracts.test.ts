@@ -206,8 +206,9 @@ describe("Contract Validation", () => {
       expect((redacted as Record<string, unknown>).api_key).toBe("[redacted]");
       expect((redacted as Record<string, unknown>).password).toBe("[redacted]");
       expect((redacted as Record<string, unknown>).normal_field).toBe("value");
-      expect((redacted.nested as Record<string, unknown>).authorization).toBe("[redacted]");
-      expect((redacted.nested as Record<string, unknown>).public_data).toBe("visible");
+      const redactedRecord = redacted as Record<string, unknown>;
+      expect((redactedRecord.nested as Record<string, unknown>).authorization).toBe("[redacted]");
+      expect((redactedRecord.nested as Record<string, unknown>).public_data).toBe("visible");
     });
   });
 
@@ -263,6 +264,7 @@ describe("Contract Validation", () => {
       verification_requirements: {
         checks: ["safety_check"],
         on_failure: "deny",
+        schema_version: "1",
       },
       evidence_ids: ["evidence-1"],
       routing_decision: null,
