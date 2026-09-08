@@ -1,0 +1,52 @@
+{
+  "schema_version": "1",
+  "transitions": [],
+  "freshness_policies": [
+    {
+      "source_type": "fixture",
+      "ttl_seconds": 60,
+      "clock_skew_seconds": 5
+    }
+  ],
+  "claims": [
+    {
+      "schema_version": "1",
+      "claim_id": "claim-old",
+      "subject": "route",
+      "text_hash": "sha256:134d21a7efa472b1418306e8a21fb3e7b67a0665f91377c22618ea0344a8eb10",
+      "status": "superseded",
+      "observed_at": "2026-09-08T07:00:00Z",
+      "verified_at": "2026-09-08T07:01:00Z",
+      "confidence": 0.7,
+      "source_type": "fixture",
+      "source_refs": [
+        {
+          "source_id": "source-fixture",
+          "digest": "sha256:f8d5e07b8c8c7c65354c0f46de0d6818e2e16d7fa8939bc57b44681bd33c5995",
+          "status": "verified"
+        }
+      ],
+      "evidence_refs": []
+    },
+    {
+      "schema_version": "1",
+      "claim_id": "claim-current",
+      "subject": "route",
+      "text_hash": "sha256:2159280966ec881c612734775df127be661402d2ad4346514ac3cd29963dfe2e",
+      "status": "active",
+      "observed_at": "2026-09-08T07:02:00Z",
+      "verified_at": "2026-09-08T07:03:00Z",
+      "confidence": 0.9,
+      "source_type": "fixture",
+      "source_refs": [
+        {
+          "source_id": "source-fixture",
+          "digest": "sha256:f8d5e07b8c8c7c65354c0f46de0d6818e2e16d7fa8939bc57b44681bd33c5995",
+          "status": "verified"
+        }
+      ],
+      "evidence_refs": [],
+      "supersedes": "claim-old"
+    }
+  ]
+}

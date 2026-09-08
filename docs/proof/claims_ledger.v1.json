@@ -339,5 +339,48 @@
       "downgrade_wording": "The gate is wired and unit/integration tested locally; it has not yet been exercised end-to-end against a real release.",
       "review_after": "2026-10-06"
     }
-  ]
+  ],
+  "lifecycle": {
+    "schema_version": "1",
+    "statuses": [
+      "observed",
+      "active",
+      "verified",
+      "superseded",
+      "disputed"
+    ],
+    "transition_table": {
+      "observed": [
+        "active",
+        "verified",
+        "superseded",
+        "disputed"
+      ],
+      "active": [
+        "verified",
+        "superseded",
+        "disputed"
+      ],
+      "verified": [
+        "active",
+        "superseded",
+        "disputed"
+      ],
+      "disputed": [
+        "active",
+        "verified"
+      ],
+      "superseded": []
+    },
+    "selection_rule": "Select fresh active or verified claims only; order by verified-at, observed-at, confidence, then claim-id. Superseded history remains queryable.",
+    "dispute_rule": "Disputed claims are surfaced in hydration omissions and cannot satisfy a required fact.",
+    "freshness_policy": {
+      "policy_required_per_source_type": true,
+      "expiry_rule": "A claim is expired when now is greater than or equal to observed_at plus ttl_seconds.",
+      "clock_skew_rule": "Observations up to clock_skew_seconds in the future are accepted; farther-future observations are rejected.",
+      "missing_policy_rule": "A missing source-type policy is not fresh and cannot satisfy a required fact."
+    },
+    "privacy_rule": "Persist claim-id, text-hash, status, timestamps, confidence, and verified source/evidence references; never persist claim text.",
+    "audit_rule": "Every status transition is an append-only claim_status_transition receipt linked to the claim receipt."
+  }
 }
