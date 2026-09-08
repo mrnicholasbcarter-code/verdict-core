@@ -178,15 +178,12 @@ def test_context_units_are_scope_safe_and_decisions_are_explicit() -> None:
 
 def test_source_uri_provenance_is_redacted_in_prompt() -> None:
     plan = ContextPlan(plan_id="uri-plan", candidate_id="route", token_budget=100)
-    unit = _unit(
-        "uri",
-        "public",
-        status="active",
-        tenant_scope="default",
-        project_scope="default",
-    )
+    unit = _unit("uri", "public", status="active", tenant_scope="default", project_scope="default")
     unit = ContextUnit(
-        **{**unit.to_dict(), "source_uri": "https://user:secret@example.test/fact?token=secret#fragment"}
+        **{
+            **unit.to_dict(),
+            "source_uri": "https://user:secret@example.test/fact?token=secret#fragment",
+        }
     )
 
     pack = ContextPackCompiler().compile_units([unit], plan)
