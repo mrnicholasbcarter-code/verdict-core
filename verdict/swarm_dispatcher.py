@@ -18,8 +18,9 @@ from typing import Any
 from verdict.contracts import AvailabilitySnapshot, RuntimeCandidate
 from verdict.dispatcher import DispatchPolicy, DispatchResult
 from verdict.dispatcher import SwarmDispatcher as BaseSwarmDispatcher
+from verdict.eligibility import EligibilityResult
 from verdict.models import ModelInfo
-from verdict.router import select_best_model
+from verdict.router import select_best_eligible_model
 from verdict.swarm_contracts import SwarmTaskEnvelope
 
 
@@ -238,7 +239,9 @@ class SwarmDispatcher:
                 )
                 model_infos.append(model_info)
 
-            best_model, _ = select_best_model(candidates=model_infos, tier=0, configs={})
+            best_model, _ = select_best_eligible_model(
+                EligibilityResult(admitted=model_infos), tier=0, configs={}
+            )
 
             # Find the matching RuntimeCandidate
             selected = None

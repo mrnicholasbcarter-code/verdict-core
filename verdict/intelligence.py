@@ -10,7 +10,7 @@ from verdict.escalation import scan
 from verdict.logger import log_decision
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.planner import StructuredPlanner
-from verdict.router import select_best_model
+from verdict.router import select_best_eligible_model, select_best_model
 
 DEFAULT_PROFILE = "development"
 DEGRADED_PROFILE = "degraded"
@@ -265,7 +265,11 @@ class IntelligenceService:
             )
             candidates = eligibility.eligible
 
-        best_model, _ = select_best_model(candidates, final_tier, self.providers)
+        best_model, _ = (
+            select_best_eligible_model(eligibility, final_tier, self.providers)
+            if eligibility is not None
+            else select_best_model(candidates, final_tier, self.providers)
+        )
 
         eligibility_record: dict[str, Any] = {}
         if eligibility is not None:
