@@ -602,35 +602,47 @@ class MemoryHookController:
     # 1. Prompt & Context Hooks
     def on_prompt(self, user_prompt: str, context_budget: int = 2048) -> str:
         """Before prompt submission: search memory and compile ContextPack."""
-        from verdict.context_pack import ContextPackCompiler, ContextPackSlot
+        from verdict.context_pack import ContextPackCompiler, ContextPlan, ContextUnit
+        from verdict.memory_adapters import hydrate_context_records
 
-        records = self.plane.search(user_prompt, limit=5)
-        slots: list[ContextPackSlot] = [
-            ContextPackSlot(
+        results = self.plane.search_ranked(user_prompt, limit=5)
+        hydrated = hydrate_context_records(
+            (result.record for result in results),
+            provider_id="memory-plane",
+            search_mode="lexical",
+            max_units=5,
+        )
+        units = [
+            ContextUnit(
+                unit_id="system:guidance",
                 slot_type="system",
                 key="system_guidance",
                 content="Verdict Unified Memory: recall prior context and receipts.",
-                source="verdict_system",
-            )
+                source_uri="urn:verdict:system-guidance",
+                source_digest="sha256:" + ("0" * 64),
+                trust="system",
+                authority="system",
+                sensitivity="public",
+            ),
+            *hydrated.units,
+            ContextUnit(
+                unit_id="dynamic:user-prompt",
+                slot_type="dynamic",
+                key="user_prompt",
+                content=user_prompt,
+                source_uri="urn:verdict:user-prompt",
+                source_digest="sha256:" + ("0" * 64),
+                trust="user",
+                authority="caller",
+                sensitivity="standard",
+            ),
         ]
-        for r in records:
-            slots.append(
-                ContextPackSlot(
-                    slot_type="memory",
-                    key=r.key,
-                    content=r.content,
-                    source=r.source,
-                    confidence=r.confidence,
-                )
-            )
-        slots.append(
-            ContextPackSlot(
-                slot_type="dynamic", key="user_prompt", content=user_prompt, source="user"
-            )
-        )
 
         compiler = ContextPackCompiler(default_token_budget=context_budget)
-        pack = compiler.compile(slots)
+        pack = compiler.compile_units(
+            units,
+            ContextPlan(plan_id="memory-hook", candidate_id="prompt", token_budget=context_budget),
+        )
         return pack.compiled_prompt
 
     def on_response(self, response_text: str, session_id: str = "default") -> dict[str, Any]:
