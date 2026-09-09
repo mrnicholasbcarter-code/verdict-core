@@ -72,3 +72,12 @@ scripts/demo-results.json
 /.specify/
 /.worktrees/
 /verdict-core-v1-*/
+evidence/
+.specify/
+AGENTS.md
+Docs/
+exports/
+.zap/
+.codex/
+CLAUDE.md.backup-*
+discovery/

@@ -1,0 +1,33 @@
+{
+  "name": "verdict-replay-pipeline",
+  "phases": [
+    "replay_trace_read",
+    "routing_decision",
+    "cost_compute",
+    "quality_proxy",
+    "receipt_attach"
+  ],
+  "routing_policy": {
+    "primary": {
+      "model": "opus-4",
+      "provider": "anthropic",
+      "tier": "top"
+    },
+    "fallback": {
+      "model": "litellm/claude-sonnet-5",
+      "provider": "litellm",
+      "tier": "low"
+    },
+    "drop": {
+      "action": "drop_verdict",
+      "reason": "fallback_exhausted_or_ineligible",
+      "receipt_attached": true
+    }
+  },
+  "source_evidence": {
+    "evidence_index": "docs/proof/EVIDENCE_INDEX.md",
+    "claims_ledger": "docs/proof/claims_ledger.v1.json"
+  },
+  "scope": "study-sized; single replay trace; 15h replay NOT run",
+  "read_first_confirmed": true
+}

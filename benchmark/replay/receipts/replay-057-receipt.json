@@ -1,0 +1,18 @@
+{
+  "receipt_id": "replay-057-phase3-1-20260909",
+  "attached_to": "benchmark/replay/receipts/replay-057-receipt.json",
+  "timestamp": "2026-09-09T19:48:04.191481+00:00",
+  "cost_usd": 0.0174,
+  "quality_proxy": {
+    "passed": true,
+    "score": 0.84,
+    "basis": "fixture_contract_roundtrip + dispatcher_case pass (benchmark fixture reproducible.json)"
+  },
+  "routing_path": [
+    "primary_opus_4",
+    "fallback_litellm_sonnet_5",
+    "drop_verdict"
+  ],
+  "evidence_source_digest": "e1c2ff90fe521b97",
+  "scope": "Pipeline setup + single replay trace only; full 15h replay NOT executed per scope."
+}

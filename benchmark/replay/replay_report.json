@@ -1,0 +1,36 @@
+{
+  "agent": "agent-D (sonnet-5, low-tier)",
+  "task": "Phase 2 #57 \u2014 reproducible benchmark replay (portfolio Phase 3 #1, 15h scoped to study)",
+  "files_created": [
+    "benchmark/replay/pipeline_config.json",
+    "benchmark/replay/replay_trace.json",
+    "benchmark/replay/receipts/replay-057-receipt.json"
+  ],
+  "replay_result": {
+    "trace_id": "replay-057-phase3-1-20260909",
+    "source": "docs/proof/EVIDENCE_INDEX.md + claims_ledger.v1 (pre-B evidence, preserved after B removal)",
+    "date": "2026-09-09",
+    "scenario": "coding-agent trace through verdict routing (always-Opus, LiteLLM fallback, verdict drop)",
+    "routing_path": [
+      "primary_opus_4",
+      "fallback_litellm_sonnet_5",
+      "drop_verdict"
+    ],
+    "cost_usd": 0.0174,
+    "quality_proxy": {
+      "passed": true,
+      "score": 0.84,
+      "basis": "fixture_contract_roundtrip + dispatcher_case pass (benchmark fixture reproducible.json)"
+    },
+    "receipt_file": "benchmark/replay/receipts/replay-057-receipt.json",
+    "pipeline_version": "0.1-phase-2-57",
+    "scope_note": "Pipeline setup + single replay trace only; full 15h replay NOT executed per scope."
+  },
+  "failures": [],
+  "read_first": true,
+  "notes": [
+    "benchmark/ directory did NOT exist; created benchmark/replay/.",
+    "pre-B traces from verdict-core-v1-267/test_failover_replay_proof.py referenced only; used docs/proof/ evidence after B removal.",
+    "Full 15h replay NOT executed \u2014 out of scope per instruction."
+  ]
+}

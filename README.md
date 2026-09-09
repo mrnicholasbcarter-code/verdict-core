@@ -2,7 +2,7 @@
 
 # Verdict
 
-**Use the right AI model for every task—not the most expensive one.**
+**The LLM router that says no: cheapest qualified model, a named reason for every drop, a receipt for every decision.**
 
 Verdict stretches your Claude Code Max, Codex Pro, 9router, and OmniRoute setup further by routing each task to the least expensive capable model, while reserving frontier models for work that truly needs them. Configure once, use more of what you already have, and keep your best-model usage under control.
 
