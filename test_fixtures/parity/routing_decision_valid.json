@@ -1,0 +1,39 @@
+{
+  "selected_route": {
+    "runtime_id": "fixture/runtime-a",
+    "provider": "fixture",
+    "model": "runtime-a",
+    "decision": "selected"
+  },
+  "task_spec": {
+    "objective": "prove contract parity",
+    "task_type": "codegen"
+  },
+  "candidate_snapshot": {
+    "candidates": 2
+  },
+  "exclusions": [
+    {
+      "runtime_id": "fixture/runtime-b",
+      "reason": "cost ceiling"
+    }
+  ],
+  "policy_floor": "protected",
+  "planner_mode": "adaptive",
+  "explanation": "selected cheapest eligible route",
+  "adaptive_influence": {
+    "weights_version": "1"
+  },
+  "fallback_plan": [
+    {
+      "action": "answer",
+      "objective": "report failure"
+    }
+  ],
+  "correlation_id": "corr-parity-1",
+  "request_id": "req-parity-1",
+  "policy_version": "1",
+  "schema_version": "1",
+  "decision_id": "decision-parity-1",
+  "receipt": null
+}

@@ -1,0 +1,22 @@
+{
+  "selected_route": {
+    "runtime_id": "fixture/runtime-a",
+    "provider": "fixture",
+    "model": "runtime-a",
+    "decision": "selected"
+  },
+  "task_spec": {},
+  "candidate_snapshot": null,
+  "exclusions": [],
+  "policy_floor": "none",
+  "planner_mode": "default",
+  "explanation": "",
+  "adaptive_influence": {},
+  "fallback_plan": [],
+  "correlation_id": null,
+  "request_id": null,
+  "policy_version": "1",
+  "schema_version": "1",
+  "decision_id": null,
+  "receipt": null
+}
