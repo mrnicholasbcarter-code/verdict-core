@@ -1,0 +1,44 @@
+{
+  "schema_version": "1",
+  "receipt_id": "receipt-parity-1",
+  "task_id": "task-parity-1",
+  "request_id": "request-parity-1",
+  "policy_version": "policy-1",
+  "input_hash": "sha256:3daf5ab3effdd9c33da84a28213f86fedb525c887ac243b75a5629406bda301d",
+  "context_hash": "sha256:677c86008a0e230d6bdc0e4aa41886cc7849be1c5c9255e4bce98c1d989b4158",
+  "eligible_candidates": [
+    "free/model-a",
+    "free/model-b"
+  ],
+  "selected_route": "free/model-a",
+  "drop_reasons": [
+    {
+      "candidate_id": "free/model-b",
+      "code": "higher_cost",
+      "evidence_id": "evidence-1"
+    }
+  ],
+  "source_references": [
+    {
+      "source_id": "catalog-1",
+      "digest": "sha256:4d53722c209678b3bb1b1dae37bd2b8740c3c82d8c0d7d08e4eb7828a69e76ea",
+      "status": "verified"
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "evidence-1",
+      "digest": "sha256:032edb511d01fa17f3a421d032cb5f9e7156be09f672e0969e06de484a361009",
+      "status": "verified"
+    }
+  ],
+  "timestamps": {
+    "created_at": "2026-09-13T12:00:00Z",
+    "decision_at": "2026-09-13T12:00:00Z"
+  },
+  "claims": [],
+  "integrity": {
+    "algorithm": "sha256",
+    "receipt_digest": "sha256:08c9afce3d94d7a8257c4b652c30d31f4b75c0ac0683fed96d5baf12c64669b8"
+  }
+}

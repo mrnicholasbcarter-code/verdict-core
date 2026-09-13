@@ -1,0 +1,19 @@
+{
+  "schema_version": "1",
+  "run_id": "run-parity-1",
+  "provider": "risk",
+  "provider_version": "1.0.0",
+  "inputs_hash": "sha256:9861f192c607147801dba090c32671cda14c251059094015d767d579e0861a14",
+  "config_hash": "sha256:78223d46fdb183493f1317458f0099631d4bda40a2652720b7a6c28f516b6135",
+  "outcome": "approved",
+  "provenance": {
+    "source": "fixture",
+    "authority": "observed"
+  },
+  "evidence_refs": [
+    "evidence-1"
+  ],
+  "details": {
+    "approved": true
+  }
+}

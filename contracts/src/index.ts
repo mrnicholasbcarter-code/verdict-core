@@ -853,6 +853,108 @@ const trustedChangeReportSchema = z
   })
   .strict();
 
+/**
+ * Provider-neutral deterministic evaluation receipt (Python
+ * `verdict.provider_receipts.ProviderReceipt`).  Every field is required on
+ * the wire: `details` must be an explicit null or object so omission is a
+ * missing field in both runtimes, never an implicit default.
+ */
+const providerReceiptSchema = z
+  .object({
+    schema_version: schemaVersion,
+    run_id: nonEmptyString,
+    provider: nonEmptyString,
+    provider_version: nonEmptyString,
+    inputs_hash: contextDigestSchema,
+    config_hash: contextDigestSchema,
+    outcome: nonEmptyString,
+    provenance: jsonObject,
+    evidence_refs: z.array(nonEmptyString),
+    details: jsonObject.nullable(),
+  })
+  .strict();
+
+const receiptIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/);
+const receiptTimestamp = z.string().datetime({ offset: true });
+
+const proofReceiptDropReasonSchema = z
+  .object({
+    candidate_id: receiptIdentifier,
+    code: receiptIdentifier,
+    evidence_id: receiptIdentifier.optional(),
+  })
+  .strict();
+
+const proofReceiptSourceReferenceSchema = z
+  .object({
+    source_id: receiptIdentifier,
+    digest: contextDigestSchema,
+    status: z.literal('verified'),
+  })
+  .strict();
+
+const proofReceiptEvidenceReferenceSchema = z
+  .object({
+    evidence_id: receiptIdentifier,
+    digest: contextDigestSchema,
+    status: z.literal('verified'),
+  })
+  .strict();
+
+const proofReceiptClaimSchema = z
+  .object({
+    claim_id: receiptIdentifier,
+    status: z.enum(['active', 'superseded', 'disputed']),
+    claim_hash: contextDigestSchema,
+    receipt_refs: z.array(receiptIdentifier),
+    evidence_refs: z.array(receiptIdentifier),
+    supersedes: receiptIdentifier.optional(),
+  })
+  .strict()
+  .refine(claim => claim.receipt_refs.length > 0 || claim.evidence_refs.length > 0, {
+    message: 'claim must reference at least one receipt or evidence',
+  });
+
+/**
+ * Privacy-safe proof receipt wire form (Python `verdict.proof_receipts` and
+ * `verdict/schemas/proof-receipt.v1.json`).  Structural parity only: the
+ * `integrity.receipt_digest` is recomputed by the Python verifier, not here.
+ * A denial (`selected_route: null`) must carry at least one drop reason.
+ */
+const proofReceiptSchema = z
+  .object({
+    schema_version: schemaVersion,
+    receipt_id: receiptIdentifier,
+    task_id: receiptIdentifier,
+    request_id: receiptIdentifier,
+    policy_version: receiptIdentifier,
+    input_hash: contextDigestSchema,
+    context_hash: contextDigestSchema,
+    eligible_candidates: z.array(receiptIdentifier).min(1),
+    selected_route: receiptIdentifier.nullable(),
+    drop_reasons: z.array(proofReceiptDropReasonSchema),
+    source_references: z.array(proofReceiptSourceReferenceSchema).min(1),
+    evidence: z.array(proofReceiptEvidenceReferenceSchema).min(1),
+    timestamps: z
+      .object({
+        created_at: receiptTimestamp,
+        decision_at: receiptTimestamp,
+        verified_at: receiptTimestamp.optional(),
+      })
+      .strict(),
+    claims: z.array(proofReceiptClaimSchema),
+    integrity: z
+      .object({
+        algorithm: z.literal('sha256'),
+        receipt_digest: contextDigestSchema,
+      })
+      .strict(),
+  })
+  .strict()
+  .refine(receipt => receipt.selected_route !== null || receipt.drop_reasons.length > 0, {
+    message: 'a denial must include at least one drop reason',
+  });
+
 const schemas = {
   task_spec: taskSpecSchema,
   TaskSpec: taskSpecSchema,
@@ -900,6 +1002,10 @@ const schemas = {
   ContextPack: contextPackSchema,
   context_pack_artifact: contextPackArtifactSchema,
   ContextPackArtifact: contextPackArtifactSchema,
+  provider_receipt: providerReceiptSchema,
+  ProviderReceipt: providerReceiptSchema,
+  proof_receipt: proofReceiptSchema,
+  ProofReceipt: proofReceiptSchema,
 } as const;
 
 export type ContractName = keyof typeof schemas;
@@ -931,6 +1037,8 @@ export type ContextPlan = z.output<typeof contextPlanSchema>;
 export type ContextPack = z.output<typeof contextPackSchema>;
 export type ContextReceipt = z.output<typeof contextReceiptSchema>;
 export type ContextPackArtifact = z.output<typeof contextPackArtifactSchema>;
+export type ProviderReceipt = z.output<typeof providerReceiptSchema>;
+export type ProofReceipt = z.output<typeof proofReceiptSchema>;
 
 function errorCategory(error: ZodError, path: readonly (string | number)[]): ContractErrorCategory {
   const issue = error.issues[0];

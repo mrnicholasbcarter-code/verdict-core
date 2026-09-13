@@ -1,0 +1,8 @@
+{
+  "selected_route": {
+    "runtime_id": "fixture/runtime-a",
+    "provider": "fixture",
+    "model": "runtime-a",
+    "decision": "selected"
+  }
+}

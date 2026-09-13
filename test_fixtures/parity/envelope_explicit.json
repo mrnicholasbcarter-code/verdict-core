@@ -1,0 +1,58 @@
+{
+  "task_spec": {
+    "objective": "test task",
+    "task_type": "chat",
+    "effort": "medium",
+    "reasoning": "medium",
+    "capabilities": [],
+    "required_capabilities": [],
+    "tools": [],
+    "context": null,
+    "context_requirements": {},
+    "tool_requirements": {},
+    "privacy": "unknown",
+    "risk": "unknown",
+    "budget": {},
+    "latency": {},
+    "latency_limit_ms": null,
+    "workflow": null,
+    "approvals": [],
+    "criticality": "unknown",
+    "verification": null,
+    "parallelism": "serial",
+    "destructive_operation": false,
+    "production_impact": false,
+    "degraded_mode_policy": "deny",
+    "metadata": {},
+    "schema_version": "1"
+  },
+  "eligibility_decision": {
+    "admitted": [
+      "gpt-4"
+    ],
+    "reason": "test"
+  },
+  "policy_digest": "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+  "allowed_capabilities": [
+    "chat"
+  ],
+  "execution_constraints": {
+    "allowed_models": [
+      "gpt-4"
+    ],
+    "allowed_tools": [],
+    "allowed_agents": [],
+    "required_verification": []
+  },
+  "verification_requirements": {
+    "checks": [],
+    "on_failure": "deny",
+    "schema_version": "1"
+  },
+  "evidence_ids": [
+    "evidence-1"
+  ],
+  "routing_decision": null,
+  "created_at": "2024-01-01T00:00:00Z",
+  "schema_version": "1"
+}
