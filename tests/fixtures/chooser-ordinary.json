@@ -1,0 +1,48 @@
+{
+  "candidates": [
+    {
+      "requested_alias": "free/model",
+      "availability": "eligible",
+      "capabilities": {
+        "resource_class": "free",
+        "tools": "observed",
+        "code": "observed"
+      },
+      "observed_at": "2026-09-13T12:00:00Z",
+      "ttl_seconds": 60,
+      "source": "fixture",
+      "freshness_seconds": 1.0,
+      "quota_remaining_pct": null,
+      "headroom_pct": 40,
+      "route": {
+        "gateway_id": "gw-a",
+        "route_id": "route-free",
+        "provider": "provider-a",
+        "model_id": "free/model",
+        "protocol": "openai.chat"
+      }
+    },
+    {
+      "requested_alias": "premium/model",
+      "availability": "eligible",
+      "capabilities": {
+        "resource_class": "subscription_premium",
+        "tools": "observed",
+        "code": "observed"
+      },
+      "observed_at": "2026-09-13T12:00:00Z",
+      "ttl_seconds": 60,
+      "source": "fixture",
+      "freshness_seconds": 1.0,
+      "quota_remaining_pct": 90,
+      "headroom_pct": 90,
+      "route": {
+        "gateway_id": "gw-b",
+        "route_id": "route-premium",
+        "provider": "provider-b",
+        "model_id": "premium/model",
+        "protocol": "openai.chat"
+      }
+    }
+  ]
+}

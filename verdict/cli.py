@@ -1797,6 +1797,62 @@ def cmd_plan(output_json: bool = False) -> None:
     cmd_setup_plan(output_json=output_json)
 
 
+def cmd_choose(
+    *,
+    task_class: str,
+    requires: str = "",
+    model: str | None = None,
+    candidates_json: str | None = None,
+    output_json: bool = False,
+) -> None:
+    """Select an eligible execution target for Prime dispatch."""
+    from verdict.chooser import ChooserError, choose_route, human_summary, load_candidates_json
+
+    if not candidates_json:
+        print(
+            "verdict choose requires --candidates-json until live catalog probing is in a later story",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    required = tuple(part.strip() for part in requires.split(",") if part.strip())
+    try:
+        candidates = load_candidates_json(candidates_json)
+        receipt = choose_route(
+            candidates, task_class=task_class, requires=required, explicit_model=model
+        )
+    except ChooserError as exc:
+        payload = {
+            "task_class": task_class,
+            "protected": task_class
+            in {"architecture", "orchestration", "hard-debug", "final-review"},
+            "selected": None,
+            "reason": exc.reason,
+            "error": str(exc),
+            "exclusions": list(exc.exclusions),
+            "policy_version": "chooser-policy/v1",
+            "ranker_version": "chooser-ranker/v1",
+            "explicit_model": model,
+            "selected_because": f"failed because {exc.reason}",
+        }
+        if output_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(payload["selected_because"])
+            if exc.exclusions:
+                print(
+                    "excluded: "
+                    + ", ".join(
+                        f"{item.get('model', '?')} ({item.get('reason', 'excluded')})"
+                        for item in exc.exclusions[:3]
+                    )
+                )
+        sys.exit(1)
+    if output_json:
+        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        return
+    print(human_summary(receipt))
+
+
 def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False) -> None:
     """List the qualified model catalog used for routing and simulation."""
     if catalog is None:
@@ -2906,6 +2962,32 @@ def main() -> None:
     plan_p = subparsers.add_parser("plan", help="Print a mutation-free setup plan")
     plan_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    choose_p = subparsers.add_parser(
+        "choose", help="Choose an eligible execution target for Prime dispatch"
+    )
+    choose_p.add_argument(
+        "--task-class",
+        required=True,
+        dest="task_class",
+        help="Task class (implementation, architecture, ...)",
+    )
+    choose_p.add_argument(
+        "--requires", default="", help="Comma-separated required capabilities (example: tools,code)"
+    )
+    choose_p.add_argument(
+        "--model",
+        default=None,
+        help="Explicit model identity; eligible selection wins, ineligible fails closed",
+    )
+    choose_p.add_argument(
+        "--candidates-json",
+        default=None,
+        help="JSON file of CandidateEvidence fixtures (required for P0)",
+    )
+    choose_p.add_argument(
+        "--json", action="store_true", help="Output machine-readable JSON receipt"
+    )
+
     models_p = subparsers.add_parser(
         "models", help="List the qualified model catalog used for routing and simulation"
     )
@@ -3116,6 +3198,14 @@ def main() -> None:
         cmd_run(args.task, args.criticality, args.terse)
     elif args.command == "plan":
         cmd_plan(output_json=args.json)
+    elif args.command == "choose":
+        cmd_choose(
+            task_class=args.task_class,
+            requires=args.requires,
+            model=args.model,
+            candidates_json=args.candidates_json,
+            output_json=args.json,
+        )
     elif args.command == "models":
         cmd_models(output_json=args.json)
     elif args.command == "inspect":
