@@ -285,12 +285,12 @@ def _receipt_from_selection(
             fallbacks.append(_identity(candidate))
     exclusions = list(extra_exclusions)
     for alias in selection.exclusion_reasons:
-        candidate = candidates_by_alias.get(alias)
-        if candidate is None:
+        excluded = candidates_by_alias.get(alias)
+        if excluded is None:
             exclusions.append({"model": alias, "reason": "not_admitted"})
             continue
-        state = candidate.availability.value
-        exclusions.append(_exclusion(candidate, f"not_admitted:{state}"))
+        state = excluded.availability.value
+        exclusions.append(_exclusion(excluded, f"not_admitted:{state}"))
     ranking_factors = {
         "resource_class_order": (
             list(_PROTECTED_CLASS_SCORE)
@@ -373,7 +373,7 @@ def choose_route(
         ) from exc
 
     if explicit_model:
-        admitted = []
+        admitted: list[CandidateEvidence] = []
         for model_id in selection.admitted_ids:
             admitted.extend(by_model.get(model_id, ()))
         if not any(_matches_explicit(candidate, explicit_model) for candidate in admitted):
