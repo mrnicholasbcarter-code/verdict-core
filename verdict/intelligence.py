@@ -414,9 +414,7 @@ class IntelligenceService:
             kept = {model.id for model in gated.admitted}
             extra = tuple(
                 NamedDrop(
-                    record.model_id,
-                    getattr(record.verdict, "value", record.verdict),
-                    record.reason,
+                    record.model_id, getattr(record.verdict, "value", record.verdict), record.reason
                 )
                 for record in gated.exclusions
             )
