@@ -16,7 +16,7 @@ requires-python = ">=3.10"
 authors = [{name = "Nicholas Carter"}]
 keywords = ["llm", "routing", "ai", "control-plane", "safety", "openai", "anthropic", "multi-model"]
 dependencies = [
-    "httpx>=0.25",
+    "httpx>=0.28.1",
     "PyYAML>=6.0",
     "rich>=15.0.0",
     "defusedxml>=0.7.1",
