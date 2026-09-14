@@ -228,3 +228,26 @@ files, evidence required to close, and an explicit not-in-scope boundary. Before
 
 The Project #6 charter and issues #450–#468 are the operational task index. This ADR is the
 architecture boundary; repository-local Spec Kit artifacts remain the implementation record.
+
+## Addendum 2026-09-14 — Spec Kit Lite + OmniRoute boundary
+
+**Status:** Accepted (Nick confirm 2026-09-14)
+
+### Spec Kit Lite
+
+Ordinary stories use a lean artifact set only: **spec → plan → tasks → implement**
+(or equivalent: change brief + execution plan + evidence record). The full sequence
+`constitution → specify → clarify → analyze → plan → tasks → implement → checklist`
+is reserved for boundary/contract changes, security launch gates, and other high-risk work.
+
+Lite reduces ceremony, not authority: admission, provenance, named exclusions, receipts,
+and acceptance-with-evidence still apply. This addendum supersedes the mandatory full
+`/speckit.*` sequence in the governance section above for routine work.
+
+### OmniRoute ownership clarification
+
+OmniRoute remains an **inventory + execution** adapter (stable HTTP APIs, correlation IDs,
+timeouts/unavailable/malformed/stale as explicit outcomes). It does **not** own context
+packing or the spend-preservation routing decision. Verdict Core owns route (worthy-vs-cheap),
+context packs, named drops, and receipts. Prefer free∩active concrete identities; metadata-only
+catalog rows are named drops, not admits.
