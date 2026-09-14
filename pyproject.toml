@@ -17,7 +17,7 @@ authors = [{name = "Nicholas Carter"}]
 keywords = ["llm", "routing", "ai", "control-plane", "safety", "openai", "anthropic", "multi-model"]
 dependencies = [
     "httpx>=0.25",
-    "PyYAML>=6.0",
+    "PyYAML>=6.0.3",
     "rich>=15.0.0",
     "defusedxml>=0.7.1",
 ]
