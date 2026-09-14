@@ -32,6 +32,10 @@ class EligibilityVerdict(str, Enum):
     NOT_LIVE_ELIGIBLE = "not_live_eligible"
     RUNTIME_TRUTH_ABSENT = "runtime_truth_absent"
     NOT_REQUESTED_TIER = "not_requested_tier"
+    NOT_FREE_TIER = "not_free_tier"
+    INACTIVE_UNCONNECTED = "inactive_unconnected"
+    OPAQUE_AUTO = "opaque_auto"
+    METADATA_GHOST = "metadata_ghost"
 
 
 # States that admit a candidate into the pre-ranking eligible set.
