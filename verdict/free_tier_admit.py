@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -24,6 +24,7 @@ import httpx
 
 from verdict.availability import is_opaque_route_id
 from verdict.classifier import classify
+from verdict.context_pack import ContextPackCompiler, ContextPackSlot, ContextPlan
 from verdict.eligibility import EligibilityRecord, EligibilityResult, EligibilityVerdict
 from verdict.free_route_harvest import free_status
 from verdict.models import ModelInfo
@@ -100,6 +101,98 @@ class OmniRouteAdmitSnapshot:
         return frozenset(row.provider for row in self.free_tier if row.provider)
 
 
+_CHEAP_PATH_EPOCH = "1970-01-01T00:00:00Z"
+
+
+@dataclass(frozen=True)
+class NamedOmission:
+    """Something left out of a cheap-path context pack, with why."""
+
+    name: str
+    reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"name": self.name, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class CheapPathContextPack:
+    """Compiled task pack used on the free∩active offload path."""
+
+    pack_digest: str
+    compiled_prompt: str
+    omissions: tuple[NamedOmission, ...]
+    pack_id: str
+    plan_digest: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pack_digest": self.pack_digest,
+            "pack_id": self.pack_id,
+            "plan_digest": self.plan_digest,
+            "omissions": [item.to_dict() for item in self.omissions],
+        }
+
+
+def build_cheap_path_context_pack(
+    task: str,
+    *,
+    candidate_id: str,
+    token_budget: int = 4096,
+    extra_slots: Sequence[ContextPackSlot] | None = None,
+) -> CheapPathContextPack:
+    """Compile a deterministic context pack for cheap-path offload.
+
+    The task itself is always included as an ``instructions`` unit. Optional
+    ``extra_slots`` may be supplied (tests/fixtures); compiler exclusions
+    become named omissions on the receipt. Timestamps are pinned so the pack
+    digest is stable for identical inputs.
+    """
+    if not isinstance(task, str) or not task.strip():
+        raise ValueError("task must be a non-empty string")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise ValueError("candidate_id must be a non-empty string")
+    if isinstance(token_budget, bool) or not isinstance(token_budget, int) or token_budget < 1:
+        raise ValueError("token_budget must be a positive integer")
+
+    task_slot = ContextPackSlot(
+        slot_type="instructions",
+        key="task",
+        content=task,
+        source="cheap_path",
+        created_at=0.0,
+        source_uri="urn:verdict:task",
+    )
+    slots = (task_slot, *(extra_slots or ()))
+    units = []
+    for slot in slots:
+        unit = slot.to_unit()
+        units.append(
+            replace(
+                unit, observed_at=_CHEAP_PATH_EPOCH, retrieved_at=_CHEAP_PATH_EPOCH, created_at=0.0
+            )
+        )
+    plan = ContextPlan(
+        plan_id=f"cheap:{candidate_id}",
+        candidate_id=candidate_id,
+        token_budget=token_budget,
+        created_at=_CHEAP_PATH_EPOCH,
+    )
+    pack = ContextPackCompiler().compile_units(tuple(units), plan)
+    omissions = tuple(
+        NamedOmission(name=decision.unit_id, reason=decision.reason)
+        for decision in pack.decisions
+        if decision.action == "exclude"
+    )
+    return CheapPathContextPack(
+        pack_digest=pack.digest,
+        compiled_prompt=pack.compiled_prompt,
+        omissions=omissions,
+        pack_id=pack.pack_id,
+        plan_digest=pack.plan_digest or plan.digest,
+    )
+
+
 @dataclass(frozen=True)
 class FreeTierAdmitReceipt:
     admitted: tuple[str, ...]
@@ -108,6 +201,8 @@ class FreeTierAdmitReceipt:
     empty_intersection: bool
     active_providers: tuple[str, ...]
     free_tier_providers: tuple[str, ...]
+    pack_digest: str | None = None
+    omissions: tuple[NamedOmission, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +212,8 @@ class FreeTierAdmitReceipt:
             "empty_intersection": self.empty_intersection,
             "active_providers": list(self.active_providers),
             "free_tier_providers": list(self.free_tier_providers),
+            "pack_digest": self.pack_digest,
+            "omissions": [item.to_dict() for item in self.omissions],
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
@@ -515,9 +612,11 @@ def execute_offload_chat(
     timeout: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> tuple[str, str]:
-    """Send the routed task through OmniRoute ``/v1/chat/completions``.
+    """Send the routed (optionally packed) content through OmniRoute chat.
 
-    Returns ``(transport_outcome, content_or_error)``. Never returns secrets.
+    ``task`` is the user message body — typically the cheap-path compiled
+    prompt when a context pack was built. Returns
+    ``(transport_outcome, content_or_error)``. Never returns secrets.
     """
     origin = normalize_omniroute_origin(base_url)
     headers = {"accept": "application/json", "content-type": "application/json"}
@@ -579,13 +678,16 @@ __all__ = [
     "REASON_NOT_FREE_TIER",
     "REASON_OPAQUE_AUTO",
     "CatalogIdentity",
+    "CheapPathContextPack",
     "FreeTierAdmitReceipt",
     "FreeTierModel",
     "LiveAdmitError",
     "NamedDrop",
+    "NamedOmission",
     "OmniRouteAdmitSnapshot",
     "ProviderConnection",
     "admit_free_tier_active",
+    "build_cheap_path_context_pack",
     "execute_offload_chat",
     "load_omniroute_admit_snapshot",
     "normalize_omniroute_origin",
