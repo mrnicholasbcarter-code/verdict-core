@@ -217,7 +217,9 @@ def test_upstream_down_does_not_fallback_to_public(monkeypatch) -> None:
 
     assert response.status_code == 502
     assert transport.requests == ["http://127.0.0.1:20128/v1/chat/completions"]
-    assert all("api.anthropic.com" not in url and "api.openai.com" not in url for url in transport.requests)
+    assert all(
+        "api.anthropic.com" not in url and "api.openai.com" not in url for url in transport.requests
+    )
 
 
 def test_resolve_upstream_prefers_omniroute_base_url(monkeypatch) -> None:
