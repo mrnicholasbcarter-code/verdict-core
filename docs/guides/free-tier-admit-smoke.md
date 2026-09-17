@@ -82,3 +82,8 @@ Expect:
 - Upstream call is made by Verdict → OmniRoute only (no public Anthropic/OpenAI)
 - Response header `x-verdict-model` is a concrete free∩active identity
 - Empty intersection / OmniRoute down → HTTP 503, fail-closed
+
+## Prove-at-rest (background)
+
+After admit works, keep free∩active identities proved at rest:
+[prove-at-rest-smoke.md](prove-at-rest-smoke.md).
