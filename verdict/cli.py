@@ -483,12 +483,24 @@ def cmd_setup_plan(*, output_json: bool = False) -> None:
         print(f"- {action['description']}")
 
 
+def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
+    """Surface OMNIROUTE_BASE_URL as a route provider without probing ports."""
+    base = os.getenv("OMNIROUTE_BASE_URL")
+    if not base or not base.strip():
+        return {}
+    url = base.strip().rstrip("/")
+    if not url.endswith("/v1"):
+        url = f"{url}/v1"
+    return {"omniroute": ProviderConfig(base_url=url, api_key_env="OMNIROUTE_API_KEY")}
+
+
 def _build_route_gate(allow_offline: bool = False) -> Gate:
     """Build the CLI Gate from the user config (shared by route/compare)."""
     config_dir = os.path.join(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
     )
     config_path = os.path.join(config_dir, "verdict.yaml")
+    omniroute = _omniroute_provider_from_env()
 
     if os.path.exists(config_path):
         with open(config_path) as f:
@@ -497,15 +509,19 @@ def _build_route_gate(allow_offline: bool = False) -> Gate:
             k: ProviderConfig(base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env"))
             for k, v in (raw.get("providers") or {}).items()
         }
+        for name, cfg in omniroute.items():
+            providers.setdefault(name, cfg)
         return Gate(
             primary_model=raw.get("primary_model", "anthropic/claude-3-opus-20240229"),
             providers=providers,
             log_path=raw.get("log_path", "verdict-decisions.jsonl"),
             allow_offline=allow_offline,
         )
+    providers = {"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")}
+    providers.update(omniroute)
     return Gate(
         primary_model="anthropic/claude-3-opus-20240229",
-        providers={"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")},
+        providers=providers,
         allow_offline=allow_offline,
     )
 
@@ -558,7 +574,12 @@ def cmd_route(
         )
     )
     # Machine-readable StrategySelection record (issue #265).
-    print(json.dumps({"strategy_selection": selection.to_dict()}, sort_keys=True))
+    payload: dict[str, Any] = {"strategy_selection": selection.to_dict()}
+    if dec.admit_receipt:
+        payload["admit_receipt"] = dec.admit_receipt
+    if dec.execute_preview:
+        payload["execute_preview"] = dec.execute_preview[:500]
+    print(json.dumps(payload, sort_keys=True))
 
 
 def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
@@ -2817,6 +2838,41 @@ def main() -> None:
         help="Limit apply to this exact service id; repeat for multiple services",
     )
     runtime_reconcile_p.add_argument("--json", action="store_true", help="Output JSON")
+
+    prove_p = subparsers.add_parser(
+        "prove-at-rest", help="Prove free-tier ∩ active OmniRoute models at rest (daemon or once)"
+    )
+    prove_sub = prove_p.add_subparsers(dest="prove_command", required=True)
+    prove_once_p = prove_sub.add_parser("once", help="Run one prove-at-rest cycle and exit")
+    prove_daemon_p = prove_sub.add_parser(
+        "daemon", help="Continuously prove free∩active identities at rest"
+    )
+    prove_status_p = prove_sub.add_parser("status", help="Show the latest persisted proof state")
+    for _prove_p in (prove_once_p, prove_daemon_p, prove_status_p):
+        _prove_p.add_argument(
+            "--state-path",
+            default=None,
+            help="Proof state JSON path (default: ~/.verdict/prove-at-rest/state.json)",
+        )
+        _prove_p.add_argument("--json", action="store_true", help="Output JSON")
+    for _prove_live_p in (prove_once_p, prove_daemon_p):
+        _prove_live_p.add_argument(
+            "--base-url", default=None, help="OmniRoute origin (default: OMNIROUTE_BASE_URL)"
+        )
+        _prove_live_p.add_argument(
+            "--interval",
+            type=float,
+            default=300.0,
+            help="Daemon interval seconds between cycles (daemon only; default 300)",
+        )
+        _prove_live_p.add_argument(
+            "--timeout", type=float, default=15.0, help="Per-identity probe timeout seconds"
+        )
+        _prove_live_p.add_argument(
+            "--allow-live-probe",
+            action="store_true",
+            help="Explicit consent to network prove-at-rest probes",
+        )
     uninst_p = subparsers.add_parser(
         "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"
     )
@@ -3178,6 +3234,16 @@ def main() -> None:
             service_ids=getattr(args, "service_ids", None),
             output_json=getattr(args, "json", False),
         )
+    elif args.command == "prove-at-rest":
+        cmd_prove_at_rest(
+            args.prove_command,
+            base_url=getattr(args, "base_url", None),
+            state_path=getattr(args, "state_path", None),
+            interval=getattr(args, "interval", 300.0),
+            timeout=getattr(args, "timeout", 15.0),
+            allow_live_probe=getattr(args, "allow_live_probe", False),
+            output_json=getattr(args, "json", False),
+        )
     elif args.command == "uninstall":
         cmd_uninstall(purge_data=getattr(args, "purge_data", False))
     elif args.command == "check":
@@ -3222,6 +3288,129 @@ def main() -> None:
         cmd_cost_report()
     else:
         parser.print_help()
+
+
+def cmd_prove_at_rest(
+    prove_command: str,
+    *,
+    base_url: str | None = None,
+    state_path: str | None = None,
+    interval: float = 300.0,
+    timeout: float = 15.0,
+    allow_live_probe: bool = False,
+    output_json: bool = False,
+) -> None:
+    """Run or inspect the free∩active prove-at-rest daemon."""
+    from verdict.prove_at_rest import (
+        ProveAtRestError,
+        ProveAtRestStore,
+        build_live_daemon,
+        default_state_path,
+    )
+
+    resolved_state = Path(state_path).expanduser() if state_path else default_state_path()
+
+    if prove_command == "status":
+        cycle = ProveAtRestStore(path=resolved_state).read()
+        if cycle is None:
+            payload = {"status": "empty", "state_path": str(resolved_state)}
+            if output_json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                console.print(f"[yellow]No prove-at-rest state at {resolved_state}[/yellow]")
+            return
+        payload = cycle.to_dict()
+        payload["state_path"] = str(resolved_state)
+        if output_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return
+        summary = cycle.summary
+        console.print(
+            f"[bold cyan]prove-at-rest[/bold cyan] cycle={cycle.cycle_id} "
+            f"healthy={summary.get('healthy', 0)} failed={summary.get('failed', 0)} "
+            f"skipped={summary.get('skipped', 0)}"
+        )
+        console.print(f"  state: {resolved_state}")
+        for item in cycle.results:
+            if item.status == "healthy":
+                style = "green"
+            elif item.status == "failed":
+                style = "red"
+            else:
+                style = "yellow"
+            detail = f" ({item.reason})" if item.reason else ""
+            console.print(f"  [{style}]{item.status}[/{style}] {item.identity_id}{detail}")
+        return
+
+    if prove_command in {"once", "daemon"} and not allow_live_probe:
+        message = "live prove-at-rest requires explicit consent; pass --allow-live-probe"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(2)
+
+    try:
+        daemon = build_live_daemon(
+            state_path=resolved_state,
+            base_url=base_url,
+            interval_seconds=interval,
+            probe_timeout_seconds=timeout,
+            allow_live_probe=allow_live_probe,
+        )
+    except ProveAtRestError as exc:
+        message = str(exc)
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(2) from exc
+
+    if prove_command == "once":
+        cycle = daemon.run_once()
+        payload = cycle.to_dict()
+        payload["state_path"] = str(resolved_state)
+        if output_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            summary = cycle.summary
+            console.print(
+                f"[bold green]prove-at-rest once[/bold green] "
+                f"healthy={summary.get('healthy', 0)} failed={summary.get('failed', 0)} "
+                f"skipped={summary.get('skipped', 0)}"
+            )
+            console.print(f"  wrote {resolved_state}")
+        if cycle.summary.get("failed", 0):
+            raise SystemExit(1)
+        return
+
+    if prove_command == "daemon":
+        console.print(
+            f"[bold cyan]prove-at-rest daemon[/bold cyan] interval={interval}s "
+            f"state={resolved_state}"
+        )
+        try:
+            daemon.run_forever()
+        except KeyboardInterrupt:
+            daemon.stop()
+            if output_json:
+                cycle = daemon.status()
+                print(
+                    json.dumps(
+                        {
+                            "status": "interrupted",
+                            "state_path": str(resolved_state),
+                            "last": None if cycle is None else cycle.to_dict(),
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                console.print("[yellow]prove-at-rest daemon stopped[/yellow]")
+        return
+
+    raise SystemExit(f"unknown prove-at-rest command: {prove_command}")
 
 
 def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:

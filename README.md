@@ -77,6 +77,8 @@ verdict probe task-coding --base-url http://localhost:20128/v1 --allow-live-prob
 
 `detect` must show `server_running: true`. `probe` must return `status: ready` for a **named** model. `auto/*` IDs are opaque and are not live proof. A catalog timeout is `blocked`, not success. See [`docs/guides/golden-path.md`](docs/guides/golden-path.md) for the dated live observation and its limitations.
 
+With `OMNIROUTE_BASE_URL` (and `OMNIROUTE_API_KEY` when required) a low-criticality `verdict route` admits a concrete **free-tier ∩ active-provider** identity, prints an `admit_receipt` of named drops, and executes through `/v1/chat/completions`. An empty intersection fails closed instead of falling back to Opus. See [`docs/guides/free-tier-admit-smoke.md`](docs/guides/free-tier-admit-smoke.md). Keep those identities proved in the background with [`verdict prove-at-rest`](docs/guides/prove-at-rest-smoke.md) (free∩active only; paid/frontier never probed).
+
 ## Cost comparison
 
 **Deterministic mock — no provider spend.**

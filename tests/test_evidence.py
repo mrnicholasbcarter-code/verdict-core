@@ -326,3 +326,46 @@ def test_evidence_lookup_requires_a_scope() -> None:
         )
         started = build_outcome_event(routing, event_type="start", outcome="unknown")
         store.put(ExplainEvidence(routing, started), scope="")
+
+
+def test_admit_receipt_pack_digest_persists_into_evidence() -> None:
+    """Serve path stores pack_digest/omissions via the evidence contract (#508 gap)."""
+    decision = RoutingDecision(
+        model="openrouter/free-model",
+        provider="omniroute",
+        tier=2,
+        reason="free-tier ∩ active provider admitted openrouter/free-model",
+        decision="selected",
+        request_id="req-pack-1",
+        safety_flags=["free_tier_active_admit", "cheap_path_context_pack"],
+        admit_receipt={
+            "chosen": "openrouter/free-model",
+            "pack_digest": "sha256:abc123",
+            "omissions": [{"name": "slot:noise", "reason": "input_budget_exhausted"}],
+            "empty_intersection": False,
+            "exclusions": [{"model": "paid/opus", "reason": "not_free_tier"}],
+            "admitted": ["openrouter/free-model"],
+            "active_providers": ["openrouter"],
+            "free_tier_providers": ["openrouter"],
+        },
+    )
+    evidence = build_routing_decision_contract(
+        decision,
+        task="summarize this",
+        criticality="low",
+        features={"stream": False},
+        correlation_id="corr-pack-1",
+        occurred_at="2026-09-17T00:00:00Z",
+    )
+    payload = evidence.to_dict()
+    assert payload["receipt"]["kind"] == "admit_receipt"
+    assert payload["receipt"]["pack_digest"] == "sha256:abc123"
+    assert payload["receipt"]["omissions"] == [
+        {"name": "slot:noise", "reason": "input_budget_exhausted"}
+    ]
+    assert payload["selected_route"]["pack_digest"] == "sha256:abc123"
+    for schema in SCHEMAS:
+        errors = list(
+            Draft202012Validator(schema["$defs"]["routing_decision"]).iter_errors(payload)
+        )
+        assert errors == [], errors
