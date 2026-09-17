@@ -39,6 +39,8 @@ class RoutingDecision:
     quality_score: float | None = None
     candidate_states: list[dict[str, Any]] = field(default_factory=list)
     safety_flags: list[str] = field(default_factory=list)
+    admit_receipt: dict[str, Any] | None = None
+    execute_preview: str | None = None
     # Compatibility with the brief advisory-ranking contract.  The canonical
     # names remain ``model`` and ``tier``.
     confidence: float = 0.0
