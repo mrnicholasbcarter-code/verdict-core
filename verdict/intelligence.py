@@ -1,15 +1,34 @@
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+from verdict.admit_prove_confirm import gate_admit_prove_confirm
 from verdict.classifier import classify
 from verdict.discovery import fetch_models
 from verdict.eligibility import EligibilityGate
 from verdict.escalation import scan
+from verdict.free_tier_admit import (
+    FAIL_CLOSED_REASON,
+    NO_ELIGIBLE_TARGET,
+    FreeTierAdmitReceipt,
+    LiveAdmitError,
+    NamedDrop,
+    OmniRouteAdmitSnapshot,
+    admit_free_tier_active,
+    build_cheap_path_context_pack,
+    execute_offload_chat,
+    load_omniroute_admit_snapshot,
+    normalize_omniroute_origin,
+    omniroute_endpoint_from_env,
+)
 from verdict.logger import log_decision
+from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.planner import StructuredPlanner
+from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
 
 DEFAULT_PROFILE = "development"
@@ -65,6 +84,13 @@ class IntelligenceService:
         planner: StructuredPlanner | None = None,
         eligibility_gate: EligibilityGate | None = None,
         allow_offline: bool = False,
+        admit_snapshot: OmniRouteAdmitSnapshot | None = None,
+        offload_executor: Any | None = None,
+        execute_offload: bool | None = None,
+        passports: dict[str, ModelPassport] | None = None,
+        confirm_transport: ProbeTransport | None = None,
+        passport_store_path: Path | None = None,
+        admit_now: datetime | None = None,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -84,6 +110,16 @@ class IntelligenceService:
         # Issue #265 (V1-002): allow_offline=True keeps every decision readable
         # without network or subprocess probes — static catalog truth only.
         self.allow_offline = allow_offline
+        self.admit_snapshot = admit_snapshot
+        self.offload_executor = offload_executor
+        # None = execute only for a live (non-fixture) snapshot.
+        self.execute_offload = execute_offload
+        # Serve admit gate: fresh prove-at-rest passports ∩ budgeted confirm.
+        # None passports → load from prove-at-rest store at request time.
+        self.passports = passports
+        self.confirm_transport = confirm_transport
+        self.passport_store_path = passport_store_path
+        self.admit_now = admit_now
         self.managed_backend_status = "offline" if allow_offline else self._probe_managed_backend()
         self._policy_version = "policy-2026-07-13.1"
 
@@ -247,6 +283,17 @@ class IntelligenceService:
         safety_floor = req_tier if req_tier <= 1 else 3
         final_tier = min(task_tier, safety_floor, eff_tier if eff_tier is not None else 3)
 
+        if final_tier > 0 and not self.allow_offline:
+            offload = self._offload_free_tier(task_str, final_tier, escalated, esc_reason)
+            if offload is not None:
+                elapsed = (time.time() - start_t) * 1000
+                dec = RoutingDecision(
+                    **{**offload.__dict__, "latency_ms": elapsed, "logged": bool(self.log_path)}
+                )
+                if self.log_path:
+                    log_decision(self.log_path, task_str, req_tier, dec, self.log_full_task)
+                return dec
+
         if self.allow_offline:
             # Static catalog only: no /v1/models discovery, no probes.
             candidates = self.static_catalog()
@@ -334,6 +381,181 @@ class IntelligenceService:
             log_decision(self.log_path, task_str, req_tier, dec, self.log_full_task)
 
         return dec
+
+    def _offload_free_tier(
+        self, task: str, final_tier: int, escalated: bool, esc_reason: str
+    ) -> RoutingDecision | None:
+        """Admit free-tier ∩ active-provider identities for offloadable work.
+
+        Returns ``None`` when OmniRoute admit surfaces are not configured *or*
+        cannot be loaded, so the historical catalog/fallback path still runs for
+        offline unit tests and dead endpoints. Fail-closed empty-intersection
+        applies only after a real (live or fixture) snapshot was consulted.
+        """
+        snapshot, endpoint, live, _fetch_error = self._load_admit_snapshot()
+        if snapshot is None:
+            # Not configured, or live surfaces unavailable: do not starve ranking.
+            return None
+        receipt = admit_free_tier_active(snapshot)
+        confirm_transport = self._resolve_confirm_transport(endpoint)
+        # Live OmniRoute confirm requires consent; fixture/injected transports do not.
+        confirm_live = bool(
+            live and confirm_transport is not None and self.confirm_transport is None
+        )
+        receipt = gate_admit_prove_confirm(
+            receipt,
+            passports=self.passports,
+            passport_store_path=self.passport_store_path,
+            confirm_transport=confirm_transport,
+            now=self.admit_now,
+            live=confirm_live,
+            consented=confirm_live or self.confirm_transport is not None,
+        )
+        eligibility = receipt.as_eligibility_result(snapshot)
+        if self.eligibility_gate is not None:
+            gated = self.eligibility_gate.evaluate(
+                eligibility.admitted, protected=False, dev_mode=(self.profile == "development")
+            )
+            kept = {model.id for model in gated.admitted}
+            extra = tuple(
+                NamedDrop(
+                    record.model_id, getattr(record.verdict, "value", record.verdict), record.reason
+                )
+                for record in gated.exclusions
+            )
+            remaining = tuple(item for item in receipt.admitted if item in kept)
+            chosen = (
+                receipt.chosen if receipt.chosen in kept else (remaining[0] if remaining else None)
+            )
+            receipt = FreeTierAdmitReceipt(
+                admitted=remaining,
+                exclusions=receipt.exclusions + extra,
+                chosen=chosen,
+                empty_intersection=chosen is None,
+                active_providers=receipt.active_providers,
+                free_tier_providers=receipt.free_tier_providers,
+                pack_digest=receipt.pack_digest,
+                omissions=receipt.omissions,
+                passport=receipt.passport,
+                confirm=receipt.confirm,
+            )
+            eligibility = gated
+        return self._decision_from_admit(
+            task,
+            final_tier,
+            escalated,
+            esc_reason,
+            receipt,
+            eligibility,
+            endpoint=endpoint,
+            live=live,
+        )
+
+    def _load_admit_snapshot(
+        self,
+    ) -> tuple[OmniRouteAdmitSnapshot | None, tuple[str, str | None] | None, bool, str | None]:
+        if self.admit_snapshot is not None:
+            return (self.admit_snapshot, omniroute_endpoint_from_env(self.providers), False, None)
+        endpoint = omniroute_endpoint_from_env(self.providers)
+        if endpoint is None or not str(endpoint[0] or "").strip():
+            return None, None, False, None
+        try:
+            snapshot = load_omniroute_admit_snapshot(endpoint[0], endpoint[1])
+        except LiveAdmitError as exc:
+            # Dead/misconfigured OmniRoute must not fail-closed the offline path.
+            return None, None, False, str(exc)
+        return snapshot, endpoint, True, None
+
+    def _decision_from_admit(
+        self,
+        task: str,
+        final_tier: int,
+        escalated: bool,
+        esc_reason: str,
+        receipt: FreeTierAdmitReceipt,
+        eligibility: Any,
+        *,
+        endpoint: tuple[str, str | None] | None,
+        live: bool,
+    ) -> RoutingDecision:
+        eligibility_record = eligibility.to_dict() if eligibility is not None else {}
+        if receipt.empty_intersection or not receipt.chosen:
+            return RoutingDecision(
+                model=NO_ELIGIBLE_TARGET,
+                provider="none",
+                tier=final_tier,
+                reason=FAIL_CLOSED_REASON,
+                escalated=escalated,
+                escalation_reason=esc_reason or None,
+                policy_version=self._policy_version,
+                degraded_mode=(self.managed_backend_status == "unavailable"),
+                managed_backend_status=self.managed_backend_status,
+                protected=False,
+                decision="denied",
+                transport_outcome="not_sent",
+                quality_outcome="unknown",
+                candidate_states=eligibility_record.get("records", []),
+                safety_flags=["fail_closed_empty_free_active_intersection"],
+                admit_receipt=receipt.to_dict(),
+            )
+        chosen = receipt.chosen
+        provider = next(
+            (model.provider for model in eligibility.admitted if model.id == chosen),
+            chosen.split("/", 1)[0] if "/" in chosen else "omniroute",
+        )
+        # Cheap path: pack context before execute; digest + omissions land on the receipt.
+        context_pack = build_cheap_path_context_pack(task, candidate_id=chosen)
+        receipt = replace(
+            receipt, pack_digest=context_pack.pack_digest, omissions=context_pack.omissions
+        )
+        packed_task = context_pack.compiled_prompt
+        should_execute = self.execute_offload
+        if should_execute is None:
+            should_execute = live and self.offload_executor is None
+        transport_outcome = "not_sent"
+        preview: str | None = None
+        if should_execute or self.offload_executor is not None:
+            if self.offload_executor is not None:
+                transport_outcome, preview = self.offload_executor(chosen, packed_task)
+            elif endpoint is not None:
+                transport_outcome, preview = execute_offload_chat(
+                    endpoint[0], chosen, packed_task, api_key=endpoint[1]
+                )
+        return RoutingDecision(
+            model=chosen,
+            provider=provider,
+            tier=final_tier,
+            reason=f"free∩active ∩ fresh-passport ∩ confirmed admitted {chosen}",
+            alternatives=list(receipt.admitted[:8]),
+            escalated=escalated,
+            escalation_reason=esc_reason or None,
+            policy_version=self._policy_version,
+            degraded_mode=(self.managed_backend_status == "unavailable"),
+            managed_backend_status=self.managed_backend_status,
+            protected=False,
+            decision="selected",
+            transport_outcome=transport_outcome,
+            quality_outcome="unknown",
+            candidate_states=eligibility_record.get("records", []),
+            safety_flags=[
+                "free_tier_active_admit",
+                "prove_confirm_admit",
+                "cheap_path_context_pack",
+            ],
+            admit_receipt=receipt.to_dict(),
+            execute_preview=preview,
+        )
+
+    def _resolve_confirm_transport(
+        self, endpoint: tuple[str, str | None] | None
+    ) -> ProbeTransport | None:
+        """Prefer an injected confirm transport; else OmniRoute OpenAI probe."""
+        if self.confirm_transport is not None:
+            return self.confirm_transport
+        if endpoint is None or not str(endpoint[0] or "").strip():
+            return None
+        origin = normalize_omniroute_origin(endpoint[0])
+        return openai_probe_transport(f"{origin}/v1", api_key=endpoint[1])
 
     def execute_argv(self, argv: list[str]) -> dict[str, Any]:
         """Execute an argument vector via subprocess and return structured output.
