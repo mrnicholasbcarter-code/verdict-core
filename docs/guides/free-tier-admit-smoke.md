@@ -51,7 +51,8 @@ Expect:
 - **Transport** `sent` on a successful execute
 - JSON blob includes `admit_receipt` with `admitted`, named `exclusions`
   (`inactive_unconnected`, `not_free_tier`, `metadata_ghost`, `opaque_auto`),
-  and `chosen`
+  `chosen`, plus cheap-path **`pack_digest`** (stable `sha256:…`) and named
+  **`omissions`** (what the context pack left out and why)
 - **Strategy** `DIRECT` for low-criticality work (not `SWARM_AUTODEV` from a
   fake tier-0 Opus fallback)
 

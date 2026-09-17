@@ -1,6 +1,6 @@
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from verdict.classifier import classify
@@ -15,6 +15,7 @@ from verdict.free_tier_admit import (
     NamedDrop,
     OmniRouteAdmitSnapshot,
     admit_free_tier_active,
+    build_cheap_path_context_pack,
     execute_offload_chat,
     load_omniroute_admit_snapshot,
     omniroute_endpoint_from_env,
@@ -468,6 +469,12 @@ class IntelligenceService:
             (model.provider for model in eligibility.admitted if model.id == chosen),
             chosen.split("/", 1)[0] if "/" in chosen else "omniroute",
         )
+        # Cheap path: pack context before execute; digest + omissions land on the receipt.
+        context_pack = build_cheap_path_context_pack(task, candidate_id=chosen)
+        receipt = replace(
+            receipt, pack_digest=context_pack.pack_digest, omissions=context_pack.omissions
+        )
+        packed_task = context_pack.compiled_prompt
         should_execute = self.execute_offload
         if should_execute is None:
             should_execute = live and self.offload_executor is None
@@ -475,10 +482,10 @@ class IntelligenceService:
         preview: str | None = None
         if should_execute or self.offload_executor is not None:
             if self.offload_executor is not None:
-                transport_outcome, preview = self.offload_executor(chosen, task)
+                transport_outcome, preview = self.offload_executor(chosen, packed_task)
             elif endpoint is not None:
                 transport_outcome, preview = execute_offload_chat(
-                    endpoint[0], chosen, task, api_key=endpoint[1]
+                    endpoint[0], chosen, packed_task, api_key=endpoint[1]
                 )
         return RoutingDecision(
             model=chosen,
@@ -496,7 +503,7 @@ class IntelligenceService:
             transport_outcome=transport_outcome,
             quality_outcome="unknown",
             candidate_states=eligibility_record.get("records", []),
-            safety_flags=["free_tier_active_admit"],
+            safety_flags=["free_tier_active_admit", "cheap_path_context_pack"],
             admit_receipt=receipt.to_dict(),
             execute_preview=preview,
         )

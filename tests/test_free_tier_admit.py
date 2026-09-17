@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from verdict.context_pack import ContextPackSlot
 from verdict.free_tier_admit import (
     FAIL_CLOSED_REASON,
     NO_ELIGIBLE_TARGET,
@@ -16,6 +17,7 @@ from verdict.free_tier_admit import (
     REASON_NOT_FREE_TIER,
     REASON_OPAQUE_AUTO,
     admit_free_tier_active,
+    build_cheap_path_context_pack,
     execute_offload_chat,
     load_omniroute_admit_snapshot,
     snapshot_from_payloads,
@@ -220,7 +222,12 @@ def test_intelligence_offload_selects_free_active_not_opus() -> None:
     assert decision.model != "anthropic/claude-3-opus-20240229"
     assert decision.admit_receipt is not None
     assert decision.admit_receipt["chosen"] == decision.model
-    assert calls == [("openrouter/nvidia/nemotron-3-nano-30b-a3b:free", "summarize this paragraph")]
+    assert calls[0][0] == "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    assert "summarize this paragraph" in calls[0][1]
+    assert calls[0][1] != "summarize this paragraph"
+    assert decision.admit_receipt["pack_digest"]
+    assert decision.admit_receipt["pack_digest"].startswith("sha256:")
+    assert isinstance(decision.admit_receipt["omissions"], list)
 
 
 def test_intelligence_empty_intersection_does_not_select_primary() -> None:
@@ -238,6 +245,8 @@ def test_intelligence_empty_intersection_does_not_select_primary() -> None:
     assert decision.transport_outcome == "not_sent"
     assert decision.admit_receipt is not None
     assert decision.admit_receipt["empty_intersection"] is True
+    assert decision.admit_receipt["pack_digest"] is None
+    assert decision.admit_receipt["omissions"] == []
     assert decision.admit_receipt["chosen"] is None
     named = {item["reason"] for item in decision.admit_receipt["exclusions"]}
     assert REASON_INACTIVE_UNCONNECTED in named
@@ -371,3 +380,60 @@ def test_cli_route_gate_merges_omniroute_env(
     assert "omniroute" in gate.providers
     assert gate.providers["omniroute"].base_url.endswith("/v1")
     assert gate.providers["omniroute"].api_key_env == "OMNIROUTE_API_KEY"
+
+
+def test_cheap_path_context_pack_digest_is_stable() -> None:
+    first = build_cheap_path_context_pack(
+        "format a bullet list", candidate_id="openrouter/free-model"
+    )
+    second = build_cheap_path_context_pack(
+        "format a bullet list", candidate_id="openrouter/free-model"
+    )
+    assert first.pack_digest == second.pack_digest
+    assert first.pack_digest.startswith("sha256:")
+    assert "format a bullet list" in first.compiled_prompt
+    assert first.omissions == ()
+
+
+def test_cheap_path_context_pack_records_named_omissions() -> None:
+    noise = ContextPackSlot(
+        slot_type="evidence", key="noise", content="N" * 5000, source="fixture", created_at=0.0
+    )
+    packed = build_cheap_path_context_pack(
+        "keep the task", candidate_id="openrouter/free-model", token_budget=40, extra_slots=[noise]
+    )
+    assert "keep the task" in packed.compiled_prompt
+    assert packed.omissions
+    named = {item.name: item.reason for item in packed.omissions}
+    assert any("noise" in name for name in named)
+
+
+def test_intelligence_receipt_carries_pack_digest_and_packed_execute() -> None:
+    snapshot = _snapshot(
+        catalog=[_catalog_row("openrouter/nvidia/nemotron-3-nano-30b-a3b:free")],
+        free_tier=[
+            {
+                "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
+                "provider": "openrouter",
+                "freeType": "recurring-daily",
+            }
+        ],
+        providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
+    )
+    calls: list[tuple[str, str]] = []
+
+    def executor(model_id: str, task: str) -> tuple[str, str]:
+        calls.append((model_id, task))
+        return "sent", "packed-ok"
+
+    svc = _service(snapshot, executor=executor)
+    decision = asyncio.run(svc.route("cheap path pack me", criticality="low"))
+    assert decision.decision == "selected"
+    assert decision.admit_receipt is not None
+    digest = decision.admit_receipt["pack_digest"]
+    assert isinstance(digest, str) and digest.startswith("sha256:")
+    assert decision.admit_receipt["omissions"] == []
+    assert calls and "cheap path pack me" in calls[0][1]
+    expected = build_cheap_path_context_pack("cheap path pack me", candidate_id=decision.model)
+    assert digest == expected.pack_digest
+    assert calls[0][1] == expected.compiled_prompt
