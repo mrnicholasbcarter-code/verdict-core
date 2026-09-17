@@ -286,6 +286,22 @@ def build_routing_decision_contract(
         payload["selected_route"]["actual_route"] = _copy_json(actual_route)
     if attempted_routes is not None:
         payload["selected_route"]["attempted_routes"] = _copy_json(attempted_routes)
+    # Cheap-path admit receipt (#508): pack_digest + named omissions must survive
+    # into VERDICT_RECEIPTS_DB / explain evidence. CLI already carries admit_receipt
+    # on RoutingDecision; the serve path only persists this contract.
+    if isinstance(decision.admit_receipt, dict) and decision.admit_receipt:
+        admit = _copy_json(decision.admit_receipt)
+        payload["receipt"] = {
+            "kind": "admit_receipt",
+            "chosen": admit.get("chosen"),
+            "pack_digest": admit.get("pack_digest"),
+            "omissions": admit.get("omissions") or [],
+            "empty_intersection": admit.get("empty_intersection"),
+            "exclusions": admit.get("exclusions") or [],
+        }
+        # Mirror digest onto selected_route for operators grepping decision JSON.
+        if admit.get("pack_digest"):
+            payload["selected_route"]["pack_digest"] = admit.get("pack_digest")
     try:
         return RoutingDecisionContract.from_dict(cast_json(redact_contract_secrets(payload)))
     except ContractValidationError:
