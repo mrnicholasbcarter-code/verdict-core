@@ -119,3 +119,6 @@ verdict catalog --management --json
 
 Live admit + execute smoke (CLI, not harness):
 [free-tier-admit-smoke.md](free-tier-admit-smoke.md).
+
+Background prove-at-rest (free∩active only):
+[prove-at-rest-smoke.md](prove-at-rest-smoke.md).
