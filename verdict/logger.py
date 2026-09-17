@@ -50,6 +50,8 @@ def log_decision(
             "quality_outcome": decision.quality_outcome,
             "quality_score": decision.quality_score,
         }
+        if decision.admit_receipt:
+            record["admit_receipt"] = decision.admit_receipt
 
         if log_full_task:
             record["task_full"] = "[redacted]"
