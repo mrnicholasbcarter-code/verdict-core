@@ -186,9 +186,12 @@ def test_claim_schema_fixture_is_strict() -> None:
         claim_texts={"claim-old": "route-old", "claim-current": "route-current"},
         clock=lambda: datetime(2026, 9, 8, 7, 2, 30, tzinfo=timezone.utc),
     )
-    assert restored.select_active(
-        subject="route", now=datetime(2026, 9, 8, 7, 2, 30, tzinfo=timezone.utc)
-    )[0].claim_id == "claim-current"
+    assert (
+        restored.select_active(
+            subject="route", now=datetime(2026, 9, 8, 7, 2, 30, tzinfo=timezone.utc)
+        )[0].claim_id
+        == "claim-current"
+    )
 
     disputed = json.loads(
         (Path(__file__).parent / "fixtures/claims_ledger/disputed.json").read_text(encoding="utf-8")
@@ -199,6 +202,5 @@ def test_claim_schema_fixture_is_strict() -> None:
         clock=lambda: datetime(2026, 9, 8, 7, 0, 30, tzinfo=timezone.utc),
     )
     assert disputed_ledger.hydrate(
-        required_facts=("unsafe route",),
-        now=datetime(2026, 9, 8, 7, 0, 30, tzinfo=timezone.utc),
+        required_facts=("unsafe route",), now=datetime(2026, 9, 8, 7, 0, 30, tzinfo=timezone.utc)
     ).blocked

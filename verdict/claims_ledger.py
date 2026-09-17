@@ -98,10 +98,7 @@ class ClaimsLedger:
             scope=self.scope,
             payload={
                 "kind": "claim_transition",
-                "transition": {
-                    **transition.to_dict(),
-                    "reason": claim_hash(transition.reason),
-                },
+                "transition": {**transition.to_dict(), "reason": claim_hash(transition.reason)},
             },
             event_id=transition.transition_id,
             event_type="claim_status_transition",
