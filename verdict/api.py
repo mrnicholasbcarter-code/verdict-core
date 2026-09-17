@@ -35,6 +35,7 @@ from verdict.evidence import (
     build_routing_decision_contract,
     request_features,
 )
+from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.gate import Gate
 from verdict.guidance import (
     GuidanceConfig,
@@ -448,9 +449,30 @@ def _allowed_private_hosts() -> set[str]:
     }
 
 
+def _openai_compatible_upstream_base(raw: str) -> str:
+    """Normalize an OmniRoute origin or ``/v1`` URL to an OpenAI-compatible base."""
+    return f"{normalize_omniroute_origin(raw)}/v1"
+
+
+def _resolve_upstream_base_url() -> str:
+    """Prefer explicit llmgate upstream, else OmniRoute via ``OMNIROUTE_BASE_URL``."""
+    explicit = (os.getenv("LLMGATE_UPSTREAM_BASE_URL") or "").strip()
+    if explicit:
+        return explicit
+    omni = (os.getenv("OMNIROUTE_BASE_URL") or "").strip()
+    if omni:
+        return _openai_compatible_upstream_base(omni)
+    return DEFAULT_UPSTREAM_BASE_URL
+
+
 def _build_proxy() -> UpstreamProxy:
-    """Build the configured upstream transport without reading client fields."""
-    base_url = os.getenv("LLMGATE_UPSTREAM_BASE_URL", DEFAULT_UPSTREAM_BASE_URL)
+    """Build the configured upstream transport without reading client fields.
+
+    Coding-agent harnesses point at ``verdict serve``; this transport points
+    Verdict at OmniRoute (``OMNIROUTE_BASE_URL``) unless
+    ``LLMGATE_UPSTREAM_BASE_URL`` is set explicitly.
+    """
+    base_url = _resolve_upstream_base_url()
     api_key = os.getenv("LLMGATE_UPSTREAM_API_KEY") or os.getenv("OMNIROUTE_API_KEY")
     timeout_ms = int(os.getenv("LLMGATE_UPSTREAM_TIMEOUT_MS", "30000"))
     if timeout_ms <= 0:
@@ -489,6 +511,9 @@ def _build_intelligence() -> IntelligenceService:
         timeout_ms=timeout_ms,
         frontier_allowlist=frontier_allowlist,
         allow_client_model_override=allow_client_model_override,
+        # Serve path: free∩active admit selects; UpstreamProxy executes once.
+        # CLI ``verdict route`` keeps its own execute_offload default.
+        execute_offload=False,
     )
 
 

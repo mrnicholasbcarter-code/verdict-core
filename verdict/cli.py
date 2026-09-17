@@ -483,12 +483,24 @@ def cmd_setup_plan(*, output_json: bool = False) -> None:
         print(f"- {action['description']}")
 
 
+def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
+    """Surface OMNIROUTE_BASE_URL as a route provider without probing ports."""
+    base = os.getenv("OMNIROUTE_BASE_URL")
+    if not base or not base.strip():
+        return {}
+    url = base.strip().rstrip("/")
+    if not url.endswith("/v1"):
+        url = f"{url}/v1"
+    return {"omniroute": ProviderConfig(base_url=url, api_key_env="OMNIROUTE_API_KEY")}
+
+
 def _build_route_gate(allow_offline: bool = False) -> Gate:
     """Build the CLI Gate from the user config (shared by route/compare)."""
     config_dir = os.path.join(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
     )
     config_path = os.path.join(config_dir, "verdict.yaml")
+    omniroute = _omniroute_provider_from_env()
 
     if os.path.exists(config_path):
         with open(config_path) as f:
@@ -497,15 +509,19 @@ def _build_route_gate(allow_offline: bool = False) -> Gate:
             k: ProviderConfig(base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env"))
             for k, v in (raw.get("providers") or {}).items()
         }
+        for name, cfg in omniroute.items():
+            providers.setdefault(name, cfg)
         return Gate(
             primary_model=raw.get("primary_model", "anthropic/claude-3-opus-20240229"),
             providers=providers,
             log_path=raw.get("log_path", "verdict-decisions.jsonl"),
             allow_offline=allow_offline,
         )
+    providers = {"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")}
+    providers.update(omniroute)
     return Gate(
         primary_model="anthropic/claude-3-opus-20240229",
-        providers={"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")},
+        providers=providers,
         allow_offline=allow_offline,
     )
 
@@ -558,7 +574,12 @@ def cmd_route(
         )
     )
     # Machine-readable StrategySelection record (issue #265).
-    print(json.dumps({"strategy_selection": selection.to_dict()}, sort_keys=True))
+    payload: dict[str, Any] = {"strategy_selection": selection.to_dict()}
+    if dec.admit_receipt:
+        payload["admit_receipt"] = dec.admit_receipt
+    if dec.execute_preview:
+        payload["execute_preview"] = dec.execute_preview[:500]
+    print(json.dumps(payload, sort_keys=True))
 
 
 def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
