@@ -179,9 +179,7 @@ def gate_admit_prove_confirm(
     if current.tzinfo is None:
         raise ValueError("now must be timezone-aware")
 
-    loaded = (
-        load_healthy_passports(passport_store_path) if passports is None else dict(passports)
-    )
+    loaded = load_healthy_passports(passport_store_path) if passports is None else dict(passports)
 
     exclusions = list(receipt.exclusions)
     passport_rows: list[PassportEvidence] = []
@@ -300,17 +298,17 @@ def gate_admit_prove_confirm(
                 )
             )
             continue
-        evidence = _confirm_from_observation(observation)
-        confirm_rows.append(evidence)
-        if evidence.confirmed:
+        confirm = _confirm_from_observation(observation)
+        confirm_rows.append(confirm)
+        if confirm.confirmed:
             confirmed_ids.append(identity_id)
             continue
         reason = (
             REASON_CONFIRM_BUDGET
-            if evidence.status == REASON_CONFIRM_BUDGET
+            if confirm.status == REASON_CONFIRM_BUDGET
             else REASON_CONFIRM_FAILED
         )
-        exclusions.append(NamedDrop(identity_id, reason, evidence.error or evidence.status))
+        exclusions.append(NamedDrop(identity_id, reason, confirm.error or confirm.status))
 
     return _finalize(
         receipt,
