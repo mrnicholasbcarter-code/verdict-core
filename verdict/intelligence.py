@@ -370,41 +370,15 @@ class IntelligenceService:
     ) -> RoutingDecision | None:
         """Admit free-tier ∩ active-provider identities for offloadable work.
 
-        Returns ``None`` when OmniRoute admit surfaces are not configured, so
-        the historical catalog/fallback path still runs. When the surfaces *are*
-        consulted, an empty intersection fails closed instead of selecting the
-        frontier primary.
+        Returns ``None`` when OmniRoute admit surfaces are not configured *or*
+        cannot be loaded, so the historical catalog/fallback path still runs for
+        offline unit tests and dead endpoints. Fail-closed empty-intersection
+        applies only after a real (live or fixture) snapshot was consulted.
         """
-        snapshot, endpoint, live, fetch_error = self._load_admit_snapshot()
-        if snapshot is None and endpoint is None:
-            return None
+        snapshot, endpoint, live, _fetch_error = self._load_admit_snapshot()
         if snapshot is None:
-            empty = FreeTierAdmitReceipt(
-                admitted=(),
-                exclusions=(
-                    NamedDrop(
-                        "*",
-                        "runtime_truth_absent",
-                        fetch_error or "live admit surfaces unavailable",
-                    ),
-                ),
-                chosen=None,
-                empty_intersection=True,
-                active_providers=(),
-                free_tier_providers=(),
-            )
-            return self._decision_from_admit(
-                task,
-                final_tier,
-                escalated,
-                esc_reason,
-                empty,
-                empty.as_eligibility_result(
-                    OmniRouteAdmitSnapshot(catalog=(), free_tier=(), connections=())
-                ),
-                endpoint=endpoint,
-                live=live,
-            )
+            # Not configured, or live surfaces unavailable: do not starve ranking.
+            return None
         receipt = admit_free_tier_active(snapshot)
         eligibility = receipt.as_eligibility_result(snapshot)
         if self.eligibility_gate is not None:
@@ -448,12 +422,13 @@ class IntelligenceService:
         if self.admit_snapshot is not None:
             return (self.admit_snapshot, omniroute_endpoint_from_env(self.providers), False, None)
         endpoint = omniroute_endpoint_from_env(self.providers)
-        if endpoint is None:
+        if endpoint is None or not str(endpoint[0] or "").strip():
             return None, None, False, None
         try:
             snapshot = load_omniroute_admit_snapshot(endpoint[0], endpoint[1])
         except LiveAdmitError as exc:
-            return None, endpoint, True, str(exc)
+            # Dead/misconfigured OmniRoute must not fail-closed the offline path.
+            return None, None, False, str(exc)
         return snapshot, endpoint, True, None
 
     def _decision_from_admit(

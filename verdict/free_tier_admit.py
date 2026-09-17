@@ -561,11 +561,13 @@ def omniroute_endpoint_from_env(
         if name != "omniroute":
             continue
         base_url = getattr(cfg, "base_url", "") or ""
+        if not str(base_url).strip():
+            return None
         key = getattr(cfg, "api_key", None)
         env_name = getattr(cfg, "api_key_env", None)
         if not key and env_name:
             key = os.getenv(str(env_name))
-        return str(base_url), key or env_key
+        return str(base_url).strip(), key or env_key
     return None
 
 
