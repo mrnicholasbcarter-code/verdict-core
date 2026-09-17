@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/claims-ledger.v1.json",
+  "title": "Verdict privacy-safe claims ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "claims", "transitions", "freshness_policies"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "claims": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/claim"}
+    },
+    "transitions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/transition"}
+    },
+    "freshness_policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_type", "ttl_seconds", "clock_skew_seconds"],
+        "properties": {
+          "source_type": {"$ref": "#/$defs/identifier"},
+          "ttl_seconds": {"anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
+          "clock_skew_seconds": {"type": "number", "minimum": 0}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "digest", "status"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/identifier"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "status": {"const": "verified"}
+      }
+    },
+    "source_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "digest", "status"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "status": {"const": "verified"}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "claim_id",
+        "subject",
+        "text_hash",
+        "status",
+        "observed_at",
+        "verified_at",
+        "confidence",
+        "source_type",
+        "source_refs",
+        "evidence_refs"
+      ],
+      "properties": {
+        "schema_version": {"const": "1"},
+        "claim_id": {"$ref": "#/$defs/identifier"},
+        "subject": {"$ref": "#/$defs/identifier"},
+        "text_hash": {"$ref": "#/$defs/digest"},
+        "status": {"enum": ["observed", "active", "verified", "superseded", "disputed"]},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "verified_at": {
+          "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "source_type": {"$ref": "#/$defs/identifier"},
+        "source_refs": {"type": "array", "items": {"$ref": "#/$defs/source_reference"}},
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/reference"}},
+        "supersedes": {"$ref": "#/$defs/identifier"}
+      },
+      "anyOf": [
+        {
+          "properties": {"source_refs": {"minItems": 1}}
+        },
+        {
+          "properties": {"evidence_refs": {"minItems": 1}}
+        }
+      ]
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "transition_id",
+        "claim_id",
+        "from_status",
+        "to_status",
+        "occurred_at",
+        "reason"
+      ],
+      "properties": {
+        "schema_version": {"const": "1"},
+        "transition_id": {"$ref": "#/$defs/identifier"},
+        "claim_id": {"$ref": "#/$defs/identifier"},
+        "from_status": {"enum": ["observed", "active", "verified", "superseded", "disputed"]},
+        "to_status": {"enum": ["observed", "active", "verified", "superseded", "disputed"]},
+        "occurred_at": {"type": "string", "format": "date-time"},
+        "reason": {"type": "string", "minLength": 1},
+        "superseded_by": {"$ref": "#/$defs/identifier"}
+      }
+    }
+  }
+}
