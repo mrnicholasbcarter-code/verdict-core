@@ -6,8 +6,8 @@ are either omitted or recorded as *skipped* with a named reason when they appear
 as free-tier admit drops.
 
 Proof results (healthy / failed / skipped) and optional ModelPassport payloads
-are persisted to a JSON file Core can read for later admit. Request-time
-budgeted confirm probes are intentionally out of scope.
+are persisted to a JSON file Core reads on serve admit. Request-time budgeted
+confirm probes run in ``verdict.admit_prove_confirm`` (not this daemon).
 """
 
 from __future__ import annotations

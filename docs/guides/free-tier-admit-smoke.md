@@ -50,9 +50,11 @@ Expect:
 - **Outcome** `selected` (or `denied` if the live intersection is genuinely empty)
 - **Transport** `sent` on a successful execute
 - JSON blob includes `admit_receipt` with `admitted`, named `exclusions`
-  (`inactive_unconnected`, `not_free_tier`, `metadata_ghost`, `opaque_auto`),
-  `chosen`, plus cheap-path **`pack_digest`** (stable `sha256:…`) and named
-  **`omissions`** (what the context pack left out and why)
+  (`inactive_unconnected`, `not_free_tier`, `metadata_ghost`, `opaque_auto`,
+  `no_passport`, `passport_stale`, `confirm_failed`, …),
+  `chosen`, cheap-path **`pack_digest`** / **`omissions`**, plus **`passport`**
+  and **`confirm`** evidence arrays (fresh prove-at-rest ∩ budgeted confirm).
+  See [admit-prove-confirm-smoke.md](admit-prove-confirm-smoke.md).
 - **Strategy** `DIRECT` for low-criticality work (not `SWARM_AUTODEV` from a
   fake tier-0 Opus fallback)
 
@@ -83,7 +85,9 @@ Expect:
 - Response header `x-verdict-model` is a concrete free∩active identity
 - Empty intersection / OmniRoute down → HTTP 503, fail-closed
 
-## Prove-at-rest (background)
+## Prove-at-rest + confirm (required for serve admit)
 
-After admit works, keep free∩active identities proved at rest:
-[prove-at-rest-smoke.md](prove-at-rest-smoke.md).
+Serve admit now requires a fresh prove-at-rest passport **and** a budgeted
+confirm. Run prove-at-rest before expecting selected offloads:
+[prove-at-rest-smoke.md](prove-at-rest-smoke.md) →
+[admit-prove-confirm-smoke.md](admit-prove-confirm-smoke.md).

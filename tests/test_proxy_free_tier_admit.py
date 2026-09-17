@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 import verdict.api as api
 from verdict.free_tier_admit import FAIL_CLOSED_REASON, NO_ELIGIBLE_TARGET, snapshot_from_payloads
 from verdict.intelligence import IntelligenceService
+from verdict.model_passports import ModelPassport
 from verdict.models import ProviderConfig
 from verdict.proxy import UpstreamProxy
 
@@ -72,7 +74,34 @@ class RecordingTransport(httpx.AsyncBaseTransport):
         return httpx.Response(404, json={"error": "missing"})
 
 
-def _admit_service(snapshot) -> IntelligenceService:
+def _fresh_passport(identity_id: str) -> ModelPassport:
+    now = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)
+    qualified = now - timedelta(minutes=1)
+    return ModelPassport(
+        provider=identity_id.split("/", 1)[0],
+        model_id=identity_id,
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=qualified,
+        last_verified_timestamp=qualified,
+        expires_at=now + timedelta(minutes=10),
+    )
+
+
+def _ok_confirm_transport():
+    def transport(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        }
+
+    return transport
+
+
+def _admit_service(snapshot, *, passports=None, confirm_transport=None) -> IntelligenceService:
     return IntelligenceService(
         primary_model="anthropic/claude-3-opus-20240229",
         providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
@@ -83,6 +112,9 @@ def _admit_service(snapshot) -> IntelligenceService:
         admit_snapshot=snapshot,
         execute_offload=False,
         ruflo_command="nonexistent_ruflo",
+        passports=passports if passports is not None else {},
+        confirm_transport=confirm_transport,
+        admit_now=datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc),
     )
 
 
@@ -119,7 +151,16 @@ def test_chat_completions_admits_then_forwards_to_omniroute(monkeypatch) -> None
         providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
     )
     transport = RecordingTransport()
-    _configure(monkeypatch, transport, _admit_service(snapshot))
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    _configure(
+        monkeypatch,
+        transport,
+        _admit_service(
+            snapshot,
+            passports={identity: _fresh_passport(identity)},
+            confirm_transport=_ok_confirm_transport(),
+        ),
+    )
 
     with TestClient(api.app) as client:
         response = client.post(
@@ -191,7 +232,16 @@ def test_upstream_down_does_not_fallback_to_public(monkeypatch) -> None:
         providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
     )
     transport = BoomTransport()
-    monkeypatch.setattr(api, "_build_intelligence", lambda: _admit_service(snapshot))
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    monkeypatch.setattr(
+        api,
+        "_build_intelligence",
+        lambda: _admit_service(
+            snapshot,
+            passports={identity: _fresh_passport(identity)},
+            confirm_transport=_ok_confirm_transport(),
+        ),
+    )
     monkeypatch.setattr(
         api,
         "_build_proxy",

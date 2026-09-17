@@ -36,6 +36,9 @@ class EligibilityVerdict(str, Enum):
     INACTIVE_UNCONNECTED = "inactive_unconnected"
     OPAQUE_AUTO = "opaque_auto"
     METADATA_GHOST = "metadata_ghost"
+    NO_PASSPORT = "no_passport"
+    PASSPORT_STALE = "passport_stale"
+    CONFIRM_FAILED = "confirm_failed"
 
 
 # States that admit a candidate into the pre-ranking eligible set.

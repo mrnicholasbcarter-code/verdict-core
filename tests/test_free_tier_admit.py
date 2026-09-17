@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,7 @@ from verdict.free_tier_admit import (
     snapshot_from_payloads,
 )
 from verdict.intelligence import IntelligenceService
+from verdict.model_passports import ModelPassport
 from verdict.models import ProviderConfig
 
 
@@ -178,7 +180,40 @@ def test_catalog_free_suffix_on_active_free_provider_is_admitted() -> None:
     assert receipt.chosen == "openrouter/google/gemma-4-31b-it:free"
 
 
-def _service(snapshot, executor=None) -> IntelligenceService:
+def _fresh_passport(identity_id: str) -> ModelPassport:
+    now = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)
+    qualified = now - timedelta(minutes=1)
+    return ModelPassport(
+        provider=identity_id.split("/", 1)[0],
+        model_id=identity_id,
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=qualified,
+        last_verified_timestamp=qualified,
+        expires_at=now + timedelta(minutes=10),
+    )
+
+
+def _ok_confirm_transport(fail: set[str] | None = None):
+    failed = fail or set()
+
+    def transport(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        if model_id in failed:
+            return {"status_code": 500, "body": {"error": {"message": "boom"}}}
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        }
+
+    return transport
+
+
+def _service(
+    snapshot, executor=None, *, passports=None, confirm_transport=None
+) -> IntelligenceService:
     return IntelligenceService(
         primary_model="anthropic/claude-3-opus-20240229",
         providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
@@ -190,6 +225,9 @@ def _service(snapshot, executor=None) -> IntelligenceService:
         offload_executor=executor,
         execute_offload=executor is not None,
         ruflo_command="nonexistent_ruflo",
+        passports=passports,
+        confirm_transport=confirm_transport,
+        admit_now=datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc),
     )
 
 
@@ -214,7 +252,13 @@ def test_intelligence_offload_selects_free_active_not_opus() -> None:
         calls.append((model_id, task))
         return "sent", "ok from offload"
 
-    svc = _service(snapshot, executor=executor)
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    svc = _service(
+        snapshot,
+        executor=executor,
+        passports={identity: _fresh_passport(identity)},
+        confirm_transport=_ok_confirm_transport(),
+    )
     decision = asyncio.run(svc.route("summarize this paragraph", criticality="low"))
     assert decision.model == "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
     assert decision.decision == "selected"
@@ -228,6 +272,36 @@ def test_intelligence_offload_selects_free_active_not_opus() -> None:
     assert decision.admit_receipt["pack_digest"]
     assert decision.admit_receipt["pack_digest"].startswith("sha256:")
     assert isinstance(decision.admit_receipt["omissions"], list)
+    assert decision.admit_receipt["passport"]
+    assert any(row["fresh"] for row in decision.admit_receipt["passport"])
+    assert decision.admit_receipt["confirm"]
+    assert any(row["confirmed"] for row in decision.admit_receipt["confirm"])
+
+
+def test_intelligence_no_passport_fail_closed_not_opus() -> None:
+    snapshot = _snapshot(
+        catalog=[
+            _catalog_row("openrouter/nvidia/nemotron-3-nano-30b-a3b:free"),
+            _catalog_row("anthropic/claude-3-opus-20240229", "claude"),
+        ],
+        free_tier=[
+            {
+                "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
+                "provider": "openrouter",
+                "freeType": "recurring-daily",
+            }
+        ],
+        providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
+    )
+    svc = _service(snapshot, passports={}, confirm_transport=_ok_confirm_transport())
+    decision = asyncio.run(svc.route("summarize this paragraph", criticality="low"))
+    assert decision.model == NO_ELIGIBLE_TARGET
+    assert decision.model != "anthropic/claude-3-opus-20240229"
+    assert decision.decision == "denied"
+    assert decision.reason == FAIL_CLOSED_REASON
+    assert decision.admit_receipt is not None
+    named = {item["reason"] for item in decision.admit_receipt["exclusions"]}
+    assert "no_passport" in named
 
 
 def test_intelligence_empty_intersection_does_not_select_primary() -> None:
@@ -426,7 +500,13 @@ def test_intelligence_receipt_carries_pack_digest_and_packed_execute() -> None:
         calls.append((model_id, task))
         return "sent", "packed-ok"
 
-    svc = _service(snapshot, executor=executor)
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    svc = _service(
+        snapshot,
+        executor=executor,
+        passports={identity: _fresh_passport(identity)},
+        confirm_transport=_ok_confirm_transport(),
+    )
     decision = asyncio.run(svc.route("cheap path pack me", criticality="low"))
     assert decision.decision == "selected"
     assert decision.admit_receipt is not None
