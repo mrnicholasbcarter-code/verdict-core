@@ -57,3 +57,27 @@ Expect:
 
 Critical work is unchanged: `verdict route "deploy production infrastructure" --criticality critical`
 still never offloads.
+
+## Harness proxy smoke (`verdict serve`)
+
+With the same tunnel + env as above, start Verdict as the harness base URL:
+
+```bash
+export LLMGATE_ALLOW_ANONYMOUS=true
+uv run python -m verdict serve --host 127.0.0.1 --port 8000
+```
+
+In another shell (same `OMNIROUTE_*` env is **not** required for the client —
+only Verdict needs it):
+
+```bash
+curl -sS http://127.0.0.1:8000/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Say hi in three words."}],"max_tokens":32,"criticality":"low"}'
+```
+
+Expect:
+
+- Upstream call is made by Verdict → OmniRoute only (no public Anthropic/OpenAI)
+- Response header `x-verdict-model` is a concrete free∩active identity
+- Empty intersection / OmniRoute down → HTTP 503, fail-closed

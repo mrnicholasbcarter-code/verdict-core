@@ -1,38 +1,77 @@
 # Coding-agent gate (Claude Code, Codex, Cursor)
 
-Paste this in under two minutes. Verdict is not a coding agent. It sits in front of the one you already use and **blocks spend** when the catalog is not qualified.
+Paste this in under two minutes. Verdict is not a coding agent. It sits in front of
+the one you already use, **admits free-tier ∩ active-provider identities**, and
+**blocks spend** when the catalog is not qualified or the intersection is empty.
 
-Need: `pip install verdict-core` and a local OpenAI-compatible gateway on `http://127.0.0.1:20128` (OmniRoute, or LiteLLM pointed at the same port).
+Need: `pip install verdict-core` (or a checkout), OmniRoute on
+`http://127.0.0.1:20128`, and **`verdict serve`** as the harness base URL.
 
-## 1. Point the agent at the gateway
+## Topology (fail-closed)
 
-Claude Code (`~/.claude/settings.json` or project `.claude/settings.json`):
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:20128"
-  }
-}
+```
+harness  →  Verdict (:8000)  →  OmniRoute (:20128)
+              admit + receipt      execute chosen model
 ```
 
-Copy the full file from [`examples/claude-code/settings.json`](../../examples/claude-code/settings.json).
+- Point the harness at **Verdict**, not OmniRoute.
+- Point Verdict at OmniRoute with `OMNIROUTE_BASE_URL` (and `OMNIROUTE_API_KEY`).
+- If Verdict or OmniRoute is down, or admit denies, the harness must **not** fall
+  back to public Anthropic/OpenAI.
+
+## 0. Start Verdict in front of OmniRoute
+
+```bash
+export OMNIROUTE_BASE_URL=http://127.0.0.1:20128
+# Never print the token. Load it into the env only.
+export OMNIROUTE_API_KEY=…   # from your OmniRoute smoke token
+export LLMGATE_ALLOW_ANONYMOUS=true   # local loopback only
+verdict serve --host 127.0.0.1 --port 8000
+```
+
+`verdict serve` exposes OpenAI-compatible `POST /v1/chat/completions`. On each
+request it runs free∩active admit (named drops on the receipt), then forwards
+the chosen **concrete** identity through OmniRoute. Empty intersection → HTTP
+503, no upstream call.
+
+Optional explicit upstream override: `LLMGATE_UPSTREAM_BASE_URL`
+(defaults to `$OMNIROUTE_BASE_URL/v1` when OmniRoute is configured).
+
+## 1. Point the agent at Verdict (OpenAI-compatible)
+
+This is the supported end-to-end path today.
 
 Codex (`~/.codex/config.toml`):
 
 ```toml
-[model_providers.omniroute]
-name = "omniroute"
-base_url = "http://127.0.0.1:20128/v1"
+[model_providers.verdict]
+name = "verdict"
+base_url = "http://127.0.0.1:8000/v1"
 ```
 
-Cursor: set the OpenAI-compatible base URL to `http://127.0.0.1:20128/v1` in models settings.
+Cursor: set the OpenAI-compatible base URL to `http://127.0.0.1:8000/v1` in
+models settings.
 
-If the gateway is down, the agent should fail to call models. That is fail-closed. Do not fall back to the public Anthropic API.
+Harness-shaped smoke (with Verdict running):
 
-## 2. Fail closed before a session spends
+```bash
+curl -sS http://127.0.0.1:8000/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"ping"}],"max_tokens":16,"criticality":"low"}'
+```
 
-Same settings file, SessionStart hook:
+Expect a concrete admitted model on `x-verdict-model` (not public Anthropic/OpenAI),
+or HTTP 503 with fail-closed deny when the intersection is empty / OmniRoute is down.
+
+## 2. Claude Code SessionStart gate
+
+Claude Code's default traffic is Anthropic Messages (`/v1/messages`). Verdict's
+proxy today is OpenAI-compatible only — full Anthropic Messages passthrough via
+Verdict is a **remaining gap**. Until then:
+
+1. Keep **SessionStart** fail-closed via `verdict hook claude-gate`.
+2. Route any OpenAI-compatible side tooling at `http://127.0.0.1:8000/v1`.
+3. Do **not** fall back to `api.anthropic.com` if the local path is down.
 
 ```json
 {
@@ -53,7 +92,12 @@ Same settings file, SessionStart hook:
 }
 ```
 
-`verdict hook claude-gate` runs `verdict catalog --management`. Exit **2** if the catalog is not qualified (`catalog_fetch_timeout`, empty, or `passed: false`). Claude Code treats exit 2 as a block.
+Copy the full file from
+[`examples/claude-code/settings.json`](../../examples/claude-code/settings.json).
+
+`verdict hook claude-gate` runs `verdict catalog --management`. Exit **2** if the
+catalog is not qualified (`catalog_fetch_timeout`, empty, or `passed: false`).
+Claude Code treats exit 2 as a block.
 
 Prove it:
 
@@ -62,12 +106,16 @@ verdict hook claude-gate
 echo $?   # 0 = admitted, 2 = blocked
 ```
 
-## 3. If the gateway is not running
+## 3. If OmniRoute is not running
 
 ```bash
-# start your local gateway on :20128, then:
+# start OmniRoute on :20128, then:
 verdict detect --json
 verdict catalog --management --json
 ```
 
-`passed: false` or `catalog_fetch_timeout` means **blocked**, not success. See [unknown ≠ healthy](unknown-not-healthy.md).
+`passed: false` or `catalog_fetch_timeout` means **blocked**, not success. See
+[unknown ≠ healthy](unknown-not-healthy.md).
+
+Live admit + execute smoke (CLI, not harness):
+[free-tier-admit-smoke.md](free-tier-admit-smoke.md).
