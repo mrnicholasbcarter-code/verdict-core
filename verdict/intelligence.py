@@ -1,8 +1,11 @@
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+from verdict.admit_prove_confirm import gate_admit_prove_confirm
 from verdict.classifier import classify
 from verdict.discovery import fetch_models
 from verdict.eligibility import EligibilityGate
@@ -18,11 +21,14 @@ from verdict.free_tier_admit import (
     build_cheap_path_context_pack,
     execute_offload_chat,
     load_omniroute_admit_snapshot,
+    normalize_omniroute_origin,
     omniroute_endpoint_from_env,
 )
 from verdict.logger import log_decision
+from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.planner import StructuredPlanner
+from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
 
 DEFAULT_PROFILE = "development"
@@ -81,6 +87,10 @@ class IntelligenceService:
         admit_snapshot: OmniRouteAdmitSnapshot | None = None,
         offload_executor: Any | None = None,
         execute_offload: bool | None = None,
+        passports: dict[str, ModelPassport] | None = None,
+        confirm_transport: ProbeTransport | None = None,
+        passport_store_path: Path | None = None,
+        admit_now: datetime | None = None,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -104,6 +114,12 @@ class IntelligenceService:
         self.offload_executor = offload_executor
         # None = execute only for a live (non-fixture) snapshot.
         self.execute_offload = execute_offload
+        # Serve admit gate: fresh prove-at-rest passports ∩ budgeted confirm.
+        # None passports → load from prove-at-rest store at request time.
+        self.passports = passports
+        self.confirm_transport = confirm_transport
+        self.passport_store_path = passport_store_path
+        self.admit_now = admit_now
         self.managed_backend_status = "offline" if allow_offline else self._probe_managed_backend()
         self._policy_version = "policy-2026-07-13.1"
 
@@ -381,6 +397,20 @@ class IntelligenceService:
             # Not configured, or live surfaces unavailable: do not starve ranking.
             return None
         receipt = admit_free_tier_active(snapshot)
+        confirm_transport = self._resolve_confirm_transport(endpoint)
+        # Live OmniRoute confirm requires consent; fixture/injected transports do not.
+        confirm_live = bool(
+            live and confirm_transport is not None and self.confirm_transport is None
+        )
+        receipt = gate_admit_prove_confirm(
+            receipt,
+            passports=self.passports,
+            passport_store_path=self.passport_store_path,
+            confirm_transport=confirm_transport,
+            now=self.admit_now,
+            live=confirm_live,
+            consented=confirm_live or self.confirm_transport is not None,
+        )
         eligibility = receipt.as_eligibility_result(snapshot)
         if self.eligibility_gate is not None:
             gated = self.eligibility_gate.evaluate(
@@ -404,6 +434,10 @@ class IntelligenceService:
                 empty_intersection=chosen is None,
                 active_providers=receipt.active_providers,
                 free_tier_providers=receipt.free_tier_providers,
+                pack_digest=receipt.pack_digest,
+                omissions=receipt.omissions,
+                passport=receipt.passport,
+                confirm=receipt.confirm,
             )
             eligibility = gated
         return self._decision_from_admit(
@@ -491,7 +525,7 @@ class IntelligenceService:
             model=chosen,
             provider=provider,
             tier=final_tier,
-            reason=f"free-tier ∩ active provider admitted {chosen}",
+            reason=f"free∩active ∩ fresh-passport ∩ confirmed admitted {chosen}",
             alternatives=list(receipt.admitted[:8]),
             escalated=escalated,
             escalation_reason=esc_reason or None,
@@ -503,10 +537,25 @@ class IntelligenceService:
             transport_outcome=transport_outcome,
             quality_outcome="unknown",
             candidate_states=eligibility_record.get("records", []),
-            safety_flags=["free_tier_active_admit", "cheap_path_context_pack"],
+            safety_flags=[
+                "free_tier_active_admit",
+                "prove_confirm_admit",
+                "cheap_path_context_pack",
+            ],
             admit_receipt=receipt.to_dict(),
             execute_preview=preview,
         )
+
+    def _resolve_confirm_transport(
+        self, endpoint: tuple[str, str | None] | None
+    ) -> ProbeTransport | None:
+        """Prefer an injected confirm transport; else OmniRoute OpenAI probe."""
+        if self.confirm_transport is not None:
+            return self.confirm_transport
+        if endpoint is None or not str(endpoint[0] or "").strip():
+            return None
+        origin = normalize_omniroute_origin(endpoint[0])
+        return openai_probe_transport(f"{origin}/v1", api_key=endpoint[1])
 
     def execute_argv(self, argv: list[str]) -> dict[str, Any]:
         """Execute an argument vector via subprocess and return structured output.

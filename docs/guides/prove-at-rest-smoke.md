@@ -3,12 +3,14 @@
 Background prover for **free-tier ∩ active-provider** OmniRoute identities.
 Paid/frontier and inactive/unconnected models are never probed; admit drops are
 recorded as `skipped` with named reasons. Request-time budgeted confirm probes
-are out of scope.
+are implemented on the serve admit path (not inside this daemon).
 
 State is written to `~/.verdict/prove-at-rest/state.json` (override with
 `--state-path` or `VERDICT_PROVE_AT_REST_STATE`). Healthy rows carry a
 `ModelPassport` payload Core can load via `verdict.prove_at_rest.load_healthy_passports`
-for later admit.
+for later admit. Serve cheap-path admit now **intersects** those passports
+and runs a budgeted confirm — see
+[admit-prove-confirm-smoke.md](admit-prove-confirm-smoke.md).
 
 ## Prerequisites
 

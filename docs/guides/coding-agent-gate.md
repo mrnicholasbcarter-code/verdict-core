@@ -122,3 +122,6 @@ Live admit + execute smoke (CLI, not harness):
 
 Background prove-at-rest (free∩active only):
 [prove-at-rest-smoke.md](prove-at-rest-smoke.md).
+
+Serve admit passport ∩ confirm gate:
+[admit-prove-confirm-smoke.md](admit-prove-confirm-smoke.md).

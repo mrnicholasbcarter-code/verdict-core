@@ -10,6 +10,9 @@ Metadata-only free-tier rows that cannot be resolved to a catalog identity, or
 whose provider is inactive/unconnected, become *named drops* rather than fake
 green. Opaque ``auto/*`` aliases are never admitted. An empty intersection
 fails closed — the caller must not treat frontier-primary fallback as success.
+
+Serve cheap-path callers then intersect this receipt with fresh prove-at-rest
+passports and a budgeted confirm probe (see ``verdict.admit_prove_confirm``).
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ _ALIAS_PREFIXES = frozenset({"oc", "kr", "cf", "or", "nv"})
 _SMALL_TOKENS = ("nano", "flash", "haiku", "mini", "small", "lite", "instant")
 
 NO_ELIGIBLE_TARGET = "no_eligible_target"
-FAIL_CLOSED_REASON = "fail_closed — empty free-tier ∩ active-provider intersection"
+FAIL_CLOSED_REASON = "fail_closed — empty free∩active ∩ fresh-passport ∩ confirmed intersection"
 
 
 class LiveAdmitError(RuntimeError):
@@ -203,6 +206,8 @@ class FreeTierAdmitReceipt:
     free_tier_providers: tuple[str, ...]
     pack_digest: str | None = None
     omissions: tuple[NamedOmission, ...] = ()
+    passport: tuple[Any, ...] = ()
+    confirm: tuple[Any, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -214,6 +219,12 @@ class FreeTierAdmitReceipt:
             "free_tier_providers": list(self.free_tier_providers),
             "pack_digest": self.pack_digest,
             "omissions": [item.to_dict() for item in self.omissions],
+            "passport": [
+                item.to_dict() if hasattr(item, "to_dict") else item for item in self.passport
+            ],
+            "confirm": [
+                item.to_dict() if hasattr(item, "to_dict") else item for item in self.confirm
+            ],
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
@@ -265,6 +276,11 @@ def _verdict_for_reason(reason: str) -> EligibilityVerdict:
         REASON_NOT_FREE_TIER: EligibilityVerdict.NOT_FREE_TIER,
         REASON_INACTIVE_UNCONNECTED: EligibilityVerdict.INACTIVE_UNCONNECTED,
         REASON_METADATA_GHOST: EligibilityVerdict.METADATA_GHOST,
+        "no_passport": EligibilityVerdict.NO_PASSPORT,
+        "passport_stale": EligibilityVerdict.PASSPORT_STALE,
+        "confirm_failed": EligibilityVerdict.CONFIRM_FAILED,
+        "confirm_budget_exhausted": EligibilityVerdict.CONFIRM_FAILED,
+        "confirm_unavailable": EligibilityVerdict.CONFIRM_FAILED,
     }
     return mapping.get(reason, EligibilityVerdict.NOT_LIVE_ELIGIBLE)
 
