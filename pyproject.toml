@@ -114,3 +114,8 @@ omit = ["tests/*", "*/__pycache__/*"]
 
 [tool.hatch.envs.default]
 dependencies = ["verdict-core"]
+
+[tool.uv]
+constraint-dependencies = [
+    "gitpython>=3.1.60",
+]
