@@ -42,13 +42,8 @@ dev = [
     "pyopenssl>=26.4.0",
     "pytest>=8.0",
     "pytest-asyncio>=1.4.0",
-<<<<<<< HEAD
     "pytest-cov>=7.1.0",
-    "ruff>=0.16.6",
-=======
-    "pytest-cov>=4.1",
     "ruff>=0.16.7",
->>>>>>> 549e95a62aaf168c12c67724473b5229d95087b4
     "mypy>=1.13",
     "vcrpy>=6.0.0",
     "types-PyYAML",
