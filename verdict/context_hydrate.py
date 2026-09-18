@@ -415,7 +415,7 @@ def _load_toml(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
-        import tomllib
+        import tomllib  # type: ignore[import-not-found]
     except ImportError:
         return _parse_context_toml_subset(path)
     try:
