@@ -50,6 +50,8 @@ REASON_REQUIRED_UNKNOWN = "required_unknown"
 REASON_UNMAPPED = "unmapped"
 REASON_STALE = "stale"
 REASON_PAID_FALLBACK = "paid_fallback"
+REASON_TASK_INSTRUCTIONS_OMITTED = "task_instructions_omitted"
+TASK_SOURCE_URI = "urn:verdict:task"
 _COMBO_PREFIXES = frozenset({"claude", "combo"})
 _ALIAS_PREFIXES = frozenset({"oc", "kr", "cf", "or", "nv"})
 _SMALL_TOKENS = ("nano", "flash", "haiku", "mini", "small", "lite", "instant")
@@ -155,11 +157,20 @@ class CheapPathContextPack:
     units: tuple[ContextUnit, ...] = ()
     included: tuple[IncludedProvenance, ...] = ()
     pack_state: PackState = "empty"
+    # BOD-110 completeness contract: the task instructions must be packed, and
+    # every task-required source must be included, before ``hydrated`` is possible.
+    task_complete: bool = True
+    required_sources: tuple[str, ...] = ()
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
         """Receipt-facing alias of ``included`` (BOD-106 / QA smoke field)."""
         return self.included
+
+    @property
+    def missing_required_sources(self) -> tuple[str, ...]:
+        included = {item.source_uri for item in self.included}
+        return tuple(uri for uri in self.required_sources if uri not in included)
 
     def to_dict(self) -> dict[str, Any]:
         sources = [item.to_dict() for item in self.included]
@@ -168,6 +179,9 @@ class CheapPathContextPack:
             "pack_id": self.pack_id,
             "plan_digest": self.plan_digest,
             "pack_state": self.pack_state,
+            "task_complete": self.task_complete,
+            "required_sources": list(self.required_sources),
+            "missing_required_sources": list(self.missing_required_sources),
             "included": sources,
             "included_sources": list(sources),
             "omissions": [item.to_dict() for item in self.omissions],
@@ -216,7 +230,7 @@ def build_cheap_path_context_pack(
         content=task,
         source="cheap_path",
         created_at=0.0,
-        source_uri="urn:verdict:task",
+        source_uri=TASK_SOURCE_URI,
     )
     slots = (task_slot, *(extra_slots or ()))
     units = []
@@ -258,18 +272,34 @@ def build_cheap_path_context_pack(
         for unit in pack.units
         if _is_workspace_provenance(unit.source_uri)
     )
+    # The task slot must survive compilation. If the budget (or a safety gate)
+    # dropped it, the compiled prompt no longer carries the instructions and
+    # must be reported as failed — never silently executed as a hydrated pack.
+    task_complete = any(unit.source_uri == TASK_SOURCE_URI for unit in pack.units)
+    omissions = gather_omissions + compiler_omissions
+    if not task_complete:
+        omissions = (
+            NamedOmission(name=TASK_SOURCE_URI, reason=REASON_TASK_INSTRUCTIONS_OMITTED),
+            *omissions,
+        )
     pack_state = classify_pack_state(
-        included=included, gathered=gathered.units, omissions=gather_omissions + compiler_omissions
+        included=included,
+        gathered=gathered.units,
+        omissions=omissions,
+        required=gathered.required_uris,
+        task_complete=task_complete,
     )
     return CheapPathContextPack(
         pack_digest=pack.digest,
         compiled_prompt=pack.compiled_prompt,
-        omissions=gather_omissions + compiler_omissions,
+        omissions=omissions,
         pack_id=pack.pack_id,
         plan_digest=pack.plan_digest or plan.digest,
         units=pack.units,
         included=included,
         pack_state=pack_state,
+        task_complete=task_complete,
+        required_sources=gathered.required_uris,
     )
 
 
@@ -298,7 +328,7 @@ def _failed_cheap_path_pack(
         content=task,
         source="cheap_path",
         created_at=0.0,
-        source_uri="urn:verdict:task",
+        source_uri=TASK_SOURCE_URI,
     )
     try:
         unit = replace(
@@ -358,11 +388,18 @@ class FreeTierAdmitReceipt:
     capability_matches: tuple[dict[str, Any], ...] = ()
     free_admitted: tuple[str, ...] = ()
     paid_admitted: tuple[str, ...] = ()
+    task_complete: bool | None = None
+    required_sources: tuple[str, ...] = ()
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
         """Receipt-facing alias of ``included`` (BOD-106 / QA smoke field)."""
         return self.included
+
+    @property
+    def missing_required_sources(self) -> tuple[str, ...]:
+        included = {item.source_uri for item in self.included}
+        return tuple(uri for uri in self.required_sources if uri not in included)
 
     def to_dict(self) -> dict[str, Any]:
         sources = [item.to_dict() for item in self.included]
@@ -375,6 +412,9 @@ class FreeTierAdmitReceipt:
             "free_tier_providers": list(self.free_tier_providers),
             "pack_digest": self.pack_digest,
             "pack_state": self.pack_state,
+            "task_complete": self.task_complete,
+            "required_sources": list(self.required_sources),
+            "missing_required_sources": list(self.missing_required_sources),
             "included": sources,
             "included_sources": list(sources),
             "omissions": [item.to_dict() for item in self.omissions],
@@ -968,8 +1008,10 @@ __all__ = [
     "REASON_OPAQUE_AUTO",
     "REASON_REQUIRED_UNKNOWN",
     "REASON_STALE",
+    "REASON_TASK_INSTRUCTIONS_OMITTED",
     "REASON_UNMAPPED",
     "REASON_WORTHY_EXCLUDES_FREE",
+    "TASK_SOURCE_URI",
     "CatalogIdentity",
     "CheapPathContextPack",
     "FreeTierAdmitReceipt",

@@ -275,3 +275,30 @@ def test_gate_capability_unit_drops_false_tools() -> None:
     assert match["admitted"] is False
     assert match["drop"]["reason"] in {"capability_mismatch", "required_unknown"}
     assert match["provenance"] or match["drop"]
+
+
+def test_task_that_exceeds_pack_budget_is_denied_not_executed(tmp_path) -> None:
+    """BOD-110: when the task itself does not fit the pack, deny — never send a pack without it."""
+    snapshot = _live_snapshot()
+    passports = {PROVEN_FREE: _passport(PROVEN_FREE), PAID_TOOLS: _passport(PAID_TOOLS)}
+    calls: list[tuple[str, str]] = []
+
+    def executor(model_id: str, packed: str) -> tuple[str, str | None]:
+        calls.append((model_id, packed))
+        return "success", "OK"
+
+    svc = _service(
+        snapshot, passports=passports, workspace_root=tmp_path, offload_executor=executor
+    )
+    huge = "summarize this paragraph. " * 20_000
+    decision = asyncio.run(svc.route(huge, criticality="low"))
+    assert decision.decision == "denied"
+    assert decision.transport_outcome == "not_sent"
+    assert "task_instructions_omitted" in decision.safety_flags
+    assert calls == [], "a pack without the task must never reach an upstream"
+    receipt = decision.admit_receipt or {}
+    assert receipt["task_complete"] is False
+    assert receipt["pack_state"] == "failed"
+    assert {item["name"]: item["reason"] for item in receipt["omissions"]}[
+        "urn:verdict:task"
+    ] == "task_instructions_omitted"

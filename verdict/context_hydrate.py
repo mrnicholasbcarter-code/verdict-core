@@ -80,11 +80,18 @@ class HydrateOmission:
 
 @dataclass(frozen=True)
 class HydrateGather:
-    """Workspace units plus gather-time omissions (compiler omissions are separate)."""
+    """Workspace units plus gather-time omissions (compiler omissions are separate).
+
+    ``required_uris`` names the task-relevant high-value sources (ADR /
+    architecture files whose path or content matches the task terms). A pack
+    that omits any of them is incomplete for this task even if some other ADR
+    landed (BOD-110).
+    """
 
     units: tuple[ContextUnit, ...]
     omissions: tuple[HydrateOmission, ...]
     workspace_root: Path
+    required_uris: tuple[str, ...] = ()
 
 
 def resolve_workspace_root(workspace_root: Path | str | None = None) -> Path:
@@ -183,7 +190,29 @@ def gather_cheap_path_units(
         units.extend(found)
         omissions.extend(missed)
 
-    return HydrateGather(tuple(units), tuple(omissions), root)
+    required = task_required_uris(task, units)
+    return HydrateGather(tuple(units), tuple(omissions), root, required)
+
+
+def task_required_uris(task: str, units: Sequence[ContextUnit]) -> tuple[str, ...]:
+    """Name the gathered high-value units this task specifically depends on.
+
+    A unit is required when it is an ADR or architecture source and its path
+    or content matches the task's query terms. Nothing is inferred beyond the
+    gathered set: a required source that does not exist on disk is not
+    invented here — it simply cannot be required.
+    """
+    terms = _query_terms(task)
+    if not terms:
+        return ()
+    required: list[str] = []
+    for unit in units:
+        if unit_hydrate_class(unit) not in (HYDRATE_CLASS_ADR, HYDRATE_CLASS_ARCHITECTURE):
+            continue
+        haystack = f"{unit.source_uri}\n{unit.content}".lower()
+        if any(term in haystack for term in terms):
+            required.append(unit.source_uri)
+    return tuple(dict.fromkeys(required))
 
 
 def _resolve_named_root(workspace: Path, name: str) -> Path | None:
@@ -426,7 +455,7 @@ def _file_matches(path: Path, terms: tuple[str, ...]) -> bool:
     if any(term in haystack for term in terms):
         return True
     try:
-        payload = path.read_text(encoding="utf-8")[:DEFAULT_MAX_FILE_BYTES].lower()
+        payload = truncate_utf8(path.read_text(encoding="utf-8"), DEFAULT_MAX_FILE_BYTES).lower()
     except (OSError, UnicodeDecodeError):
         return False
     return any(term in payload for term in terms)
@@ -464,9 +493,7 @@ def _unit_from_file(
         return None, HydrateOmission(name=source_uri, reason="unreadable")
     except OSError:
         return None, HydrateOmission(name=source_uri, reason="unreadable")
-    content = (
-        payload if len(payload.encode("utf-8")) <= max_file_bytes else payload[:max_file_bytes]
-    )
+    content = truncate_utf8(payload, max_file_bytes)
     seen_uris.add(source_uri)
     digest = _digest_text(content)
     unit = ContextUnit(
@@ -484,6 +511,20 @@ def _unit_from_file(
         created_at=0.0,
     )
     return unit, None
+
+
+def truncate_utf8(text: str, max_bytes: int) -> str:
+    """Bound ``text`` to ``max_bytes`` of UTF-8, never splitting a code point.
+
+    ``max_file_bytes`` is a byte limit: multi-byte content must not be allowed
+    to exceed it by counting characters instead (BOD-110).
+    """
+    if max_bytes <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def _relative_uri(origin: Path, path: Path) -> str:
@@ -609,4 +650,6 @@ __all__ = [
     "hydrate_priority_class",
     "resolve_mcp_root",
     "resolve_workspace_root",
+    "task_required_uris",
+    "truncate_utf8",
 ]

@@ -351,3 +351,112 @@ def test_hydrate_compiler_error_stamps_failed(tmp_path: Path, monkeypatch: objec
     assert any(item.reason == "compiler_error" for item in packed.omissions)
     assert "hydrate architecture ADR" in packed.compiled_prompt
     assert packed.pack_digest.startswith("sha256:")
+
+
+# --- BOD-110: task- and requirement-complete hydration -----------------------
+
+
+def test_unicode_content_honors_max_file_bytes_by_bytes(tmp_path: Path) -> None:
+    """``max_file_bytes`` is a byte limit; multibyte text must not exceed it."""
+    (tmp_path / "docs" / "adr").mkdir(parents=True)
+    adr = tmp_path / "docs" / "adr" / "ADR-001-unicode.md"
+    # Each "é" is 2 bytes in UTF-8: 3000 chars == 6000 bytes.
+    adr.write_text("é" * 3000, encoding="utf-8")
+
+    gathered = gather_cheap_path_units(
+        "unicode", workspace_root=tmp_path, roots=("docs/adr",), mcp_root="", max_file_bytes=1000
+    )
+    unit = next(item for item in gathered.units if item.source_uri == "docs/adr/ADR-001-unicode.md")
+    encoded = unit.content.encode("utf-8")
+    assert len(encoded) <= 1000
+    assert len(unit.content) < 1000, "char count must not be used as the byte limit"
+    # Never split a code point: the bounded content must still decode strictly.
+    encoded.decode("utf-8")
+
+
+def test_truncate_utf8_never_splits_a_code_point() -> None:
+    from verdict.context_hydrate import truncate_utf8
+
+    assert truncate_utf8("abc", 10) == "abc"
+    assert truncate_utf8("é" * 3, 3) == "é"  # 3 bytes fits one 2-byte char, not one-and-a-half
+    assert truncate_utf8("日本語", 4) == "日"
+    assert truncate_utf8("anything", 0) == ""
+
+
+def test_oversized_task_is_failed_not_hydrated(tmp_path: Path) -> None:
+    """Task instructions dropped for budget make the pack ``failed`` — never hydrated."""
+    _plant(tmp_path)
+    huge_task = "REPEAT THIS INSTRUCTION " * 2000
+
+    packed = build_cheap_path_context_pack(
+        huge_task,
+        candidate_id="openrouter/free-model",
+        token_budget=200,
+        workspace_root=tmp_path,
+        workspace_roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+    )
+    assert packed.task_complete is False
+    assert packed.pack_state == "failed"
+    named = {item.name: item.reason for item in packed.omissions}
+    assert named["urn:verdict:task"] == "task_instructions_omitted"
+    receipt = packed.to_dict()
+    assert receipt["task_complete"] is False
+    assert receipt["pack_state"] == "failed"
+    assert "REPEAT THIS INSTRUCTION" not in packed.compiled_prompt
+
+
+def test_task_relevant_adr_omitted_is_partial_even_when_another_adr_landed(tmp_path: Path) -> None:
+    """A small unrelated ADR must not let a budget-omitted task-relevant ADR read hydrated."""
+    (tmp_path / "docs" / "adr").mkdir(parents=True)
+    (tmp_path / "docs" / "architecture").mkdir(parents=True)
+    small = tmp_path / "docs" / "adr" / "ADR-001-naming.md"
+    relevant = tmp_path / "docs" / "adr" / "ADR-002-billing-ledger.md"
+    arch = tmp_path / "docs" / "architecture" / "overview.md"
+    small.write_text("# ADR-001 Naming\n\nUse kebab-case.\n", encoding="utf-8")
+    relevant.write_text(
+        "# ADR-002 Billing ledger\n\n" + ("Billing ledger invariant text. " * 200) + "\n",
+        encoding="utf-8",
+    )
+    arch.write_text("# Architecture\n\nOne control plane.\n", encoding="utf-8")
+
+    packed = build_cheap_path_context_pack(
+        "fix the billing ledger reconciliation bug",
+        candidate_id="openrouter/free-model",
+        token_budget=400,
+        workspace_root=tmp_path,
+        workspace_roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+    )
+    included = {item.source_uri for item in packed.included}
+    assert "docs/adr/ADR-001-naming.md" in included, "class-level ADR coverage is present"
+    assert "docs/adr/ADR-002-billing-ledger.md" not in included
+    assert "docs/adr/ADR-002-billing-ledger.md" in packed.required_sources
+    assert packed.missing_required_sources == ("docs/adr/ADR-002-billing-ledger.md",)
+    assert packed.pack_state == "partial"
+    receipt = packed.to_dict()
+    assert receipt["missing_required_sources"] == ["docs/adr/ADR-002-billing-ledger.md"]
+    named = {item.name: item.reason for item in packed.omissions}
+    assert named["docs/adr/ADR-002-billing-ledger.md"] == "input_budget_exhausted"
+
+
+def test_task_relevant_adr_included_is_hydrated(tmp_path: Path) -> None:
+    (tmp_path / "docs" / "adr").mkdir(parents=True)
+    (tmp_path / "docs" / "architecture").mkdir(parents=True)
+    (tmp_path / "docs" / "adr" / "ADR-002-billing-ledger.md").write_text(
+        "# ADR-002 Billing ledger\n\nLedger invariant.\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "architecture" / "overview.md").write_text(
+        "# Architecture\n\nOne control plane.\n", encoding="utf-8"
+    )
+    packed = build_cheap_path_context_pack(
+        "fix the billing ledger reconciliation bug",
+        candidate_id="openrouter/free-model",
+        workspace_root=tmp_path,
+        workspace_roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+    )
+    assert packed.required_sources == ("docs/adr/ADR-002-billing-ledger.md",)
+    assert packed.missing_required_sources == ()
+    assert packed.task_complete is True
+    assert packed.pack_state == "hydrated"

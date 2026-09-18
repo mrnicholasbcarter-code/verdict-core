@@ -42,6 +42,9 @@ from verdict.worthiness import classify_worthiness
 DEFAULT_PROFILE = "development"
 DEGRADED_PROFILE = "degraded"
 DEFAULT_TIMEOUT_MS = 1000
+TASK_INSTRUCTIONS_OMITTED_REASON = (
+    "denied — task instructions exceed the cheap-path context budget and were not packed"
+)
 
 
 @dataclass
@@ -543,7 +546,32 @@ class IntelligenceService:
             omissions=context_pack.omissions,
             included=context_pack.included,
             pack_state=context_pack.pack_state,
+            task_complete=context_pack.task_complete,
+            required_sources=context_pack.required_sources,
         )
+        if not context_pack.task_complete:
+            # BOD-110: the compiled pack no longer carries the task instructions.
+            # Executing it would send the model context without the request, so
+            # the decision is denied with a named reason instead of "hydrated".
+            return RoutingDecision(
+                model=NO_ELIGIBLE_TARGET,
+                provider="none",
+                tier=final_tier,
+                reason=TASK_INSTRUCTIONS_OMITTED_REASON,
+                escalated=escalated,
+                escalation_reason=esc_reason or None,
+                policy_version=self._policy_version,
+                degraded_mode=False,
+                managed_backend_status=self.managed_backend_status,
+                protected=False,
+                task_class=task_class,
+                decision="denied",
+                transport_outcome="not_sent",
+                quality_outcome="unknown",
+                candidate_states=eligibility_record.get("records", []),
+                safety_flags=["cheap_path_context_pack", "task_instructions_omitted"],
+                admit_receipt=receipt.to_dict(),
+            )
         packed_task = context_pack.compiled_prompt
         should_execute = self.execute_offload
         if should_execute is None:
