@@ -206,7 +206,6 @@ def _service(snapshot, *, passports, confirm_transport) -> IntelligenceService:
         discovery_ttl=60,
         admit_snapshot=snapshot,
         execute_offload=False,
-        ruflo_command="nonexistent_ruflo",
         passports=passports,
         confirm_transport=confirm_transport,
         admit_now=NOW,

@@ -84,8 +84,6 @@ class IntelligenceService:
         log_path: str,
         log_full_task: bool,
         discovery_ttl: int,
-        ruflo_command: str = "ruflo",
-        ruvector_command: str = "ruvector",
         timeout_ms: int = 1000,
         frontier_allowlist: tuple[str, ...] | None = None,
         allow_client_model_override: bool = False,
@@ -112,8 +110,6 @@ class IntelligenceService:
         self.log_path = log_path
         self.log_full_task = log_full_task
         self.discovery_ttl = discovery_ttl
-        self.ruflo_command = ruflo_command
-        self.ruvector_command = ruvector_command
         self.timeout_ms = timeout_ms
         self.frontier_allowlist = frontier_allowlist
         self.allow_client_model_override = allow_client_model_override
@@ -140,7 +136,9 @@ class IntelligenceService:
         self.metadata_snapshot = metadata_snapshot
         self.metadata_store_path = metadata_store_path
         self.identity_map = identity_map
-        self.managed_backend_status = "offline" if allow_offline else self._probe_managed_backend()
+        # Cheap path does not require Ruflo/RuVector. Those remain optional
+        # swarm/workflow adapters and must not mark routing degraded.
+        self.managed_backend_status = "offline" if allow_offline else "not_used"
         self._policy_version = "policy-2026-07-13.1"
 
     async def rank(self, eligible: list[ModelInfo], task_spec: Any) -> IntelligenceRanking:
@@ -158,26 +156,6 @@ class IntelligenceService:
             task_spec_id=str(getattr(task_spec, "prompt", ""))[:50],
             profile=self.profile,
         )
-
-    def _redact(self, text: str) -> str:
-        import re
-
-        # Basic redaction before CLI execution (sk-...)
-        return re.sub(r"sk-[a-zA-Z0-9]{10,}", "[REDACTED]", text)
-
-    def _probe_managed_backend(self) -> str:
-        try:
-            import subprocess
-
-            result = subprocess.run(
-                [self.ruflo_command, "guidance", "gates", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=0.5,
-            )
-            return "healthy" if result.returncode == 0 else "unavailable"
-        except Exception:
-            return "unavailable"
 
     def static_catalog(self) -> list[ModelInfo]:
         """Build routing candidates from configured provider models only.
@@ -206,37 +184,15 @@ class IntelligenceService:
         return candidates
 
     def readiness(self) -> ReadinessReport:
-        def _get_version(cmd: str) -> str:
-            try:
-                result = subprocess.run(
-                    [cmd, "--version"], capture_output=True, text=True, timeout=0.5
-                )
-                if result.returncode == 0:
-                    # Take first line of output
-                    return result.stdout.splitlines()[0].strip() if result.stdout else "unknown"
-                else:
-                    return "unknown"
-            except Exception:
-                return "unknown"
-
-        ruflo_version = _get_version(self.ruflo_command)
-        ruvector_version = _get_version(self.ruvector_command)
-
-        status = (
-            "ready"
-            if self.profile != "production" or self.managed_backend_status != "unavailable"
-            else "not_ready"
-        )
-        degraded = self.managed_backend_status == "unavailable"
         return ReadinessReport(
-            status=status,
-            production_ready=(not degraded),
+            status="ready",
+            production_ready=True,
             profile=self.profile,
             managed_backend_status=self.managed_backend_status,
-            degraded_mode=degraded,
+            degraded_mode=False,
             policy_version=self._policy_version,
-            reason="ready" if not degraded else "managed intelligence unavailable",
-            adapter_versions={"ruflo": ruflo_version, "ruvector": ruvector_version},
+            reason="ready",
+            adapter_versions={},
         )
 
     async def route(
@@ -258,21 +214,6 @@ class IntelligenceService:
                 context = task["context"]
         else:
             task_str = task
-
-        # Hard deterministic floor logic here.
-        if not self.allow_offline:
-            redacted_task = self._redact(task_str)
-            # Attempt an async call or subprocess with timeout to Ruflo
-            try:
-                import subprocess
-
-                subprocess.run(
-                    [self.ruflo_command, "hooks", "model-route", "--context", redacted_task],
-                    capture_output=True,
-                    timeout=0.2,
-                )
-            except Exception:
-                pass
 
         # Fallback to strict heuristic scan
         eff_tier, heuristic_reason = scan(task_str)
@@ -359,7 +300,7 @@ class IntelligenceService:
                 escalated=escalated,
                 escalation_reason=esc_reason or None,
                 policy_version=self._policy_version,
-                degraded_mode=(self.managed_backend_status == "unavailable"),
+                degraded_mode=False,
                 managed_backend_status=self.managed_backend_status,
                 protected=(final_tier == 0),
                 decision="fallback" if best_model is None else "selected",
@@ -381,7 +322,7 @@ class IntelligenceService:
                 escalated=escalated,
                 escalation_reason=esc_reason or None,
                 policy_version=self._policy_version,
-                degraded_mode=(self.managed_backend_status == "unavailable"),
+                degraded_mode=False,
                 managed_backend_status=self.managed_backend_status,
                 protected=(final_tier == 0),
                 decision="selected",
@@ -571,7 +512,7 @@ class IntelligenceService:
                 escalated=escalated,
                 escalation_reason=esc_reason or None,
                 policy_version=self._policy_version,
-                degraded_mode=(self.managed_backend_status == "unavailable"),
+                degraded_mode=False,
                 managed_backend_status=self.managed_backend_status,
                 protected=False,
                 task_class=task_class,
@@ -624,8 +565,6 @@ class IntelligenceService:
             safety_flags.append(f"worthiness_{receipt.task_class}")
         if receipt.requirements:
             safety_flags.append("capability_hard_gate")
-        # Cheap-path chooser is the selector; Ruflo absence is not degraded mode.
-        degraded = (self.managed_backend_status == "unavailable") and not chooser_owned
         return RoutingDecision(
             model=chosen,
             provider=provider,
@@ -635,7 +574,7 @@ class IntelligenceService:
             escalated=escalated,
             escalation_reason=esc_reason or None,
             policy_version=self._policy_version,
-            degraded_mode=degraded,
+            degraded_mode=False,
             managed_backend_status=self.managed_backend_status,
             protected=False,
             task_class=task_class,
