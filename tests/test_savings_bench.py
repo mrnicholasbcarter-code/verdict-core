@@ -23,6 +23,7 @@ from verdict.savings_execution import (
     ArmExecution,
     ArmRequest,
     canonical_input_hash,
+    input_hash_from_sent_payload,
     validate_quality,
 )
 from verdict.savings_live import (
@@ -363,7 +364,9 @@ def test_fallback_identity_within_attempt_chain_is_explained_and_bound() -> None
     assert explained
     for task in explained:
         assert task["identity_binding"]["bound"] is True
-        assert "fell back within the attempt chain" in task["identity_binding"]["explanation"]
+        assert (
+            "fell back within the observed attempt chain" in task["identity_binding"]["explanation"]
+        )
         assert "completed_identity_not_in_attempt_chain" not in task["withhold_reasons"]
 
 
@@ -451,3 +454,144 @@ def test_omniroute_arm_executor_without_headers_yields_unbound_evidence() -> Non
     assert execution.completed_with == ""
     with pytest.raises(ValueError):
         parse_measured_cost({"headers": dict(execution.headers)})
+
+
+# --- BOD-116: evidence must be observed from the gateway, never copied --------
+
+
+def _arm_request(arm: str = "verdict", prompt: str = "Debug the null dereference.") -> ArmRequest:
+    criteria = ("names the null path",)
+    return ArmRequest(
+        arm=arm,
+        task_id="t",
+        prompt=prompt,
+        acceptance_criteria=criteria,
+        input_hash=canonical_input_hash(prompt, criteria),
+        model="opencode/hy3-free",
+        routed_model="opencode/hy3-free" if arm == "verdict" else None,
+        attempt_chain=("opencode/hy3-free", "opencode/fallback-free") if arm == "verdict" else (),
+    )
+
+
+def test_omniroute_executor_ignores_body_model_without_identity_header() -> None:
+    """An echoed request alias in the body is not provider-bound identity."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"X-OmniRoute-Request-Id": "req-1"},
+            json={"model": "auto/cheap", "choices": [{"message": {"content": "x"}}]},
+        )
+
+    execute = omniroute_arm_executor(
+        "http://127.0.0.1:20128", transport=httpx.MockTransport(handler)
+    )
+    execution = execute(_arm_request())
+    assert execution.completed_with == ""
+    assert execution.receipt["identity_source"] == "none"
+
+
+def test_omniroute_executor_input_hash_is_derived_from_sent_bytes() -> None:
+    """The execution's input hash is recomputed from the bytes that left the client."""
+    sent: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        return httpx.Response(
+            200,
+            headers={"X-OmniRoute-Request-Id": "req-1", "X-OmniRoute-Model": "opencode/hy3-free"},
+            json={"choices": [{"message": {"content": "x"}}]},
+        )
+
+    execute = omniroute_arm_executor(
+        "http://127.0.0.1:20128", transport=httpx.MockTransport(handler)
+    )
+
+    honest = execute(_arm_request())
+    assert honest.input_hash == input_hash_from_sent_payload(sent[-1])
+    assert honest.input_hash == _arm_request().input_hash
+    assert honest.receipt["input_hash_source"] == "sent_payload"
+    assert honest.receipt["sent_payload_digest"].startswith("sha256:")
+
+    # A request whose declared hash does not describe the prompt actually sent
+    # must be caught: the executor cannot simply echo request.input_hash.
+    stale = _arm_request()
+    stale = ArmRequest(
+        **{**stale.__dict__, "input_hash": canonical_input_hash("other prompt", ("a",))}
+    )
+    mismatched = execute(stale)
+    assert mismatched.input_hash != stale.input_hash
+    assert mismatched.input_hash == input_hash_from_sent_payload(sent[-1])
+
+
+def test_input_hash_from_sent_payload_rejects_unparseable_bodies() -> None:
+    assert input_hash_from_sent_payload(b"not json") == ""
+    assert input_hash_from_sent_payload(b'{"messages": []}') == ""
+
+
+def test_omniroute_executor_attempt_chain_is_observed_not_planned() -> None:
+    chain_header: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "X-OmniRoute-Request-Id": "req-1",
+                "X-OmniRoute-Model": "opencode/fallback-free",
+                **chain_header,
+            },
+            json={"choices": [{"message": {"content": "x"}}]},
+        )
+
+    execute = omniroute_arm_executor(
+        "http://127.0.0.1:20128", transport=httpx.MockTransport(handler)
+    )
+
+    unobserved = execute(_arm_request())
+    assert unobserved.attempt_chain == (), "planned chain must not be reported as observed"
+
+    chain_header["X-OmniRoute-Attempt-Chain"] = "opencode/hy3-free, opencode/fallback-free"
+    observed = execute(_arm_request())
+    assert observed.attempt_chain == ("opencode/hy3-free", "opencode/fallback-free")
+
+
+def test_planned_fallback_without_observed_chain_is_refused() -> None:
+    """A completed model that differs from routed needs gateway chain evidence, not a plan."""
+
+    def fallback_without_receipt(request: ArmRequest) -> ArmExecution:
+        if request.arm == "verdict" and len(request.attempt_chain) > 1:
+            execution = _fake_executor(completed={"verdict": request.attempt_chain[1]})(request)
+            return ArmExecution(**{**execution.__dict__, "attempt_chain": ()})
+        return _fake_executor()(request)
+
+    report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH, execute_arm=fallback_without_receipt)
+    fell_back = [
+        t
+        for t in report["tasks"]
+        if t["identity_binding"]["completed_with"] != t["verdict"]["routed"]
+    ]
+    assert fell_back
+    for task in fell_back:
+        assert task["savings_claimed"] is False
+        assert "verdict:completed_identity_not_in_attempt_chain" in task["withhold_reasons"]
+        assert task["identity_binding"]["bound"] is False
+        assert task["identity_binding"]["attempt_chain"] == []
+
+
+def test_live_refuses_when_baseline_output_fails_checks() -> None:
+    """A cheaper Verdict answer is not savings if the frontier baseline failed the task."""
+    report = run_savings_bench(
+        DEFAULT_SAVINGS_FIXTURE_PATH,
+        execute_arm=_fake_executor(
+            outputs={
+                "direct": "unrelated chatter",
+                "verdict": "Null path found in the ADR-governed receipt serializer; control plane test receipt.",
+            }
+        ),
+    )
+    for task in report["tasks"]:
+        assert task["direct"]["quality"]["passed"] is False
+        assert task["savings_claimed"] is False
+        assert "baseline_quality_miss" in task["withhold_reasons"]
+        assert "quality_miss" not in task["withhold_reasons"], "verdict arm quality is separate"
+    assert report["aggregate"]["savings_claimed_count"] == 0

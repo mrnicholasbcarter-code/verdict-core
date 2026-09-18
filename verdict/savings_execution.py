@@ -30,11 +30,47 @@ EVIDENCE_HEADER_PREFIX = "x-omniroute-"
 EXECUTION_ID_HEADERS = ("x-omniroute-request-id", "x-request-id", "x-verdict-request-id")
 
 
+def render_task_message(prompt: str, acceptance_criteria: Sequence[str]) -> str:
+    """The exact user-message text both arms receive. This *is* the canonical input."""
+    criteria = "\n".join(f"- {item}" for item in acceptance_criteria)
+    return f"{prompt}\n\nAcceptance criteria:\n{criteria}"
+
+
 def canonical_input_hash(prompt: str, acceptance_criteria: Sequence[str]) -> str:
-    """Hash of the exact task input both arms must receive."""
-    payload = {"prompt": prompt, "acceptance_criteria": list(acceptance_criteria)}
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+    """Hash of the exact task input both arms must receive.
+
+    Defined over the rendered user message so that an executor can recompute
+    it from the bytes it actually transmitted (:func:`input_hash_from_sent_payload`)
+    rather than echoing the value it was handed.
+    """
+    rendered = render_task_message(prompt, acceptance_criteria)
+    return f"sha256:{hashlib.sha256(rendered.encode('utf-8')).hexdigest()}"
+
+
+def input_hash_from_sent_payload(content: bytes) -> str:
+    """Recompute the canonical input hash from a serialized chat-completions body.
+
+    Returns ``""`` when the body is not JSON or carries no user message, so the
+    caller's ``input_hash_mismatch`` gate fires instead of passing vacuously.
+    """
+    try:
+        body = json.loads(content)
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    messages = body.get("messages") if isinstance(body, Mapping) else None
+    if not isinstance(messages, list):
+        return ""
+    user_messages = [
+        item
+        for item in messages
+        if isinstance(item, Mapping)
+        and item.get("role") == "user"
+        and isinstance(item.get("content"), str)
+    ]
+    if not user_messages:
+        return ""
+    task_text = str(user_messages[-1]["content"])
+    return f"sha256:{hashlib.sha256(task_text.encode('utf-8')).hexdigest()}"
 
 
 def output_digest(output: str) -> str:
@@ -64,9 +100,8 @@ class ArmRequest:
         items: list[dict[str, str]] = []
         if self.context_envelope:
             items.append({"role": "system", "content": self.context_envelope})
-        criteria = "\n".join(f"- {item}" for item in self.acceptance_criteria)
         items.append(
-            {"role": "user", "content": f"{self.prompt}\n\nAcceptance criteria:\n{criteria}"}
+            {"role": "user", "content": render_task_message(self.prompt, self.acceptance_criteria)}
         )
         return items
 
@@ -181,10 +216,12 @@ def execution_evidence_gaps(
         gaps.append(f"{request.arm}:upstream_status_{execution.status_code}")
     if request.arm == ARM_VERDICT:
         routed = request.routed_model or ""
-        chain = tuple(execution.attempt_chain or request.attempt_chain)
+        # Only the chain the gateway *reported* counts. The planned chain on the
+        # request explains what Verdict intended, not what happened.
+        chain = tuple(execution.attempt_chain)
         if routed and execution.completed_with != routed and execution.completed_with not in chain:
             # A completed identity that is neither the routed pick nor a named
-            # fallback in the attempt chain cannot be explained; refuse.
+            # fallback in the observed attempt chain cannot be explained; refuse.
             gaps.append(f"{request.arm}:completed_identity_not_in_attempt_chain")
     return gaps
 
@@ -193,13 +230,18 @@ def explain_identity(request: ArmRequest, execution: ArmExecution) -> dict[str, 
     """Bind routed → completed identity for the Verdict arm and explain any difference."""
     routed = request.routed_model
     completed = execution.completed_with
-    chain = list(execution.attempt_chain or request.attempt_chain)
+    chain = list(execution.attempt_chain)
     if routed is None:
         explanation = "direct arm: fixed frontier identity"
     elif completed == routed:
         explanation = "completed with the routed identity"
     elif completed in chain:
-        explanation = f"routed {routed} fell back within the attempt chain to {completed}"
+        explanation = f"routed {routed} fell back within the observed attempt chain to {completed}"
+    elif completed in request.attempt_chain:
+        explanation = (
+            f"completed identity {completed} was a planned fallback but the gateway "
+            "reported no attempt chain — not in the attempt chain — unbound"
+        )
     else:
         explanation = f"completed identity {completed} is not in the attempt chain — unbound"
     return {
@@ -207,6 +249,7 @@ def explain_identity(request: ArmRequest, execution: ArmExecution) -> dict[str, 
         "completed_with": completed,
         "gateway": execution.gateway,
         "attempt_chain": chain,
+        "planned_attempt_chain": list(request.attempt_chain),
         "bound": routed is None or completed == routed or completed in chain,
         "explanation": explanation,
     }
@@ -225,6 +268,8 @@ __all__ = [
     "evaluate_output_against_checks",
     "execution_evidence_gaps",
     "explain_identity",
+    "input_hash_from_sent_payload",
     "output_digest",
+    "render_task_message",
     "validate_quality",
 ]

@@ -8,8 +8,16 @@ each arm is a real ``POST /v1/chat/completions`` against that gateway.
 Evidence returned per arm (see :class:`verdict.savings_execution.ArmExecution`):
 
 * ``execution_id`` — ``X-OmniRoute-Request-Id`` (or the response body ``id``),
-* ``completed_with`` — ``X-OmniRoute-Model`` / ``X-OmniRoute-Completed-With``,
-  falling back to the body ``model`` only when no header is present,
+* ``completed_with`` — ``X-OmniRoute-Model`` / ``X-OmniRoute-Completed-With``
+  **only**. The body ``model`` is an echo of the request alias and is never
+  treated as provider-bound identity; without the header the arm is
+  ``identity_unbound`` and cannot claim,
+* ``input_hash`` — recomputed from the exact bytes this client transmitted
+  (:func:`verdict.savings_execution.input_hash_from_sent_payload`), never
+  copied from the request,
+* ``attempt_chain`` — ``X-OmniRoute-Attempt-Chain`` (comma-separated) when the
+  gateway reports one; otherwise empty. The *planned* chain on the request is
+  never reported as observed,
 * cost/tokens/cache — the raw ``x-omniroute-*`` headers, consumed by
   :func:`verdict.savings_bench.parse_measured_cost`; nothing is estimated,
 * the produced output text (digested in the evidence bundle, never stored).
@@ -20,6 +28,8 @@ recorded response would not be an execution.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -27,13 +37,19 @@ from typing import Any
 import httpx
 
 from verdict.free_tier_admit import normalize_omniroute_origin
-from verdict.savings_execution import ArmExecution, ArmExecutor, ArmRequest
+from verdict.savings_execution import (
+    ArmExecution,
+    ArmExecutor,
+    ArmRequest,
+    input_hash_from_sent_payload,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 120.0
 DEFAULT_MAX_TOKENS = 1024
 GATEWAY = "omniroute"
 _ID_HEADERS = ("x-omniroute-request-id", "x-request-id")
 _MODEL_HEADERS = ("x-omniroute-model", "x-omniroute-completed-with")
+_CHAIN_HEADERS = ("x-omniroute-attempt-chain", "x-omniroute-fallback-chain")
 
 
 class LiveExecutorUnavailableError(RuntimeError):
@@ -89,8 +105,11 @@ def omniroute_arm_executor(
             "max_tokens": max_tokens,
             "stream": False,
         }
+        # Serialize once and send those exact bytes so the input hash we report
+        # describes what actually left this process, not a re-encoding of it.
+        content = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         with httpx.Client(timeout=timeout, transport=transport, follow_redirects=False) as client:
-            response = client.post(url, headers=headers, json=payload)
+            response = client.post(url, headers=headers, content=content)
         try:
             body = response.json()
         except ValueError:
@@ -98,28 +117,35 @@ def omniroute_arm_executor(
         body_map: Mapping[str, Any] = body if isinstance(body, Mapping) else {}
         response_headers = {key.lower(): value for key, value in response.headers.items()}
         execution_id = _first_header(response_headers, _ID_HEADERS) or str(body_map.get("id") or "")
-        completed_with = _first_header(response_headers, _MODEL_HEADERS) or str(
-            body_map.get("model") or ""
+        # Identity is provider-bound only when the gateway asserts it in a header.
+        # ``body.model`` echoes the requested alias and proves nothing.
+        completed_with = _first_header(response_headers, _MODEL_HEADERS) or ""
+        chain_header = _first_header(response_headers, _CHAIN_HEADERS)
+        observed_chain = (
+            tuple(part.strip() for part in chain_header.split(",") if part.strip())
+            if chain_header
+            else ()
         )
         raw_usage = body_map.get("usage")
         usage: dict[str, Any] = dict(raw_usage) if isinstance(raw_usage, Mapping) else {}
         receipt: dict[str, Any] = {
             "status_code": response.status_code,
             "usage": usage,
-            "identity_source": (
-                "header" if _first_header(response_headers, _MODEL_HEADERS) else "body.model"
-            ),
+            "identity_source": "header" if completed_with else "none",
+            "input_hash_source": "sent_payload",
+            "sent_payload_digest": f"sha256:{hashlib.sha256(content).hexdigest()}",
+            "attempt_chain_source": "header" if observed_chain else "none",
         }
         return ArmExecution(
             arm=request.arm,
             execution_id=execution_id,
-            input_hash=request.input_hash,
+            input_hash=input_hash_from_sent_payload(content),
             completed_with=completed_with,
             gateway=GATEWAY,
             output=_content_of(body_map),
             headers=response_headers,
             receipt=receipt,
-            attempt_chain=request.attempt_chain,
+            attempt_chain=observed_chain,
             status_code=response.status_code,
         )
 
