@@ -471,7 +471,11 @@ def test_admit_receipt_selected_because_survives_receipts_db_round_trip() -> Non
     receipt = stored.routing_decision.receipt
     assert receipt is not None
     assert "selected_because" in pre_embed
-    assert "selected_because" in receipt, "selected_because present pre-embed but missing post-embed"
+    assert "selected_because" in receipt, (
+        "selected_because present pre-embed but missing post-embed"
+    )
     assert receipt["selected_because"] == pre_embed["selected_because"]
     assert receipt["chooser_ranked_admitted"] is True
-    assert stored.routing_decision.selected_route["selected_because"] == pre_embed["selected_because"]
+    assert (
+        stored.routing_decision.selected_route["selected_because"] == pre_embed["selected_because"]
+    )
