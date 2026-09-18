@@ -9,8 +9,6 @@ import pytest
 
 from verdict.savings_bench import (
     DEFAULT_SAVINGS_FIXTURE_PATH,
-    FREE_IDENTITY,
-    FRONTIER_IDENTITY,
     TALK_TRACK,
     format_savings_report,
     parse_measured_cost,
@@ -22,6 +20,7 @@ def test_parse_measured_cost_reads_omniroute_headers_only() -> None:
     cost = parse_measured_cost(
         {
             "headers": {
+                "X-OmniRoute-Model": "cx/gpt-5.6-sol",
                 "X-OmniRoute-Response-Cost": "0.012",
                 "X-OmniRoute-Tokens-In": "100",
                 "X-OmniRoute-Tokens-Out": "20",
@@ -41,6 +40,15 @@ def test_parse_measured_cost_rejects_invented_fields() -> None:
         parse_measured_cost({"estimated_usd": 0.5, "headers": {}})
 
 
+def test_arm_without_used_model_fails_closed(tmp_path: Path) -> None:
+    fixture = json.loads(DEFAULT_SAVINGS_FIXTURE_PATH.read_text())
+    del fixture["tasks"][0]["direct"]["headers"]["X-OmniRoute-Model"]
+    path = tmp_path / "missing-model.json"
+    path.write_text(json.dumps(fixture))
+    with pytest.raises(ValueError, match="must specify the model used"):
+        run_savings_bench(path)
+
+
 def test_savings_bench_measures_three_legit_tasks_and_withholds_quality_miss() -> None:
     report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH)
     assert report["talk_track"] == TALK_TRACK
@@ -54,7 +62,6 @@ def test_savings_bench_measures_three_legit_tasks_and_withholds_quality_miss() -
     assert debug["verdict"]["included_sources"]
     assert debug["verdict"]["cost_source"] == "headers"
     assert debug["direct"]["cost_source"] == "headers"
-    assert debug["verdict"]["completed_with"] == FREE_IDENTITY
     assert debug["verdict"]["task_class"] == "ordinary"
     assert debug["verdict"]["cache_hit"] is False
     assert debug["savings_claimed"] is True
@@ -63,11 +70,9 @@ def test_savings_bench_measures_three_legit_tasks_and_withholds_quality_miss() -
     refactor = by_id["refactor-with-tests"]
     assert refactor["savings_claimed"] is True
     assert refactor["verdict"]["pack_state"] == "hydrated"
-    assert refactor["verdict"]["completed_with"] == FREE_IDENTITY
 
     miss = by_id["implement-from-ac"]
     assert miss["verdict"]["quality"]["passed"] is False
-    assert miss["verdict"]["completed_with"] == FREE_IDENTITY
     assert miss["savings_claimed"] is False
     assert miss["withhold_reason"] == "quality_miss"
     assert miss["deltas"]["cost_usd"] < 0
@@ -80,31 +85,43 @@ def test_savings_bench_measures_three_legit_tasks_and_withholds_quality_miss() -
     )
 
 
-def test_savings_bench_stamps_current_completed_with_identities() -> None:
+def test_each_arm_specifies_the_model_the_cost_belongs_to() -> None:
+    fixture = json.loads(DEFAULT_SAVINGS_FIXTURE_PATH.read_text())
+    expected: dict[str, dict[str, str]] = {}
+    for task in fixture["tasks"]:
+        expected[task["id"]] = {
+            "direct": task["direct"]["headers"]["X-OmniRoute-Model"],
+            "verdict": task["verdict"]["headers"]["X-OmniRoute-Model"],
+        }
+        assert expected[task["id"]]["direct"]
+        assert expected[task["id"]]["verdict"]
     report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH)
     encoded = json.dumps(report)
     assert "claude-3-opus" not in encoded
-    assert report["frontier_model"] == FRONTIER_IDENTITY
-    assert FRONTIER_IDENTITY == "cx/gpt-5.6-sol"
-    assert FREE_IDENTITY == "opencode/hy3-free"
+    assert "FREE_IDENTITY" not in encoded
+    assert "FRONTIER_IDENTITY" not in encoded
     for task in report["tasks"]:
-        assert task["direct"]["model"] == FRONTIER_IDENTITY
-        assert task["direct"]["completed_with"] == FRONTIER_IDENTITY
-        assert task["verdict"]["completed_with"] == task["verdict"]["model"]
-        assert task["verdict"]["completed_with"] == FREE_IDENTITY
+        wanted = expected[task["task_id"]]
+        assert task["direct"]["completed_with"] == wanted["direct"]
+        assert task["verdict"]["completed_with"] == wanted["verdict"]
+        assert task["verdict"]["routed"]
         assert "opus" not in task["direct"]["completed_with"]
         assert "opus" not in task["verdict"]["completed_with"]
+        assert "opus" not in task["verdict"]["routed"]
     rendered = format_savings_report(report)
-    assert f"frontier_model: {FRONTIER_IDENTITY}" in rendered
-    assert f"direct={FRONTIER_IDENTITY}" in rendered
-    assert f"verdict={FREE_IDENTITY}" in rendered
+    assert "direct_used=" in rendered
+    assert "verdict_used=" in rendered
+    assert "routed=" in rendered
+    used_models = {task["verdict"]["completed_with"] for task in report["tasks"]}
+    assert len(used_models) > 1
 
 
 def test_cheaper_model_cache_hit_is_measured_and_not_sold_as_savings() -> None:
     report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH)
     by_id = {task["task_id"]: task for task in report["tasks"]}
     replay = by_id["debug-null-deref-cache-replay"]
-    assert replay["verdict"]["completed_with"] == FREE_IDENTITY
+    assert replay["verdict"]["completed_with"]
+    assert replay["verdict"]["routed"]
     assert replay["verdict"]["task_class"] == "ordinary"
     assert replay["verdict"]["cache_hit"] is True
     assert replay["direct"]["cache_hit"] is False
@@ -116,6 +133,7 @@ def test_cheaper_model_cache_hit_is_measured_and_not_sold_as_savings() -> None:
     assert "cache_hits: 1" in rendered
     assert "cache_hit=true" in rendered
     assert "withheld:cache_hit_is_not_model_savings" in rendered
+    assert f"verdict_used={replay['verdict']['completed_with']}" in rendered
 
 
 def test_cmd_benchmark_savings_writes_we_measure_report(
@@ -129,11 +147,16 @@ def test_cmd_benchmark_savings_writes_we_measure_report(
     assert "talk_track: we measure" in out
     assert "withheld:quality_miss" in out
     assert "withheld:cache_hit_is_not_model_savings" in out
-    assert "direct=cx/gpt-5.6-sol" in out
-    assert "verdict=opencode/hy3-free" in out
+    assert "direct_used=" in out
+    assert "verdict_used=" in out
+    assert "routed=" in out
     assert "cache_hit=true" in out
     assert "claude-3-opus" not in out
     payload = json.loads(output.read_text())
     assert payload["talk_track"] == "we measure"
     assert payload["aggregate"]["task_count"] == 4
     assert payload["aggregate"]["cache_hit_count"] == 1
+    for task in payload["tasks"]:
+        assert task["direct"]["completed_with"]
+        assert task["verdict"]["completed_with"]
+        assert task["verdict"]["routed"]

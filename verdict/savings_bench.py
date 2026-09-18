@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from verdict.classifier import classify
 from verdict.context_hydrate import DEFAULT_CONTEXT_ROOTS
 from verdict.free_tier_admit import OmniRouteAdmitSnapshot, snapshot_from_payloads
 from verdict.intelligence import IntelligenceService
@@ -43,13 +44,40 @@ COST_HEADER = "x-omniroute-response-cost"
 TOKENS_IN_HEADER = "x-omniroute-tokens-in"
 TOKENS_OUT_HEADER = "x-omniroute-tokens-out"
 CACHE_HIT_HEADER = "x-omniroute-cache-hit"
+MODEL_HEADER = "x-omniroute-model"
 _FETCHED = "2026-09-18T18:00:00Z"
 _NOW = datetime(2026, 9, 18, 18, 0, tzinfo=timezone.utc)
-FREE_IDENTITY = "opencode/hy3-free"
-_FREE = FREE_IDENTITY
-FRONTIER_IDENTITY = "cx/gpt-5.6-sol"
-_FRONTIER = FRONTIER_IDENTITY
 _KINDS = frozenset({"debug", "refactor_tests", "implement_from_ac"})
+
+
+@dataclass(frozen=True)
+class _CatalogIdentity:
+    identity_id: str
+    provider: str
+    free: bool = False
+    free_model_id: str | None = None
+    tools: bool = True
+    vision: bool = False
+    context: int | None = None
+
+
+# Representative catalog so the chooser actually chooses. None of these slugs
+# is the measured identity — that must be specified on each arm.
+_CATALOG: tuple[_CatalogIdentity, ...] = (
+    _CatalogIdentity(
+        "opencode/hy3-free", "opencode", free=True, free_model_id="hy3-free"
+    ),
+    _CatalogIdentity(
+        "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
+        "openrouter",
+        free=True,
+        free_model_id="nvidia/nemotron-3-nano-30b-a3b:free",
+        tools=False,
+    ),
+    _CatalogIdentity("groq/llama-3.3-70b-versatile", "groq", context=131072),
+    _CatalogIdentity("cx/gpt-5.6-sol", "cx", vision=True, context=200000),
+    _CatalogIdentity("openai/gpt-5.5", "openai", vision=True, context=200000),
+)
 
 
 @dataclass(frozen=True)
@@ -115,13 +143,13 @@ def parse_measured_cost(arm: Mapping[str, Any]) -> MeasuredCost:
     )
 
 
-def _completed_with(arm: Mapping[str, Any], fallback: str) -> str:
-    """Identity that actually completed the arm, never an inferred default."""
+def _used_model(arm: Mapping[str, Any]) -> str:
+    """Identity the arm's measured cost belongs to. Must be specified, never inferred."""
     headers = _headers(arm)
-    for key in ("x-omniroute-model", "x-omniroute-completed-with"):
+    for key in (MODEL_HEADER, "x-omniroute-completed-with"):
         stamped = headers.get(key)
-        if stamped:
-            return stamped
+        if isinstance(stamped, str) and stamped.strip():
+            return stamped.strip()
     receipt = _receipt(arm)
     for key in ("completed_with", "model"):
         raw = arm.get(key)
@@ -130,7 +158,10 @@ def _completed_with(arm: Mapping[str, Any], fallback: str) -> str:
         stamped = receipt.get(key)
         if isinstance(stamped, str) and stamped.strip():
             return stamped.strip()
-    return fallback
+    raise ValueError(
+        "each arm must specify the model used via X-OmniRoute-Model, "
+        "completed_with, or model — identities are not inferred"
+    )
 
 
 def _quality(arm: Mapping[str, Any]) -> dict[str, Any]:
@@ -178,6 +209,7 @@ def _validate_savings_fixture(fixture: dict[str, Any]) -> None:
                 raise ValueError(f"task {task_id!r} missing {arm_name} arm")
             parse_measured_cost(arm)
             _quality(arm)
+            _used_model(arm)
     if len(kinds) < 2:
         raise ValueError(
             "fixture must cover at least two of debug / refactor_tests / implement_from_ac"
@@ -191,39 +223,41 @@ def _prov(value: bool | int) -> ProvenancedField:
 
 
 def _metadata() -> MetadataSnapshot:
+    records = []
+    for row in _CATALOG:
+        caps = CapabilityCaps(
+            tools=_prov(row.tools),
+            vision=_prov(row.vision),
+            context=_prov(row.context) if row.context is not None else None,
+        )
+        records.append(
+            ModelMetadataRecord(id=row.identity_id, caps=caps, omniroute_ids=(row.identity_id,))
+        )
     return MetadataSnapshot(
-        schema_version="1",
-        refreshed_at=_FETCHED,
-        sources={},
-        records=(
-            ModelMetadataRecord(
-                id=_FREE,
-                caps=CapabilityCaps(tools=_prov(True), vision=_prov(False)),
-                omniroute_ids=(_FREE,),
-            ),
-            ModelMetadataRecord(
-                id=_FRONTIER,
-                caps=CapabilityCaps(tools=_prov(True), vision=_prov(True), context=_prov(200000)),
-                omniroute_ids=(_FRONTIER,),
-            ),
-        ),
+        schema_version="1", refreshed_at=_FETCHED, sources={}, records=tuple(records)
     )
 
 
 def _snapshot() -> OmniRouteAdmitSnapshot:
+    catalog_rows = [{"id": row.identity_id, "owned_by": row.provider} for row in _CATALOG]
+    free_tier = [
+        {"modelId": row.free_model_id, "provider": row.provider, "freeType": "keyless"}
+        for row in _CATALOG
+        if row.free and row.free_model_id
+    ]
+    seen_providers: list[str] = []
+    connections = []
+    for row in _CATALOG:
+        if row.provider in seen_providers:
+            continue
+        seen_providers.append(row.provider)
+        connections.append(
+            {"provider": row.provider, "isActive": True, "testStatus": "active"}
+        )
     return snapshot_from_payloads(
-        catalog={
-            "data": [{"id": _FREE, "owned_by": "opencode"}, {"id": _FRONTIER, "owned_by": "cx"}]
-        },
-        free_tier={
-            "perModel": [{"modelId": "hy3-free", "provider": "opencode", "freeType": "keyless"}]
-        },
-        providers={
-            "connections": [
-                {"provider": "opencode", "isActive": True, "testStatus": "active"},
-                {"provider": "cx", "isActive": True, "testStatus": "active"},
-            ]
-        },
+        catalog={"data": catalog_rows},
+        free_tier={"perModel": free_tier},
+        providers={"connections": connections},
     )
 
 
@@ -254,9 +288,18 @@ def _ok_transport() -> Any:
     return transport
 
 
+def _service_primary_model() -> str:
+    """Constructor fallback only — never used as a measured completed-with identity."""
+    for row in _CATALOG:
+        if classify(row.identity_id) <= 1:
+            return row.identity_id
+    return _CATALOG[0].identity_id
+
+
 def _service(workspace_root: Path) -> IntelligenceService:
+    passports = {row.identity_id: _passport(row.identity_id) for row in _CATALOG}
     return IntelligenceService(
-        primary_model=_FRONTIER,
+        primary_model=_service_primary_model(),
         providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
         profile="development",
         log_path="",
@@ -264,7 +307,7 @@ def _service(workspace_root: Path) -> IntelligenceService:
         discovery_ttl=60,
         admit_snapshot=_snapshot(),
         execute_offload=False,
-        passports={_FREE: _passport(_FREE), _FRONTIER: _passport(_FRONTIER)},
+        passports=passports,
         confirm_transport=_ok_transport(),
         admit_now=_NOW,
         workspace_root=workspace_root,
@@ -328,18 +371,17 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
             verdict_cost=verdict_cost,
         )
         cost_delta = round(verdict_cost.usd - direct_cost.usd, 6)
-        frontier_pin = str(fixture.get("frontier_model") or _FRONTIER)
-        direct_requested = str(direct_arm.get("model") or frontier_pin)
-        direct_completed = _completed_with(direct_arm, direct_requested)
-        verdict_completed = decision.model
+        direct_used = _used_model(direct_arm)
+        verdict_used = _used_model(verdict_arm)
+        verdict_routed = decision.model
         tasks.append(
             {
                 "task_id": str(task["id"]),
                 "kind": str(task["kind"]),
                 "acceptance_criteria": list(task["acceptance_criteria"]),
                 "direct": {
-                    "model": direct_requested,
-                    "completed_with": direct_completed,
+                    "completed_with": direct_used,
+                    "model": direct_used,
                     "cost_usd": direct_cost.usd,
                     "tokens_in": direct_cost.tokens_in,
                     "tokens_out": direct_cost.tokens_out,
@@ -348,8 +390,9 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
                     "quality": direct_quality,
                 },
                 "verdict": {
-                    "model": verdict_completed,
-                    "completed_with": verdict_completed,
+                    "completed_with": verdict_used,
+                    "routed": verdict_routed,
+                    "model": verdict_routed,
                     "task_class": decision.task_class,
                     "pack_state": pack_state,
                     "included_sources": included,
@@ -373,7 +416,6 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
         "schema_version": SAVINGS_REPORT_SCHEMA_VERSION,
         "mode": "local-savings",
         "talk_track": TALK_TRACK,
-        "frontier_model": str(fixture.get("frontier_model") or _FRONTIER),
         "fixture_path": str(path),
         "fixture_digest_sha256": _fixture_digest(fixture),
         "workspace": str(workspace),
@@ -401,8 +443,9 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
             ),
             "quality": "quality miss is reported and never sold as savings",
             "completed_with": (
-                "direct arm is the pinned frontier identity; "
-                "Verdict arm is decision.model from the live chooser"
+                "each arm must specify the model the measured cost belongs to "
+                "(X-OmniRoute-Model / completed_with); Verdict also stamps "
+                "routed=decision.model from the live chooser"
             ),
         },
     }
@@ -413,7 +456,6 @@ def format_savings_report(report: dict[str, Any]) -> str:
     lines = [
         f"mode: {report['mode']}",
         f"talk_track: {report['talk_track']}",
-        f"frontier_model: {report.get('frontier_model') or _FRONTIER}",
         f"tasks: {report['aggregate']['task_count']}",
         f"savings_claimed: {report['aggregate']['savings_claimed_count']}",
         f"quality_misses: {report['aggregate']['quality_miss_count']}",
@@ -423,21 +465,21 @@ def format_savings_report(report: dict[str, Any]) -> str:
     ]
     for task in cast(list[dict[str, Any]], report["tasks"]):
         claim = "claimed" if task["savings_claimed"] else f"withheld:{task['withhold_reason']}"
-        direct_id = task["direct"].get("completed_with") or task["direct"].get("model")
-        verdict_id = task["verdict"].get("completed_with") or task["verdict"].get("model")
+        direct_used = task["direct"].get("completed_with") or task["direct"].get("model")
+        verdict_used = task["verdict"].get("completed_with")
+        routed = task["verdict"].get("routed") or task["verdict"].get("model")
         cache_hit = bool(task["verdict"].get("cache_hit"))
         lines.append(
             f"- {task['task_id']} ({task['kind']}): {claim} "
             f"delta={task['deltas']['cost_usd']} pack={task['verdict']['pack_state']} "
-            f"direct={direct_id} verdict={verdict_id} cache_hit={str(cache_hit).lower()}"
+            f"direct_used={direct_used} verdict_used={verdict_used} "
+            f"routed={routed} cache_hit={str(cache_hit).lower()}"
         )
     return "\n".join(lines) + "\n"
 
 
 __all__ = [
     "DEFAULT_SAVINGS_FIXTURE_PATH",
-    "FREE_IDENTITY",
-    "FRONTIER_IDENTITY",
     "TALK_TRACK",
     "MeasuredCost",
     "format_savings_report",

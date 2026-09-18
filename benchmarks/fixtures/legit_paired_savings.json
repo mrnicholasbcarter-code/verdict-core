@@ -2,7 +2,6 @@
   "schema_version": "1",
   "talk_track": "we measure",
   "workspace": "benchmarks/fixtures/legit_workspace",
-  "frontier_model": "cx/gpt-5.6-sol",
   "tasks": [
     {
       "id": "debug-null-deref",
@@ -13,8 +12,8 @@
         "does not invent a missing source"
       ],
       "direct": {
-        "model": "cx/gpt-5.6-sol",
         "headers": {
+          "X-OmniRoute-Model": "cx/gpt-5.6-sol",
           "X-OmniRoute-Response-Cost": "0.0184",
           "X-OmniRoute-Tokens-In": "1200",
           "X-OmniRoute-Tokens-Out": "340",
@@ -24,6 +23,7 @@
       },
       "verdict": {
         "headers": {
+          "X-OmniRoute-Model": "opencode/hy3-free",
           "X-OmniRoute-Response-Cost": "0.0019",
           "X-OmniRoute-Tokens-In": "1600",
           "X-OmniRoute-Tokens-Out": "280",
@@ -41,8 +41,8 @@
         "does not invent a missing source"
       ],
       "direct": {
-        "model": "cx/gpt-5.6-sol",
         "headers": {
+          "X-OmniRoute-Model": "cx/gpt-5.6-sol",
           "X-OmniRoute-Response-Cost": "0.0184",
           "X-OmniRoute-Tokens-In": "1200",
           "X-OmniRoute-Tokens-Out": "340",
@@ -52,6 +52,7 @@
       },
       "verdict": {
         "headers": {
+          "X-OmniRoute-Model": "opencode/hy3-free",
           "X-OmniRoute-Response-Cost": "0.0004",
           "X-OmniRoute-Tokens-In": "1600",
           "X-OmniRoute-Tokens-Out": "280",
@@ -69,8 +70,8 @@
         "adds a failing-first test"
       ],
       "direct": {
-        "model": "cx/gpt-5.6-sol",
         "headers": {
+          "X-OmniRoute-Model": "cx/gpt-5.6-sol",
           "X-OmniRoute-Response-Cost": "0.0241",
           "X-OmniRoute-Tokens-In": "1800",
           "X-OmniRoute-Tokens-Out": "410",
@@ -80,6 +81,7 @@
       },
       "verdict": {
         "headers": {
+          "X-OmniRoute-Model": "groq/llama-3.3-70b-versatile",
           "X-OmniRoute-Response-Cost": "0.0034",
           "X-OmniRoute-Tokens-In": "2100",
           "X-OmniRoute-Tokens-Out": "360",
@@ -97,8 +99,8 @@
         "does not treat cache hits as model savings"
       ],
       "direct": {
-        "model": "cx/gpt-5.6-sol",
         "headers": {
+          "X-OmniRoute-Model": "cx/gpt-5.6-sol",
           "X-OmniRoute-Response-Cost": "0.0156",
           "X-OmniRoute-Tokens-In": "900",
           "X-OmniRoute-Tokens-Out": "250",
@@ -108,6 +110,7 @@
       },
       "verdict": {
         "headers": {
+          "X-OmniRoute-Model": "opencode/hy3-free",
           "X-OmniRoute-Response-Cost": "0.0021",
           "X-OmniRoute-Tokens-In": "1100",
           "X-OmniRoute-Tokens-Out": "190",
