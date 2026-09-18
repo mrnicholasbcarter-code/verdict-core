@@ -58,6 +58,8 @@ superseded by a later record rather than edited away.
 | [028](ADR-028-launch-gate-tooling.md) — Security and privacy launch-gate tooling | Release pipeline gains dependency/build-origin/HTTP-surface evidence, privacy tests, and a fail-closed release-gate record. | Accepted |
 | [029](ADR-029-portfolio-repositioning-plan.md) — Portfolio repositioning plan | Strip tracked agent-workspace artifacts, relocate non-routing experiments, unify positioning, reorder the README, then benchmark and launch. | Accepted |
 | [030](ADR-030-proof-carrying-decision-plane.md) — Proof-carrying decision plane for Verdict | Verdict owns the context-to-decision-to-receipt-to-proof chain; LiteLLM and OmniRoute are optional boundaries, and the UI consumes the receipt contract. | Accepted |
+| [031](ADR-031-prime-workflow-skills.md) — Project-owned Prime workflow | Five workflow skills own resumption, hydration, dispatch, proof, and finishing with durable leases. | Accepted for implementation |
+| [032](ADR-032-core-model-metadata-store.md) — Core owns model metadata | OmniRoute is inventory/execute/health only; Core fetches models.dev + LiteLLM with per-field provenance. | Accepted |
 
 ## Ecosystem decision trail
 

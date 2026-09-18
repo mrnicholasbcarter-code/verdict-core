@@ -87,8 +87,14 @@ class EligibilityGate:
 Native integration with OmniRoute gateway:
 - HTTP transport with connection pooling
 - WebSocket for real-time updates
-- Capability catalog discovery
-- Automatic fallback
+- Catalog identity and liveness only — **not** capability metadata SoT
+
+### 5b. Core metadata store (`verdict/metadata/`)
+
+Independently fetched model caps from models.dev (primary) and LiteLLM
+(secondary). Each field carries `source` + `version|fetched_at`. Soft ranks are
+never invented. See [`guides/model-metadata-store.md`](guides/model-metadata-store.md)
+and [ADR-032](adr/ADR-032-core-model-metadata-store.md).
 
 ---
 

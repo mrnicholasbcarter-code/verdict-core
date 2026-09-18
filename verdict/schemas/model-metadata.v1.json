@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdict.dev/schemas/model-metadata.v1.json",
+  "title": "Verdict Core Model Metadata Store v1 (BOD-108)",
+  "description": "Independently fetched model capability metadata. OmniRoute is never the metadata source of truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "refreshed_at", "sources", "records"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "refreshed_at": {"type": "string", "format": "date-time"},
+    "sources": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/source_status"}
+    },
+    "mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string"},
+        "entry_count": {"type": "integer", "minimum": 0},
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/record"}
+    },
+    "drops": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/drop"}
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "field", "primary_source", "secondary_source"],
+        "properties": {
+          "id": {"$ref": "#/$defs/non_empty_string"},
+          "field": {"$ref": "#/$defs/non_empty_string"},
+          "primary_source": {"$ref": "#/$defs/non_empty_string"},
+          "secondary_source": {"$ref": "#/$defs/non_empty_string"},
+          "detail": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_string": {"type": "string", "minLength": 1},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {"$ref": "#/$defs/non_empty_string"},
+        "fetched_at": {"type": "string", "format": "date-time"},
+        "version": {"type": "string", "minLength": 1},
+        "raw_id": {"type": "string", "minLength": 1}
+      },
+      "anyOf": [
+        {"required": ["fetched_at"]},
+        {"required": ["version"]}
+      ]
+    },
+    "provenanced_bool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "provenance"],
+      "properties": {
+        "value": {"type": "boolean"},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "provenanced_int": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "provenance"],
+      "properties": {
+        "value": {"type": "integer"},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "provenanced_number": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "provenance"],
+      "properties": {
+        "value": {"type": "number"},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "source_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "status"],
+      "properties": {
+        "source": {"$ref": "#/$defs/non_empty_string"},
+        "status": {"enum": ["ok", "skipped", "error"]},
+        "url": {"type": "string"},
+        "fetched_at": {"type": "string", "format": "date-time"},
+        "version": {"type": "string"},
+        "reason": {"type": "string"},
+        "record_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "caps", "scores"],
+      "properties": {
+        "id": {"$ref": "#/$defs/non_empty_string"},
+        "provider": {"type": "string"},
+        "display_name": {"type": "string"},
+        "omniroute_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/non_empty_string"}
+        },
+        "caps": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tools": {"$ref": "#/$defs/provenanced_bool"},
+            "vision": {"$ref": "#/$defs/provenanced_bool"},
+            "structured": {"$ref": "#/$defs/provenanced_bool"},
+            "reasoning": {"$ref": "#/$defs/provenanced_bool"},
+            "attachment": {"$ref": "#/$defs/provenanced_bool"},
+            "context": {"$ref": "#/$defs/provenanced_int"},
+            "max_input": {"$ref": "#/$defs/provenanced_int"},
+            "max_output": {"$ref": "#/$defs/provenanced_int"},
+            "input_cost_per_million": {"$ref": "#/$defs/provenanced_number"},
+            "output_cost_per_million": {"$ref": "#/$defs/provenanced_number"}
+          }
+        },
+        "scores": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "aa_intelligence": {"$ref": "#/$defs/provenanced_number"},
+            "aa_coding": {"$ref": "#/$defs/provenanced_number"},
+            "aa_agentic": {"$ref": "#/$defs/provenanced_number"},
+            "aa_latency": {"$ref": "#/$defs/provenanced_number"},
+            "arena_elo": {"$ref": "#/$defs/provenanced_number"},
+            "open_llm": {"$ref": "#/$defs/provenanced_number"},
+            "bfcl": {"$ref": "#/$defs/provenanced_number"}
+          }
+        }
+      }
+    },
+    "drop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["omniroute_id", "reason"],
+      "properties": {
+        "omniroute_id": {"$ref": "#/$defs/non_empty_string"},
+        "reason": {
+          "enum": ["unmapped", "required_unknown", "stale", "map_target_missing"]
+        },
+        "detail": {"type": "string"},
+        "missing_fields": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/non_empty_string"}
+        }
+      }
+    }
+  }
+}

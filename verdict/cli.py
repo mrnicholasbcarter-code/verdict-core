@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -2798,6 +2799,55 @@ def main() -> None:
     )
     catalog_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    metadata_p = subparsers.add_parser(
+        "metadata", help="Refresh and inspect Core's independent model metadata store (BOD-108)"
+    )
+    metadata_sub = metadata_p.add_subparsers(dest="metadata_command", required=True)
+    metadata_refresh_p = metadata_sub.add_parser(
+        "refresh", help="Fetch models.dev + LiteLLM into the on-disk Core store"
+    )
+    metadata_refresh_p.add_argument(
+        "--store",
+        dest="store_path",
+        default=None,
+        help="Store path (default ~/.verdict/model-metadata.json)",
+    )
+    metadata_refresh_p.add_argument("--mapping", dest="mapping_path", default=None)
+    metadata_refresh_p.add_argument(
+        "--models-dev-api-file", default=None, help="Offline models.dev api.json fixture"
+    )
+    metadata_refresh_p.add_argument(
+        "--models-dev-models-file", default=None, help="Offline models.dev models.json fixture"
+    )
+    metadata_refresh_p.add_argument(
+        "--litellm-file", default=None, help="Offline LiteLLM JSON fixture"
+    )
+    metadata_refresh_p.add_argument(
+        "--include-p1",
+        action="store_true",
+        help="Record P1 skip reasons (AA/Arena/OpenLLM/BFCL); scores stored only from fixtures",
+    )
+    metadata_refresh_p.add_argument(
+        "--json", action="store_true", help="Output machine-readable JSON"
+    )
+    metadata_show_p = metadata_sub.add_parser(
+        "show", help="Summarize the on-disk Core metadata store"
+    )
+    metadata_show_p.add_argument("--store", dest="store_path", default=None)
+    metadata_show_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    metadata_lookup_p = metadata_sub.add_parser(
+        "lookup", help="Look up one OmniRoute id in the Core store (named drop if unmapped)"
+    )
+    metadata_lookup_p.add_argument("omniroute_id")
+    metadata_lookup_p.add_argument("--store", dest="store_path", default=None)
+    metadata_lookup_p.add_argument("--mapping", dest="mapping_path", default=None)
+    metadata_lookup_p.add_argument(
+        "--requires", default="", help="Comma-separated required caps (unknown → named drop)"
+    )
+    metadata_lookup_p.add_argument(
+        "--json", action="store_true", help="Output machine-readable JSON"
+    )
+
     suggest_p = subparsers.add_parser(
         "suggest", help="Review intelligence suggestions from past outcomes"
     )
@@ -3329,6 +3379,8 @@ def main() -> None:
         )
     elif args.command == "failover-proof":
         cmd_failover_proof(memory_path=args.memory_path, output_json=args.json)
+    elif args.command == "metadata":
+        cmd_metadata(args)
     elif args.command == "cost-report":
         cmd_cost_report()
     else:
@@ -3522,6 +3574,185 @@ def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:
         console.print(f"  Replacement model: {proof.replacement_model}")
         console.print(f"  Completed steps: {list(proof.completed_stages)}")
         console.print(f"  Digest: {proof.digest}")
+
+
+def _metadata_json_file(path: str | Path | None) -> Any | None:
+    if path is None:
+        return None
+    return json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+
+
+def cmd_metadata(args: Any) -> None:
+    command = getattr(args, "metadata_command", None)
+    if command == "refresh":
+        cmd_metadata_refresh(
+            store_path=getattr(args, "store_path", None),
+            mapping_path=getattr(args, "mapping_path", None),
+            models_dev_api_file=getattr(args, "models_dev_api_file", None),
+            models_dev_models_file=getattr(args, "models_dev_models_file", None),
+            litellm_file=getattr(args, "litellm_file", None),
+            include_p1=getattr(args, "include_p1", False),
+            output_json=getattr(args, "json", False),
+        )
+        return
+    if command == "show":
+        cmd_metadata_show(
+            store_path=getattr(args, "store_path", None), output_json=getattr(args, "json", False)
+        )
+        return
+    if command == "lookup":
+        required = tuple(
+            item.strip() for item in str(getattr(args, "requires", "")).split(",") if item.strip()
+        )
+        cmd_metadata_lookup(
+            args.omniroute_id,
+            store_path=getattr(args, "store_path", None),
+            mapping_path=getattr(args, "mapping_path", None),
+            required=required,
+            output_json=getattr(args, "json", False),
+        )
+        return
+    raise SystemExit(f"unknown metadata command: {command}")
+
+
+def cmd_metadata_refresh(
+    *,
+    store_path: str | Path | None = None,
+    mapping_path: str | Path | None = None,
+    models_dev_api_file: str | Path | None = None,
+    models_dev_models_file: str | Path | None = None,
+    litellm_file: str | Path | None = None,
+    include_p1: bool = False,
+    output_json: bool = False,
+    now: datetime | None = None,
+) -> None:
+    """Refresh the Core metadata store from files (offline) or public HTTPS."""
+    from verdict.metadata import ModelMetadataError, file_transport, refresh_metadata
+
+    offline = any(
+        path is not None for path in (models_dev_api_file, models_dev_models_file, litellm_file)
+    )
+    clock = now or datetime.now(timezone.utc)
+    try:
+        if offline:
+            transport = file_transport(
+                models_dev_api=_metadata_json_file(models_dev_api_file),
+                models_dev_models=_metadata_json_file(models_dev_models_file),
+                litellm=_metadata_json_file(litellm_file),
+                fetched_at=clock.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            )
+        else:
+            transport = None
+        snapshot = refresh_metadata(
+            transport=transport,
+            mapping_path=mapping_path,
+            store_path=store_path,
+            include_p1=include_p1,
+            now=clock,
+            persist=True,
+        )
+    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+        if output_json:
+            print(json.dumps({"error": str(exc)}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    report = {
+        "schema_version": snapshot.schema_version,
+        "refreshed_at": snapshot.refreshed_at,
+        "record_count": len(snapshot.records),
+        "drop_count": len(snapshot.drops),
+        "conflict_count": len(snapshot.conflicts),
+        "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
+        "mapping": snapshot.mapping,
+        "store": str(
+            Path(store_path).expanduser()
+            if store_path
+            else Path.home() / ".verdict" / "model-metadata.json"
+        ),
+    }
+    if output_json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+    console.print("[bold green]Core metadata store refreshed[/bold green]")
+    console.print(f"  records: {report['record_count']}")
+    console.print(f"  mapping drops: {report['drop_count']}")
+    console.print(f"  store: {report['store']}")
+    for name, status in snapshot.sources.items():
+        console.print(
+            f"  {name}: {status.status}" + (f" ({status.reason})" if status.reason else "")
+        )
+
+
+def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool = False) -> None:
+    from verdict.metadata import ModelMetadataError, default_store_path, load_store
+
+    resolved = Path(store_path).expanduser() if store_path else default_store_path()
+    try:
+        snapshot = load_store(resolved)
+    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+        if output_json:
+            print(json.dumps({"error": str(exc), "store": str(resolved)}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    payload = {
+        "store": str(resolved),
+        "schema_version": snapshot.schema_version,
+        "refreshed_at": snapshot.refreshed_at,
+        "record_count": len(snapshot.records),
+        "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
+        "drops": [item.to_dict() for item in snapshot.drops],
+    }
+    if output_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    console.print(f"[bold cyan]Core metadata[/bold cyan] {snapshot.refreshed_at}")
+    console.print(f"  records: {len(snapshot.records)}  store: {resolved}")
+
+
+def cmd_metadata_lookup(
+    omniroute_id: str,
+    *,
+    store_path: str | Path | None = None,
+    mapping_path: str | Path | None = None,
+    required: tuple[str, ...] = (),
+    output_json: bool = False,
+) -> None:
+    from verdict.metadata import (
+        ModelMetadataError,
+        default_store_path,
+        load_identity_map,
+        load_store,
+        lookup_omniroute_id,
+    )
+
+    resolved = Path(store_path).expanduser() if store_path else default_store_path()
+    try:
+        snapshot = load_store(resolved)
+        mapping = load_identity_map(mapping_path)
+        found = lookup_omniroute_id(snapshot, omniroute_id, required=required, identity_map=mapping)
+    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+        if output_json:
+            print(json.dumps({"error": str(exc)}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    payload = found.to_dict()
+    if output_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if found.drop is not None:
+        console.print(f"[yellow]named drop[/yellow] {found.drop.reason}: {omniroute_id}")
+        if found.drop.detail:
+            console.print(f"  {found.drop.detail}")
+        return
+    assert found.record is not None
+    console.print(f"[green]mapped[/green] {omniroute_id} → {found.record.id}")
+    for name, cited in found.provenance_for_receipt().items():
+        console.print(
+            f"  {name}: {cited.get('source')} {cited.get('version') or cited.get('fetched_at')}"
+        )
 
 
 if __name__ == "__main__":

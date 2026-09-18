@@ -1,0 +1,18 @@
+{
+  "schema_version": "1",
+  "note": "Fixture map for unit tests.",
+  "entries": [
+    {
+      "omniroute_id": "groq/llama-3.3-70b-versatile",
+      "models_dev_id": "groq/llama-3.3-70b-versatile"
+    },
+    {
+      "omniroute_id": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+      "models_dev_id": "meta/llama-3.3-70b-instruct"
+    },
+    {
+      "omniroute_id": "ghost/unmapped-target",
+      "models_dev_id": "missing/not-in-fixture"
+    }
+  ]
+}

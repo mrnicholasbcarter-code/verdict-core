@@ -63,6 +63,32 @@ verdict models [flags]
 
 ---
 
+### `verdict metadata` — Core model metadata store (BOD-108)
+
+Independent of OmniRoute. See [`guides/model-metadata-store.md`](guides/model-metadata-store.md).
+
+```bash
+verdict metadata refresh [--json]
+verdict metadata show [--json]
+verdict metadata lookup <omniroute_id> [--requires tools,vision,structured,context] [--json]
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `refresh` | Fetch models.dev + LiteLLM into `~/.verdict/model-metadata.json` |
+| `show` | Summarize the on-disk store |
+| `lookup` | Join one OmniRoute id; unmapped/required-unknown → named drop |
+
+| Flag | Description |
+|------|-------------|
+| `--store <path>` | Store path |
+| `--mapping <path>` | Explicit OmniRoute → models.dev map |
+| `--models-dev-api-file <path>` | Offline models.dev `api.json` |
+| `--litellm-file <path>` | Offline LiteLLM JSON |
+| `--requires <caps>` | Lookup: comma-separated required caps |
+
+---
+
 ### `verdict policy` — Manage routing policies
 
 ```bash

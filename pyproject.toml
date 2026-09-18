@@ -6,6 +6,10 @@ build-backend = "hatchling.build"
 packages = ["verdict"]
 artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json", "schemas/context-pack.v1.json", "schemas/runtime-health.v1.json", "schemas/runtime-passport.v1.json", "schemas/gateway-adapter.v1.json", "schemas/proof-receipt.v1.json", "verdict/schemas/claims-ledger.v1.json"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"verdict/data/omniroute_models_dev_map.json" = "verdict/data/omniroute_models_dev_map.json"
+"verdict/schemas/model-metadata.v1.json" = "verdict/schemas/model-metadata.v1.json"
+
 [project]
 name = "verdict-core"
 version = "0.2.0"

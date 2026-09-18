@@ -29,7 +29,8 @@ verdict/
 ├── eligibility.py           # EligibilityGate — hard safety floors
 ├── gate.py                  # Gate — composes eligibility + intelligence
 ├── intelligence.py          # IntelligenceService — advisory ranking (cannot bypass gate)
-├── omniroute.py             # OmniRouteHTTPTransport — native OpenAI-compatible
+├── metadata/                # Core metadata store — models.dev + LiteLLM (BOD-108)
+├── omniroute.py             # OmniRouteHTTPTransport — inventory/execute/health only
 ├── planner.py               # IntakePlanner, PlanningResult
 ├── probes.py                # ProbeRunner, 1-token liveness checks
 ├── contracts/               # JSON schemas
@@ -40,6 +41,8 @@ verdict/
 **Route flow**: `api.py:route()` → `Gate.route()` → `EligibilityGate.filter()` → `IntelligenceService.rank()` → `Dispatcher.assign()` → `Proxy.forward()`
 
 **Explain flow**: `api.py:route_explain()` → `AvailabilityCache.explain()` → `EligibilityGate.explain()` → returns freshness + eligibility explain record
+
+**Metadata refresh**: `cli.py:cmd_metadata_refresh()` → `metadata.refresh_metadata()` → models.dev + LiteLLM → `~/.verdict/model-metadata.json` (OmniRoute is never metadata SoT)
 
 ## Testing
 ```bash
