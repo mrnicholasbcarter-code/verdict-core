@@ -18,7 +18,7 @@ passports and a budgeted confirm probe (see ``verdict.admit_prove_confirm``).
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -658,10 +658,29 @@ def _is_positively_free_identity(identity_id: str) -> bool:
     return free_status({"id": identity_id}) == "free"
 
 
-def _choose_sort(identity_id: str, active_healthy: frozenset[str]) -> tuple[int, int, int, str]:
+def _looks_free_by_name(identity_id: str) -> bool:
+    """Name heuristic only. Never authoritative when a free_admitted set exists."""
     lowered = identity_id.lower()
     leaf = lowered.rsplit("/", 1)[-1]
-    free_mark = 0 if (":free" in lowered or leaf.endswith("-free") or leaf.endswith(":free")) else 1
+    return ":free" in lowered or leaf.endswith("-free") or leaf.endswith(":free")
+
+
+def _choose_sort(
+    identity_id: str, active_healthy: frozenset[str], free_admitted: Collection[str] | None = None
+) -> tuple[int, int, int, str]:
+    """Free-first ordering keyed on authoritative free-tier membership (BOD-112).
+
+    ``free_admitted`` is the free∩active set observed from OmniRoute's free-tier
+    summary. When it is provided, an identity is free iff it is a member — a free
+    model without a ``:free``/``-free`` suffix must not be displaced by paid
+    candidates, and a paid model must not jump the queue by name. The name
+    heuristic is used only when no authoritative set is available.
+    """
+    lowered = identity_id.lower()
+    if free_admitted is not None:
+        free_mark = 0 if identity_id in free_admitted else 1
+    else:
+        free_mark = 0 if _looks_free_by_name(identity_id) else 1
     small = 0 if any(token in lowered for token in _SMALL_TOKENS) else 1
     provider = _provider_of(identity_id)
     healthy = 0 if provider in active_healthy else 1
@@ -774,7 +793,9 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
     )
     chosen = None
     if admitted_sorted:
-        chosen = sorted(admitted_sorted, key=lambda item: _choose_sort(item, healthy))[0]
+        chosen = sorted(
+            admitted_sorted, key=lambda item: _choose_sort(item, healthy, admitted_sorted)
+        )[0]
     return FreeTierAdmitReceipt(
         admitted=admitted_sorted,
         exclusions=tuple(exclusions),
