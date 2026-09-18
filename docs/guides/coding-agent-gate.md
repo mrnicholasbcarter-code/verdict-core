@@ -41,12 +41,24 @@ Optional explicit upstream override: `LLMGATE_UPSTREAM_BASE_URL`
 
 This is the supported end-to-end path today.
 
-Codex (`~/.codex/config.toml`):
+Codex — prefer the Architect-locked CLI (backs up `~/.codex/config.toml` first):
+
+```bash
+verdict harness codex enable
+verdict harness codex status
+verdict harness codex disable
+```
+
+See [codex-harness.md](codex-harness.md). Equivalent manual snippet:
 
 ```toml
+model_provider = "verdict"
+
 [model_providers.verdict]
-name = "verdict"
 base_url = "http://127.0.0.1:8000/v1"
+env_key = "LLMGATE_AUTH_TOKEN"
+wire_api = "responses"
+requires_openai_auth = false
 ```
 
 Cursor: set the OpenAI-compatible base URL to `http://127.0.0.1:8000/v1` in
