@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from verdict.admit_prove_confirm import ConfirmEvidence, PassportEvidence, gate_admit_prove_confirm
 from verdict.chooser import apply_best_of_admitted, headroom_from_confirm_latency
+from verdict.evidence import build_routing_decision_contract
 from verdict.free_tier_admit import (
     NO_ELIGIBLE_TARGET,
     FreeTierAdmitReceipt,
@@ -234,3 +235,34 @@ def test_intelligence_cheap_path_chooser_owns_pick_and_stamps_receipt() -> None:
     assert decision.degraded_mode is True
     named = {item["reason"] for item in decision.admit_receipt["exclusions"]}
     assert "not_free_tier" in named or NAMED_DROP not in admitted
+
+
+def test_best_of_admitted_selected_because_survives_evidence_embed() -> None:
+    """Chooser-stamped selected_because must survive serve evidence compactification."""
+    snapshot = _snapshot()
+    svc = _service(
+        snapshot,
+        passports={GHOST: _passport(GHOST), PROVEN: _passport(PROVEN)},
+        confirm_transport=_ok_transport(),
+    )
+    decision = asyncio.run(svc.route("summarize this paragraph", criticality="low"))
+    pre_embed = decision.admit_receipt
+    assert pre_embed is not None
+    assert "selected_because" in pre_embed
+    because = pre_embed["selected_because"]
+    assert isinstance(because, str) and because
+    payload = build_routing_decision_contract(
+        decision,
+        task="summarize this paragraph",
+        criticality="low",
+        features={"stream": False},
+        correlation_id="corr-best-of-1",
+        occurred_at="2026-09-18T00:00:00Z",
+    ).to_dict()
+    receipt = payload["receipt"]
+    assert "selected_because" in receipt, (
+        "selected_because present on in-memory admit receipt but dropped by evidence embed"
+    )
+    assert receipt["selected_because"] == because
+    assert receipt.get("chooser_ranked_admitted") is True
+    assert payload["selected_route"]["selected_because"] == because
