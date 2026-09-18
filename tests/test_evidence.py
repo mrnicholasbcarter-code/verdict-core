@@ -12,6 +12,7 @@ from referencing import Registry, Resource  # type: ignore[import-untyped]
 
 from verdict.contracts import OutcomeEvent, RoutingDecisionContract
 from verdict.evidence import (
+    DurableEvidenceStore,
     EvidenceStore,
     ExplainEvidence,
     build_outcome_event,
@@ -369,3 +370,112 @@ def test_admit_receipt_pack_digest_persists_into_evidence() -> None:
             Draft202012Validator(schema["$defs"]["routing_decision"]).iter_errors(payload)
         )
         assert errors == [], errors
+
+
+def _chooser_admit_receipt() -> dict[str, Any]:
+    return {
+        "chosen": "opencode/hy3-free",
+        "pack_digest": "sha256:abc123",
+        "omissions": [{"name": "slot:noise", "reason": "input_budget_exhausted"}],
+        "empty_intersection": False,
+        "exclusions": [{"model": "paid/opus", "reason": "not_free_tier"}],
+        "admitted": ["opencode/hy3-free", "openrouter/free-model"],
+        "active_providers": ["opencode", "openrouter"],
+        "free_tier_providers": ["opencode", "openrouter"],
+        "selected_because": (
+            "selected because Core chooser ranked only the live "
+            "passport∩confirm admitted set; beat 1 other admitted candidate(s); "
+            "named drops were not re-admitted"
+        ),
+        "chooser_ranked_admitted": True,
+        "chooser_owned": True,
+    }
+
+
+def test_admit_receipt_selected_because_persists_into_evidence() -> None:
+    """Serve evidence embed must not drop #514 chooser fields (same class as #510)."""
+    pre_embed = _chooser_admit_receipt()
+    decision = RoutingDecision(
+        model="opencode/hy3-free",
+        provider="omniroute",
+        tier=2,
+        reason="free∩active ∩ fresh-passport ∩ confirmed admitted opencode/hy3-free",
+        decision="selected",
+        request_id="req-chooser-1",
+        degraded_mode=True,
+        safety_flags=[
+            "free_tier_active_admit",
+            "cheap_path_context_pack",
+            "chooser_ranked_admitted",
+        ],
+        admit_receipt=pre_embed,
+    )
+    assert "selected_because" in pre_embed
+    evidence = build_routing_decision_contract(
+        decision,
+        task="summarize this",
+        criticality="low",
+        features={"stream": False},
+        correlation_id="corr-chooser-1",
+        occurred_at="2026-09-18T00:00:00Z",
+    )
+    payload = evidence.to_dict()
+    receipt = payload["receipt"]
+    dropped = [
+        key
+        for key in ("selected_because", "chooser_ranked_admitted", "chooser_owned")
+        if key in pre_embed and key not in receipt
+    ]
+    assert dropped == [], f"evidence embed dropped chooser fields present pre-embed: {dropped}"
+    assert receipt["kind"] == "admit_receipt"
+    assert receipt["selected_because"] == pre_embed["selected_because"]
+    assert receipt["chooser_ranked_admitted"] is True
+    assert receipt["chooser_owned"] is True
+    assert receipt["pack_digest"] == "sha256:abc123"
+    assert payload["selected_route"]["selected_because"] == pre_embed["selected_because"]
+    assert payload["selected_route"]["chooser_ranked_admitted"] is True
+    for schema in SCHEMAS:
+        errors = list(
+            Draft202012Validator(schema["$defs"]["routing_decision"]).iter_errors(payload)
+        )
+        assert errors == [], errors
+
+
+def test_admit_receipt_selected_because_survives_receipts_db_round_trip() -> None:
+    """Persisted VERDICT_RECEIPTS_DB evidence must keep selected_because (#514 gap)."""
+    pre_embed = _chooser_admit_receipt()
+    decision = RoutingDecision(
+        model="opencode/hy3-free",
+        provider="omniroute",
+        tier=2,
+        reason="free∩active ∩ fresh-passport ∩ confirmed admitted opencode/hy3-free",
+        decision="selected",
+        request_id="req-chooser-db-1",
+        degraded_mode=True,
+        safety_flags=["chooser_ranked_admitted"],
+        admit_receipt=pre_embed,
+    )
+    routing = build_routing_decision_contract(
+        decision,
+        task="summarize this",
+        criticality="low",
+        features={"stream": False},
+        correlation_id="corr-chooser-db-1",
+        occurred_at="2026-09-18T00:00:00Z",
+    )
+    started = build_outcome_event(routing, event_type="start", outcome="unknown")
+    store = DurableEvidenceStore(":memory:")
+    key = store.put(ExplainEvidence(routing, started), scope="default")
+    stored = store.find(evidence_id=key, scope="default")
+    assert stored is not None
+    receipt = stored.routing_decision.receipt
+    assert receipt is not None
+    assert "selected_because" in pre_embed
+    assert "selected_because" in receipt, (
+        "selected_because present pre-embed but missing post-embed"
+    )
+    assert receipt["selected_because"] == pre_embed["selected_because"]
+    assert receipt["chooser_ranked_admitted"] is True
+    assert (
+        stored.routing_decision.selected_route["selected_because"] == pre_embed["selected_because"]
+    )

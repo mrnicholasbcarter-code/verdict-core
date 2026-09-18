@@ -38,6 +38,25 @@ _CANDIDATE_FIELDS = frozenset(
     {"model_id", "provider", "admitted", "verdict", "state", "source", "reason"}
 )
 _MAX_EVIDENCE_TEXT = 256
+# Compact cheap-path admit receipt fields stamped onto the evidence contract
+# (#510 pack_digest/omissions; #514 chooser selected_because / ownership).
+# Intentionally allowlisted so serve persistence cannot silently drop chooser
+# fields the in-memory admit receipt already carries.
+_COMPACT_ADMIT_RECEIPT_FIELDS: tuple[str, ...] = (
+    "chosen",
+    "pack_digest",
+    "omissions",
+    "empty_intersection",
+    "exclusions",
+    "selected_because",
+    "chooser_ranked_admitted",
+)
+_COMPACT_ADMIT_LIST_FIELDS = frozenset({"omissions", "exclusions"})
+# Snapshot arrays stay off the compact evidence receipt (size / privacy).
+_ADMIT_RECEIPT_SNAPSHOT_FIELDS = frozenset(
+    {"admitted", "active_providers", "free_tier_providers", "passport", "confirm"}
+)
+_CHOOSER_SCALAR_TYPES = (str, bool, int, float)
 
 
 class AmbiguousEvidenceSelectorError(LookupError):
@@ -197,6 +216,38 @@ def _compact_json(value: Any) -> Any:
     return value
 
 
+def _compact_admit_receipt(admit: dict[str, Any], *, safety_flags: Iterable[str]) -> dict[str, Any]:
+    """Copy the cheap-path admit receipt into a persistable evidence payload.
+
+    Serve only stores this compact contract (CLI already carries the full
+    ``admit_receipt`` on ``RoutingDecision``). Chooser-owned fields from #514
+    must survive the same allowlist that #510 added for ``pack_digest``.
+    Unknown chooser scalars are copied through so a later flag cannot be
+    dropped the way ``selected_because`` was.
+    """
+
+    compact: dict[str, Any] = {"kind": "admit_receipt"}
+    for key in _COMPACT_ADMIT_RECEIPT_FIELDS:
+        if key in _COMPACT_ADMIT_LIST_FIELDS:
+            compact[key] = admit.get(key) or []
+            continue
+        if key == "chooser_ranked_admitted" and key not in admit:
+            continue
+        value = admit.get(key)
+        if key == "selected_because" and isinstance(value, str):
+            compact[key] = redact_text(value)
+        else:
+            compact[key] = _copy_json(value)
+    for key, value in admit.items():
+        if key in compact or key in _ADMIT_RECEIPT_SNAPSHOT_FIELDS:
+            continue
+        if value is None or isinstance(value, _CHOOSER_SCALAR_TYPES):
+            compact[key] = redact_text(value) if isinstance(value, str) else value
+    if "chooser_ranked_admitted" in set(safety_flags):
+        compact["chooser_ranked_admitted"] = True
+    return compact
+
+
 def build_routing_decision_contract(
     decision: RoutingDecision,
     *,
@@ -286,22 +337,22 @@ def build_routing_decision_contract(
         payload["selected_route"]["actual_route"] = _copy_json(actual_route)
     if attempted_routes is not None:
         payload["selected_route"]["attempted_routes"] = _copy_json(attempted_routes)
-    # Cheap-path admit receipt (#508): pack_digest + named omissions must survive
-    # into VERDICT_RECEIPTS_DB / explain evidence. CLI already carries admit_receipt
-    # on RoutingDecision; the serve path only persists this contract.
+    # Cheap-path admit receipt (#508/#510/#514): pack_digest, omissions, and
+    # chooser selected_because must survive into VERDICT_RECEIPTS_DB / explain
+    # evidence. CLI already carries admit_receipt on RoutingDecision; the serve
+    # path only persists this contract.
     if isinstance(decision.admit_receipt, dict) and decision.admit_receipt:
         admit = _copy_json(decision.admit_receipt)
-        payload["receipt"] = {
-            "kind": "admit_receipt",
-            "chosen": admit.get("chosen"),
-            "pack_digest": admit.get("pack_digest"),
-            "omissions": admit.get("omissions") or [],
-            "empty_intersection": admit.get("empty_intersection"),
-            "exclusions": admit.get("exclusions") or [],
-        }
-        # Mirror digest onto selected_route for operators grepping decision JSON.
-        if admit.get("pack_digest"):
-            payload["selected_route"]["pack_digest"] = admit.get("pack_digest")
+        compact = _compact_admit_receipt(admit, safety_flags=decision.safety_flags)
+        payload["receipt"] = compact
+        # Mirror digest / chooser ownership onto selected_route for operators
+        # grepping decision JSON (same pattern as #510 pack_digest).
+        if compact.get("pack_digest"):
+            payload["selected_route"]["pack_digest"] = compact.get("pack_digest")
+        if compact.get("selected_because"):
+            payload["selected_route"]["selected_because"] = compact.get("selected_because")
+        if compact.get("chooser_ranked_admitted"):
+            payload["selected_route"]["chooser_ranked_admitted"] = True
     try:
         return RoutingDecisionContract.from_dict(cast_json(redact_contract_secrets(payload)))
     except ContractValidationError:
