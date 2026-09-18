@@ -275,3 +275,87 @@ def test_gate_capability_unit_drops_false_tools() -> None:
     assert match["admitted"] is False
     assert match["drop"]["reason"] in {"capability_mismatch", "required_unknown"}
     assert match["provenance"] or match["drop"]
+
+
+def test_task_that_exceeds_pack_budget_is_denied_not_executed(tmp_path) -> None:
+    """BOD-110: when the task itself does not fit the pack, deny — never send a pack without it."""
+    snapshot = _live_snapshot()
+    passports = {PROVEN_FREE: _passport(PROVEN_FREE), PAID_TOOLS: _passport(PAID_TOOLS)}
+    calls: list[tuple[str, str]] = []
+
+    def executor(model_id: str, packed: str) -> tuple[str, str | None]:
+        calls.append((model_id, packed))
+        return "success", "OK"
+
+    svc = _service(
+        snapshot, passports=passports, workspace_root=tmp_path, offload_executor=executor
+    )
+    huge = "summarize this paragraph. " * 20_000
+    decision = asyncio.run(svc.route(huge, criticality="low"))
+    assert decision.decision == "denied"
+    assert decision.transport_outcome == "not_sent"
+    assert "task_instructions_omitted" in decision.safety_flags
+    assert calls == [], "a pack without the task must never reach an upstream"
+    receipt = decision.admit_receipt or {}
+    assert receipt["task_complete"] is False
+    assert receipt["pack_state"] == "failed"
+    assert {item["name"]: item["reason"] for item in receipt["omissions"]}[
+        "urn:verdict:task"
+    ] == "task_instructions_omitted"
+
+
+# --- BOD-112: server-authoritative worthiness -------------------------------
+
+
+def test_client_task_class_cannot_downgrade_worthy_work() -> None:
+    task = "Design a distributed authentication architecture and security threat model"
+    result = classify_worthiness(task, context={"task_class": "ordinary"})
+    assert result.task_class == WORTHY
+    assert "classification:server-authoritative" in result.class_reasons
+    assert any(reason.startswith("client_hint_ignored:") for reason in result.class_reasons)
+
+
+def test_client_task_class_worthy_is_an_untrusted_hint_that_only_raises() -> None:
+    hinted = classify_worthiness("summarize this paragraph", context={"task_class": "worthy"})
+    assert hinted.task_class == WORTHY
+    assert any(reason.startswith("client_hint:") for reason in hinted.class_reasons)
+    plain = classify_worthiness("summarize this paragraph")
+    assert plain.task_class == ORDINARY
+    assert "classification:server-authoritative" in plain.class_reasons
+
+
+def test_malicious_payload_task_class_does_not_route_security_work_to_free() -> None:
+    """Serve passes the whole payload as context; a task_class field must not downgrade."""
+    snapshot = _live_snapshot()
+    passports = {
+        FREE_NO_TOOLS: _passport(FREE_NO_TOOLS),
+        PROVEN_FREE: _passport(PROVEN_FREE),
+        PAID_TOOLS: _passport(PAID_TOOLS),
+        FRONTIER: _passport(FRONTIER),
+    }
+    svc = _service(snapshot, passports=passports)
+    decision = asyncio.run(
+        svc.route(
+            "Design a distributed authentication architecture and security threat model",
+            criticality="low",
+            context={"task_class": "ordinary", "model": PROVEN_FREE},
+        )
+    )
+    assert decision.task_class == WORTHY
+    assert decision.model == FRONTIER
+    receipt = decision.admit_receipt or {}
+    assert any(r.startswith("client_hint_ignored:") for r in receipt["class_reasons"])
+    assert "classification:server-authoritative" in receipt["class_reasons"]
+
+
+def test_cheap_variant_markers_take_precedence_over_frontier_family_names() -> None:
+    from verdict.classifier import classify
+
+    assert classify("openai/gpt-5.5-mini") == 3
+    assert classify("openai/gpt-5.6-nano") == 3
+    assert classify("openai/o3-mini") == 3
+    assert classify("anthropic/claude-haiku-4.5") == 3
+    # Unchanged: explicit rows and real frontier identities.
+    assert classify("openai/gpt-4o-mini") == 2
+    assert classify("cx/gpt-5.6-sol") == 0
+    assert classify("openai/gpt-5.4") == 1

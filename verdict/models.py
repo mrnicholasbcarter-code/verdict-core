@@ -41,6 +41,10 @@ class RoutingDecision:
     safety_flags: list[str] = field(default_factory=list)
     admit_receipt: dict[str, Any] | None = None
     execute_preview: str | None = None
+    # Compiled cheap-path pack (BOD-111). The serve relay injects it verbatim
+    # into the upstream request; ``admit_receipt["prompt_digest"]`` is its
+    # sha256. Never serialized into client-facing decision dicts.
+    context_pack_prompt: str | None = None
     # Compatibility with the brief advisory-ranking contract.  The canonical
     # names remain ``model`` and ``tier``.
     confidence: float = 0.0

@@ -25,16 +25,14 @@ from verdict.comparison import ComparisonHarness
 from verdict.contracts import AvailabilitySnapshot, RoutingDecisionContract, TaskSpec
 from verdict.dispatcher import SwarmDispatcher
 from verdict.failover_replay_proof import replay_proof, run_forced_failover_proof
+from verdict.fixture_paths import default_fixture_path, resolve_fixture_path
 from verdict.gate import Gate
 from verdict.memory_plane import MemoryPlane
 from verdict.models import ModelConfig, ProviderConfig
 
 # Use absolute path to ensure it works from any working directory
-_PACKAGE_ROOT = Path(__file__).parent.parent
-DEFAULT_FIXTURE_PATH = _PACKAGE_ROOT / "benchmarks" / "fixtures" / "reproducible.json"
-DEFAULT_COMPARISON_FIXTURE_PATH = (
-    _PACKAGE_ROOT / "benchmarks" / "fixtures" / "direct_vs_verdict.json"
-)
+DEFAULT_FIXTURE_PATH = default_fixture_path("benchmarks/fixtures/reproducible.json")
+DEFAULT_COMPARISON_FIXTURE_PATH = default_fixture_path("benchmarks/fixtures/direct_vs_verdict.json")
 REPORT_SCHEMA_VERSION = "1"
 COMPARISON_REPORT_SCHEMA_VERSION = "1"
 
@@ -88,11 +86,7 @@ def _summarize(samples_ns: Sequence[int]) -> dict[str, int | float | str]:
 
 
 def load_benchmark_fixture(path: str | os.PathLike[str] = DEFAULT_FIXTURE_PATH) -> dict[str, Any]:
-    fixture_path = Path(path)
-    # If path is relative and doesn't exist, try relative to package root
-    if not fixture_path.is_absolute() and not fixture_path.exists():
-        _package_root = Path(__file__).parent.parent
-        fixture_path = _package_root / path
+    fixture_path = resolve_fixture_path(path)
     return cast(dict[str, Any], json.loads(fixture_path.read_text()))
 
 

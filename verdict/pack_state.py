@@ -7,7 +7,12 @@ Receipt-facing states:
   is incomplete (ADR or architecture gathered / budget-omitted but not packed)
 * ``hydrated`` — at least one included unit from each required high-value class
   that exists on disk (ADR + architecture when present; README is optional)
-* ``failed`` — hydrate / compiler error path
+* ``failed`` — hydrate / compiler error path, or the task instructions themselves
+  were omitted (BOD-110: a pack without its task is never hydrated or partial)
+
+Task-required sources (ADR / architecture files matching the task terms) must
+all be packed; a task-relevant ADR left out for budget is ``partial`` even if
+another, smaller ADR made it in (BOD-110).
 
 Invent-never: a missing root is a named ``source_missing`` omission only. It does
 not count as a present high-value class and must not be invented to reach
@@ -45,13 +50,19 @@ def classify_pack_state(
     gathered: Sequence[object] = (),
     omissions: Sequence[object] = (),
     failed: bool = False,
+    required: Sequence[str] = (),
+    task_complete: bool = True,
 ) -> PackState:
     """Classify a compiled cheap-path pack for admit/execute receipts.
 
     ``included`` / ``gathered`` items are provenance rows (``source_uri``).
     ``omissions`` items are named drops (``name`` + ``reason``).
+    ``required`` names task-specific sources that must be packed; omitting any
+    of them is ``partial`` even when the class-level thesis set landed (BOD-110).
+    ``task_complete=False`` means the task instructions themselves did not
+    survive compilation, which is ``failed`` — never hydrated, never partial.
     """
-    if failed:
+    if failed or not task_complete:
         return "failed"
     included_uris = tuple(uri for uri in (_item_uri(item) for item in included) if uri)
     if not included_uris:
@@ -60,6 +71,8 @@ def classify_pack_state(
     packed = {_required_class(uri) for uri in included_uris}
     packed.discard(None)
     if present - packed:
+        return "partial"
+    if any(uri.strip() and uri.strip() not in included_uris for uri in required):
         return "partial"
     return "hydrated"
 

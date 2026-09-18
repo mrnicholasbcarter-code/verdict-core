@@ -213,7 +213,10 @@ def gate_admit_prove_confirm(
         )
 
     healthy = frozenset(receipt.active_providers)
-    ordered = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy))
+    # BOD-112: free candidates are confirmed before paid fallbacks, keyed on the
+    # authoritative free_admitted set rather than an ID-suffix heuristic.
+    free_set = frozenset(receipt.free_admitted) if receipt.free_admitted else None
+    ordered = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
     shortlist = ordered[:max_confirm_candidates]
     deferred = ordered[max_confirm_candidates:]
     for identity_id in deferred:
@@ -329,9 +332,10 @@ def _finalize(
 ) -> FreeTierAdmitReceipt:
     admitted_sorted = tuple(sorted(admitted))
     healthy = frozenset(receipt.active_providers)
+    free_set = frozenset(receipt.free_admitted) if receipt.free_admitted else None
     chosen = None
     if admitted_sorted:
-        chosen = sorted(admitted_sorted, key=lambda item: _choose_sort(item, healthy))[0]
+        chosen = sorted(admitted_sorted, key=lambda item: _choose_sort(item, healthy, free_set))[0]
     return replace(
         receipt,
         admitted=admitted_sorted,

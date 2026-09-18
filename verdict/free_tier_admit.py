@@ -18,8 +18,9 @@ passports and a budgeted confirm probe (see ``verdict.admit_prove_confirm``).
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -50,6 +51,8 @@ REASON_REQUIRED_UNKNOWN = "required_unknown"
 REASON_UNMAPPED = "unmapped"
 REASON_STALE = "stale"
 REASON_PAID_FALLBACK = "paid_fallback"
+REASON_TASK_INSTRUCTIONS_OMITTED = "task_instructions_omitted"
+TASK_SOURCE_URI = "urn:verdict:task"
 _COMBO_PREFIXES = frozenset({"claude", "combo"})
 _ALIAS_PREFIXES = frozenset({"oc", "kr", "cf", "or", "nv"})
 _SMALL_TOKENS = ("nano", "flash", "haiku", "mini", "small", "lite", "instant")
@@ -155,19 +158,37 @@ class CheapPathContextPack:
     units: tuple[ContextUnit, ...] = ()
     included: tuple[IncludedProvenance, ...] = ()
     pack_state: PackState = "empty"
+    # BOD-110 completeness contract: the task instructions must be packed, and
+    # every task-required source must be included, before ``hydrated`` is possible.
+    task_complete: bool = True
+    required_sources: tuple[str, ...] = ()
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
         """Receipt-facing alias of ``included`` (BOD-106 / QA smoke field)."""
         return self.included
 
+    @property
+    def missing_required_sources(self) -> tuple[str, ...]:
+        included = {item.source_uri for item in self.included}
+        return tuple(uri for uri in self.required_sources if uri not in included)
+
+    @property
+    def prompt_digest(self) -> str:
+        """sha256 of the compiled prompt text — what an upstream actually receives."""
+        return f"sha256:{sha256(self.compiled_prompt.encode('utf-8')).hexdigest()}"
+
     def to_dict(self) -> dict[str, Any]:
         sources = [item.to_dict() for item in self.included]
         return {
             "pack_digest": self.pack_digest,
+            "prompt_digest": self.prompt_digest,
             "pack_id": self.pack_id,
             "plan_digest": self.plan_digest,
             "pack_state": self.pack_state,
+            "task_complete": self.task_complete,
+            "required_sources": list(self.required_sources),
+            "missing_required_sources": list(self.missing_required_sources),
             "included": sources,
             "included_sources": list(sources),
             "omissions": [item.to_dict() for item in self.omissions],
@@ -216,7 +237,7 @@ def build_cheap_path_context_pack(
         content=task,
         source="cheap_path",
         created_at=0.0,
-        source_uri="urn:verdict:task",
+        source_uri=TASK_SOURCE_URI,
     )
     slots = (task_slot, *(extra_slots or ()))
     units = []
@@ -258,18 +279,34 @@ def build_cheap_path_context_pack(
         for unit in pack.units
         if _is_workspace_provenance(unit.source_uri)
     )
+    # The task slot must survive compilation. If the budget (or a safety gate)
+    # dropped it, the compiled prompt no longer carries the instructions and
+    # must be reported as failed — never silently executed as a hydrated pack.
+    task_complete = any(unit.source_uri == TASK_SOURCE_URI for unit in pack.units)
+    omissions = gather_omissions + compiler_omissions
+    if not task_complete:
+        omissions = (
+            NamedOmission(name=TASK_SOURCE_URI, reason=REASON_TASK_INSTRUCTIONS_OMITTED),
+            *omissions,
+        )
     pack_state = classify_pack_state(
-        included=included, gathered=gathered.units, omissions=gather_omissions + compiler_omissions
+        included=included,
+        gathered=gathered.units,
+        omissions=omissions,
+        required=gathered.required_uris,
+        task_complete=task_complete,
     )
     return CheapPathContextPack(
         pack_digest=pack.digest,
         compiled_prompt=pack.compiled_prompt,
-        omissions=gather_omissions + compiler_omissions,
+        omissions=omissions,
         pack_id=pack.pack_id,
         plan_digest=pack.plan_digest or plan.digest,
         units=pack.units,
         included=included,
         pack_state=pack_state,
+        task_complete=task_complete,
+        required_sources=gathered.required_uris,
     )
 
 
@@ -288,8 +325,6 @@ def _failed_cheap_path_pack(
     task: str, *, candidate_id: str, token_budget: int
 ) -> CheapPathContextPack:
     """Stamp ``pack_state=failed`` without blocking execute or inventing sources."""
-    from hashlib import sha256
-
     from verdict.context_hydrate import CHEAP_PATH_EPOCH
 
     task_slot = ContextPackSlot(
@@ -298,7 +333,7 @@ def _failed_cheap_path_pack(
         content=task,
         source="cheap_path",
         created_at=0.0,
-        source_uri="urn:verdict:task",
+        source_uri=TASK_SOURCE_URI,
     )
     try:
         unit = replace(
@@ -358,11 +393,19 @@ class FreeTierAdmitReceipt:
     capability_matches: tuple[dict[str, Any], ...] = ()
     free_admitted: tuple[str, ...] = ()
     paid_admitted: tuple[str, ...] = ()
+    task_complete: bool | None = None
+    required_sources: tuple[str, ...] = ()
+    prompt_digest: str | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
         """Receipt-facing alias of ``included`` (BOD-106 / QA smoke field)."""
         return self.included
+
+    @property
+    def missing_required_sources(self) -> tuple[str, ...]:
+        included = {item.source_uri for item in self.included}
+        return tuple(uri for uri in self.required_sources if uri not in included)
 
     def to_dict(self) -> dict[str, Any]:
         sources = [item.to_dict() for item in self.included]
@@ -374,7 +417,11 @@ class FreeTierAdmitReceipt:
             "active_providers": list(self.active_providers),
             "free_tier_providers": list(self.free_tier_providers),
             "pack_digest": self.pack_digest,
+            "prompt_digest": self.prompt_digest,
             "pack_state": self.pack_state,
+            "task_complete": self.task_complete,
+            "required_sources": list(self.required_sources),
+            "missing_required_sources": list(self.missing_required_sources),
             "included": sources,
             "included_sources": list(sources),
             "omissions": [item.to_dict() for item in self.omissions],
@@ -618,10 +665,29 @@ def _is_positively_free_identity(identity_id: str) -> bool:
     return free_status({"id": identity_id}) == "free"
 
 
-def _choose_sort(identity_id: str, active_healthy: frozenset[str]) -> tuple[int, int, int, str]:
+def _looks_free_by_name(identity_id: str) -> bool:
+    """Name heuristic only. Never authoritative when a free_admitted set exists."""
     lowered = identity_id.lower()
     leaf = lowered.rsplit("/", 1)[-1]
-    free_mark = 0 if (":free" in lowered or leaf.endswith("-free") or leaf.endswith(":free")) else 1
+    return ":free" in lowered or leaf.endswith("-free") or leaf.endswith(":free")
+
+
+def _choose_sort(
+    identity_id: str, active_healthy: frozenset[str], free_admitted: Collection[str] | None = None
+) -> tuple[int, int, int, str]:
+    """Free-first ordering keyed on authoritative free-tier membership (BOD-112).
+
+    ``free_admitted`` is the free∩active set observed from OmniRoute's free-tier
+    summary. When it is provided, an identity is free iff it is a member — a free
+    model without a ``:free``/``-free`` suffix must not be displaced by paid
+    candidates, and a paid model must not jump the queue by name. The name
+    heuristic is used only when no authoritative set is available.
+    """
+    lowered = identity_id.lower()
+    if free_admitted is not None:
+        free_mark = 0 if identity_id in free_admitted else 1
+    else:
+        free_mark = 0 if _looks_free_by_name(identity_id) else 1
     small = 0 if any(token in lowered for token in _SMALL_TOKENS) else 1
     provider = _provider_of(identity_id)
     healthy = 0 if provider in active_healthy else 1
@@ -734,7 +800,9 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
     )
     chosen = None
     if admitted_sorted:
-        chosen = sorted(admitted_sorted, key=lambda item: _choose_sort(item, healthy))[0]
+        chosen = sorted(
+            admitted_sorted, key=lambda item: _choose_sort(item, healthy, admitted_sorted)
+        )[0]
     return FreeTierAdmitReceipt(
         admitted=admitted_sorted,
         exclusions=tuple(exclusions),
@@ -968,8 +1036,10 @@ __all__ = [
     "REASON_OPAQUE_AUTO",
     "REASON_REQUIRED_UNKNOWN",
     "REASON_STALE",
+    "REASON_TASK_INSTRUCTIONS_OMITTED",
     "REASON_UNMAPPED",
     "REASON_WORTHY_EXCLUDES_FREE",
+    "TASK_SOURCE_URI",
     "CatalogIdentity",
     "CheapPathContextPack",
     "FreeTierAdmitReceipt",

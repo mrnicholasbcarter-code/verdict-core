@@ -226,3 +226,67 @@ def test_gate_loads_passports_from_prove_at_rest_store(tmp_path: Path) -> None:
         item.reason for item in gated.exclusions if item.model_id == "opencode/hy3-free"
     }
     assert REASON_NO_PASSPORT in drop_reasons
+
+
+# --- BOD-112: authoritative free-first confirm shortlist --------------------
+
+
+def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:
+    """A free model named without ``:free``/``-free`` must not lose the shortlist to paid."""
+    from dataclasses import replace
+
+    from verdict.free_tier_admit import expand_admit_for_worthiness
+
+    free_plain = "opencode/hy3"  # free per OmniRoute free-tier summary, no suffix in the ID
+    paid = "anthropic/claude-3-opus-20240229"
+    snapshot = snapshot_from_payloads(
+        catalog={
+            "data": [
+                {"id": free_plain, "owned_by": "opencode"},
+                {"id": paid, "owned_by": "anthropic"},
+            ]
+        },
+        free_tier={"perModel": [{"modelId": "hy3", "provider": "opencode", "freeType": "keyless"}]},
+        providers={
+            "connections": [
+                {"provider": "opencode", "isActive": True, "testStatus": "active"},
+                {"provider": "anthropic", "isActive": True, "testStatus": "active"},
+            ]
+        },
+    )
+    base = admit_free_tier_active(snapshot)
+    assert base.free_admitted == (free_plain,)
+    ordinary = expand_admit_for_worthiness(
+        base, snapshot, task_class="ordinary", class_reasons=("test",)
+    )
+    assert set(ordinary.admitted) == {free_plain, paid}
+
+    probed: list[str] = []
+
+    def spy(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        probed.append(model_id)
+        return _ok_transport()(model_id, payload, timeout)
+
+    gated = gate_admit_prove_confirm(
+        ordinary,
+        passports={free_plain: _passport(free_plain), paid: _passport(paid)},
+        confirm_transport=spy,
+        now=NOW,
+        max_confirm_candidates=1,
+    )
+    assert probed == [free_plain], "free candidate must be confirmed before any paid fallback"
+    assert gated.chosen == free_plain
+    named = {item.model_id: item.reason for item in gated.exclusions}
+    assert named[paid] == "confirm_budget_exhausted"
+
+    # Name heuristics alone would have put the alphabetically-earlier paid model first.
+    heuristic_only = replace(ordinary, free_admitted=())
+    probed.clear()
+    gate_admit_prove_confirm(
+        heuristic_only,
+        passports={free_plain: _passport(free_plain), paid: _passport(paid)},
+        confirm_transport=spy,
+        now=NOW,
+        max_confirm_candidates=1,
+    )
+    assert probed == [paid], "sanity: the fix is the authoritative free_admitted set"

@@ -654,6 +654,7 @@ def cmd_benchmark(
     allow_live_provider: bool = False,
     live_provider: str | None = None,
     savings: bool = False,
+    live_paired: bool = False,
 ) -> None:
     """Run the reproducible local benchmark harness and optionally persist JSON."""
     if savings:
@@ -666,7 +667,19 @@ def cmd_benchmark(
         path = fixture
         if fixture == "benchmarks/fixtures/reproducible.json":
             path = str(DEFAULT_SAVINGS_FIXTURE_PATH)
-        report = run_savings_bench(path)
+        execute_arm = None
+        if live_paired:
+            # BOD-114: the only claim-capable mode. Both arms execute against the
+            # configured OmniRoute gateway; without one we refuse rather than
+            # silently degrade to the labeled simulation.
+            from verdict.savings_live import LiveExecutorUnavailableError, executor_from_env
+
+            try:
+                execute_arm = executor_from_env()
+            except LiveExecutorUnavailableError as exc:
+                console.print(f"[bold red]❌ {exc}[/bold red]")
+                raise SystemExit(2) from exc
+        report = run_savings_bench(path, execute_arm=execute_arm)
         console.print(format_savings_report(report), end="")
         if output_json:
             output_path = Path(output_json)
@@ -2738,7 +2751,18 @@ def main() -> None:
     benchmark_p.add_argument(
         "--savings",
         action="store_true",
-        help="Run the BOD-101 paired legit-task savings bench (we measure)",
+        help=(
+            "Run the paired legit-task savings bench (we measure). Without --live-paired "
+            "this is a labeled simulation that cannot claim savings."
+        ),
+    )
+    benchmark_p.add_argument(
+        "--live-paired",
+        action="store_true",
+        help=(
+            "Execute both arms of every --savings task against OMNIROUTE_BASE_URL "
+            "(OMNIROUTE_API_KEY) and bind cost/identity/quality to the execution receipts"
+        ),
     )
 
     quickstart_p = subparsers.add_parser(
@@ -3265,6 +3289,7 @@ def main() -> None:
             allow_live_provider=args.allow_live_provider,
             live_provider=args.live_provider,
             savings=args.savings,
+            live_paired=args.live_paired,
         )
     elif args.command == "quickstart":
         cmd_quickstart(

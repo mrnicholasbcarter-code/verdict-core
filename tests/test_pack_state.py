@@ -72,3 +72,36 @@ def test_failed_takes_precedence() -> None:
     assert not savings_unlocked("failed")
     assert not savings_unlocked(None)
     assert not savings_unlocked("empty")
+
+
+def test_task_omitted_is_failed_regardless_of_includes() -> None:
+    """BOD-110: no task instructions → failed, never hydrated/partial."""
+    included = (
+        IncludedProvenance("docs/adr/ADR-001.md", "sha256:" + "a" * 64),
+        IncludedProvenance("docs/architecture/decision.md", "sha256:" + "b" * 64),
+    )
+    state = classify_pack_state(included=included, gathered=included, task_complete=False)
+    assert state == "failed"
+    assert not savings_unlocked(state)
+
+
+def test_missing_required_source_is_partial() -> None:
+    """BOD-110: a task-required ADR left out is partial even with class coverage."""
+    included = (
+        IncludedProvenance("docs/adr/ADR-001.md", "sha256:" + "a" * 64),
+        IncludedProvenance("docs/architecture/decision.md", "sha256:" + "b" * 64),
+    )
+    gathered = (*included, IncludedProvenance("docs/adr/ADR-007-task.md", "sha256:" + "c" * 64))
+    omissions = (NamedOmission(name="docs/adr/ADR-007-task.md", reason="input_budget_exhausted"),)
+    state = classify_pack_state(
+        included=included,
+        gathered=gathered,
+        omissions=omissions,
+        required=("docs/adr/ADR-007-task.md",),
+    )
+    assert state == "partial"
+    assert not savings_unlocked(state)
+    complete = classify_pack_state(
+        included=gathered, gathered=gathered, required=("docs/adr/ADR-007-task.md",)
+    )
+    assert complete == "hydrated"

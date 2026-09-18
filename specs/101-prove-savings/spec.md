@@ -40,3 +40,13 @@ real `included_sources`.
 - Invented % talk track
 - Selling empty/partial packs as hydrated
 - Hardcoding a winner identity that scripts the chooser
+
+## Execution binding (BOD-114)
+
+The fixture-only run is a labeled **simulation** (`mode=simulation-not-executed`,
+`claims_allowed=false`) and can never set `savings_claimed=true`. Claims require
+`--live-paired` (or an `execute_arm` hook): both arms executed with execution
+IDs, the same input hash, observed costs, provider-bound identities with an
+explained attempt chain, output-evaluated quality, a hydrated pack, and no
+cache hit. See `docs/benchmarks/paired-savings.md`.
+

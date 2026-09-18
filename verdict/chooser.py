@@ -500,10 +500,19 @@ def rank_admitted_candidates(
 
 
 def _resource_class_for(identity_id: str, free_admitted: Sequence[str]) -> str:
-    """Map an admitted identity onto a chooser resource class. Never invent scores."""
-    lowered = identity_id.lower()
-    if identity_id in set(free_admitted) or ":free" in lowered or lowered.endswith("-free"):
-        return FREE
+    """Map an admitted identity onto a chooser resource class. Never invent scores.
+
+    ``free_admitted`` is authoritative (BOD-112): when the receipt carries the
+    observed free∩active set, membership alone decides FREE. The ID-suffix
+    heuristic applies only to receipts that never observed free-tier metadata.
+    """
+    if free_admitted:
+        if identity_id in set(free_admitted):
+            return FREE
+    else:
+        lowered = identity_id.lower()
+        if ":free" in lowered or lowered.endswith("-free"):
+            return FREE
     if classify(identity_id) <= 1:
         return SUBSCRIPTION_PREMIUM
     return SUBSCRIPTION_WORKER

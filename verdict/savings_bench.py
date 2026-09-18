@@ -1,10 +1,22 @@
-"""Paired frontier-direct vs Verdict savings bench (BOD-101).
+"""Paired frontier-direct vs Verdict savings bench (BOD-101 / BOD-114).
 
-Cost is parsed only from OmniRoute response headers or the same fields on a
-receipt. Cache hits are labeled and never sold as model savings. Quality misses
-are reported and withhold a savings claim. The Verdict arm must actually route
-so ``pack_state=hydrated`` with real ``included_sources`` is observed, not
-asserted.
+Talk track: "we measure". Cost and token usage come only from observed
+OmniRoute response headers or matching receipt fields, bound to an execution
+ID. Cache hits are labeled and never sold as model savings. Quality misses are
+reported and withhold a savings claim. The Verdict arm must actually route
+through the live chooser against a hydrated pack.
+
+Two modes:
+
+* **simulation-not-executed** (default, offline fixture): neither arm is
+  executed. The report is explicitly labeled a simulation, every task is
+  withheld with ``simulation_not_executed``, and ``savings_claimed`` is never
+  true. Fixture identities are reported but flagged as unbound.
+* **live-paired**: an ``execute_arm`` hook (see :mod:`verdict.savings_execution`
+  and :mod:`verdict.savings_live`) runs both arms on the same input hash. A
+  claim requires both execution IDs, matching input hashes, observed costs,
+  provider-bound identities with an explained attempt chain, a hydrated pack,
+  no cache hit, and quality evaluated from the produced output.
 """
 
 from __future__ import annotations
@@ -12,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +32,11 @@ from typing import Any, cast
 
 from verdict.classifier import classify
 from verdict.context_hydrate import DEFAULT_CONTEXT_ROOTS
+from verdict.fixture_paths import (
+    default_fixture_path,
+    resolve_fixture_path,
+    resolve_fixture_workspace,
+)
 from verdict.free_tier_admit import OmniRouteAdmitSnapshot, snapshot_from_payloads
 from verdict.intelligence import IntelligenceService
 from verdict.metadata.records import (
@@ -33,13 +50,27 @@ from verdict.metadata.store import MetadataSnapshot
 from verdict.model_passports import ModelPassport
 from verdict.models import ProviderConfig
 from verdict.pack_state import savings_unlocked
-
-_PACKAGE_ROOT = Path(__file__).parent.parent
-DEFAULT_SAVINGS_FIXTURE_PATH = (
-    _PACKAGE_ROOT / "benchmarks" / "fixtures" / "legit_paired_savings.json"
+from verdict.savings_execution import (
+    ARM_DIRECT,
+    ARM_VERDICT,
+    ArmExecution,
+    ArmExecutor,
+    ArmRequest,
+    QualityEvaluator,
+    QualityResult,
+    canonical_input_hash,
+    evaluate_output_against_checks,
+    execution_evidence_gaps,
+    explain_identity,
+    validate_quality,
 )
+
+DEFAULT_SAVINGS_FIXTURE_PATH = default_fixture_path("benchmarks/fixtures/legit_paired_savings.json")
 TALK_TRACK = "we measure"
-SAVINGS_REPORT_SCHEMA_VERSION = "1"
+SAVINGS_REPORT_SCHEMA_VERSION = "2"
+MODE_SIMULATION = "simulation-not-executed"
+MODE_LIVE_PAIRED = "live-paired"
+WITHHOLD_SIMULATION = "simulation_not_executed"
 COST_HEADER = "x-omniroute-response-cost"
 TOKENS_IN_HEADER = "x-omniroute-tokens-in"
 TOKENS_OUT_HEADER = "x-omniroute-tokens-out"
@@ -166,12 +197,7 @@ def _quality(arm: Mapping[str, Any]) -> dict[str, Any]:
     raw = arm.get("quality")
     if not isinstance(raw, dict):
         raise ValueError("each arm must include quality.passed")
-    passed = raw.get("passed")
-    if not isinstance(passed, bool):
-        raise ValueError("quality.passed must be a boolean")
-    misses = raw.get("misses", [])
-    if not isinstance(misses, list) or any(not isinstance(item, str) for item in misses):
-        raise ValueError("quality.misses must be a list of strings")
+    passed, misses = validate_quality(raw.get("passed"), raw.get("misses", []), where="quality")
     return {"passed": passed, "misses": list(misses)}
 
 
@@ -313,137 +339,357 @@ def _service(workspace_root: Path) -> IntelligenceService:
     )
 
 
-def _withhold_reason(
+def _withhold_reasons(
     *,
+    executed: bool,
+    evidence_gaps: Sequence[str],
     pack_state: str | None,
     included_sources: list[Any],
     verdict_quality: Mapping[str, Any],
-    direct_cost: MeasuredCost,
-    verdict_cost: MeasuredCost,
-) -> str | None:
+    direct_cost: MeasuredCost | None,
+    verdict_cost: MeasuredCost | None,
+) -> list[str]:
+    """Every reason a claim is refused, in precedence order. Empty means claimable."""
+    reasons: list[str] = []
+    if not executed:
+        reasons.append(WITHHOLD_SIMULATION)
+    reasons.extend(evidence_gaps)
     if not verdict_quality["passed"]:
-        return "quality_miss"
-    if direct_cost.cache_hit or verdict_cost.cache_hit:
-        return "cache_hit_is_not_model_savings"
+        reasons.append("quality_miss")
+    if (direct_cost is not None and direct_cost.cache_hit) or (
+        verdict_cost is not None and verdict_cost.cache_hit
+    ):
+        reasons.append("cache_hit_is_not_model_savings")
     if not savings_unlocked(pack_state) or not included_sources:
-        return "pack_not_hydrated"
-    if verdict_cost.usd >= direct_cost.usd:
-        return "no_cost_reduction"
-    return None
+        reasons.append("pack_not_hydrated")
+    if direct_cost is None or verdict_cost is None:
+        reasons.append("cost_not_observed")
+    elif verdict_cost.usd >= direct_cost.usd:
+        reasons.append("no_cost_reduction")
+    return list(dict.fromkeys(reasons))
 
 
-def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -> dict[str, Any]:
-    """Run the offline paired legit-task savings bench."""
-    path = Path(fixture_path)
-    if not path.is_absolute() and not path.exists():
-        path = _PACKAGE_ROOT / fixture_path
+def _arm_view(arm: Mapping[str, Any], *, measured_from: str) -> dict[str, Any]:
+    """Cost/identity/quality for one arm as evidence rows, never as invented numbers."""
+    return {"measured_from": measured_from, **_arm_cost_view(arm)}
+
+
+def _arm_cost_view(arm: Mapping[str, Any]) -> dict[str, Any]:
+    cost = parse_measured_cost(arm)
+    return {
+        "completed_with": _used_model(arm),
+        "cost_usd": cost.usd,
+        "tokens_in": cost.tokens_in,
+        "tokens_out": cost.tokens_out,
+        "cache_hit": cost.cache_hit,
+        "cost_source": cost.source,
+    }
+
+
+def _cost_or_error(arm: Mapping[str, Any]) -> tuple[MeasuredCost | None, str | None]:
+    try:
+        return parse_measured_cost(arm), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _execute(executor: ArmExecutor, request: ArmRequest) -> tuple[ArmExecution | None, str | None]:
+    try:
+        execution = executor(request)
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if execution.arm != request.arm:
+        return None, f"executor returned arm {execution.arm!r} for {request.arm!r}"
+    return execution, None
+
+
+def run_savings_bench(
+    fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH,
+    *,
+    execute_arm: ArmExecutor | None = None,
+    quality_evaluator: QualityEvaluator | None = None,
+    gateway: str = "omniroute",
+) -> dict[str, Any]:
+    """Run the paired legit-task savings bench.
+
+    Without ``execute_arm`` the run is a labeled simulation and can never
+    claim savings. With it, both arms are executed on the same input hash and
+    a claim requires complete, bound evidence.
+    """
+    path = resolve_fixture_path(fixture_path)
     fixture = cast(dict[str, Any], json.loads(path.read_text()))
     _validate_savings_fixture(fixture)
-    workspace = Path(str(fixture.get("workspace") or "benchmarks/fixtures/legit_workspace"))
-    if not workspace.is_absolute():
-        workspace = (_PACKAGE_ROOT / workspace).resolve()
+    workspace = resolve_fixture_workspace(
+        path, str(fixture.get("workspace") or "benchmarks/fixtures/legit_workspace")
+    )
     service = _service(workspace)
+    evaluate = quality_evaluator or evaluate_output_against_checks
+    executed_mode = execute_arm is not None
     tasks: list[dict[str, Any]] = []
+    evidence_bundle: list[dict[str, Any]] = []
     for task in cast(list[dict[str, Any]], fixture["tasks"]):
-        decision = asyncio.run(service.route(str(task["prompt"]), criticality="low"))
-        receipt = decision.admit_receipt or {}
-        pack_state = receipt.get("pack_state") if isinstance(receipt, dict) else None
-        included = (
-            list(receipt.get("included_sources") or receipt.get("included") or [])
-            if isinstance(receipt, dict)
-            else []
+        task_id = str(task["id"])
+        prompt = str(task["prompt"])
+        criteria = tuple(str(item) for item in task["acceptance_criteria"])
+        input_hash = canonical_input_hash(prompt, criteria)
+        decision = asyncio.run(service.route(prompt, criticality="low"))
+        receipt = decision.admit_receipt if isinstance(decision.admit_receipt, dict) else {}
+        pack_state = receipt.get("pack_state")
+        included = list(receipt.get("included_sources") or receipt.get("included") or [])
+        direct_fixture = cast(dict[str, Any], task[ARM_DIRECT])
+        verdict_fixture = cast(dict[str, Any], task[ARM_VERDICT])
+        direct_identity = _used_model(direct_fixture)
+        verdict_routed = decision.model
+        attempt_chain = tuple(dict.fromkeys([verdict_routed, *decision.alternatives]))
+
+        direct_request = ArmRequest(
+            arm=ARM_DIRECT,
+            task_id=task_id,
+            prompt=prompt,
+            acceptance_criteria=criteria,
+            input_hash=input_hash,
+            model=direct_identity,
         )
-        direct_arm = cast(dict[str, Any], task["direct"])
-        verdict_arm = cast(dict[str, Any], task["verdict"])
-        direct_cost = parse_measured_cost(direct_arm)
-        verdict_cost = parse_measured_cost(verdict_arm)
-        direct_quality = _quality(direct_arm)
-        verdict_quality = _quality(verdict_arm)
-        withhold = _withhold_reason(
+        verdict_request = ArmRequest(
+            arm=ARM_VERDICT,
+            task_id=task_id,
+            prompt=prompt,
+            acceptance_criteria=criteria,
+            input_hash=input_hash,
+            model=verdict_routed,
+            context_envelope=decision.context_pack_prompt,
+            routed_model=verdict_routed,
+            attempt_chain=attempt_chain,
+            pack_digest=receipt.get("pack_digest"),
+            prompt_digest=receipt.get("prompt_digest"),
+        )
+
+        direct_exec: ArmExecution | None = None
+        verdict_exec: ArmExecution | None = None
+        executor_errors: dict[str, str] = {}
+        if execute_arm is not None:
+            direct_exec, err = _execute(execute_arm, direct_request)
+            if err:
+                executor_errors[ARM_DIRECT] = err
+            verdict_exec, err = _execute(execute_arm, verdict_request)
+            if err:
+                executor_errors[ARM_VERDICT] = err
+
+        if executed_mode:
+            direct_cost, direct_cost_err = (
+                _cost_or_error(_arm_from_execution(direct_exec))
+                if direct_exec is not None
+                else (None, "not executed")
+            )
+            verdict_cost, verdict_cost_err = (
+                _cost_or_error(_arm_from_execution(verdict_exec))
+                if verdict_exec is not None
+                else (None, "not executed")
+            )
+            gaps = execution_evidence_gaps(direct_request, direct_exec, cost_error=direct_cost_err)
+            gaps += execution_evidence_gaps(
+                verdict_request, verdict_exec, cost_error=verdict_cost_err
+            )
+            direct_quality = (
+                evaluate(task, direct_exec).to_dict()
+                if direct_exec is not None
+                else QualityResult(False, ("not executed",), "none").to_dict()
+            )
+            verdict_quality = (
+                evaluate(task, verdict_exec).to_dict()
+                if verdict_exec is not None
+                else QualityResult(False, ("not executed",), "none").to_dict()
+            )
+            direct_view = _execution_view(direct_exec, direct_cost)
+            verdict_view = _execution_view(verdict_exec, verdict_cost)
+            identity = (
+                explain_identity(verdict_request, verdict_exec)
+                if verdict_exec is not None
+                else {
+                    "routed": verdict_routed,
+                    "completed_with": None,
+                    "gateway": gateway,
+                    "attempt_chain": list(attempt_chain),
+                    "bound": False,
+                    "explanation": "verdict arm was not executed",
+                }
+            )
+            for execution in (direct_exec, verdict_exec):
+                if execution is not None:
+                    evidence_bundle.append({"task_id": task_id, **execution.to_evidence()})
+        else:
+            # Simulation: fixture numbers are echoed as *stated* values, never as
+            # evidence. They are not bound to any execution and cannot claim.
+            direct_cost = parse_measured_cost(direct_fixture)
+            verdict_cost = parse_measured_cost(verdict_fixture)
+            gaps = []
+            direct_quality = _quality(direct_fixture)
+            verdict_quality = _quality(verdict_fixture)
+            direct_view = _arm_view(direct_fixture, measured_from="fixture (not executed)")
+            verdict_view = _arm_view(verdict_fixture, measured_from="fixture (not executed)")
+            stated = verdict_view["completed_with"]
+            identity = {
+                "routed": verdict_routed,
+                "completed_with": stated,
+                "gateway": None,
+                "attempt_chain": list(attempt_chain),
+                "bound": False,
+                "explanation": (
+                    "fixture-stated identity is not bound to any execution receipt"
+                    + (
+                        ""
+                        if stated == verdict_routed
+                        else f"; live chooser routed {verdict_routed}"
+                    )
+                ),
+            }
+
+        reasons = _withhold_reasons(
+            executed=executed_mode and direct_exec is not None and verdict_exec is not None,
+            evidence_gaps=gaps,
             pack_state=str(pack_state) if pack_state is not None else None,
             included_sources=included,
             verdict_quality=verdict_quality,
             direct_cost=direct_cost,
             verdict_cost=verdict_cost,
         )
-        cost_delta = round(verdict_cost.usd - direct_cost.usd, 6)
-        direct_used = _used_model(direct_arm)
-        verdict_used = _used_model(verdict_arm)
-        verdict_routed = decision.model
+        cost_delta = (
+            round(verdict_cost.usd - direct_cost.usd, 6)
+            if direct_cost is not None and verdict_cost is not None
+            else None
+        )
         tasks.append(
             {
-                "task_id": str(task["id"]),
+                "task_id": task_id,
                 "kind": str(task["kind"]),
-                "acceptance_criteria": list(task["acceptance_criteria"]),
+                "acceptance_criteria": list(criteria),
+                "input_hash": input_hash,
+                "executed": executed_mode and direct_exec is not None and verdict_exec is not None,
+                "executor_errors": executor_errors,
                 "direct": {
-                    "completed_with": direct_used,
-                    "model": direct_used,
-                    "cost_usd": direct_cost.usd,
-                    "tokens_in": direct_cost.tokens_in,
-                    "tokens_out": direct_cost.tokens_out,
-                    "cache_hit": direct_cost.cache_hit,
-                    "cost_source": direct_cost.source,
+                    **direct_view,
+                    "model": direct_view["completed_with"],
                     "quality": direct_quality,
                 },
                 "verdict": {
-                    "completed_with": verdict_used,
+                    **verdict_view,
                     "routed": verdict_routed,
                     "model": verdict_routed,
                     "task_class": decision.task_class,
                     "pack_state": pack_state,
+                    "pack_digest": receipt.get("pack_digest"),
+                    "prompt_digest": receipt.get("prompt_digest"),
                     "included_sources": included,
-                    "selected_because": receipt.get("selected_because")
-                    if isinstance(receipt, dict)
-                    else None,
-                    "cost_usd": verdict_cost.usd,
-                    "tokens_in": verdict_cost.tokens_in,
-                    "tokens_out": verdict_cost.tokens_out,
-                    "cache_hit": verdict_cost.cache_hit,
-                    "cost_source": verdict_cost.source,
+                    "selected_because": receipt.get("selected_because"),
                     "quality": verdict_quality,
                 },
+                "identity_binding": identity,
                 "deltas": {"cost_usd": cost_delta},
-                "savings_claimed": withhold is None,
-                "withhold_reason": withhold,
+                "savings_claimed": not reasons,
+                "withhold_reason": reasons[0] if reasons else None,
+                "withhold_reasons": reasons,
             }
         )
     claimed = [item for item in tasks if item["savings_claimed"]]
+
+    def _count(reason: str) -> int:
+        return sum(1 for item in tasks if reason in item["withhold_reasons"])
+
+    measured = [
+        item for item in tasks if item["executed"] and item["deltas"]["cost_usd"] is not None
+    ]
+    stated = [
+        item for item in tasks if not item["executed"] and item["deltas"]["cost_usd"] is not None
+    ]
     return {
         "schema_version": SAVINGS_REPORT_SCHEMA_VERSION,
-        "mode": "local-savings",
+        "mode": MODE_LIVE_PAIRED if executed_mode else MODE_SIMULATION,
+        "executed": executed_mode,
+        "claims_allowed": executed_mode,
         "talk_track": TALK_TRACK,
         "fixture_path": str(path),
         "fixture_digest_sha256": _fixture_digest(fixture),
         "workspace": str(workspace),
+        "gateway": gateway if executed_mode else None,
         "tasks": tasks,
+        "evidence_bundle": evidence_bundle,
         "aggregate": {
             "task_count": len(tasks),
+            "executed_count": sum(1 for item in tasks if item["executed"]),
             "savings_claimed_count": len(claimed),
-            "quality_miss_count": sum(
-                1 for item in tasks if item["withhold_reason"] == "quality_miss"
-            ),
-            "cache_hit_count": sum(
-                1 for item in tasks if item["withhold_reason"] == "cache_hit_is_not_model_savings"
-            ),
+            "simulation_count": _count(WITHHOLD_SIMULATION),
+            "quality_miss_count": _count("quality_miss"),
+            "cache_hit_count": _count("cache_hit_is_not_model_savings"),
             "measured_cost_delta_usd": round(
-                sum(float(item["deltas"]["cost_usd"]) for item in tasks), 6
+                sum(float(item["deltas"]["cost_usd"]) for item in measured), 6
+            ),
+            # Fixture-stated deltas from unexecuted arms. Not measurements.
+            "stated_cost_delta_usd": round(
+                sum(float(item["deltas"]["cost_usd"]) for item in stated), 6
             ),
             "claimed_cost_delta_usd": round(
                 sum(float(item["deltas"]["cost_usd"]) for item in claimed), 6
             ),
         },
         "provenance": {
-            "cost": "X-OmniRoute-Response-Cost / Tokens-In/Out headers or matching receipt fields",
+            "mode": (
+                "live-paired: both arms executed by execute_arm on the same input_hash"
+                if executed_mode
+                else "simulation: fixture values are stated, not observed; no arm was executed; "
+                "savings cannot be claimed"
+            ),
+            "cost": (
+                "X-OmniRoute-Response-Cost / Tokens-In/Out headers or matching receipt fields, "
+                "bound to execution_id"
+            ),
             "cache_hit": (
                 "cache hit on cheaper or frontier models is labeled and never sold as model savings"
             ),
-            "quality": "quality miss is reported and never sold as savings",
+            "quality": (
+                "evaluated from produced output against task checks; passed=true with misses "
+                "is rejected as contradictory"
+            ),
             "completed_with": (
-                "each arm must specify the model the measured cost belongs to "
-                "(X-OmniRoute-Model / completed_with); Verdict also stamps "
-                "routed=decision.model from the live chooser"
+                "each arm's identity comes from the execution receipt (X-OmniRoute-Model / "
+                "completed_with); the Verdict arm binds routed → completed via the attempt chain"
+            ),
+            "evidence_bundle": (
+                "privacy-reviewed: execution IDs, input/output digests, identities and "
+                "x-omniroute-* headers only; no prompt or output text"
             ),
         },
+    }
+
+
+def _arm_from_execution(execution: ArmExecution) -> dict[str, Any]:
+    return {
+        "headers": dict(execution.headers),
+        "receipt": dict(execution.receipt),
+        "completed_with": execution.completed_with,
+    }
+
+
+def _execution_view(execution: ArmExecution | None, cost: MeasuredCost | None) -> dict[str, Any]:
+    if execution is None:
+        return {
+            "measured_from": "not executed",
+            "execution_id": None,
+            "completed_with": None,
+            "cost_usd": None,
+            "tokens_in": None,
+            "tokens_out": None,
+            "cache_hit": None,
+            "cost_source": None,
+        }
+    return {
+        "measured_from": f"execution {execution.execution_id}",
+        "execution_id": execution.execution_id,
+        "completed_with": execution.completed_with,
+        "cost_usd": None if cost is None else cost.usd,
+        "tokens_in": None if cost is None else cost.tokens_in,
+        "tokens_out": None if cost is None else cost.tokens_out,
+        "cache_hit": None if cost is None else cost.cache_hit,
+        "cost_source": None if cost is None else cost.source,
     }
 
 
@@ -451,16 +697,24 @@ def format_savings_report(report: dict[str, Any]) -> str:
     """Render a talk-track-safe savings report."""
     lines = [
         f"mode: {report['mode']}",
+        f"claims_allowed: {str(report.get('claims_allowed', False)).lower()}",
         f"talk_track: {report['talk_track']}",
         f"tasks: {report['aggregate']['task_count']}",
+        f"executed: {report['aggregate'].get('executed_count', 0)}",
         f"savings_claimed: {report['aggregate']['savings_claimed_count']}",
         f"quality_misses: {report['aggregate']['quality_miss_count']}",
         f"cache_hits: {report['aggregate'].get('cache_hit_count', 0)}",
         f"measured_cost_delta_usd: {report['aggregate']['measured_cost_delta_usd']}",
+        f"stated_cost_delta_usd: {report['aggregate'].get('stated_cost_delta_usd', 0)}",
         f"claimed_cost_delta_usd: {report['aggregate']['claimed_cost_delta_usd']}",
     ]
     for task in cast(list[dict[str, Any]], report["tasks"]):
-        claim = "claimed" if task["savings_claimed"] else f"withheld:{task['withhold_reason']}"
+        if task["savings_claimed"]:
+            claim = "claimed"
+        else:
+            claim = "withheld:" + ",".join(
+                task.get("withhold_reasons") or [task["withhold_reason"]]
+            )
         direct_used = task["direct"].get("completed_with") or task["direct"].get("model")
         verdict_used = task["verdict"].get("completed_with")
         routed = task["verdict"].get("routed") or task["verdict"].get("model")
@@ -471,12 +725,20 @@ def format_savings_report(report: dict[str, Any]) -> str:
             f"direct_used={direct_used} verdict_used={verdict_used} "
             f"routed={routed} cache_hit={str(cache_hit).lower()}"
         )
+    if not report.get("claims_allowed", False):
+        lines.append(
+            "NOTE: simulation — no arm was executed; fixture values are stated, not observed; "
+            "savings cannot be claimed from this report"
+        )
     return "\n".join(lines) + "\n"
 
 
 __all__ = [
     "DEFAULT_SAVINGS_FIXTURE_PATH",
+    "MODE_LIVE_PAIRED",
+    "MODE_SIMULATION",
     "TALK_TRACK",
+    "WITHHOLD_SIMULATION",
     "MeasuredCost",
     "format_savings_report",
     "parse_measured_cost",

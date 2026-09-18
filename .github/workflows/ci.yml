@@ -26,9 +26,16 @@ jobs:
       - name: Run TypeScript client SDK tests
         run: cd verdict/client-sdk && npm test
 
-  example-smoke-test:
+  client-package-smoke:
+    # Replaces the former example-smoke-test, which invoked a TypeScript example
+    # that no longer exists and piped it through head, so it passed regardless
+    # of the producer's exit status. This job runs a real producer (the client
+    # SDK package verifier) under pipefail and fails on any nonzero exit.
     runs-on: ubuntu-latest
     needs: typescript-contract-parity
+    defaults:
+      run:
+        shell: bash -euo pipefail {0}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -37,19 +44,24 @@ jobs:
           cache: npm
       - name: Install Node dependencies (all workspaces)
         run: npm ci --workspaces
-      - name: Run example smoke test
-        run: npx tsx examples/verdict-client-example.ts 2>&1 | head -30
-        env:
-          VERDICT_API_URL: http://localhost:8000/v1
+      - name: Build TypeScript contracts
+        run: cd contracts && npm run build
+      - name: Verify client SDK package contents
+        run: cd verdict/client-sdk && npm run verify:package
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every version in requires-python / classifiers is exercised.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
-      - name: Set up Python 3.13
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
         run: |
@@ -122,12 +134,16 @@ jobs:
 
   install-smoke:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Minimal install smoke
         run: |
@@ -136,6 +152,25 @@ jobs:
           /tmp/verdict-minimal/bin/python -m pip install .
           /tmp/verdict-minimal/bin/verdict --help
           /tmp/verdict-minimal/bin/verdict route "format this README" --criticality low --terse
+      - name: Server extra smoke
+        run: |
+          python -m venv /tmp/verdict-server
+          /tmp/verdict-server/bin/python -m pip install --upgrade pip
+          /tmp/verdict-server/bin/python -m pip install ".[server]"
+          /tmp/verdict-server/bin/python -c 'from verdict.api import app; assert app is not None'
+      - name: Dashboard extra smoke
+        run: |
+          python -m venv /tmp/verdict-dashboard
+          /tmp/verdict-dashboard/bin/python -m pip install --upgrade pip
+          /tmp/verdict-dashboard/bin/python -m pip install ".[dashboard]"
+          /tmp/verdict-dashboard/bin/python -c 'import importlib.util as u; assert u.find_spec("verdict.dashboard"); import streamlit, plotly, pandas'
+      - name: All extras smoke (what `verdict serve` / `verdict dashboard` recommend)
+        run: |
+          python -m venv /tmp/verdict-all
+          /tmp/verdict-all/bin/python -m pip install --upgrade pip
+          /tmp/verdict-all/bin/python -m pip install ".[all]"
+          /tmp/verdict-all/bin/verdict detect --json
+          /tmp/verdict-all/bin/python -c 'from verdict.api import app; assert app is not None; import streamlit, plotly, pandas'
       - name: Complete install smoke
         run: |
           python -m venv /tmp/verdict-complete
@@ -150,7 +185,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: [test, lint, security, type-check, install-smoke, typescript-contract-parity]
+    needs: [test, lint, security, type-check, install-smoke, typescript-contract-parity, client-package-smoke]
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
@@ -175,6 +210,12 @@ jobs:
           /tmp/verdict-wheel/bin/verdict detect --json
           /tmp/verdict-wheel/bin/verdict quickstart --json --non-interactive --dry-run > /tmp/verdict-wheel-quickstart.json
           /tmp/verdict-wheel/bin/python -c 'import json; from pathlib import Path; report = json.loads(Path("/tmp/verdict-wheel-quickstart.json").read_text()); assert report["decision"]["selected_route"]["runtime_id"] == "demo/frontier-tools"'
+      - name: Wheel benchmark smoke (documented commands, no source checkout)
+        run: |
+          cd /tmp
+          /tmp/verdict-wheel/bin/verdict benchmark --output-json /tmp/verdict-wheel-bench.json
+          /tmp/verdict-wheel/bin/verdict benchmark --savings --output-json /tmp/verdict-wheel-savings.json
+          /tmp/verdict-wheel/bin/python -c 'import json; from pathlib import Path; report = json.loads(Path("/tmp/verdict-wheel-savings.json").read_text()); assert report["aggregate"]["savings_claimed_count"] == 0, report'
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v7
         with:

@@ -70,29 +70,35 @@ class WorthinessClassification:
 def _combined_text(task: str, context: Mapping[str, Any] | None) -> str:
     parts = [task]
     if isinstance(context, Mapping):
-        for key in ("objective", "task", "task_class"):
+        for key in ("objective", "task"):
             value = context.get(key)
             if isinstance(value, str) and value.strip():
                 parts.append(value)
     return " ".join(parts).lower()
 
 
+def _client_hint(context: Mapping[str, Any] | None) -> str | None:
+    if context is None:
+        return None
+    raw = context.get("task_class")
+    if not isinstance(raw, str):
+        return None
+    hint = raw.strip().lower()
+    return hint if hint in {WORTHY, ORDINARY} else None
+
+
 def classify_worthiness(
     task: str, *, criticality: str = "medium", context: Mapping[str, Any] | None = None
 ) -> WorthinessClassification:
-    """Classify ``worthy`` vs ``ordinary`` with named reasons (no invented scores)."""
+    """Classify ``worthy`` vs ``ordinary`` with named reasons (no invented scores).
+
+    Classification is server-authoritative (BOD-112). A client-supplied
+    ``task_class`` is an untrusted hint: it may raise ordinary work to worthy
+    (the caller chooses to pay for protection) but it can never downgrade work
+    the server classifies as worthy. Either way the receipt names what happened.
+    """
     text = _combined_text(task, context)
-    explicit = None if context is None else context.get("task_class")
-    if isinstance(explicit, str):
-        chosen = explicit.strip().lower()
-        if chosen == WORTHY:
-            return WorthinessClassification(
-                task_class=WORTHY, class_reasons=("explicit task_class=worthy",)
-            )
-        if chosen == ORDINARY:
-            return WorthinessClassification(
-                task_class=ORDINARY, class_reasons=("explicit task_class=ordinary",)
-            )
+    hint = _client_hint(context)
 
     reasons: list[str] = []
     tier, label = scan(task)
@@ -110,8 +116,20 @@ def classify_worthiness(
         reasons.append(f"criticality:{lowered_crit}")
 
     if reasons:
+        reasons.append("classification:server-authoritative")
+        if hint == ORDINARY:
+            reasons.append("client_hint_ignored:task_class=ordinary cannot downgrade worthy work")
         return WorthinessClassification(
             task_class=WORTHY, class_reasons=tuple(dict.fromkeys(reasons))
+        )
+
+    if hint == WORTHY:
+        return WorthinessClassification(
+            task_class=WORTHY,
+            class_reasons=(
+                "client_hint:task_class=worthy (untrusted; raises cost, never lowers protection)",
+                "classification:server-authoritative",
+            ),
         )
 
     ordinary_hits = [token for token in _ORDINARY_TOKENS if token in text]
@@ -120,4 +138,7 @@ def classify_worthiness(
         if ordinary_hits
         else ("no worthy markers; default ordinary coding",)
     )
-    return WorthinessClassification(task_class=ORDINARY, class_reasons=ordinary_reasons)
+    return WorthinessClassification(
+        task_class=ORDINARY,
+        class_reasons=(*ordinary_reasons, "classification:server-authoritative"),
+    )

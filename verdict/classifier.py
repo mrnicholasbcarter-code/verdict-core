@@ -56,9 +56,23 @@ def classify(model_id: str, overrides: dict[str, int] | None = None) -> int:
     # Strip provider prefix for matching (e.g., "anthropic/claude-sonnet-4" → "claude-sonnet-4")
     raw = model_id.split("/", 1)[-1].lower()
 
-    for tier in range(4):
-        for pattern in CAPABILITY_PATTERNS[tier]:
-            if re.search(pattern, raw, re.IGNORECASE):
-                return tier
+    # Cheap-variant markers (mini / nano / flash / lite / haiku / …) take
+    # precedence over frontier family names: "gpt-5.5-mini" or "o3-mini" is a
+    # small model, not a tier-0 frontier, even though its family pattern matches
+    # (BOD-112 classifier precedence). Explicit tier-2 rows such as
+    # "gpt-4o-mini" still win over the generic tier-3 markers.
+    cheap_variant = _matches_any(raw, CAPABILITY_PATTERNS[3])
+    for tier in (0, 1):
+        if cheap_variant:
+            break
+        if _matches_any(raw, CAPABILITY_PATTERNS[tier]):
+            return tier
+    for tier in (2, 3):
+        if _matches_any(raw, CAPABILITY_PATTERNS[tier]):
+            return tier
 
     return 2  # default to medium if unknown
+
+
+def _matches_any(raw: str, patterns: list[str]) -> bool:
+    return any(re.search(pattern, raw, re.IGNORECASE) for pattern in patterns)

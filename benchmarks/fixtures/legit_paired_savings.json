@@ -1,5 +1,5 @@
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "talk_track": "we measure",
   "workspace": "benchmarks/fixtures/legit_workspace",
   "tasks": [
@@ -19,7 +19,10 @@
           "X-OmniRoute-Tokens-Out": "340",
           "X-OmniRoute-Cache-Hit": "false"
         },
-        "quality": {"passed": true, "misses": []}
+        "quality": {
+          "passed": true,
+          "misses": []
+        }
       },
       "verdict": {
         "headers": {
@@ -29,7 +32,16 @@
           "X-OmniRoute-Tokens-Out": "280",
           "X-OmniRoute-Cache-Hit": "false"
         },
-        "quality": {"passed": true, "misses": []}
+        "quality": {
+          "passed": true,
+          "misses": []
+        }
+      },
+      "checks": {
+        "must_contain": [
+          "null",
+          "adr"
+        ]
       }
     },
     {
@@ -48,7 +60,10 @@
           "X-OmniRoute-Tokens-Out": "340",
           "X-OmniRoute-Cache-Hit": "false"
         },
-        "quality": {"passed": true, "misses": []}
+        "quality": {
+          "passed": true,
+          "misses": []
+        }
       },
       "verdict": {
         "headers": {
@@ -58,7 +73,16 @@
           "X-OmniRoute-Tokens-Out": "280",
           "X-OmniRoute-Cache-Hit": "true"
         },
-        "quality": {"passed": true, "misses": []}
+        "quality": {
+          "passed": true,
+          "misses": []
+        }
+      },
+      "checks": {
+        "must_contain": [
+          "null",
+          "adr"
+        ]
       }
     },
     {
@@ -77,7 +101,10 @@
           "X-OmniRoute-Tokens-Out": "410",
           "X-OmniRoute-Cache-Hit": "false"
         },
-        "quality": {"passed": true, "misses": []}
+        "quality": {
+          "passed": true,
+          "misses": []
+        }
       },
       "verdict": {
         "headers": {
@@ -87,7 +114,15 @@
           "X-OmniRoute-Tokens-Out": "360",
           "X-OmniRoute-Cache-Hit": "false"
         },
-        "quality": {"passed": true, "misses": []}
+        "quality": {
+          "passed": true,
+          "misses": []
+        }
+      },
+      "checks": {
+        "must_contain": [
+          "test"
+        ]
       }
     },
     {
@@ -106,7 +141,10 @@
           "X-OmniRoute-Tokens-Out": "250",
           "X-OmniRoute-Cache-Hit": "false"
         },
-        "quality": {"passed": true, "misses": []}
+        "quality": {
+          "passed": true,
+          "misses": []
+        }
       },
       "verdict": {
         "headers": {
@@ -118,9 +156,18 @@
         },
         "quality": {
           "passed": false,
-          "misses": ["does not treat cache hits as model savings"]
+          "misses": [
+            "does not treat cache hits as model savings"
+          ]
         }
+      },
+      "checks": {
+        "must_contain": [
+          "control plane",
+          "receipt"
+        ]
       }
     }
-  ]
+  ],
+  "mode_note": "Fixture arms are STATED values for the offline simulation. They are not observed and cannot claim savings; run `verdict benchmark --savings --live-paired` for measured evidence."
 }

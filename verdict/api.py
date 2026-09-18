@@ -18,12 +18,14 @@ try:
     from starlette.responses import JSONResponse, Response, StreamingResponse
 except ImportError as exc:
     raise ImportError(
-        "FastAPI is required for the web server mode. Install with `pip install verdict[server]`"
+        "FastAPI is required for the web server mode. Install with "
+        '`pip install "verdict-core[server]"` (or `verdict-core[all]`)'
     ) from exc
 
 from verdict.availability import OmniRouteAvailabilityAdapter
 from verdict.availability_cache import AvailabilityCache
 from verdict.catalog import configured_catalog_filters, normalize_catalog
+from verdict.context_inject import InjectionRecord, inject_context_pack
 from verdict.contracts import redact_contract_secrets
 from verdict.eligibility import EligibilityGate
 from verdict.evidence import (
@@ -45,7 +47,7 @@ from verdict.guidance import (
 )
 from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
 from verdict.model_passports import ModelPassport
-from verdict.models import ModelInfo, ProviderConfig
+from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from verdict.relay import (
@@ -794,7 +796,40 @@ def _proxy_error(
 def _safe_decision_dict(decision: Any) -> dict[str, Any]:
     """Serialize legacy compatibility data without exposing diagnostic secrets."""
 
-    return cast(dict[str, Any], redact_contract_secrets(asdict(decision)))
+    data = asdict(decision)
+    # The compiled pack is workspace content bound for the upstream model, not
+    # a client-facing decision field (BOD-111). Its digest lives in the receipt.
+    data.pop("context_pack_prompt", None)
+    return cast(dict[str, Any], redact_contract_secrets(data))
+
+
+def _inject_decision_pack(
+    payload: dict[str, Any], decision: RoutingDecision, *, surface: str
+) -> tuple[dict[str, Any], InjectionRecord]:
+    """Inject the decision's compiled cheap-path pack into the forwarded payload."""
+    receipt = decision.admit_receipt if isinstance(decision.admit_receipt, dict) else {}
+    if "cheap_path_context_pack" not in decision.safety_flags:
+        return payload, InjectionRecord(
+            injected=False,
+            pack_state=None,
+            pack_digest=None,
+            prompt_digest=None,
+            envelope_digest=None,
+            reason="not_cheap_path",
+        )
+    pack_state = receipt.get("pack_state")
+    pack_digest = receipt.get("pack_digest")
+    prompt_digest = receipt.get("prompt_digest")
+    task_complete = receipt.get("task_complete")
+    return inject_context_pack(
+        payload,
+        surface=surface,
+        compiled_prompt=decision.context_pack_prompt,
+        pack_state=pack_state if isinstance(pack_state, str) else None,
+        pack_digest=pack_digest if isinstance(pack_digest, str) else None,
+        prompt_digest=prompt_digest if isinstance(prompt_digest, str) else None,
+        task_complete=task_complete is not False,
+    )
 
 
 def _task_text(payload: dict[str, Any]) -> str:
@@ -1192,6 +1227,10 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         for local_field in ("request_id", "correlation_id", "criticality", "idempotency_key"):
             forwarded.pop(local_field, None)
         forwarded["model"] = attempt.model
+        # BOD-111: the hydrated pack the receipt describes is what the upstream
+        # receives. Injection is recorded per attempt and never claimed when
+        # the pack is empty/failed or the task did not survive compilation.
+        forwarded, injection = _inject_decision_pack(forwarded, decision, surface=surface)
         try:
             if surface == "responses":
                 result = await proxy_instance.responses(forwarded, idempotency_key=request_key)
@@ -1211,6 +1250,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     else failure_class(result.status_code),
                     "transition_legal": True if index == 0 else bool(edge and edge.legal),
                     "compatibility_rule_version": result.compatibility_rule_version,
+                    "context_pack": injection.to_dict(),
                 }
             )
             record_attempt_event(
@@ -1227,6 +1267,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     else failure_class(result.status_code),
                     "transition_edge": edge.to_dict() if edge is not None else None,
                     "compatibility_rule_version": result.compatibility_rule_version,
+                    "context_pack": injection.to_dict(),
                 },
             )
             if result.status_code < 400 or not retryable_response_status(
@@ -1308,6 +1349,15 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     response_headers["x-verdict-transport-outcome"] = decision_record.transport_outcome
     response_headers["x-verdict-quality-outcome"] = decision_record.quality_outcome
     response_headers["x-verdict-degraded-mode"] = str(decision_record.degraded_mode).lower()
+    last_injection = attempts_used[-1].get("context_pack") if attempts_used else None
+    if isinstance(last_injection, dict):
+        response_headers["x-verdict-pack-injected"] = str(
+            bool(last_injection.get("injected"))
+        ).lower()
+        if last_injection.get("pack_state"):
+            response_headers["x-verdict-pack-state"] = str(last_injection["pack_state"])
+        if last_injection.get("injected") and last_injection.get("envelope_digest"):
+            response_headers["x-verdict-pack-digest"] = str(last_injection["envelope_digest"])
     response_headers.update(_evidence_headers(route_evidence))
 
     if isinstance(result, BufferedUpstreamResponse):
