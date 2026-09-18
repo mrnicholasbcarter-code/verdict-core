@@ -1,0 +1,26 @@
+{
+  "meta/llama-3.3-70b-instruct": {
+    "id": "meta/llama-3.3-70b-instruct",
+    "name": "Llama 3.3 70B Instruct",
+    "attachment": false,
+    "reasoning": false,
+    "tool_call": true,
+    "structured_output": true,
+    "last_updated": "2024-12-06",
+    "modalities": {"input": ["text"], "output": ["text"]},
+    "open_weights": true,
+    "limit": {"context": 131072, "output": 32768}
+  },
+  "google/gemini-2.0-flash": {
+    "id": "google/gemini-2.0-flash",
+    "name": "Gemini 2.0 Flash",
+    "attachment": true,
+    "reasoning": false,
+    "tool_call": true,
+    "structured_output": true,
+    "last_updated": "2024-12-11",
+    "modalities": {"input": ["text", "image"], "output": ["text"]},
+    "open_weights": false,
+    "limit": {"context": 1048576, "output": 8192}
+  }
+}

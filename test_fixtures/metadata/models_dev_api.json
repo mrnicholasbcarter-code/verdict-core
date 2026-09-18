@@ -1,0 +1,40 @@
+{
+  "groq": {
+    "id": "groq",
+    "name": "Groq",
+    "models": {
+      "llama-3.3-70b-versatile": {
+        "id": "llama-3.3-70b-versatile",
+        "name": "Llama 3.3 70B",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": true,
+        "temperature": true,
+        "last_updated": "2024-12-06",
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "open_weights": true,
+        "limit": {"context": 131072, "output": 32768},
+        "cost": {"input": 0.59, "output": 0.79}
+      }
+    }
+  },
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "models": {
+      "gpt-4o-mini": {
+        "id": "gpt-4o-mini",
+        "name": "GPT-4o mini",
+        "attachment": true,
+        "reasoning": false,
+        "tool_call": true,
+        "structured_output": true,
+        "last_updated": "2024-07-18",
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "open_weights": false,
+        "limit": {"context": 128000, "input": 128000, "output": 16384},
+        "cost": {"input": 0.15, "output": 0.6}
+      }
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schema_version": "1",
+  "note": "Explicit OmniRoute inventory id → models.dev id. Unlisted OmniRoute ids are unmapped (named drop for BOD-100). Do not fuzzy-match or substitute a related model.",
+  "entries": [
+    {
+      "omniroute_id": "groq/llama-3.3-70b-versatile",
+      "models_dev_id": "groq/llama-3.3-70b-versatile"
+    },
+    {
+      "omniroute_id": "groq/llama-3.1-8b-instant",
+      "models_dev_id": "groq/llama-3.1-8b-instant"
+    },
+    {
+      "omniroute_id": "groq/whisper-large-v3",
+      "models_dev_id": "groq/whisper-large-v3"
+    },
+    {
+      "omniroute_id": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+      "models_dev_id": "meta/llama-3.3-70b-instruct"
+    },
+    {
+      "omniroute_id": "openrouter/google/gemini-2.0-flash-exp:free",
+      "models_dev_id": "google/gemini-2.0-flash"
+    },
+    {
+      "omniroute_id": "openrouter/deepseek/deepseek-chat:free",
+      "models_dev_id": "deepseek/deepseek-chat"
+    },
+    {
+      "omniroute_id": "openrouter/mistralai/mistral-small-latest:free",
+      "models_dev_id": "mistral/mistral-small-latest"
+    },
+    {
+      "omniroute_id": "google/gemini-2.0-flash",
+      "models_dev_id": "google/gemini-2.0-flash"
+    },
+    {
+      "omniroute_id": "google/gemini-2.0-flash-lite",
+      "models_dev_id": "google/gemini-2.0-flash-lite"
+    },
+    {
+      "omniroute_id": "openai/gpt-4o-mini",
+      "models_dev_id": "openai/gpt-4o-mini"
+    },
+    {
+      "omniroute_id": "openai/gpt-4o",
+      "models_dev_id": "openai/gpt-4o"
+    },
+    {
+      "omniroute_id": "openai/gpt-4.1-nano",
+      "models_dev_id": "openai/gpt-4.1-nano"
+    },
+    {
+      "omniroute_id": "anthropic/claude-haiku-4-5-20251001",
+      "models_dev_id": "anthropic/claude-haiku-4-5-20251001"
+    },
+    {
+      "omniroute_id": "anthropic/claude-sonnet-4-5-20250929",
+      "models_dev_id": "anthropic/claude-sonnet-4-5-20250929"
+    },
+    {
+      "omniroute_id": "deepseek/deepseek-chat",
+      "models_dev_id": "deepseek/deepseek-chat"
+    },
+    {
+      "omniroute_id": "mistral/mistral-small-latest",
+      "models_dev_id": "mistral/mistral-small-latest"
+    },
+    {
+      "omniroute_id": "mistral/mistral-small-2506",
+      "models_dev_id": "mistral/mistral-small-2506"
+    },
+    {
+      "omniroute_id": "meta/llama-3.3-70b-instruct",
+      "models_dev_id": "meta/llama-3.3-70b-instruct"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "data": [
+    {
+      "id": "openai/gpt-4o-mini",
+      "evaluations": {
+        "intelligence_index": 25.1,
+        "coding_index": 22.0,
+        "agentic_index": 18.4
+      },
+      "median_time_to_first_token": 0.41
+    }
+  ]
+}
