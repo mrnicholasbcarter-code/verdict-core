@@ -45,7 +45,8 @@ TOKENS_OUT_HEADER = "x-omniroute-tokens-out"
 CACHE_HIT_HEADER = "x-omniroute-cache-hit"
 _FETCHED = "2026-09-18T18:00:00Z"
 _NOW = datetime(2026, 9, 18, 18, 0, tzinfo=timezone.utc)
-_FREE = "opencode/hy3-free"
+FREE_IDENTITY = "opencode/hy3-free"
+_FREE = FREE_IDENTITY
 FRONTIER_IDENTITY = "cx/gpt-5.6-sol"
 _FRONTIER = FRONTIER_IDENTITY
 _KINDS = frozenset({"debug", "refactor_tests", "implement_from_ac"})
@@ -383,6 +384,11 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
             "quality_miss_count": sum(
                 1 for item in tasks if item["withhold_reason"] == "quality_miss"
             ),
+            "cache_hit_count": sum(
+                1
+                for item in tasks
+                if item["withhold_reason"] == "cache_hit_is_not_model_savings"
+            ),
             "measured_cost_delta_usd": round(
                 sum(float(item["deltas"]["cost_usd"]) for item in tasks), 6
             ),
@@ -392,7 +398,10 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
         },
         "provenance": {
             "cost": "X-OmniRoute-Response-Cost / Tokens-In/Out headers or matching receipt fields",
-            "cache_hit": "cache hit is not model savings",
+            "cache_hit": (
+                "cache hit on cheaper or frontier models is labeled and "
+                "never sold as model savings"
+            ),
             "quality": "quality miss is reported and never sold as savings",
             "completed_with": (
                 "direct arm is the pinned frontier identity; "
@@ -411,6 +420,7 @@ def format_savings_report(report: dict[str, Any]) -> str:
         f"tasks: {report['aggregate']['task_count']}",
         f"savings_claimed: {report['aggregate']['savings_claimed_count']}",
         f"quality_misses: {report['aggregate']['quality_miss_count']}",
+        f"cache_hits: {report['aggregate'].get('cache_hit_count', 0)}",
         f"measured_cost_delta_usd: {report['aggregate']['measured_cost_delta_usd']}",
         f"claimed_cost_delta_usd: {report['aggregate']['claimed_cost_delta_usd']}",
     ]
@@ -418,16 +428,18 @@ def format_savings_report(report: dict[str, Any]) -> str:
         claim = "claimed" if task["savings_claimed"] else f"withheld:{task['withhold_reason']}"
         direct_id = task["direct"].get("completed_with") or task["direct"].get("model")
         verdict_id = task["verdict"].get("completed_with") or task["verdict"].get("model")
+        cache_hit = bool(task["verdict"].get("cache_hit"))
         lines.append(
             f"- {task['task_id']} ({task['kind']}): {claim} "
             f"delta={task['deltas']['cost_usd']} pack={task['verdict']['pack_state']} "
-            f"direct={direct_id} verdict={verdict_id}"
+            f"direct={direct_id} verdict={verdict_id} cache_hit={str(cache_hit).lower()}"
         )
     return "\n".join(lines) + "\n"
 
 
 __all__ = [
     "DEFAULT_SAVINGS_FIXTURE_PATH",
+    "FREE_IDENTITY",
     "FRONTIER_IDENTITY",
     "TALK_TRACK",
     "MeasuredCost",

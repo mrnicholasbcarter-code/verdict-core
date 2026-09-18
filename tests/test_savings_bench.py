@@ -9,6 +9,7 @@ import pytest
 
 from verdict.savings_bench import (
     DEFAULT_SAVINGS_FIXTURE_PATH,
+    FREE_IDENTITY,
     FRONTIER_IDENTITY,
     TALK_TRACK,
     format_savings_report,
@@ -53,20 +54,26 @@ def test_savings_bench_measures_three_legit_tasks_and_withholds_quality_miss() -
     assert debug["verdict"]["included_sources"]
     assert debug["verdict"]["cost_source"] == "headers"
     assert debug["direct"]["cost_source"] == "headers"
+    assert debug["verdict"]["completed_with"] == FREE_IDENTITY
+    assert debug["verdict"]["task_class"] == "ordinary"
+    assert debug["verdict"]["cache_hit"] is False
     assert debug["savings_claimed"] is True
     assert debug["deltas"]["cost_usd"] < 0
 
     refactor = by_id["refactor-with-tests"]
     assert refactor["savings_claimed"] is True
     assert refactor["verdict"]["pack_state"] == "hydrated"
+    assert refactor["verdict"]["completed_with"] == FREE_IDENTITY
 
     miss = by_id["implement-from-ac"]
     assert miss["verdict"]["quality"]["passed"] is False
+    assert miss["verdict"]["completed_with"] == FREE_IDENTITY
     assert miss["savings_claimed"] is False
     assert miss["withhold_reason"] == "quality_miss"
     assert miss["deltas"]["cost_usd"] < 0
     assert report["aggregate"]["quality_miss_count"] == 1
     assert report["aggregate"]["savings_claimed_count"] == 2
+    assert report["aggregate"]["cache_hit_count"] == 1
     assert (
         report["aggregate"]["claimed_cost_delta_usd"]
         != report["aggregate"]["measured_cost_delta_usd"]
@@ -79,31 +86,36 @@ def test_savings_bench_stamps_current_completed_with_identities() -> None:
     assert "claude-3-opus" not in encoded
     assert report["frontier_model"] == FRONTIER_IDENTITY
     assert FRONTIER_IDENTITY == "cx/gpt-5.6-sol"
+    assert FREE_IDENTITY == "opencode/hy3-free"
     for task in report["tasks"]:
         assert task["direct"]["model"] == FRONTIER_IDENTITY
         assert task["direct"]["completed_with"] == FRONTIER_IDENTITY
         assert task["verdict"]["completed_with"] == task["verdict"]["model"]
-        assert task["verdict"]["completed_with"]
+        assert task["verdict"]["completed_with"] == FREE_IDENTITY
         assert "opus" not in task["direct"]["completed_with"]
         assert "opus" not in task["verdict"]["completed_with"]
     rendered = format_savings_report(report)
     assert f"frontier_model: {FRONTIER_IDENTITY}" in rendered
     assert f"direct={FRONTIER_IDENTITY}" in rendered
-    assert "verdict=" in rendered
+    assert f"verdict={FREE_IDENTITY}" in rendered
 
 
-def test_cache_hit_is_not_sold_as_model_savings(tmp_path: Path) -> None:
-    fixture = json.loads(DEFAULT_SAVINGS_FIXTURE_PATH.read_text())
-    fixture["tasks"] = fixture["tasks"][:2]
-    fixture["tasks"][0]["verdict"]["headers"]["X-OmniRoute-Cache-Hit"] = "true"
-    fixture["tasks"][0]["verdict"]["quality"] = {"passed": True, "misses": []}
-    path = tmp_path / "cache-hit.json"
-    path.write_text(json.dumps(fixture))
-    report = run_savings_bench(path)
-    task = report["tasks"][0]
-    assert task["verdict"]["cache_hit"] is True
-    assert task["savings_claimed"] is False
-    assert task["withhold_reason"] == "cache_hit_is_not_model_savings"
+def test_cheaper_model_cache_hit_is_measured_and_not_sold_as_savings() -> None:
+    report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH)
+    by_id = {task["task_id"]: task for task in report["tasks"]}
+    replay = by_id["debug-null-deref-cache-replay"]
+    assert replay["verdict"]["completed_with"] == FREE_IDENTITY
+    assert replay["verdict"]["task_class"] == "ordinary"
+    assert replay["verdict"]["cache_hit"] is True
+    assert replay["direct"]["cache_hit"] is False
+    assert replay["verdict"]["quality"]["passed"] is True
+    assert replay["deltas"]["cost_usd"] < 0
+    assert replay["savings_claimed"] is False
+    assert replay["withhold_reason"] == "cache_hit_is_not_model_savings"
+    rendered = format_savings_report(report)
+    assert "cache_hits: 1" in rendered
+    assert "cache_hit=true" in rendered
+    assert "withheld:cache_hit_is_not_model_savings" in rendered
 
 
 def test_cmd_benchmark_savings_writes_we_measure_report(
@@ -116,9 +128,12 @@ def test_cmd_benchmark_savings_writes_we_measure_report(
     out = capsys.readouterr().out
     assert "talk_track: we measure" in out
     assert "withheld:quality_miss" in out
+    assert "withheld:cache_hit_is_not_model_savings" in out
     assert "direct=cx/gpt-5.6-sol" in out
-    assert "verdict=" in out
+    assert "verdict=opencode/hy3-free" in out
+    assert "cache_hit=true" in out
     assert "claude-3-opus" not in out
     payload = json.loads(output.read_text())
     assert payload["talk_track"] == "we measure"
-    assert payload["aggregate"]["task_count"] == 3
+    assert payload["aggregate"]["task_count"] == 4
+    assert payload["aggregate"]["cache_hit_count"] == 1

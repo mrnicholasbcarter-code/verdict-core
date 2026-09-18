@@ -7,7 +7,7 @@
     {
       "id": "debug-null-deref",
       "kind": "debug",
-      "prompt": "Debug the null dereference in the cheap-path admit receipt serializer. Cite the ADR and architecture.",
+      "prompt": "Debug the null dereference in the cheap-path admit receipt serializer. Cite the ADR.",
       "acceptance_criteria": [
         "names the null path",
         "does not invent a missing source"
@@ -33,9 +33,37 @@
       }
     },
     {
+      "id": "debug-null-deref-cache-replay",
+      "kind": "debug",
+      "prompt": "Debug the null dereference in the cheap-path admit receipt serializer. Cite the ADR.",
+      "acceptance_criteria": [
+        "names the null path",
+        "does not invent a missing source"
+      ],
+      "direct": {
+        "model": "cx/gpt-5.6-sol",
+        "headers": {
+          "X-OmniRoute-Response-Cost": "0.0184",
+          "X-OmniRoute-Tokens-In": "1200",
+          "X-OmniRoute-Tokens-Out": "340",
+          "X-OmniRoute-Cache-Hit": "false"
+        },
+        "quality": {"passed": true, "misses": []}
+      },
+      "verdict": {
+        "headers": {
+          "X-OmniRoute-Response-Cost": "0.0004",
+          "X-OmniRoute-Tokens-In": "1600",
+          "X-OmniRoute-Tokens-Out": "280",
+          "X-OmniRoute-Cache-Hit": "true"
+        },
+        "quality": {"passed": true, "misses": []}
+      }
+    },
+    {
       "id": "refactor-with-tests",
       "kind": "refactor_tests",
-      "prompt": "Refactor the pack_state classifier and add tests for hydrated vs empty digest. Follow docs/architecture.",
+      "prompt": "Refactor the pack_state classifier and add tests for hydrated vs empty digest. Follow the ADR.",
       "acceptance_criteria": [
         "keeps empty digest from faking hydrated",
         "adds a failing-first test"
@@ -63,7 +91,7 @@
     {
       "id": "implement-from-ac",
       "kind": "implement_from_ac",
-      "prompt": "Implement the savings-unlocked helper from the architecture AC: hydrated pack only.",
+      "prompt": "Implement the savings-unlocked helper from the acceptance criteria: hydrated pack only.",
       "acceptance_criteria": [
         "returns true only for pack_state=hydrated",
         "does not treat cache hits as model savings"

@@ -22,12 +22,15 @@ real `included_sources`.
 6. Frontier-direct pin is a current identity (`cx/gpt-5.6-sol`), not a 2024
    Opus snapshot. Each arm stamps `completed_with` — direct is the pin, Verdict
    is the chooser pick (`decision.model`). The report prints both.
+7. Ordinary coding prompts stay ordinary so Verdict can complete with a cheaper
+   model (`opencode/hy3-free`). A cheaper-model cache-hit replay is a first-class
+   fixture task, labeled `cache_hit`, and **not** sold as model savings.
 
 ## Proof
 
 - Hydrated Verdict arm with cheaper measured cost and passing AC → savings claimed.
 - Quality miss (even if cheaper) → `savings_claimed=false`, reason `quality_miss`.
-- Cache-hit cost → withheld as `cache_hit_is_not_model_savings`.
+- Cheaper-model cache-hit cost → withheld as `cache_hit_is_not_model_savings`.
 
 ## Non-goals
 
