@@ -19,6 +19,9 @@ real `included_sources`.
 4. Cost is parsed only from `X-OmniRoute-Response-Cost` / Tokens-In/Out headers
    or the same fields on a receipt. Cache hit ≠ model savings.
 5. A quality miss is reported and **not** sold as savings.
+6. Frontier-direct pin is a current identity (`cx/gpt-5.6-sol`), not a 2024
+   Opus snapshot. Each arm stamps `completed_with` — direct is the pin, Verdict
+   is the chooser pick (`decision.model`). The report prints both.
 
 ## Proof
 

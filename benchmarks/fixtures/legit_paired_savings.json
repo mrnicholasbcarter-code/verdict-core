@@ -2,7 +2,7 @@
   "schema_version": "1",
   "talk_track": "we measure",
   "workspace": "benchmarks/fixtures/legit_workspace",
-  "frontier_model": "anthropic/claude-3-opus-20240229",
+  "frontier_model": "cx/gpt-5.6-sol",
   "tasks": [
     {
       "id": "debug-null-deref",
@@ -13,7 +13,7 @@
         "does not invent a missing source"
       ],
       "direct": {
-        "model": "anthropic/claude-3-opus-20240229",
+        "model": "cx/gpt-5.6-sol",
         "headers": {
           "X-OmniRoute-Response-Cost": "0.0184",
           "X-OmniRoute-Tokens-In": "1200",
@@ -41,7 +41,7 @@
         "adds a failing-first test"
       ],
       "direct": {
-        "model": "anthropic/claude-3-opus-20240229",
+        "model": "cx/gpt-5.6-sol",
         "headers": {
           "X-OmniRoute-Response-Cost": "0.0241",
           "X-OmniRoute-Tokens-In": "1800",
@@ -69,7 +69,7 @@
         "does not treat cache hits as model savings"
       ],
       "direct": {
-        "model": "anthropic/claude-3-opus-20240229",
+        "model": "cx/gpt-5.6-sol",
         "headers": {
           "X-OmniRoute-Response-Cost": "0.0156",
           "X-OmniRoute-Tokens-In": "900",

@@ -9,7 +9,9 @@ import pytest
 
 from verdict.savings_bench import (
     DEFAULT_SAVINGS_FIXTURE_PATH,
+    FRONTIER_IDENTITY,
     TALK_TRACK,
+    format_savings_report,
     parse_measured_cost,
     run_savings_bench,
 )
@@ -71,6 +73,25 @@ def test_savings_bench_measures_three_legit_tasks_and_withholds_quality_miss() -
     )
 
 
+def test_savings_bench_stamps_current_completed_with_identities() -> None:
+    report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH)
+    encoded = json.dumps(report)
+    assert "claude-3-opus" not in encoded
+    assert report["frontier_model"] == FRONTIER_IDENTITY
+    assert FRONTIER_IDENTITY == "cx/gpt-5.6-sol"
+    for task in report["tasks"]:
+        assert task["direct"]["model"] == FRONTIER_IDENTITY
+        assert task["direct"]["completed_with"] == FRONTIER_IDENTITY
+        assert task["verdict"]["completed_with"] == task["verdict"]["model"]
+        assert task["verdict"]["completed_with"]
+        assert "opus" not in task["direct"]["completed_with"]
+        assert "opus" not in task["verdict"]["completed_with"]
+    rendered = format_savings_report(report)
+    assert f"frontier_model: {FRONTIER_IDENTITY}" in rendered
+    assert f"direct={FRONTIER_IDENTITY}" in rendered
+    assert "verdict=" in rendered
+
+
 def test_cache_hit_is_not_sold_as_model_savings(tmp_path: Path) -> None:
     fixture = json.loads(DEFAULT_SAVINGS_FIXTURE_PATH.read_text())
     fixture["tasks"] = fixture["tasks"][:2]
@@ -95,6 +116,9 @@ def test_cmd_benchmark_savings_writes_we_measure_report(
     out = capsys.readouterr().out
     assert "talk_track: we measure" in out
     assert "withheld:quality_miss" in out
+    assert "direct=cx/gpt-5.6-sol" in out
+    assert "verdict=" in out
+    assert "claude-3-opus" not in out
     payload = json.loads(output.read_text())
     assert payload["talk_track"] == "we measure"
     assert payload["aggregate"]["task_count"] == 3

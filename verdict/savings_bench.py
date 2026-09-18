@@ -46,7 +46,8 @@ CACHE_HIT_HEADER = "x-omniroute-cache-hit"
 _FETCHED = "2026-09-18T18:00:00Z"
 _NOW = datetime(2026, 9, 18, 18, 0, tzinfo=timezone.utc)
 _FREE = "opencode/hy3-free"
-_FRONTIER = "anthropic/claude-3-opus-20240229"
+FRONTIER_IDENTITY = "cx/gpt-5.6-sol"
+_FRONTIER = FRONTIER_IDENTITY
 _KINDS = frozenset({"debug", "refactor_tests", "implement_from_ac"})
 
 
@@ -111,6 +112,24 @@ def parse_measured_cost(arm: Mapping[str, Any]) -> MeasuredCost:
     return MeasuredCost(
         usd=usd, tokens_in=tokens_in, tokens_out=tokens_out, cache_hit=cache_hit, source=source
     )
+
+
+def _completed_with(arm: Mapping[str, Any], fallback: str) -> str:
+    """Identity that actually completed the arm, never an inferred default."""
+    headers = _headers(arm)
+    for key in ("x-omniroute-model", "x-omniroute-completed-with"):
+        stamped = headers.get(key)
+        if stamped:
+            return stamped
+    receipt = _receipt(arm)
+    for key in ("completed_with", "model"):
+        raw = arm.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+        stamped = receipt.get(key)
+        if isinstance(stamped, str) and stamped.strip():
+            return stamped.strip()
+    return fallback
 
 
 def _quality(arm: Mapping[str, Any]) -> dict[str, Any]:
@@ -195,7 +214,7 @@ def _snapshot() -> OmniRouteAdmitSnapshot:
         catalog={
             "data": [
                 {"id": _FREE, "owned_by": "opencode"},
-                {"id": _FRONTIER, "owned_by": "anthropic"},
+                {"id": _FRONTIER, "owned_by": "cx"},
             ]
         },
         free_tier={
@@ -204,7 +223,7 @@ def _snapshot() -> OmniRouteAdmitSnapshot:
         providers={
             "connections": [
                 {"provider": "opencode", "isActive": True, "testStatus": "active"},
-                {"provider": "anthropic", "isActive": True, "testStatus": "active"},
+                {"provider": "cx", "isActive": True, "testStatus": "active"},
             ]
         },
     )
@@ -311,13 +330,18 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
             verdict_cost=verdict_cost,
         )
         cost_delta = round(verdict_cost.usd - direct_cost.usd, 6)
+        frontier_pin = str(fixture.get("frontier_model") or _FRONTIER)
+        direct_requested = str(direct_arm.get("model") or frontier_pin)
+        direct_completed = _completed_with(direct_arm, direct_requested)
+        verdict_completed = decision.model
         tasks.append(
             {
                 "task_id": str(task["id"]),
                 "kind": str(task["kind"]),
                 "acceptance_criteria": list(task["acceptance_criteria"]),
                 "direct": {
-                    "model": str(direct_arm.get("model") or fixture.get("frontier_model")),
+                    "model": direct_requested,
+                    "completed_with": direct_completed,
                     "cost_usd": direct_cost.usd,
                     "tokens_in": direct_cost.tokens_in,
                     "tokens_out": direct_cost.tokens_out,
@@ -326,7 +350,8 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
                     "quality": direct_quality,
                 },
                 "verdict": {
-                    "model": decision.model,
+                    "model": verdict_completed,
+                    "completed_with": verdict_completed,
                     "task_class": decision.task_class,
                     "pack_state": pack_state,
                     "included_sources": included,
@@ -350,6 +375,7 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
         "schema_version": SAVINGS_REPORT_SCHEMA_VERSION,
         "mode": "local-savings",
         "talk_track": TALK_TRACK,
+        "frontier_model": str(fixture.get("frontier_model") or _FRONTIER),
         "fixture_path": str(path),
         "fixture_digest_sha256": _fixture_digest(fixture),
         "workspace": str(workspace),
@@ -371,6 +397,10 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
             "cost": "X-OmniRoute-Response-Cost / Tokens-In/Out headers or matching receipt fields",
             "cache_hit": "cache hit is not model savings",
             "quality": "quality miss is reported and never sold as savings",
+            "completed_with": (
+                "direct arm is the pinned frontier identity; "
+                "Verdict arm is decision.model from the live chooser"
+            ),
         },
     }
 
@@ -380,6 +410,7 @@ def format_savings_report(report: dict[str, Any]) -> str:
     lines = [
         f"mode: {report['mode']}",
         f"talk_track: {report['talk_track']}",
+        f"frontier_model: {report.get('frontier_model') or _FRONTIER}",
         f"tasks: {report['aggregate']['task_count']}",
         f"savings_claimed: {report['aggregate']['savings_claimed_count']}",
         f"quality_misses: {report['aggregate']['quality_miss_count']}",
@@ -388,9 +419,12 @@ def format_savings_report(report: dict[str, Any]) -> str:
     ]
     for task in cast(list[dict[str, Any]], report["tasks"]):
         claim = "claimed" if task["savings_claimed"] else f"withheld:{task['withhold_reason']}"
+        direct_id = task["direct"].get("completed_with") or task["direct"].get("model")
+        verdict_id = task["verdict"].get("completed_with") or task["verdict"].get("model")
         lines.append(
             f"- {task['task_id']} ({task['kind']}): {claim} "
-            f"delta={task['deltas']['cost_usd']} pack={task['verdict']['pack_state']}"
+            f"delta={task['deltas']['cost_usd']} pack={task['verdict']['pack_state']} "
+            f"direct={direct_id} verdict={verdict_id}"
         )
     return "\n".join(lines) + "\n"
 
@@ -398,6 +432,7 @@ def format_savings_report(report: dict[str, Any]) -> str:
 __all__ = [
     "DEFAULT_SAVINGS_FIXTURE_PATH",
     "TALK_TRACK",
+    "FRONTIER_IDENTITY",
     "MeasuredCost",
     "format_savings_report",
     "parse_measured_cost",

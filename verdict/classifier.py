@@ -7,7 +7,7 @@ import re
 # Tier 0 = most capable (never used for cheap work)
 # Tier 3 = cheapest/fastest (only used for low-criticality)
 CAPABILITY_PATTERNS: dict[int, list[str]] = {
-    0: [r"opus", r"gpt-5\.5", r"grok-4", r"o3-pro", r"o3(?!-mini)"],
+    0: [r"opus", r"gpt-5\.6", r"gpt-5\.5", r"grok-4", r"o3-pro", r"o3(?!-mini)"],
     1: [
         r"sonnet-4",
         r"gpt-5\.4",
