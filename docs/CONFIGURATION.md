@@ -25,8 +25,6 @@ allow_client_model_override = false
 log_path = "verdict-decisions.jsonl"
 log_full_task = false
 discovery_ttl = 60
-ruflo_command = "ruflo"
-ruvector_command = "ruvector"
 frontier_allowlist = []        # Models allowed for frontier tier
 
 # Availability cache (issue #56)
@@ -83,8 +81,6 @@ auto_open = true
 | `LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE` | `intelligence.allow_client_model_override` | `true` |
 | `LLMGATE_LOG_PATH` | `intelligence.log_path` | `/var/log/verdict.jsonl` |
 | `LLMGATE_DISCOVERY_TTL_SECONDS` | `intelligence.discovery_ttl` | `120` |
-| `LLMGATE_RUFLO_COMMAND` | `intelligence.ruflo_command` | `ruflo` |
-| `LLMGATE_RUVECTOR_COMMAND` | `intelligence.ruvector_command` | `ruvector` |
 | `LLMGATE_FRONTIER_ALLOWLIST` | `intelligence.frontier_allowlist` | `model1,model2` |
 | `LLMGATE_AVAILABILITY_TTL_SECONDS` | `availability.ttl_seconds` | `60` |
 | `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | `availability.stale_window_seconds` | `30` |

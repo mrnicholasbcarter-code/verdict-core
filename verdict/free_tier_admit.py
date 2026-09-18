@@ -44,6 +44,12 @@ REASON_OPAQUE_AUTO = "opaque_auto"
 REASON_NOT_FREE_TIER = "not_free_tier"
 REASON_INACTIVE_UNCONNECTED = "inactive_unconnected"
 REASON_METADATA_GHOST = "metadata_ghost"
+REASON_WORTHY_EXCLUDES_FREE = "worthy_excludes_free_for_cost"
+REASON_CAPABILITY_MISMATCH = "capability_mismatch"
+REASON_REQUIRED_UNKNOWN = "required_unknown"
+REASON_UNMAPPED = "unmapped"
+REASON_STALE = "stale"
+REASON_PAID_FALLBACK = "paid_fallback"
 _COMBO_PREFIXES = frozenset({"claude", "combo"})
 _ALIAS_PREFIXES = frozenset({"oc", "kr", "cf", "or", "nv"})
 _SMALL_TOKENS = ("nano", "flash", "haiku", "mini", "small", "lite", "instant")
@@ -346,6 +352,12 @@ class FreeTierAdmitReceipt:
     passport: tuple[Any, ...] = ()
     confirm: tuple[Any, ...] = ()
     selected_because: str | None = None
+    task_class: str | None = None
+    class_reasons: tuple[str, ...] = ()
+    requirements: tuple[str, ...] = ()
+    capability_matches: tuple[dict[str, Any], ...] = ()
+    free_admitted: tuple[str, ...] = ()
+    paid_admitted: tuple[str, ...] = ()
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -373,6 +385,12 @@ class FreeTierAdmitReceipt:
                 item.to_dict() if hasattr(item, "to_dict") else item for item in self.confirm
             ],
             "selected_because": self.selected_because,
+            "task_class": self.task_class,
+            "class_reasons": list(self.class_reasons),
+            "requirements": list(self.requirements),
+            "capability_matches": [dict(item) for item in self.capability_matches],
+            "free_admitted": list(self.free_admitted),
+            "paid_admitted": list(self.paid_admitted),
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
@@ -429,6 +447,12 @@ def _verdict_for_reason(reason: str) -> EligibilityVerdict:
         "confirm_failed": EligibilityVerdict.CONFIRM_FAILED,
         "confirm_budget_exhausted": EligibilityVerdict.CONFIRM_FAILED,
         "confirm_unavailable": EligibilityVerdict.CONFIRM_FAILED,
+        REASON_CAPABILITY_MISMATCH: EligibilityVerdict.CAPABILITY_MISMATCH,
+        REASON_REQUIRED_UNKNOWN: EligibilityVerdict.REQUIRED_UNKNOWN,
+        REASON_WORTHY_EXCLUDES_FREE: EligibilityVerdict.WORTHY_EXCLUDES_FREE,
+        REASON_UNMAPPED: EligibilityVerdict.UNMAPPED,
+        REASON_STALE: EligibilityVerdict.STALE,
+        "map_target_missing": EligibilityVerdict.UNMAPPED,
     }
     return mapping.get(reason, EligibilityVerdict.NOT_LIVE_ELIGIBLE)
 
@@ -718,6 +742,7 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
         empty_intersection=chosen is None,
         active_providers=tuple(sorted(active)),
         free_tier_providers=tuple(sorted(free_providers)),
+        free_admitted=admitted_sorted,
     )
 
 
@@ -834,14 +859,117 @@ def omniroute_endpoint_from_env(
     return None
 
 
+def _is_combo_identity(identity_id: str) -> bool:
+    return identity_id.split("/", 1)[0] in _COMBO_PREFIXES
+
+
+def is_frontier_identity(identity_id: str, allowlist: tuple[str, ...] | None = None) -> bool:
+    """Named frontier/high-cap identity. Never inferred from 'sounds expensive'."""
+    if allowlist:
+        return identity_id in allowlist
+    return classify(identity_id) <= 1
+
+
+def _catalog_paid_identities(
+    snapshot: OmniRouteAdmitSnapshot, *, skip: set[str]
+) -> tuple[tuple[str, ...], tuple[NamedDrop, ...]]:
+    """Active-provider catalog identities that are not positively free."""
+    admitted: list[str] = []
+    seen: set[str] = set(skip)
+    drops: list[NamedDrop] = []
+    active = snapshot.active_providers
+    for identity in snapshot.catalog:
+        identity_id = identity.identity_id
+        if identity_id in seen:
+            continue
+        if is_opaque_route_id(identity_id):
+            continue
+        if identity.provider not in active:
+            continue
+        if _is_positively_free_identity(identity_id):
+            continue
+        if _is_combo_identity(identity_id):
+            drops.append(
+                NamedDrop(identity_id, REASON_OPAQUE_AUTO, "combo-prefixed catalog identity")
+            )
+            continue
+        seen.add(identity_id)
+        admitted.append(identity_id)
+    return tuple(admitted), tuple(drops)
+
+
+def expand_admit_for_worthiness(
+    receipt: FreeTierAdmitReceipt,
+    snapshot: OmniRouteAdmitSnapshot,
+    *,
+    task_class: str,
+    class_reasons: tuple[str, ...],
+    frontier_allowlist: tuple[str, ...] | None = None,
+) -> FreeTierAdmitReceipt:
+    """Ordinary: keep free and add lesser-paid. Worthy: drop free-for-cost, keep frontier paid."""
+    paid, extra_drops = _catalog_paid_identities(snapshot, skip=set(receipt.admitted))
+    exclusions = list(receipt.exclusions)
+    exclusions.extend(extra_drops)
+    if task_class == "worthy":
+        for identity_id in receipt.admitted:
+            exclusions.append(
+                NamedDrop(
+                    identity_id,
+                    REASON_WORTHY_EXCLUDES_FREE,
+                    "worthy path never selects free-tier solely for cost",
+                )
+            )
+        frontier = tuple(item for item in paid if is_frontier_identity(item, frontier_allowlist))
+        for identity_id in paid:
+            if identity_id not in frontier:
+                exclusions.append(
+                    NamedDrop(
+                        identity_id,
+                        REASON_NOT_FREE_TIER,
+                        "ordinary/lesser-paid identity is not frontier-class for worthy work",
+                    )
+                )
+        remaining = frontier
+        chosen = remaining[0] if remaining else None
+        return replace(
+            receipt,
+            admitted=remaining,
+            exclusions=tuple(exclusions),
+            chosen=chosen,
+            empty_intersection=chosen is None,
+            task_class=task_class,
+            class_reasons=class_reasons,
+            free_admitted=receipt.free_admitted or receipt.admitted,
+            paid_admitted=frontier,
+        )
+    merged = tuple(dict.fromkeys((*receipt.admitted, *paid)))
+    chosen = receipt.chosen if receipt.chosen in merged else (merged[0] if merged else None)
+    return replace(
+        receipt,
+        admitted=merged,
+        exclusions=tuple(exclusions),
+        chosen=chosen,
+        empty_intersection=chosen is None,
+        task_class=task_class,
+        class_reasons=class_reasons,
+        free_admitted=receipt.free_admitted or receipt.admitted,
+        paid_admitted=paid,
+    )
+
+
 __all__ = [
     "DEFAULT_CHEAP_PATH_TOKEN_BUDGET",
     "FAIL_CLOSED_REASON",
     "NO_ELIGIBLE_TARGET",
+    "REASON_CAPABILITY_MISMATCH",
     "REASON_INACTIVE_UNCONNECTED",
     "REASON_METADATA_GHOST",
     "REASON_NOT_FREE_TIER",
     "REASON_OPAQUE_AUTO",
+    "REASON_REQUIRED_UNKNOWN",
+    "REASON_STALE",
+    "REASON_UNMAPPED",
+    "REASON_WORTHY_EXCLUDES_FREE",
     "CatalogIdentity",
     "CheapPathContextPack",
     "FreeTierAdmitReceipt",
@@ -856,6 +984,8 @@ __all__ = [
     "admit_free_tier_active",
     "build_cheap_path_context_pack",
     "execute_offload_chat",
+    "expand_admit_for_worthiness",
+    "is_frontier_identity",
     "load_omniroute_admit_snapshot",
     "normalize_omniroute_origin",
     "omniroute_endpoint_from_env",

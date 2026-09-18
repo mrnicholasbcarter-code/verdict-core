@@ -225,7 +225,6 @@ def _service(
         admit_snapshot=snapshot,
         offload_executor=executor,
         execute_offload=executor is not None,
-        ruflo_command="nonexistent_ruflo",
         passports=passports,
         confirm_transport=confirm_transport,
         admit_now=datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc),

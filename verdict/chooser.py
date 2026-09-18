@@ -17,6 +17,7 @@ from typing import Any
 
 from verdict.autodev_routing import CandidateEvidence, RouteSelection, select_eligible_route
 from verdict.availability import AvailabilityState
+from verdict.classifier import classify
 from verdict.free_tier_admit import FreeTierAdmitReceipt
 from verdict.gateway_adapters import AdapterRouteIdentity
 from verdict.model_passports import ModelPassport
@@ -498,6 +499,16 @@ def rank_admitted_candidates(
     )
 
 
+def _resource_class_for(identity_id: str, free_admitted: Sequence[str]) -> str:
+    """Map an admitted identity onto a chooser resource class. Never invent scores."""
+    lowered = identity_id.lower()
+    if identity_id in set(free_admitted) or ":free" in lowered or lowered.endswith("-free"):
+        return FREE
+    if classify(identity_id) <= 1:
+        return SUBSCRIPTION_PREMIUM
+    return SUBSCRIPTION_WORKER
+
+
 def _provider_of(identity_id: str) -> str:
     if "/" in identity_id:
         return identity_id.split("/", 1)[0]
@@ -534,6 +545,7 @@ def cheap_path_candidate(
     passport_qualified_at: datetime | None = None,
     now: datetime | None = None,
     provider: str | None = None,
+    resource_class: str = FREE,
 ) -> CandidateEvidence:
     """Build chooser evidence for one already-admitted cheap-path identity.
 
@@ -548,7 +560,8 @@ def cheap_path_candidate(
     freshness = None
     if passport_qualified_at is not None:
         freshness = max(0.0, (current - passport_qualified_at).total_seconds())
-    capabilities: dict[str, str] = {"resource_class": FREE, "chat": "observed"}
+    pool = resource_class if resource_class in RESOURCE_CLASSES else FREE
+    capabilities: dict[str, str] = {"resource_class": pool, "chat": "observed"}
     if latency is not None:
         capabilities["confirm_latency_ms"] = f"{float(latency):.3f}"
     resolved_provider = provider or _provider_of(identity_id)
@@ -637,6 +650,11 @@ def _cheap_path_because(
         "Core chooser ranked only the live passport∩confirm admitted set",
         "named drops were not re-admitted",
     ]
+    pool = choose_receipt.selected.get("resource_pool") if choose_receipt.selected else None
+    if pool == FREE:
+        extra.append("free-first among admitted")
+    elif pool:
+        extra.append("free-first exhausted; lesser-paid fallback")
     if others:
         extra.insert(1, f"beat {len(others)} other admitted candidate(s)")
     if confirm_latency_ms is not None:
@@ -680,6 +698,7 @@ def apply_best_of_admitted(
                 or (None if passport is None else passport.qualified_at),
                 now=current,
                 provider=_provider_of(identity_id),
+                resource_class=_resource_class_for(identity_id, receipt.free_admitted),
             )
         )
     try:

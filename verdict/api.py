@@ -506,8 +506,6 @@ def _build_intelligence() -> IntelligenceService:
         log_path=os.getenv("LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),
         log_full_task=False,
         discovery_ttl=int(os.getenv("LLMGATE_DISCOVERY_TTL_SECONDS", "60")),
-        ruflo_command=os.getenv("LLMGATE_RUFLO_COMMAND", "ruflo"),
-        ruvector_command=os.getenv("LLMGATE_RUVECTOR_COMMAND", "ruvector"),
         timeout_ms=timeout_ms,
         frontier_allowlist=frontier_allowlist,
         allow_client_model_override=allow_client_model_override,

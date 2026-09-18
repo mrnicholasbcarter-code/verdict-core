@@ -111,7 +111,6 @@ def _admit_service(snapshot, *, passports=None, confirm_transport=None) -> Intel
         discovery_ttl=60,
         admit_snapshot=snapshot,
         execute_offload=False,
-        ruflo_command="nonexistent_ruflo",
         passports=passports if passports is not None else {},
         confirm_transport=confirm_transport,
         admit_now=datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc),
@@ -294,6 +293,7 @@ def test_resolve_upstream_explicit_llmgate_wins(monkeypatch) -> None:
 
 def test_build_intelligence_disables_inline_execute_offload(monkeypatch) -> None:
     monkeypatch.setenv("LLMGATE_LOG_PATH", "")
-    monkeypatch.setenv("LLMGATE_RUFLO_COMMAND", "nonexistent_ruflo")
     svc = api._build_intelligence()
     assert svc.execute_offload is False
+    assert svc.managed_backend_status == "not_used"
+    assert not hasattr(svc, "ruflo_command")

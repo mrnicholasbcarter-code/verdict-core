@@ -39,6 +39,11 @@ class EligibilityVerdict(str, Enum):
     NO_PASSPORT = "no_passport"
     PASSPORT_STALE = "passport_stale"
     CONFIRM_FAILED = "confirm_failed"
+    CAPABILITY_MISMATCH = "capability_mismatch"
+    REQUIRED_UNKNOWN = "required_unknown"
+    WORTHY_EXCLUDES_FREE = "worthy_excludes_free_for_cost"
+    UNMAPPED = "unmapped"
+    STALE = "stale"
 
 
 # States that admit a candidate into the pre-ranking eligible set.

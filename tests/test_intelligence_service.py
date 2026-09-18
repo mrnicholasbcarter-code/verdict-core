@@ -1,73 +1,54 @@
 import asyncio
 import subprocess
 
-import pytest
-
 from verdict.intelligence import IntelligenceService
 
 
-def test_production_readiness_fails_without_backend() -> None:
-    # Cold-start and adapter-failure tests prove deterministic safety behavior
-    svc = IntelligenceService(
+def _service(*, profile: str = "development") -> IntelligenceService:
+    return IntelligenceService(
         primary_model="anthropic/claude-3-opus",
         providers={},
-        profile="production",
+        profile=profile,
         log_path="",
         log_full_task=False,
         discovery_ttl=60,
-        ruflo_command="nonexistent_ruflo",
     )
-    report = svc.readiness()
-    assert report.status == "not_ready"
-    assert report.profile == "production"
-    assert report.degraded_mode is True
-    assert report.managed_backend_status == "unavailable"
 
 
-def test_development_profile_readiness_succeeds_degraded() -> None:
-    svc = IntelligenceService(
-        primary_model="anthropic/claude-3-opus",
-        providers={},
-        profile="development",
-        log_path="",
-        log_full_task=False,
-        discovery_ttl=60,
-        ruflo_command="nonexistent_ruflo",
-    )
-    report = svc.readiness()
+def test_production_readiness_succeeds_without_ruflo() -> None:
+    report = _service(profile="production").readiness()
     assert report.status == "ready"
+    assert report.production_ready is True
+    assert report.profile == "production"
+    assert report.degraded_mode is False
+    assert report.managed_backend_status == "not_used"
+    assert report.reason == "ready"
+    assert report.adapter_versions == {}
+
+
+def test_development_profile_readiness_succeeds_without_ruflo() -> None:
+    report = _service(profile="development").readiness()
+    assert report.status == "ready"
+    assert report.production_ready is True
     assert report.profile == "development"
-    assert report.degraded_mode is True
-    assert report.managed_backend_status == "unavailable"
+    assert report.degraded_mode is False
+    assert report.managed_backend_status == "not_used"
 
 
-def test_redaction_before_ruflo_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = []
+def test_route_does_not_invoke_ruflo(monkeypatch) -> None:
+    calls: list[list[str]] = []
 
-    def mock_run(args: list[str], **kwargs: dict[str, object]) -> None:
-        calls.append(args)
-        # Raise OSError to simulate unavailable adapter after checking arguments
-        raise OSError("Simulated adapter failure")
+    def mock_run(args: list[str], **kwargs: object) -> None:
+        calls.append(list(args))
+        raise OSError("Ruflo must not be invoked on the cheap path")
 
     monkeypatch.setattr(subprocess, "run", mock_run)
 
-    svc = IntelligenceService(
-        primary_model="anthropic/claude-3-opus",
-        providers={},
-        profile="development",
-        log_path="",
-        log_full_task=False,
-        discovery_ttl=60,
-    )
-
     decision = asyncio.run(
-        svc.route("Here is a task with a private_key=sk-1234567890", criticality="medium")
+        _service().route("Here is a task with a private_key=sk-1234567890", criticality="medium")
     )
 
-    # Must have fallen back efficiently
     assert decision.model == "anthropic/claude-3-opus"
-
-    # Check that redaction occurred before passing to Ruflo (assuming the mock gets called)
-    assert len(calls) > 0
-    cmd_args = " ".join(calls[0])
-    assert "sk-1234567890" not in cmd_args
+    assert decision.degraded_mode is False
+    assert decision.managed_backend_status == "not_used"
+    assert all("ruflo" not in " ".join(str(part) for part in args) for args in calls)

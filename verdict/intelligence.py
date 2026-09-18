@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.admit_prove_confirm import gate_admit_prove_confirm
+from verdict.capability_gate import derive_requirements, gate_capability
 from verdict.chooser import ChooserError, apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.discovery import fetch_models
@@ -22,16 +23,21 @@ from verdict.free_tier_admit import (
     admit_free_tier_active,
     build_cheap_path_context_pack,
     execute_offload_chat,
+    expand_admit_for_worthiness,
     load_omniroute_admit_snapshot,
     normalize_omniroute_origin,
     omniroute_endpoint_from_env,
 )
 from verdict.logger import log_decision
+from verdict.metadata.mapping import IdentityMap, load_identity_map
+from verdict.metadata.records import ModelMetadataError
+from verdict.metadata.store import MetadataSnapshot, default_store_path, load_store
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.planner import StructuredPlanner
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
+from verdict.worthiness import classify_worthiness
 
 DEFAULT_PROFILE = "development"
 DEGRADED_PROFILE = "degraded"
@@ -78,8 +84,6 @@ class IntelligenceService:
         log_path: str,
         log_full_task: bool,
         discovery_ttl: int,
-        ruflo_command: str = "ruflo",
-        ruvector_command: str = "ruvector",
         timeout_ms: int = 1000,
         frontier_allowlist: tuple[str, ...] | None = None,
         allow_client_model_override: bool = False,
@@ -96,6 +100,9 @@ class IntelligenceService:
         workspace_root: Path | str | None = None,
         context_roots: Sequence[str] | None = None,
         mcp_root: Path | str | None = None,
+        metadata_snapshot: MetadataSnapshot | None = None,
+        metadata_store_path: Path | str | None = None,
+        identity_map: IdentityMap | None = None,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -103,8 +110,6 @@ class IntelligenceService:
         self.log_path = log_path
         self.log_full_task = log_full_task
         self.discovery_ttl = discovery_ttl
-        self.ruflo_command = ruflo_command
-        self.ruvector_command = ruvector_command
         self.timeout_ms = timeout_ms
         self.frontier_allowlist = frontier_allowlist
         self.allow_client_model_override = allow_client_model_override
@@ -128,7 +133,12 @@ class IntelligenceService:
         self.workspace_root = workspace_root
         self.context_roots = tuple(context_roots) if context_roots is not None else None
         self.mcp_root = mcp_root
-        self.managed_backend_status = "offline" if allow_offline else self._probe_managed_backend()
+        self.metadata_snapshot = metadata_snapshot
+        self.metadata_store_path = metadata_store_path
+        self.identity_map = identity_map
+        # Cheap path does not require Ruflo/RuVector. Those remain optional
+        # swarm/workflow adapters and must not mark routing degraded.
+        self.managed_backend_status = "offline" if allow_offline else "not_used"
         self._policy_version = "policy-2026-07-13.1"
 
     async def rank(self, eligible: list[ModelInfo], task_spec: Any) -> IntelligenceRanking:
@@ -146,26 +156,6 @@ class IntelligenceService:
             task_spec_id=str(getattr(task_spec, "prompt", ""))[:50],
             profile=self.profile,
         )
-
-    def _redact(self, text: str) -> str:
-        import re
-
-        # Basic redaction before CLI execution (sk-...)
-        return re.sub(r"sk-[a-zA-Z0-9]{10,}", "[REDACTED]", text)
-
-    def _probe_managed_backend(self) -> str:
-        try:
-            import subprocess
-
-            result = subprocess.run(
-                [self.ruflo_command, "guidance", "gates", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=0.5,
-            )
-            return "healthy" if result.returncode == 0 else "unavailable"
-        except Exception:
-            return "unavailable"
 
     def static_catalog(self) -> list[ModelInfo]:
         """Build routing candidates from configured provider models only.
@@ -194,37 +184,15 @@ class IntelligenceService:
         return candidates
 
     def readiness(self) -> ReadinessReport:
-        def _get_version(cmd: str) -> str:
-            try:
-                result = subprocess.run(
-                    [cmd, "--version"], capture_output=True, text=True, timeout=0.5
-                )
-                if result.returncode == 0:
-                    # Take first line of output
-                    return result.stdout.splitlines()[0].strip() if result.stdout else "unknown"
-                else:
-                    return "unknown"
-            except Exception:
-                return "unknown"
-
-        ruflo_version = _get_version(self.ruflo_command)
-        ruvector_version = _get_version(self.ruvector_command)
-
-        status = (
-            "ready"
-            if self.profile != "production" or self.managed_backend_status != "unavailable"
-            else "not_ready"
-        )
-        degraded = self.managed_backend_status == "unavailable"
         return ReadinessReport(
-            status=status,
-            production_ready=(not degraded),
+            status="ready",
+            production_ready=True,
             profile=self.profile,
             managed_backend_status=self.managed_backend_status,
-            degraded_mode=degraded,
+            degraded_mode=False,
             policy_version=self._policy_version,
-            reason="ready" if not degraded else "managed intelligence unavailable",
-            adapter_versions={"ruflo": ruflo_version, "ruvector": ruvector_version},
+            reason="ready",
+            adapter_versions={},
         )
 
     async def route(
@@ -246,21 +214,6 @@ class IntelligenceService:
                 context = task["context"]
         else:
             task_str = task
-
-        # Hard deterministic floor logic here.
-        if not self.allow_offline:
-            redacted_task = self._redact(task_str)
-            # Attempt an async call or subprocess with timeout to Ruflo
-            try:
-                import subprocess
-
-                subprocess.run(
-                    [self.ruflo_command, "hooks", "model-route", "--context", redacted_task],
-                    capture_output=True,
-                    timeout=0.2,
-                )
-            except Exception:
-                pass
 
         # Fallback to strict heuristic scan
         eff_tier, heuristic_reason = scan(task_str)
@@ -292,7 +245,9 @@ class IntelligenceService:
         final_tier = min(task_tier, safety_floor, eff_tier if eff_tier is not None else 3)
 
         if final_tier > 0 and not self.allow_offline:
-            offload = self._offload_free_tier(task_str, final_tier, escalated, esc_reason)
+            offload = self._offload_free_tier(
+                task_str, final_tier, escalated, esc_reason, context=context
+            )
             if offload is not None:
                 elapsed = (time.time() - start_t) * 1000
                 dec = RoutingDecision(
@@ -345,7 +300,7 @@ class IntelligenceService:
                 escalated=escalated,
                 escalation_reason=esc_reason or None,
                 policy_version=self._policy_version,
-                degraded_mode=(self.managed_backend_status == "unavailable"),
+                degraded_mode=False,
                 managed_backend_status=self.managed_backend_status,
                 protected=(final_tier == 0),
                 decision="fallback" if best_model is None else "selected",
@@ -367,7 +322,7 @@ class IntelligenceService:
                 escalated=escalated,
                 escalation_reason=esc_reason or None,
                 policy_version=self._policy_version,
-                degraded_mode=(self.managed_backend_status == "unavailable"),
+                degraded_mode=False,
                 managed_backend_status=self.managed_backend_status,
                 protected=(final_tier == 0),
                 decision="selected",
@@ -390,8 +345,29 @@ class IntelligenceService:
 
         return dec
 
+    def _load_metadata(self) -> tuple[MetadataSnapshot | None, IdentityMap | None]:
+        snapshot = self.metadata_snapshot
+        if snapshot is None:
+            path = self.metadata_store_path or default_store_path()
+            try:
+                snapshot = load_store(path)
+            except (OSError, ValueError, ModelMetadataError):
+                snapshot = None
+        mapping = self.identity_map
+        if mapping is None:
+            try:
+                mapping = load_identity_map()
+            except (OSError, ModelMetadataError):
+                mapping = None
+        return snapshot, mapping
+
     def _offload_free_tier(
-        self, task: str, final_tier: int, escalated: bool, esc_reason: str
+        self,
+        task: str,
+        final_tier: int,
+        escalated: bool,
+        esc_reason: str,
+        context: dict[str, Any] | None = None,
     ) -> RoutingDecision | None:
         """Admit free-tier ∩ active-provider identities for offloadable work.
 
@@ -404,7 +380,38 @@ class IntelligenceService:
         if snapshot is None:
             # Not configured, or live surfaces unavailable: do not starve ranking.
             return None
+        classification = classify_worthiness(
+            task,
+            criticality=(
+                str(context.get("criticality"))
+                if isinstance(context, dict) and isinstance(context.get("criticality"), str)
+                else "medium"
+            ),
+            context=context,
+        )
+        planner_caps: tuple[str, ...] = ()
+        try:
+            planned = self.planner.plan(task, context=context).task_spec
+            planner_caps = tuple(planned.required_capabilities)
+        except Exception:
+            planner_caps = ()
+        requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
         receipt = admit_free_tier_active(snapshot)
+        receipt = expand_admit_for_worthiness(
+            receipt,
+            snapshot,
+            task_class=classification.task_class,
+            class_reasons=classification.class_reasons,
+            frontier_allowlist=self.frontier_allowlist,
+        )
+        metadata_snapshot, identity_map = self._load_metadata()
+        receipt = gate_capability(
+            receipt,
+            requirements,
+            snapshot=metadata_snapshot,
+            identity_map=identity_map,
+            now=self.admit_now,
+        )
         confirm_transport = self._resolve_confirm_transport(endpoint)
         # Live OmniRoute confirm requires consent; fixture/injected transports do not.
         confirm_live = bool(
@@ -435,26 +442,21 @@ class IntelligenceService:
             chosen = (
                 receipt.chosen if receipt.chosen in kept else (remaining[0] if remaining else None)
             )
-            receipt = FreeTierAdmitReceipt(
+            receipt = replace(
+                receipt,
                 admitted=remaining,
                 exclusions=receipt.exclusions + extra,
                 chosen=chosen,
                 empty_intersection=chosen is None,
-                active_providers=receipt.active_providers,
-                free_tier_providers=receipt.free_tier_providers,
-                pack_digest=receipt.pack_digest,
-                omissions=receipt.omissions,
-                included=receipt.included,
-                pack_state=receipt.pack_state,
-                passport=receipt.passport,
-                confirm=receipt.confirm,
-                selected_because=receipt.selected_because,
             )
             eligibility = gated
         if receipt.admitted:
             try:
                 receipt = apply_best_of_admitted(
-                    receipt, passports=self.passports, now=self.admit_now
+                    receipt,
+                    passports=self.passports,
+                    now=self.admit_now,
+                    task_class=classification.protected_ranker_class,
                 )
             except ChooserError:
                 receipt = replace(
@@ -469,6 +471,7 @@ class IntelligenceService:
             eligibility,
             endpoint=endpoint,
             live=live,
+            task_class=classification.task_class,
         )
 
     def _load_admit_snapshot(
@@ -497,6 +500,7 @@ class IntelligenceService:
         *,
         endpoint: tuple[str, str | None] | None,
         live: bool,
+        task_class: str = "ordinary",
     ) -> RoutingDecision:
         eligibility_record = eligibility.to_dict() if eligibility is not None else {}
         if receipt.empty_intersection or not receipt.chosen:
@@ -508,9 +512,10 @@ class IntelligenceService:
                 escalated=escalated,
                 escalation_reason=esc_reason or None,
                 policy_version=self._policy_version,
-                degraded_mode=(self.managed_backend_status == "unavailable"),
+                degraded_mode=False,
                 managed_backend_status=self.managed_backend_status,
                 protected=False,
+                task_class=task_class,
                 decision="denied",
                 transport_outcome="not_sent",
                 quality_outcome="unknown",
@@ -556,6 +561,10 @@ class IntelligenceService:
         safety_flags = ["free_tier_active_admit", "prove_confirm_admit", "cheap_path_context_pack"]
         if chooser_owned:
             safety_flags.append("chooser_ranked_admitted")
+        if receipt.task_class:
+            safety_flags.append(f"worthiness_{receipt.task_class}")
+        if receipt.requirements:
+            safety_flags.append("capability_hard_gate")
         return RoutingDecision(
             model=chosen,
             provider=provider,
@@ -565,9 +574,10 @@ class IntelligenceService:
             escalated=escalated,
             escalation_reason=esc_reason or None,
             policy_version=self._policy_version,
-            degraded_mode=(self.managed_backend_status == "unavailable") or chooser_owned,
+            degraded_mode=False,
             managed_backend_status=self.managed_backend_status,
             protected=False,
+            task_class=task_class,
             decision="selected",
             transport_outcome=transport_outcome,
             quality_outcome="unknown",
