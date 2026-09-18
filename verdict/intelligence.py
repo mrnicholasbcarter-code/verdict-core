@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.admit_prove_confirm import gate_admit_prove_confirm
+from verdict.chooser import ChooserError, apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.discovery import fetch_models
 from verdict.eligibility import EligibilityGate
@@ -438,8 +439,18 @@ class IntelligenceService:
                 omissions=receipt.omissions,
                 passport=receipt.passport,
                 confirm=receipt.confirm,
+                selected_because=receipt.selected_because,
             )
             eligibility = gated
+        if receipt.admitted:
+            try:
+                receipt = apply_best_of_admitted(
+                    receipt, passports=self.passports, now=self.admit_now
+                )
+            except ChooserError:
+                receipt = replace(
+                    receipt, chosen=None, empty_intersection=True, selected_because=None
+                )
         return self._decision_from_admit(
             task,
             final_tier,
@@ -521,6 +532,10 @@ class IntelligenceService:
                 transport_outcome, preview = execute_offload_chat(
                     endpoint[0], chosen, packed_task, api_key=endpoint[1]
                 )
+        chooser_owned = bool(receipt.selected_because) and receipt.chosen is not None
+        safety_flags = ["free_tier_active_admit", "prove_confirm_admit", "cheap_path_context_pack"]
+        if chooser_owned:
+            safety_flags.append("chooser_ranked_admitted")
         return RoutingDecision(
             model=chosen,
             provider=provider,
@@ -530,18 +545,14 @@ class IntelligenceService:
             escalated=escalated,
             escalation_reason=esc_reason or None,
             policy_version=self._policy_version,
-            degraded_mode=(self.managed_backend_status == "unavailable"),
+            degraded_mode=(self.managed_backend_status == "unavailable") or chooser_owned,
             managed_backend_status=self.managed_backend_status,
             protected=False,
             decision="selected",
             transport_outcome=transport_outcome,
             quality_outcome="unknown",
             candidate_states=eligibility_record.get("records", []),
-            safety_flags=[
-                "free_tier_active_admit",
-                "prove_confirm_admit",
-                "cheap_path_context_pack",
-            ],
+            safety_flags=safety_flags,
             admit_receipt=receipt.to_dict(),
             execute_preview=preview,
         )

@@ -276,6 +276,9 @@ def test_intelligence_offload_selects_free_active_not_opus() -> None:
     assert any(row["fresh"] for row in decision.admit_receipt["passport"])
     assert decision.admit_receipt["confirm"]
     assert any(row["confirmed"] for row in decision.admit_receipt["confirm"])
+    assert decision.admit_receipt["selected_because"]
+    assert str(decision.admit_receipt["selected_because"]).startswith("selected because")
+    assert "chooser_ranked_admitted" in decision.safety_flags
 
 
 def test_intelligence_no_passport_fail_closed_not_opus() -> None:
