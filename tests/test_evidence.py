@@ -342,6 +342,9 @@ def test_admit_receipt_pack_digest_persists_into_evidence() -> None:
         admit_receipt={
             "chosen": "openrouter/free-model",
             "pack_digest": "sha256:abc123",
+            "included": [
+                {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64}
+            ],
             "omissions": [{"name": "slot:noise", "reason": "input_budget_exhausted"}],
             "empty_intersection": False,
             "exclusions": [{"model": "paid/opus", "reason": "not_free_tier"}],
@@ -361,6 +364,9 @@ def test_admit_receipt_pack_digest_persists_into_evidence() -> None:
     payload = evidence.to_dict()
     assert payload["receipt"]["kind"] == "admit_receipt"
     assert payload["receipt"]["pack_digest"] == "sha256:abc123"
+    assert payload["receipt"]["included"] == [
+        {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64}
+    ]
     assert payload["receipt"]["omissions"] == [
         {"name": "slot:noise", "reason": "input_budget_exhausted"}
     ]

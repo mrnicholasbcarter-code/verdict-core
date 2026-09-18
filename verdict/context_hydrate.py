@@ -12,12 +12,12 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from verdict.context_pack import ContextUnit, SlotType
+from verdict.context_pack import ContextUnit, SlotType, unit_prompt_token_cost
 from verdict.documentation_preflight import _is_adr_path
 
 CHEAP_PATH_EPOCH = "1970-01-01T00:00:00Z"
@@ -25,6 +25,15 @@ DEFAULT_CONTEXT_ROOTS: tuple[str, ...] = ("docs", "docs/architecture", "docs/adr
 PROJECT_DOC_NAMES: tuple[str, ...] = ("README.md", "README", "AGENTS.md", "CONTRIBUTING.md")
 DEFAULT_MAX_UNITS_PER_ROOT = 8
 DEFAULT_MAX_FILE_BYTES = 8_192
+# ADR / architecture / project docs must land before misc docs when the pack
+# budget is tight. Lower number = packed sooner.
+HYDRATE_CLASS_ADR = 0
+HYDRATE_CLASS_ARCHITECTURE = 1
+HYDRATE_CLASS_README = 2
+HYDRATE_CLASS_PROJECT = 3
+HYDRATE_CLASS_OTHER = 4
+_PROJECT_DOC_LOWER = {name.lower() for name in PROJECT_DOC_NAMES}
+_README_NAMES = frozenset({"readme.md", "readme"})
 _DOC_SUFFIXES = {".md", ".markdown", ".txt"}
 _SKIP_DIR_PARTS = {
     ".git",
@@ -314,13 +323,102 @@ def _list_doc_files(root: Path, *, skip_subtrees: Sequence[Path]) -> list[Path]:
 
 def _rank_files(paths: Sequence[Path], *, task: str) -> list[Path]:
     terms = _query_terms(task)
-    if not terms:
-        return list(paths)
-    matched = [path for path in paths if _file_matches(path, terms)]
-    leftover = [path for path in paths if path not in matched]
-    # Prefer query hits, then fill remaining budget from the rest so a small
-    # fixture still hydrates when the task wording does not mention filenames.
-    return matched + leftover
+    # Query hits first, then high-value small roots (ADR / architecture /
+    # project docs) so a tight pack budget still hydrates the thesis files
+    # instead of filling on large misc docs.
+    return sorted(
+        paths,
+        key=lambda path: (
+            0 if terms and _file_matches(path, terms) else 1,
+            hydrate_priority_class(path),
+            _file_size(path),
+            path.as_posix(),
+        ),
+    )
+
+
+def hydrate_priority_class(path: Path) -> int:
+    """Return pack priority for a workspace path (ADR highest, misc lowest)."""
+    name = path.name.lower()
+    parts = {part.lower() for part in path.parts}
+    if _is_adr_path(path) or name.startswith("adr-") or name.startswith("adr_"):
+        return HYDRATE_CLASS_ADR
+    if "architecture" in parts or name == "architecture.md":
+        return HYDRATE_CLASS_ARCHITECTURE
+    if name in _README_NAMES:
+        return HYDRATE_CLASS_README
+    if name in _PROJECT_DOC_LOWER:
+        return HYDRATE_CLASS_PROJECT
+    return HYDRATE_CLASS_OTHER
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def unit_hydrate_class(unit: ContextUnit) -> int:
+    """Pack priority for a gathered unit; the task slot sorts separately."""
+    if unit.slot_type == "instructions" or unit.source_uri.startswith("urn:verdict:task"):
+        return -1
+    return hydrate_priority_class(Path(unit.source_uri))
+
+
+def cheap_path_unit_sort_key(
+    units: Sequence[ContextUnit], *, token_budget: int
+) -> Callable[[ContextUnit], tuple[int, int, int, int, str, str]]:
+    """Compiler order: task, one reserved unit per high-value class, then small-first.
+
+    Reserving the smallest fitting ADR, architecture, and README units prevents a
+    pile of large ADRs from starving architecture (and vice versa) under budget.
+    """
+    task_units = [
+        unit
+        for unit in units
+        if unit.slot_type == "instructions" or unit.source_uri.startswith("urn:verdict:task")
+    ]
+    leftover = token_budget - sum(unit_prompt_token_cost(unit) for unit in task_units)
+    reserved: set[str] = set()
+    by_class: dict[int, list[ContextUnit]] = {
+        HYDRATE_CLASS_ADR: [],
+        HYDRATE_CLASS_ARCHITECTURE: [],
+        HYDRATE_CLASS_README: [],
+        HYDRATE_CLASS_PROJECT: [],
+        HYDRATE_CLASS_OTHER: [],
+    }
+    for unit in units:
+        cls = unit_hydrate_class(unit)
+        if cls < 0:
+            continue
+        by_class[cls].append(unit)
+    for cls in (
+        HYDRATE_CLASS_ADR,
+        HYDRATE_CLASS_ARCHITECTURE,
+        HYDRATE_CLASS_README,
+        HYDRATE_CLASS_PROJECT,
+    ):
+        ranked = sorted(
+            by_class[cls],
+            key=lambda item: (len(item.content.encode("utf-8")), item.source_uri, item.unit_id),
+        )
+        for unit in ranked:
+            cost = unit_prompt_token_cost(unit)
+            if 0 < cost <= leftover:
+                reserved.add(unit.source_uri)
+                leftover -= cost
+                break
+
+    def order(unit: ContextUnit) -> tuple[int, int, int, int, str, str]:
+        if unit.slot_type == "instructions" or unit.source_uri.startswith("urn:verdict:task"):
+            return (0, 0, 0, 0, unit.key, unit.unit_id)
+        cls = unit_hydrate_class(unit)
+        reserve_rank = 0 if unit.source_uri in reserved else 1
+        size = len(unit.content.encode("utf-8"))
+        return (1, reserve_rank, cls, size, unit.key, unit.unit_id)
+
+    return order
 
 
 def _file_matches(path: Path, terms: tuple[str, ...]) -> bool:
@@ -495,13 +593,20 @@ __all__ = [
     "CHEAP_PATH_EPOCH",
     "CONTEXT_ROOTS_ENV",
     "DEFAULT_CONTEXT_ROOTS",
+    "HYDRATE_CLASS_ADR",
+    "HYDRATE_CLASS_ARCHITECTURE",
+    "HYDRATE_CLASS_OTHER",
+    "HYDRATE_CLASS_PROJECT",
+    "HYDRATE_CLASS_README",
     "MCP_CONTEXT_ROOT_ENV",
     "PROJECT_DOC_NAMES",
     "WORKSPACE_ROOT_ENV",
     "HydrateGather",
     "HydrateOmission",
+    "cheap_path_unit_sort_key",
     "default_context_roots",
     "gather_cheap_path_units",
+    "hydrate_priority_class",
     "resolve_mcp_root",
     "resolve_workspace_root",
 ]

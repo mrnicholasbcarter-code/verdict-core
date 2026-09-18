@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from time import time
@@ -412,6 +412,13 @@ class ContextUnit:
         return cls(**payload)
 
 
+def unit_prompt_token_cost(unit: ContextUnit) -> int:
+    """Token cost of compiling ``unit`` the same way the pack compiler will."""
+    content = sanitize_injection_patterns(unit.content)
+    header = f"[{unit.slot_type.upper()}:{unit.key} (source: {_safe_source_uri(unit.source_uri)})]"
+    return estimate_tokens(f"{header}\n{content}\n")
+
+
 @dataclass(frozen=True)
 class ContextPackSlot:
     """Legacy source-attributed prompt slot accepted by the v0 compiler."""
@@ -733,6 +740,8 @@ class ContextPackCompiler:
         plan: ContextPlan,
         pack_id: str | None = None,
         evaluation_at: str | None = None,
+        *,
+        unit_sort_key: Callable[[ContextUnit], Any] | None = None,
     ) -> ContextPack:
         if not isinstance(plan, ContextPlan):
             raise ContextContractError("plan must be a ContextPlan")
@@ -740,17 +749,17 @@ class ContextPackCompiler:
         # identity. Normalize it at the compilation boundary so equivalent
         # inputs from separate processes produce the same artifact.
         normalized_units = tuple(replace(unit, created_at=0.0) for unit in units)
-        sorted_units = sorted(
-            normalized_units,
-            key=lambda unit: (
+        order = unit_sort_key or (
+            lambda unit: (
                 self._PRECEDENCE.get(unit.slot_type, 99),
                 self._STATUS_PRECEDENCE[unit.status],
                 -unit.confidence,
                 -unit.created_at,
                 unit.key,
                 unit.unit_id,
-            ),
+            )
         )
+        sorted_units = sorted(normalized_units, key=order)
         conflicts: list[dict[str, Any]] = []
         seen: dict[str, str] = {}
         for unit in sorted_units:
@@ -862,7 +871,7 @@ class ContextPackCompiler:
                 f"(source: {_safe_source_uri(unit.source_uri)})]"
             )
             rendered = f"{header}\n{content}\n"
-            cost = estimate_tokens(rendered)
+            cost = unit_prompt_token_cost(unit)
             if current_tokens + cost > plan.input_token_budget:
                 decisions.append(
                     ContextDecision(

@@ -39,19 +39,21 @@ _CANDIDATE_FIELDS = frozenset(
 )
 _MAX_EVIDENCE_TEXT = 256
 # Compact cheap-path admit receipt fields stamped onto the evidence contract
-# (#510 pack_digest/omissions; #514 chooser selected_because / ownership).
+# (#510 pack_digest/omissions; #514 chooser selected_because / ownership;
+# BOD-99 included source_uri digests).
 # Intentionally allowlisted so serve persistence cannot silently drop chooser
 # fields the in-memory admit receipt already carries.
 _COMPACT_ADMIT_RECEIPT_FIELDS: tuple[str, ...] = (
     "chosen",
     "pack_digest",
+    "included",
     "omissions",
     "empty_intersection",
     "exclusions",
     "selected_because",
     "chooser_ranked_admitted",
 )
-_COMPACT_ADMIT_LIST_FIELDS = frozenset({"omissions", "exclusions"})
+_COMPACT_ADMIT_LIST_FIELDS = frozenset({"omissions", "exclusions", "included"})
 # Snapshot arrays stay off the compact evidence receipt (size / privacy).
 _ADMIT_RECEIPT_SNAPSHOT_FIELDS = frozenset(
     {"admitted", "active_providers", "free_tier_providers", "passport", "confirm"}
@@ -337,10 +339,10 @@ def build_routing_decision_contract(
         payload["selected_route"]["actual_route"] = _copy_json(actual_route)
     if attempted_routes is not None:
         payload["selected_route"]["attempted_routes"] = _copy_json(attempted_routes)
-    # Cheap-path admit receipt (#508/#510/#514): pack_digest, omissions, and
-    # chooser selected_because must survive into VERDICT_RECEIPTS_DB / explain
-    # evidence. CLI already carries admit_receipt on RoutingDecision; the serve
-    # path only persists this contract.
+    # Cheap-path admit receipt (#508/#510/#514/#BOD-99): pack_digest, included
+    # provenance, omissions, and chooser selected_because must survive into
+    # VERDICT_RECEIPTS_DB / explain evidence. CLI already carries admit_receipt
+    # on RoutingDecision; the serve path only persists this contract.
     if isinstance(decision.admit_receipt, dict) and decision.admit_receipt:
         admit = _copy_json(decision.admit_receipt)
         compact = _compact_admit_receipt(admit, safety_flags=decision.safety_flags)

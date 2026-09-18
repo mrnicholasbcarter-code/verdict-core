@@ -545,6 +545,7 @@ def test_intelligence_receipt_carries_pack_digest_and_packed_execute(tmp_path: P
     assert digest == expected.pack_digest
     assert calls[0][1] == expected.compiled_prompt
     assert decision.admit_receipt["omissions"] == [item.to_dict() for item in expected.omissions]
+    assert decision.admit_receipt["included"] == [item.to_dict() for item in expected.included]
 
 
 def test_intelligence_execute_receives_hydrated_workspace_unit(tmp_path: Path) -> None:
@@ -583,3 +584,8 @@ def test_intelligence_execute_receives_hydrated_workspace_unit(tmp_path: Path) -
     named = {item["name"]: item["reason"] for item in decision.admit_receipt["omissions"]}
     assert named.get("docs") == "source_missing"
     assert "invented" not in calls[0][1].lower()
+    included = {
+        item["source_uri"]: item["source_digest"] for item in decision.admit_receipt["included"]
+    }
+    assert "README.md" in included
+    assert included["README.md"].startswith("sha256:")
