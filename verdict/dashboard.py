@@ -1,18 +1,22 @@
 """Streamlit analytics dashboard for the Verdict decision log.
 
-Spend truthfulness (BOD-113): "actual" spend is shown only from observed
-cost/token receipts recorded on decisions. Any per-model price assumption is
+Spend truthfulness (BOD-113 / BOD-117): "measured" spend is shown only from
+post-execution outcome receipts (``verdict-outcomes.jsonl``, written by the
+serve path after the gateway answers and joined to decisions by
+``request_id``). The pre-execution decision row cannot know what an execution
+cost, so it is never a spend source. Any per-model price assumption is
 labelled synthetic, is opt-in, and is never presented as measured cost.
 """
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+from verdict.outcome_log import load_outcomes, measured_spend_for, outcome_log_path
 
 st.set_page_config(page_title="verdict Analytics", page_icon="⚙️", layout="wide")
 
@@ -30,10 +34,6 @@ if not log_path.is_file():
     st.stop()
 
 
-# Observed receipts: the only inputs allowed to back "actual spend".
-OBSERVED_COST_FIELDS = ("observed_cost_usd", "cost_usd")
-OBSERVED_TOKEN_FIELDS = ("observed_tokens_total", "tokens_total")
-
 # Synthetic assumptions: opt-in illustration only, never labelled actual.
 SYNTHETIC_PRICES_USD_PER_REQUEST = {
     "opus": 0.015,
@@ -43,20 +43,6 @@ SYNTHETIC_PRICES_USD_PER_REQUEST = {
     "default": 0.001,
 }
 SYNTHETIC_FRONTIER_BASELINE_USD = 0.015
-
-
-def _first_number(record: dict[str, Any], keys: tuple[str, ...]) -> float | None:
-    """Return the first numeric value among ``keys`` at the top level or in the receipt."""
-    receipt = record.get("admit_receipt")
-    scopes: list[dict[str, Any]] = [record]
-    if isinstance(receipt, dict):
-        scopes.append(receipt)
-    for scope in scopes:
-        for key in keys:
-            value = scope.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-                return float(value)
-    return None
 
 
 def synthetic_price(model: str) -> float:
@@ -83,11 +69,18 @@ def load_data(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame(records)
     df["ts"] = pd.to_datetime(df["ts"])
-    df["observed_cost_usd"] = [_first_number(row, OBSERVED_COST_FIELDS) for row in records]
-    df["observed_tokens_total"] = [_first_number(row, OBSERVED_TOKEN_FIELDS) for row in records]
-    df["cost_source"] = [
-        "observed receipt" if cost is not None else "not measured"
-        for cost in df["observed_cost_usd"]
+    # Join each pre-execution decision to its post-execution outcome receipt.
+    # Only that receipt may back "measured": it is the one written after the
+    # gateway reported what the execution actually cost.
+    outcomes = load_outcomes(path)
+    joined = [measured_spend_for(row, outcomes) for row in records]
+    df["observed_cost_usd"] = [item["observed_cost_usd"] if item else None for item in joined]
+    df["observed_tokens_total"] = [
+        item["observed_tokens_total"] if item else None for item in joined
+    ]
+    df["cost_source"] = [item["cost_source"] if item else "not measured" for item in joined]
+    df["has_outcome_receipt"] = [
+        isinstance(row.get("request_id"), str) and row["request_id"] in outcomes for row in records
     ]
     return df
 
@@ -97,6 +90,9 @@ df = load_data(log_path)
 if df.empty:
     st.info("Log is empty.")
     st.stop()
+
+outcomes_path = outcome_log_path(log_path)
+receipt_count = int(df["has_outcome_receipt"].sum())
 
 # High level KPIs (measured only)
 total_requests = len(df)
@@ -109,26 +105,45 @@ col1, col2, col3 = st.columns(3)
 col1.metric("Total Routed Prompts", f"{total_requests:,}")
 if measured_count:
     col2.metric(
-        "Measured Spend (observed receipts)",
+        f"Measured Spend ({measured_count} receipts)",
         f"${measured_spend:,.4f}",
-        help=f"Sum of observed cost receipts on {measured_count} of {total_requests} decisions.",
+        help=(
+            f"Sum of observed cost on {measured_count} of {total_requests} decisions, "
+            f"from post-execution outcome receipts in {outcomes_path.name} "
+            "(X-OmniRoute-Response-Cost). Never estimated from model names."
+        ),
+    )
+elif not outcomes_path.is_file():
+    col2.metric(
+        "Measured Spend",
+        "no execution receipts yet",
+        help=(
+            f"{outcomes_path.name} does not exist beside this decision log. The serve "
+            "path writes one outcome receipt per upstream attempt; run traffic through "
+            "`verdict serve` to produce them. Verdict does not estimate spend from model names."
+        ),
     )
 else:
     col2.metric(
-        "Measured Spend (observed receipts)",
+        "Measured Spend",
         "not measured",
         help=(
-            "No decision in this log carries an observed cost receipt "
-            "(observed_cost_usd). Verdict does not estimate spend from model names."
+            f"{receipt_count} of {total_requests} decisions have an outcome receipt, but none "
+            "carried X-OmniRoute-Response-Cost. The gateway did not report cost; Verdict "
+            "does not estimate it from model names."
         ),
     )
 col3.metric("P99 Routing Latency", f"{p99_latency:.2f}ms")
 
 if measured_count < total_requests:
+    unmeasured = total_requests - measured_count
+    without_receipt = total_requests - receipt_count
     st.caption(
-        f"{total_requests - measured_count} of {total_requests} decisions have no observed "
-        "cost receipt and are excluded from measured spend. Savings are never inferred "
-        "from model-name price tables."
+        f"{unmeasured} of {total_requests} decisions are excluded from measured spend: "
+        f"{without_receipt} have no execution receipt (never executed, streamed before the "
+        f"receipt landed, or logged before {outcomes_path.name} existed) and "
+        f"{unmeasured - without_receipt} executed without a cost header. Savings are never "
+        "inferred from model-name price tables."
     )
 
 st.divider()
@@ -151,7 +166,7 @@ with c1:
 with c2:
     st.subheader("Measured Spend Over Time")
     if measured_count:
-        df_time = measured.set_index("ts").resample("1H")[["observed_cost_usd"]].sum().reset_index()
+        df_time = measured.set_index("ts").resample("1h")[["observed_cost_usd"]].sum().reset_index()
         fig2 = go.Figure()
         fig2.add_trace(
             go.Scatter(

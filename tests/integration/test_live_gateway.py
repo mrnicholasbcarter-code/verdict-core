@@ -38,7 +38,12 @@ class FakeIntelligence:
         )
 
     async def route(
-        self, task: str, criticality: str = "medium", context: dict[str, object] | None = None
+        self,
+        task: str,
+        criticality: str = "medium",
+        context: dict[str, object] | None = None,
+        *,
+        request_id: str | None = None,
     ) -> RoutingDecision:
         if criticality == "critical":
             return RoutingDecision(

@@ -116,9 +116,36 @@ verdict ui
 
 Requires the dashboard extras (`pip install "verdict-core[dashboard]"` or
 `"verdict-core[all]"`). The dashboard reads `verdict-decisions.jsonl` from the
-current directory. Spend is shown only from observed cost/token receipts on
-decisions; any per-model price assumption is an opt-in view explicitly
-labelled *synthetic* and is never presented as measured spend.
+current directory and joins it to `verdict-outcomes.jsonl` beside it. Spend is
+shown only from those post-execution outcome receipts; any per-model price
+assumption is an opt-in view explicitly labelled *synthetic* and is never
+presented as measured spend.
+
+#### Outcome receipts (`verdict-outcomes.jsonl`)
+
+The decision log is written *before* the upstream call and therefore cannot
+know what an execution cost. `verdict serve` writes one **outcome receipt**
+per upstream attempt after the gateway answers, to a sibling file derived from
+`log_path` (`verdict-decisions.jsonl` → `verdict-outcomes.jsonl`;
+`custom.jsonl` → `custom-outcomes.jsonl`). Records join to decisions on
+`request_id`; when a request has several attempts, the highest `attempt` is
+the one the client received.
+
+| Field | Source | Notes |
+|-------|--------|-------|
+| `record` | constant `"outcome"` | distinguishes rows from decision records |
+| `schema_version` | constant `1` | |
+| `request_id` | the decision's `request_id` | join key |
+| `attempt`, `surface`, `status_code` | serve path | `surface` is `chat` or `responses` |
+| `completed_with`, `completed_with_source` | `X-OmniRoute-Model` header, else the attempt's model | source is `header` or `attempt.model` |
+| `execution_id` | `X-OmniRoute-Request-Id` | `null` when absent |
+| `observed_cost_usd`, `cost_source` | `X-OmniRoute-Response-Cost` **only** | `null` when the header is absent — unmeasured, never `$0`; never estimated from a model name |
+| `observed_tokens_in/out/total`, `tokens_source` | `X-OmniRoute-Tokens-In/Out`, else body `usage` | token counts never become a price |
+| `cache_hit` | `X-OmniRoute-Cache-Hit` | `null` when absent |
+
+Streamed responses contribute headers only (the body is not buffered), so
+their token counts come from headers or are `null`. Writing a receipt never
+raises; if `log_path` is empty nothing is written.
 
 ---
 

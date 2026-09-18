@@ -203,7 +203,12 @@ class IntelligenceService:
         task: str | dict[str, Any],
         criticality: str = "medium",
         context: dict[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
     ) -> RoutingDecision:
+        """Route ``task``. ``request_id`` (when the caller already owns one) is stamped
+        on the decision *before* it is logged so post-execution outcome receipts
+        (BOD-117) can join back to this row."""
         start_t = time.time()
 
         # Handle envelope input
@@ -254,7 +259,12 @@ class IntelligenceService:
             if offload is not None:
                 elapsed = (time.time() - start_t) * 1000
                 dec = RoutingDecision(
-                    **{**offload.__dict__, "latency_ms": elapsed, "logged": bool(self.log_path)}
+                    **{
+                        **offload.__dict__,
+                        "latency_ms": elapsed,
+                        "logged": bool(self.log_path),
+                        "request_id": request_id or offload.request_id,
+                    }
                 )
                 if self.log_path:
                     log_decision(self.log_path, task_str, req_tier, dec, self.log_full_task)
@@ -341,7 +351,12 @@ class IntelligenceService:
 
         elapsed = (time.time() - start_t) * 1000
         dec = RoutingDecision(
-            **{**dec.__dict__, "latency_ms": elapsed, "logged": bool(self.log_path)}
+            **{
+                **dec.__dict__,
+                "latency_ms": elapsed,
+                "logged": bool(self.log_path),
+                "request_id": request_id or dec.request_id,
+            }
         )
         if self.log_path:
             log_decision(self.log_path, task_str, req_tier, dec, self.log_full_task)

@@ -36,6 +36,7 @@ from verdict.evidence import (
     build_outcome_event,
     build_routing_decision_contract,
     request_features,
+    safe_identifier,
 )
 from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.gate import Gate
@@ -49,6 +50,7 @@ from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, Intelligen
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.outcome_log import build_outcome_record, log_outcome
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from verdict.relay import (
     build_attempts,
@@ -870,6 +872,37 @@ def _headers_for_body(result: BufferedUpstreamResponse) -> dict[str, str]:
     return headers
 
 
+def _record_execution_outcome(
+    *,
+    request_id: str,
+    model: str,
+    attempt: int,
+    surface: str,
+    result: BufferedUpstreamResponse | StreamedUpstreamResponse,
+) -> None:
+    """Persist the gateway's post-execution receipt beside the decision log (BOD-117).
+
+    Streamed responses expose headers only; their body is not buffered here, so
+    token counts fall back to headers and cost remains header-only either way.
+    """
+    log_path = getattr(intelligence_instance, "log_path", None)
+    if not log_path:
+        return
+    body = result.body if isinstance(result, BufferedUpstreamResponse) else None
+    log_outcome(
+        log_path,
+        build_outcome_record(
+            request_id=request_id,
+            model=model,
+            status_code=result.status_code,
+            attempt=attempt,
+            surface=surface,
+            headers=result.headers,
+            body=body,
+        ),
+    )
+
+
 def _relay_response_headers(
     result: BufferedUpstreamResponse | StreamedUpstreamResponse,
 ) -> dict[str, str]:
@@ -1118,9 +1151,22 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     correlation_id = request.headers.get("x-verdict-correlation-id")
     if not correlation_id and isinstance(payload.get("correlation_id"), str):
         correlation_id = cast(str, payload["correlation_id"])
-    decision = await intelligence_instance.route(
-        task, criticality=payload.get("criticality", "medium"), context=payload
+    # Resolve the request id *before* routing so the pre-execution decision row
+    # and the post-execution outcome receipt share one key (BOD-117).
+    client_request_id = request.headers.get("x-verdict-request-id") or (
+        payload.get("request_id") if isinstance(payload.get("request_id"), str) else None
     )
+    request_id = safe_identifier(client_request_id, prefix="req")
+    decision = await intelligence_instance.route(
+        task,
+        criticality=payload.get("criticality", "medium"),
+        context=payload,
+        request_id=request_id,
+    )
+    if client_request_id is None and decision.request_id:
+        # An intelligence that mints its own ids keeps them; precedence stays
+        # client id → decision id → generated.
+        request_id = decision.request_id
     criticality = payload.get("criticality", "medium")
     if not isinstance(criticality, str):
         criticality = "unknown"
@@ -1138,8 +1184,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         task=task,
         criticality=criticality,
         features=features,
-        request_id=request.headers.get("x-verdict-request-id")
-        or (payload.get("request_id") if isinstance(payload.get("request_id"), str) else None),
+        request_id=request_id,
         correlation_id=correlation_id,
         scope=_evidence_scope(request),
         requested_identity=request_identity,
@@ -1240,6 +1285,15 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 result = replace(result, body=_ValidatedSSEStream(result.body, surface=surface))
                 result = await _prime_stream(result)
             last_status = result.status_code
+            # BOD-117: the only place execution cost is observable is *after* the
+            # upstream answers. Persist it per attempt, keyed to the decision.
+            _record_execution_outcome(
+                request_id=decision.request_id,
+                model=attempt.model,
+                attempt=index,
+                surface=surface,
+                result=result,
+            )
             attempts_used.append(
                 {
                     "model": attempt.model,
