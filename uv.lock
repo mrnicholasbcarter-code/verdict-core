@@ -3549,10 +3549,12 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "fastapi" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "plotly" },
     { name = "streamlit" },
+    { name = "uvicorn" },
 ]
 dashboard = [
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -3570,6 +3572,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "types-defusedxml" },
     { name = "types-jsonschema" },
     { name = "types-pyyaml" },
@@ -3585,13 +3588,14 @@ requires-dist = [
     { name = "code-review-graph", marker = "extra == 'dev'", specifier = ">=2.3.8" },
     { name = "cyclonedx-bom", marker = "extra == 'dev'", specifier = ">=7.3.1" },
     { name = "defusedxml", specifier = ">=0.7.1" },
+    { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.141.1" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.141.1" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.1" },
-    { name = "pandas", marker = "extra == 'all'" },
+    { name = "pandas", marker = "extra == 'all'", specifier = ">=2.3.3" },
     { name = "pandas", marker = "extra == 'dashboard'", specifier = ">=2.3.3" },
-    { name = "plotly", marker = "extra == 'all'" },
+    { name = "plotly", marker = "extra == 'all'", specifier = ">=7.0.0" },
     { name = "plotly", marker = "extra == 'dashboard'", specifier = ">=7.0.0" },
     { name = "pyopenssl", marker = "extra == 'dev'", specifier = ">=26.4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
@@ -3600,11 +3604,13 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.7" },
-    { name = "streamlit", marker = "extra == 'all'" },
+    { name = "streamlit", marker = "extra == 'all'", specifier = ">=1.63.0" },
     { name = "streamlit", marker = "extra == 'dashboard'", specifier = ">=1.63.0" },
+    { name = "tomli", marker = "python_full_version < '3.11' and extra == 'dev'", specifier = ">=2.0" },
     { name = "types-defusedxml", marker = "extra == 'dev'", specifier = ">=0.7.0.20260504" },
     { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.26.0.20260518" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
+    { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.52.4" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.52.4" },
     { name = "vcrpy", marker = "extra == 'dev'", specifier = ">=8.3.0" },
 ]

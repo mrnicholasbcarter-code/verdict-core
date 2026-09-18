@@ -68,6 +68,8 @@ dev = [
     "types-defusedxml>=0.7.0.20260504",
     "code-review-graph>=2.3.8",
     "cyclonedx-bom>=7.3.1",
+    # tests parse pyproject.toml; tomllib is stdlib only from 3.11
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.scripts]

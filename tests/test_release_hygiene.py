@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
-import tomllib
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised only on the 3.10 CI lane
+    import tomli as tomllib
 
 from verdict.fixture_paths import FIXTURE_ROOTS, resolve_fixture_path, resolve_fixture_workspace
 
