@@ -1,5 +1,6 @@
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -92,6 +93,9 @@ class IntelligenceService:
         confirm_transport: ProbeTransport | None = None,
         passport_store_path: Path | None = None,
         admit_now: datetime | None = None,
+        workspace_root: Path | str | None = None,
+        context_roots: Sequence[str] | None = None,
+        mcp_root: Path | str | None = None,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -121,6 +125,9 @@ class IntelligenceService:
         self.confirm_transport = confirm_transport
         self.passport_store_path = passport_store_path
         self.admit_now = admit_now
+        self.workspace_root = workspace_root
+        self.context_roots = tuple(context_roots) if context_roots is not None else None
+        self.mcp_root = mcp_root
         self.managed_backend_status = "offline" if allow_offline else self._probe_managed_backend()
         self._policy_version = "policy-2026-07-13.1"
 
@@ -514,8 +521,15 @@ class IntelligenceService:
             (model.provider for model in eligibility.admitted if model.id == chosen),
             chosen.split("/", 1)[0] if "/" in chosen else "omniroute",
         )
-        # Cheap path: pack context before execute; digest + omissions land on the receipt.
-        context_pack = build_cheap_path_context_pack(task, candidate_id=chosen)
+        # Cheap path: gather real provenance units, compile under budget, then
+        # execute. Digest + named omissions land on the admit receipt.
+        context_pack = build_cheap_path_context_pack(
+            task,
+            candidate_id=chosen,
+            workspace_root=self.workspace_root,
+            workspace_roots=self.context_roots,
+            mcp_root=self.mcp_root,
+        )
         receipt = replace(
             receipt, pack_digest=context_pack.pack_digest, omissions=context_pack.omissions
         )

@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -27,7 +28,7 @@ import httpx
 
 from verdict.availability import is_opaque_route_id
 from verdict.classifier import classify
-from verdict.context_pack import ContextPackCompiler, ContextPackSlot, ContextPlan
+from verdict.context_pack import ContextPackCompiler, ContextPackSlot, ContextPlan, ContextUnit
 from verdict.eligibility import EligibilityRecord, EligibilityResult, EligibilityVerdict
 from verdict.free_route_harvest import free_status
 from verdict.models import ModelInfo
@@ -104,9 +105,6 @@ class OmniRouteAdmitSnapshot:
         return frozenset(row.provider for row in self.free_tier if row.provider)
 
 
-_CHEAP_PATH_EPOCH = "1970-01-01T00:00:00Z"
-
-
 @dataclass(frozen=True)
 class NamedOmission:
     """Something left out of a cheap-path context pack, with why."""
@@ -127,6 +125,7 @@ class CheapPathContextPack:
     omissions: tuple[NamedOmission, ...]
     pack_id: str
     plan_digest: str
+    units: tuple[ContextUnit, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -143,13 +142,16 @@ def build_cheap_path_context_pack(
     candidate_id: str,
     token_budget: int = 4096,
     extra_slots: Sequence[ContextPackSlot] | None = None,
+    workspace_root: Path | str | None = None,
+    workspace_roots: Sequence[str] | None = None,
+    mcp_root: Path | str | None = None,
 ) -> CheapPathContextPack:
-    """Compile a deterministic context pack for cheap-path offload.
+    """Compile a provenance-rich context pack for cheap-path offload.
 
-    The task itself is always included as an ``instructions`` unit. Optional
-    ``extra_slots`` may be supplied (tests/fixtures); compiler exclusions
-    become named omissions on the receipt. Timestamps are pinned so the pack
-    digest is stable for identical inputs.
+    Gather real workspace units (repo docs / architecture / ADRs / project docs,
+    plus MCP only when a source is configured), then compile under budget.
+    Missing sources become named omissions — never invented content. An empty
+    gather still compiles the task and does not block execute.
     """
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-empty string")
@@ -157,6 +159,8 @@ def build_cheap_path_context_pack(
         raise ValueError("candidate_id must be a non-empty string")
     if isinstance(token_budget, bool) or not isinstance(token_budget, int) or token_budget < 1:
         raise ValueError("token_budget must be a positive integer")
+
+    from verdict.context_hydrate import CHEAP_PATH_EPOCH, gather_cheap_path_units
 
     task_slot = ContextPackSlot(
         slot_type="instructions",
@@ -172,27 +176,35 @@ def build_cheap_path_context_pack(
         unit = slot.to_unit()
         units.append(
             replace(
-                unit, observed_at=_CHEAP_PATH_EPOCH, retrieved_at=_CHEAP_PATH_EPOCH, created_at=0.0
+                unit, observed_at=CHEAP_PATH_EPOCH, retrieved_at=CHEAP_PATH_EPOCH, created_at=0.0
             )
         )
+    gathered = gather_cheap_path_units(
+        task, workspace_root=workspace_root, roots=workspace_roots, mcp_root=mcp_root
+    )
+    units.extend(gathered.units)
     plan = ContextPlan(
         plan_id=f"cheap:{candidate_id}",
         candidate_id=candidate_id,
         token_budget=token_budget,
-        created_at=_CHEAP_PATH_EPOCH,
+        created_at=CHEAP_PATH_EPOCH,
     )
     pack = ContextPackCompiler().compile_units(tuple(units), plan)
-    omissions = tuple(
+    compiler_omissions = tuple(
         NamedOmission(name=decision.unit_id, reason=decision.reason)
         for decision in pack.decisions
         if decision.action == "exclude"
     )
+    gather_omissions = tuple(
+        NamedOmission(name=item.name, reason=item.reason) for item in gathered.omissions
+    )
     return CheapPathContextPack(
         pack_digest=pack.digest,
         compiled_prompt=pack.compiled_prompt,
-        omissions=omissions,
+        omissions=gather_omissions + compiler_omissions,
         pack_id=pack.pack_id,
         plan_digest=pack.plan_digest or plan.digest,
+        units=pack.units,
     )
 
 

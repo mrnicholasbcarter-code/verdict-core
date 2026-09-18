@@ -210,6 +210,8 @@ def _service(snapshot, *, passports, confirm_transport) -> IntelligenceService:
         passports=passports,
         confirm_transport=confirm_transport,
         admit_now=NOW,
+        context_roots=(),
+        mcp_root="",
     )
 
 

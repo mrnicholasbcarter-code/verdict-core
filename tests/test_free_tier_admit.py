@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from verdict.context_hydrate import DEFAULT_CONTEXT_ROOTS
 from verdict.context_pack import ContextPackSlot
 from verdict.free_tier_admit import (
     FAIL_CLOSED_REASON,
@@ -212,7 +213,7 @@ def _ok_confirm_transport(fail: set[str] | None = None):
 
 
 def _service(
-    snapshot, executor=None, *, passports=None, confirm_transport=None
+    snapshot, executor=None, *, passports=None, confirm_transport=None, workspace_root=None
 ) -> IntelligenceService:
     return IntelligenceService(
         primary_model="anthropic/claude-3-opus-20240229",
@@ -228,6 +229,9 @@ def _service(
         passports=passports,
         confirm_transport=confirm_transport,
         admit_now=datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc),
+        workspace_root=workspace_root,
+        context_roots=() if workspace_root is None else DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
     )
 
 
@@ -459,12 +463,20 @@ def test_cli_route_gate_merges_omniroute_env(
     assert gate.providers["omniroute"].api_key_env == "OMNIROUTE_API_KEY"
 
 
-def test_cheap_path_context_pack_digest_is_stable() -> None:
+def test_cheap_path_context_pack_digest_is_stable(tmp_path: Path) -> None:
     first = build_cheap_path_context_pack(
-        "format a bullet list", candidate_id="openrouter/free-model"
+        "format a bullet list",
+        candidate_id="openrouter/free-model",
+        workspace_root=tmp_path,
+        workspace_roots=(),
+        mcp_root="",
     )
     second = build_cheap_path_context_pack(
-        "format a bullet list", candidate_id="openrouter/free-model"
+        "format a bullet list",
+        candidate_id="openrouter/free-model",
+        workspace_root=tmp_path,
+        workspace_roots=(),
+        mcp_root="",
     )
     assert first.pack_digest == second.pack_digest
     assert first.pack_digest.startswith("sha256:")
@@ -472,12 +484,18 @@ def test_cheap_path_context_pack_digest_is_stable() -> None:
     assert first.omissions == ()
 
 
-def test_cheap_path_context_pack_records_named_omissions() -> None:
+def test_cheap_path_context_pack_records_named_omissions(tmp_path: Path) -> None:
     noise = ContextPackSlot(
         slot_type="evidence", key="noise", content="N" * 5000, source="fixture", created_at=0.0
     )
     packed = build_cheap_path_context_pack(
-        "keep the task", candidate_id="openrouter/free-model", token_budget=40, extra_slots=[noise]
+        "keep the task",
+        candidate_id="openrouter/free-model",
+        token_budget=40,
+        extra_slots=[noise],
+        workspace_root=tmp_path,
+        workspace_roots=(),
+        mcp_root="",
     )
     assert "keep the task" in packed.compiled_prompt
     assert packed.omissions
@@ -485,7 +503,7 @@ def test_cheap_path_context_pack_records_named_omissions() -> None:
     assert any("noise" in name for name in named)
 
 
-def test_intelligence_receipt_carries_pack_digest_and_packed_execute() -> None:
+def test_intelligence_receipt_carries_pack_digest_and_packed_execute(tmp_path: Path) -> None:
     snapshot = _snapshot(
         catalog=[_catalog_row("openrouter/nvidia/nemotron-3-nano-30b-a3b:free")],
         free_tier=[
@@ -509,14 +527,59 @@ def test_intelligence_receipt_carries_pack_digest_and_packed_execute() -> None:
         executor=executor,
         passports={identity: _fresh_passport(identity)},
         confirm_transport=_ok_confirm_transport(),
+        workspace_root=tmp_path,
     )
     decision = asyncio.run(svc.route("cheap path pack me", criticality="low"))
     assert decision.decision == "selected"
     assert decision.admit_receipt is not None
     digest = decision.admit_receipt["pack_digest"]
     assert isinstance(digest, str) and digest.startswith("sha256:")
-    assert decision.admit_receipt["omissions"] == []
     assert calls and "cheap path pack me" in calls[0][1]
-    expected = build_cheap_path_context_pack("cheap path pack me", candidate_id=decision.model)
+    expected = build_cheap_path_context_pack(
+        "cheap path pack me",
+        candidate_id=decision.model,
+        workspace_root=tmp_path,
+        workspace_roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+    )
     assert digest == expected.pack_digest
     assert calls[0][1] == expected.compiled_prompt
+    assert decision.admit_receipt["omissions"] == [item.to_dict() for item in expected.omissions]
+
+
+def test_intelligence_execute_receives_hydrated_workspace_unit(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("README_PROVENANCE_MARKER\n", encoding="utf-8")
+    snapshot = _snapshot(
+        catalog=[_catalog_row("openrouter/nvidia/nemotron-3-nano-30b-a3b:free")],
+        free_tier=[
+            {
+                "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
+                "provider": "openrouter",
+                "freeType": "recurring-daily",
+            }
+        ],
+        providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
+    )
+    calls: list[tuple[str, str]] = []
+
+    def executor(model_id: str, task: str) -> tuple[str, str]:
+        calls.append((model_id, task))
+        return "sent", "hydrated-ok"
+
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    svc = _service(
+        snapshot,
+        executor=executor,
+        passports={identity: _fresh_passport(identity)},
+        confirm_transport=_ok_confirm_transport(),
+        workspace_root=tmp_path,
+    )
+    decision = asyncio.run(svc.route("summarize the project readme", criticality="low"))
+    assert decision.decision == "selected"
+    assert calls
+    assert "README_PROVENANCE_MARKER" in calls[0][1]
+    assert decision.admit_receipt is not None
+    assert decision.admit_receipt["pack_digest"].startswith("sha256:")
+    named = {item["name"]: item["reason"] for item in decision.admit_receipt["omissions"]}
+    assert named.get("docs") == "source_missing"
+    assert "invented" not in calls[0][1].lower()

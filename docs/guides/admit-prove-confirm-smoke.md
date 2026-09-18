@@ -50,8 +50,8 @@ On a selected decision, `admit_receipt` (decision / evidence receipt) must inclu
 | --- | --- |
 | `admitted` / `chosen` | Concrete free∩active identity (not Opus, not `auto/*`) |
 | `exclusions[].reason` | Named drops: `inactive_unconnected`, `not_free_tier`, `no_passport`, `passport_stale`, `confirm_failed`, … |
-| `pack_digest` | Stable `sha256:…` cheap-path pack |
-| `omissions` | Named context-pack omissions |
+| `pack_digest` | Stable `sha256:…` cheap-path pack (workspace provenance units compiled under budget) |
+| `omissions` | Named context-pack omissions (missing roots, unreadables, budget excludes — never invented content) |
 | **`passport`** | Per-candidate evidence: `identity_id`, `fresh`, `expires_at`, `auth_state`, … |
 | **`confirm`** | Per-candidate evidence: `identity_id`, `confirmed`, `status`, optional `latency_ms` / `error` |
 
