@@ -64,9 +64,7 @@ class _CatalogIdentity:
 # Representative catalog so the chooser actually chooses. None of these slugs
 # is the measured identity — that must be specified on each arm.
 _CATALOG: tuple[_CatalogIdentity, ...] = (
-    _CatalogIdentity(
-        "opencode/hy3-free", "opencode", free=True, free_model_id="hy3-free"
-    ),
+    _CatalogIdentity("opencode/hy3-free", "opencode", free=True, free_model_id="hy3-free"),
     _CatalogIdentity(
         "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
         "openrouter",
@@ -223,7 +221,7 @@ def _prov(value: bool | int) -> ProvenancedField:
 
 
 def _metadata() -> MetadataSnapshot:
-    records = []
+    records: list[ModelMetadataRecord] = []
     for row in _CATALOG:
         caps = CapabilityCaps(
             tools=_prov(row.tools),
@@ -246,14 +244,12 @@ def _snapshot() -> OmniRouteAdmitSnapshot:
         if row.free and row.free_model_id
     ]
     seen_providers: list[str] = []
-    connections = []
+    connections: list[dict[str, Any]] = []
     for row in _CATALOG:
         if row.provider in seen_providers:
             continue
         seen_providers.append(row.provider)
-        connections.append(
-            {"provider": row.provider, "isActive": True, "testStatus": "active"}
-        )
+        connections.append({"provider": row.provider, "isActive": True, "testStatus": "active"})
     return snapshot_from_payloads(
         catalog={"data": catalog_rows},
         free_tier={"perModel": free_tier},
