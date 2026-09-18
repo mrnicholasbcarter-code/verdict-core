@@ -28,10 +28,17 @@ import httpx
 
 from verdict.availability import is_opaque_route_id
 from verdict.classifier import classify
-from verdict.context_pack import ContextPackCompiler, ContextPackSlot, ContextPlan, ContextUnit
+from verdict.context_pack import (
+    ContextContractError,
+    ContextPackCompiler,
+    ContextPackSlot,
+    ContextPlan,
+    ContextUnit,
+)
 from verdict.eligibility import EligibilityRecord, EligibilityResult, EligibilityVerdict
 from verdict.free_route_harvest import free_status
 from verdict.models import ModelInfo
+from verdict.pack_state import PackState, classify_pack_state
 
 REASON_OPAQUE_AUTO = "opaque_auto"
 REASON_NOT_FREE_TIER = "not_free_tier"
@@ -141,13 +148,22 @@ class CheapPathContextPack:
     plan_digest: str
     units: tuple[ContextUnit, ...] = ()
     included: tuple[IncludedProvenance, ...] = ()
+    pack_state: PackState = "empty"
+
+    @property
+    def included_sources(self) -> tuple[IncludedProvenance, ...]:
+        """Receipt-facing alias of ``included`` (BOD-106 / QA smoke field)."""
+        return self.included
 
     def to_dict(self) -> dict[str, Any]:
+        sources = [item.to_dict() for item in self.included]
         return {
             "pack_digest": self.pack_digest,
             "pack_id": self.pack_id,
             "plan_digest": self.plan_digest,
-            "included": [item.to_dict() for item in self.included],
+            "pack_state": self.pack_state,
+            "included": sources,
+            "included_sources": list(sources),
             "omissions": [item.to_dict() for item in self.omissions],
         }
 
@@ -170,6 +186,10 @@ def build_cheap_path_context_pack(
     thesis set is included rather than truncated as ``input_budget_exhausted``.
     Missing sources become named omissions — never invented content. An empty
     gather still compiles the task and does not block execute.
+
+    ``pack_state`` classifies the result for receipts (BOD-106). Savings stay
+    blocked until ``hydrated``; empty/partial with a digest is still a hydrate
+    FAIL. Hydrate/compiler errors stamp ``failed`` and still do not block execute.
     """
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-empty string")
@@ -201,19 +221,24 @@ def build_cheap_path_context_pack(
                 unit, observed_at=CHEAP_PATH_EPOCH, retrieved_at=CHEAP_PATH_EPOCH, created_at=0.0
             )
         )
-    gathered = gather_cheap_path_units(
-        task, workspace_root=workspace_root, roots=workspace_roots, mcp_root=mcp_root
-    )
-    units.extend(gathered.units)
-    plan = ContextPlan(
-        plan_id=f"cheap:{candidate_id}",
-        candidate_id=candidate_id,
-        token_budget=token_budget,
-        created_at=CHEAP_PATH_EPOCH,
-    )
-    pack = ContextPackCompiler().compile_units(
-        tuple(units), plan, unit_sort_key=cheap_path_unit_sort_key(units, token_budget=token_budget)
-    )
+    try:
+        gathered = gather_cheap_path_units(
+            task, workspace_root=workspace_root, roots=workspace_roots, mcp_root=mcp_root
+        )
+        units.extend(gathered.units)
+        plan = ContextPlan(
+            plan_id=f"cheap:{candidate_id}",
+            candidate_id=candidate_id,
+            token_budget=token_budget,
+            created_at=CHEAP_PATH_EPOCH,
+        )
+        pack = ContextPackCompiler().compile_units(
+            tuple(units),
+            plan,
+            unit_sort_key=cheap_path_unit_sort_key(units, token_budget=token_budget),
+        )
+    except (OSError, UnicodeError, ContextContractError):
+        return _failed_cheap_path_pack(task, candidate_id=candidate_id, token_budget=token_budget)
     compiler_omissions = tuple(
         NamedOmission(name=_omission_name(decision), reason=decision.reason)
         for decision in pack.decisions
@@ -227,6 +252,9 @@ def build_cheap_path_context_pack(
         for unit in pack.units
         if _is_workspace_provenance(unit.source_uri)
     )
+    pack_state = classify_pack_state(
+        included=included, gathered=gathered.units, omissions=gather_omissions + compiler_omissions
+    )
     return CheapPathContextPack(
         pack_digest=pack.digest,
         compiled_prompt=pack.compiled_prompt,
@@ -235,6 +263,7 @@ def build_cheap_path_context_pack(
         plan_digest=pack.plan_digest or plan.digest,
         units=pack.units,
         included=included,
+        pack_state=pack_state,
     )
 
 
@@ -249,6 +278,59 @@ def _omission_name(decision: Any) -> str:
     return str(decision.unit_id)
 
 
+def _failed_cheap_path_pack(
+    task: str, *, candidate_id: str, token_budget: int
+) -> CheapPathContextPack:
+    """Stamp ``pack_state=failed`` without blocking execute or inventing sources."""
+    from hashlib import sha256
+
+    from verdict.context_hydrate import CHEAP_PATH_EPOCH
+
+    task_slot = ContextPackSlot(
+        slot_type="instructions",
+        key="task",
+        content=task,
+        source="cheap_path",
+        created_at=0.0,
+        source_uri="urn:verdict:task",
+    )
+    try:
+        unit = replace(
+            task_slot.to_unit(),
+            observed_at=CHEAP_PATH_EPOCH,
+            retrieved_at=CHEAP_PATH_EPOCH,
+            created_at=0.0,
+        )
+        plan = ContextPlan(
+            plan_id=f"cheap:{candidate_id}",
+            candidate_id=candidate_id,
+            token_budget=token_budget,
+            created_at=CHEAP_PATH_EPOCH,
+        )
+        pack = ContextPackCompiler().compile_units((unit,), plan)
+        pack_digest = pack.digest
+        compiled_prompt = pack.compiled_prompt
+        pack_id = pack.pack_id
+        plan_digest = pack.plan_digest or plan.digest
+        units = pack.units
+    except (OSError, UnicodeError, ContextContractError, ValueError):
+        compiled_prompt = task
+        pack_digest = f"sha256:{sha256(task.encode()).hexdigest()}"
+        pack_id = "failed"
+        plan_digest = f"sha256:{sha256(candidate_id.encode()).hexdigest()}"
+        units = ()
+    return CheapPathContextPack(
+        pack_digest=pack_digest,
+        compiled_prompt=compiled_prompt,
+        omissions=(NamedOmission(name="hydrate", reason="compiler_error"),),
+        pack_id=pack_id,
+        plan_digest=plan_digest,
+        units=units,
+        included=(),
+        pack_state="failed",
+    )
+
+
 @dataclass(frozen=True)
 class FreeTierAdmitReceipt:
     admitted: tuple[str, ...]
@@ -260,11 +342,18 @@ class FreeTierAdmitReceipt:
     pack_digest: str | None = None
     omissions: tuple[NamedOmission, ...] = ()
     included: tuple[IncludedProvenance, ...] = ()
+    pack_state: PackState | None = None
     passport: tuple[Any, ...] = ()
     confirm: tuple[Any, ...] = ()
     selected_because: str | None = None
 
+    @property
+    def included_sources(self) -> tuple[IncludedProvenance, ...]:
+        """Receipt-facing alias of ``included`` (BOD-106 / QA smoke field)."""
+        return self.included
+
     def to_dict(self) -> dict[str, Any]:
+        sources = [item.to_dict() for item in self.included]
         return {
             "admitted": list(self.admitted),
             "exclusions": [item.to_dict() for item in self.exclusions],
@@ -273,7 +362,9 @@ class FreeTierAdmitReceipt:
             "active_providers": list(self.active_providers),
             "free_tier_providers": list(self.free_tier_providers),
             "pack_digest": self.pack_digest,
-            "included": [item.to_dict() for item in self.included],
+            "pack_state": self.pack_state,
+            "included": sources,
+            "included_sources": list(sources),
             "omissions": [item.to_dict() for item in self.omissions],
             "passport": [
                 item.to_dict() if hasattr(item, "to_dict") else item for item in self.passport
@@ -760,6 +851,7 @@ __all__ = [
     "NamedDrop",
     "NamedOmission",
     "OmniRouteAdmitSnapshot",
+    "PackState",
     "ProviderConnection",
     "admit_free_tier_active",
     "build_cheap_path_context_pack",

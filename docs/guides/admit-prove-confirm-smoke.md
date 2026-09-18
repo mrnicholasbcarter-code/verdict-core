@@ -50,8 +50,9 @@ On a selected decision, `admit_receipt` (decision / evidence receipt) must inclu
 | --- | --- |
 | `admitted` / `chosen` | Concrete free∩active identity (not Opus, not `auto/*`) |
 | `exclusions[].reason` | Named drops: `inactive_unconnected`, `not_free_tier`, `no_passport`, `passport_stale`, `confirm_failed`, … |
-| `pack_digest` | Stable `sha256:…` cheap-path pack (workspace provenance units compiled under budget) |
-| `included` | Provenance for compiled units (`source_uri` + content digest). ADR and architecture files that exist on disk must appear here — an omissions-only pack is a QA fail. |
+| `pack_digest` | Stable `sha256:…` cheap-path pack (workspace provenance units compiled under budget). A digest alone is **not** hydrated. |
+| `pack_state` | `empty` \| `partial` \| `hydrated` \| `failed`. **Savings stay blocked until `hydrated`.** Empty/partial with a pretty digest is still a FAIL for rich hydrate. |
+| `included` / `included_sources` | Provenance for compiled units (`source_uri` + content digest). QA smokes `included_sources`. ADR and architecture files that exist on disk must appear here for `hydrated`. |
 | `omissions` | Named context-pack omissions (missing roots, unreadables, budget excludes for truly oversize units — never invented content) |
 | **`passport`** | Per-candidate evidence: `identity_id`, `fresh`, `expires_at`, `auth_state`, … |
 | **`confirm`** | Per-candidate evidence: `identity_id`, `confirmed`, `status`, optional `latency_ms` / `error` |

@@ -52,9 +52,12 @@ Expect:
 - JSON blob includes `admit_receipt` with `admitted`, named `exclusions`
   (`inactive_unconnected`, `not_free_tier`, `metadata_ghost`, `opaque_auto`,
   `no_passport`, `passport_stale`, `confirm_failed`, …),
-  `chosen`, cheap-path **`pack_digest`** / **`included`** (`source_uri` +
-  digest) / **`omissions`**, plus **`passport`**
+  `chosen`, cheap-path **`pack_digest`** / **`pack_state`** /
+  **`included_sources`** (`source_uri` + digest, kept in sync with
+  **`included`**) / **`omissions`**, plus **`passport`**
   and **`confirm`** evidence arrays (fresh prove-at-rest ∩ budgeted confirm).
+  `pack_state` must be `hydrated` (with real includes) before claiming cheap-path
+  savings — empty/partial plus a digest is still a FAIL.
   See [admit-prove-confirm-smoke.md](admit-prove-confirm-smoke.md).
 - **Strategy** `DIRECT` for low-criticality work (not `SWARM_AUTODEV` from a
   fake tier-0 Opus fallback)

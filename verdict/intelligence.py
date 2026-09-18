@@ -445,6 +445,7 @@ class IntelligenceService:
                 pack_digest=receipt.pack_digest,
                 omissions=receipt.omissions,
                 included=receipt.included,
+                pack_state=receipt.pack_state,
                 passport=receipt.passport,
                 confirm=receipt.confirm,
                 selected_because=receipt.selected_because,
@@ -536,6 +537,7 @@ class IntelligenceService:
             pack_digest=context_pack.pack_digest,
             omissions=context_pack.omissions,
             included=context_pack.included,
+            pack_state=context_pack.pack_state,
         )
         packed_task = context_pack.compiled_prompt
         should_execute = self.execute_offload
