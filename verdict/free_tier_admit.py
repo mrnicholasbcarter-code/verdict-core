@@ -744,6 +744,7 @@ def omniroute_endpoint_from_env(
 
 
 __all__ = [
+    "DEFAULT_CHEAP_PATH_TOKEN_BUDGET",
     "FAIL_CLOSED_REASON",
     "NO_ELIGIBLE_TARGET",
     "REASON_INACTIVE_UNCONNECTED",
@@ -752,7 +753,6 @@ __all__ = [
     "REASON_OPAQUE_AUTO",
     "CatalogIdentity",
     "CheapPathContextPack",
-    "DEFAULT_CHEAP_PATH_TOKEN_BUDGET",
     "FreeTierAdmitReceipt",
     "FreeTierModel",
     "IncludedProvenance",

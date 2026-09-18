@@ -234,6 +234,7 @@ def test_adr_and_architecture_included_when_large_adrs_would_starve_budget(tmp_p
     assert any(uri.startswith("docs/adr/") for uri in included), included
     assert "docs/architecture/decision.md" in included
     assert included["docs/architecture/decision.md"] == _digest(arch_body)
+    assert "README.md" in included
     assert ADR_TOKEN in packed.compiled_prompt
     assert ARCH_TOKEN in packed.compiled_prompt
     assert MISSING_TOKEN not in packed.compiled_prompt
@@ -241,9 +242,9 @@ def test_adr_and_architecture_included_when_large_adrs_would_starve_budget(tmp_p
         item for item in packed.omissions if item.reason == "input_budget_exhausted"
     ]
     assert packed.included, "omissions-only pack is a QA fail when roots exist on disk"
-    assert not (
-        budget_omissions and not packed.included
-    ), "gathered thesis docs must not all be budget omissions"
+    assert not (budget_omissions and not packed.included), (
+        "gathered thesis docs must not all be budget omissions"
+    )
     receipt = packed.to_dict()
     assert receipt["pack_digest"].startswith("sha256:")
     assert receipt["included"]

@@ -29,9 +29,11 @@ DEFAULT_MAX_FILE_BYTES = 8_192
 # budget is tight. Lower number = packed sooner.
 HYDRATE_CLASS_ADR = 0
 HYDRATE_CLASS_ARCHITECTURE = 1
-HYDRATE_CLASS_PROJECT = 2
-HYDRATE_CLASS_OTHER = 3
+HYDRATE_CLASS_README = 2
+HYDRATE_CLASS_PROJECT = 3
+HYDRATE_CLASS_OTHER = 4
 _PROJECT_DOC_LOWER = {name.lower() for name in PROJECT_DOC_NAMES}
+_README_NAMES = frozenset({"readme.md", "readme"})
 _DOC_SUFFIXES = {".md", ".markdown", ".txt"}
 _SKIP_DIR_PARTS = {
     ".git",
@@ -343,7 +345,9 @@ def hydrate_priority_class(path: Path) -> int:
         return HYDRATE_CLASS_ADR
     if "architecture" in parts or name == "architecture.md":
         return HYDRATE_CLASS_ARCHITECTURE
-    if name in _PROJECT_DOC_LOWER or name.startswith("readme"):
+    if name in _README_NAMES:
+        return HYDRATE_CLASS_README
+    if name in _PROJECT_DOC_LOWER:
         return HYDRATE_CLASS_PROJECT
     return HYDRATE_CLASS_OTHER
 
@@ -367,7 +371,7 @@ def cheap_path_unit_sort_key(
 ) -> Callable[[ContextUnit], tuple[int, int, int, int, str, str]]:
     """Compiler order: task, one reserved unit per high-value class, then small-first.
 
-    Reserving the smallest fitting ADR, architecture, and project doc prevents a
+    Reserving the smallest fitting ADR, architecture, and README units prevents a
     pile of large ADRs from starving architecture (and vice versa) under budget.
     """
     task_units = [
@@ -380,6 +384,7 @@ def cheap_path_unit_sort_key(
     by_class: dict[int, list[ContextUnit]] = {
         HYDRATE_CLASS_ADR: [],
         HYDRATE_CLASS_ARCHITECTURE: [],
+        HYDRATE_CLASS_README: [],
         HYDRATE_CLASS_PROJECT: [],
         HYDRATE_CLASS_OTHER: [],
     }
@@ -388,7 +393,12 @@ def cheap_path_unit_sort_key(
         if cls < 0:
             continue
         by_class[cls].append(unit)
-    for cls in (HYDRATE_CLASS_ADR, HYDRATE_CLASS_ARCHITECTURE, HYDRATE_CLASS_PROJECT):
+    for cls in (
+        HYDRATE_CLASS_ADR,
+        HYDRATE_CLASS_ARCHITECTURE,
+        HYDRATE_CLASS_README,
+        HYDRATE_CLASS_PROJECT,
+    ):
         ranked = sorted(
             by_class[cls],
             key=lambda item: (len(item.content.encode("utf-8")), item.source_uri, item.unit_id),
@@ -587,6 +597,7 @@ __all__ = [
     "HYDRATE_CLASS_ARCHITECTURE",
     "HYDRATE_CLASS_OTHER",
     "HYDRATE_CLASS_PROJECT",
+    "HYDRATE_CLASS_README",
     "MCP_CONTEXT_ROOT_ENV",
     "PROJECT_DOC_NAMES",
     "WORKSPACE_ROOT_ENV",
