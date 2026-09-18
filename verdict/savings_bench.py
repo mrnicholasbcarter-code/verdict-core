@@ -212,10 +212,7 @@ def _metadata() -> MetadataSnapshot:
 def _snapshot() -> OmniRouteAdmitSnapshot:
     return snapshot_from_payloads(
         catalog={
-            "data": [
-                {"id": _FREE, "owned_by": "opencode"},
-                {"id": _FRONTIER, "owned_by": "cx"},
-            ]
+            "data": [{"id": _FREE, "owned_by": "opencode"}, {"id": _FRONTIER, "owned_by": "cx"}]
         },
         free_tier={
             "perModel": [{"modelId": "hy3-free", "provider": "opencode", "freeType": "keyless"}]
@@ -431,8 +428,8 @@ def format_savings_report(report: dict[str, Any]) -> str:
 
 __all__ = [
     "DEFAULT_SAVINGS_FIXTURE_PATH",
-    "TALK_TRACK",
     "FRONTIER_IDENTITY",
+    "TALK_TRACK",
     "MeasuredCost",
     "format_savings_report",
     "parse_measured_cost",
