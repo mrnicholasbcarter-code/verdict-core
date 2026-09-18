@@ -653,8 +653,27 @@ def cmd_benchmark(
     *,
     allow_live_provider: bool = False,
     live_provider: str | None = None,
+    savings: bool = False,
 ) -> None:
     """Run the reproducible local benchmark harness and optionally persist JSON."""
+    if savings:
+        from verdict.savings_bench import (
+            DEFAULT_SAVINGS_FIXTURE_PATH,
+            format_savings_report,
+            run_savings_bench,
+        )
+
+        path = fixture
+        if fixture == "benchmarks/fixtures/reproducible.json":
+            path = str(DEFAULT_SAVINGS_FIXTURE_PATH)
+        report = run_savings_bench(path)
+        console.print(format_savings_report(report), end="")
+        if output_json:
+            output_path = Path(output_json)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        return
+
     report = run_reproducible_benchmarks(
         fixture, allow_live_provider=allow_live_provider, live_provider=live_provider
     )
@@ -2716,6 +2735,11 @@ def main() -> None:
     benchmark_p.add_argument("--output-json", default=None)
     benchmark_p.add_argument("--allow-live-provider", action="store_true")
     benchmark_p.add_argument("--live-provider", default=None)
+    benchmark_p.add_argument(
+        "--savings",
+        action="store_true",
+        help="Run the BOD-101 paired legit-task savings bench (we measure)",
+    )
 
     quickstart_p = subparsers.add_parser(
         "quickstart", help="Run the credential-free deterministic flagship quickstart"
@@ -3240,6 +3264,7 @@ def main() -> None:
             args.output_json,
             allow_live_provider=args.allow_live_provider,
             live_provider=args.live_provider,
+            savings=args.savings,
         )
     elif args.command == "quickstart":
         cmd_quickstart(

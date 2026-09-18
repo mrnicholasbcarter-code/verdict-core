@@ -1,0 +1,126 @@
+{
+  "schema_version": "1",
+  "talk_track": "we measure",
+  "workspace": "benchmarks/fixtures/legit_workspace",
+  "tasks": [
+    {
+      "id": "debug-null-deref",
+      "kind": "debug",
+      "prompt": "Debug the null dereference in the cheap-path admit receipt serializer. Cite the ADR.",
+      "acceptance_criteria": [
+        "names the null path",
+        "does not invent a missing source"
+      ],
+      "direct": {
+        "headers": {
+          "X-OmniRoute-Model": "cx/gpt-5.6-sol",
+          "X-OmniRoute-Response-Cost": "0.0184",
+          "X-OmniRoute-Tokens-In": "1200",
+          "X-OmniRoute-Tokens-Out": "340",
+          "X-OmniRoute-Cache-Hit": "false"
+        },
+        "quality": {"passed": true, "misses": []}
+      },
+      "verdict": {
+        "headers": {
+          "X-OmniRoute-Model": "opencode/hy3-free",
+          "X-OmniRoute-Response-Cost": "0.0019",
+          "X-OmniRoute-Tokens-In": "1600",
+          "X-OmniRoute-Tokens-Out": "280",
+          "X-OmniRoute-Cache-Hit": "false"
+        },
+        "quality": {"passed": true, "misses": []}
+      }
+    },
+    {
+      "id": "debug-null-deref-cache-replay",
+      "kind": "debug",
+      "prompt": "Debug the null dereference in the cheap-path admit receipt serializer. Cite the ADR.",
+      "acceptance_criteria": [
+        "names the null path",
+        "does not invent a missing source"
+      ],
+      "direct": {
+        "headers": {
+          "X-OmniRoute-Model": "cx/gpt-5.6-sol",
+          "X-OmniRoute-Response-Cost": "0.0184",
+          "X-OmniRoute-Tokens-In": "1200",
+          "X-OmniRoute-Tokens-Out": "340",
+          "X-OmniRoute-Cache-Hit": "false"
+        },
+        "quality": {"passed": true, "misses": []}
+      },
+      "verdict": {
+        "headers": {
+          "X-OmniRoute-Model": "opencode/hy3-free",
+          "X-OmniRoute-Response-Cost": "0.0004",
+          "X-OmniRoute-Tokens-In": "1600",
+          "X-OmniRoute-Tokens-Out": "280",
+          "X-OmniRoute-Cache-Hit": "true"
+        },
+        "quality": {"passed": true, "misses": []}
+      }
+    },
+    {
+      "id": "refactor-with-tests",
+      "kind": "refactor_tests",
+      "prompt": "Refactor the pack_state classifier and add tests for hydrated vs empty digest. Follow the ADR.",
+      "acceptance_criteria": [
+        "keeps empty digest from faking hydrated",
+        "adds a failing-first test"
+      ],
+      "direct": {
+        "headers": {
+          "X-OmniRoute-Model": "cx/gpt-5.6-sol",
+          "X-OmniRoute-Response-Cost": "0.0241",
+          "X-OmniRoute-Tokens-In": "1800",
+          "X-OmniRoute-Tokens-Out": "410",
+          "X-OmniRoute-Cache-Hit": "false"
+        },
+        "quality": {"passed": true, "misses": []}
+      },
+      "verdict": {
+        "headers": {
+          "X-OmniRoute-Model": "groq/llama-3.3-70b-versatile",
+          "X-OmniRoute-Response-Cost": "0.0034",
+          "X-OmniRoute-Tokens-In": "2100",
+          "X-OmniRoute-Tokens-Out": "360",
+          "X-OmniRoute-Cache-Hit": "false"
+        },
+        "quality": {"passed": true, "misses": []}
+      }
+    },
+    {
+      "id": "implement-from-ac",
+      "kind": "implement_from_ac",
+      "prompt": "Implement the savings-unlocked helper from the acceptance criteria: hydrated pack only.",
+      "acceptance_criteria": [
+        "returns true only for pack_state=hydrated",
+        "does not treat cache hits as model savings"
+      ],
+      "direct": {
+        "headers": {
+          "X-OmniRoute-Model": "cx/gpt-5.6-sol",
+          "X-OmniRoute-Response-Cost": "0.0156",
+          "X-OmniRoute-Tokens-In": "900",
+          "X-OmniRoute-Tokens-Out": "250",
+          "X-OmniRoute-Cache-Hit": "false"
+        },
+        "quality": {"passed": true, "misses": []}
+      },
+      "verdict": {
+        "headers": {
+          "X-OmniRoute-Model": "opencode/hy3-free",
+          "X-OmniRoute-Response-Cost": "0.0021",
+          "X-OmniRoute-Tokens-In": "1100",
+          "X-OmniRoute-Tokens-Out": "190",
+          "X-OmniRoute-Cache-Hit": "false"
+        },
+        "quality": {
+          "passed": false,
+          "misses": ["does not treat cache hits as model savings"]
+        }
+      }
+    }
+  ]
+}
