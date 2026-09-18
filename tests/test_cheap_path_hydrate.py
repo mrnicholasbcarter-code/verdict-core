@@ -68,10 +68,14 @@ def test_fixture_files_become_pack_units_with_provenance(tmp_path: Path) -> None
     )
     receipt = packed.to_dict()
     assert receipt["pack_digest"].startswith("sha256:")
+    assert receipt["pack_state"] == "hydrated"
     assert {row["source_uri"] for row in receipt["included"]} >= {
         "docs/adr/ADR-001-hydrate.md",
         "docs/architecture/decision.md",
     }
+    assert receipt["included_sources"] == receipt["included"]
+    assert all("source_digest" in row for row in receipt["included_sources"])
+    assert packed.included_sources == packed.included
 
 
 def test_missing_root_is_named_omission_not_invented(tmp_path: Path) -> None:
@@ -96,6 +100,8 @@ def test_missing_root_is_named_omission_not_invented(tmp_path: Path) -> None:
     included = {item.source_uri for item in packed.included}
     assert "docs/adr/ADR-001-hydrate.md" in included
     assert packed.pack_digest.startswith("sha256:")
+    assert packed.pack_state == "hydrated"
+    assert packed.to_dict()["included_sources"]
 
 
 def test_hydrate_digest_is_stable_for_identical_workspace(tmp_path: Path) -> None:
@@ -135,6 +141,11 @@ def test_empty_workspace_fails_soft_with_named_omissions(tmp_path: Path) -> None
     assert MISSING_TOKEN not in packed.compiled_prompt
     assert packed.pack_digest.startswith("sha256:")
     assert packed.included == ()
+    assert packed.pack_state == "empty"
+    receipt = packed.to_dict()
+    assert receipt["pack_state"] == "empty"
+    assert receipt["included_sources"] == []
+    assert receipt["pack_digest"].startswith("sha256:")
 
 
 def test_mcp_not_configured_is_not_faked(tmp_path: Path) -> None:
@@ -278,3 +289,65 @@ def test_oversize_unit_omits_with_budget_reason_but_adr_still_included(tmp_path:
     assert packed.pack_digest.startswith("sha256:")
     assert MISSING_TOKEN not in packed.compiled_prompt
     assert "invented" not in packed.compiled_prompt.lower()
+    assert packed.pack_state == "hydrated"
+    assert packed.to_dict()["included_sources"]
+
+
+def test_budget_that_only_fits_one_high_value_class_is_partial(tmp_path: Path) -> None:
+    """BOD-106: ADR+architecture on disk but budget fits one class → partial, not hydrated."""
+    (tmp_path / "docs" / "adr").mkdir(parents=True)
+    (tmp_path / "docs" / "architecture").mkdir(parents=True)
+    body = ("HIGH-VALUE CLASS BODY " * 120) + "\n"
+    adr = tmp_path / "docs" / "adr" / "ADR-001-hydrate.md"
+    arch = tmp_path / "docs" / "architecture" / "decision.md"
+    adr.write_text(f"# ADR\n\n{body}{ADR_TOKEN}\n", encoding="utf-8")
+    arch.write_text(f"# Architecture\n\n{body}{ARCH_TOKEN}\n", encoding="utf-8")
+
+    packed = build_cheap_path_context_pack(
+        "hydrate",
+        candidate_id="openrouter/free-model",
+        token_budget=800,
+        workspace_root=tmp_path,
+        workspace_roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+    )
+    included = {item.source_uri for item in packed.included}
+    budget_omissions = {
+        item.name for item in packed.omissions if item.reason == "input_budget_exhausted"
+    }
+    assert packed.included, "one class should still include"
+    assert packed.pack_state == "partial"
+    assert packed.pack_state != "hydrated"
+    assert packed.to_dict()["pack_state"] == "partial"
+    assert packed.to_dict()["included_sources"] == packed.to_dict()["included"]
+    has_adr = any(uri.startswith("docs/adr/") for uri in included)
+    has_arch = "docs/architecture/decision.md" in included
+    assert has_adr ^ has_arch, included
+    assert budget_omissions
+    assert packed.pack_digest.startswith("sha256:")
+
+
+def test_hydrate_compiler_error_stamps_failed(tmp_path: Path, monkeypatch: object) -> None:
+    _plant(tmp_path)
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        from verdict.context_pack import ContextContractError
+
+        raise ContextContractError("forced compiler failure")
+
+    monkeypatch.setattr("verdict.context_pack.ContextPackCompiler.compile_units", boom)
+    packed = build_cheap_path_context_pack(
+        "hydrate architecture ADR",
+        candidate_id="openrouter/free-model",
+        workspace_root=tmp_path,
+        workspace_roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+    )
+    assert packed.pack_state == "failed"
+    assert packed.included_sources == ()
+    receipt = packed.to_dict()
+    assert receipt["pack_state"] == "failed"
+    assert receipt["included_sources"] == []
+    assert any(item.reason == "compiler_error" for item in packed.omissions)
+    assert "hydrate architecture ADR" in packed.compiled_prompt
+    assert packed.pack_digest.startswith("sha256:")

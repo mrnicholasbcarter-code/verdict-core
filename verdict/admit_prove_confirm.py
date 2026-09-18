@@ -342,6 +342,7 @@ def _finalize(
         pack_digest=receipt.pack_digest,
         omissions=receipt.omissions,
         included=receipt.included,
+        pack_state=receipt.pack_state,
         passport=tuple(passport_evidence),
         confirm=tuple(confirm_evidence),
     )

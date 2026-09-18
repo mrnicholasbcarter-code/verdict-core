@@ -342,7 +342,11 @@ def test_admit_receipt_pack_digest_persists_into_evidence() -> None:
         admit_receipt={
             "chosen": "openrouter/free-model",
             "pack_digest": "sha256:abc123",
+            "pack_state": "hydrated",
             "included": [
+                {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64}
+            ],
+            "included_sources": [
                 {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64}
             ],
             "omissions": [{"name": "slot:noise", "reason": "input_budget_exhausted"}],
@@ -364,13 +368,16 @@ def test_admit_receipt_pack_digest_persists_into_evidence() -> None:
     payload = evidence.to_dict()
     assert payload["receipt"]["kind"] == "admit_receipt"
     assert payload["receipt"]["pack_digest"] == "sha256:abc123"
+    assert payload["receipt"]["pack_state"] == "hydrated"
     assert payload["receipt"]["included"] == [
         {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64}
     ]
+    assert payload["receipt"]["included_sources"] == payload["receipt"]["included"]
     assert payload["receipt"]["omissions"] == [
         {"name": "slot:noise", "reason": "input_budget_exhausted"}
     ]
     assert payload["selected_route"]["pack_digest"] == "sha256:abc123"
+    assert payload["selected_route"]["pack_state"] == "hydrated"
     for schema in SCHEMAS:
         errors = list(
             Draft202012Validator(schema["$defs"]["routing_decision"]).iter_errors(payload)
@@ -382,6 +389,10 @@ def _chooser_admit_receipt() -> dict[str, Any]:
     return {
         "chosen": "opencode/hy3-free",
         "pack_digest": "sha256:abc123",
+        "pack_state": "partial",
+        "included": [
+            {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64}
+        ],
         "omissions": [{"name": "slot:noise", "reason": "input_budget_exhausted"}],
         "empty_intersection": False,
         "exclusions": [{"model": "paid/opus", "reason": "not_free_tier"}],
@@ -485,3 +496,90 @@ def test_admit_receipt_selected_because_survives_receipts_db_round_trip() -> Non
     assert (
         stored.routing_decision.selected_route["selected_because"] == pre_embed["selected_because"]
     )
+
+
+def test_admit_receipt_pack_state_and_included_sources_survive_receipts_db() -> None:
+    """BOD-106: pack_state + included_sources persist through evidence/DB allowlist."""
+    sources = [
+        {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64},
+        {"source_uri": "docs/architecture/decision.md", "source_digest": "sha256:" + "c" * 64},
+    ]
+    pre_embed = {
+        "chosen": "opencode/hy3-free",
+        "pack_digest": "sha256:abc123",
+        "pack_state": "hydrated",
+        "included": sources,
+        "included_sources": sources,
+        "omissions": [],
+        "empty_intersection": False,
+        "exclusions": [],
+        "admitted": ["opencode/hy3-free"],
+        "active_providers": ["opencode"],
+        "free_tier_providers": ["opencode"],
+        "selected_because": "selected because Core chooser ranked only the live set",
+    }
+    decision = RoutingDecision(
+        model="opencode/hy3-free",
+        provider="omniroute",
+        tier=2,
+        reason="free∩active ∩ fresh-passport ∩ confirmed admitted opencode/hy3-free",
+        decision="selected",
+        request_id="req-pack-state-db-1",
+        safety_flags=["cheap_path_context_pack"],
+        admit_receipt=pre_embed,
+    )
+    routing = build_routing_decision_contract(
+        decision,
+        task="summarize this",
+        criticality="low",
+        features={"stream": False},
+        correlation_id="corr-pack-state-db-1",
+        occurred_at="2026-09-18T00:00:00Z",
+    )
+    started = build_outcome_event(routing, event_type="start", outcome="unknown")
+    store = DurableEvidenceStore(":memory:")
+    key = store.put(ExplainEvidence(routing, started), scope="default")
+    stored = store.find(evidence_id=key, scope="default")
+    assert stored is not None
+    receipt = stored.routing_decision.receipt
+    assert receipt is not None
+    assert receipt["pack_state"] == "hydrated"
+    assert receipt["included_sources"] == sources
+    assert receipt["included"] == sources
+    assert stored.routing_decision.selected_route["pack_state"] == "hydrated"
+
+
+def test_included_migrates_to_included_sources_on_evidence_embed() -> None:
+    """Legacy #517 `included` fills receipt-facing `included_sources`."""
+    included = [
+        {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64}
+    ]
+    decision = RoutingDecision(
+        model="openrouter/free-model",
+        provider="omniroute",
+        tier=2,
+        reason="free-tier ∩ active provider admitted openrouter/free-model",
+        decision="selected",
+        request_id="req-included-migrate-1",
+        safety_flags=["cheap_path_context_pack"],
+        admit_receipt={
+            "chosen": "openrouter/free-model",
+            "pack_digest": "sha256:abc123",
+            "pack_state": "empty",
+            "included": included,
+            "omissions": [],
+            "empty_intersection": False,
+            "exclusions": [],
+        },
+    )
+    payload = build_routing_decision_contract(
+        decision,
+        task="summarize this",
+        criticality="low",
+        features={"stream": False},
+        correlation_id="corr-included-migrate-1",
+        occurred_at="2026-09-18T00:00:00Z",
+    ).to_dict()
+    assert payload["receipt"]["included_sources"] == included
+    assert payload["receipt"]["included"] == included
+    assert payload["receipt"]["pack_state"] == "empty"

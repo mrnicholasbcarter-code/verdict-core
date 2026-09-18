@@ -40,20 +40,22 @@ _CANDIDATE_FIELDS = frozenset(
 _MAX_EVIDENCE_TEXT = 256
 # Compact cheap-path admit receipt fields stamped onto the evidence contract
 # (#510 pack_digest/omissions; #514 chooser selected_because / ownership;
-# BOD-99 included source_uri digests).
+# BOD-99 included source_uri digests; BOD-106 pack_state + included_sources).
 # Intentionally allowlisted so serve persistence cannot silently drop chooser
 # fields the in-memory admit receipt already carries.
 _COMPACT_ADMIT_RECEIPT_FIELDS: tuple[str, ...] = (
     "chosen",
     "pack_digest",
+    "pack_state",
     "included",
+    "included_sources",
     "omissions",
     "empty_intersection",
     "exclusions",
     "selected_because",
     "chooser_ranked_admitted",
 )
-_COMPACT_ADMIT_LIST_FIELDS = frozenset({"omissions", "exclusions", "included"})
+_COMPACT_ADMIT_LIST_FIELDS = frozenset({"omissions", "exclusions", "included", "included_sources"})
 # Snapshot arrays stay off the compact evidence receipt (size / privacy).
 _ADMIT_RECEIPT_SNAPSHOT_FIELDS = frozenset(
     {"admitted", "active_providers", "free_tier_providers", "passport", "confirm"}
@@ -247,6 +249,9 @@ def _compact_admit_receipt(admit: dict[str, Any], *, safety_flags: Iterable[str]
             compact[key] = redact_text(value) if isinstance(value, str) else value
     if "chooser_ranked_admitted" in set(safety_flags):
         compact["chooser_ranked_admitted"] = True
+    sources = compact.get("included_sources") or compact.get("included") or []
+    compact["included"] = _copy_json(sources)
+    compact["included_sources"] = _copy_json(sources)
     return compact
 
 
@@ -339,18 +344,20 @@ def build_routing_decision_contract(
         payload["selected_route"]["actual_route"] = _copy_json(actual_route)
     if attempted_routes is not None:
         payload["selected_route"]["attempted_routes"] = _copy_json(attempted_routes)
-    # Cheap-path admit receipt (#508/#510/#514/#BOD-99): pack_digest, included
-    # provenance, omissions, and chooser selected_because must survive into
-    # VERDICT_RECEIPTS_DB / explain evidence. CLI already carries admit_receipt
-    # on RoutingDecision; the serve path only persists this contract.
+    # Cheap-path admit receipt (#508/#510/#514/#BOD-99/#BOD-106): pack_digest,
+    # pack_state, included_sources, omissions, and chooser selected_because must
+    # survive into VERDICT_RECEIPTS_DB / explain evidence. CLI already carries
+    # admit_receipt on RoutingDecision; the serve path only persists this contract.
     if isinstance(decision.admit_receipt, dict) and decision.admit_receipt:
         admit = _copy_json(decision.admit_receipt)
         compact = _compact_admit_receipt(admit, safety_flags=decision.safety_flags)
         payload["receipt"] = compact
-        # Mirror digest / chooser ownership onto selected_route for operators
-        # grepping decision JSON (same pattern as #510 pack_digest).
+        # Mirror digest / pack_state / chooser ownership onto selected_route for
+        # operators grepping decision JSON (same pattern as #510 pack_digest).
         if compact.get("pack_digest"):
             payload["selected_route"]["pack_digest"] = compact.get("pack_digest")
+        if compact.get("pack_state"):
+            payload["selected_route"]["pack_state"] = compact.get("pack_state")
         if compact.get("selected_because"):
             payload["selected_route"]["selected_because"] = compact.get("selected_because")
         if compact.get("chooser_ranked_admitted"):
