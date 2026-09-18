@@ -548,6 +548,7 @@ class IntelligenceService:
             pack_state=context_pack.pack_state,
             task_complete=context_pack.task_complete,
             required_sources=context_pack.required_sources,
+            prompt_digest=context_pack.prompt_digest,
         )
         if not context_pack.task_complete:
             # BOD-110: the compiled pack no longer carries the task instructions.
@@ -613,6 +614,7 @@ class IntelligenceService:
             safety_flags=safety_flags,
             admit_receipt=receipt.to_dict(),
             execute_preview=preview,
+            context_pack_prompt=packed_task,
         )
 
     def _resolve_confirm_transport(

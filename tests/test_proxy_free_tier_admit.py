@@ -297,3 +297,116 @@ def test_build_intelligence_disables_inline_execute_offload(monkeypatch) -> None
     assert svc.execute_offload is False
     assert svc.managed_backend_status == "not_used"
     assert not hasattr(svc, "ruflo_command")
+
+
+# --- BOD-111: hydrated pack is injected into the actual upstream request ------
+
+
+def _admit_service_with_workspace(snapshot, *, passports, confirm_transport, workspace_root):
+    from verdict.context_hydrate import DEFAULT_CONTEXT_ROOTS
+
+    return IntelligenceService(
+        primary_model="anthropic/claude-3-opus-20240229",
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=snapshot,
+        execute_offload=False,
+        passports=passports,
+        confirm_transport=confirm_transport,
+        admit_now=datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc),
+        context_roots=DEFAULT_CONTEXT_ROOTS,
+        workspace_root=workspace_root,
+        mcp_root="",
+    )
+
+
+def _free_snapshot():
+    return _snapshot(
+        catalog=[
+            _catalog_row("openrouter/nvidia/nemotron-3-nano-30b-a3b:free"),
+            _catalog_row("anthropic/claude-3-opus-20240229", "claude"),
+        ],
+        free_tier=[
+            {
+                "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
+                "provider": "openrouter",
+                "freeType": "recurring-daily",
+            }
+        ],
+        providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
+    )
+
+
+def test_hydrated_pack_is_injected_and_digest_matches_receipt(monkeypatch, tmp_path) -> None:
+    import hashlib
+
+    (tmp_path / "docs" / "adr").mkdir(parents=True)
+    (tmp_path / "docs" / "architecture").mkdir(parents=True)
+    (tmp_path / "docs" / "adr" / "ADR-001-ledger.md").write_text(
+        "# ADR-001 Ledger\n\nADR-TOKEN-7731 governs the ledger.\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "architecture" / "overview.md").write_text(
+        "# Architecture\n\nARCH-TOKEN-9920 single control plane.\n", encoding="utf-8"
+    )
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    transport = RecordingTransport()
+    _configure(
+        monkeypatch,
+        transport,
+        _admit_service_with_workspace(
+            _free_snapshot(),
+            passports={identity: _fresh_passport(identity)},
+            confirm_transport=_ok_confirm_transport(),
+            workspace_root=tmp_path,
+        ),
+    )
+    user_messages = [{"role": "user", "content": "summarize the ledger ADR"}]
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "auto", "messages": user_messages, "criticality": "low"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-verdict-pack-injected"] == "true"
+    assert response.headers["x-verdict-pack-state"] == "hydrated"
+    forwarded = transport.requests[0]["body"]
+    assert forwarded["messages"][1:] == user_messages, "client messages are never rewritten"
+    envelope = forwarded["messages"][0]
+    assert envelope["role"] == "system"
+    assert "ADR-TOKEN-7731" in envelope["content"]
+    assert "ARCH-TOKEN-9920" in envelope["content"]
+    assert "summarize the ledger ADR" in envelope["content"]
+    digest = f"sha256:{hashlib.sha256(envelope['content'].encode('utf-8')).hexdigest()}"
+    assert response.headers["x-verdict-pack-digest"] == digest
+    # Verdict-local controls still never reach the upstream.
+    assert "criticality" not in forwarded
+
+
+def test_empty_pack_is_not_claimed_as_injected(monkeypatch, tmp_path) -> None:
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    transport = RecordingTransport()
+    _configure(
+        monkeypatch,
+        transport,
+        _admit_service_with_workspace(
+            _free_snapshot(),
+            passports={identity: _fresh_passport(identity)},
+            confirm_transport=_ok_confirm_transport(),
+            workspace_root=tmp_path,  # nothing to hydrate from
+        ),
+    )
+    user_messages = [{"role": "user", "content": "summarize this paragraph"}]
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "auto", "messages": user_messages, "criticality": "low"},
+        )
+    assert response.status_code == 200
+    assert response.headers["x-verdict-pack-injected"] == "false"
+    assert response.headers["x-verdict-pack-state"] == "empty"
+    assert "x-verdict-pack-digest" not in response.headers
+    assert transport.requests[0]["body"]["messages"] == user_messages

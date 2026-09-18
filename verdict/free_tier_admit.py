@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -172,10 +173,16 @@ class CheapPathContextPack:
         included = {item.source_uri for item in self.included}
         return tuple(uri for uri in self.required_sources if uri not in included)
 
+    @property
+    def prompt_digest(self) -> str:
+        """sha256 of the compiled prompt text — what an upstream actually receives."""
+        return f"sha256:{sha256(self.compiled_prompt.encode('utf-8')).hexdigest()}"
+
     def to_dict(self) -> dict[str, Any]:
         sources = [item.to_dict() for item in self.included]
         return {
             "pack_digest": self.pack_digest,
+            "prompt_digest": self.prompt_digest,
             "pack_id": self.pack_id,
             "plan_digest": self.plan_digest,
             "pack_state": self.pack_state,
@@ -318,8 +325,6 @@ def _failed_cheap_path_pack(
     task: str, *, candidate_id: str, token_budget: int
 ) -> CheapPathContextPack:
     """Stamp ``pack_state=failed`` without blocking execute or inventing sources."""
-    from hashlib import sha256
-
     from verdict.context_hydrate import CHEAP_PATH_EPOCH
 
     task_slot = ContextPackSlot(
@@ -390,6 +395,7 @@ class FreeTierAdmitReceipt:
     paid_admitted: tuple[str, ...] = ()
     task_complete: bool | None = None
     required_sources: tuple[str, ...] = ()
+    prompt_digest: str | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -411,6 +417,7 @@ class FreeTierAdmitReceipt:
             "active_providers": list(self.active_providers),
             "free_tier_providers": list(self.free_tier_providers),
             "pack_digest": self.pack_digest,
+            "prompt_digest": self.prompt_digest,
             "pack_state": self.pack_state,
             "task_complete": self.task_complete,
             "required_sources": list(self.required_sources),
