@@ -115,6 +115,8 @@ def _admit_service(snapshot, *, passports=None, confirm_transport=None) -> Intel
         passports=passports if passports is not None else {},
         confirm_transport=confirm_transport,
         admit_now=datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc),
+        context_roots=(),
+        mcp_root="",
     )
 
 

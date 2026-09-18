@@ -514,6 +514,7 @@ def _build_intelligence() -> IntelligenceService:
         # Serve path: free∩active admit selects; UpstreamProxy executes once.
         # CLI ``verdict route`` keeps its own execute_offload default.
         execute_offload=False,
+        workspace_root=os.getenv("VERDICT_WORKSPACE_ROOT") or os.getcwd(),
     )
 
 
