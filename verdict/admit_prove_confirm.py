@@ -341,6 +341,7 @@ def _finalize(
         free_tier_providers=receipt.free_tier_providers,
         pack_digest=receipt.pack_digest,
         omissions=receipt.omissions,
+        included=receipt.included,
         passport=tuple(passport_evidence),
         confirm=tuple(confirm_evidence),
     )

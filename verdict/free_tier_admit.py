@@ -45,6 +45,9 @@ NO_ELIGIBLE_TARGET = "no_eligible_target"
 FAIL_CLOSED_REASON = "fail_closed — empty free∩active ∩ fresh-passport ∩ confirmed intersection"
 
 
+DEFAULT_CHEAP_PATH_TOKEN_BUDGET = 16_384
+
+
 class LiveAdmitError(RuntimeError):
     """Raised when a required OmniRoute admit surface cannot be read."""
 
@@ -117,6 +120,17 @@ class NamedOmission:
 
 
 @dataclass(frozen=True)
+class IncludedProvenance:
+    """A compiled cheap-path unit that landed in the pack, with provenance."""
+
+    source_uri: str
+    source_digest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"source_uri": self.source_uri, "source_digest": self.source_digest}
+
+
+@dataclass(frozen=True)
 class CheapPathContextPack:
     """Compiled task pack used on the free∩active offload path."""
 
@@ -126,12 +140,14 @@ class CheapPathContextPack:
     pack_id: str
     plan_digest: str
     units: tuple[ContextUnit, ...] = ()
+    included: tuple[IncludedProvenance, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "pack_digest": self.pack_digest,
             "pack_id": self.pack_id,
             "plan_digest": self.plan_digest,
+            "included": [item.to_dict() for item in self.included],
             "omissions": [item.to_dict() for item in self.omissions],
         }
 
@@ -140,7 +156,7 @@ def build_cheap_path_context_pack(
     task: str,
     *,
     candidate_id: str,
-    token_budget: int = 4096,
+    token_budget: int = DEFAULT_CHEAP_PATH_TOKEN_BUDGET,
     extra_slots: Sequence[ContextPackSlot] | None = None,
     workspace_root: Path | str | None = None,
     workspace_roots: Sequence[str] | None = None,
@@ -150,6 +166,8 @@ def build_cheap_path_context_pack(
 
     Gather real workspace units (repo docs / architecture / ADRs / project docs,
     plus MCP only when a source is configured), then compile under budget.
+    High-value roots (ADR, architecture, README) are packed first so a normal
+    thesis set is included rather than truncated as ``input_budget_exhausted``.
     Missing sources become named omissions — never invented content. An empty
     gather still compiles the task and does not block execute.
     """
@@ -160,7 +178,11 @@ def build_cheap_path_context_pack(
     if isinstance(token_budget, bool) or not isinstance(token_budget, int) or token_budget < 1:
         raise ValueError("token_budget must be a positive integer")
 
-    from verdict.context_hydrate import CHEAP_PATH_EPOCH, gather_cheap_path_units
+    from verdict.context_hydrate import (
+        CHEAP_PATH_EPOCH,
+        cheap_path_unit_sort_key,
+        gather_cheap_path_units,
+    )
 
     task_slot = ContextPackSlot(
         slot_type="instructions",
@@ -189,14 +211,21 @@ def build_cheap_path_context_pack(
         token_budget=token_budget,
         created_at=CHEAP_PATH_EPOCH,
     )
-    pack = ContextPackCompiler().compile_units(tuple(units), plan)
+    pack = ContextPackCompiler().compile_units(
+        tuple(units), plan, unit_sort_key=cheap_path_unit_sort_key(units, token_budget=token_budget)
+    )
     compiler_omissions = tuple(
-        NamedOmission(name=decision.unit_id, reason=decision.reason)
+        NamedOmission(name=_omission_name(decision), reason=decision.reason)
         for decision in pack.decisions
         if decision.action == "exclude"
     )
     gather_omissions = tuple(
         NamedOmission(name=item.name, reason=item.reason) for item in gathered.omissions
+    )
+    included = tuple(
+        IncludedProvenance(source_uri=unit.source_uri, source_digest=unit.source_digest)
+        for unit in pack.units
+        if _is_workspace_provenance(unit.source_uri)
     )
     return CheapPathContextPack(
         pack_digest=pack.digest,
@@ -205,7 +234,19 @@ def build_cheap_path_context_pack(
         pack_id=pack.pack_id,
         plan_digest=pack.plan_digest or plan.digest,
         units=pack.units,
+        included=included,
     )
+
+
+def _is_workspace_provenance(source_uri: str) -> bool:
+    return bool(source_uri) and not source_uri.startswith("urn:")
+
+
+def _omission_name(decision: Any) -> str:
+    ref = getattr(decision, "reversible_ref", None) or ""
+    if ref and not str(ref).startswith("urn:"):
+        return str(ref)
+    return str(decision.unit_id)
 
 
 @dataclass(frozen=True)
@@ -218,6 +259,7 @@ class FreeTierAdmitReceipt:
     free_tier_providers: tuple[str, ...]
     pack_digest: str | None = None
     omissions: tuple[NamedOmission, ...] = ()
+    included: tuple[IncludedProvenance, ...] = ()
     passport: tuple[Any, ...] = ()
     confirm: tuple[Any, ...] = ()
     selected_because: str | None = None
@@ -231,6 +273,7 @@ class FreeTierAdmitReceipt:
             "active_providers": list(self.active_providers),
             "free_tier_providers": list(self.free_tier_providers),
             "pack_digest": self.pack_digest,
+            "included": [item.to_dict() for item in self.included],
             "omissions": [item.to_dict() for item in self.omissions],
             "passport": [
                 item.to_dict() if hasattr(item, "to_dict") else item for item in self.passport
@@ -709,8 +752,10 @@ __all__ = [
     "REASON_OPAQUE_AUTO",
     "CatalogIdentity",
     "CheapPathContextPack",
+    "DEFAULT_CHEAP_PATH_TOKEN_BUDGET",
     "FreeTierAdmitReceipt",
     "FreeTierModel",
+    "IncludedProvenance",
     "LiveAdmitError",
     "NamedDrop",
     "NamedOmission",

@@ -444,6 +444,7 @@ class IntelligenceService:
                 free_tier_providers=receipt.free_tier_providers,
                 pack_digest=receipt.pack_digest,
                 omissions=receipt.omissions,
+                included=receipt.included,
                 passport=receipt.passport,
                 confirm=receipt.confirm,
                 selected_because=receipt.selected_because,
@@ -531,7 +532,10 @@ class IntelligenceService:
             mcp_root=self.mcp_root,
         )
         receipt = replace(
-            receipt, pack_digest=context_pack.pack_digest, omissions=context_pack.omissions
+            receipt,
+            pack_digest=context_pack.pack_digest,
+            omissions=context_pack.omissions,
+            included=context_pack.included,
         )
         packed_task = context_pack.compiled_prompt
         should_execute = self.execute_offload
