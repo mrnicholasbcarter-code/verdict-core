@@ -385,9 +385,7 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
                 1 for item in tasks if item["withhold_reason"] == "quality_miss"
             ),
             "cache_hit_count": sum(
-                1
-                for item in tasks
-                if item["withhold_reason"] == "cache_hit_is_not_model_savings"
+                1 for item in tasks if item["withhold_reason"] == "cache_hit_is_not_model_savings"
             ),
             "measured_cost_delta_usd": round(
                 sum(float(item["deltas"]["cost_usd"]) for item in tasks), 6
@@ -399,8 +397,7 @@ def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -
         "provenance": {
             "cost": "X-OmniRoute-Response-Cost / Tokens-In/Out headers or matching receipt fields",
             "cache_hit": (
-                "cache hit on cheaper or frontier models is labeled and "
-                "never sold as model savings"
+                "cache hit on cheaper or frontier models is labeled and never sold as model savings"
             ),
             "quality": "quality miss is reported and never sold as savings",
             "completed_with": (
