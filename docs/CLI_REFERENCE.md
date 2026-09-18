@@ -108,17 +108,17 @@ verdict policy <subcommand> [args]
 
 ---
 
-### `verdict dashboard` — Launch/manage verdict-ui
+### `verdict ui` — Launch the Streamlit analytics dashboard
 
 ```bash
-verdict dashboard [flags]
+verdict ui
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--port <n>` | Port (default: 8501) |
-| `--host <ip>` | Host (default: localhost) |
-| `--no-browser` | Don't open browser |
+Requires the dashboard extras (`pip install "verdict-core[dashboard]"` or
+`"verdict-core[all]"`). The dashboard reads `verdict-decisions.jsonl` from the
+current directory. Spend is shown only from observed cost/token receipts on
+decisions; any per-model price assumption is an opt-in view explicitly
+labelled *synthetic* and is never presented as measured spend.
 
 ---
 

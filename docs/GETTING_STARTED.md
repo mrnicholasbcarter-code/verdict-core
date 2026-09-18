@@ -6,11 +6,14 @@
 # Using pipx (recommended)
 pipx install verdict-core
 
-# Or with server extras
+# Or with server extras (`verdict serve` needs FastAPI + uvicorn)
 pipx install 'verdict-core[server]'
 
-# Or with dashboard extras (Streamlit + Plotly)
-pipx install 'verdict-core[server,dashboard]'
+# Or with dashboard extras (`verdict ui` needs Streamlit + Plotly + pandas)
+pipx install 'verdict-core[dashboard]'
+
+# Or everything `verdict serve` / `verdict ui` need
+pipx install 'verdict-core[all]'
 
 # Or universal installer
 curl -fsSL https://raw.githubusercontent.com/verdict/verdict-core/main/install.sh | bash

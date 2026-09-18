@@ -18,7 +18,8 @@ try:
     from starlette.responses import JSONResponse, Response, StreamingResponse
 except ImportError as exc:
     raise ImportError(
-        "FastAPI is required for the web server mode. Install with `pip install verdict[server]`"
+        "FastAPI is required for the web server mode. Install with "
+        '`pip install "verdict-core[server]"` (or `verdict-core[all]`)'
     ) from exc
 
 from verdict.availability import OmniRouteAvailabilityAdapter

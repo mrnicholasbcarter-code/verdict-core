@@ -20,6 +20,11 @@ from typing import Any, cast
 
 from verdict.classifier import classify
 from verdict.context_hydrate import DEFAULT_CONTEXT_ROOTS
+from verdict.fixture_paths import (
+    default_fixture_path,
+    resolve_fixture_path,
+    resolve_fixture_workspace,
+)
 from verdict.free_tier_admit import OmniRouteAdmitSnapshot, snapshot_from_payloads
 from verdict.intelligence import IntelligenceService
 from verdict.metadata.records import (
@@ -34,10 +39,7 @@ from verdict.model_passports import ModelPassport
 from verdict.models import ProviderConfig
 from verdict.pack_state import savings_unlocked
 
-_PACKAGE_ROOT = Path(__file__).parent.parent
-DEFAULT_SAVINGS_FIXTURE_PATH = (
-    _PACKAGE_ROOT / "benchmarks" / "fixtures" / "legit_paired_savings.json"
-)
+DEFAULT_SAVINGS_FIXTURE_PATH = default_fixture_path("benchmarks/fixtures/legit_paired_savings.json")
 TALK_TRACK = "we measure"
 SAVINGS_REPORT_SCHEMA_VERSION = "1"
 COST_HEADER = "x-omniroute-response-cost"
@@ -334,14 +336,12 @@ def _withhold_reason(
 
 def run_savings_bench(fixture_path: str | Path = DEFAULT_SAVINGS_FIXTURE_PATH) -> dict[str, Any]:
     """Run the offline paired legit-task savings bench."""
-    path = Path(fixture_path)
-    if not path.is_absolute() and not path.exists():
-        path = _PACKAGE_ROOT / fixture_path
+    path = resolve_fixture_path(fixture_path)
     fixture = cast(dict[str, Any], json.loads(path.read_text()))
     _validate_savings_fixture(fixture)
-    workspace = Path(str(fixture.get("workspace") or "benchmarks/fixtures/legit_workspace"))
-    if not workspace.is_absolute():
-        workspace = (_PACKAGE_ROOT / workspace).resolve()
+    workspace = resolve_fixture_workspace(
+        path, str(fixture.get("workspace") or "benchmarks/fixtures/legit_workspace")
+    )
     service = _service(workspace)
     tasks: list[dict[str, Any]] = []
     for task in cast(list[dict[str, Any]], fixture["tasks"]):
