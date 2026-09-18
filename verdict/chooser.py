@@ -10,13 +10,16 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from verdict.autodev_routing import CandidateEvidence, RouteSelection, select_eligible_route
 from verdict.availability import AvailabilityState
+from verdict.free_tier_admit import FreeTierAdmitReceipt
+from verdict.gateway_adapters import AdapterRouteIdentity
+from verdict.model_passports import ModelPassport
 
 POLICY_VERSION = "chooser-policy/v1"
 RANKER_VERSION = "chooser-ranker/v1"
@@ -48,6 +51,11 @@ _PROTECTED_CLASS_SCORE = {
 }
 
 _NO_ELIGIBLE = "no_eligible_target"
+# Project last-confirm latency onto the existing quality_score headroom input.
+# 0ms → 100% observed headroom; 5000ms+ → 0%. UNKNOWN stays None (never invented).
+_CONFIRM_LATENCY_HEADROOM_MS = 5000.0
+_CHEAP_PATH_GATEWAY = "omniroute"
+_CHEAP_PATH_SOURCE = "admit-prove-confirm"
 
 
 class ChooserError(ValueError):
@@ -132,6 +140,33 @@ def _quality_score(evidence: CandidateEvidence) -> float:
     if evidence.availability is AvailabilityState.ELIGIBLE:
         score += 0.05
     return score
+
+
+def headroom_from_confirm_latency(latency_ms: float | None) -> float | None:
+    """Project observed confirm latency onto the existing headroom quality input.
+
+    Does not invent a score: missing latency stays UNKNOWN so it cannot outrank
+    an observed prove/confirm signal.
+    """
+    if latency_ms is None or isinstance(latency_ms, bool):
+        return None
+    try:
+        latency = float(latency_ms)
+    except (TypeError, ValueError):
+        return None
+    if latency < 0.0:
+        return None
+    return max(0.0, min(100.0, 100.0 * (1.0 - latency / _CONFIRM_LATENCY_HEADROOM_MS)))
+
+
+def _confirm_latency_from_evidence(evidence: CandidateEvidence) -> float | None:
+    raw = evidence.capabilities.get("confirm_latency_ms")
+    if raw in {None, "", "unknown"}:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def production_ranker(
@@ -233,21 +268,36 @@ def _digest(evidence: CandidateEvidence) -> str:
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _because(selected: CandidateEvidence, *, task_class: str, explicit_model: str | None) -> str:
+def _because(
+    selected: CandidateEvidence,
+    *,
+    task_class: str,
+    explicit_model: str | None,
+    fallback_count: int = 0,
+    confirm_latency_ms: float | None = None,
+) -> str:
     pool = resource_class_from_evidence(selected)
     if explicit_model and _matches_explicit(selected, explicit_model):
-        return (
+        text = (
             f"selected because explicit model {explicit_model} is eligible "
             f"and beats automatic ranking"
         )
-    if task_class_is_protected(task_class):
-        return (
+    elif task_class_is_protected(task_class):
+        text = (
             f"selected because protected task class {task_class} prefers eligible {pool} capacity"
         )
-    return (
-        f"selected because ordinary task class {task_class} prefers eligible "
-        f"{pool} capacity over more expensive classes"
-    )
+    else:
+        text = (
+            f"selected because ordinary task class {task_class} prefers eligible "
+            f"{pool} capacity over more expensive classes"
+        )
+    if fallback_count > 0:
+        text += f"; beat {fallback_count} other admitted candidate(s)"
+        if confirm_latency_ms is not None:
+            text += f" on last-confirm latency {confirm_latency_ms:.1f}ms"
+        else:
+            text += " on observed prove quality"
+    return text
 
 
 def _receipt_from_selection(
@@ -300,6 +350,7 @@ def _receipt_from_selection(
         "explicit_model_wins": bool(explicit_model),
         "quality": "observed_headroom_then_quota_unknown_never_promoted",
     }
+    confirm_latency = _confirm_latency_from_evidence(selected)
     return ChooseReceipt(
         task_class=task_class,
         protected=task_class_is_protected(task_class),
@@ -314,7 +365,13 @@ def _receipt_from_selection(
         ranker_version=RANKER_VERSION,
         explicit_model=explicit_model,
         reason="selected",
-        selected_because=_because(selected, task_class=task_class, explicit_model=explicit_model),
+        selected_because=_because(
+            selected,
+            task_class=task_class,
+            explicit_model=explicit_model,
+            fallback_count=len(fallbacks),
+            confirm_latency_ms=confirm_latency,
+        ),
     )
 
 
@@ -406,6 +463,241 @@ def choose_route(
         candidates_by_alias=by_alias,
         candidates_by_model=by_model,
     )
+
+
+def rank_admitted_candidates(
+    candidates: Iterable[CandidateEvidence],
+    *,
+    task_class: str = "implementation",
+    explicit_model: str | None = None,
+) -> ChooseReceipt:
+    """Rank an already-admitted set. Never reintroduces identities not in ``candidates``."""
+    candidate_list = list(candidates)
+    if not candidate_list:
+        raise ChooserError(_NO_ELIGIBLE, "no admitted candidates to rank")
+    ranker = production_ranker(task_class, explicit_model)
+    selected = max(candidate_list, key=ranker)
+    ranked = sorted(candidate_list, key=ranker, reverse=True)
+    selection = RouteSelection(
+        selected=selected,
+        exclusion_reasons=(),
+        admitted_ids=tuple(candidate.route.model_id for candidate in candidate_list),
+        ranked_ids=tuple(candidate.route.model_id for candidate in ranked),
+    )
+    by_alias = {candidate.requested_alias: candidate for candidate in candidate_list}
+    by_model: dict[str, list[CandidateEvidence]] = {}
+    for candidate in candidate_list:
+        by_model.setdefault(candidate.route.model_id, []).append(candidate)
+    return _receipt_from_selection(
+        selection,
+        task_class=task_class,
+        explicit_model=explicit_model,
+        extra_exclusions=(),
+        candidates_by_alias=by_alias,
+        candidates_by_model=by_model,
+    )
+
+
+def _provider_of(identity_id: str) -> str:
+    if "/" in identity_id:
+        return identity_id.split("/", 1)[0]
+    return identity_id or "unknown"
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _quota_from_passport(
+    *, expires_at: datetime | None, qualified_at: datetime | None, now: datetime
+) -> float | None:
+    if expires_at is None or qualified_at is None:
+        return None
+    total = (expires_at - qualified_at).total_seconds()
+    if total <= 0:
+        return None
+    remaining = (expires_at - now).total_seconds()
+    return max(0.0, min(100.0, 100.0 * remaining / total))
+
+
+def cheap_path_candidate(
+    identity_id: str,
+    *,
+    confirm_latency_ms: float | None = None,
+    passport_latency_p95: float | None = None,
+    passport_expires_at: datetime | None = None,
+    passport_qualified_at: datetime | None = None,
+    now: datetime | None = None,
+    provider: str | None = None,
+) -> CandidateEvidence:
+    """Build chooser evidence for one already-admitted cheap-path identity.
+
+    Hard signals: last-confirm latency/ok (caller only passes confirmed ids) and
+    prove-at-rest passport remaining life. Soft OmniRoute health-matrix /
+    model-latency-stats / assess buckets are not wired, so they are unused.
+    """
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    latency = confirm_latency_ms if confirm_latency_ms is not None else passport_latency_p95
+    freshness = None
+    if passport_qualified_at is not None:
+        freshness = max(0.0, (current - passport_qualified_at).total_seconds())
+    capabilities: dict[str, str] = {"resource_class": FREE, "chat": "observed"}
+    if latency is not None:
+        capabilities["confirm_latency_ms"] = f"{float(latency):.3f}"
+    resolved_provider = provider or _provider_of(identity_id)
+    return CandidateEvidence(
+        requested_alias=identity_id,
+        route=AdapterRouteIdentity(
+            gateway_id=_CHEAP_PATH_GATEWAY,
+            route_id=identity_id,
+            provider=resolved_provider,
+            model_id=identity_id,
+            protocol="openai.chat",
+        ),
+        availability=AvailabilityState.ELIGIBLE,
+        capabilities=capabilities,
+        observed_at=current,
+        ttl_seconds=60,
+        source=_CHEAP_PATH_SOURCE,
+        freshness_seconds=freshness,
+        quota_remaining_pct=_quota_from_passport(
+            expires_at=passport_expires_at, qualified_at=passport_qualified_at, now=current
+        ),
+        headroom_pct=headroom_from_confirm_latency(latency),
+    )
+
+
+def _confirm_row(receipt: FreeTierAdmitReceipt, identity_id: str) -> Any:
+    for row in receipt.confirm:
+        row_id = getattr(row, "identity_id", None)
+        if row_id is None and isinstance(row, Mapping):
+            row_id = row.get("identity_id")
+        if row_id == identity_id:
+            return row
+    return None
+
+
+def _passport_row(receipt: FreeTierAdmitReceipt, identity_id: str) -> Any:
+    for row in receipt.passport:
+        row_id = getattr(row, "identity_id", None)
+        if row_id is None and isinstance(row, Mapping):
+            row_id = row.get("identity_id")
+        if row_id == identity_id:
+            return row
+    return None
+
+
+def _row_latency_ms(row: Any) -> float | None:
+    if row is None:
+        return None
+    raw = getattr(row, "latency_ms", None)
+    if raw is None and isinstance(row, Mapping):
+        raw = row.get("latency_ms")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value < 0.0:
+        return None
+    return value
+
+
+def _row_datetime(row: Any, field: str) -> datetime | None:
+    if row is None:
+        return None
+    raw = getattr(row, field, None)
+    if raw is None and isinstance(row, Mapping):
+        raw = row.get(field)
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, str):
+        return _parse_iso(raw)
+    return None
+
+
+def _cheap_path_because(
+    selected_id: str,
+    *,
+    admitted: Sequence[str],
+    confirm_latency_ms: float | None,
+    choose_receipt: ChooseReceipt,
+) -> str:
+    others = [item for item in admitted if item != selected_id]
+    lead = choose_receipt.selected_because.rstrip(".")
+    extra = [
+        "Core chooser ranked only the live passport∩confirm admitted set",
+        "named drops were not re-admitted",
+    ]
+    if others:
+        extra.insert(1, f"beat {len(others)} other admitted candidate(s)")
+    if confirm_latency_ms is not None:
+        extra.append(f"last-confirm latency {confirm_latency_ms:.1f}ms")
+    return f"{lead}; " + "; ".join(extra)
+
+
+def apply_best_of_admitted(
+    receipt: FreeTierAdmitReceipt,
+    *,
+    passports: Mapping[str, ModelPassport] | None = None,
+    now: datetime | None = None,
+    task_class: str = "implementation",
+) -> FreeTierAdmitReceipt:
+    """Rank only identities already admitted by free∩active ∩ passport ∩ confirm.
+
+    Named drops are never re-admitted. OmniRoute does not own the pick.
+    """
+    dropped = {item.model_id for item in receipt.exclusions}
+    admitted = [identity for identity in receipt.admitted if identity not in dropped]
+    if not admitted:
+        return replace(receipt, chosen=None, empty_intersection=True, selected_because=None)
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    loaded = passports or {}
+    candidates: list[CandidateEvidence] = []
+    for identity_id in admitted:
+        confirm = _confirm_row(receipt, identity_id)
+        passport_ev = _passport_row(receipt, identity_id)
+        passport = loaded.get(identity_id)
+        candidates.append(
+            cheap_path_candidate(
+                identity_id,
+                confirm_latency_ms=_row_latency_ms(confirm),
+                passport_latency_p95=None if passport is None else passport.latency_p95,
+                passport_expires_at=_row_datetime(passport_ev, "expires_at")
+                or (None if passport is None else passport.expires_at),
+                passport_qualified_at=_row_datetime(passport_ev, "qualified_at")
+                or (None if passport is None else passport.qualified_at),
+                now=current,
+                provider=_provider_of(identity_id),
+            )
+        )
+    try:
+        choose_receipt = rank_admitted_candidates(candidates, task_class=task_class)
+    except ChooserError:
+        return replace(receipt, chosen=None, empty_intersection=True, selected_because=None)
+
+    selected = None if choose_receipt.selected is None else choose_receipt.selected.get("model")
+    if selected is None or selected not in admitted:
+        return replace(receipt, chosen=None, empty_intersection=True, selected_because=None)
+
+    because = _cheap_path_because(
+        selected,
+        admitted=admitted,
+        confirm_latency_ms=_row_latency_ms(_confirm_row(receipt, selected)),
+        choose_receipt=choose_receipt,
+    )
+    return replace(receipt, chosen=selected, empty_intersection=False, selected_because=because)
 
 
 def human_summary(receipt: ChooseReceipt) -> str:

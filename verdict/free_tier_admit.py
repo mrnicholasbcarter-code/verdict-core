@@ -208,6 +208,7 @@ class FreeTierAdmitReceipt:
     omissions: tuple[NamedOmission, ...] = ()
     passport: tuple[Any, ...] = ()
     confirm: tuple[Any, ...] = ()
+    selected_because: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -225,6 +226,7 @@ class FreeTierAdmitReceipt:
             "confirm": [
                 item.to_dict() if hasattr(item, "to_dict") else item for item in self.confirm
             ],
+            "selected_because": self.selected_because,
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
