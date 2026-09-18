@@ -54,8 +54,22 @@ _COMPACT_ADMIT_RECEIPT_FIELDS: tuple[str, ...] = (
     "exclusions",
     "selected_because",
     "chooser_ranked_admitted",
+    "task_class",
+    "class_reasons",
+    "requirements",
+    "capability_matches",
 )
-_COMPACT_ADMIT_LIST_FIELDS = frozenset({"omissions", "exclusions", "included", "included_sources"})
+_COMPACT_ADMIT_LIST_FIELDS = frozenset(
+    {
+        "omissions",
+        "exclusions",
+        "included",
+        "included_sources",
+        "class_reasons",
+        "requirements",
+        "capability_matches",
+    }
+)
 # Snapshot arrays stay off the compact evidence receipt (size / privacy).
 _ADMIT_RECEIPT_SNAPSHOT_FIELDS = frozenset(
     {"admitted", "active_providers", "free_tier_providers", "passport", "confirm"}

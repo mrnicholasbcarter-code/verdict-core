@@ -10,7 +10,7 @@ drop before select. Empty intersection fails closed.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -332,17 +332,12 @@ def _finalize(
     chosen = None
     if admitted_sorted:
         chosen = sorted(admitted_sorted, key=lambda item: _choose_sort(item, healthy))[0]
-    return FreeTierAdmitReceipt(
+    return replace(
+        receipt,
         admitted=admitted_sorted,
         exclusions=tuple(exclusions),
         chosen=chosen,
         empty_intersection=chosen is None,
-        active_providers=receipt.active_providers,
-        free_tier_providers=receipt.free_tier_providers,
-        pack_digest=receipt.pack_digest,
-        omissions=receipt.omissions,
-        included=receipt.included,
-        pack_state=receipt.pack_state,
         passport=tuple(passport_evidence),
         confirm=tuple(confirm_evidence),
     )

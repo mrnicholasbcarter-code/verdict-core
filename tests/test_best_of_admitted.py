@@ -234,7 +234,7 @@ def test_intelligence_cheap_path_chooser_owns_pick_and_stamps_receipt() -> None:
     assert isinstance(because, str) and because.startswith("selected because")
     assert "chooser" in because.lower() or "admitted" in because
     assert "chooser_ranked_admitted" in decision.safety_flags
-    assert decision.degraded_mode is True
+    assert decision.degraded_mode is False
     named = {item["reason"] for item in decision.admit_receipt["exclusions"]}
     assert "not_free_tier" in named or NAMED_DROP not in admitted
 
