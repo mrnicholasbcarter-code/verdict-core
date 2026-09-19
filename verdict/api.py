@@ -656,7 +656,19 @@ async def _route_with_intelligence(
 ) -> Any:
     if intelligence_instance is None:
         raise HTTPException(status_code=503, detail="Intelligence service not initialized")
-    return await intelligence_instance.route(task, criticality=criticality, context=context)
+    # BOD-127: default API serve path requires BOD-104 authority (no silent invent).
+    from verdict.serve_path import CONTEXT_REQUIRE_AUTHORITY
+
+    merged = dict(context or {})
+    merged.setdefault(CONTEXT_REQUIRE_AUTHORITY, True)
+    try:
+        return await intelligence_instance.route(task, criticality=criticality, context=merged)
+    except Exception as exc:
+        from verdict.execution_path import ExecutionPathError
+
+        if isinstance(exc, ExecutionPathError):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise
 
 
 @app.post("/v1/route")

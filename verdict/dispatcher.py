@@ -6,11 +6,15 @@ caller may use the returned assignment with a separately verified executor.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from verdict.contracts import AvailabilitySnapshot, RuntimeCandidate
+from verdict.execution_path import ExecutionPathDecision, ExecutionPathError
+from verdict.serve_path import match_candidate_to_selected_route
+from verdict.session_economics import ConcreteRoute
 
 
 class SubagentExecutor(Protocol):
@@ -129,7 +133,12 @@ def _capabilities(candidate: RuntimeCandidate) -> frozenset[str]:
 
 
 class SwarmDispatcher:
-    """Select the least-cost candidate using only a caller-supplied snapshot."""
+    """Bind an already-authorized runtime — never invent model/route selection.
+
+    BOD-104 owns strategy/route selection. BOD-67 owns dispatch. This module
+    only validates eligibility of a caller-supplied ``authorized_runtime_id``
+    against an availability snapshot (planning contract; no provider invoke).
+    """
 
     def __init__(self, policy: DispatchPolicy | None = None, *, clock: Any = None) -> None:
         self.policy = policy or DispatchPolicy()
@@ -142,7 +151,15 @@ class SwarmDispatcher:
         policy: DispatchPolicy | None = None,
         dry_run: bool = True,
         now: datetime | None = None,
+        selected_route: ConcreteRoute | Mapping[str, Any] | ExecutionPathDecision | None = None,
+        authorized_runtime_id: str | None = None,
     ) -> DispatchResult:
+        """Bind an authorized selected_route; never least-cost invent.
+
+        Fail closed when neither ``selected_route`` nor ``authorized_runtime_id``
+        is supplied — swarm must not autonomously select models (BOD-127).
+        """
+
         active = policy or self.policy
         snap = _as_snapshot(snapshot)
         current = now or (self.clock() if self.clock else datetime.now(timezone.utc))
@@ -162,58 +179,61 @@ class SwarmDispatcher:
                     candidate.runtime_id, False, _cost(candidate), 0, tuple(reasons)
                 )
             )
+
+        if selected_route is None and (
+            not authorized_runtime_id or not str(authorized_runtime_id).strip()
+        ):
+            return DispatchResult(
+                None,
+                tuple(explanations),
+                tuple(eligible),
+                dry_run,
+                "missing_authorized_selected_route",
+            )
+
         if not eligible:
             return DispatchResult(None, tuple(explanations), (), dry_run, "no eligible candidates")
 
+        if selected_route is not None:
+            # Raises ExecutionPathError when no eligible candidate matches —
+            # never invent an alternate (BOD-127).
+            authorized = match_candidate_to_selected_route(eligible, selected_route)
+        else:
+            authorized = next((c for c in eligible if c.runtime_id == authorized_runtime_id), None)
+            if authorized is None:
+                raise ExecutionPathError(
+                    f"no candidate matches authorized_runtime_id={authorized_runtime_id!r}; "
+                    "swarm must not invent an alternate"
+                )
+
+        # Soft verification/escalation depth tracking only — never swap route.
         verification = active.verification_required
-        verified = [
-            c for c in eligible if active.verification_capability.lower() in _capabilities(c)
-        ]
         depth = 0
-        pool = eligible
-        if verification and verified:
-            pool = verified
-            if len(verified) < len(eligible):
-                if not active.allow_escalation or active.max_escalation_depth < 1:
-                    return DispatchResult(
-                        None,
-                        tuple(explanations),
-                        tuple(eligible),
-                        dry_run,
-                        "verification escalation denied",
-                    )
-                depth = 1
-        elif verification and not verified:
+        if verification and active.verification_capability.lower() not in _capabilities(authorized):
             if not active.allow_escalation or active.max_escalation_depth < 1:
                 return DispatchResult(
                     None,
                     tuple(explanations),
                     tuple(eligible),
                     dry_run,
-                    "verification escalation denied",
+                    "authorized_runtime_missing_verification_capability",
                 )
             depth = 1
-            required = active.required_capabilities | {active.verification_capability.lower()}
-            pool = [c for c in eligible if required <= _capabilities(c)]
-            if not pool:
-                return DispatchResult(
-                    None,
-                    tuple(explanations),
-                    tuple(eligible),
-                    dry_run,
-                    "no verification-capable candidate",
-                )
-        chosen = min(
-            pool, key=lambda c: (_cost(c) if _cost(c) is not None else float("inf"), c.runtime_id)
-        )
-        chosen_cost = _cost(chosen) or 0.0
+
+        chosen_cost = _cost(authorized) or 0.0
         for index, item in enumerate(explanations):
-            if item.runtime_id == chosen.runtime_id:
+            if item.runtime_id == authorized.runtime_id:
                 explanations[index] = AssignmentExplanation(
-                    item.runtime_id, True, item.cost, depth, ("least cost eligible",)
+                    item.runtime_id, True, item.cost, depth, ("authorized_selected_route",)
                 )
         return DispatchResult(
-            chosen, tuple(explanations), tuple(pool), dry_run, "selected", chosen_cost, depth
+            authorized,
+            tuple(explanations),
+            tuple(eligible),
+            dry_run,
+            "selected_route",
+            chosen_cost,
+            depth,
         )
 
     def _snapshot_reason(self, snapshot: AvailabilitySnapshot, now: datetime) -> tuple[str, ...]:

@@ -13,6 +13,11 @@ fails closed — the caller must not treat frontier-primary fallback as success.
 
 Serve cheap-path callers then intersect this receipt with fresh prove-at-rest
 passports and a budgeted confirm probe (see ``verdict.admit_prove_confirm``).
+
+BOD-127: this module is a candidate *feed* only. ``chosen`` is an
+advisory ranking of admitted free∩active identities — never production
+serve-path strategy authority. Serve path must consume
+``optimize_execution_path`` / ``ExecutionPathDecision``.
 """
 
 from __future__ import annotations

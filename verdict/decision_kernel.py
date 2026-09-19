@@ -24,6 +24,10 @@ Design invariants (spec/003-deterministic-decision-kernel):
 The outcome (``accepted``/``degraded``/``denied``) is the aggregate of the
 per-candidate eligibility verdicts -- there is no separate named-policy gate
 (FR-007).
+
+BOD-127: DecisionKernel remains an eligibility/advisory facade. Production
+serve strategy authority is ``optimize_execution_path`` (BOD-104); AdaptiveRanker
+inside this facade must not be treated as a competing route inventor.
 """
 
 from __future__ import annotations

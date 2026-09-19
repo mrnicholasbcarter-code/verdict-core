@@ -84,7 +84,12 @@ def _to_failure_entry(
 
 
 class FailoverEngine:
-    """Selects an equivalent qualified ``ModelPassport`` after a failure."""
+    """Applies BOD-55-authorized replacements after a transient failure.
+
+    Must not independently invent fallback models/providers (BOD-127). When an
+    ``execution_path_decision`` is bound, recovery must go through
+    ``BoundedRecoveryController`` / ``apply_bounded_recovery``.
+    """
 
     def __init__(
         self,
@@ -147,13 +152,29 @@ class FailoverEngine:
         message: str = "",
         status_code: int | None = None,
         candidates: Sequence[ModelPassport] = (),
+        authorized_replacements: Sequence[ModelPassport] | None = None,
+        execution_path_decision: Any | None = None,
+        require_bounded_recovery: bool = False,
     ) -> ExecutionSession:
-        """Quarantine, rebind, and resume the session at the failed step.
+        """Quarantine, rebind, and resume using a BOD-55-authorized replacement.
 
         Returns the same session mutated in place and checkpointed, so callers
         can either keep the reference or use the returned value after a
         resume-from-disk round trip.
+
+        BOD-127: when an ``execution_path_decision`` is bound (or
+        ``require_bounded_recovery`` is set), FailoverEngine must not
+        independently invent a replacement — callers use
+        ``apply_bounded_recovery`` / ``BoundedRecoveryController`` with
+        BOD-104-prequalified stronger routes.
         """
+        if execution_path_decision is not None or require_bounded_recovery:
+            from verdict.serve_path import failover_must_defer_to_bounded_recovery
+
+            failover_must_defer_to_bounded_recovery(
+                execution_path_decision=execution_path_decision, require_bounded_recovery=True
+            )
+
         if not self.is_transient_failure(error_class, status_code):
             raise FailoverEngineError(
                 f"failure {error_class} (status {status_code}) is not transient; "
@@ -170,12 +191,27 @@ class FailoverEngine:
                 f"step {failed_step!r} exceeded {self.max_failovers_per_step} failovers"
             )
 
+        # Prefer explicit authorized_replacements; legacy ``candidates`` is a
+        # compatibility feed treated as prequalified only when EP is unbound.
+        pool: Sequence[ModelPassport]
+        if authorized_replacements is not None:
+            pool = authorized_replacements
+        elif candidates:
+            pool = candidates
+        else:
+            raise FailoverEngineError(
+                "BOD-55/BOD-104 authorized_replacements required; "
+                "FailoverEngine cannot invent replacements"
+            )
+        if not pool:
+            raise FailoverEngineError(
+                "BOD-55/BOD-104 authorized_replacements required; "
+                "FailoverEngine cannot invent replacements"
+            )
+
         requirements = _recalculate_requirements(session, failed_step)
-        replacement = self._select_equivalent(
-            failed_key=failed_key,
-            current=session.model_id,
-            requirements=requirements,
-            candidates=candidates,
+        replacement = self._select_authorized(
+            failed_key=failed_key, requirements=requirements, authorized=pool
         )
 
         now = _now()
@@ -214,30 +250,32 @@ class FailoverEngine:
 
     # ------------------------------------------------------------------ internals
 
-    def _select_equivalent(
+    def _select_authorized(
         self,
         *,
         failed_key: str,
-        current: str | None,
         requirements: CandidateRequirements,
-        candidates: Sequence[ModelPassport],
+        authorized: Sequence[ModelPassport],
     ) -> ModelPassport:
-        eligible = [p for p in candidates if self._passport_satisfies(p, requirements)]
-        eligible = [
-            p
-            for p in eligible
-            if p.key != failed_key
-            and p.availability_state not in {"quarantined", "denied"}
-            and not self.is_quarantined(p.key)
-        ]
-        if not eligible:
-            raise FailoverEngineError(
-                f"no equivalent qualified model for {failed_key!r} satisfying "
-                f"capabilities {sorted(requirements.required)}"
-            )
-        # Deterministic pick: prefer the same provider (fewer contract changes),
-        # then lexicographic key.
-        return min(eligible, key=lambda p: (p.provider != failed_key.split("/", 1)[0], p.key))
+        """First authorized passport that still satisfies requirements.
+
+        Order is caller-defined (BOD-55 / BOD-104). Never re-rank by provider
+        preference or lexicographic key.
+        """
+        for passport in authorized:
+            if passport.key == failed_key:
+                continue
+            if passport.availability_state in {"quarantined", "denied"}:
+                continue
+            if self.is_quarantined(passport.key):
+                continue
+            if not self._passport_satisfies(passport, requirements):
+                continue
+            return passport
+        raise FailoverEngineError(
+            f"no equivalent qualified model for {failed_key!r} satisfying "
+            f"capabilities {sorted(requirements.required)}"
+        )
 
     @staticmethod
     def _passport_satisfies(passport: ModelPassport, requirements: CandidateRequirements) -> bool:

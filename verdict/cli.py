@@ -650,13 +650,32 @@ def _build_route_gate(allow_offline: bool = False) -> Gate:
 
 
 def cmd_route(
-    task: str, criticality: str, terse: bool = False, allow_offline: bool = False
+    task: str,
+    criticality: str,
+    terse: bool = False,
+    allow_offline: bool = False,
+    allow_legacy_selector: bool | None = None,
 ) -> None:
-    """Route a single task."""
+    """Route a single task.
+
+    BOD-127: default CLI serve requires a BOD-104 ``ExecutionPathDecision``
+    (or ``execution_path_request``) in context. Pass
+    ``allow_legacy_selector=True`` only as an explicit migration escape
+    (offline demos / unit fixtures) — never silent.
+    """
+    from verdict.serve_path import CONTEXT_ALLOW_LEGACY, CONTEXT_REQUIRE_AUTHORITY
+
     gate = _build_route_gate(allow_offline=allow_offline)
+    if allow_legacy_selector is None:
+        allow_legacy_selector = bool(allow_offline)
+    context: dict[str, object] = (
+        {CONTEXT_ALLOW_LEGACY: True}
+        if allow_legacy_selector
+        else {CONTEXT_REQUIRE_AUTHORITY: True}
+    )
 
     if terse:
-        dec = gate.route(task, criticality)
+        dec = gate.route(task, criticality, context=context)
         print(dec.model)
         return
 
@@ -666,7 +685,7 @@ def cmd_route(
         else "[bold green]Evaluating network & heuristics..."
     )
     with console.status(status_label, spinner="dots"):
-        dec, selection = gate.route_with_strategy(task, criticality)
+        dec, selection = gate.route_with_strategy(task, criticality, context=context)
 
     tier_colors = {0: "red", 1: "magenta", 2: "yellow", 3: "green"}
     t_color = tier_colors.get(dec.tier, "white")
@@ -2012,9 +2031,21 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         console.print("  [green]✓ System is healthy! All checks passed.[/green]")
 
 
-def cmd_run(task: str, criticality: str, terse: bool = False) -> None:
+def cmd_run(
+    task: str,
+    criticality: str,
+    terse: bool = False,
+    allow_offline: bool = False,
+    allow_legacy_selector: bool | None = None,
+) -> None:
     """Run a single task through the routing gate (alias of route)."""
-    cmd_route(task, criticality, terse)
+    cmd_route(
+        task,
+        criticality,
+        terse,
+        allow_offline=allow_offline,
+        allow_legacy_selector=allow_legacy_selector,
+    )
 
 
 def cmd_plan(output_json: bool = False) -> None:
@@ -2803,6 +2834,14 @@ def main() -> None:
         action="store_true",
         help="Decide from the static catalog only — no network discovery or probes",
     )
+    route_p.add_argument(
+        "--allow-legacy-selector",
+        action="store_true",
+        help=(
+            "BOD-127 migration escape: allow pre-BOD-104 selectors. "
+            "Production serve must omit this and supply execution_path_decision."
+        ),
+    )
 
     compare_p = subparsers.add_parser(
         "compare", help="Compare a DIRECT frontier call vs the Verdict route for one task"
@@ -3467,7 +3506,13 @@ def main() -> None:
                 apply=bool(args.apply),
             )
     elif args.command == "route":
-        cmd_route(args.task, args.criticality, args.terse)
+        cmd_route(
+            args.task,
+            args.criticality,
+            args.terse,
+            allow_offline=getattr(args, "allow_offline", False),
+            allow_legacy_selector=getattr(args, "allow_legacy_selector", None),
+        )
     elif args.command == "autodev":
         if args.autodev_action == "packet":
             if args.packet_action == "shadow":

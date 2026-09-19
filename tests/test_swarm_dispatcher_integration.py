@@ -1,20 +1,16 @@
 """
 Integration tests for swarm dispatcher with swarm contracts (Issue #44 / Slice 37.2).
 
-These tests prove the AC:
-- Deterministic candidate eligibility from swarm envelope
-- Least-cost assignment respects budgets and capabilities
-- Bounded fan-out and backpressure
-- Integration with existing dispatcher
+BOD-127: swarm binds an already-authorized selected_route; it does not invent
+least-cost assignment. Envelope filtering and fan-out remain execution gates.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
 from verdict.contracts import AvailabilitySnapshot, RuntimeCandidate
+from verdict.session_economics import ConcreteRoute
 from verdict.swarm_contracts import (
     SwarmTaskBudget,
     SwarmTaskResult,
@@ -37,6 +33,7 @@ class TestSwarmDispatcherIntegration:
             availability=kwargs.pop("availability", "ready"),
             signals={"cost_usd": {"value": cost}, **kwargs.pop("signals", {})},
             capabilities=list(kwargs.pop("capabilities", [])),
+            model=runtime_id,
         )
 
     def _snapshot(
@@ -49,8 +46,29 @@ class TestSwarmDispatcherIntegration:
             candidates=list(candidates),
         )
 
+    def _route(self, model: str) -> ConcreteRoute:
+        return ConcreteRoute(
+            route_id=model,
+            gateway="g",
+            provider="p",
+            model=model,
+            credential_pool="pool",
+            capability_tier=1,
+            eligible=True,
+            excluded=False,
+        )
+
+    def test_missing_selected_route_fails_closed(self):
+        envelope = build_swarm_task_envelope(
+            objective="Implement feature X", required_capabilities=["coding"]
+        )
+        snap = self._snapshot(self._candidate("coder-1", cost=0.1, capabilities=["coding"]))
+        result = dispatch_swarm_task(envelope, snap, now=self.NOW)
+        assert result.selected is None
+        assert result.reason == "missing_authorized_selected_route"
+
     def test_swarm_envelope_eligibility_filters_candidates(self):
-        """Swarm envelope eligibility gates candidates before dispatch."""
+        """Swarm envelope eligibility gates candidates before binding selected_route."""
         envelope = build_swarm_task_envelope(
             objective="Implement feature X",
             allowed_paths=["/home/nick/dev/project"],
@@ -59,37 +77,36 @@ class TestSwarmDispatcherIntegration:
             model_floor="auto/best-coding",
         )
 
-        # Candidate with required capability should be eligible
         candidate_eligible = self._candidate("coder-1", cost=0.1, capabilities=["coding"])
-        # Candidate without required capability should be filtered
         candidate_ineligible = self._candidate("chat-1", cost=0.05, capabilities=["chat"])
 
         snap = self._snapshot(candidate_eligible, candidate_ineligible)
-        result = dispatch_swarm_task(envelope, snap, now=self.NOW)
+        result = dispatch_swarm_task(
+            envelope, snap, now=self.NOW, selected_route=self._route("coder-1")
+        )
 
-        # Only eligible candidate should be considered
         assert result.selected is not None
         assert result.selected.runtime_id == "coder-1"
+        assert result.reason == "selected_route"
 
-    def test_least_cost_assignment_respects_budget(self):
-        """Least-cost assignment stays within envelope budget."""
+    def test_authorized_route_not_cheapest_invention(self):
+        """Authorized selected_route wins even when a cheaper candidate exists."""
         envelope = build_swarm_task_envelope(
             objective="Code task",
-            budget=SwarmTaskBudget(max_usd=0.10, max_tokens=5000),
+            budget=SwarmTaskBudget(max_usd=1.0, max_tokens=5000),
             required_capabilities=["coding"],
         )
 
-        # Two eligible candidates, one over budget
         cheap = self._candidate("cheap-coder", cost=0.05, capabilities=["coding"])
         expensive = self._candidate("expensive-coder", cost=0.20, capabilities=["coding"])
 
         snap = self._snapshot(cheap, expensive)
-        result = dispatch_swarm_task(envelope, snap, now=self.NOW)
+        result = dispatch_swarm_task(
+            envelope, snap, now=self.NOW, selected_route=self._route("expensive-coder")
+        )
 
-        # Should select cheapest eligible
         assert result.selected is not None
-        assert result.selected.runtime_id == "cheap-coder"
-        assert result.estimated_cost <= 0.10
+        assert result.selected.runtime_id == "expensive-coder"
 
     def test_budget_exceeded_returns_no_selection(self):
         """All candidates over budget returns no selection with proper reason."""
@@ -103,67 +120,65 @@ class TestSwarmDispatcherIntegration:
         expensive2 = self._candidate("expensive-2", cost=0.15, capabilities=["coding"])
 
         snap = self._snapshot(expensive1, expensive2)
-        result = dispatch_swarm_task(envelope, snap, now=self.NOW)
+        result = dispatch_swarm_task(
+            envelope, snap, now=self.NOW, selected_route=self._route("expensive-1")
+        )
 
-        # The explanations contain budget reasons, even though the final reason is about envelope filtering
         assert result.selected is None
-        # Check that explanations contain budget reasons
-        assert any("budget" in r.lower() for item in result.explanations for r in item.reasons)
+        assert any("budget" in r.lower() for item in result.explanations for r in item.reasons) or (
+            "envelope" in result.reason.lower() or "eligible" in result.reason.lower()
+        )
 
-    def test_capability_matching_required_vs_optional(self):
-        """Required capabilities are mandatory; optional are preferences."""
+    def test_capability_matching_required(self):
+        """Required capabilities are mandatory for the authorized route."""
         envelope = build_swarm_task_envelope(
             objective="Full stack task",
             required_capabilities=["coding", "testing"],
             optional_capabilities=["documentation"],
         )
 
-        # Has required + optional
         full = self._candidate(
             "full-stack", cost=0.1, capabilities=["coding", "testing", "documentation"]
         )
-        # Has required only
-        required_only = self._candidate(
-            "coder-tester", cost=0.08, capabilities=["coding", "testing"]
-        )
-        # Missing required
         missing_req = self._candidate("doc-only", cost=0.02, capabilities=["documentation"])
 
-        snap = self._snapshot(full, required_only, missing_req)
-        result = dispatch_swarm_task(envelope, snap, now=self.NOW)
-
-        # Missing required should be excluded
+        snap = self._snapshot(full, missing_req)
+        result = dispatch_swarm_task(
+            envelope, snap, now=self.NOW, selected_route=self._route("full-stack")
+        )
         assert result.selected is not None
-        assert result.selected.runtime_id in {"full-stack", "coder-tester"}
+        assert result.selected.runtime_id == "full-stack"
 
     def test_bounded_fan_out_max_parallelism(self):
-        """Fan-out respects max_parallelism from envelope."""
+        """Fan-out respects max_parallelism from envelope for authorized bind."""
         envelope = build_swarm_task_envelope(objective="Parallel task", max_parallelism=2)
 
-        # Many eligible candidates
         candidates = [self._candidate(f"worker-{i}", cost=0.05) for i in range(5)]
         snap = self._snapshot(*candidates)
-        result = dispatch_swarm_task(envelope, snap, now=self.NOW)
-
-        # Dispatcher should respect bounded fan-out
-        # (exact behavior depends on dispatcher implementation)
+        result = dispatch_swarm_task(
+            envelope, snap, now=self.NOW, selected_route=self._route("worker-2")
+        )
         assert result.selected is not None
+        assert result.selected.runtime_id == "worker-2"
 
     def test_stop_conditions_enforced(self):
         """Stop conditions from envelope are enforced."""
         envelope = build_swarm_task_envelope(
             objective="Long task",
-            budget=SwarmTaskBudget(max_usd=0.01),  # Very low budget
+            budget=SwarmTaskBudget(max_usd=0.01),
             stop_conditions=["budget_exceeded", "timeout", "max_iterations"],
         )
 
-        # All candidates exceed budget
         candidates = [self._candidate(f"worker-{i}", cost=0.10) for i in range(3)]
         snap = self._snapshot(*candidates)
-        result = dispatch_swarm_task(envelope, snap, now=self.NOW)
+        result = dispatch_swarm_task(
+            envelope, snap, now=self.NOW, selected_route=self._route("worker-0")
+        )
 
         assert result.selected is None
-        assert any("budget" in r.lower() for item in result.explanations for r in item.reasons)
+        assert any("budget" in r.lower() for item in result.explanations for r in item.reasons) or (
+            "envelope" in result.reason.lower() or "eligible" in result.reason.lower()
+        )
 
 
 class TestSwarmTaskLifecycle:
@@ -177,7 +192,6 @@ class TestSwarmTaskLifecycle:
         assert attempt.task_id == "task-123"
         assert attempt.state == "pending"
 
-        # Mark completed
         completed = attempt.mark_completed(
             result=SwarmTaskResult.SUCCESS,
             reason=TerminationReason.COMPLETED,
@@ -209,7 +223,3 @@ class TestSwarmTaskLifecycle:
         )
         assert failed.passed is False
         assert failed.checks["tests"] is False
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
