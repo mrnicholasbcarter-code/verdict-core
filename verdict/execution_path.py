@@ -162,6 +162,13 @@ class ExecutionPathOffer:
             )
         if not self.expected_cost.strategy_id:
             raise ExecutionPathError("expected_cost.strategy_id must be non-empty")
+        # Cost receipt must be bound to this concrete route (prevent foreign costs).
+        sid = self.expected_cost.strategy_id
+        if self.route.route_id not in sid and self.route.model not in sid:
+            raise ExecutionPathError(
+                "expected_cost.strategy_id must reference route_id or model "
+                f"({sid!r} vs {self.route.route_id!r}/{self.route.model!r})"
+            )
         object.__setattr__(self, "evidence_conflicts", tuple(self.evidence_conflicts))
 
     @property
@@ -323,6 +330,8 @@ def _qualify_offer(
     plan_slice = offer.assistance_plan.task_slice
     if plan_slice.slice_id != task_slice.slice_id:
         return "evidence_unbound_task_slice_id"
+    if plan_slice.objective != task_slice.objective:
+        return "evidence_unbound_task_objective"
     if plan_slice.proof_criteria != task_slice.proof_criteria:
         return "evidence_unbound_proof_criteria"
     if plan_slice.acceptance_criteria != task_slice.acceptance_criteria:
@@ -351,11 +360,18 @@ def _qualify_offer(
         and not offer.assistance_plan.intrinsic_sufficient
     ):
         return "not_assisted_sufficient"
-    if offer.budget_receipt is not None and not offer.budget_receipt.fits:
-        return "budget_dropped_mandatory_context"
+    if offer.budget_receipt is not None:
+        if not offer.budget_receipt.fits:
+            return "budget_dropped_mandatory_context"
+        if any(om.priority == "mandatory" for om in offer.budget_receipt.omitted):
+            return "budget_omitted_mandatory_context"
     freshness = (offer.certification_freshness or "unknown").lower()
-    if freshness == "stale":
-        return "stale_runtime_certification"
+    if freshness in {"stale", "unknown", ""}:
+        return (
+            "stale_runtime_certification"
+            if freshness == "stale"
+            else "unknown_certification_freshness_not_optimistic"
+        )
     if offer.certification_state in _UNHEALTHY_CERT:
         return f"certification_{offer.certification_state.value}_not_optimistic"
     if (
@@ -365,8 +381,6 @@ def _qualify_offer(
         return "degraded_certification_requires_explicit_policy"
     if offer.certification_state is None:
         return "certification_required_for_qualify"
-    if freshness == "unknown" and offer.certification_state is CertificationState.UNKNOWN:
-        return "unknown_health_never_capable"
     if offer.expected_cost.has_unknown_cash:
         return "unknown_price_not_treated_as_free"
     if not offer.expected_cost.qualified:
@@ -406,9 +420,55 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             unknowns.append(f"conflict:{conflict}")
 
     hard_ids = set(request.hard_excluded_ids)
+    shortlist_ids: frozenset[str] | None = None
     if request.pool_receipt is not None:
         for drop in request.pool_receipt.hard_drops:
             hard_ids.add(drop.route_id)
+        shortlist_ids = frozenset(entry.route_id for entry in request.pool_receipt.shortlist)
+
+    # Authoritative session BLOCKED vetoes all dispatch.
+    if (
+        request.session_decision is not None
+        and request.session_decision.authoritative
+        and request.session_decision.decision == "BLOCKED"
+    ):
+        rejected.append(
+            RejectedStrategy(
+                strategy="blocked",
+                candidate_id=request.session_decision.selected_route_id,
+                reason="authoritative_session_blocked",
+            )
+        )
+        blocked_session_payload: dict[str, Any] = {
+            "trajectory_id": request.trajectory_id,
+            "selected_strategy": "blocked",
+            "reason": "authoritative_session_blocked",
+            "when": _format_datetime(when),
+        }
+        return ExecutionPathDecision(
+            selected_strategy="blocked",
+            selected_candidate_id=None,
+            selected_route=None,
+            rejected=tuple(rejected),
+            assistance_plan_id=None,
+            assistance_plan_digest=None,
+            expected_cost=None,
+            expected_cost_terms=(),
+            budget_state=None,
+            tools_surface=(),
+            session_decision=request.session_decision.to_dict(),
+            recovery_policy=_recovery_policy_dict(request.recovery_bounds),
+            verification_requirements=tuple(request.task_slice.proof_criteria),
+            assumptions=tuple(dict.fromkeys([*assumptions, "authoritative_session_blocked"])),
+            unknowns=tuple(dict.fromkeys(unknowns)),
+            freshness={"decision_at": _format_datetime(when)},
+            evidence_digests={},
+            why_selected="blocked_authoritative_session",
+            decision_digest=_digest(blocked_session_payload),
+            trajectory_id=request.trajectory_id,
+            task_slice_id=request.task_slice.slice_id,
+            strategy_selection_reason="authoritative_session_blocked",
+        )
 
     # Session preference cannot restore hard-excluded or EC-incapable candidates.
     session_pref: str | None = None
@@ -426,6 +486,16 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             session_pref = None
 
     for offer in request.offers:
+        if shortlist_ids is not None and offer.candidate_id not in shortlist_ids:
+            rejected.append(
+                RejectedStrategy(
+                    strategy=offer.strategy,
+                    candidate_id=offer.candidate_id,
+                    reason="not_in_candidate_pool_shortlist",
+                    expected_cost_strategy_id=offer.expected_cost.strategy_id,
+                )
+            )
+            continue
         reason = _qualify_offer(
             offer,
             task_slice=request.task_slice,

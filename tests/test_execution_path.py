@@ -1994,3 +1994,131 @@ def test_ep_intelligence_rejects_client_dict_decision() -> None:
         raise AssertionError("expected ExecutionPathError")
     except ExecutionPathError as exc:
         assert "ExecutionPathDecision" in str(exc)
+
+
+def test_ep_authoritative_session_blocked_vetoes_dispatch() -> None:
+    cheap = _route("cheap-1")
+    plan = _plan(candidate_id="cheap-1")
+    session = SessionRouteDecision(
+        decision="BLOCKED",
+        selected_route_id=None,
+        selected_route=None,
+        reason="quota_exhausted",
+        override_reasons=(),
+        terms=(),
+        assumptions=(),
+        freshness={},
+        stay_ev=None,
+        switch_ev=None,
+        mode=DecisionMode.AUTHORITATIVE,
+        authoritative=True,
+        would_decide="BLOCKED",
+        alternatives=(),
+    )
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=(
+                _offer(
+                    strategy="direct_cheap",
+                    route=cheap,
+                    plan=plan,
+                    expected=_cost(
+                        "direct_cheap:cheap-1",
+                        assistance=plan.assistance_cost,
+                        execution_tokens=1_000,
+                        is_free=True,
+                    ),
+                    is_cheap=True,
+                ),
+            ),
+            session_decision=session,
+            now=NOW,
+        )
+    )
+    assert decision.selected_strategy == "blocked"
+    assert any("authoritative_session_blocked" in r.reason for r in decision.rejected)
+
+
+def test_ep_unknown_cert_freshness_not_optimistic() -> None:
+    cheap = _route("cheap-1")
+    plan = _plan(candidate_id="cheap-1")
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=(
+                _offer(
+                    strategy="direct_cheap",
+                    route=cheap,
+                    plan=plan,
+                    expected=_cost(
+                        "direct_cheap:cheap-1",
+                        assistance=plan.assistance_cost,
+                        execution_tokens=1_000,
+                        is_free=True,
+                    ),
+                    cert_state=CertificationState.READY,
+                    cert_freshness="unknown",
+                    is_cheap=True,
+                ),
+            ),
+            now=NOW,
+        )
+    )
+    assert decision.selected_strategy == "blocked"
+    assert any("unknown_certification_freshness" in r.reason for r in decision.rejected)
+
+
+def test_ep_mandatory_budget_omission_rejected_even_if_fits() -> None:
+    cheap = _route("cheap-1")
+    plan = _plan(candidate_id="cheap-1")
+    receipt = BudgetReceipt(
+        candidate_id="cheap-1",
+        context_limit=8000,
+        usable_input_budget=4000,
+        reserved_total=500,
+        used_tokens=100,
+        fits=True,
+        included=(),
+        omitted=(
+            BudgetOmission(
+                unit_id="proof-1",
+                source_class="proof_verification",
+                reason="dropped",
+                priority="mandatory",
+                token_count=200,
+                token_count_kind="exact",
+                value_score=1.0,
+                provenance_uri="fixture://proof-1",
+            ),
+        ),
+        per_source_used={},
+        account_digest="sha256:account",
+        digest="sha256:budget-omit",
+    )
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=(
+                _offer(
+                    strategy="direct_cheap",
+                    route=cheap,
+                    plan=plan,
+                    expected=_cost(
+                        "direct_cheap:cheap-1",
+                        assistance=plan.assistance_cost,
+                        execution_tokens=1_000,
+                        is_free=True,
+                    ),
+                    budget=receipt,
+                    is_cheap=True,
+                ),
+            ),
+            now=NOW,
+        )
+    )
+    assert decision.selected_strategy == "blocked"
+    assert any("budget_omitted_mandatory" in r.reason for r in decision.rejected)
