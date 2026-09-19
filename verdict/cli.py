@@ -35,6 +35,7 @@ from verdict.harness_prime import DEFAULT_BASE_URL as PRIME_HARNESS_DEFAULT_BASE
 from verdict.harness_prime import DEFAULT_TOKEN_ENV as PRIME_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.models import ModelInfo, ProviderConfig, TaskSpec
 from verdict.patch_executor import DEFAULT_BASE_URL
+from verdict.terminal_ui import TerminalUI
 
 console = Console()
 
@@ -103,20 +104,8 @@ def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None =
 
 
 def select_from_list(prompt_text: str, options: list[str], default: str | None = None) -> str:
-    """Prompt the user to select from a list of options."""
-    for i, opt in enumerate(options, 1):
-        console.print(f"  [green]{i}[/]: {opt}")
-    while True:
-        ask_val = Prompt.ask(prompt_text, default=default)
-        choice = str(ask_val).strip() if ask_val is not None else ""
-        try:
-            val = int(choice)
-            if 1 <= val <= len(options):
-                return options[val - 1]
-        except ValueError:
-            if choice in options:
-                return choice
-        console.print("[yellow]Invalid choice. Please enter the number or the exact name.[/]")
+    """Render a consistent, accessible numbered selector."""
+    return TerminalUI(console).select(prompt_text, options, default=default)
 
 
 PROVIDER_MAPPING = {
@@ -156,8 +145,8 @@ def cmd_setup(
         BootstrapMode,
         BootstrapScope,
         rollback_bootstrap_actions,
-        run_bootstrap,
     )
+    from verdict.setup_presentation import present_bootstrap
 
     if rollback:
         resolved = Path(state_dir) if state_dir else Path.home() / ".verdict" / "bootstrap"
@@ -207,7 +196,9 @@ def cmd_setup(
             )
             return
         mode = BootstrapMode.RECOMMENDED if recommended else BootstrapMode.PLAN
-        report = run_bootstrap(
+        report = present_bootstrap(
+            console=console,
+            output_json=output_json,
             mode=mode,
             scope=BootstrapScope(scope),
             non_interactive=True,
@@ -217,26 +208,12 @@ def cmd_setup(
         if output_json:
             print(json.dumps(report_payload, indent=2, sort_keys=True))
             return
-        plan = report_payload["plan"]
-        stages = report_payload["stages"]
-        if not isinstance(plan, dict) or not isinstance(stages, list):
-            raise TypeError("bootstrap report must include plan dict and stages list")
-        print("Verdict capability bootstrap (dry-run; no changes made)")
-        print(f"Plan: {plan['plan_id']}")
-        print(f"Scope: {scope}  Mode: {mode.value}")
-        for stage in stages:
-            if not isinstance(stage, dict):
-                continue
-            print(f"- [{stage['stage']}] {stage['status']}: {stage['summary']}")
-        actions = plan.get("actions", [])
-        if isinstance(actions, list):
-            for action in actions:
-                if isinstance(action, dict):
-                    print(f"  action: {action['description']}")
         return
 
     if apply:
-        report = run_bootstrap(
+        report = present_bootstrap(
+            console=console,
+            output_json=output_json,
             mode=BootstrapMode.APPLY,
             scope=BootstrapScope(scope),
             non_interactive=non_interactive,
@@ -250,11 +227,6 @@ def cmd_setup(
             raise TypeError("bootstrap report must include stages list")
         if output_json:
             print(json.dumps(apply_payload, indent=2, sort_keys=True))
-        else:
-            for stage in stages:
-                if not isinstance(stage, dict):
-                    continue
-                print(f"- [{stage['stage']}] {stage['status']}: {stage['summary']}")
         consent_blocked = any(
             isinstance(stage, dict)
             and stage.get("stage") == "consent"
@@ -265,6 +237,8 @@ def cmd_setup(
             raise SystemExit(2)
         return
 
+    ui = TerminalUI(console)
+
     # If an existing config file is present but not valid YAML, warn before
     # prompting the user for anything and let them opt out of overwriting it.
     existing_config_dir = os.path.join(
@@ -274,9 +248,17 @@ def cmd_setup(
     if os.path.exists(existing_config_path):
         try:
             with open(existing_config_path) as f:
-                yaml.safe_load(f)
+                existing = yaml.safe_load(f)
+            if isinstance(existing, dict):
+                ui.header("Existing installation")
+                ui.status("Verdict configuration", "found", existing_config_path)
+                ui.panel(
+                    "Preserved",
+                    "Existing configuration preserved. Run verdict setup --recommended to review capabilities, or verdict doctor to inspect health.",
+                )
+                return
         except yaml.YAMLError as e:
-            console.print(
+            ui.console.print(
                 f"[yellow]⚠️  Existing config at {existing_config_path} is not valid YAML: {e}[/yellow]"
             )
             try:
@@ -284,26 +266,33 @@ def cmd_setup(
             except (KeyboardInterrupt, EOFError):
                 overwrite = "n"
             if not overwrite.lower().startswith("y"):
-                console.print("[yellow]Setup cancelled.[/yellow]")
+                ui.console.print("[yellow]Setup cancelled.[/yellow]")
                 sys.exit(1)
 
     # First, run auto-detection to show user what's available
-    _print_detection_banner()
+    ui.header("Setup")
     detected_result = None
     try:
-        from verdict.provider_detection import detect_all_providers, format_detection_report
+        from verdict.provider_detection import detect_all_providers
 
-        detected_result = detect_all_providers()
-        console.print(format_detection_report(detected_result, verbose=False))
+        with ui.task("Discovering providers and gateway models"):
+            detected_result = detect_all_providers()
+        ui.section("Discovered providers")
+        for provider in detected_result.all_providers():
+            state = (
+                "reachable"
+                if provider.server_running
+                else "configured"
+                if provider.api_key_configured
+                else "found"
+                if provider.cli_available
+                else "missing"
+            )
+            ui.status(provider.name, state, provider.base_url or "")
     except Exception as e:
-        console.print(f"[yellow]Detection skipped: {e}[/yellow]")
+        ui.console.print(f"[yellow]Detection skipped: {e}[/yellow]")
 
-    console.print(
-        Panel.fit(
-            "[bold blue]Verdict Setup Wizard[/bold blue]\nLet's configure your routing engine.",
-            border_style="blue",
-        )
-    )
+    ui.section("Configure routing")
 
     config: dict[str, Any] = {}
     use_auto = False
@@ -314,23 +303,24 @@ def cmd_setup(
     try:
         from verdict.provider_detection import probe_gateways
 
-        gateways = probe_gateways()
+        with ui.task("Discovering gateways"):
+            gateways = probe_gateways()
         healthy_gateways = [g for g in gateways if g.health_ok]
         if healthy_gateways:
             selected_gateway = healthy_gateways[0]
             config["gateway_url"] = selected_gateway.url
             os.environ["OMNIROUTE_BASE_URL"] = selected_gateway.url
-            console.print(
+            ui.console.print(
                 f"\n[bold green]✓ Detected {selected_gateway.display_name} at "
                 f"{selected_gateway.url} — gateway URL saved to config.[/bold green]"
             )
             if len(healthy_gateways) > 1:
-                console.print(
+                ui.console.print(
                     "[dim]Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the "
                     "above to select a different one.[/dim]"
                 )
     except Exception as e:
-        console.print(f"[yellow]Gateway detection skipped: {e}[/yellow]")
+        ui.console.print(f"[yellow]Gateway detection skipped: {e}[/yellow]")
 
     running_providers = []
     if detected_result:
@@ -344,7 +334,7 @@ def cmd_setup(
 
     # Pre-select based on detection if running in automated test/input context where "done" or empty is passed
     if running_providers:
-        console.print("\n[bold cyan]Auto-detection found active providers![/bold cyan]")
+        ui.console.print("\n[bold cyan]Auto-detection found active providers![/bold cyan]")
         try:
             should_auto = Prompt.ask(
                 "Would you like to auto-configure Verdict using a detected provider?", default="y"
@@ -379,7 +369,7 @@ def cmd_setup(
                     # Retrieve models
                     models = selected_provider.models
                     if models:
-                        console.print(
+                        ui.console.print(
                             f"\n[cyan]Detected models for {selected_provider.name}:[/cyan]"
                         )
                         # Add an option for custom
@@ -429,11 +419,11 @@ def cmd_setup(
                             to_sync.append((p.name, prov_name, url_to_check, node_name))
 
             if to_sync:
-                console.print(
+                ui.console.print(
                     "\n[bold cyan]Syncing detected system providers to OmniRoute/9Router:[/bold cyan]"
                 )
                 for name, _p_name, url, _ in to_sync:
-                    console.print(f"  • Found active [green]{name}[/]: [dim]{url}[/]")
+                    ui.console.print(f"  • Found active [green]{name}[/]: [dim]{url}[/]")
 
                 if (
                     Prompt.ask(
@@ -452,17 +442,17 @@ def cmd_setup(
                         }
                         res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                         if res:
-                            console.print(
+                            ui.console.print(
                                 f"  [green]✓[/] Successfully registered node: {node_name}"
                             )
                         else:
-                            console.print(f"  [red]✗[/] Failed to register node: {node_name}")
+                            ui.console.print(f"  [red]✗[/] Failed to register node: {node_name}")
         except (KeyboardInterrupt, EOFError):
             pass
 
     # Prompt user about adding free providers like gemini/antigravity for local fallback routing
     try:
-        console.print("\n[bold cyan]Fallback Models Configuration:[/bold cyan]")
+        ui.console.print("\n[bold cyan]Fallback Models Configuration:[/bold cyan]")
         if (
             Prompt.ask(
                 "Setup free fallback endpoints (Gemini Free, OpenRouter Free) for local offloads?",
@@ -473,29 +463,29 @@ def cmd_setup(
         ):
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not gemini_key:
-                console.print(
+                ui.console.print(
                     "\n[yellow]⚠️  GEMINI_API_KEY is not configured in your environment.[/yellow]"
                 )
-                console.print("  Get a free Gemini API key at: https://aistudio.google.com/")
-                console.print('  Then select it: export GEMINI_API_KEY="your_key"')
+                ui.console.print("  Get a free Gemini API key at: https://aistudio.google.com/")
+                ui.console.print('  Then select it: export GEMINI_API_KEY="your_key"')
 
             or_key = os.getenv("OPENROUTER_API_KEY")
             if not or_key:
-                console.print(
+                ui.console.print(
                     "\n[yellow]⚠️  OPENROUTER_API_KEY is not configured in your environment.[/yellow]"
                 )
-                console.print("  Get an OpenRouter key at: https://openrouter.ai/keys")
-                console.print('  Then select it: export OPENROUTER_API_KEY="your_key"')
+                ui.console.print("  Get an OpenRouter key at: https://openrouter.ai/keys")
+                ui.console.print('  Then select it: export OPENROUTER_API_KEY="your_key"')
 
             fallback_options = [
                 "Google Gemini Free Tier (https://generativelanguage.googleapis.com)",
                 "OpenRouter Free Models (https://openrouter.ai/api/v1)",
             ]
 
-            console.print("\nAvailable free fallback endpoints:")
+            ui.console.print("\nAvailable free fallback endpoints:")
             selected_fallbacks = []
             for i, opt in enumerate(fallback_options, 1):
-                console.print(f"  [green]{i}[/]: {opt}")
+                ui.console.print(f"  [green]{i}[/]: {opt}")
 
             choices = Prompt.ask(
                 "Enter endpoints to add (e.g. '1, 2' or 'all', or 'done')", default="all"
@@ -517,9 +507,9 @@ def cmd_setup(
                     }
                     res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                     if res:
-                        console.print("  [green]✓[/] Registered Gemini Free fallback node")
+                        ui.console.print("  [green]✓[/] Registered Gemini Free fallback node")
                     else:
-                        console.print(
+                        ui.console.print(
                             "  [red]✗[/] Failed to register Gemini Free fallback node (OmniRoute not running)"
                         )
                 elif idx == 2:
@@ -532,37 +522,35 @@ def cmd_setup(
                     }
                     res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                     if res:
-                        console.print("  [green]✓[/] Registered OpenRouter Free fallback node")
+                        ui.console.print("  [green]✓[/] Registered OpenRouter Free fallback node")
                     else:
-                        console.print("  [red]✗[/] Failed to register OpenRouter Free node")
+                        ui.console.print("  [red]✗[/] Failed to register OpenRouter Free node")
     except (KeyboardInterrupt, EOFError):
         pass
 
     if not use_auto:
         if not running_providers:
-            console.print(
+            ui.console.print(
                 "\n[bold yellow]⚠️  No active providers or routers running on this machine.[/bold yellow]"
             )
-            console.print("To run OmniRoute (centralized router recommended for Verdict):")
-            console.print("  [bold]npm install -g omniroute[/bold]")
-            console.print("  [bold]omniroute serve[/bold]\n")
+            ui.console.print("To run OmniRoute (centralized router recommended for Verdict):")
+            ui.console.print("  [bold]npm install -g omniroute[/bold]")
+            ui.console.print("  [bold]omniroute serve[/bold]\n")
 
             try:
                 should_manual = Prompt.ask(
                     "Would you like to manually configure Verdict right now anyway?", default="y"
                 )
                 if not should_manual.lower().startswith("y"):
-                    console.print(
+                    ui.console.print(
                         "\n[yellow]Setup cancelled. Please start your provider/router and try again.[/yellow]"
                     )
                     return
             except (KeyboardInterrupt, EOFError):
-                console.print("\n[yellow]Setup input interrupted.[/yellow]")
+                ui.console.print("\n[yellow]Setup input interrupted.[/yellow]")
                 return
 
-        console.print(
-            Panel.fit("[bold blue]Verdict Manual Configuration[/bold blue]", border_style="blue")
-        )
+        ui.section("Manual configuration")
         try:
             config["primary_model"] = Prompt.ask(
                 "[bold]Primary model[/bold] (Tier-0, never offloaded)",
@@ -583,8 +571,24 @@ def cmd_setup(
                     "api_key_env": api_key_env or None,
                 }
         except (KeyboardInterrupt, EOFError):
-            console.print("\n[yellow]Manual configuration input interrupted.[/yellow]")
+            ui.console.print("\n[yellow]Manual configuration input interrupted.[/yellow]")
             return
+
+    # Review the exact file write before mutating an interactive installation.
+    ui.plan(
+        {
+            "actions": [
+                {
+                    "kind": "configure",
+                    "description": "Save Verdict routing configuration",
+                    "reason": f"Primary model: {config.get('primary_model', '')}",
+                }
+            ]
+        }
+    )
+    if ui.interactive and not ui.confirm("Save this configuration?", default=True):
+        ui.status("Configuration", "skipped", "No configuration file written.")
+        return
 
     # Save configuration
     config_dir = os.path.join(
@@ -596,39 +600,34 @@ def cmd_setup(
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False)
 
-    console.print(f"\n[bold green]✓ Saved configuration to {config_path}![/bold green]")
-    console.print("[dim]Configuration contents:[/dim]")
-    console.print(yaml.dump(config, default_flow_style=False))
+    ui.console.print(f"\n[bold green]✓ Saved configuration to {config_path}![/bold green]")
+    ui.console.print("[dim]Configuration contents:[/dim]")
+    ui.console.print(yaml.dump(config, default_flow_style=False))
 
 
 def cmd_setup_plan(
     *, output_json: bool = False, scope: str = "all", recommended: bool = False
 ) -> None:
     """Print the mutation-free setup plan; optionally enrich with bootstrap."""
-
     from verdict.setup_plan import build_setup_plan
 
-    # Default path preserves the classic setup_plan contract (no probes).
     if not recommended and scope == "all":
-        plan: dict[str, Any] = build_setup_plan().to_dict()
+        plan = build_setup_plan().to_dict()
         if output_json:
             print(json.dumps(plan, indent=2, sort_keys=True))
             return
-        print("Verdict setup plan (dry-run; no changes made)")
-        print(f"Plan: {plan['plan_id']}")
-        config = plan["config"]
-        actions = plan["actions"]
-        assert isinstance(config, dict)
-        assert isinstance(actions, list)
-        print(f"Config: {config['path']}")
-        for action in actions:
-            assert isinstance(action, dict)
-            print(f"- {action['description']}")
+        ui = TerminalUI(console)
+        ui.header("Setup plan")
+        ui.plan(plan)
+        ui.panel("Review complete", "No changes made. This plan does not probe services.")
         return
 
-    from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
+    from verdict.capability_bootstrap import BootstrapMode, BootstrapScope
+    from verdict.setup_presentation import present_bootstrap
 
-    bootstrap = run_bootstrap(
+    bootstrap = present_bootstrap(
+        console=console,
+        output_json=output_json,
         mode=BootstrapMode.RECOMMENDED if recommended else BootstrapMode.PLAN,
         scope=BootstrapScope(scope),
         non_interactive=True,
@@ -636,25 +635,8 @@ def cmd_setup_plan(
     base = build_setup_plan(
         bootstrap_providers=bootstrap.providers, include_bootstrap=True, bootstrap_scope=scope
     ).to_dict()
-    plan = {**base, "bootstrap": bootstrap.to_dict()}
     if output_json:
-        print(json.dumps(plan, indent=2, sort_keys=True))
-        return
-    print("Verdict setup plan (dry-run; no changes made)")
-    print(f"Plan: {plan['plan_id']}")
-    config = plan["config"]
-    actions = plan["actions"]
-    assert isinstance(config, dict)
-    assert isinstance(actions, list)
-    print(f"Config: {config['path']}")
-    for action in actions:
-        assert isinstance(action, dict)
-        print(f"- {action['description']}")
-    bootstrap_payload = plan["bootstrap"]
-    assert isinstance(bootstrap_payload, dict)
-    stages = bootstrap_payload.get("stages", [])
-    assert isinstance(stages, list)
-    print(f"Bootstrap stages: {len(stages)}")
+        print(json.dumps({**base, "bootstrap": bootstrap.to_dict()}, indent=2, sort_keys=True))
 
 
 def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
@@ -1801,13 +1783,14 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
             raise SystemExit(1)
         return
 
-    console.print(
-        Panel.fit("[bold green]🩺 Verdict System Doctor[/bold green]", border_style="green")
-    )
+    ui = TerminalUI(console)
+    ui.header("Doctor")
 
     from verdict.capability_bootstrap import doctor_capability_report
 
-    capability_report = doctor_capability_report()
+    with ui.task("Inspecting capabilities"):
+        capability_report = doctor_capability_report()
+    ui.doctor(capability_report)
     capabilities = capability_report.get("capabilities", [])
     if not isinstance(capabilities, list):
         capabilities = []
@@ -1815,7 +1798,9 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         1 for item in capabilities if isinstance(item, dict) and item.get("status") == "covered"
     )
     total = len(capabilities)
-    console.print(f"  • Capability coverage: [cyan]{covered}/{total}[/] covered (bootstrap view)")
+    ui.console.print(
+        f"  • Capability coverage: [cyan]{covered}/{total}[/] covered (bootstrap view)"
+    )
 
     issues_found = []
     fixed_issues = []
@@ -1823,7 +1808,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     from verdict.documentation_preflight import run_documentation_preflight
 
     documentation_report = run_documentation_preflight(fix=fix)
-    console.print(
+    ui.console.print(
         "  • Documentation preflight: "
         f"[{'green' if documentation_report.passed else 'red'}]"
         f"{documentation_report.status}[/] "
@@ -1863,7 +1848,9 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
             from verdict.classifier import classify
 
             tier = classify(primary_model)
-            console.print(f"  • Configured Primary Model: [cyan]{primary_model}[/] (Tier-{tier})")
+            ui.console.print(
+                f"  • Configured Primary Model: [cyan]{primary_model}[/] (Tier-{tier})"
+            )
 
         providers = config.get("providers", {})
         if not isinstance(providers, dict):
@@ -1918,7 +1905,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
             if fix:
                 try:
                     os.rename(legacy_config_path, config_path)
-                    console.print(f"  [green]✓[/] Renamed {legacy_config_path} -> {config_path}")
+                    ui.console.print(f"  [green]✓[/] Renamed {legacy_config_path} -> {config_path}")
                     fixed_issues.append("Config file is named 'config.yaml'")
                 except Exception as exc:
                     issues_found.append(f"Failed to rename config.yaml: {exc}")
@@ -1968,7 +1955,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         issues_found.append("OPENAI_API_KEY appears invalid (expected prefix 'sk-').")
 
     # 1f. Env var reference note (T024)
-    console.print(
+    ui.console.print(
         "  [dim]See .env.example in the repository root for the full environment "
         "variable reference.[/dim]"
     )
@@ -1976,7 +1963,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     # 2. OmniRoute nodes check
     existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
     if existing_nodes is None:
-        console.print(
+        ui.console.print(
             "[dim]OmniRoute server is not currently running/reachable to check nodes.[/dim]"
         )
     else:
@@ -1986,7 +1973,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         elif isinstance(existing_nodes, dict) and "items" in existing_nodes:
             items = existing_nodes["items"]
 
-        console.print(
+        ui.console.print(
             f"  • Connected to OmniRoute: [green]OK[/] (Found {len(items)} configured node endpoints)"
         )
 
@@ -2008,11 +1995,11 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     node_urls[clean_url] = node_id
 
         if duplicates:
-            console.print(
+            ui.console.print(
                 "\n[yellow]⚠️  Duplicate provider nodes detected in local OmniRoute database:[/yellow]"
             )
             for node_id, name, url, original_id in duplicates:
-                console.print(
+                ui.console.print(
                     f"  • Node [red]{name}[/] ({node_id}) is a duplicate of node ({original_id}) on URL: {url}"
                 )
                 issues_found.append(f"Duplicate node '{name}' in OmniRoute configuration.")
@@ -2029,10 +2016,10 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     for node_id, name, _url, _ in duplicates:
                         res = _omniroute_api_request("DELETE", f"/api/provider-nodes/{node_id}")
                         if res is not None:
-                            console.print(f"  [green]✓[/] Removed duplicate node: {name}")
+                            ui.console.print(f"  [green]✓[/] Removed duplicate node: {name}")
                             fixed_issues.append(f"Removed duplicate node {node_id}")
                         else:
-                            console.print(f"  [red]✗[/] Failed to remove node {node_id}")
+                            ui.console.print(f"  [red]✗[/] Failed to remove node {node_id}")
             except (KeyboardInterrupt, EOFError):
                 pass
 
@@ -2057,31 +2044,12 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                         f"Configured provider node '{name}' ({url}) is unreachable/offline."
                     )
 
-    # 4. Summary report
-    console.print("\n" + "═" * 45)
-    console.print(
-        f"🩺 Doctor Report: {len(issues_found)} issues identified. {len(fixed_issues)} resolved."
-    )
-    console.print("═" * 45)
-
-    if issues_found:
-        for iss in issues_found:
-            is_fixed = False
-            for fixed_issue in fixed_issues:
-                if fixed_issue.lower() in iss.lower():
-                    is_fixed = True
-                    break
-            if is_fixed:
-                console.print(f"  [green]✓ FIXED:[/] {iss}")
-            else:
-                console.print(f"  [red]✗ ISSUE:[/] {iss}")
-
-        if not config:
-            console.print(
-                "\n[yellow]💡 Suggestion: Run 'verdict setup' to initialize your configuration file.[/yellow]"
-            )
-    else:
-        console.print("  [green]✓ System is healthy! All checks passed.[/green]")
+    # One shared presentation for the existing diagnostic results.
+    ui.doctor_summary(issues_found, fixed_issues)
+    if issues_found and not config:
+        ui.panel(
+            "Next step", "Run verdict setup to initialize your configuration file.", tone="WARNING"
+        )
 
 
 def cmd_run(

@@ -57,6 +57,21 @@ SCHEMA_VERSION = "capability-bootstrap/v1"
 _DIGEST_PREFIX = "sha256:"
 _OWNERSHIP_SCHEMA = "bootstrap-ownership/v1"
 
+# Optional presentation boundary: real transitions, never terminal instructions.
+BootstrapObserver = Callable[[str, str, str, Mapping[str, Any]], None]
+
+
+def _notify(
+    observer: BootstrapObserver | None,
+    stage: str,
+    status: str,
+    summary: str,
+    data: Mapping[str, Any] | None = None,
+) -> None:
+    if observer is not None:
+        observer(stage, status, summary, data or {})
+
+
 # High-value capabilities setup cares about (brand-free). Providers satisfy these.
 _BOOTSTRAP_CAPABILITIES: tuple[str, ...] = (
     "harness.execute",
@@ -1334,6 +1349,7 @@ def apply_bootstrap_actions(
     install_runner: InstallRunner | None = None,
     install_command_runner: InstallCommandRunner | None = None,
     path_resolver: PathResolver | None = None,
+    observer: BootstrapObserver | None = None,
 ) -> tuple[StageResult, StageResult, dict[str, object]]:
     """Consent gate + idempotent apply with backups and ownership tracking."""
 
@@ -1442,12 +1458,16 @@ def apply_bootstrap_actions(
 
         result: Mapping[str, Any]
         if action.kind == "install_provider":
+            _notify(observer, "action", "running", action.description, action.to_dict())
             result = runner(action)
         else:
             result = {"status": "recorded", "kind": action.kind}
 
         if action.kind == "install_provider" and not _successful_apply_result(result):
             applied.append({"action_id": action.action_id, "result": dict(result)})
+            _notify(
+                observer, "action", str(result.get("status", "failed")), action.description, result
+            )
             continue
 
         ownership.setdefault("managed_actions", []).append(
@@ -1459,6 +1479,9 @@ def apply_bootstrap_actions(
             }
         )
         applied.append({"action_id": action.action_id, "result": dict(result)})
+        _notify(
+            observer, "action", str(result.get("status", "recorded")), action.description, result
+        )
 
     _save_ownership(state_dir, ownership)
     succeeded: list[dict[str, object]] = []
@@ -1690,6 +1713,8 @@ def run_bootstrap(
     certify_now: datetime | None = None,
     home: Path | None = None,
     cwd: Path | None = None,
+    observer: BootstrapObserver | None = None,
+    confirm_plan: Callable[[UnifiedBootstrapPlan], bool] | None = None,
 ) -> BootstrapReport:
     """Run the staged bootstrap pipeline and return a machine-readable report."""
 
@@ -1698,6 +1723,7 @@ def run_bootstrap(
     stages: list[StageResult] = []
 
     # DISCOVER
+    _notify(observer, "discover", "running", "Discovering environment")
     if providers is None:
         discovered = discover_providers(
             path_resolver=path_resolver,
@@ -1726,6 +1752,8 @@ def run_bootstrap(
             )
         )
 
+    _notify(observer, stages[-1].stage, stages[-1].status, stages[-1].summary)
+    _notify(observer, "normalize", "running", "Normalizing capability observations")
     # NORMALIZE: de-dupe and fill catalog placeholders so recommendations stay capability-complete
     normalized = _merge_with_catalog(discovered, scope_v)
     stages.append(
@@ -1737,6 +1765,15 @@ def run_bootstrap(
         )
     )
 
+    _notify(observer, stages[-1].stage, stages[-1].status, stages[-1].summary)
+    _notify(
+        observer,
+        "providers",
+        "found",
+        "Provider observations",
+        {"providers": [p.to_dict() for p in normalized]},
+    )
+    _notify(observer, "recommend", "running", "Evaluating capability recommendations")
     # RECOMMEND
     recommendations = recommend_capabilities(normalized, registry=registry)
     stages.append(
@@ -1752,6 +1789,15 @@ def run_bootstrap(
         )
     )
 
+    _notify(observer, stages[-1].stage, stages[-1].status, stages[-1].summary)
+    _notify(
+        observer,
+        "recommendations",
+        "recommended",
+        "Recommendations",
+        {"recommendations": [r.to_dict() for r in recommendations]},
+    )
+    _notify(observer, "preflight", "running", "Preparing the mutation plan")
     # PREFLIGHT + unified plan
     recommended_only = mode_v is BootstrapMode.RECOMMENDED
     plan = build_bootstrap_plan(
@@ -1766,12 +1812,17 @@ def run_bootstrap(
         )
     )
 
+    _notify(observer, stages[-1].stage, stages[-1].status, stages[-1].summary)
+    _notify(observer, "plan", "planned", "Review proposed actions", plan.to_dict())
     apply_payload: dict[str, object] = {"mutated": False, "actions": []}
     resolved_state = (
         Path(state_dir) if state_dir is not None else Path.home() / ".verdict" / "bootstrap"
     )
 
     if mode_v is BootstrapMode.APPLY:
+        # User answers feed the existing gate; unattended runs never prompt.
+        if not consent and not non_interactive and not allowlist and confirm_plan is not None:
+            consent = confirm_plan(plan)
         consent_stage, apply_stage, apply_payload = apply_bootstrap_actions(
             plan,
             state_dir=resolved_state,
@@ -1782,6 +1833,7 @@ def run_bootstrap(
             install_runner=install_runner,
             install_command_runner=install_command_runner,
             path_resolver=path_resolver,
+            observer=observer,
         )
         stages.extend([consent_stage, apply_stage])
     else:
@@ -1804,6 +1856,9 @@ def run_bootstrap(
 
     # CERTIFY — refresh provider observations after successful APPLY so newly
     # installed providers are not certified from stale pre-apply snapshots.
+    for stage in stages[-2:]:
+        _notify(observer, stage.stage, stage.status, stage.summary, stage.details)
+    _notify(observer, "certify", "running", "Certifying observed provider state")
     providers_for_cert = normalized
     if mode_v is BootstrapMode.APPLY and bool(apply_payload.get("mutated")):
         applied_obj = apply_payload.get("actions", [])
@@ -1889,6 +1944,7 @@ def run_bootstrap(
         )
     )
 
+    _notify(observer, stages[-1].stage, stages[-1].status, stages[-1].summary)
     mutation_free = mode_v is not BootstrapMode.APPLY or not bool(apply_payload.get("mutated"))
     return BootstrapReport(
         stages=tuple(stages),
