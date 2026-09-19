@@ -223,6 +223,45 @@ class IntelligenceService:
         else:
             task_str = task
 
+        # BOD-104: when an ExecutionPathDecision is supplied, it is the sole
+        # strategy authority — legacy free-tier/chooser paths dispatch only.
+        if isinstance(context, dict) and context.get("execution_path_decision") is not None:
+            from verdict.execution_path import (
+                ExecutionPathDecision,
+                ExecutionPathError,
+                legacy_selector_must_yield,
+            )
+
+            ep = context["execution_path_decision"]
+            if isinstance(ep, ExecutionPathDecision):
+                payload = ep.to_dict()
+            elif isinstance(ep, dict):
+                payload = ep
+            else:
+                raise ExecutionPathError(
+                    "context['execution_path_decision'] must be ExecutionPathDecision or dict"
+                )
+            legacy_selector_must_yield(
+                execution_path_decision=payload, legacy_selected_model_id=None
+            )
+            route_info = payload.get("selected_route") or {}
+            model = str(route_info.get("model") or payload.get("selected_candidate_id") or "")
+            provider = str(route_info.get("provider") or "unknown")
+            if not model:
+                raise ExecutionPathError("BOD-104 decision has no concrete model to dispatch")
+            elapsed = (time.time() - start_t) * 1000
+            return RoutingDecision(
+                model=model,
+                provider=provider,
+                tier=int(route_info.get("capability_tier") or 2),
+                reason=f"bod104:{payload.get('selected_strategy')}:{payload.get('why_selected')}",
+                latency_ms=elapsed,
+                logged=False,
+                request_id=request_id or "",
+                decision="selected",
+                safety_flags=["bod104_execution_path_authority"],
+            )
+
         # Fallback to strict heuristic scan
         eff_tier, heuristic_reason = scan(task_str)
 
