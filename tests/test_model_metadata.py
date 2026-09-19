@@ -175,9 +175,7 @@ class TestMappingAndDrops:
     def test_unique_leaf_joins_gateway_prefix_to_models_json(self, tmp_path: Path) -> None:
         """BOD-121: agy/* inventory id joins via unique models.json leaf."""
         snapshot = _refresh(tmp_path)
-        found = lookup_omniroute_id(
-            snapshot, "agy/gemini-2.0-flash", required=("tools",)
-        )
+        found = lookup_omniroute_id(snapshot, "agy/gemini-2.0-flash", required=("tools",))
         assert found.drop is None
         assert found.admitted_for_caps is True
         assert found.record is not None
@@ -196,14 +194,8 @@ class TestMappingAndDrops:
             refreshed_at=FETCHED_AT,
             sources={},
             records=(
-                ModelMetadataRecord(
-                    id="google/shared-leaf",
-                    caps=CapabilityCaps(tools=tools),
-                ),
-                ModelMetadataRecord(
-                    id="anthropic/shared-leaf",
-                    caps=CapabilityCaps(tools=tools),
-                ),
+                ModelMetadataRecord(id="google/shared-leaf", caps=CapabilityCaps(tools=tools)),
+                ModelMetadataRecord(id="anthropic/shared-leaf", caps=CapabilityCaps(tools=tools)),
             ),
         )
         found = lookup_omniroute_id(snapshot, "agy/shared-leaf", required=("tools",))
@@ -216,9 +208,7 @@ class TestMappingAndDrops:
     def test_variant_suffix_without_models_json_row_is_named_drop(self, tmp_path: Path) -> None:
         """BOD-121: no silent strip of effort/variant suffixes to a base leaf."""
         snapshot = _refresh(tmp_path)
-        found = lookup_omniroute_id(
-            snapshot, "agy/gemini-2.0-flash-high", required=("tools",)
-        )
+        found = lookup_omniroute_id(snapshot, "agy/gemini-2.0-flash-high", required=("tools",))
         assert found.drop is not None
         assert found.drop.reason == DROP_UNMAPPED
         assert found.record is None
@@ -229,13 +219,9 @@ class TestMappingAndDrops:
         snapshot = _refresh(tmp_path)
         # Map agy leaf to meta model so exact map wins over google/* unique leaf.
         mapping = IdentityMap(
-            omniroute_to_models_dev={
-                "agy/gemini-2.0-flash": "meta/llama-3.3-70b-instruct",
-            }
+            omniroute_to_models_dev={"agy/gemini-2.0-flash": "meta/llama-3.3-70b-instruct"}
         )
-        found = lookup_omniroute_id(
-            snapshot, "agy/gemini-2.0-flash", identity_map=mapping
-        )
+        found = lookup_omniroute_id(snapshot, "agy/gemini-2.0-flash", identity_map=mapping)
         assert found.record is not None
         assert found.record.id == "meta/llama-3.3-70b-instruct"
         assert found.drop is None
