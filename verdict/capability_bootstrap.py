@@ -21,6 +21,7 @@ import os
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
@@ -557,50 +558,189 @@ def _default_gateway_probe(provider_id: str) -> Mapping[str, Any]:
     return {"reachable": False, "health_ok": False, "reason": "no live probe in setup plan mode"}
 
 
-def _default_certifier(providers: tuple[DiscoveredProvider, ...]) -> Mapping[str, Any]:
-    """Fallback certification seam until BOD-92 runtime_certification lands."""
-    passport_seam = "stub"
-    try:
-        import verdict.runtime_passports as runtime_passports
+def _provider_kind_to_component_kind(kind: ProviderKind) -> Any:
+    from verdict.runtime_certification import ComponentKind
 
-        if hasattr(runtime_passports, "RuntimeCapabilityPassport"):
-            passport_seam = "runtime_passports"
-    except ImportError:  # pragma: no cover
-        passport_seam = "stub"
+    mapping = {
+        ProviderKind.HARNESS: ComponentKind.HARNESS,
+        ProviderKind.GATEWAY: ComponentKind.GATEWAY,
+        ProviderKind.INTELLIGENCE: ComponentKind.INTELLIGENCE,
+        ProviderKind.DOCS: ComponentKind.MCP,
+        ProviderKind.RUNTIME: ComponentKind.TOOLCHAIN,
+        ProviderKind.SECURITY: ComponentKind.TOOLCHAIN,
+        ProviderKind.OTHER: ComponentKind.PROVIDER,
+    }
+    return mapping.get(kind, ComponentKind.PROVIDER)
+
+
+def _health_claim_for_provider(provider: DiscoveredProvider) -> str:
+    """Map bootstrap lifecycle/health into BOD-92 health_claim vocabulary."""
+
+    if provider.lifecycle is ProviderLifecycle.NOT_INSTALLED:
+        return "unsupported"
+    if (
+        provider.lifecycle is ProviderLifecycle.HEALTHY
+        and provider.health_state == "healthy"
+        and provider.qualification_state == "qualified"
+    ):
+        return "ready"
+    if provider.health_state == "unhealthy":
+        return "degraded"
+    if provider.lifecycle is ProviderLifecycle.INSTALLED and provider.health_state != "healthy":
+        # Binary/config presence is never certification — matches installed != healthy.
+        return "configured"
+    if provider.lifecycle in {
+        ProviderLifecycle.CONFIGURED,
+        ProviderLifecycle.AUTHENTICATED,
+        ProviderLifecycle.REACHABLE,
+    }:
+        return "configured"
+    return "unknown"
+
+
+def _safe_snapshot_capabilities(capabilities: frozenset[str]) -> frozenset[str]:
+    """Drop capability ids that BOD-92 ``_safe_text`` rejects (e.g. ``security.secrets``)."""
+
+    from verdict.runtime_certification import RuntimeCertificationError, _safe_text
+
+    safe: set[str] = set()
+    for item in capabilities:
+        try:
+            safe.add(_safe_text(item, "capability"))
+        except RuntimeCertificationError:
+            continue
+    return frozenset(safe)
+
+
+def _discovered_to_snapshot(provider: DiscoveredProvider) -> Any:
+    from verdict.runtime_certification import DetectedSnapshot
+
+    # Never put filesystem paths into identity — BOD-92 rejects private-path text.
+    identity = provider.provider_id
+    evidence: dict[str, object] = {
+        "lifecycle": provider.lifecycle.value,
+        "health_state": provider.health_state,
+        "qualification_state": provider.qualification_state,
+        "auth_state": provider.auth_state,
+        "binary_present": bool(provider.path_or_endpoint)
+        and provider.lifecycle is not ProviderLifecycle.NOT_INSTALLED,
+        "has_endpoint": bool(provider.path_or_endpoint),
+    }
+    if provider.failure_reason:
+        # Keep reason free of path/secret material by truncating to a short token.
+        reason = provider.failure_reason.strip().split("/")[0][:120]
+        if reason:
+            evidence["failure_reason"] = reason
+    return DetectedSnapshot(
+        component_id=provider.provider_id,
+        kind=_provider_kind_to_component_kind(provider.provider_kind),
+        identity=identity,
+        source="capability_bootstrap",
+        health_claim=_health_claim_for_provider(provider),
+        version=provider.version,
+        capabilities=_safe_snapshot_capabilities(provider.capabilities),
+        requires_probe=False,
+        premium_probe=False,
+        evidence=evidence,
+    )
+
+
+def _parity_from_component(state: str, parity_facets: object) -> str:
+    """Collapse BOD-92 state + optional facets into bootstrap's single parity string."""
+
+    if state == "ready":
+        level = "supported"
+    elif state == "degraded":
+        level = "partial"
+    elif state in {"unavailable", "unsupported"}:
+        level = "unsupported"
+    else:
+        level = "partial"
+    if not isinstance(parity_facets, list) or not parity_facets:
+        return level
+    facet_levels = {
+        str(item.get("level"))
+        for item in parity_facets
+        if isinstance(item, dict) and item.get("level")
+    }
+    if "unsupported" in facet_levels and level == "supported":
+        return "partial"
+    return level
+
+
+def _default_certifier(
+    providers: tuple[DiscoveredProvider, ...],
+    *,
+    now: datetime | None = None,
+) -> Mapping[str, Any]:
+    """Certify bootstrap providers via BOD-92 ``certify_runtime`` (evidence only)."""
+
+    from datetime import timezone
+
+    from verdict.runtime_certification import CertificationState, certify_runtime
+
+    snapshots = tuple(_discovered_to_snapshot(provider) for provider in providers)
+    report = certify_runtime(
+        snapshots=snapshots,
+        now=now or datetime.now(timezone.utc),
+        run_registered_detectors=False,
+    )
+    report_dict = report.to_dict()
+    by_id = {component.component_id: component for component in report.components}
 
     results: list[dict[str, object]] = []
     for provider in providers:
-        certified = (
-            provider.lifecycle is ProviderLifecycle.HEALTHY
-            and provider.health_state == "healthy"
-            and provider.qualification_state == "qualified"
+        component = by_id.get(provider.provider_id)
+        if component is None:
+            results.append(
+                {
+                    "provider_id": provider.provider_id,
+                    "certified": False,
+                    "parity": "unsupported",
+                    "reason": "missing from runtime certification report",
+                    "passport_seam": "runtime_certification",
+                }
+            )
+            continue
+        certified = component.state is CertificationState.READY
+        reason = (
+            "provider certified ready by BOD-92 runtime certification"
+            if certified
+            else (
+                "; ".join(component.limitations)
+                if component.limitations
+                else f"state={component.state.value}"
+            )
         )
-        if provider.lifecycle is ProviderLifecycle.INSTALLED and provider.health_state != "healthy":
-            parity = "unsupported"
+        if (
+            provider.lifecycle is ProviderLifecycle.INSTALLED
+            and provider.health_state != "healthy"
+            and not certified
+        ):
             reason = "installed != healthy"
-        elif certified:
-            parity = "supported"
-            reason = "provider reports healthy and qualified"
-        elif provider.lifecycle is ProviderLifecycle.NOT_INSTALLED:
-            parity = "unsupported"
-            reason = "not installed"
-        else:
-            parity = "partial"
-            reason = provider.failure_reason or f"lifecycle={provider.lifecycle.value}"
         results.append(
             {
                 "provider_id": provider.provider_id,
                 "certified": certified,
-                "parity": parity,
+                "parity": _parity_from_component(
+                    component.state.value,
+                    [facet.to_dict() for facet in component.parity] if component.parity else None,
+                ),
                 "reason": reason,
-                "passport_seam": passport_seam,
+                "passport_seam": "runtime_certification",
+                "state": component.state.value,
+                "confidence": component.confidence,
+                "freshness": component.freshness,
             }
         )
+
     summary_bits = [item["reason"] for item in results if item["reason"] == "installed != healthy"]
     return {
-        "schema_version": "runtime-certification-seam/v1",
+        "schema_version": "runtime-certification/v1",
+        "passport_seam": "runtime_certification",
         "results": results,
         "summary": "; ".join(str(bit) for bit in summary_bits) or "certification complete",
+        "runtime_report": report_dict,
     }
 
 
@@ -1392,6 +1532,7 @@ def run_bootstrap(
     path_resolver: PathResolver | None = None,
     probe_gateway: GatewayProbe | None = None,
     registry: SemanticCapabilityRegistry | None = None,
+    certify_now: datetime | None = None,
 ) -> BootstrapReport:
     """Run the staged bootstrap pipeline and return a machine-readable report."""
 
@@ -1557,7 +1698,14 @@ def run_bootstrap(
                     refreshed.append(item)
             providers_for_cert = tuple(refreshed)
 
-    certify = certifier or _default_certifier
+    if certifier is None:
+
+        def _wired_certifier(providers: tuple[DiscoveredProvider, ...]) -> Mapping[str, Any]:
+            return _default_certifier(providers, now=certify_now)
+
+        certify: Certifier = _wired_certifier
+    else:
+        certify = certifier
     certification = dict(certify(providers_for_cert))
     cert_summary = str(certification.get("summary") or "certification complete")
     if any(

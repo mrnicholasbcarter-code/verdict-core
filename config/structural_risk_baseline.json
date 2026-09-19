@@ -16,8 +16,8 @@
   },
   {
     "path": "verdict/capability_bootstrap.py",
-    "max_lines": 1700,
-    "rationale": "BOD-124 staged bootstrap pipeline; split deferred until Sol TUI consumes semantic stages."
+    "max_lines": 1850,
+    "rationale": "BOD-124 bootstrap + BOD-92 certify_runtime wiring; split deferred."
   },
   {
     "path": "verdict/capability_passports.py",
