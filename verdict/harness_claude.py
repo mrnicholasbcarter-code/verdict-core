@@ -284,10 +284,11 @@ def certify(
     claude_home: Path | None = None,
     force: bool = False,
     health_check: HealthCheck | Callable[[str], bool] | None = None,
+    which: Callable[[str], str | None] | None = None,
 ) -> CertifyReport:
     """Evidence-only certification. Never prints secrets. Live token use is NEEDS_OWNER."""
 
-    discovered = discover(claude_home=claude_home)
+    discovered = discover(claude_home=claude_home, which=which)
     report = status(claude_home=claude_home)
     base = report.base_url or DEFAULT_BASE_URL
     healthy = False

@@ -137,7 +137,11 @@ def test_certify_is_partial_without_live_token(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     claude_home = _claude_home(tmp_path)
     enable(claude_home=claude_home, health_check=_healthy)
-    report = certify(claude_home=claude_home, health_check=_healthy)
+    report = certify(
+        claude_home=claude_home,
+        health_check=_healthy,
+        which=lambda _name: "/tmp/claude",
+    )
     assert report.overall == "partial"
     assert report.facets["hooks"] == "supported"
     assert report.facets["model_selection"] == "partial"
