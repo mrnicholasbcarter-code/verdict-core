@@ -3213,8 +3213,7 @@ def main() -> None:
     subparsers.add_parser("cost-report", help="Estimate token cost from routing decision history")
 
     resume_p = subparsers.add_parser(
-        "resume",
-        help="Reconstruct durable story resume state (worktree + handoff + prompt)",
+        "resume", help="Reconstruct durable story resume state (worktree + handoff + prompt)"
     )
     resume_p.add_argument("story", help="Linear story id (e.g. BOD-65)")
     resume_p.add_argument(
@@ -3225,9 +3224,7 @@ def main() -> None:
         help="Optional harness launcher stub (records intent; does not exec yet)",
     )
     resume_p.add_argument(
-        "--repo",
-        default=".",
-        help="Repository path used for worktree discovery (default: cwd)",
+        "--repo", default=".", help="Repository path used for worktree discovery (default: cwd)"
     )
     resume_p.add_argument(
         "--create",
@@ -3489,10 +3486,7 @@ def cmd_resume(
     target = Path(repo) if repo is not None else Path.cwd()
     try:
         payload = resume_story(
-            target,
-            story,
-            with_harness=with_harness,
-            create_if_missing=create_if_missing,
+            target, story, with_harness=with_harness, create_if_missing=create_if_missing
         )
     except WorktreeRegistryError as exc:
         if output_json:
@@ -3515,9 +3509,7 @@ def cmd_resume(
     if payload.get("pr_url"):
         console.print(f"  pr:       {payload['pr_url']} ({payload.get('pr_state')})")
     if with_harness:
-        console.print(
-            f"  launcher: {with_harness} [yellow](stub — not executed)[/yellow]"
-        )
+        console.print(f"  launcher: {with_harness} [yellow](stub — not executed)[/yellow]")
     console.print("")
     console.print(payload["resume_prompt"])
     return payload

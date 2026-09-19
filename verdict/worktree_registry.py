@@ -138,10 +138,14 @@ class WorktreeRegistry:
         return bool(porcelain.strip())
 
     def head_sha(self, worktree: Path | str | None = None) -> str:
-        return self._git("rev-parse", "HEAD", cwd=worktree or self.repo).strip()
+        return self._git(
+            "rev-parse", "HEAD", cwd=Path(worktree) if worktree is not None else self.repo
+        ).strip()
 
     def rev_parse(self, ref: str, *, worktree: Path | str | None = None) -> str:
-        return self._git("rev-parse", ref, cwd=worktree or self.repo).strip()
+        return self._git(
+            "rev-parse", ref, cwd=Path(worktree) if worktree is not None else self.repo
+        ).strip()
 
     # --- discovery --------------------------------------------------------
 
