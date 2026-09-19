@@ -21,6 +21,7 @@ from verdict.metadata.records import (
     SOURCE_BFCL,
     SOURCE_LITELLM,
     SOURCE_MODELS_DEV,
+    SOURCE_MODELS_DEV_MODELS,
     SOURCE_OPEN_LLM,
     FieldConflict,
     FieldProvenance,
@@ -166,6 +167,57 @@ def save_store(snapshot: MetadataSnapshot, path: Path | str | None = None) -> Pa
     return resolved
 
 
+def model_id_leaf(model_id: str) -> str:
+    """Return the leaf segment after the last ``/``, or the full id if unscoped."""
+    key = model_id.strip()
+    if "/" not in key:
+        return key
+    return key.rsplit("/", 1)[-1]
+
+
+def _record_from_models_json(record: ModelMetadataRecord) -> bool:
+    """True when at least one cap cites models.dev models.json provenance."""
+    for name in (
+        "tools",
+        "vision",
+        "structured",
+        "reasoning",
+        "attachment",
+        "context",
+        "max_input",
+        "max_output",
+        "input_cost_per_million",
+        "output_cost_per_million",
+    ):
+        item = record.caps.field(name)
+        if item is not None and item.provenance.source == SOURCE_MODELS_DEV_MODELS:
+            return True
+    return False
+
+
+def unique_leaf_models_json_index(
+    snapshot: MetadataSnapshot,
+) -> dict[str, ModelMetadataRecord | tuple[str, ...]]:
+    """Index models.json records by leaf.
+
+    Unique leaf → the single record. Ambiguous leaf → sorted tuple of competing ids
+    (caller must named-drop, never pick arbitrarily).
+    """
+    buckets: dict[str, list[ModelMetadataRecord]] = {}
+    for item in snapshot.records:
+        if not _record_from_models_json(item):
+            continue
+        leaf = model_id_leaf(item.id)
+        buckets.setdefault(leaf, []).append(item)
+    index: dict[str, ModelMetadataRecord | tuple[str, ...]] = {}
+    for leaf, items in buckets.items():
+        if len(items) == 1:
+            index[leaf] = items[0]
+        else:
+            index[leaf] = tuple(sorted(record.id for record in items))
+    return index
+
+
 def lookup_omniroute_id(
     snapshot: MetadataSnapshot,
     omniroute_id: str,
@@ -177,8 +229,11 @@ def lookup_omniroute_id(
 ) -> MetadataLookup:
     """Resolve an OmniRoute inventory id against Core's store.
 
-    Unmapped and required-unknown are named drops for later BOD-100. This
-    function does not admit work and does not consult OmniRoute metadata.
+    Join order (BOD-121): exact map → exact store id → unique leaf in
+    models.dev models.json → else named drop ``unmapped``. Ambiguous leaves
+    are named drops (never an arbitrary pick). Unmapped and required-unknown
+    are named drops for later BOD-100. This function does not admit work and
+    does not consult OmniRoute metadata.
     """
     if not isinstance(omniroute_id, str) or not omniroute_id.strip():
         raise ModelMetadataError("omniroute_id must be non-empty")
@@ -201,15 +256,37 @@ def lookup_omniroute_id(
     if models_dev_id is None and key in index:
         models_dev_id = index[key].id
     if models_dev_id is None:
-        return MetadataLookup(
-            omniroute_id=key,
-            record=None,
-            drop=MetadataDrop(
+        leaf = model_id_leaf(key)
+        leaf_index = unique_leaf_models_json_index(snapshot)
+        leaf_hit = leaf_index.get(leaf)
+        if isinstance(leaf_hit, ModelMetadataRecord):
+            models_dev_id = leaf_hit.id
+        elif isinstance(leaf_hit, tuple):
+            return MetadataLookup(
                 omniroute_id=key,
-                reason=DROP_UNMAPPED,
-                detail="no explicit OmniRoute→models.dev map and no identity match",
-            ),
-        )
+                record=None,
+                drop=MetadataDrop(
+                    omniroute_id=key,
+                    reason=DROP_UNMAPPED,
+                    detail=(
+                        f"ambiguous leaf {leaf!r} across models.dev models.json: "
+                        + ", ".join(leaf_hit)
+                    ),
+                ),
+            )
+        else:
+            return MetadataLookup(
+                omniroute_id=key,
+                record=None,
+                drop=MetadataDrop(
+                    omniroute_id=key,
+                    reason=DROP_UNMAPPED,
+                    detail=(
+                        "no explicit OmniRoute→models.dev map, no identity match, "
+                        "and no unique models.json leaf"
+                    ),
+                ),
+            )
     record = snapshot.record_by_id(models_dev_id)
     if record is None:
         return MetadataLookup(
@@ -278,33 +355,8 @@ def refresh_metadata(
     sources: dict[str, SourceStatus] = {}
     records: dict[str, ModelMetadataRecord] = {}
 
-    models_doc, models_status = _fetch(transport, models_dev_models_url)
-    if models_doc is not None:
-        parsed = parse_models_dev_models(
-            models_doc.data,
-            provenance=FieldProvenance(
-                source=SOURCE_MODELS_DEV,
-                fetched_at=models_doc.fetched_at,
-                version=models_doc.version,
-            ),
-        )
-        records.update(parsed)
-        sources[SOURCE_MODELS_DEV + ".models"] = SourceStatus(
-            source=SOURCE_MODELS_DEV,
-            status="ok",
-            url=models_doc.url,
-            fetched_at=models_doc.fetched_at,
-            version=models_doc.version,
-            record_count=len(parsed),
-        )
-    else:
-        sources[SOURCE_MODELS_DEV + ".models"] = SourceStatus(
-            source=SOURCE_MODELS_DEV,
-            status=models_status.status,
-            url=models_dev_models_url,
-            reason=models_status.reason,
-        )
-
+    # Fetch api.json first, then models.json so models.json wins on id overlap
+    # (BOD-121: models.json is the canonical capability join target).
     api_doc, api_status = _fetch(transport, models_dev_api_url)
     if api_doc is not None:
         parsed_api = parse_models_dev_api(
@@ -328,6 +380,33 @@ def refresh_metadata(
             status=api_status.status,
             url=models_dev_api_url,
             reason=api_status.reason,
+        )
+
+    models_doc, models_status = _fetch(transport, models_dev_models_url)
+    if models_doc is not None:
+        parsed = parse_models_dev_models(
+            models_doc.data,
+            provenance=FieldProvenance(
+                source=SOURCE_MODELS_DEV_MODELS,
+                fetched_at=models_doc.fetched_at,
+                version=models_doc.version,
+            ),
+        )
+        records.update(parsed)
+        sources[SOURCE_MODELS_DEV_MODELS] = SourceStatus(
+            source=SOURCE_MODELS_DEV_MODELS,
+            status="ok",
+            url=models_doc.url,
+            fetched_at=models_doc.fetched_at,
+            version=models_doc.version,
+            record_count=len(parsed),
+        )
+    else:
+        sources[SOURCE_MODELS_DEV_MODELS] = SourceStatus(
+            source=SOURCE_MODELS_DEV_MODELS,
+            status=models_status.status,
+            url=models_dev_models_url,
+            reason=models_status.reason,
         )
 
     if (
