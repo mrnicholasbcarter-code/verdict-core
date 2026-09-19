@@ -1,11 +1,12 @@
-# Coding-agent gate (Claude Code, Codex, Cursor)
+# Coding-agent gate (Claude Code, Codex, Cursor, Cline, Hermes, …)
 
 Paste this in under two minutes. Verdict is not a coding agent. It sits in front of
 the one you already use, **admits free-tier ∩ active-provider identities**, and
 **blocks spend** when the catalog is not qualified or the intersection is empty.
 
-Need: `pip install verdict-core` (or a checkout), OmniRoute on
-`http://127.0.0.1:20128`, and **`verdict serve`** as the harness base URL.
+Need: `pip install verdict-core` (or a checkout) and **`verdict serve`** as the
+harness base URL. OmniRoute on `http://127.0.0.1:20128` is an **optional
+upstream** behind Verdict — never the harness target.
 
 ## Topology (fail-closed)
 
@@ -94,6 +95,18 @@ verdict harness opencode disable
 ```
 
 See [opencode-harness.md](opencode-harness.md).
+
+Cline — prefer the Architect-locked CLI (CLI providers.json and/or IDE sidecar):
+
+```bash
+verdict harness cline enable
+verdict harness cline status
+verdict harness cline certify
+verdict harness cline disable
+```
+
+See [cline-harness.md](cline-harness.md). Manual fallback: Cline → OpenAI Compatible
+→ Base URL `http://127.0.0.1:8000/v1` (not OmniRoute `:20128`).
 
 Harness-shaped smoke (with Verdict running):
 

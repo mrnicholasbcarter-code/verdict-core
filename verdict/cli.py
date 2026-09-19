@@ -20,6 +20,8 @@ from verdict.benchmarking import format_benchmark_report, run_reproducible_bench
 from verdict.gate import Gate
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_claude import DEFAULT_TOKEN_ENV as CLAUDE_HARNESS_DEFAULT_TOKEN_ENV
+from verdict.harness_cline import DEFAULT_BASE_URL as CLINE_HARNESS_DEFAULT_BASE_URL
+from verdict.harness_cline import DEFAULT_TOKEN_ENV as CLINE_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_codex import DEFAULT_BASE_URL as CODEX_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_codex import DEFAULT_TOKEN_ENV as CODEX_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_cursor import DEFAULT_BASE_URL as CURSOR_HARNESS_DEFAULT_BASE_URL
@@ -3412,6 +3414,44 @@ def main() -> None:
         action="store_true",
         help="Treat Verdict health as ok when probing fails (local proof only)",
     )
+    harness_cline_p = harness_sub.add_parser(
+        "cline",
+        help="Discover, enable, disable, status, or certify Cline as a Verdict OpenAI-compatible client",
+    )
+    harness_cline_sub = harness_cline_p.add_subparsers(dest="harness_cline_command", required=True)
+    harness_cline_sub.add_parser(
+        "discover", help="Report whether Cline CLI/IDE config is present and where it points"
+    )
+    cline_enable_p = harness_cline_sub.add_parser(
+        "enable", help="Backup Cline config and point OpenAI-compatible base URL at Verdict :8000"
+    )
+    cline_enable_p.add_argument(
+        "--base-url",
+        default=CLINE_HARNESS_DEFAULT_BASE_URL,
+        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
+    )
+    cline_enable_p.add_argument(
+        "--token-env",
+        default=CLINE_HARNESS_DEFAULT_TOKEN_ENV,
+        help="Env var Cline should read for the bearer token (default: LLMGATE_AUTH_TOKEN; never printed)",
+    )
+    cline_enable_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Write Cline config even if the Verdict health check fails",
+    )
+    harness_cline_sub.add_parser(
+        "disable", help="Restore pre-enable Cline provider/settings/providers.json backups"
+    )
+    harness_cline_sub.add_parser(
+        "status", help="Show Cline install state, base URL, and whether the token env is set"
+    )
+    cline_certify_p = harness_cline_sub.add_parser(
+        "certify", help="Emit Cline harness parity facets (partial while IDE secrets need owner)"
+    )
+    cline_certify_p.add_argument(
+        "--force", action="store_true", help="Treat Verdict health as ok for local certify proof"
+    )
 
     runtime_p = subparsers.add_parser(
         "runtime", help="Inspect and safely reconcile global Ruflo/RuVector ownership"
@@ -3923,6 +3963,13 @@ def main() -> None:
                 token_env=getattr(args, "token_env", OPENCODE_HARNESS_DEFAULT_TOKEN_ENV),
                 force=getattr(args, "force", False),
             )
+        elif args.harness_target == "cline":
+            cmd_harness_cline(
+                args.harness_cline_command,
+                base_url=getattr(args, "base_url", CLINE_HARNESS_DEFAULT_BASE_URL),
+                token_env=getattr(args, "token_env", CLINE_HARNESS_DEFAULT_TOKEN_ENV),
+                force=getattr(args, "force", False),
+            )
         else:
             raise SystemExit(f"unknown harness: {args.harness_target}")
     elif args.command == "runtime":
@@ -4332,6 +4379,64 @@ def cmd_harness_opencode(
         console.print(f"[bold red]{exc}[/bold red]")
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness opencode command: {command}")
+
+
+def cmd_harness_cline(
+    command: str,
+    *,
+    base_url: str = CLINE_HARNESS_DEFAULT_BASE_URL,
+    token_env: str = CLINE_HARNESS_DEFAULT_TOKEN_ENV,
+    force: bool = False,
+) -> None:
+    """Discover, enable, disable, status, or certify Cline → Verdict."""
+    from verdict.harness_cline import (
+        HarnessClineError,
+        certify,
+        disable,
+        discover,
+        enable,
+        format_certify,
+        format_discover,
+        format_status,
+        status,
+    )
+
+    try:
+        if command == "discover":
+            console.print(format_discover(discover()), end="")
+            return
+        if command == "enable":
+            result = enable(base_url=base_url, token_env=token_env, force=force)
+            console.print("[bold green]Cline harness enabled[/bold green]")
+            console.print(f"  integration: {result.integration}")
+            console.print(f"  base_url: {result.base_url}")
+            console.print(f"  token_env: {result.token_env}")
+            if result.created_backup:
+                console.print(f"  backup: {result.backup_path}")
+            else:
+                console.print(f"  config: {result.config_path}")
+            if result.providers_json_path is not None:
+                console.print(f"  providers_json: {result.providers_json_path}")
+            if result.settings_path is not None:
+                console.print(f"  settings: {result.settings_path}")
+            for step in result.ui_steps:
+                console.print(f"  ui: {step}")
+            return
+        if command == "disable":
+            disable()
+            console.print("[bold green]Cline harness disabled[/bold green]")
+            console.print("  restored pre-enable Cline provider/settings/providers.json backups")
+            return
+        if command == "status":
+            console.print(format_status(status()), end="")
+            return
+        if command == "certify":
+            console.print(format_certify(certify(force=force)), end="")
+            return
+    except HarnessClineError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    raise SystemExit(f"unknown harness cline command: {command}")
 
 
 def cmd_prove_at_rest(
