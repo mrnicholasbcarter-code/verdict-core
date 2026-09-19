@@ -475,7 +475,8 @@ def _serve_once(monkeypatch, tmp_path, *, with_cost: bool):
 def test_serve_writes_outcome_receipt_with_observed_cost(monkeypatch, tmp_path) -> None:
     request_id, decision, outcomes = _serve_once(monkeypatch, tmp_path, with_cost=True)
     assert "observed_cost_usd" not in decision, "pre-execution decision never carries cost"
-    outcome = outcomes[request_id]
+    assert len(outcomes[request_id]["attempts"]) == 1
+    outcome = outcomes[request_id]["final"]
     assert outcome["observed_cost_usd"] == 0.0031
     assert outcome["cost_source"] == "x-omniroute-response-cost"
     assert outcome["observed_tokens_total"] == 720
@@ -487,7 +488,7 @@ def test_serve_writes_outcome_receipt_with_observed_cost(monkeypatch, tmp_path) 
 
 def test_serve_without_cost_header_records_unmeasured_outcome(monkeypatch, tmp_path) -> None:
     request_id, _decision, outcomes = _serve_once(monkeypatch, tmp_path, with_cost=False)
-    outcome = outcomes[request_id]
+    outcome = outcomes[request_id]["final"]
     assert outcome["observed_cost_usd"] is None, "no header means unmeasured, never $0"
     assert outcome["cost_source"] is None
     assert outcome["status_code"] == 200

@@ -86,6 +86,11 @@ def test_dashboard_measures_spend_from_outcome_receipts_not_admit_receipts() -> 
     # can never carry an observed cost; it must not be the spend source.
     assert 'record.get("admit_receipt")' not in source
     assert "no execution receipts yet" in source.lower()
+    # Outcome logs share the .jsonl extension; they must never be offered as decision logs.
+    assert "is_outcome_log(" in source
+    # Reused client request ids are excluded, never credited to every decision.
+    assert "ambiguous_request_ids(" in source
+    assert "decision_rows=records" in source
 
 
 def test_ci_has_python_matrix_and_no_head_masked_smoke() -> None:

@@ -100,8 +100,12 @@ def observe_execution(*, headers: HeaderItems, body: bytes | None) -> dict[str, 
     else:
         usage = _body_usage(body)
         if usage is not None:
-            tokens_in = _non_negative_int(usage.get("prompt_tokens"))
-            tokens_out = _non_negative_int(usage.get("completion_tokens"))
+            # Chat Completions names these prompt_/completion_tokens; the
+            # Responses API names them input_/output_tokens.
+            tokens_in = _non_negative_int(usage.get("prompt_tokens", usage.get("input_tokens")))
+            tokens_out = _non_negative_int(
+                usage.get("completion_tokens", usage.get("output_tokens"))
+            )
             if tokens_in is not None or tokens_out is not None:
                 tokens_source = "body.usage"
     tokens_total = (
@@ -177,13 +181,8 @@ def log_outcome(decision_log_path: Path | str | None, record: Mapping[str, Any])
         pass  # Never disrupt serving because a receipt could not be written.
 
 
-def load_outcomes(decision_log_path: Path | str) -> dict[str, dict[str, Any]]:
-    """Latest outcome per ``request_id`` (the final attempt is the one the client got)."""
-    target = outcome_log_path(decision_log_path)
-    if not target.is_file():
-        return {}
-    outcomes: dict[str, dict[str, Any]] = {}
-    with target.open(encoding="utf-8") as handle:
+def _iter_outcome_rows(path: Path) -> Iterable[dict[str, Any]]:
+    with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -191,33 +190,105 @@ def load_outcomes(decision_log_path: Path | str) -> dict[str, dict[str, Any]]:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(row, Mapping) or row.get("record") != OUTCOME_RECORD_KIND:
-                continue
-            request_id = row.get("request_id")
-            if not isinstance(request_id, str) or not request_id:
-                continue
-            previous = outcomes.get(request_id)
-            if previous is None or int(row.get("attempt", 0)) >= int(previous.get("attempt", 0)):
-                outcomes[request_id] = dict(row)
+            if isinstance(row, Mapping) and row.get("record") == OUTCOME_RECORD_KIND:
+                yield dict(row)
+
+
+def is_outcome_log(path: Path | str) -> bool:
+    """True when ``path`` is an outcome log (by name or by its first record)."""
+    target = Path(path)
+    if target.stem.endswith("-outcomes") or target.stem == "outcomes":
+        return True
+    if not target.is_file():
+        return False
+    try:
+        with target.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    return False
+                return isinstance(row, Mapping) and row.get("record") == OUTCOME_RECORD_KIND
+    except OSError:
+        return False
+    return False
+
+
+def load_outcomes(decision_log_path: Path | str) -> dict[str, dict[str, Any]]:
+    """All outcome receipts per ``request_id``.
+
+    Each value is ``{"final": <highest attempt>, "attempts": [<every attempt>]}``.
+    ``final`` is the response the client received (identity, status);
+    ``attempts`` is what serving this request actually cost, retries included.
+    """
+    target = outcome_log_path(decision_log_path)
+    if not target.is_file():
+        return {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in _iter_outcome_rows(target):
+        request_id = row.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            grouped.setdefault(request_id, []).append(row)
+    outcomes: dict[str, dict[str, Any]] = {}
+    for request_id, rows in grouped.items():
+        rows.sort(key=lambda item: int(item.get("attempt", 0)))
+        outcomes[request_id] = {"final": rows[-1], "attempts": rows}
     return outcomes
 
 
 def measured_spend_for(
-    decision: Mapping[str, Any], outcomes: Mapping[str, Mapping[str, Any]]
+    decision: Mapping[str, Any],
+    outcomes: Mapping[str, Mapping[str, Any]],
+    *,
+    decision_rows: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Join a decision row to its outcome receipt; ``None`` when spend was not observed."""
+    """Join a decision row to its outcome receipts; ``None`` when spend cannot be measured.
+
+    Spend is the **sum of every billed attempt** for the request — a retry the
+    gateway charged for is still money spent serving this decision. When the
+    same ``request_id`` appears on more than one decision row (client-supplied
+    ids are sanitized, not made unique) the receipt cannot be attributed to any
+    one of them, so all of them are excluded rather than each being credited.
+    """
     request_id = decision.get("request_id")
     if not isinstance(request_id, str) or request_id not in outcomes:
         return None
-    outcome = outcomes[request_id]
-    cost = _non_negative_float(outcome.get("observed_cost_usd"))
-    if cost is None:
+    if decision_rows is not None:
+        duplicates = sum(1 for row in decision_rows if row.get("request_id") == request_id)
+        if duplicates > 1:
+            return None
+    attempts = outcomes[request_id].get("attempts") or []
+    billed = [
+        (cost, _non_negative_int(row.get("observed_tokens_total")), row.get("cost_source"))
+        for row in attempts
+        if (cost := _non_negative_float(row.get("observed_cost_usd"))) is not None
+    ]
+    if not billed:
         return None
+    tokens = [count for _cost, count, _source in billed if count is not None]
+    headers = sorted({str(source) for _cost, _count, source in billed if source})
     return {
-        "observed_cost_usd": cost,
-        "observed_tokens_total": _non_negative_int(outcome.get("observed_tokens_total")),
-        "cost_source": f"outcome receipt ({outcome.get('cost_source') or 'unknown header'})",
+        "observed_cost_usd": round(sum(cost for cost, _count, _source in billed), 10),
+        "observed_tokens_total": sum(tokens) if tokens else None,
+        "billed_attempts": len(billed),
+        "cost_source": (
+            f"outcome receipt ({', '.join(headers) or 'unknown header'})"
+            if len(billed) == 1
+            else f"outcome receipts ({', '.join(headers) or 'unknown header'}, {len(billed)} attempts)"
+        ),
     }
+
+
+def ambiguous_request_ids(decision_rows: Iterable[Mapping[str, Any]]) -> set[str]:
+    """Client-supplied ids that appear on more than one decision row."""
+    seen: dict[str, int] = {}
+    for row in decision_rows:
+        request_id = row.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            seen[request_id] = seen.get(request_id, 0) + 1
+    return {request_id for request_id, count in seen.items() if count > 1}
 
 
 __all__ = [
@@ -227,7 +298,9 @@ __all__ = [
     "OUTCOME_SCHEMA_VERSION",
     "TOKENS_IN_HEADER",
     "TOKENS_OUT_HEADER",
+    "ambiguous_request_ids",
     "build_outcome_record",
+    "is_outcome_log",
     "load_outcomes",
     "log_outcome",
     "measured_spend_for",

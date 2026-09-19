@@ -16,14 +16,22 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from verdict.outcome_log import load_outcomes, measured_spend_for, outcome_log_path
+from verdict.outcome_log import (
+    ambiguous_request_ids,
+    is_outcome_log,
+    load_outcomes,
+    measured_spend_for,
+    outcome_log_path,
+)
 
 st.set_page_config(page_title="verdict Analytics", page_icon="⚙️", layout="wide")
 
 st.title("⚙️ verdict Analytics")
 st.markdown("Live routing dashboard for evaluating heuristic fallbacks and quota headroom.")
 
-available_logs = sorted(Path.cwd().glob("*.jsonl"))
+# Outcome receipts live beside the decision log and share its extension; they
+# are joined *into* a decision log, never offered as one.
+available_logs = sorted(path for path in Path.cwd().glob("*.jsonl") if not is_outcome_log(path))
 default_log = Path.cwd() / "verdict-decisions.jsonl"
 if default_log not in available_logs:
     available_logs.insert(0, default_log)
@@ -32,6 +40,14 @@ log_path = st.selectbox("Decision log", available_logs, format_func=str)
 if not log_path.is_file():
     st.warning(f"Log file not found at {log_path}. Run some tasks first!")
     st.stop()
+if is_outcome_log(log_path):
+    st.error(
+        f"{log_path.name} is an outcome-receipt log, not a decision log. Select the "
+        "decision log it belongs to; its receipts are joined in automatically."
+    )
+    st.stop()
+
+REQUIRED_DECISION_COLUMNS = ("ts", "model_chosen", "effective_tier", "latency_ms")
 
 
 # Synthetic assumptions: opt-in illustration only, never labelled actual.
@@ -68,24 +84,46 @@ def load_data(path: Path) -> pd.DataFrame:
     if not records:
         return pd.DataFrame()
     df = pd.DataFrame(records)
+    missing = [column for column in REQUIRED_DECISION_COLUMNS if column not in df.columns]
+    if missing:
+        raise ValueError(f"not a decision log: missing columns {missing}")
     df["ts"] = pd.to_datetime(df["ts"])
-    # Join each pre-execution decision to its post-execution outcome receipt.
-    # Only that receipt may back "measured": it is the one written after the
-    # gateway reported what the execution actually cost.
+    # Join each pre-execution decision to its post-execution outcome receipts.
+    # Only those receipts may back "measured": they are written after the
+    # gateway reported what each attempt actually cost. Spend sums every billed
+    # attempt (a charged retry is still spend); a client-supplied request_id
+    # that appears on several decisions is ambiguous and excluded, never
+    # credited to each of them.
     outcomes = load_outcomes(path)
-    joined = [measured_spend_for(row, outcomes) for row in records]
+    ambiguous = ambiguous_request_ids(records)
+    joined = [measured_spend_for(row, outcomes, decision_rows=records) for row in records]
     df["observed_cost_usd"] = [item["observed_cost_usd"] if item else None for item in joined]
     df["observed_tokens_total"] = [
         item["observed_tokens_total"] if item else None for item in joined
     ]
-    df["cost_source"] = [item["cost_source"] if item else "not measured" for item in joined]
+    df["billed_attempts"] = [item["billed_attempts"] if item else 0 for item in joined]
+    df["cost_source"] = [
+        item["cost_source"]
+        if item
+        else (
+            "ambiguous: request_id reused across decisions"
+            if row.get("request_id") in ambiguous
+            else "not measured"
+        )
+        for item, row in zip(joined, records, strict=True)
+    ]
     df["has_outcome_receipt"] = [
         isinstance(row.get("request_id"), str) and row["request_id"] in outcomes for row in records
     ]
+    df["ambiguous_request_id"] = [row.get("request_id") in ambiguous for row in records]
     return df
 
 
-df = load_data(log_path)
+try:
+    df = load_data(log_path)
+except ValueError as exc:
+    st.error(f"{log_path.name}: {exc}")
+    st.stop()
 
 if df.empty:
     st.info("Log is empty.")
@@ -93,6 +131,7 @@ if df.empty:
 
 outcomes_path = outcome_log_path(log_path)
 receipt_count = int(df["has_outcome_receipt"].sum())
+ambiguous_count = int(df["ambiguous_request_id"].sum())
 
 # High level KPIs (measured only)
 total_requests = len(df)
@@ -138,12 +177,22 @@ col3.metric("P99 Routing Latency", f"{p99_latency:.2f}ms")
 if measured_count < total_requests:
     unmeasured = total_requests - measured_count
     without_receipt = total_requests - receipt_count
+    no_cost_header = max(0, unmeasured - without_receipt - ambiguous_count)
+    parts = [
+        f"{without_receipt} have no execution receipt (never executed, streamed before the "
+        f"receipt landed, or logged before {outcomes_path.name} existed)"
+    ]
+    if ambiguous_count:
+        parts.append(
+            f"{ambiguous_count} reuse a client-supplied request_id across decisions and cannot "
+            "be attributed to one of them"
+        )
+    parts.append(f"{no_cost_header} executed without a cost header")
     st.caption(
         f"{unmeasured} of {total_requests} decisions are excluded from measured spend: "
-        f"{without_receipt} have no execution receipt (never executed, streamed before the "
-        f"receipt landed, or logged before {outcomes_path.name} existed) and "
-        f"{unmeasured - without_receipt} executed without a cost header. Savings are never "
-        "inferred from model-name price tables."
+        + "; ".join(parts)
+        + ". Measured spend sums every billed attempt per request, retries included. "
+        "Savings are never inferred from model-name price tables."
     )
 
 st.divider()
