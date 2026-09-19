@@ -619,6 +619,8 @@ class ContextReceipt:
     unresolved_uncertainties: tuple[str, ...] = ()
     created_at: str = field(default_factory=_now_iso)
     schema_version: str = CONTEXT_SCHEMA_VERSION
+    # BOD-123 additive: capability coverage (requested/available/used/omitted).
+    capability_coverage: Mapping[str, Any] | None = None
 
     @classmethod
     def from_pack(cls, pack: ContextPack) -> ContextReceipt:
@@ -641,9 +643,13 @@ class ContextReceipt:
         _tuple_strings(self.unresolved_uncertainties, "unresolved_uncertainties")
         if self.schema_version != CONTEXT_SCHEMA_VERSION:
             raise ContextContractError("unsupported context receipt schema version")
+        if self.capability_coverage is not None:
+            if not isinstance(self.capability_coverage, Mapping):
+                raise ContextContractError("capability_coverage must be an object")
+            object.__setattr__(self, "capability_coverage", dict(self.capability_coverage))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "receipt_id": self.receipt_id,
             "plan_digest": self.plan_digest,
@@ -652,6 +658,9 @@ class ContextReceipt:
             "unresolved_uncertainties": list(self.unresolved_uncertainties),
             "created_at": self.created_at,
         }
+        if self.capability_coverage is not None:
+            payload["capability_coverage"] = dict(self.capability_coverage)
+        return payload
 
     @property
     def digest(self) -> str:
@@ -662,8 +671,12 @@ class ContextReceipt:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ContextReceipt:
+        migrated = dict(value)
+        # Pre-BOD-123 receipts omit capability_coverage.
+        if "capability_coverage" not in migrated:
+            migrated["capability_coverage"] = None
         payload = _strict(
-            value,
+            migrated,
             {
                 "schema_version",
                 "receipt_id",
@@ -673,7 +686,7 @@ class ContextReceipt:
                 "unresolved_uncertainties",
                 "created_at",
             },
-            set(),
+            {"capability_coverage"},
             "context_receipt",
         )
         return cls(
