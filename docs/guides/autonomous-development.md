@@ -132,11 +132,12 @@ committing.
 
 ## 7. Record learning without leaking data
 
-Use Ruflo pre-task, task, memory, and post-task hooks to retain sanitized
-patterns and outcomes. Record verified successes and failures so the learning
-loop cannot reward worker mirages. SONA/ReasoningBank may improve orchestrator
-selection, but learned results cannot bypass Verdict's deterministic policy or
-eligibility gate.
+Retain sanitized patterns and outcomes through Verdict's Memory Plane and
+receipt/evidence surfaces—not through deleted Ruflo/SONA orchestration hooks
+(BOD-17). Record verified successes and failures so the learning loop cannot
+reward worker mirages. Optional adaptive ranking may inform selection, but
+learned results cannot bypass Verdict's deterministic policy or eligibility
+gate.
 
 The final handoff states what changed, what passed, what merged, what remains,
 and which limitations are open. “Finished” means acceptance criteria and
