@@ -41,7 +41,9 @@ PACK_STATES: frozenset[str] = frozenset({"empty", "partial", "hydrated", "failed
 REQUIRED_HIGH_VALUE_CLASSES: frozenset[int] = frozenset(
     {HYDRATE_CLASS_ADR, HYDRATE_CLASS_ARCHITECTURE}
 )
-_PRESENT_OMISSION_REASONS: frozenset[str] = frozenset({"input_budget_exhausted", "unreadable"})
+_PRESENT_OMISSION_REASONS: frozenset[str] = frozenset(
+    {"input_budget_exhausted", "unreadable", "unit_cap_exceeded"}
+)
 
 
 def classify_pack_state(

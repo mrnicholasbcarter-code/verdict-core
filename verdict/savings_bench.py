@@ -345,6 +345,7 @@ def _withhold_reasons(
     evidence_gaps: Sequence[str],
     pack_state: str | None,
     included_sources: list[Any],
+    direct_quality: Mapping[str, Any],
     verdict_quality: Mapping[str, Any],
     direct_cost: MeasuredCost | None,
     verdict_cost: MeasuredCost | None,
@@ -354,6 +355,10 @@ def _withhold_reasons(
     if not executed:
         reasons.append(WITHHOLD_SIMULATION)
     reasons.extend(evidence_gaps)
+    if not direct_quality["passed"]:
+        # A paired comparison needs a valid baseline. Beating a frontier answer
+        # that itself failed the task is not evidence of savings.
+        reasons.append("baseline_quality_miss")
     if not verdict_quality["passed"]:
         reasons.append("quality_miss")
     if (direct_cost is not None and direct_cost.cache_hit) or (
@@ -549,6 +554,7 @@ def run_savings_bench(
             evidence_gaps=gaps,
             pack_state=str(pack_state) if pack_state is not None else None,
             included_sources=included,
+            direct_quality=direct_quality,
             verdict_quality=verdict_quality,
             direct_cost=direct_cost,
             verdict_cost=verdict_cost,

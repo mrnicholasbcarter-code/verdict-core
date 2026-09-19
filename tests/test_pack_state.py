@@ -105,3 +105,12 @@ def test_missing_required_source_is_partial() -> None:
         included=gathered, gathered=gathered, required=("docs/adr/ADR-007-task.md",)
     )
     assert complete == "hydrated"
+
+
+def test_partial_when_architecture_exists_but_gather_cap_dropped_it() -> None:
+    """A file the per-root cap never gathered is present on disk, not absent (BOD-110)."""
+    included = (IncludedProvenance("docs/adr/ADR-001.md", "sha256:" + "a" * 64),)
+    omissions = (NamedOmission(name="docs/architecture/decision.md", reason="unit_cap_exceeded"),)
+    state = classify_pack_state(included=included, gathered=included, omissions=omissions)
+    assert state == "partial"
+    assert not savings_unlocked(state)

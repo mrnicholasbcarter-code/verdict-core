@@ -76,6 +76,23 @@ def test_dashboard_never_labels_hardcoded_prices_as_actual_cost() -> None:
     assert "NOT measured" in source
 
 
+def test_dashboard_measures_spend_from_outcome_receipts_not_admit_receipts() -> None:
+    """BOD-117: the producer of measured spend is the post-execution outcome log."""
+    source = (REPO / "verdict" / "dashboard.py").read_text(encoding="utf-8")
+    assert "from verdict.outcome_log import" in source
+    assert "load_outcomes(" in source
+    assert "measured_spend_for(" in source
+    # The pre-execution admit receipt is written before the upstream answers and
+    # can never carry an observed cost; it must not be the spend source.
+    assert 'record.get("admit_receipt")' not in source
+    assert "no execution receipts yet" in source.lower()
+    # Outcome logs share the .jsonl extension; they must never be offered as decision logs.
+    assert "is_outcome_log(" in source
+    # Reused client request ids are excluded, never credited to every decision.
+    assert "ambiguous_request_ids(" in source
+    assert "decision_rows=records" in source
+
+
 def test_ci_has_python_matrix_and_no_head_masked_smoke() -> None:
     ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     for version in ("3.10", "3.11", "3.12", "3.13"):

@@ -190,8 +190,12 @@ def gather_cheap_path_units(
         units.extend(found)
         omissions.extend(missed)
 
-    required = task_required_uris(task, units)
-    return HydrateGather(tuple(units), tuple(omissions), root, required)
+    # Required sources are judged over everything the task matched — gathered
+    # units *and* files the per-root cap left behind — never only the survivors.
+    required = task_required_uris(task, units) + tuple(
+        omission.name for omission in omissions if omission.reason == OMISSION_UNIT_CAP_EXCEEDED
+    )
+    return HydrateGather(tuple(units), tuple(omissions), root, tuple(dict.fromkeys(required)))
 
 
 def task_required_uris(task: str, units: Sequence[ContextUnit]) -> tuple[str, ...]:
@@ -282,8 +286,20 @@ def _gather_root(
     ranked = _rank_files(candidates, task=task)
     units: list[ContextUnit] = []
     omissions: list[HydrateOmission] = []
-    for file_path in ranked:
+    for index, file_path in enumerate(ranked):
         if len(units) >= max_units:
+            # The cap has been reached. Anything left that this task *requires*
+            # (task-matching ADR / architecture) must be named as an omission so
+            # the pack cannot read hydrated while silently lacking it (BOD-110).
+            omissions.extend(
+                _capped_required_omissions(
+                    workspace,
+                    ranked[index:],
+                    task=task,
+                    max_file_bytes=max_file_bytes,
+                    seen_uris=seen_uris,
+                )
+            )
             break
         unit, omission = _unit_from_file(
             workspace,
@@ -297,6 +313,38 @@ def _gather_root(
         elif unit is not None:
             units.append(unit)
     return units, omissions
+
+
+OMISSION_UNIT_CAP_EXCEEDED = "unit_cap_exceeded"
+
+
+def _capped_required_omissions(
+    workspace: Path,
+    remaining: Sequence[Path],
+    *,
+    task: str,
+    max_file_bytes: int,
+    seen_uris: set[str],
+) -> list[HydrateOmission]:
+    """Name task-required high-value files the per-root cap left ungathered."""
+    terms = _query_terms(task)
+    if not terms:
+        return []
+    omissions: list[HydrateOmission] = []
+    for file_path in remaining:
+        if hydrate_priority_class(file_path) not in (HYDRATE_CLASS_ADR, HYDRATE_CLASS_ARCHITECTURE):
+            continue
+        source_uri = _relative_uri(workspace, file_path)
+        if source_uri in seen_uris:
+            continue
+        try:
+            content = truncate_utf8(file_path.read_text(encoding="utf-8"), max_file_bytes)
+        except (OSError, UnicodeDecodeError):
+            content = ""
+        haystack = f"{source_uri}\n{content}".lower()
+        if any(term in haystack for term in terms):
+            omissions.append(HydrateOmission(name=source_uri, reason=OMISSION_UNIT_CAP_EXCEEDED))
+    return omissions
 
 
 def _gather_mcp(

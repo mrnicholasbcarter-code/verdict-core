@@ -460,3 +460,51 @@ def test_task_relevant_adr_included_is_hydrated(tmp_path: Path) -> None:
     assert packed.missing_required_sources == ()
     assert packed.task_complete is True
     assert packed.pack_state == "hydrated"
+
+
+def test_task_relevant_adr_beyond_gather_cap_is_named_and_makes_pack_partial(
+    tmp_path: Path,
+) -> None:
+    """BOD-110 gap: a required ADR the per-root unit cap never gathered is still required."""
+    (tmp_path / "docs" / "adr").mkdir(parents=True)
+    (tmp_path / "docs" / "architecture").mkdir(parents=True)
+    (tmp_path / "docs" / "architecture" / "overview.md").write_text(
+        "# Architecture\n\nOne control plane.\n", encoding="utf-8"
+    )
+    # One more task-matching ADR than the default per-root cap allows.
+    from verdict.context_hydrate import DEFAULT_MAX_UNITS_PER_ROOT
+
+    count = DEFAULT_MAX_UNITS_PER_ROOT + 1
+    for index in range(count):
+        (tmp_path / "docs" / "adr" / f"ADR-{index:03d}-billing-ledger-part{index}.md").write_text(
+            f"# ADR-{index:03d} Billing ledger part {index}\n\nLedger invariant {index}.\n",
+            encoding="utf-8",
+        )
+
+    gathered = gather_cheap_path_units(
+        "fix the billing ledger reconciliation bug",
+        workspace_root=tmp_path,
+        roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+    )
+    adr_units = [u.source_uri for u in gathered.units if u.source_uri.startswith("docs/adr/")]
+    assert len(adr_units) == DEFAULT_MAX_UNITS_PER_ROOT
+    assert len(gathered.required_uris) == count, "every matching ADR is required, gathered or not"
+    capped = {o.name: o.reason for o in gathered.omissions if o.reason == "unit_cap_exceeded"}
+    assert len(capped) == 1
+    (capped_uri,) = capped
+    assert capped_uri in gathered.required_uris
+    assert capped_uri not in adr_units
+
+    packed = build_cheap_path_context_pack(
+        "fix the billing ledger reconciliation bug",
+        candidate_id="openrouter/free-model",
+        token_budget=200_000,
+        workspace_root=tmp_path,
+        workspace_roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+    )
+    assert packed.missing_required_sources == (capped_uri,)
+    assert packed.pack_state == "partial"
+    named = {item.name: item.reason for item in packed.omissions}
+    assert named[capped_uri] == "unit_cap_exceeded"

@@ -1,25 +1,37 @@
 """Streamlit analytics dashboard for the Verdict decision log.
 
-Spend truthfulness (BOD-113): "actual" spend is shown only from observed
-cost/token receipts recorded on decisions. Any per-model price assumption is
+Spend truthfulness (BOD-113 / BOD-117): "measured" spend is shown only from
+post-execution outcome receipts (``verdict-outcomes.jsonl``, written by the
+serve path after the gateway answers and joined to decisions by
+``request_id``). The pre-execution decision row cannot know what an execution
+cost, so it is never a spend source. Any per-model price assumption is
 labelled synthetic, is opt-in, and is never presented as measured cost.
 """
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from verdict.outcome_log import (
+    ambiguous_request_ids,
+    is_outcome_log,
+    load_outcomes,
+    measured_spend_for,
+    outcome_log_path,
+)
+
 st.set_page_config(page_title="verdict Analytics", page_icon="⚙️", layout="wide")
 
 st.title("⚙️ verdict Analytics")
 st.markdown("Live routing dashboard for evaluating heuristic fallbacks and quota headroom.")
 
-available_logs = sorted(Path.cwd().glob("*.jsonl"))
+# Outcome receipts live beside the decision log and share its extension; they
+# are joined *into* a decision log, never offered as one.
+available_logs = sorted(path for path in Path.cwd().glob("*.jsonl") if not is_outcome_log(path))
 default_log = Path.cwd() / "verdict-decisions.jsonl"
 if default_log not in available_logs:
     available_logs.insert(0, default_log)
@@ -28,11 +40,15 @@ log_path = st.selectbox("Decision log", available_logs, format_func=str)
 if not log_path.is_file():
     st.warning(f"Log file not found at {log_path}. Run some tasks first!")
     st.stop()
+if is_outcome_log(log_path):
+    st.error(
+        f"{log_path.name} is an outcome-receipt log, not a decision log. Select the "
+        "decision log it belongs to; its receipts are joined in automatically."
+    )
+    st.stop()
 
+REQUIRED_DECISION_COLUMNS = ("ts", "model_chosen", "effective_tier", "latency_ms")
 
-# Observed receipts: the only inputs allowed to back "actual spend".
-OBSERVED_COST_FIELDS = ("observed_cost_usd", "cost_usd")
-OBSERVED_TOKEN_FIELDS = ("observed_tokens_total", "tokens_total")
 
 # Synthetic assumptions: opt-in illustration only, never labelled actual.
 SYNTHETIC_PRICES_USD_PER_REQUEST = {
@@ -43,20 +59,6 @@ SYNTHETIC_PRICES_USD_PER_REQUEST = {
     "default": 0.001,
 }
 SYNTHETIC_FRONTIER_BASELINE_USD = 0.015
-
-
-def _first_number(record: dict[str, Any], keys: tuple[str, ...]) -> float | None:
-    """Return the first numeric value among ``keys`` at the top level or in the receipt."""
-    receipt = record.get("admit_receipt")
-    scopes: list[dict[str, Any]] = [record]
-    if isinstance(receipt, dict):
-        scopes.append(receipt)
-    for scope in scopes:
-        for key in keys:
-            value = scope.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-                return float(value)
-    return None
 
 
 def synthetic_price(model: str) -> float:
@@ -82,21 +84,54 @@ def load_data(path: Path) -> pd.DataFrame:
     if not records:
         return pd.DataFrame()
     df = pd.DataFrame(records)
+    missing = [column for column in REQUIRED_DECISION_COLUMNS if column not in df.columns]
+    if missing:
+        raise ValueError(f"not a decision log: missing columns {missing}")
     df["ts"] = pd.to_datetime(df["ts"])
-    df["observed_cost_usd"] = [_first_number(row, OBSERVED_COST_FIELDS) for row in records]
-    df["observed_tokens_total"] = [_first_number(row, OBSERVED_TOKEN_FIELDS) for row in records]
-    df["cost_source"] = [
-        "observed receipt" if cost is not None else "not measured"
-        for cost in df["observed_cost_usd"]
+    # Join each pre-execution decision to its post-execution outcome receipts.
+    # Only those receipts may back "measured": they are written after the
+    # gateway reported what each attempt actually cost. Spend sums every billed
+    # attempt (a charged retry is still spend); a client-supplied request_id
+    # that appears on several decisions is ambiguous and excluded, never
+    # credited to each of them.
+    outcomes = load_outcomes(path)
+    ambiguous = ambiguous_request_ids(records)
+    joined = [measured_spend_for(row, outcomes, decision_rows=records) for row in records]
+    df["observed_cost_usd"] = [item["observed_cost_usd"] if item else None for item in joined]
+    df["observed_tokens_total"] = [
+        item["observed_tokens_total"] if item else None for item in joined
     ]
+    df["billed_attempts"] = [item["billed_attempts"] if item else 0 for item in joined]
+    df["cost_source"] = [
+        item["cost_source"]
+        if item
+        else (
+            "ambiguous: request_id reused across decisions"
+            if row.get("request_id") in ambiguous
+            else "not measured"
+        )
+        for item, row in zip(joined, records, strict=True)
+    ]
+    df["has_outcome_receipt"] = [
+        isinstance(row.get("request_id"), str) and row["request_id"] in outcomes for row in records
+    ]
+    df["ambiguous_request_id"] = [row.get("request_id") in ambiguous for row in records]
     return df
 
 
-df = load_data(log_path)
+try:
+    df = load_data(log_path)
+except ValueError as exc:
+    st.error(f"{log_path.name}: {exc}")
+    st.stop()
 
 if df.empty:
     st.info("Log is empty.")
     st.stop()
+
+outcomes_path = outcome_log_path(log_path)
+receipt_count = int(df["has_outcome_receipt"].sum())
+ambiguous_count = int(df["ambiguous_request_id"].sum())
 
 # High level KPIs (measured only)
 total_requests = len(df)
@@ -109,26 +144,55 @@ col1, col2, col3 = st.columns(3)
 col1.metric("Total Routed Prompts", f"{total_requests:,}")
 if measured_count:
     col2.metric(
-        "Measured Spend (observed receipts)",
+        f"Measured Spend ({measured_count} receipts)",
         f"${measured_spend:,.4f}",
-        help=f"Sum of observed cost receipts on {measured_count} of {total_requests} decisions.",
+        help=(
+            f"Sum of observed cost on {measured_count} of {total_requests} decisions, "
+            f"from post-execution outcome receipts in {outcomes_path.name} "
+            "(X-OmniRoute-Response-Cost). Never estimated from model names."
+        ),
+    )
+elif not outcomes_path.is_file():
+    col2.metric(
+        "Measured Spend",
+        "no execution receipts yet",
+        help=(
+            f"{outcomes_path.name} does not exist beside this decision log. The serve "
+            "path writes one outcome receipt per upstream attempt; run traffic through "
+            "`verdict serve` to produce them. Verdict does not estimate spend from model names."
+        ),
     )
 else:
     col2.metric(
-        "Measured Spend (observed receipts)",
+        "Measured Spend",
         "not measured",
         help=(
-            "No decision in this log carries an observed cost receipt "
-            "(observed_cost_usd). Verdict does not estimate spend from model names."
+            f"{receipt_count} of {total_requests} decisions have an outcome receipt, but none "
+            "carried X-OmniRoute-Response-Cost. The gateway did not report cost; Verdict "
+            "does not estimate it from model names."
         ),
     )
 col3.metric("P99 Routing Latency", f"{p99_latency:.2f}ms")
 
 if measured_count < total_requests:
+    unmeasured = total_requests - measured_count
+    without_receipt = total_requests - receipt_count
+    no_cost_header = max(0, unmeasured - without_receipt - ambiguous_count)
+    parts = [
+        f"{without_receipt} have no execution receipt (never executed, streamed before the "
+        f"receipt landed, or logged before {outcomes_path.name} existed)"
+    ]
+    if ambiguous_count:
+        parts.append(
+            f"{ambiguous_count} reuse a client-supplied request_id across decisions and cannot "
+            "be attributed to one of them"
+        )
+    parts.append(f"{no_cost_header} executed without a cost header")
     st.caption(
-        f"{total_requests - measured_count} of {total_requests} decisions have no observed "
-        "cost receipt and are excluded from measured spend. Savings are never inferred "
-        "from model-name price tables."
+        f"{unmeasured} of {total_requests} decisions are excluded from measured spend: "
+        + "; ".join(parts)
+        + ". Measured spend sums every billed attempt per request, retries included. "
+        "Savings are never inferred from model-name price tables."
     )
 
 st.divider()
@@ -151,7 +215,7 @@ with c1:
 with c2:
     st.subheader("Measured Spend Over Time")
     if measured_count:
-        df_time = measured.set_index("ts").resample("1H")[["observed_cost_usd"]].sum().reset_index()
+        df_time = measured.set_index("ts").resample("1h")[["observed_cost_usd"]].sum().reset_index()
         fig2 = go.Figure()
         fig2.add_trace(
             go.Scatter(

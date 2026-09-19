@@ -101,12 +101,14 @@ def _ok_confirm_transport():
     return transport
 
 
-def _admit_service(snapshot, *, passports=None, confirm_transport=None) -> IntelligenceService:
+def _admit_service(
+    snapshot, *, passports=None, confirm_transport=None, log_path: str = ""
+) -> IntelligenceService:
     return IntelligenceService(
         primary_model="anthropic/claude-3-opus-20240229",
         providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
         profile="development",
-        log_path="",
+        log_path=log_path,
         log_full_task=False,
         discovery_ttl=60,
         admit_snapshot=snapshot,
@@ -410,3 +412,83 @@ def test_empty_pack_is_not_claimed_as_injected(monkeypatch, tmp_path) -> None:
     assert response.headers["x-verdict-pack-state"] == "empty"
     assert "x-verdict-pack-digest" not in response.headers
     assert transport.requests[0]["body"]["messages"] == user_messages
+
+
+# --- BOD-117: serving writes a post-execution outcome receipt --------------------
+
+
+class CostReportingTransport(RecordingTransport):
+    """Spy upstream that returns OmniRoute cost/usage headers like the real gateway."""
+
+    def __init__(self, *, with_cost: bool) -> None:
+        super().__init__()
+        self.with_cost = with_cost
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await super().handle_async_request(request)
+        if response.status_code != 200 or not self.with_cost:
+            return response
+        headers = dict(response.headers)
+        headers.update(
+            {
+                "X-OmniRoute-Request-Id": "exec-777",
+                "X-OmniRoute-Model": "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
+                "X-OmniRoute-Response-Cost": "0.0031",
+                "X-OmniRoute-Tokens-In": "640",
+                "X-OmniRoute-Tokens-Out": "80",
+                "X-OmniRoute-Cache-Hit": "false",
+            }
+        )
+        return httpx.Response(200, headers=headers, content=response.content)
+
+
+def _serve_once(monkeypatch, tmp_path, *, with_cost: bool):
+    from verdict.outcome_log import load_outcomes
+
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    transport = CostReportingTransport(with_cost=with_cost)
+    decisions = tmp_path / "verdict-decisions.jsonl"
+    _configure(
+        monkeypatch,
+        transport,
+        _admit_service(
+            _free_snapshot(),
+            passports={identity: _fresh_passport(identity)},
+            confirm_transport=_ok_confirm_transport(),
+            log_path=str(decisions),
+        ),
+    )
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert response.status_code == 200
+    request_id = response.headers["x-verdict-request-id"]
+    decision_rows = [
+        json.loads(line) for line in decisions.read_text(encoding="utf-8").splitlines() if line
+    ]
+    assert [row["request_id"] for row in decision_rows] == [request_id]
+    return request_id, decision_rows[0], load_outcomes(decisions)
+
+
+def test_serve_writes_outcome_receipt_with_observed_cost(monkeypatch, tmp_path) -> None:
+    request_id, decision, outcomes = _serve_once(monkeypatch, tmp_path, with_cost=True)
+    assert "observed_cost_usd" not in decision, "pre-execution decision never carries cost"
+    assert len(outcomes[request_id]["attempts"]) == 1
+    outcome = outcomes[request_id]["final"]
+    assert outcome["observed_cost_usd"] == 0.0031
+    assert outcome["cost_source"] == "x-omniroute-response-cost"
+    assert outcome["observed_tokens_total"] == 720
+    assert outcome["completed_with"] == "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    assert outcome["execution_id"] == "exec-777"
+    assert outcome["status_code"] == 200
+    assert outcome["surface"] == "chat"
+
+
+def test_serve_without_cost_header_records_unmeasured_outcome(monkeypatch, tmp_path) -> None:
+    request_id, _decision, outcomes = _serve_once(monkeypatch, tmp_path, with_cost=False)
+    outcome = outcomes[request_id]["final"]
+    assert outcome["observed_cost_usd"] is None, "no header means unmeasured, never $0"
+    assert outcome["cost_source"] is None
+    assert outcome["status_code"] == 200

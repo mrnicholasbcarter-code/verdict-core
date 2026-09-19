@@ -183,7 +183,12 @@ class FixedIntelligence:
     profile = "test"
 
     async def route(
-        self, task: str, criticality: str = "medium", context: dict[str, Any] | None = None
+        self,
+        task: str,
+        criticality: str = "medium",
+        context: dict[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
     ) -> RoutingDecision:
         assert task == "preserve all fields"
         return RoutingDecision(
@@ -822,7 +827,7 @@ def test_compatibility_400_is_not_retried_unchanged_or_failed_over(monkeypatch) 
     _configure_test_app(monkeypatch, transport)
 
     class NvidiaIntelligence(FixedIntelligence):
-        async def route(self, task, criticality="medium", context=None):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
             decision = await super().route(task, criticality, context)
             return replace(
                 decision,
@@ -902,7 +907,7 @@ def test_pre_byte_fallback_requires_idempotency_and_is_never_used_for_tools(monk
     _configure_test_app(monkeypatch, transport)
 
     class Alternatives(FixedIntelligence):
-        async def route(self, task, criticality="medium", context=None):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
             decision = await super().route(task or "preserve all fields", criticality, context)
             return replace(
                 decision,
