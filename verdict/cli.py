@@ -3458,7 +3458,8 @@ def main() -> None:
     )
 
     docs_p = memory_sub.add_parser(
-        "docs", help="Verify or ingest authoritative project and optional external runtime documentation"
+        "docs",
+        help="Verify or ingest authoritative project and optional external runtime documentation",
     )
     docs_p.add_argument(
         "--fix", action="store_true", help="Fetch and ingest missing/stale documents"
@@ -3468,8 +3469,7 @@ def main() -> None:
     docs_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     setup_p = memory_sub.add_parser(
-        "setup",
-        help="Autopilot wizard to connect tools (Codex, Claude, Pi) to Unified Memory",
+        "setup", help="Autopilot wizard to connect tools (Codex, Claude, Pi) to Unified Memory"
     )
     setup_p.add_argument(
         "--tools", default=None, help="Comma-separated tools to configure (default: auto-detected)"
