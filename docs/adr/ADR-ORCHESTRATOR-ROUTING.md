@@ -1,6 +1,8 @@
+> **Status: SUPERSEDED (BOD-17 / BOD-127)** — Ruflo swarm dispatch and neural/SONA selection are obsolete Core architecture and were deleted. Canonical serve path is BOD-104 execution-path → BOD-67 optimized dispatch → `verdict.dispatcher` authorized `selected_route` only. Docs hygiene continues under BOD-131.
+
 # ADR-ORCHESTRATOR-ROUTING: Orchestrator-Driven Model Selection with Deterministic Enforcement
 
-- **Status**: accepted
+- **Status**: SUPERSEDED (BOD-17)
 - **Date**: 2026-07-31
 - **Deciders**: Verdict Core maintainers
 - **Tags**: routing, architecture, orchestrator, neural-learning, eligibility-gate

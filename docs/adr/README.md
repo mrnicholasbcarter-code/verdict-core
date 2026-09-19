@@ -50,7 +50,7 @@ superseded by a later record rather than edited away.
 | [020](ADR-020-gateway-adapter-contracts.md) — Gateway adapter contracts | A versioned, provider-neutral adapter contract keeps gateway specifics out of core. | Accepted |
 | [021](ADR-021-deterministic-provider-receipts.md) — Deterministic provider receipts | All domain providers emit a standardized portable `ProviderReceipt` payload. | Accepted |
 | [022](ADR-022-context-provider-conformance.md) — Context provider conformance suite | A shared conformance suite pins context-provider behaviour across repos. | Accepted (partial) |
-| [023](ADR-023-governed-swarm-supervision.md) — Governed swarm supervision | Swarm supervision is pinned by conformance tests so agents cannot bypass governance. | Accepted (partial) |
+| [023](ADR-023-governed-swarm-supervision.md) — Governed swarm supervision | **SUPERSEDED (BOD-17)** — Ruflo/swarm supervision deleted from Core; canonical dispatch is BOD-104 → BOD-67. | Superseded |
 | [024](ADR-024-cross-repo-compatibility-gate.md) — Cross-repo compatibility gate | A compatibility manifest plus a fail-closed gate CLI guards cross-repo contract drift. | Partially implemented |
 | [025](ADR-025-node-envelope-enforcement.md) — Node envelope enforcement | `verdict-node` enforces the same `ExecutionEnvelope` invariants as core. | Proposed |
 | [026](ADR-026-responses-compatibility-boundary.md) — Responses compatibility boundary | A versioned compatibility rule applies immediately before the HTTP Responses transport. | Accepted |
@@ -70,7 +70,7 @@ than in a separate series:
 |---|---|
 | Provider receipt format | [ADR-021](ADR-021-deterministic-provider-receipts.md) |
 | Context provider interface standardization | [ADR-022](ADR-022-context-provider-conformance.md) |
-| SwarmSpec governance model | [ADR-023](ADR-023-governed-swarm-supervision.md) |
+| SwarmSpec governance model (historical) | [ADR-023](ADR-023-governed-swarm-supervision.md) — SUPERSEDED by BOD-17 |
 | Verdict-ecosystem as extension, not fork | [ADR-024](ADR-024-cross-repo-compatibility-gate.md) |
 | Node envelope enforcement | [ADR-025](ADR-025-node-envelope-enforcement.md) |
 
