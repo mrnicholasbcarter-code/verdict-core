@@ -122,11 +122,89 @@ PROVIDER_MAPPING = {
 
 
 def cmd_setup(
-    *, dry_run: bool = False, output_json: bool = False, non_interactive: bool = False
+    *,
+    dry_run: bool = False,
+    output_json: bool = False,
+    non_interactive: bool = False,
+    recommended: bool = False,
+    plan_only: bool = False,
+    scope: str = "all",
+    allowlist: list[str] | None = None,
+    consent: bool = False,
+    apply: bool = False,
 ) -> None:
-    """Interactive setup wizard or a mutation-free setup plan."""
-    if dry_run or output_json or non_interactive:
-        cmd_setup_plan(output_json=output_json)
+    """Interactive setup wizard, mutation-free plan, or capability bootstrap APPLY."""
+    from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
+
+    # Preserve the classic mutation-free setup_plan contract for dry-run / plan
+    # unless the caller explicitly requested bootstrap enrichment or APPLY.
+    wants_classic_plan = (dry_run or plan_only or (output_json and not apply)) and not (
+        recommended or apply or scope != "all"
+    )
+    if wants_classic_plan:
+        cmd_setup_plan(output_json=output_json or dry_run or plan_only)
+        return
+
+    wants_bootstrap_plan = (
+        recommended or plan_only or dry_run or non_interactive or scope != "all"
+    ) and not apply
+    if wants_bootstrap_plan:
+        mode = BootstrapMode.RECOMMENDED if recommended else BootstrapMode.PLAN
+        report = run_bootstrap(
+            mode=mode,
+            scope=BootstrapScope(scope),
+            non_interactive=True,
+            allowlist=tuple(allowlist or ()),
+        )
+        payload = report.to_dict()
+        if output_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return
+        plan = payload["plan"]
+        stages = payload["stages"]
+        if not isinstance(plan, dict) or not isinstance(stages, list):
+            raise TypeError("bootstrap report must include plan dict and stages list")
+        print("Verdict capability bootstrap (dry-run; no changes made)")
+        print(f"Plan: {plan['plan_id']}")
+        print(f"Scope: {scope}  Mode: {mode.value}")
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
+            print(f"- [{stage['stage']}] {stage['status']}: {stage['summary']}")
+        actions = plan.get("actions", [])
+        if isinstance(actions, list):
+            for action in actions:
+                if isinstance(action, dict):
+                    print(f"  action: {action['description']}")
+        return
+
+    if apply:
+        report = run_bootstrap(
+            mode=BootstrapMode.APPLY,
+            scope=BootstrapScope(scope),
+            non_interactive=non_interactive,
+            allowlist=tuple(allowlist or ()),
+            consent=consent,
+        )
+        payload = report.to_dict()
+        stages = payload["stages"]
+        if not isinstance(stages, list):
+            raise TypeError("bootstrap report must include stages list")
+        if output_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            for stage in stages:
+                if not isinstance(stage, dict):
+                    continue
+                print(f"- [{stage['stage']}] {stage['status']}: {stage['summary']}")
+        consent_blocked = any(
+            isinstance(stage, dict)
+            and stage.get("stage") == "consent"
+            and stage.get("status") == "blocked"
+            for stage in stages
+        )
+        if consent_blocked:
+            raise SystemExit(2)
         return
 
     # If an existing config file is present but not valid YAML, warn before
@@ -465,12 +543,42 @@ def cmd_setup(
     console.print(yaml.dump(config, default_flow_style=False))
 
 
-def cmd_setup_plan(*, output_json: bool = False) -> None:
-    """Print the mutation-free setup plan without discovery or side effects."""
+def cmd_setup_plan(
+    *, output_json: bool = False, scope: str = "all", recommended: bool = False
+) -> None:
+    """Print the mutation-free setup plan; optionally enrich with bootstrap."""
 
     from verdict.setup_plan import build_setup_plan
 
-    plan: dict[str, Any] = build_setup_plan().to_dict()
+    # Default path preserves the classic setup_plan contract (no probes).
+    if not recommended and scope == "all":
+        plan: dict[str, Any] = build_setup_plan().to_dict()
+        if output_json:
+            print(json.dumps(plan, indent=2, sort_keys=True))
+            return
+        print("Verdict setup plan (dry-run; no changes made)")
+        print(f"Plan: {plan['plan_id']}")
+        config = plan["config"]
+        actions = plan["actions"]
+        assert isinstance(config, dict)
+        assert isinstance(actions, list)
+        print(f"Config: {config['path']}")
+        for action in actions:
+            assert isinstance(action, dict)
+            print(f"- {action['description']}")
+        return
+
+    from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
+
+    bootstrap = run_bootstrap(
+        mode=BootstrapMode.RECOMMENDED if recommended else BootstrapMode.PLAN,
+        scope=BootstrapScope(scope),
+        non_interactive=True,
+    )
+    base = build_setup_plan(
+        bootstrap_providers=bootstrap.providers, include_bootstrap=True
+    ).to_dict()
+    plan = {**base, "bootstrap": bootstrap.to_dict()}
     if output_json:
         print(json.dumps(plan, indent=2, sort_keys=True))
         return
@@ -484,6 +592,11 @@ def cmd_setup_plan(*, output_json: bool = False) -> None:
     for action in actions:
         assert isinstance(action, dict)
         print(f"- {action['description']}")
+    bootstrap_payload = plan["bootstrap"]
+    assert isinstance(bootstrap_payload, dict)
+    stages = bootstrap_payload.get("stages", [])
+    assert isinstance(stages, list)
+    print(f"Bootstrap stages: {len(stages)}")
 
 
 def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
@@ -1596,12 +1709,14 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     if output_json:
         from pathlib import Path
 
+        from verdict.capability_bootstrap import doctor_capability_report
         from verdict.memory_bridge import run_doctor_diagnostics
         from verdict.runtime_daemons import RuntimeManager
         from verdict.runtime_health import build_runtime_health_report
 
         report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
         report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
+        report["capability_bootstrap"] = doctor_capability_report()
         print(json.dumps(report, indent=2, sort_keys=True))
         if report["status"] != "healthy":
             raise SystemExit(1)
@@ -1610,6 +1725,18 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     console.print(
         Panel.fit("[bold green]🩺 Verdict System Doctor[/bold green]", border_style="green")
     )
+
+    from verdict.capability_bootstrap import doctor_capability_report
+
+    capability_report = doctor_capability_report()
+    capabilities = capability_report.get("capabilities", [])
+    if not isinstance(capabilities, list):
+        capabilities = []
+    covered = sum(
+        1 for item in capabilities if isinstance(item, dict) and item.get("status") == "covered"
+    )
+    total = len(capabilities)
+    console.print(f"  • Capability coverage: [cyan]{covered}/{total}[/] covered (bootstrap view)")
 
     issues_found = []
     fixed_issues = []
@@ -2622,15 +2749,40 @@ def main() -> None:
     setup_cli_p.add_argument(
         "setup_action",
         nargs="?",
-        choices=["plan"],
-        help="Read-only setup operation (currently: plan)",
+        choices=["plan", "intelligence", "gateways", "harnesses"],
+        help="Read-only setup operation or capability scope",
     )
     setup_cli_p.add_argument(
         "--dry-run", action="store_true", help="Build a mutation-free setup plan"
     )
+    setup_cli_p.add_argument(
+        "--plan", action="store_true", help="Mutation-free capability bootstrap plan"
+    )
+    setup_cli_p.add_argument(
+        "--recommended",
+        action="store_true",
+        help="Show recommended enrichment set (still mutation-free without --apply)",
+    )
     setup_cli_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     setup_cli_p.add_argument(
         "--non-interactive", action="store_true", help="Do not prompt or mutate state"
+    )
+    setup_cli_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply authorized bootstrap actions (requires --yes or --allow)",
+    )
+    setup_cli_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Final consent for APPLY (no silent third-party installs without this or --allow)",
+    )
+    setup_cli_p.add_argument(
+        "--allow",
+        dest="allowlist",
+        action="append",
+        default=[],
+        help="Non-interactive allowlist provider id (repeatable), e.g. gateway.omniroute",
     )
 
     route_p = subparsers.add_parser("route", help="Route a single prompt/task")
@@ -3287,11 +3439,22 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "setup":
-        if args.setup_action == "plan":
-            cmd_setup_plan(output_json=args.json)
+        scope = "all"
+        if args.setup_action in {"intelligence", "gateways", "harnesses"}:
+            scope = args.setup_action
+        if args.setup_action == "plan" or args.plan:
+            cmd_setup_plan(output_json=args.json, scope=scope, recommended=args.recommended)
         else:
             cmd_setup(
-                dry_run=args.dry_run, output_json=args.json, non_interactive=args.non_interactive
+                dry_run=args.dry_run,
+                output_json=args.json,
+                non_interactive=args.non_interactive,
+                recommended=args.recommended,
+                plan_only=False,
+                scope=scope,
+                allowlist=list(args.allowlist or []),
+                consent=bool(args.yes),
+                apply=bool(args.apply),
             )
     elif args.command == "route":
         cmd_route(args.task, args.criticality, args.terse)

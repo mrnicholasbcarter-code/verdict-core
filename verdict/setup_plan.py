@@ -3,6 +3,9 @@
 The planner deliberately performs no discovery probes and never reads config
 contents. It describes the first-run mutations that a future apply command may
 request, leaving consent and execution to a separate transaction boundary.
+
+Optional bootstrap enrichment actions (BOD-124) may be attached when callers
+pass discovered providers; those actions remain mutation-free until APPLY.
 """
 
 from __future__ import annotations
@@ -10,8 +13,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from verdict.capability_bootstrap import DiscoveredProvider
 
 SCHEMA_VERSION = "1"
 _DIGEST_PREFIX = "sha256:"
@@ -121,12 +129,9 @@ def _config_path() -> Path:
     return Path.home() / ".config" / "verdict" / "verdict.yaml"
 
 
-def build_setup_plan() -> SetupPlan:
-    """Build a deterministic local setup plan without network or mutations."""
-
-    config_exists = _config_path().is_file()
-    actions = (
-        (
+def _base_config_actions(config_exists: bool) -> tuple[SetupAction, ...]:
+    if config_exists:
+        return (
             SetupAction(
                 action_id="preserve-config",
                 kind="inspect",
@@ -140,22 +145,56 @@ def build_setup_plan() -> SetupPlan:
                 requires_consent=False,
             ),
         )
-        if config_exists
-        else (
-            SetupAction(
-                action_id="create-config",
-                kind="write_config",
-                target="config",
-                description="Create a minimal Verdict configuration after explicit consent.",
-                reason="A missing configuration is required before an operator can apply setup.",
-                security_impact="Creates only local configuration; credentials remain environment/keyring references.",
-                postcondition="A validated minimal configuration exists at the planned target.",
-                undo="Remove the newly created configuration after confirming it was not modified.",
-                reversible=True,
-                requires_consent=True,
-            ),
-        )
+    return (
+        SetupAction(
+            action_id="create-config",
+            kind="write_config",
+            target="config",
+            description="Create a minimal Verdict configuration after explicit consent.",
+            reason="A missing configuration is required before an operator can apply setup.",
+            security_impact="Creates only local configuration; credentials remain environment/keyring references.",
+            postcondition="A validated minimal configuration exists at the planned target.",
+            undo="Remove the newly created configuration after confirming it was not modified.",
+            reversible=True,
+            requires_consent=True,
+        ),
     )
+
+
+def _bootstrap_setup_actions(
+    bootstrap_providers: Sequence[DiscoveredProvider] | None,
+) -> tuple[SetupAction, ...]:
+    """Translate BOD-124 bootstrap plan actions into SetupAction rows."""
+
+    if bootstrap_providers is None:
+        return ()
+    from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
+
+    report = run_bootstrap(
+        providers=bootstrap_providers,
+        mode=BootstrapMode.RECOMMENDED,
+        scope=BootstrapScope.ALL,
+        non_interactive=True,
+    )
+    return tuple(action.to_setup_action() for action in report.plan.actions)
+
+
+def build_setup_plan(
+    *,
+    bootstrap_providers: Sequence[DiscoveredProvider] | None = None,
+    include_bootstrap: bool = False,
+) -> SetupPlan:
+    """Build a deterministic local setup plan without network or mutations.
+
+    When ``include_bootstrap`` is true, attach capability-bootstrap enrichment
+    actions derived from ``bootstrap_providers`` (or an empty observation set).
+    """
+
+    config_exists = _config_path().is_file()
+    actions = _base_config_actions(config_exists)
+    if include_bootstrap:
+        providers = bootstrap_providers if bootstrap_providers is not None else ()
+        actions = actions + _bootstrap_setup_actions(providers)
     return SetupPlan(
         config_path=_display_config_path(), config_exists=config_exists, actions=actions
     )
