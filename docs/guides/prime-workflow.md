@@ -112,6 +112,24 @@ owns orchestration updates, worker owns only assigned files and its receipt/evid
 The supervisor serializes the entire repo loop via common-git flock, including across
 different worktrees. External legacy writers must be detected during reconciliation.
 
+### Cross-harness durable resume (BOD-65/66)
+
+Workers (Cursor, Claude Code, Codex, Prime) are interchangeable. Durable resume state
+must **not** live in proprietary chat history. Canonical sources are Git + worktree +
+branch + Linear + proof/test state + `.verdict/handoff.md` in the story worktree.
+
+CLI foundations (library authority; launcher adapters may remain stubs):
+
+```bash
+verdict resume BOD-65
+verdict resume BOD-65 --json
+verdict resume BOD-65 --with claude   # records launcher intent; does not exec yet
+```
+
+`verdict.worktree_registry` enforces reattach-before-create and refuses silent cleanup
+of dirty or unmerged worktrees. `verdict.handoff` reads/writes the handoff schema.
+`verdict.resume` builds a normalized resume prompt any harness can consume.
+
 ## Dispatch packet and receipt, version 1
 
 Packet required fields:
