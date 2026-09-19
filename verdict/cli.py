@@ -862,21 +862,13 @@ def cmd_detect(
         sys.exit(1)
 
 
-def cmd_certify(
-    *,
-    snapshot_path: str | None = None,
-    output_json: bool = True,
-) -> None:
+def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -> None:
     """Emit a BOD-92 runtime certification report (evidence only, JSON).
 
     Reads DetectedSnapshot fixtures from ``--from`` when provided. Does not
     perform live network probes or mutate setup/doctor state (BOD-124).
     """
-    from verdict.runtime_certification import (
-        ComponentKind,
-        DetectedSnapshot,
-        certify_runtime,
-    )
+    from verdict.runtime_certification import ComponentKind, DetectedSnapshot, certify_runtime
 
     snapshots: list[DetectedSnapshot] = []
     if snapshot_path:
@@ -2840,8 +2832,7 @@ def main() -> None:
     detect_p.add_argument("--config", action="store_true", help="Generate suggested Verdict config")
 
     certify_p = subparsers.add_parser(
-        "certify",
-        help="Emit runtime certification passport JSON (BOD-92 evidence only)",
+        "certify", help="Emit runtime certification passport JSON (BOD-92 evidence only)"
     )
     certify_p.add_argument(
         "--from",
