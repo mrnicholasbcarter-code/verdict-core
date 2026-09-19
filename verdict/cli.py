@@ -679,7 +679,7 @@ def cmd_benchmark(
             except LiveExecutorUnavailableError as exc:
                 console.print(f"[bold red]❌ {exc}[/bold red]")
                 raise SystemExit(2) from exc
-        report = run_savings_bench(path, execute_arm=execute_arm)
+        report = run_savings_bench(path, execute_arm=execute_arm, live_admit=live_paired)
         console.print(format_savings_report(report), end="")
         if output_json:
             output_path = Path(output_json)

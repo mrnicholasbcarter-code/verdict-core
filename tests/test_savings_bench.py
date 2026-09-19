@@ -611,3 +611,80 @@ def test_direct_arm_executed_on_a_different_model_is_not_a_frontier_baseline() -
         assert task["savings_claimed"] is False
         assert "direct:baseline_identity_substituted" in task["withhold_reasons"]
         assert task["direct"]["completed_with"] == "cx/cheap-substitute"
+
+
+def test_gateway_stripped_provider_prefix_is_not_baseline_substitution() -> None:
+    """OmniRoute reports X-OmniRoute-Model as bare id; cx/foo ≡ foo is not a rewrite."""
+    from verdict.savings_execution import identities_equivalent
+
+    assert identities_equivalent("cx/gpt-5.6-sol", "gpt-5.6-sol")
+    assert not identities_equivalent("cx/gpt-5.6-sol", "cx/cheap-substitute")
+
+    def stripped_prefix(request: ArmRequest) -> ArmExecution:
+        if request.arm == "direct":
+            return _fake_executor(completed={"direct": "gpt-5.6-sol"})(request)
+        return _fake_executor()(request)
+
+    report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH, execute_arm=stripped_prefix)
+    for task in report["tasks"]:
+        assert "direct:baseline_identity_substituted" not in task["withhold_reasons"]
+
+
+def test_live_admit_service_does_not_inject_baked_catalog() -> None:
+    """Live-paired routing must consult OmniRoute admit + passports + metadata, not fixtures."""
+    from verdict.savings_bench import _live_service
+
+    service = _live_service(Path("."))
+    assert service.admit_snapshot is None, "must load live OmniRoute admit snapshot"
+    assert service.passports is None, "must load prove-at-rest passports from store"
+    assert service.confirm_transport is None, "must use budgeted OmniRoute confirm"
+    assert service.metadata_snapshot is None, "must use Core metadata store"
+    assert service.admit_now is None, "must use wall clock, not a frozen fixture now"
+    assert service.execute_offload is False
+
+
+def test_denied_admit_skips_verdict_arm_execute(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When live admit fail-closes, do not POST no_eligible_target to the gateway."""
+    from verdict.free_tier_admit import FAIL_CLOSED_REASON, NO_ELIGIBLE_TARGET
+    from verdict.models import RoutingDecision
+
+    seen: list[ArmRequest] = []
+
+    def executor(request: ArmRequest) -> ArmExecution:
+        seen.append(request)
+        return _fake_executor()(request)
+
+    async def denied_route(self, task, criticality="medium", context=None):
+        return RoutingDecision(
+            model=NO_ELIGIBLE_TARGET,
+            provider="none",
+            tier=1,
+            reason=FAIL_CLOSED_REASON,
+            decision="denied",
+            transport_outcome="not_sent",
+            quality_outcome="unknown",
+            admit_receipt={
+                "admitted": [],
+                "chosen": None,
+                "empty_intersection": True,
+                "pack_state": "hydrated",
+                "included_sources": [{"source_uri": "adr://x"}],
+                "prompt_digest": "sha256:abc",
+            },
+        )
+
+    monkeypatch.setattr("verdict.intelligence.IntelligenceService.route", denied_route)
+    report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH, execute_arm=executor, live_admit=True)
+    assert all(req.arm == "direct" for req in seen), "Verdict arm must not execute on deny"
+    assert report["aggregate"]["savings_claimed_count"] == 0
+    assert report["mode"] == MODE_LIVE_PAIRED
+    for task in report["tasks"]:
+        assert task["savings_claimed"] is False
+        assert "verdict:admit_denied" in task["withhold_reasons"]
+        assert WITHHOLD_SIMULATION not in task["withhold_reasons"]
+        assert task["verdict"]["routed"] == NO_ELIGIBLE_TARGET
+        assert (
+            task["executor_errors"].get("verdict")
+            or "verdict:not_executed" in task["withhold_reasons"]
+            or "verdict:admit_denied" in task["withhold_reasons"]
+        )
