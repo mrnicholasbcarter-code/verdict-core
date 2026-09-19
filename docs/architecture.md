@@ -67,9 +67,11 @@ class EligibilityGate:
 ### 3. Intelligence Service (`verdict/intelligence.py`)
 
 **Advisory ranking** — cannot bypass hard gate. Provides:
-- Historical outcome learning (Ruflo)
-- Semantic similarity (RuVector)
+- Historical outcome signals from MemoryPlane (`verdict/memory_*`)
 - Expected value estimation
+
+Canonical durable memory is MemoryPlane (`verdict/memory_*`); Ruflo/swarm
+learning is not part of Core after BOD-17.
 
 ### 4. Availability Cache (`verdict/availability_cache.py`)
 
@@ -88,6 +90,10 @@ Native integration with OmniRoute gateway:
 - HTTP transport with connection pooling
 - WebSocket for real-time updates
 - Catalog identity and liveness only — **not** capability metadata SoT
+
+Harness adapters (Claude Code, Codex, Cursor, Cline, …) are Verdict-managed on
+`:8000`. OmniRoute on `:20128` is optional upstream transport behind Verdict —
+never the harness base URL.
 
 ### 5b. Core metadata store (`verdict/metadata/`)
 
@@ -129,16 +135,16 @@ Client Request
      ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ INTELLIGENCE: Rank eligible candidates (advisory)               │
-│ - Historical outcomes (Ruflo)                                    │
-│ - Semantic similarity (RuVector)                                 │
+│ - Historical outcomes via MemoryPlane (`verdict/memory_*`)       │
 │ - Expected value estimation                                      │
 └─────────────────────────────────────────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ DISPATCHER: Select best model, log decision                     │
-│ - Apply capacity admission                                       │
-│ - Emit telemetry (SONA)                                          │
+│ DISPATCHER: hydrate → bind authorized route (BOD-104 / BOD-67)  │
+│ - optimized_dispatch hydrates, then binds selected_route         │
+│ - SwarmDispatcher is the BOD-127 binder (legacy class name)      │
+│ - Apply capacity admission; emit telemetry                       │
 └─────────────────────────────────────────────────────────────────┘
      │
      ▼
@@ -216,8 +222,8 @@ Contracts include:
 | `TaskSpec` | Normalized task input (versioned) |
 | `RoutingDecisionContract` | Gate → Eligibility → Intelligence output |
 | `AvailabilitySnapshot` | Cache entry with metadata |
-| `OutcomeEpisode` | SONA feedback loop record |
-| `LearningEvent` | Ruflo learning event |
+| `OutcomeEpisode` | Feedback / outcome episode record |
+| `LearningEvent` | **Removed / superseded (BOD-17)** — was Ruflo learning; use MemoryPlane |
 | `VerificationPlan` | Post-deployment verification |
 
 ---
@@ -250,3 +256,6 @@ Contracts include:
 - [Intelligence Service](architecture/intelligence-service.md)
 - [Proxy Layer](architecture/proxy-layer.md)
 - [Telemetry Loop](architecture/telemetry-loop.md)
+- [ADR-004 Local-first MemoryPlane](adr/ADR-004-local-first-memory-plane.md)
+- [ADR-023 Governed swarm supervision](adr/ADR-023-governed-swarm-supervision.md) — **SUPERSEDED** (BOD-17; Ruflo/swarm deleted from Core)
+- [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** (BOD-17 / BOD-127)
