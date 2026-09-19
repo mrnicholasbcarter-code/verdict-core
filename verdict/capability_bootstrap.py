@@ -669,9 +669,7 @@ def _parity_from_component(state: str, parity_facets: object) -> str:
 
 
 def _default_certifier(
-    providers: tuple[DiscoveredProvider, ...],
-    *,
-    now: datetime | None = None,
+    providers: tuple[DiscoveredProvider, ...], *, now: datetime | None = None
 ) -> Mapping[str, Any]:
     """Certify bootstrap providers via BOD-92 ``certify_runtime`` (evidence only)."""
 
@@ -681,9 +679,7 @@ def _default_certifier(
 
     snapshots = tuple(_discovered_to_snapshot(provider) for provider in providers)
     report = certify_runtime(
-        snapshots=snapshots,
-        now=now or datetime.now(timezone.utc),
-        run_registered_detectors=False,
+        snapshots=snapshots, now=now or datetime.now(timezone.utc), run_registered_detectors=False
     )
     report_dict = report.to_dict()
     by_id = {component.component_id: component for component in report.components}
