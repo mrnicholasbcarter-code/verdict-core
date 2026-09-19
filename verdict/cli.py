@@ -711,13 +711,16 @@ def cmd_route(
 
     BOD-127: authority is derived from profile / ``VERDICT_REQUIRE_EXECUTION_PATH``
     (and production profile). Pass ``allow_legacy_selector=True`` only as an
-    explicit migration escape — never silent. API serve still forces authority.
+    explicit migration escape — never silent. ``allow_offline`` only switches the
+    catalog/network surface; it must not imply legacy selector escape. API serve
+    still forces authority.
     """
     from verdict.serve_path import CONTEXT_ALLOW_LEGACY
 
     gate = _build_route_gate(allow_offline=allow_offline)
+    # Never couple offline catalog mode to the BOD-127 legacy escape.
     if allow_legacy_selector is None:
-        allow_legacy_selector = bool(allow_offline)
+        allow_legacy_selector = False
     context: dict[str, object] = {}
     if allow_legacy_selector:
         context[CONTEXT_ALLOW_LEGACY] = True
@@ -2899,13 +2902,17 @@ def main() -> None:
     route_p.add_argument(
         "--allow-offline",
         action="store_true",
-        help="Decide from the static catalog only — no network discovery or probes",
+        help=(
+            "Decide from the static catalog only — no network discovery or probes. "
+            "Does not enable the BOD-127 legacy selector escape (use --allow-legacy-selector)."
+        ),
     )
     route_p.add_argument(
         "--allow-legacy-selector",
         action="store_true",
         help=(
             "BOD-127 migration escape: allow pre-BOD-104 selectors. "
+            "Required explicitly; --allow-offline alone never enables this. "
             "Production serve must omit this and supply execution_path_decision."
         ),
     )
