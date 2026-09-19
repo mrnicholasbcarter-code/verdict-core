@@ -1,0 +1,20 @@
+{
+  "acct-codex-a": {
+    "confidence": 0.75,
+    "health": "ok",
+    "pools": [
+      {
+        "pool_id": "codex-weekly",
+        "scope": "chatgpt-codex",
+        "status": "available",
+        "unit": "tokens",
+        "remaining_pct": 43.0,
+        "used_pct": 57.0,
+        "window_seconds": 604800,
+        "reset_at": "2026-09-24T12:00:00Z",
+        "evidence_id": "gw-codex-weekly"
+      }
+    ],
+    "notes": ["gateway-view"]
+  }
+}

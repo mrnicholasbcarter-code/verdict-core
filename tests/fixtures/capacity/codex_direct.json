@@ -1,0 +1,103 @@
+{
+  "acct-codex-a": {
+    "observed_at": "2026-09-19T12:00:00Z",
+    "fresh_until": "2026-09-19T12:02:00Z",
+    "confidence": 0.95,
+    "health": "ok",
+    "pools": [
+      {
+        "pool_id": "codex-5h",
+        "scope": "chatgpt-codex",
+        "status": "constrained",
+        "unit": "tokens",
+        "remaining_pct": 42.0,
+        "used_pct": 58.0,
+        "window_seconds": 18000,
+        "reset_at": "2026-09-19T17:00:00Z",
+        "evidence_id": "codex-5h-obs"
+      },
+      {
+        "pool_id": "codex-weekly",
+        "scope": "chatgpt-codex",
+        "status": "constrained",
+        "unit": "tokens",
+        "remaining_pct": 8.0,
+        "used_pct": 92.0,
+        "window_seconds": 604800,
+        "reset_at": "2026-09-24T12:00:00Z",
+        "evidence_id": "codex-weekly-obs"
+      },
+      {
+        "pool_id": "codex-o3-extra",
+        "scope": "model:o3",
+        "status": "available",
+        "unit": "credits",
+        "remaining_pct": 100.0,
+        "used_pct": 0.0,
+        "reset_at": "2026-09-26T00:00:00Z",
+        "evidence_id": "codex-o3-extra"
+      }
+    ],
+    "balances": [
+      {
+        "balance_id": "codex-reset-credits",
+        "kind": "reset_credits",
+        "remaining": 3.0,
+        "currency_or_unit": "credits",
+        "resets": true,
+        "evidence_id": "codex-bal-1"
+      }
+    ]
+  },
+  "acct-codex-b": {
+    "observed_at": "2026-09-19T12:00:00Z",
+    "fresh_until": "2026-09-19T12:02:00Z",
+    "confidence": 0.95,
+    "health": "ok",
+    "pools": [
+      {
+        "pool_id": "codex-weekly",
+        "scope": "chatgpt-codex",
+        "status": "available",
+        "unit": "tokens",
+        "remaining_pct": 74.0,
+        "used_pct": 26.0,
+        "window_seconds": 604800,
+        "reset_at": "2026-09-24T12:00:00Z",
+        "evidence_id": "codex-b-weekly"
+      }
+    ],
+    "balances": []
+  },
+  "acct-codex-exhausted": {
+    "observed_at": "2026-09-19T12:00:00Z",
+    "fresh_until": "2026-09-19T12:02:00Z",
+    "pools": [
+      {
+        "pool_id": "codex-weekly",
+        "status": "exhausted",
+        "unit": "tokens",
+        "remaining_pct": 0.0,
+        "used_pct": 100.0,
+        "reset_at": "2026-09-24T12:00:00Z",
+        "evidence_id": "codex-ex-weekly"
+      }
+    ]
+  },
+  "acct-429": {
+    "error": {
+      "failure_class": "quota_exhausted",
+      "message": "rate limited",
+      "http_status": 429,
+      "retry_after_seconds": 45,
+      "pool_id": "codex-rpm"
+    }
+  },
+  "acct-auth-expired": {
+    "error": {
+      "failure_class": "auth_expired",
+      "message": "oauth session expired",
+      "http_status": 401
+    }
+  }
+}
