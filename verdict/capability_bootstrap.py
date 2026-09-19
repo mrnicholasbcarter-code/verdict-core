@@ -15,9 +15,12 @@ When APPLY is authorized, a bounded default ``InstallRunner`` may execute the
 documented OmniRoute install (``npm install -g omniroute``) only — other providers
 still require an explicit runner and otherwise fail closed.
 
-Binary presence is not health, authentication, or qualification. Recommendations are
-capability-first (providers second). OmniRoute may be recommended but is never a hard
-dependency or routing authority.
+Binary presence is not health, authentication, or qualification. Existing harness
+MCP registries (Claude Code, Cursor, Codex, project ``.mcp.json``) are imported as
+``configured`` providers with config-path references only — secrets are never
+copied, and RECOMMEND/APPLY prefer reuse/repair over duplicate installs.
+Recommendations are capability-first (providers second). OmniRoute may be
+recommended but is never a hard dependency or routing authority.
 
 Certification consumes BOD-92 passport/certification helpers when available via a narrow
 ``Certifier`` Protocol seam; this module does not own evidence-type definitions.
@@ -47,6 +50,7 @@ from verdict.capability_registry import (
     build_default_registry,
     resolve_capability,
 )
+from verdict.mcp_config_discovery import discover_mcp_provider_configs, group_mcp_hits_by_provider
 from verdict.setup_plan import SetupAction
 
 SCHEMA_VERSION = "capability-bootstrap/v1"
@@ -764,12 +768,21 @@ def discover_providers(
     path_resolver: PathResolver | None = None,
     probe_gateway: GatewayProbe | None = None,
     scope: BootstrapScope = BootstrapScope.ALL,
+    home: Path | None = None,
+    cwd: Path | None = None,
 ) -> tuple[DiscoveredProvider, ...]:
-    """Discover catalog providers without promoting binary presence to healthy."""
+    """Discover catalog providers without promoting binary presence to healthy.
+
+    Also imports existing MCP/provider config from supported harness locations
+    (Claude Code, Cursor, Codex, project ``.mcp.json``). Config hits become
+    ``configured`` (never healthy/qualified). Secrets are never copied — only
+    config file paths are recorded on ``config_sources``.
+    """
 
     which = path_resolver or _default_path_resolver
     probe = probe_gateway or _default_gateway_probe
     kinds = _scope_kinds(scope)
+    mcp_by_provider = group_mcp_hits_by_provider(discover_mcp_provider_configs(home=home, cwd=cwd))
     found: list[DiscoveredProvider] = []
 
     for entry in _CATALOG:
@@ -799,6 +812,9 @@ def discover_providers(
             binary_path = which(binary)
             if binary_path:
                 break
+
+        mcp_hits = mcp_by_provider.get(entry.provider_id, ())
+        config_sources = tuple(dict.fromkeys(hit.config_path for hit in mcp_hits))
 
         if entry.provider_kind is ProviderKind.GATEWAY:
             probe_result = dict(probe(entry.provider_id))
@@ -866,6 +882,7 @@ def discover_providers(
                     capabilities=entry.capabilities,
                     lifecycle=ProviderLifecycle.INSTALLED,
                     path_or_endpoint=binary_path,
+                    config_sources=config_sources,
                     auth_state="unknown",
                     health_state="unknown",
                     qualification_state="unqualified",
@@ -874,6 +891,28 @@ def discover_providers(
                     install_source=entry.install_source,
                     install_command=entry.install_command,
                     failure_reason="binary present; not live-certified",
+                    optional=entry.optional,
+                    hard_dependency=entry.hard_dependency,
+                )
+            )
+        elif config_sources:
+            # Harness MCP registry entry — reuse config, never claim healthy.
+            found.append(
+                DiscoveredProvider(
+                    provider_id=entry.provider_id,
+                    provider_kind=entry.provider_kind,
+                    capabilities=entry.capabilities,
+                    lifecycle=ProviderLifecycle.CONFIGURED,
+                    path_or_endpoint=None,
+                    config_sources=config_sources,
+                    auth_state="unknown",
+                    health_state="unknown",
+                    qualification_state="unqualified",
+                    authority=entry.authority,
+                    freshness="unknown",
+                    install_source=entry.install_source,
+                    install_command=entry.install_command,
+                    failure_reason="configured in harness MCP; not live-certified",
                     optional=entry.optional,
                     hard_dependency=entry.hard_dependency,
                 )
@@ -1649,6 +1688,8 @@ def run_bootstrap(
     probe_gateway: GatewayProbe | None = None,
     registry: SemanticCapabilityRegistry | None = None,
     certify_now: datetime | None = None,
+    home: Path | None = None,
+    cwd: Path | None = None,
 ) -> BootstrapReport:
     """Run the staged bootstrap pipeline and return a machine-readable report."""
 
@@ -1659,7 +1700,11 @@ def run_bootstrap(
     # DISCOVER
     if providers is None:
         discovered = discover_providers(
-            path_resolver=path_resolver, probe_gateway=probe_gateway, scope=scope_v
+            path_resolver=path_resolver,
+            probe_gateway=probe_gateway,
+            scope=scope_v,
+            home=home,
+            cwd=cwd,
         )
         stages.append(
             StageResult(
@@ -1779,7 +1824,11 @@ def run_bootstrap(
         if providers is None:
             providers_for_cert = _filter_scope(
                 discover_providers(
-                    path_resolver=path_resolver, probe_gateway=probe_gateway, scope=scope_v
+                    path_resolver=path_resolver,
+                    probe_gateway=probe_gateway,
+                    scope=scope_v,
+                    home=home,
+                    cwd=cwd,
                 ),
                 scope_v,
             )
