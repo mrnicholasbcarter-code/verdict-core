@@ -355,7 +355,7 @@ def test_swarm_dispatcher_consumes_selected_route() -> None:
         candidates=[_runtime("other-model", cost=0.01), _runtime("cheap-model", cost=1.0)],
         ttl_seconds=60,
     )
-    result = SwarmDispatcher().dispatch(snap, selected_route=decision.selected_route)
+    result = SwarmDispatcher().dispatch(snap, selected_route=decision.selected_route, now=NOW)
     assert result.selected is not None
     assert result.selected.runtime_id == "cheap-model"
     assert "selected_route" in result.reason
@@ -370,7 +370,7 @@ def test_swarm_fails_closed_without_matching_selected_route() -> None:
         ttl_seconds=60,
     )
     with pytest.raises(ExecutionPathError, match="no candidate matches"):
-        SwarmDispatcher().dispatch(snap, selected_route=decision.selected_route)
+        SwarmDispatcher().dispatch(snap, selected_route=decision.selected_route, now=NOW)
 
 
 def test_ruflo_submit_binds_selected_route() -> None:

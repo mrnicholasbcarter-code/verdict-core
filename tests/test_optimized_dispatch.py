@@ -280,6 +280,7 @@ def test_free_healthy_bound_when_ep_selects_cheap() -> None:
         task_class="implementation",
         hydrated=hydrated,
         dry_run=True,
+        now=NOW,
     )
 
     assert result.selected is not None
@@ -320,6 +321,7 @@ def test_free_unhealthy_skipped_with_named_reason() -> None:
             task_class="implementation",
             hydrated=hydrated,
             dry_run=True,
+            now=NOW,
         )
 
     message = str(exc_info.value).lower()
@@ -346,7 +348,12 @@ def test_premium_carve_out_binds_frontier_from_ep_evidence() -> None:
         token_budget=500,
     )
     result, receipt = execute_optimized_dispatch(
-        decision=decision, snapshot=snap, task_class="architecture", hydrated=hydrated, dry_run=True
+        decision=decision,
+        snapshot=snap,
+        task_class="architecture",
+        hydrated=hydrated,
+        dry_run=True,
+        now=NOW,
     )
 
     assert result.selected is not None
@@ -378,6 +385,7 @@ def test_missing_explicit_child_model_rejected() -> None:
             is_child=True,
             explicit_model=None,
             dry_run=True,
+            now=NOW,
         )
 
     with pytest.raises(OptimizedDispatchError, match="explicit"):
@@ -389,6 +397,7 @@ def test_missing_explicit_child_model_rejected() -> None:
             is_child=True,
             explicit_model="",
             dry_run=True,
+            now=NOW,
         )
 
 
@@ -545,6 +554,7 @@ def test_execute_builds_decision_only_via_optimize_execution_path() -> None:
         hydrated=hydrated,
         dry_run=True,
         dispatcher=SwarmDispatcher(),
+        now=NOW,
     )
     assert result.selected is not None
     assert receipt.strategy_authority == STRATEGY_AUTHORITY
@@ -554,4 +564,6 @@ def test_execute_builds_decision_only_via_optimize_execution_path() -> None:
 def test_execute_requires_decision_or_request() -> None:
     snap = _snapshot(_candidate("free-1", model="openrouter/free-coder"))
     with pytest.raises(OptimizedDispatchError):
-        execute_optimized_dispatch(snapshot=snap, task_class="implementation", dry_run=True)
+        execute_optimized_dispatch(
+            snapshot=snap, task_class="implementation", dry_run=True, now=NOW
+        )
