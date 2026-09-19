@@ -15,12 +15,13 @@ Completed:
 - Temp-dir unit tests (12); refuse OmniRoute `:20128` without `--force`; default Verdict `:8000`; backup+rollback
 - Certify reports `not-installed` when binaries missing; live enable NEEDS_OWNER
 - ruff + mypy --strict clean on new modules
+- Pushed PR https://github.com/mrnicholasbcarter-code/verdict-core/pull/555 and commented Linear BOD-124
 
 Currently working on:
-- (none — awaiting PR review/merge)
+- (none — awaiting review/merge)
 
 Next exact steps:
-1. Review/merge PR for feat/bod-124-harness-prime-opencode
+1. Review/merge PR #555
 2. Live enable with secrets remains NEEDS_OWNER
 
 Acceptance criteria:
