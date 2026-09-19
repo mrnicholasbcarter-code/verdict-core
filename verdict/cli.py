@@ -146,6 +146,7 @@ def cmd_setup(
     consent: bool = False,
     apply: bool = False,
     rollback: bool = False,
+    rollback_actions: list[str] | None = None,
     state_dir: str | None = None,
 ) -> None:
     """Interactive setup wizard, mutation-free plan, or capability bootstrap APPLY."""
@@ -160,7 +161,9 @@ def cmd_setup(
 
     if rollback:
         resolved = Path(state_dir) if state_dir else Path.home() / ".verdict" / "bootstrap"
-        stage = rollback_bootstrap_actions(state_dir=resolved)
+        stage = rollback_bootstrap_actions(
+            state_dir=resolved, action_ids=tuple(rollback_actions) if rollback_actions else None
+        )
         rollback_payload: dict[str, object] = {
             "schema_version": "capability-bootstrap/v1",
             "kind": "bootstrap_rollback",
@@ -2875,6 +2878,13 @@ def main() -> None:
         help="Roll back Verdict-owned bootstrap APPLY records (ownership/backups; no TUI)",
     )
     setup_cli_p.add_argument(
+        "--rollback-action",
+        dest="rollback_actions",
+        action="append",
+        default=[],
+        help="Limit rollback to a managed action_id (repeatable)",
+    )
+    setup_cli_p.add_argument(
         "--state-dir",
         default=None,
         help="Bootstrap ownership state directory (default: ~/.verdict/bootstrap)",
@@ -3797,7 +3807,10 @@ def main() -> None:
             scope = args.setup_action
         if getattr(args, "rollback", False):
             cmd_setup(
-                rollback=True, output_json=args.json, state_dir=getattr(args, "state_dir", None)
+                rollback=True,
+                rollback_actions=list(getattr(args, "rollback_actions", None) or []),
+                output_json=args.json,
+                state_dir=getattr(args, "state_dir", None),
             )
         elif args.setup_action == "plan" or args.plan:
             cmd_setup_plan(output_json=args.json, scope=scope, recommended=args.recommended)
