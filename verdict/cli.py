@@ -136,8 +136,19 @@ def cmd_setup(
     """Interactive setup wizard, mutation-free plan, or capability bootstrap APPLY."""
     from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
 
-    wants_plan = dry_run or output_json or non_interactive or recommended or plan_only
-    if wants_plan and not apply:
+    # Preserve the classic mutation-free setup_plan contract for dry-run / plan
+    # unless the caller explicitly requested bootstrap enrichment or APPLY.
+    wants_classic_plan = (dry_run or plan_only or (output_json and not apply)) and not (
+        recommended or apply or scope != "all"
+    )
+    if wants_classic_plan:
+        cmd_setup_plan(output_json=output_json or dry_run or plan_only)
+        return
+
+    wants_bootstrap_plan = (
+        recommended or plan_only or dry_run or non_interactive or scope != "all"
+    ) and not apply
+    if wants_bootstrap_plan:
         mode = BootstrapMode.RECOMMENDED if recommended else BootstrapMode.PLAN
         report = run_bootstrap(
             mode=mode,
@@ -535,10 +546,29 @@ def cmd_setup(
 def cmd_setup_plan(
     *, output_json: bool = False, scope: str = "all", recommended: bool = False
 ) -> None:
-    """Print the mutation-free setup / capability-bootstrap plan."""
+    """Print the mutation-free setup plan; optionally enrich with bootstrap."""
+
+    from verdict.setup_plan import build_setup_plan
+
+    # Default path preserves the classic setup_plan contract (no probes).
+    if not recommended and scope == "all":
+        plan: dict[str, Any] = build_setup_plan().to_dict()
+        if output_json:
+            print(json.dumps(plan, indent=2, sort_keys=True))
+            return
+        print("Verdict setup plan (dry-run; no changes made)")
+        print(f"Plan: {plan['plan_id']}")
+        config = plan["config"]
+        actions = plan["actions"]
+        assert isinstance(config, dict)
+        assert isinstance(actions, list)
+        print(f"Config: {config['path']}")
+        for action in actions:
+            assert isinstance(action, dict)
+            print(f"- {action['description']}")
+        return
 
     from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
-    from verdict.setup_plan import build_setup_plan
 
     bootstrap = run_bootstrap(
         mode=BootstrapMode.RECOMMENDED if recommended else BootstrapMode.PLAN,
@@ -548,7 +578,7 @@ def cmd_setup_plan(
     base = build_setup_plan(
         bootstrap_providers=bootstrap.providers, include_bootstrap=True
     ).to_dict()
-    plan: dict[str, Any] = {**base, "bootstrap": bootstrap.to_dict()}
+    plan = {**base, "bootstrap": bootstrap.to_dict()}
     if output_json:
         print(json.dumps(plan, indent=2, sort_keys=True))
         return
@@ -562,7 +592,11 @@ def cmd_setup_plan(
     for action in actions:
         assert isinstance(action, dict)
         print(f"- {action['description']}")
-    print(f"Bootstrap stages: {len(plan['bootstrap']['stages'])}")
+    bootstrap_payload = plan["bootstrap"]
+    assert isinstance(bootstrap_payload, dict)
+    stages = bootstrap_payload.get("stages", [])
+    assert isinstance(stages, list)
+    print(f"Bootstrap stages: {len(stages)}")
 
 
 def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
