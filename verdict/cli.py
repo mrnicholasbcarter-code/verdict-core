@@ -18,8 +18,12 @@ from rich.table import Table
 
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from verdict.gate import Gate
+from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
+from verdict.harness_claude import DEFAULT_TOKEN_ENV as CLAUDE_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_codex import DEFAULT_BASE_URL as CODEX_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_codex import DEFAULT_TOKEN_ENV as CODEX_HARNESS_DEFAULT_TOKEN_ENV
+from verdict.harness_cursor import DEFAULT_BASE_URL as CURSOR_HARNESS_DEFAULT_BASE_URL
+from verdict.harness_cursor import DEFAULT_TOKEN_ENV as CURSOR_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_hermes import DEFAULT_BASE_URL as HERMES_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_hermes import DEFAULT_MODEL as HERMES_HARNESS_DEFAULT_MODEL
 from verdict.harness_hermes import DEFAULT_TOKEN_ENV as HERMES_HARNESS_DEFAULT_TOKEN_ENV
@@ -3227,6 +3231,97 @@ def main() -> None:
     harness_hermes_sub.add_parser(
         "status", help="Show active Hermes provider, base URL, and whether the token env is set"
     )
+    harness_claude_p = harness_sub.add_parser(
+        "claude", help="Enable, disable, discover, or certify Claude Code as a Verdict client"
+    )
+    harness_claude_sub = harness_claude_p.add_subparsers(
+        dest="harness_claude_command", required=True
+    )
+    harness_claude_sub.add_parser(
+        "discover", help="Observe Claude Code install/config without mutating it"
+    )
+    claude_enable_p = harness_claude_sub.add_parser(
+        "enable",
+        help="Backup ~/.claude/settings.json and point OpenAI-compatible traffic at Verdict",
+    )
+    claude_enable_p.add_argument(
+        "--base-url",
+        default=CLAUDE_HARNESS_DEFAULT_BASE_URL,
+        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
+    )
+    claude_enable_p.add_argument(
+        "--token-env",
+        default=CLAUDE_HARNESS_DEFAULT_TOKEN_ENV,
+        help="Env var Claude/OpenAI tooling should read for the bearer token (never printed)",
+    )
+    claude_enable_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Write Claude settings even if the Verdict health check fails",
+    )
+    harness_claude_sub.add_parser(
+        "disable", help="Restore the pre-enable ~/.claude/settings.json backup"
+    )
+    harness_claude_sub.add_parser(
+        "status",
+        help="Show Claude Code Verdict base URL, gate hook, and whether the token env is set",
+    )
+    claude_certify_p = harness_claude_sub.add_parser(
+        "certify",
+        help="Evidence-only Claude Code certification (partial until BOD-102 Messages proxy)",
+    )
+    claude_certify_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Treat Verdict health as ok when probing fails (local proof only)",
+    )
+    harness_cursor_p = harness_sub.add_parser(
+        "cursor",
+        help="Enable, disable, discover, or certify Cursor as a Verdict OpenAI-compatible client",
+    )
+    harness_cursor_sub = harness_cursor_p.add_subparsers(
+        dest="harness_cursor_command", required=True
+    )
+    harness_cursor_sub.add_parser(
+        "discover", help="Observe Cursor install/config without mutating it"
+    )
+    cursor_enable_p = harness_cursor_sub.add_parser(
+        "enable", help="Write Verdict-managed Cursor provider config aimed at Verdict :8000"
+    )
+    cursor_enable_p.add_argument(
+        "--base-url",
+        default=CURSOR_HARNESS_DEFAULT_BASE_URL,
+        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
+    )
+    cursor_enable_p.add_argument(
+        "--token-env",
+        default=CURSOR_HARNESS_DEFAULT_TOKEN_ENV,
+        help="Env var Cursor/OpenAI tooling should read for the bearer token (never printed)",
+    )
+    cursor_enable_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Write Cursor config even if the Verdict health check fails",
+    )
+    cursor_enable_p.add_argument(
+        "--wrapper",
+        action="store_true",
+        help="Also install ~/.cursor/bin/cursor-verdict wrapper (last-resort integration)",
+    )
+    harness_cursor_sub.add_parser(
+        "disable", help="Restore pre-enable Cursor provider/settings/wrapper backups"
+    )
+    harness_cursor_sub.add_parser(
+        "status", help="Show Cursor Verdict provider, base URL, and whether the token env is set"
+    )
+    cursor_certify_p = harness_cursor_sub.add_parser(
+        "certify", help="Evidence-only Cursor certification (partial; IDE UI toggle is NEEDS_OWNER)"
+    )
+    cursor_certify_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Treat Verdict health as ok when probing fails (local proof only)",
+    )
 
     runtime_p = subparsers.add_parser(
         "runtime", help="Inspect and safely reconcile global Ruflo/RuVector ownership"
@@ -3709,6 +3804,21 @@ def main() -> None:
                 model=getattr(args, "model", HERMES_HARNESS_DEFAULT_MODEL),
                 force=getattr(args, "force", False),
             )
+        elif args.harness_target == "claude":
+            cmd_harness_claude(
+                args.harness_claude_command,
+                base_url=getattr(args, "base_url", CLAUDE_HARNESS_DEFAULT_BASE_URL),
+                token_env=getattr(args, "token_env", CLAUDE_HARNESS_DEFAULT_TOKEN_ENV),
+                force=getattr(args, "force", False),
+            )
+        elif args.harness_target == "cursor":
+            cmd_harness_cursor(
+                args.harness_cursor_command,
+                base_url=getattr(args, "base_url", CURSOR_HARNESS_DEFAULT_BASE_URL),
+                token_env=getattr(args, "token_env", CURSOR_HARNESS_DEFAULT_TOKEN_ENV),
+                force=getattr(args, "force", False),
+                wrapper=getattr(args, "wrapper", False),
+            )
         else:
             raise SystemExit(f"unknown harness: {args.harness_target}")
     elif args.command == "runtime":
@@ -3906,6 +4016,113 @@ def cmd_harness_hermes(
         console.print(f"[bold red]{exc}[/bold red]")
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness hermes command: {command}")
+
+
+def cmd_harness_claude(
+    command: str,
+    *,
+    base_url: str = CLAUDE_HARNESS_DEFAULT_BASE_URL,
+    token_env: str = CLAUDE_HARNESS_DEFAULT_TOKEN_ENV,
+    force: bool = False,
+) -> None:
+    """Discover, enable, disable, status, or certify Claude Code → Verdict."""
+    from verdict.harness_claude import (
+        HarnessClaudeError,
+        certify,
+        disable,
+        discover,
+        enable,
+        format_certify,
+        format_discover,
+        format_status,
+        status,
+    )
+
+    try:
+        if command == "discover":
+            console.print(format_discover(discover()), end="")
+            return
+        if command == "enable":
+            result = enable(base_url=base_url, token_env=token_env, force=force)
+            console.print("[bold green]Claude Code harness enabled[/bold green]")
+            console.print(f"  integration: {result.integration}")
+            console.print(f"  base_url: {result.base_url}")
+            console.print(f"  token_env: {result.token_env}")
+            if result.created_backup:
+                console.print(f"  backup: {result.backup_path}")
+            else:
+                console.print(f"  config: {result.config_path}")
+            return
+        if command == "disable":
+            disable()
+            console.print("[bold green]Claude Code harness disabled[/bold green]")
+            console.print("  restored pre-enable ~/.claude/settings.json backup")
+            return
+        if command == "status":
+            console.print(format_status(status()), end="")
+            return
+        if command == "certify":
+            console.print(format_certify(certify(force=force)), end="")
+            return
+    except HarnessClaudeError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    raise SystemExit(f"unknown harness claude command: {command}")
+
+
+def cmd_harness_cursor(
+    command: str,
+    *,
+    base_url: str = CURSOR_HARNESS_DEFAULT_BASE_URL,
+    token_env: str = CURSOR_HARNESS_DEFAULT_TOKEN_ENV,
+    force: bool = False,
+    wrapper: bool = False,
+) -> None:
+    """Discover, enable, disable, status, or certify Cursor → Verdict."""
+    from verdict.harness_cursor import (
+        HarnessCursorError,
+        certify,
+        disable,
+        discover,
+        enable,
+        format_certify,
+        format_discover,
+        format_status,
+        status,
+    )
+
+    try:
+        if command == "discover":
+            console.print(format_discover(discover()), end="")
+            return
+        if command == "enable":
+            result = enable(base_url=base_url, token_env=token_env, force=force, wrapper=wrapper)
+            console.print("[bold green]Cursor harness enabled[/bold green]")
+            console.print(f"  integration: {result.integration}")
+            console.print(f"  base_url: {result.base_url}")
+            console.print(f"  token_env: {result.token_env}")
+            if result.created_backup:
+                console.print(f"  backup: {result.backup_path}")
+            else:
+                console.print(f"  config: {result.config_path}")
+            if result.wrapper_path is not None:
+                console.print(f"  wrapper: {result.wrapper_path}")
+            return
+        if command == "disable":
+            disable()
+            console.print("[bold green]Cursor harness disabled[/bold green]")
+            console.print("  restored pre-enable Cursor provider/settings/wrapper backups")
+            return
+        if command == "status":
+            console.print(format_status(status()), end="")
+            return
+        if command == "certify":
+            console.print(format_certify(certify(force=force)), end="")
+            return
+    except HarnessCursorError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    raise SystemExit(f"unknown harness cursor command: {command}")
 
 
 def cmd_prove_at_rest(
