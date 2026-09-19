@@ -363,6 +363,67 @@ def test_allowlisted_apply_is_idempotent_with_backup_and_ownership(tmp_path: Pat
     assert consent_second["status"] in {"ok", "skipped"}
 
 
+def test_rollback_removes_verdict_owned_markers_and_ownership(tmp_path: Path) -> None:
+    from verdict.capability_bootstrap import rollback_bootstrap_actions
+
+    state_dir = tmp_path / "state"
+    installs: list[str] = []
+
+    def _install(action: Any) -> dict[str, object]:
+        installs.append(action.action_id)
+        marker = state_dir / "markers" / f"{action.target}.installed"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("ok\n", encoding="utf-8")
+        return {"status": "installed", "marker": str(marker)}
+
+    run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        install_runner=_install,
+        scope=BootstrapScope.GATEWAYS,
+    )
+    marker = state_dir / "markers" / "gateway.omniroute.installed"
+    assert marker.is_file()
+
+    stage = rollback_bootstrap_actions(state_dir=state_dir)
+    assert stage.status == "ok"
+    assert stage.stage == "rollback"
+    assert not marker.exists()
+    ownership = json.loads((state_dir / "ownership.json").read_text(encoding="utf-8"))
+    assert ownership["managed_actions"] == []
+    assert stage.details["rolled_back"]
+
+
+def test_rollback_without_runner_reports_manual_undo_for_external_install(tmp_path: Path) -> None:
+    from verdict.capability_bootstrap import rollback_bootstrap_actions
+
+    state_dir = tmp_path / "state"
+
+    def _install(action: Any) -> dict[str, object]:
+        # Marker outside state_dir — not Verdict-owned filesystem.
+        return {"status": "installed", "marker": str(tmp_path / "outside" / action.target)}
+
+    run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        install_runner=_install,
+        scope=BootstrapScope.GATEWAYS,
+    )
+    stage = rollback_bootstrap_actions(state_dir=state_dir)
+    assert stage.status == "partial"
+    assert stage.details["manual_undo_required"]
+    ownership = json.loads((state_dir / "ownership.json").read_text(encoding="utf-8"))
+    assert ownership["managed_actions"], "ownership retained until uninstall runner succeeds"
+
+
 def test_scope_filters_intelligence_gateways_harnesses() -> None:
     mixed = (
         *_full_reuse_machine(),

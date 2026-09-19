@@ -95,6 +95,7 @@ class StageName(str, Enum):
     CONSENT = "consent"
     APPLY = "apply"
     CERTIFY = "certify"
+    ROLLBACK = "rollback"
 
 
 @dataclass(frozen=True)
@@ -1221,6 +1222,161 @@ def apply_bootstrap_actions(
     return consent_stage, apply_stage, {"mutated": bool(succeeded), "actions": applied}
 
 
+UninstallRunner = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
+
+
+def _remove_verdict_owned_marker(result: Mapping[str, Any], *, state_dir: Path) -> bool:
+    """Delete a marker file recorded under state_dir during APPLY (Verdict-owned only)."""
+
+    marker = result.get("marker")
+    if not isinstance(marker, str) or not marker:
+        return False
+    path = Path(marker)
+    try:
+        path.resolve().relative_to(state_dir.resolve())
+    except ValueError:
+        return False
+    if path.is_file():
+        path.unlink()
+        return True
+    return False
+
+
+def rollback_bootstrap_actions(
+    *,
+    state_dir: Path,
+    action_ids: Sequence[str] | None = None,
+    uninstall_runner: UninstallRunner | None = None,
+) -> StageResult:
+    """Reverse Verdict-owned bootstrap APPLY records using ownership + backups.
+
+    Presentation-free: returns a semantic StageResult for doctor/CLI/TUI consumers.
+    Third-party package uninstall only runs when ``uninstall_runner`` is supplied;
+    otherwise install actions surface ``manual_undo_required`` with the planned undo
+    text and keep ownership until a runner succeeds or the action is ownership-only.
+    """
+
+    ownership = _load_ownership(state_dir)
+    managed = [item for item in ownership.get("managed_actions", []) if isinstance(item, dict)]
+    wanted = frozenset(action_ids) if action_ids is not None else None
+    selected = [
+        item for item in managed if wanted is None or str(item.get("action_id") or "") in wanted
+    ]
+    if not selected:
+        return StageResult(
+            stage=StageName.ROLLBACK.value,
+            status="ok",
+            summary="No Verdict-owned bootstrap actions to roll back.",
+            details={"rolled_back": [], "manual_undo_required": [], "failed": []},
+        )
+
+    backups = ownership.get("backups", {})
+    if not isinstance(backups, dict):
+        backups = {}
+
+    rolled_back: list[str] = []
+    manual: list[dict[str, object]] = []
+    failed: list[dict[str, object]] = []
+    remaining: list[dict[str, object]] = []
+    selected_ids = {str(item.get("action_id") or "") for item in selected}
+
+    for item in managed:
+        action_id = str(item.get("action_id") or "")
+        if action_id not in selected_ids:
+            remaining.append(item)
+            continue
+
+        result_obj = item.get("result")
+        result_map: Mapping[str, Any] = result_obj if isinstance(result_obj, Mapping) else {}
+        kind = str(item.get("kind") or "")
+        backup_path_raw = backups.get(action_id)
+        undo_text = "Remove Verdict ownership markers for this action."
+        action_payload: Mapping[str, Any] = {}
+        if isinstance(backup_path_raw, str) and backup_path_raw:
+            backup_file = Path(backup_path_raw)
+            if backup_file.is_file():
+                try:
+                    backup_raw = json.loads(backup_file.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    backup_raw = {}
+                if isinstance(backup_raw, dict):
+                    action_obj = backup_raw.get("action")
+                    if isinstance(action_obj, dict):
+                        action_payload = action_obj
+                        undo_text = str(action_obj.get("undo") or undo_text)
+
+        if kind == "install_provider":
+            if uninstall_runner is not None:
+                try:
+                    undo_result = uninstall_runner(item, action_payload)
+                except Exception as exc:
+                    failed.append({"action_id": action_id, "status": "failed", "error": str(exc)})
+                    remaining.append(item)
+                    continue
+                if not _successful_apply_result(undo_result):
+                    failed.append(
+                        {
+                            "action_id": action_id,
+                            "status": str(undo_result.get("status") or "failed"),
+                            "result": dict(undo_result),
+                        }
+                    )
+                    remaining.append(item)
+                    continue
+                _remove_verdict_owned_marker(result_map, state_dir=state_dir)
+                rolled_back.append(action_id)
+                continue
+
+            if _remove_verdict_owned_marker(result_map, state_dir=state_dir):
+                rolled_back.append(action_id)
+                continue
+
+            manual.append(
+                {
+                    "action_id": action_id,
+                    "status": "manual_undo_required",
+                    "undo": undo_text,
+                    "provider_id": item.get("provider_id"),
+                }
+            )
+            remaining.append(item)
+            continue
+
+        # Ownership-only / recorded actions: drop Verdict management immediately.
+        _remove_verdict_owned_marker(result_map, state_dir=state_dir)
+        rolled_back.append(action_id)
+
+    ownership["managed_actions"] = remaining
+    _save_ownership(state_dir, ownership)
+
+    if failed and not rolled_back:
+        status = "failed"
+        summary = "Rollback failed for all selected Verdict-owned actions."
+    elif failed or manual:
+        status = "partial"
+        summary = (
+            f"Rolled back {len(rolled_back)} action(s); "
+            f"{len(manual)} need manual undo; {len(failed)} failed."
+        )
+    else:
+        status = "ok"
+        summary = f"Rolled back {len(rolled_back)} Verdict-owned bootstrap action(s)."
+
+    return StageResult(
+        stage=StageName.ROLLBACK.value,
+        status=status,
+        summary=summary,
+        details={
+            "rolled_back": rolled_back,
+            "manual_undo_required": manual,
+            "failed": failed,
+            "remaining_managed": [
+                str(item.get("action_id") or "") for item in remaining if item.get("action_id")
+            ],
+        },
+    )
+
+
 def run_bootstrap(
     *,
     providers: Sequence[DiscoveredProvider] | DiscoveredProvider | None = None,
@@ -1505,5 +1661,6 @@ __all__ = [
     "discover_providers",
     "doctor_capability_report",
     "recommend_capabilities",
+    "rollback_bootstrap_actions",
     "run_bootstrap",
 ]

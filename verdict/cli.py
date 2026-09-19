@@ -145,9 +145,46 @@ def cmd_setup(
     allowlist: list[str] | None = None,
     consent: bool = False,
     apply: bool = False,
+    rollback: bool = False,
+    rollback_actions: list[str] | None = None,
+    state_dir: str | None = None,
 ) -> None:
     """Interactive setup wizard, mutation-free plan, or capability bootstrap APPLY."""
-    from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
+    from pathlib import Path
+
+    from verdict.capability_bootstrap import (
+        BootstrapMode,
+        BootstrapScope,
+        rollback_bootstrap_actions,
+        run_bootstrap,
+    )
+
+    if rollback:
+        resolved = Path(state_dir) if state_dir else Path.home() / ".verdict" / "bootstrap"
+        stage = rollback_bootstrap_actions(
+            state_dir=resolved, action_ids=tuple(rollback_actions) if rollback_actions else None
+        )
+        rollback_payload: dict[str, object] = {
+            "schema_version": "capability-bootstrap/v1",
+            "kind": "bootstrap_rollback",
+            "stage": stage.to_dict(),
+        }
+        if output_json:
+            print(json.dumps(rollback_payload, indent=2, sort_keys=True))
+        else:
+            print(f"Bootstrap rollback: {stage.status} — {stage.summary}")
+            details = stage.details if isinstance(stage.details, dict) else {}
+            for action_id in details.get("rolled_back", []) or []:
+                print(f"  rolled_back: {action_id}")
+            for item in details.get("manual_undo_required", []) or []:
+                if isinstance(item, dict):
+                    print(f"  manual_undo_required: {item.get('action_id')} — {item.get('undo')}")
+            for item in details.get("failed", []) or []:
+                if isinstance(item, dict):
+                    print(f"  failed: {item.get('action_id')} — {item.get('status')}")
+            if stage.status == "failed":
+                raise SystemExit(1)
+        return
 
     # Preserve the classic mutation-free setup_plan contract for dry-run / plan
     # unless the caller explicitly requested bootstrap enrichment or APPLY.
@@ -176,12 +213,12 @@ def cmd_setup(
             non_interactive=True,
             allowlist=tuple(allowlist or ()),
         )
-        payload = report.to_dict()
+        report_payload: dict[str, object] = report.to_dict()
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(report_payload, indent=2, sort_keys=True))
             return
-        plan = payload["plan"]
-        stages = payload["stages"]
+        plan = report_payload["plan"]
+        stages = report_payload["stages"]
         if not isinstance(plan, dict) or not isinstance(stages, list):
             raise TypeError("bootstrap report must include plan dict and stages list")
         print("Verdict capability bootstrap (dry-run; no changes made)")
@@ -205,13 +242,14 @@ def cmd_setup(
             non_interactive=non_interactive,
             allowlist=tuple(allowlist or ()),
             consent=consent,
+            state_dir=Path(state_dir) if state_dir else None,
         )
-        payload = report.to_dict()
-        stages = payload["stages"]
+        apply_payload: dict[str, object] = report.to_dict()
+        stages = apply_payload["stages"]
         if not isinstance(stages, list):
             raise TypeError("bootstrap report must include stages list")
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(apply_payload, indent=2, sort_keys=True))
         else:
             for stage in stages:
                 if not isinstance(stage, dict):
@@ -2834,6 +2872,23 @@ def main() -> None:
         default=[],
         help="Non-interactive allowlist provider id (repeatable), e.g. gateway.omniroute",
     )
+    setup_cli_p.add_argument(
+        "--rollback",
+        action="store_true",
+        help="Roll back Verdict-owned bootstrap APPLY records (ownership/backups; no TUI)",
+    )
+    setup_cli_p.add_argument(
+        "--rollback-action",
+        dest="rollback_actions",
+        action="append",
+        default=[],
+        help="Limit rollback to a managed action_id (repeatable)",
+    )
+    setup_cli_p.add_argument(
+        "--state-dir",
+        default=None,
+        help="Bootstrap ownership state directory (default: ~/.verdict/bootstrap)",
+    )
 
     route_p = subparsers.add_parser("route", help="Route a single prompt/task")
     route_p.add_argument("task", help="Task description or prompt text")
@@ -3750,7 +3805,14 @@ def main() -> None:
         scope = "all"
         if args.setup_action in {"intelligence", "gateways", "harnesses"}:
             scope = args.setup_action
-        if args.setup_action == "plan" or args.plan:
+        if getattr(args, "rollback", False):
+            cmd_setup(
+                rollback=True,
+                rollback_actions=list(getattr(args, "rollback_actions", None) or []),
+                output_json=args.json,
+                state_dir=getattr(args, "state_dir", None),
+            )
+        elif args.setup_action == "plan" or args.plan:
             cmd_setup_plan(output_json=args.json, scope=scope, recommended=args.recommended)
         elif args.setup_action in {"intelligence", "gateways", "harnesses"} and not args.apply:
             # Bare scoped subcommands plan bootstrap for that scope (not the legacy wizard).
@@ -3766,6 +3828,7 @@ def main() -> None:
                 allowlist=list(args.allowlist or []),
                 consent=bool(args.yes),
                 apply=bool(args.apply),
+                state_dir=getattr(args, "state_dir", None),
             )
     elif args.command == "route":
         cmd_route(
