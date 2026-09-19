@@ -2236,9 +2236,7 @@ def test_ep_escalate_strategy_requires_escalation_cost_term() -> None:
         is_free=True,
     )
     paid_cost = _cost(
-        "direct_paid:paid-1",
-        assistance=paid_plan.assistance_cost,
-        execution_tokens=40_000,
+        "direct_paid:paid-1", assistance=paid_plan.assistance_cost, execution_tokens=40_000
     )
     decision = optimize_execution_path(
         ExecutionPathRequest(
