@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -37,7 +38,11 @@ from verdict.fixture_paths import (
     resolve_fixture_path,
     resolve_fixture_workspace,
 )
-from verdict.free_tier_admit import OmniRouteAdmitSnapshot, snapshot_from_payloads
+from verdict.free_tier_admit import (
+    OmniRouteAdmitSnapshot,
+    normalize_omniroute_origin,
+    snapshot_from_payloads,
+)
 from verdict.intelligence import IntelligenceService
 from verdict.metadata.records import (
     SOURCE_MODELS_DEV,
@@ -319,6 +324,11 @@ def _service_primary_model() -> str:
 
 
 def _service(workspace_root: Path) -> IntelligenceService:
+    """Offline / unit-test chooser: baked catalog + always-ok confirm.
+
+    Never used for ``--live-paired`` claim runs — those must consult live
+    OmniRoute admit, prove-at-rest passports, budgeted confirm, and Core metadata.
+    """
     passports = {row.identity_id: _passport(row.identity_id) for row in _CATALOG}
     return IntelligenceService(
         primary_model=_service_primary_model(),
@@ -339,8 +349,40 @@ def _service(workspace_root: Path) -> IntelligenceService:
     )
 
 
+def _live_service(workspace_root: Path) -> IntelligenceService:
+    """Live chooser: OmniRoute admit ∩ prove-at-rest ∩ confirm ∩ Core metadata.
+
+    Injects nothing that would short-circuit the daemon. Snapshot, passports,
+    confirm transport, and metadata are loaded at request time from the live
+    environment (same path as ``verdict serve``).
+    """
+    raw = (os.getenv("OMNIROUTE_BASE_URL") or "http://127.0.0.1:20128").strip()
+    origin = normalize_omniroute_origin(raw)
+    return IntelligenceService(
+        # Constructor fallback only — never measured. Admit chooses or deny.
+        primary_model="no_eligible_target",
+        providers={
+            "omniroute": ProviderConfig(base_url=f"{origin}/v1", api_key_env="OMNIROUTE_API_KEY")
+        },
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=None,
+        execute_offload=False,
+        passports=None,
+        confirm_transport=None,
+        admit_now=None,
+        workspace_root=workspace_root,
+        context_roots=DEFAULT_CONTEXT_ROOTS,
+        mcp_root="",
+        metadata_snapshot=None,
+    )
+
+
 def _withhold_reasons(
     *,
+    simulation: bool,
     executed: bool,
     evidence_gaps: Sequence[str],
     pack_state: str | None,
@@ -352,8 +394,12 @@ def _withhold_reasons(
 ) -> list[str]:
     """Every reason a claim is refused, in precedence order. Empty means claimable."""
     reasons: list[str] = []
-    if not executed:
+    # Simulation is fixture mode only. A live-paired admit deny is not a simulation.
+    if simulation:
         reasons.append(WITHHOLD_SIMULATION)
+    elif not executed:
+        # Live mode but one/both arms did not complete — gaps name why.
+        pass
     reasons.extend(evidence_gaps)
     if not direct_quality["passed"]:
         # A paired comparison needs a valid baseline. Beating a frontier answer
@@ -414,12 +460,17 @@ def run_savings_bench(
     execute_arm: ArmExecutor | None = None,
     quality_evaluator: QualityEvaluator | None = None,
     gateway: str = "omniroute",
+    live_admit: bool = False,
 ) -> dict[str, Any]:
     """Run the paired legit-task savings bench.
 
     Without ``execute_arm`` the run is a labeled simulation and can never
     claim savings. With it, both arms are executed on the same input hash and
     a claim requires complete, bound evidence.
+
+    ``live_admit=True`` (CLI ``--live-paired``) routes the Verdict arm through
+    live OmniRoute admit ∩ prove-at-rest ∩ confirm ∩ Core metadata — never the
+    baked fixture catalog. Unit tests keep the default offline chooser.
     """
     path = resolve_fixture_path(fixture_path)
     fixture = cast(dict[str, Any], json.loads(path.read_text()))
@@ -427,7 +478,7 @@ def run_savings_bench(
     workspace = resolve_fixture_workspace(
         path, str(fixture.get("workspace") or "benchmarks/fixtures/legit_workspace")
     )
-    service = _service(workspace)
+    service = _live_service(workspace) if live_admit else _service(workspace)
     evaluate = quality_evaluator or evaluate_output_against_checks
     executed_mode = execute_arm is not None
     tasks: list[dict[str, Any]] = []
@@ -445,7 +496,10 @@ def run_savings_bench(
         verdict_fixture = cast(dict[str, Any], task[ARM_VERDICT])
         direct_identity = _used_model(direct_fixture)
         verdict_routed = decision.model
-        attempt_chain = tuple(dict.fromkeys([verdict_routed, *decision.alternatives]))
+        admit_denied = decision.decision == "denied" or verdict_routed == "no_eligible_target"
+        attempt_chain = (
+            () if admit_denied else tuple(dict.fromkeys([verdict_routed, *decision.alternatives]))
+        )
 
         direct_request = ArmRequest(
             arm=ARM_DIRECT,
@@ -476,9 +530,13 @@ def run_savings_bench(
             direct_exec, err = _execute(execute_arm, direct_request)
             if err:
                 executor_errors[ARM_DIRECT] = err
-            verdict_exec, err = _execute(execute_arm, verdict_request)
-            if err:
-                executor_errors[ARM_VERDICT] = err
+            if admit_denied:
+                # Never POST no_eligible_target / a denied identity to the gateway.
+                executor_errors[ARM_VERDICT] = decision.reason or "admit_denied"
+            else:
+                verdict_exec, err = _execute(execute_arm, verdict_request)
+                if err:
+                    executor_errors[ARM_VERDICT] = err
 
         if executed_mode:
             direct_cost, direct_cost_err = (
@@ -495,6 +553,8 @@ def run_savings_bench(
             gaps += execution_evidence_gaps(
                 verdict_request, verdict_exec, cost_error=verdict_cost_err
             )
+            if admit_denied:
+                gaps.append("verdict:admit_denied")
             direct_quality = (
                 evaluate(task, direct_exec).to_dict()
                 if direct_exec is not None
@@ -516,7 +576,11 @@ def run_savings_bench(
                     "gateway": gateway,
                     "attempt_chain": list(attempt_chain),
                     "bound": False,
-                    "explanation": "verdict arm was not executed",
+                    "explanation": (
+                        f"admit denied: {decision.reason}"
+                        if admit_denied
+                        else "verdict arm was not executed"
+                    ),
                 }
             )
             for execution in (direct_exec, verdict_exec):
@@ -550,6 +614,7 @@ def run_savings_bench(
             }
 
         reasons = _withhold_reasons(
+            simulation=not executed_mode,
             executed=executed_mode and direct_exec is not None and verdict_exec is not None,
             evidence_gaps=gaps,
             pack_state=str(pack_state) if pack_state is not None else None,

@@ -197,6 +197,24 @@ def evaluate_output_against_checks(
     return QualityResult(passed=not misses, misses=misses, evaluator="checks.must_contain")
 
 
+def identities_equivalent(requested: str, completed: str) -> bool:
+    """True when gateway identity matches the request, including provider-prefix stripping.
+
+    OmniRoute often reports ``X-OmniRoute-Model`` as the bare model id while the
+    request used ``provider/model``. That is alias normalization, not a rewrite
+    to a different model. Distinct tails (``cx/foo`` vs ``cx/cheap``) are not
+    equivalent.
+    """
+    a, b = requested.strip(), completed.strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if "/" in a and a.split("/", 1)[1] == b:
+        return True
+    return bool("/" in b and b.split("/", 1)[1] == a)
+
+
 def execution_evidence_gaps(
     request: ArmRequest, execution: ArmExecution | None, *, cost_error: str | None
 ) -> list[str]:
@@ -220,7 +238,7 @@ def execution_evidence_gaps(
         request.arm == ARM_DIRECT
         and request.model
         and execution.completed_with
-        and execution.completed_with != request.model
+        and not identities_equivalent(request.model, execution.completed_with)
     ):
         gaps.append(f"{request.arm}:baseline_identity_substituted")
     if request.arm == ARM_VERDICT:
@@ -228,7 +246,13 @@ def execution_evidence_gaps(
         # Only the chain the gateway *reported* counts. The planned chain on the
         # request explains what Verdict intended, not what happened.
         chain = tuple(execution.attempt_chain)
-        if routed and execution.completed_with != routed and execution.completed_with not in chain:
+        completed = execution.completed_with
+        if (
+            routed
+            and not identities_equivalent(routed, completed)
+            and completed not in chain
+            and not any(identities_equivalent(member, completed) for member in chain)
+        ):
             # A completed identity that is neither the routed pick nor a named
             # fallback in the observed attempt chain cannot be explained; refuse.
             gaps.append(f"{request.arm}:completed_identity_not_in_attempt_chain")
@@ -242,9 +266,13 @@ def explain_identity(request: ArmRequest, execution: ArmExecution) -> dict[str, 
     chain = list(execution.attempt_chain)
     if routed is None:
         explanation = "direct arm: fixed frontier identity"
-    elif completed == routed:
-        explanation = "completed with the routed identity"
-    elif completed in chain:
+    elif identities_equivalent(routed, completed):
+        explanation = (
+            "completed with the routed identity"
+            if completed == routed
+            else f"completed with gateway alias of routed identity ({routed} ≡ {completed})"
+        )
+    elif completed in chain or any(identities_equivalent(member, completed) for member in chain):
         explanation = f"routed {routed} fell back within the observed attempt chain to {completed}"
     elif completed in request.attempt_chain:
         explanation = (
@@ -259,7 +287,12 @@ def explain_identity(request: ArmRequest, execution: ArmExecution) -> dict[str, 
         "gateway": execution.gateway,
         "attempt_chain": chain,
         "planned_attempt_chain": list(request.attempt_chain),
-        "bound": routed is None or completed == routed or completed in chain,
+        "bound": (
+            routed is None
+            or identities_equivalent(routed, completed)
+            or completed in chain
+            or any(identities_equivalent(member, completed) for member in chain)
+        ),
         "explanation": explanation,
     }
 
@@ -277,6 +310,7 @@ __all__ = [
     "evaluate_output_against_checks",
     "execution_evidence_gaps",
     "explain_identity",
+    "identities_equivalent",
     "input_hash_from_sent_payload",
     "output_digest",
     "render_task_message",

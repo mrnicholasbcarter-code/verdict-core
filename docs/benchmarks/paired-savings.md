@@ -5,6 +5,12 @@ Verdict cheap-path arm on the same legit task (debug, refactor+tests,
 implement-from-AC) and the same acceptance criteria. Savings are only ever
 claimed from **executed, receipt-bound evidence**.
 
+In ``live-paired`` mode the Verdict arm is routed through the same gate
+pipeline as ``verdict serve``: OmniRoute free∩active inventory → prove-at-rest
+passport → budgeted confirm → Core metadata capability gate → chooser. There
+is no baked model catalog on that path. If admit fail-closes, the Verdict arm
+is not executed and the task is withheld with ``verdict:admit_denied``.
+
 ## Two modes
 
 | Mode | Command | Can claim savings? |
