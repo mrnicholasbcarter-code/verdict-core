@@ -862,6 +862,41 @@ def cmd_detect(
         sys.exit(1)
 
 
+def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -> None:
+    """Emit a BOD-92 runtime certification report (evidence only, JSON).
+
+    Reads DetectedSnapshot fixtures from ``--from`` when provided. Does not
+    perform live network probes or mutate setup/doctor state (BOD-124).
+    """
+    from verdict.runtime_certification import ComponentKind, DetectedSnapshot, certify_runtime
+
+    snapshots: list[DetectedSnapshot] = []
+    if snapshot_path:
+        payload = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+        raw_items = payload.get("snapshots", payload if isinstance(payload, list) else [])
+        for item in raw_items:
+            snapshots.append(
+                DetectedSnapshot(
+                    component_id=item["component_id"],
+                    kind=ComponentKind(item["kind"]),
+                    identity=item["identity"],
+                    source=item["source"],
+                    health_claim=item.get("health_claim", "unknown"),
+                    version=item.get("version"),
+                    capabilities=frozenset(item.get("capabilities", [])),
+                    requires_probe=bool(item.get("requires_probe", False)),
+                    evidence=item.get("evidence", {}),
+                    models=tuple(item.get("models", ())),
+                )
+            )
+    report = certify_runtime(snapshots=tuple(snapshots))
+    encoded = json.dumps(report.to_dict(), indent=2, sort_keys=True)
+    if output_json:
+        print(encoded)
+    else:
+        console.print_json(encoded)
+
+
 def cmd_probe(
     models: list[str],
     base_url: str = "http://localhost:20128/v1",
@@ -2796,6 +2831,22 @@ def main() -> None:
     )
     detect_p.add_argument("--config", action="store_true", help="Generate suggested Verdict config")
 
+    certify_p = subparsers.add_parser(
+        "certify", help="Emit runtime certification passport JSON (BOD-92 evidence only)"
+    )
+    certify_p.add_argument(
+        "--from",
+        dest="certify_from",
+        default=None,
+        help="Path to DetectedSnapshot JSON fixtures (offline; no live probes)",
+    )
+    certify_p.add_argument(
+        "--json",
+        action="store_true",
+        default=True,
+        help="Output JSON (default; certification is machine-readable)",
+    )
+
     # New: probe command (1-token liveness test before assigning work)
     probe_p = subparsers.add_parser("probe", help="Run a 1-token liveness probe against models")
     probe_p.add_argument(
@@ -3377,6 +3428,11 @@ def main() -> None:
             output_json=args.json,
             output_config=args.config,
             offline=args.offline,
+        )
+    elif args.command == "certify":
+        cmd_certify(
+            snapshot_path=getattr(args, "certify_from", None),
+            output_json=getattr(args, "json", True),
         )
     elif args.command == "suggest":
         cmd_suggest(args.log_path)
