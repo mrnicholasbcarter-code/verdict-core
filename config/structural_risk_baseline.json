@@ -15,14 +15,19 @@
     "rationale": "Existing availability hotspot; decomposition tracked by issue #123."
   },
   {
+    "path": "verdict/capability_bootstrap.py",
+    "max_lines": 1700,
+    "rationale": "BOD-124 staged bootstrap pipeline; split deferred until Sol TUI consumes semantic stages."
+  },
+  {
     "path": "verdict/capability_passports.py",
     "max_lines": 535,
     "rationale": "Existing capability passport module; decomposition tracked by issue #123."
   },
   {
     "path": "verdict/cli.py",
-    "max_lines": 1675,
-    "rationale": "Existing CLI and setup hotspot; decomposition tracked by issue #123."
+    "max_lines": 4900,
+    "rationale": "CLI + harness + bootstrap entrypoints; decomposition tracked by issue #123 / BOD-131."
   },
   {
     "path": "verdict/compaction.py",

@@ -161,13 +161,13 @@ def cmd_setup(
     if rollback:
         resolved = Path(state_dir) if state_dir else Path.home() / ".verdict" / "bootstrap"
         stage = rollback_bootstrap_actions(state_dir=resolved)
-        payload = {
+        rollback_payload: dict[str, object] = {
             "schema_version": "capability-bootstrap/v1",
             "kind": "bootstrap_rollback",
             "stage": stage.to_dict(),
         }
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(rollback_payload, indent=2, sort_keys=True))
         else:
             print(f"Bootstrap rollback: {stage.status} — {stage.summary}")
             details = stage.details if isinstance(stage.details, dict) else {}
@@ -210,12 +210,12 @@ def cmd_setup(
             non_interactive=True,
             allowlist=tuple(allowlist or ()),
         )
-        payload = report.to_dict()
+        report_payload: dict[str, object] = report.to_dict()
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(report_payload, indent=2, sort_keys=True))
             return
-        plan = payload["plan"]
-        stages = payload["stages"]
+        plan = report_payload["plan"]
+        stages = report_payload["stages"]
         if not isinstance(plan, dict) or not isinstance(stages, list):
             raise TypeError("bootstrap report must include plan dict and stages list")
         print("Verdict capability bootstrap (dry-run; no changes made)")
@@ -241,12 +241,12 @@ def cmd_setup(
             consent=consent,
             state_dir=Path(state_dir) if state_dir else None,
         )
-        payload = report.to_dict()
-        stages = payload["stages"]
+        apply_payload: dict[str, object] = report.to_dict()
+        stages = apply_payload["stages"]
         if not isinstance(stages, list):
             raise TypeError("bootstrap report must include stages list")
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(apply_payload, indent=2, sort_keys=True))
         else:
             for stage in stages:
                 if not isinstance(stage, dict):
