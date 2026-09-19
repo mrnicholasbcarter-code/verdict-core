@@ -35,6 +35,11 @@
     "rationale": "Existing contract hotspot; decomposition tracked by issue #123."
   },
   {
+    "path": "verdict/delivery.py",
+    "max_lines": 850,
+    "rationale": "BOD-68 delivery controller owns proof\u2192PR\u2192CI\u2192merge policy + ports; split deferred until live supervisor lands."
+  },
+  {
     "path": "verdict/documentation_preflight.py",
     "max_lines": 1048,
     "rationale": "Existing documentation preflight module; decomposition tracked by issue #123."
