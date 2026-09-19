@@ -146,7 +146,6 @@ def cmd_setup(
         BootstrapScope,
         rollback_bootstrap_actions,
     )
-
     from verdict.setup_presentation import present_bootstrap
 
     if rollback:
