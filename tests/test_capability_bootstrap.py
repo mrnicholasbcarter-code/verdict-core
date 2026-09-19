@@ -255,21 +255,46 @@ def test_unhealthy_gateway_is_installed_not_healthy_and_not_certified() -> None:
     assert all(item.get("selected_provider_id") != "gateway.omniroute" for item in gateway_recs)
 
 
+def test_default_certifier_uses_bod92_runtime_certification() -> None:
+    """Default CERTIFY seam must call BOD-92 certify_runtime (not a stub)."""
+
+    report = run_bootstrap(
+        providers=_unhealthy_gateway_machine(), mode=BootstrapMode.PLAN, non_interactive=True
+    ).to_dict()
+
+    certification = report["certification"]
+    assert certification["schema_version"] == "runtime-certification/v1"
+    assert certification["passport_seam"] == "runtime_certification"
+    assert isinstance(certification.get("runtime_report"), dict)
+    assert certification["runtime_report"]["purpose"] == "evidence"
+    results = {item["provider_id"]: item for item in certification["results"]}
+    omni = results["gateway.omniroute"]
+    assert omni["certified"] is False
+    assert omni["reason"] == "installed != healthy"
+    assert omni["passport_seam"] == "runtime_certification"
+    assert "state" in omni
+
+
 def test_plan_noninteractive_is_deterministic_json_without_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from datetime import datetime, timezone
+
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    frozen = datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc)
     first = run_bootstrap(
         providers=_clean_machine(),
         mode=BootstrapMode.PLAN,
         non_interactive=True,
         state_dir=tmp_path / "state",
+        certify_now=frozen,
     ).to_dict()
     second = run_bootstrap(
         providers=_clean_machine(),
         mode=BootstrapMode.PLAN,
         non_interactive=True,
         state_dir=tmp_path / "state",
+        certify_now=frozen,
     ).to_dict()
 
     assert first == second
