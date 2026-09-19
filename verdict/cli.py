@@ -142,13 +142,20 @@ def cmd_setup(
         recommended or apply or scope != "all"
     )
     if wants_classic_plan:
-        cmd_setup_plan(output_json=output_json or dry_run or plan_only)
+        cmd_setup_plan(output_json=output_json)
         return
 
     wants_bootstrap_plan = (
         recommended or plan_only or dry_run or non_interactive or scope != "all"
     ) and not apply
     if wants_bootstrap_plan:
+        # Scoped subcommands and recommended plans keep the setup_plan envelope
+        # with nested bootstrap when possible; bare bootstrap report for APPLY prep.
+        if scope != "all" or recommended:
+            cmd_setup_plan(
+                output_json=output_json, scope=scope, recommended=recommended or scope != "all"
+            )
+            return
         mode = BootstrapMode.RECOMMENDED if recommended else BootstrapMode.PLAN
         report = run_bootstrap(
             mode=mode,
@@ -576,7 +583,7 @@ def cmd_setup_plan(
         non_interactive=True,
     )
     base = build_setup_plan(
-        bootstrap_providers=bootstrap.providers, include_bootstrap=True
+        bootstrap_providers=bootstrap.providers, include_bootstrap=True, bootstrap_scope=scope
     ).to_dict()
     plan = {**base, "bootstrap": bootstrap.to_dict()}
     if output_json:
@@ -3444,6 +3451,9 @@ def main() -> None:
             scope = args.setup_action
         if args.setup_action == "plan" or args.plan:
             cmd_setup_plan(output_json=args.json, scope=scope, recommended=args.recommended)
+        elif args.setup_action in {"intelligence", "gateways", "harnesses"} and not args.apply:
+            # Bare scoped subcommands plan bootstrap for that scope (not the legacy wizard).
+            cmd_setup_plan(output_json=args.json, scope=scope, recommended=True)
         else:
             cmd_setup(
                 dry_run=args.dry_run,
