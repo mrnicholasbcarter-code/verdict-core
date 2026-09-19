@@ -34,13 +34,22 @@ import httpx
 
 from verdict.availability import is_opaque_route_id
 from verdict.classifier import classify
+from verdict.context_budget import (
+    BudgetCandidateLimit,
+    BudgetReceipt,
+    BudgetUnit,
+    ContextBudgetError,
+    ContextBudgetGovernor,
+)
 from verdict.context_pack import (
     ContextContractError,
     ContextPackCompiler,
     ContextPackSlot,
     ContextPlan,
     ContextUnit,
+    unit_prompt_token_cost,
 )
+from verdict.context_trust import SourceKind, admit_external_evidence
 from verdict.eligibility import EligibilityRecord, EligibilityResult, EligibilityVerdict
 from verdict.free_route_harvest import free_status
 from verdict.models import ModelInfo
@@ -167,6 +176,9 @@ class CheapPathContextPack:
     # every task-required source must be included, before ``hydrated`` is possible.
     task_complete: bool = True
     required_sources: tuple[str, ...] = ()
+    # BOD-128: BudgetReceipt + Context Trust feed for BOD-104 offers.
+    budget_receipt: BudgetReceipt | None = None
+    context_trust_admitted: bool = True
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -197,6 +209,10 @@ class CheapPathContextPack:
             "included": sources,
             "included_sources": list(sources),
             "omissions": [item.to_dict() for item in self.omissions],
+            "budget_receipt": None
+            if self.budget_receipt is None
+            else self.budget_receipt.to_dict(),
+            "context_trust_admitted": self.context_trust_admitted,
         }
 
 
@@ -213,11 +229,12 @@ def build_cheap_path_context_pack(
     """Compile a provenance-rich context pack for cheap-path offload.
 
     Gather real workspace units (repo docs / architecture / ADRs / project docs,
-    plus MCP only when a source is configured), then compile under budget.
-    High-value roots (ADR, architecture, README) are packed first so a normal
-    thesis set is included rather than truncated as ``input_budget_exhausted``.
-    Missing sources become named omissions — never invented content. An empty
-    gather still compiles the task and does not block execute.
+    plus MCP only when a source is configured), admit every external unit through
+    Context Trust (BOD-126), allocate via BudgetReceipt (BOD-125), then compile
+    only the allocated set. High-value roots (ADR, architecture, README) remain
+    preferred under budget. Missing sources become named omissions — never
+    invented content. An empty gather still compiles the task and does not block
+    execute.
 
     ``pack_state`` classifies the result for receipts (BOD-106). Savings stay
     blocked until ``hydrated``; empty/partial with a digest is still a hydrate
@@ -245,7 +262,7 @@ def build_cheap_path_context_pack(
         source_uri=TASK_SOURCE_URI,
     )
     slots = (task_slot, *(extra_slots or ()))
-    units = []
+    units: list[ContextUnit] = []
     for slot in slots:
         unit = slot.to_unit()
         units.append(
@@ -258,17 +275,45 @@ def build_cheap_path_context_pack(
             task, workspace_root=workspace_root, roots=workspace_roots, mcp_root=mcp_root
         )
         units.extend(gathered.units)
+        admitted_units, trust_omissions = _admit_external_units_for_compile(
+            units, task_policy=task, epoch=CHEAP_PATH_EPOCH
+        )
+        budget_receipt, compile_units, budget_omissions = _allocate_compile_units(
+            admitted_units, candidate_id=candidate_id, token_budget=token_budget
+        )
         plan = ContextPlan(
             plan_id=f"cheap:{candidate_id}",
             candidate_id=candidate_id,
-            token_budget=token_budget,
+            token_budget=budget_receipt.usable_input_budget,
             created_at=CHEAP_PATH_EPOCH,
         )
         pack = ContextPackCompiler().compile_units(
-            tuple(units),
+            tuple(compile_units),
             plan,
-            unit_sort_key=cheap_path_unit_sort_key(units, token_budget=token_budget),
+            unit_sort_key=cheap_path_unit_sort_key(
+                compile_units, token_budget=budget_receipt.usable_input_budget
+            ),
         )
+    except ContextBudgetError as exc:
+        if exc.code == "mandatory_overflow":
+            # Mandatory task cannot fit usable budget — BOD-110 failed pack.
+            digest = f"sha256:{sha256(task.encode('utf-8')).hexdigest()}"
+            return CheapPathContextPack(
+                pack_digest=digest,
+                compiled_prompt="",
+                omissions=(
+                    NamedOmission(name=TASK_SOURCE_URI, reason=REASON_TASK_INSTRUCTIONS_OMITTED),
+                ),
+                pack_id="failed",
+                plan_digest=f"sha256:{sha256(candidate_id.encode('utf-8')).hexdigest()}",
+                units=(),
+                included=(),
+                pack_state="failed",
+                task_complete=False,
+                budget_receipt=None,
+                context_trust_admitted=True,
+            )
+        return _failed_cheap_path_pack(task, candidate_id=candidate_id, token_budget=token_budget)
     except (OSError, UnicodeError, ContextContractError):
         return _failed_cheap_path_pack(task, candidate_id=candidate_id, token_budget=token_budget)
     compiler_omissions = tuple(
@@ -288,7 +333,7 @@ def build_cheap_path_context_pack(
     # dropped it, the compiled prompt no longer carries the instructions and
     # must be reported as failed — never silently executed as a hydrated pack.
     task_complete = any(unit.source_uri == TASK_SOURCE_URI for unit in pack.units)
-    omissions = gather_omissions + compiler_omissions
+    omissions = gather_omissions + trust_omissions + budget_omissions + compiler_omissions
     if not task_complete:
         omissions = (
             NamedOmission(name=TASK_SOURCE_URI, reason=REASON_TASK_INSTRUCTIONS_OMITTED),
@@ -312,7 +357,129 @@ def build_cheap_path_context_pack(
         pack_state=pack_state,
         task_complete=task_complete,
         required_sources=gathered.required_uris,
+        budget_receipt=budget_receipt,
+        context_trust_admitted=True,
     )
+
+
+def _external_source_kind(unit: ContextUnit) -> SourceKind | None:
+    """Return a Context Trust source kind for external units; None if local/task."""
+    uri = unit.source_uri
+    if uri == TASK_SOURCE_URI or uri.startswith("urn:verdict:"):
+        return None
+    if uri.startswith("mcp:"):
+        return "mcp_output"
+    if uri.startswith(("http://", "https://")):
+        return "web"
+    if unit.trust in {"untrusted", "unverified"} and unit.authority in {"evidence", "unverified"}:
+        return "unknown"
+    return None
+
+
+def _admit_external_units_for_compile(
+    units: Sequence[ContextUnit], *, task_policy: str, epoch: str
+) -> tuple[list[ContextUnit], tuple[NamedOmission, ...]]:
+    """Run BOD-126 admit on every external unit before model-bound compile."""
+    admitted: list[ContextUnit] = []
+    omissions: list[NamedOmission] = []
+    for unit in units:
+        kind = _external_source_kind(unit)
+        if kind is None:
+            admitted.append(unit)
+            continue
+        result = admit_external_evidence(
+            content=unit.content,
+            source_kind=kind,
+            source_uri=unit.source_uri,
+            unit_id=unit.unit_id,
+            key=unit.key,
+            slot_type=unit.slot_type,
+            task_policy=task_policy,
+            observed_at=epoch,
+            tenant_scope=unit.tenant_scope,
+            project_scope=unit.project_scope,
+        )
+        if result.excluded or result.unit is None:
+            reason = result.exclusion_reason or "excluded"
+            omissions.append(
+                NamedOmission(
+                    name=unit.source_uri
+                    if _is_workspace_provenance(unit.source_uri)
+                    else unit.unit_id,
+                    reason=f"context_trust_{reason}",
+                )
+            )
+            continue
+        admitted.append(replace(result.unit, observed_at=epoch, retrieved_at=epoch, created_at=0.0))
+    return admitted, tuple(omissions)
+
+
+def _budget_source_class(unit: ContextUnit) -> str:
+    if unit.source_uri == TASK_SOURCE_URI or unit.slot_type == "instructions":
+        return "task_spec"
+    if unit.source_uri.startswith("mcp:") or unit.slot_type == "tools":
+        return "mcp_tools"
+    if unit.slot_type == "history":
+        return "conversation_history"
+    if unit.slot_type == "memory":
+        return "memory"
+    if unit.slot_type in {"system", "policy"}:
+        return "system_harness"
+    return "docs"
+
+
+def _budget_value_score(unit: ContextUnit) -> float:
+    from verdict.context_hydrate import unit_hydrate_class
+
+    cls = unit_hydrate_class(unit)
+    if cls < 0:
+        return 1.0
+    if unit.source_uri.startswith("mcp:"):
+        return 0.55
+    if unit.source_uri.startswith(("http://", "https://")):
+        return 0.5
+    scores = {0: 0.95, 1: 0.9, 2: 0.85, 3: 0.8}
+    return scores.get(cls, 0.4)
+
+
+def _context_units_to_budget_units(units: Sequence[ContextUnit]) -> list[BudgetUnit]:
+    budget_units: list[BudgetUnit] = []
+    for unit in units:
+        mandatory = unit.source_uri == TASK_SOURCE_URI or unit.slot_type == "instructions"
+        budget_units.append(
+            BudgetUnit(
+                unit_id=unit.unit_id,
+                source_class=_budget_source_class(unit),  # type: ignore[arg-type]
+                priority="mandatory" if mandatory else "optional",
+                content=unit.content,
+                token_count=unit_prompt_token_cost(unit),
+                token_count_kind="estimated",
+                provenance_uri=unit.source_uri,
+                value_score=_budget_value_score(unit),
+            )
+        )
+    return budget_units
+
+
+def _allocate_compile_units(
+    units: Sequence[ContextUnit], *, candidate_id: str, token_budget: int
+) -> tuple[BudgetReceipt, list[ContextUnit], tuple[NamedOmission, ...]]:
+    """Allocate via BudgetReceipt; return only included units for compile (no dual budget)."""
+    governor = ContextBudgetGovernor()
+    limit = BudgetCandidateLimit(candidate_id=candidate_id, context_limit=token_budget)
+    receipt = governor.allocate(_context_units_to_budget_units(units), limit)
+    included_ids = {item.unit_id for item in receipt.included}
+    compile_units = [unit for unit in units if unit.unit_id in included_ids]
+    omissions = tuple(
+        NamedOmission(
+            name=om.provenance_uri if _is_workspace_provenance(om.provenance_uri) else om.unit_id,
+            # Preserve governor reason strings (e.g. input_budget_exhausted) for
+            # existing cheap-path receipt consumers; do not invent a parallel taxonomy.
+            reason=om.reason,
+        )
+        for om in receipt.omitted
+    )
+    return receipt, compile_units, omissions
 
 
 def _is_workspace_provenance(source_uri: str) -> bool:
@@ -374,6 +541,8 @@ def _failed_cheap_path_pack(
         units=units,
         included=(),
         pack_state="failed",
+        budget_receipt=None,
+        context_trust_admitted=True,
     )
 
 
