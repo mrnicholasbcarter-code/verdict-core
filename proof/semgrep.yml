@@ -1,0 +1,20 @@
+# Deterministic Semgrep CE rules for BOD-89 (no paid SaaS, no registry fetch at proof time).
+rules:
+  - id: verdict.no-assert-false-security-bypass
+    languages: [python]
+    severity: ERROR
+    message: "Do not hardcode security bypasses"
+    patterns:
+      - pattern: SECURITY_BYPASS = True
+  - id: verdict.no-eval
+    languages: [python]
+    severity: ERROR
+    message: "Avoid eval()"
+    patterns:
+      - pattern: eval(...)
+  - id: verdict.no-pickle-loads
+    languages: [python]
+    severity: ERROR
+    message: "Avoid pickle.loads on untrusted data"
+    patterns:
+      - pattern: pickle.loads(...)

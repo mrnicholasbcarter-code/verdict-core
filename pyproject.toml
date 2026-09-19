@@ -87,7 +87,7 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
 ignore = ["E501", "B008"]
-per-file-ignores = { "tests/*" = ["S101"] }
+per-file-ignores = { "tests/*" = ["S101"], "scripts/demo-routing.py" = ["N999"] }
 
 [tool.ruff.format]
 quote-style = "double"
