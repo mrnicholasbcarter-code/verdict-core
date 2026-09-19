@@ -3401,8 +3401,7 @@ def main() -> None:
         "disable", help="Restore the pre-enable ~/.config/opencode/opencode.json backup"
     )
     harness_opencode_sub.add_parser(
-        "status",
-        help="Show OpenCode Verdict provider, base URL, and whether the token env is set",
+        "status", help="Show OpenCode Verdict provider, base URL, and whether the token env is set"
     )
     opencode_certify_p = harness_opencode_sub.add_parser(
         "certify",
@@ -4228,6 +4227,7 @@ def cmd_harness_cursor(
         console.print(f"[bold red]{exc}[/bold red]")
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness cursor command: {command}")
+
 
 def cmd_harness_prime(
     command: str,
