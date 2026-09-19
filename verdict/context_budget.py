@@ -62,6 +62,7 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)https?://[^\s/@]+:[^\s/@]+@"),
 )
 
+
 class ContextBudgetError(ValueError):
     """Raised when budget accounting or allocation cannot proceed safely."""
 
