@@ -595,3 +595,19 @@ def test_live_refuses_when_baseline_output_fails_checks() -> None:
         assert "baseline_quality_miss" in task["withhold_reasons"]
         assert "quality_miss" not in task["withhold_reasons"], "verdict arm quality is separate"
     assert report["aggregate"]["savings_claimed_count"] == 0
+
+
+def test_direct_arm_executed_on_a_different_model_is_not_a_frontier_baseline() -> None:
+    """The gateway rerouting the direct request to a cheaper model is not a frontier comparison."""
+
+    def substituted_baseline(request: ArmRequest) -> ArmExecution:
+        if request.arm == "direct":
+            return _fake_executor(completed={"direct": "cx/cheap-substitute"})(request)
+        return _fake_executor()(request)
+
+    report = run_savings_bench(DEFAULT_SAVINGS_FIXTURE_PATH, execute_arm=substituted_baseline)
+    assert report["aggregate"]["savings_claimed_count"] == 0
+    for task in report["tasks"]:
+        assert task["savings_claimed"] is False
+        assert "direct:baseline_identity_substituted" in task["withhold_reasons"]
+        assert task["direct"]["completed_with"] == "cx/cheap-substitute"

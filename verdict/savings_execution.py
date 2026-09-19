@@ -214,6 +214,15 @@ def execution_evidence_gaps(
         gaps.append(f"{request.arm}:cost_not_observed")
     if execution.status_code is not None and not 200 <= execution.status_code < 300:
         gaps.append(f"{request.arm}:upstream_status_{execution.status_code}")
+    # The direct arm is the fixed frontier baseline. A gateway that
+    # completes it with a different model is not a frontier comparison.
+    if (
+        request.arm == ARM_DIRECT
+        and request.model
+        and execution.completed_with
+        and execution.completed_with != request.model
+    ):
+        gaps.append(f"{request.arm}:baseline_identity_substituted")
     if request.arm == ARM_VERDICT:
         routed = request.routed_model or ""
         # Only the chain the gateway *reported* counts. The planned chain on the

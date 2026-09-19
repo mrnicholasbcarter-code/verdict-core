@@ -229,3 +229,12 @@ def test_measured_spend_joins_decisions_to_outcomes_by_request_id(tmp_path: Path
     }
     assert measured_spend_for({"request_id": "req-unknown"}, outcomes) is None
     assert measured_spend_for({}, outcomes) is None
+
+
+def test_observe_execution_rejects_non_finite_cost_and_token_values() -> None:
+    for bad in ("inf", "Infinity", "-inf", "nan", "NaN", "1e999"):
+        observed = observe_execution(
+            headers=[("x-omniroute-response-cost", bad), ("x-omniroute-tokens-in", bad)], body=None
+        )
+        assert observed["observed_cost_usd"] is None, bad
+        assert observed["observed_tokens_in"] is None, bad

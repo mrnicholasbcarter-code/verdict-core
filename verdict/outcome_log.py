@@ -19,6 +19,7 @@ is ever inferred from a model name.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,13 +60,14 @@ def _non_negative_float(value: object) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value) if value >= 0 else None
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) and parsed >= 0 else None
     if isinstance(value, str):
         try:
             parsed = float(value.strip())
         except ValueError:
             return None
-        return parsed if parsed >= 0 else None
+        return parsed if math.isfinite(parsed) and parsed >= 0 else None
     return None
 
 
