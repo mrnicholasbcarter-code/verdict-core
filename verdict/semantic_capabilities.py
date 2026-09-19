@@ -46,6 +46,11 @@ SEMANTIC_CAPABILITIES: Final[frozenset[str]] = frozenset(
         "vcs.pr.read",
         "vcs.pr.write",
         "reasoning.sequential",
+        # Security boundary (BOD-126) — brand-free domain ids; scanners are providers
+        "security.prompt_injection",
+        "security.secrets",
+        "security.agent_config",
+        "security.mcp_config",
     }
 )
 
@@ -64,8 +69,15 @@ _BRAND_FRAGMENTS: Final[frozenset[str]] = frozenset(
         "tree-sitter",
         "treesitter",
         "native.verdict",
+        "agentshield",
+        "gitleaks",
+        "semgrep",
     }
 )
+
+# Protocol-domain exceptions: substring matches a brand fragment but names the
+# security *subject* (MCP config scanning), not a provider product brand.
+_BRAND_FREE_ALLOWLIST: Final[frozenset[str]] = frozenset({"security.mcp_config"})
 
 
 class SemanticCapabilityError(ValueError):
@@ -81,6 +93,12 @@ def assert_brand_free_capability_id(capability_id: str) -> None:
     if not capability_id or not capability_id.strip():
         raise SemanticCapabilityError("capability_id is required")
     lowered = capability_id.lower().strip()
+    if lowered in _BRAND_FREE_ALLOWLIST:
+        if "." not in capability_id:
+            raise SemanticCapabilityError(
+                f"capability id must be domain.capability shaped: {capability_id!r}"
+            )
+        return
     if lowered.startswith("native."):
         raise SemanticCapabilityError(
             f"capability id must not use provider namespace: {capability_id!r}"
