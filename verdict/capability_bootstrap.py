@@ -4,6 +4,9 @@ Staged flow: discover → normalize → recommend → preflight → consent → 
 
 Setup/DX only — not Core routing, cost ledger, or BOD-104. Third-party software is
 never silently installed: consent or an explicit non-interactive allowlist is required.
+When APPLY is authorized, a bounded default ``InstallRunner`` may execute the
+documented OmniRoute install (``npm install -g omniroute``) only — other providers
+still require an explicit runner and otherwise fail closed.
 
 Binary presence is not health, authentication, or qualification. Recommendations are
 capability-first (providers second). OmniRoute may be recommended but is never a hard
@@ -26,6 +29,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
+from verdict.bootstrap_install import (
+    InstallCommandRunner,
+    build_default_install_runner,
+    run_default_provider_install,
+)
 from verdict.capability_registry import (
     ResolveDecision,
     SemanticCapabilityRegistry,
@@ -1201,6 +1209,8 @@ def apply_bootstrap_actions(
     non_interactive: bool,
     decline_optional: bool = False,
     install_runner: InstallRunner | None = None,
+    install_command_runner: InstallCommandRunner | None = None,
+    path_resolver: PathResolver | None = None,
 ) -> tuple[StageResult, StageResult, dict[str, object]]:
     """Consent gate + idempotent apply with backups and ownership tracking."""
 
@@ -1279,7 +1289,11 @@ def apply_bootstrap_actions(
     backup_dir = state_dir / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     applied: list[dict[str, object]] = []
-    runner = install_runner
+    # Consent/allowlist already enforced above. Default runner only executes
+    # documented safe providers (gateway.omniroute); others stay blocked.
+    runner = install_runner or build_default_install_runner(
+        state_dir=state_dir, command_runner=install_command_runner, path_resolver=path_resolver
+    )
 
     for action in authorized:
         backup_path = backup_dir / f"{action.action_id.replace(':', '__')}.json"
@@ -1294,15 +1308,6 @@ def apply_bootstrap_actions(
 
         result: Mapping[str, Any]
         if action.kind == "install_provider":
-            if runner is None:
-                # Never silently shell out, and never mark success without a runner.
-                result = {
-                    "status": "blocked",
-                    "install_command": action.install_command,
-                    "note": "install runner not configured; action left pending",
-                }
-                applied.append({"action_id": action.action_id, "result": dict(result)})
-                continue
             result = runner(action)
         else:
             result = {"status": "recorded", "kind": action.kind}
@@ -1324,6 +1329,7 @@ def apply_bootstrap_actions(
     _save_ownership(state_dir, ownership)
     succeeded: list[dict[str, object]] = []
     runner_blocked: list[dict[str, object]] = []
+    runner_failed: list[dict[str, object]] = []
     for item in applied:
         result_obj = item.get("result")
         if not isinstance(result_obj, dict):
@@ -1331,20 +1337,37 @@ def apply_bootstrap_actions(
         result_map: Mapping[str, Any] = result_obj
         if _successful_apply_result(result_map):
             succeeded.append(item)
-        elif str(result_map.get("status") or "").lower() == "blocked":
+            continue
+        status = str(result_map.get("status") or "").lower()
+        if status == "blocked":
             runner_blocked.append(item)
-    if runner_blocked and not succeeded:
+        elif status in {"failed", "error"}:
+            runner_failed.append(item)
+    if (runner_blocked or runner_failed) and not succeeded:
+        if runner_failed and not runner_blocked:
+            summary = "APPLY failed: install command did not prove success."
+            status = "failed"
+        else:
+            summary = (
+                "APPLY blocked: no install runner for unauthorized/unsupported "
+                "third-party installs."
+            )
+            status = "blocked"
         apply_stage = StageResult(
             stage=StageName.APPLY.value,
-            status="blocked",
-            summary="APPLY blocked: install runner not configured for third-party installs.",
-            details={"blocked": [item["action_id"] for item in runner_blocked], "applied": []},
+            status=status,
+            summary=summary,
+            details={
+                "blocked": [item["action_id"] for item in runner_blocked],
+                "failed": [item["action_id"] for item in runner_failed],
+                "applied": [],
+            },
         )
         return consent_stage, apply_stage, {"mutated": False, "actions": applied}
 
     apply_stage = StageResult(
         stage=StageName.APPLY.value,
-        status="ok" if not runner_blocked else "partial",
+        status="ok" if not runner_blocked and not runner_failed else "partial",
         summary=(
             f"Applied {len(succeeded)} Verdict-owned action(s) with backups."
             if succeeded
@@ -1353,6 +1376,7 @@ def apply_bootstrap_actions(
         details={
             "applied": [item["action_id"] for item in succeeded],
             "blocked": [item["action_id"] for item in runner_blocked],
+            "failed": [item["action_id"] for item in runner_failed],
         },
     )
     return consent_stage, apply_stage, {"mutated": bool(succeeded), "actions": applied}
@@ -1525,6 +1549,7 @@ def run_bootstrap(
     state_dir: Path | str | None = None,
     certifier: Certifier | None = None,
     install_runner: InstallRunner | None = None,
+    install_command_runner: InstallCommandRunner | None = None,
     path_resolver: PathResolver | None = None,
     probe_gateway: GatewayProbe | None = None,
     registry: SemanticCapabilityRegistry | None = None,
@@ -1615,6 +1640,8 @@ def run_bootstrap(
             non_interactive=non_interactive,
             decline_optional=decline_optional,
             install_runner=install_runner,
+            install_command_runner=install_command_runner,
+            path_resolver=path_resolver,
         )
         stages.extend([consent_stage, apply_stage])
     else:
@@ -1802,9 +1829,11 @@ __all__ = [
     "UnifiedBootstrapPlan",
     "apply_bootstrap_actions",
     "build_bootstrap_plan",
+    "build_default_install_runner",
     "discover_providers",
     "doctor_capability_report",
     "recommend_capabilities",
     "rollback_bootstrap_actions",
     "run_bootstrap",
+    "run_default_provider_install",
 ]

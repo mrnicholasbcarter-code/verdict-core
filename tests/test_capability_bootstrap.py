@@ -556,9 +556,58 @@ def test_discovery_accepts_official_binary_aliases(monkeypatch: pytest.MonkeyPat
     assert cbm["path_or_endpoint"] == "/home/user/.local/bin/codebase-memory-mcp"
 
 
-def test_apply_without_install_runner_is_blocked_and_not_owned(tmp_path: Path) -> None:
+def test_default_install_runner_blocks_unsupported_provider(tmp_path: Path) -> None:
+    """Default runner only covers documented OmniRoute — other providers stay blocked."""
+
+    from verdict.capability_bootstrap import BootstrapAction, run_default_provider_install
+
+    commands: list[tuple[str, ...]] = []
+    result = run_default_provider_install(
+        BootstrapAction(
+            action_id="install:gateway.litellm",
+            kind="install_provider",
+            target="gateway.litellm",
+            description="Install LiteLLM",
+            reason="test",
+            security_impact="third-party",
+            postcondition="litellm on PATH",
+            undo="uninstall litellm",
+            reversible=True,
+            requires_consent=True,
+            provider_id="gateway.litellm",
+            install_command="pip install litellm",
+            install_source="https://github.com/BerriAI/litellm",
+        ),
+        state_dir=tmp_path / "state",
+        command_runner=lambda argv: (
+            commands.append(tuple(str(p) for p in argv))
+            or {"returncode": 0, "stdout": "", "stderr": ""}
+        ),
+        path_resolver=lambda _name: "/usr/bin/npm",
+    )
+    assert result["status"] == "blocked"
+    assert "no default install runner" in str(result["note"])
+    assert commands == []
+
+
+def test_default_omniroute_install_runner_applies_with_consent(tmp_path: Path) -> None:
+    """Consented APPLY uses documented OmniRoute install when no custom runner is passed."""
+
+    from verdict.capability_bootstrap import run_default_provider_install
+
     state_dir = tmp_path / "state"
-    first = run_bootstrap(
+    commands: list[tuple[str, ...]] = []
+    present = {"npm": "/usr/bin/npm"}
+
+    def _which(name: str) -> str | None:
+        return present.get(name)
+
+    def _commands(argv: Any) -> dict[str, object]:
+        commands.append(tuple(str(part) for part in argv))
+        present["omniroute"] = "/usr/bin/omniroute"
+        return {"returncode": 0, "stdout": "added 1 package\n", "stderr": ""}
+
+    report = run_bootstrap(
         providers=_clean_machine(),
         mode=BootstrapMode.APPLY,
         non_interactive=True,
@@ -567,28 +616,129 @@ def test_apply_without_install_runner_is_blocked_and_not_owned(tmp_path: Path) -
         state_dir=state_dir,
         scope=BootstrapScope.GATEWAYS,
         install_runner=None,
+        install_command_runner=_commands,
+        path_resolver=_which,
     ).to_dict()
-    apply_stage = next(stage for stage in first["stages"] if stage["stage"] == "apply")
-    assert apply_stage["status"] == "blocked"
-    assert first["apply"]["mutated"] is False
+
+    apply_stage = next(stage for stage in report["stages"] if stage["stage"] == "apply")
+    assert apply_stage["status"] == "ok"
+    assert report["apply"]["mutated"] is True
+    assert commands == [("npm", "install", "-g", "omniroute")]
+    ownership = json.loads((state_dir / "ownership.json").read_text(encoding="utf-8"))
+    assert ownership["managed_actions"]
+    managed = ownership["managed_actions"][0]
+    assert managed["provider_id"] == "gateway.omniroute"
+    result = managed["result"]
+    assert result["status"] == "installed"
+    assert result["install_command"] == "npm install -g omniroute"
+    assert result["install_source"] == "https://github.com/NeuronZero/omniroute"
+    assert result["argv"] == ["npm", "install", "-g", "omniroute"]
+    assert Path(result["marker"]).is_file()
+
+    # Direct unit: fail closed when exit 0 but binary missing.
+    present.pop("omniroute", None)
+    from verdict.capability_bootstrap import BootstrapAction
+
+    failed = run_default_provider_install(
+        BootstrapAction(
+            action_id="install:gateway.omniroute",
+            kind="install_provider",
+            description="Install OmniRoute",
+            target="gateway.omniroute",
+            provider_id="gateway.omniroute",
+            requires_consent=True,
+            reversible=True,
+            install_command="npm install -g omniroute",
+            install_source="https://github.com/NeuronZero/omniroute",
+            reason="test",
+            security_impact="third-party",
+            postcondition="omniroute on PATH",
+            undo="uninstall omniroute",
+        ),
+        state_dir=state_dir / "unit",
+        command_runner=lambda _argv: {"returncode": 0, "stdout": "", "stderr": ""},
+        path_resolver=lambda name: "/usr/bin/npm" if name == "npm" else None,
+    )
+    assert failed["status"] == "failed"
+    assert "refusing to guess" in str(failed["note"])
+
+
+def test_default_omniroute_install_skips_reinstall_when_present(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    commands: list[tuple[str, ...]] = []
+
+    report = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        scope=BootstrapScope.GATEWAYS,
+        install_command_runner=lambda argv: (
+            commands.append(tuple(argv)) or {"returncode": 0, "stdout": "", "stderr": ""}
+        ),
+        path_resolver=lambda name: f"/usr/bin/{name}" if name in {"npm", "omniroute"} else None,
+    ).to_dict()
+
+    assert report["apply"]["mutated"] is True
+    assert commands == [], "must not reinstall when binary already on PATH"
+    ownership = json.loads((state_dir / "ownership.json").read_text(encoding="utf-8"))
+    result = ownership["managed_actions"][0]["result"]
+    assert result["skipped_command"] is True
+    assert result["status"] == "installed"
+
+
+def test_default_omniroute_install_never_runs_without_consent(tmp_path: Path) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    report = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=(),
+        consent=False,
+        state_dir=tmp_path / "state",
+        scope=BootstrapScope.GATEWAYS,
+        install_command_runner=lambda argv: (
+            commands.append(tuple(argv)) or {"returncode": 0, "stdout": "", "stderr": ""}
+        ),
+        path_resolver=lambda name: "/usr/bin/npm" if name == "npm" else None,
+    ).to_dict()
+
+    consent_stage = next(stage for stage in report["stages"] if stage["stage"] == "consent")
+    assert consent_stage["status"] == "blocked"
+    assert commands == []
+    assert report["apply"]["mutated"] is False
+
+
+def test_default_omniroute_install_fails_closed_on_nonzero_exit(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    commands: list[tuple[str, ...]] = []
+
+    report = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        scope=BootstrapScope.GATEWAYS,
+        install_command_runner=lambda argv: (
+            commands.append(tuple(str(p) for p in argv))
+            or {"returncode": 1, "stdout": "", "stderr": "EACCES"}
+        ),
+        path_resolver=lambda name: "/usr/bin/npm" if name == "npm" else None,
+    ).to_dict()
+
+    apply_stage = next(stage for stage in report["stages"] if stage["stage"] == "apply")
+    assert apply_stage["status"] == "failed"
+    assert report["apply"]["mutated"] is False
+    assert commands == [("npm", "install", "-g", "omniroute")]
     ownership_path = state_dir / "ownership.json"
     if ownership_path.exists():
         ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
         assert ownership.get("managed_actions", []) == []
-
-    # Second run must still attempt (not suppressed by fake ownership).
-    second = run_bootstrap(
-        providers=_clean_machine(),
-        mode=BootstrapMode.APPLY,
-        non_interactive=True,
-        allowlist=("gateway.omniroute",),
-        consent=True,
-        state_dir=state_dir,
-        scope=BootstrapScope.GATEWAYS,
-        install_runner=None,
-    ).to_dict()
-    apply_second = next(stage for stage in second["stages"] if stage["stage"] == "apply")
-    assert apply_second["status"] == "blocked"
 
 
 def test_successful_apply_refreshes_provider_before_certify(tmp_path: Path) -> None:
