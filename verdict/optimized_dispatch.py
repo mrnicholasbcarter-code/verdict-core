@@ -341,10 +341,11 @@ def hydrate_worker_context(
             input_digest=hit.input_digest,
         )
 
+    omissions: list[dict[str, str]] = []
+
     if context_pack is not None:
         _reject_secrets(context_pack.units)
         pack = context_pack
-        omissions: list[dict[str, str]] = []
         retained = tuple(c for c in proof_criteria if c in pack.compiled_prompt)
         if not retained:
             # Re-compile with mandatory proof unit when caller pack omitted proof.
@@ -376,7 +377,6 @@ def hydrate_worker_context(
     proof_cost = estimate_tokens(proof.content)
     remaining = max(token_budget - proof_cost - 8, 1)
     kept: list[ContextUnit] = [proof]
-    omissions: list[dict[str, str]] = []
     for unit in assembled[1:]:
         cost = estimate_tokens(unit.content)
         if cost > remaining:
@@ -495,9 +495,16 @@ def execute_optimized_dispatch(
 
     identity = selected_route_dispatch_identity(resolved)
     active = dispatcher or SwarmDispatcher()
+    dispatch_snapshot: AvailabilitySnapshot | dict[str, Any]
+    if isinstance(snapshot, AvailabilitySnapshot):
+        dispatch_snapshot = snapshot
+    elif isinstance(snapshot, dict):
+        dispatch_snapshot = snapshot
+    else:
+        dispatch_snapshot = dict(snapshot)
 
     try:
-        result = active.dispatch(snapshot, dry_run=dry_run, selected_route=resolved)
+        result = active.dispatch(dispatch_snapshot, dry_run=dry_run, selected_route=resolved)
     except ExecutionPathError as exc:
         # Named eligibility / unmatched reasons from hard gates.
         raise OptimizedDispatchError(str(exc)) from exc
@@ -519,11 +526,17 @@ def execute_optimized_dispatch(
     candidates = tuple(
         c.runtime_id if hasattr(c, "runtime_id") else str(c) for c in (result.eligible or ())
     )
-    if not candidates:
+    if not candidates and isinstance(snapshot, AvailabilitySnapshot):
         # Still record observed snapshot identities for the receipt.
-        snap = snapshot if isinstance(snapshot, AvailabilitySnapshot) else None
-        if snap is not None:
-            candidates = tuple(item.runtime_id for item in snap.candidates)
+        ids: list[str] = []
+        for item in snapshot.candidates:
+            if isinstance(item, Mapping):
+                rid = item.get("runtime_id")
+                if rid:
+                    ids.append(str(rid))
+            else:
+                ids.append(str(item.runtime_id))
+        candidates = tuple(ids)
 
     route = resolved.selected_route
     receipt = DispatchReceipt(
