@@ -403,6 +403,15 @@ _CATALOG: tuple[_CatalogEntry, ...] = (
         authority=30,
     ),
     _CatalogEntry(
+        "harness.cline",
+        ProviderKind.HARNESS,
+        frozenset({"harness.execute"}),
+        binaries=("cline",),
+        install_source="https://github.com/cline/cline",
+        install_command="npm install -g cline  # or install the VS Code Cline extension",
+        authority=30,
+    ),
+    _CatalogEntry(
         "gateway.omniroute",
         ProviderKind.GATEWAY,
         frozenset({"gateway.inventory", "gateway.execute", "gateway.quota"}),
