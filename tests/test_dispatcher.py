@@ -56,6 +56,36 @@ def test_missing_selected_route_fails_closed() -> None:
     assert result.reason == "missing_authorized_selected_route"
 
 
+def test_blank_authorized_runtime_id_fails_closed() -> None:
+    result = SwarmDispatcher().dispatch(
+        snapshot(candidate("cheap", cost=0.1), candidate("expensive", cost=2)),
+        now=NOW,
+        authorized_runtime_id="   ",
+    )
+    assert result.selected is None
+    assert result.reason == "missing_authorized_selected_route"
+
+
+def test_authorized_runtime_id_binds_exact_match_not_cheapest() -> None:
+    result = SwarmDispatcher().dispatch(
+        snapshot(candidate("expensive", cost=2), candidate("cheap", cost=0.1)),
+        now=NOW,
+        authorized_runtime_id="expensive",
+    )
+    assert result.selected is not None
+    assert result.selected.runtime_id == "expensive"
+    assert result.estimated_cost == 2.0
+
+
+def test_unmatched_authorized_runtime_id_raises() -> None:
+    with pytest.raises(ExecutionPathError, match="authorized_runtime_id"):
+        SwarmDispatcher().dispatch(
+            snapshot(candidate("cheap", cost=0.1)),
+            now=NOW,
+            authorized_runtime_id="missing",
+        )
+
+
 def test_no_eligible_candidates_records_all_exclusions() -> None:
     result = SwarmDispatcher().dispatch(
         snapshot(

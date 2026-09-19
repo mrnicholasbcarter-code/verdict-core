@@ -40,6 +40,7 @@ from verdict.serve_path import (
     CONTEXT_EP_DECISION,
     CONTEXT_EP_REQUEST,
     CONTEXT_REQUIRE_AUTHORITY,
+    consume_selected_route,
     failover_must_defer_to_bounded_recovery,
     free_tier_feed_identities,
     match_candidate_to_selected_route,
@@ -344,6 +345,74 @@ def _runtime(runtime_id: str, *, cost: float) -> RuntimeCandidate:
         model=runtime_id,
     )
 
+
+def test_consume_selected_route_rejects_bare_invented_mapping() -> None:
+    """Phase-6 P0: loose Mapping payloads must not invent dispatch identity."""
+    with pytest.raises(ExecutionPathError, match="strategy_authority|bare invented"):
+        consume_selected_route({"model": "x"})
+    with pytest.raises(ExecutionPathError, match="strategy_authority|bare invented"):
+        consume_selected_route(
+            {"model": "x", "provider": "p", "route_id": "r", "capability_tier": 1}
+        )
+    with pytest.raises(ExecutionPathError, match="missing non-empty model"):
+        consume_selected_route(
+            {
+                "strategy_authority": STRATEGY_AUTHORITY,
+                "provider": "p",
+                "route_id": "r",
+                "capability_tier": 1,
+            }
+        )
+    with pytest.raises(ExecutionPathError, match="missing provider"):
+        consume_selected_route(
+            {
+                "strategy_authority": STRATEGY_AUTHORITY,
+                "model": "x",
+                "route_id": "r",
+                "capability_tier": 1,
+            }
+        )
+    with pytest.raises(ExecutionPathError, match="missing capability_tier"):
+        consume_selected_route(
+            {
+                "strategy_authority": STRATEGY_AUTHORITY,
+                "model": "x",
+                "provider": "p",
+                "route_id": "r",
+            }
+        )
+
+
+def test_consume_selected_route_accepts_ep_decision_and_concrete_route() -> None:
+    decision = _decision()
+    from_ep = consume_selected_route(decision)
+    assert from_ep["model"] == "cheap-model"
+    assert from_ep["strategy_authority"] == STRATEGY_AUTHORITY
+
+    route = _route("auth-1")
+    from_route = consume_selected_route(route)
+    assert from_route["model"] == "cheap-model"
+    assert from_route["provider"] == "provider-a"
+    assert from_route["strategy_authority"] == STRATEGY_AUTHORITY
+
+
+def test_consume_selected_route_accepts_stamped_authorized_mapping() -> None:
+    stamped = {
+        "route_id": "auth-1",
+        "gateway": "gateway-a",
+        "provider": "provider-a",
+        "model": "cheap-model",
+        "capability_tier": 1,
+        "strategy_authority": STRATEGY_AUTHORITY,
+    }
+    identity = consume_selected_route(stamped)
+    assert identity["model"] == "cheap-model"
+    assert identity["provider"] == "provider-a"
+    assert identity["capability_tier"] == 1
+    assert identity["strategy_authority"] == STRATEGY_AUTHORITY
+
+
+def test_swarm_binds_authorized_selected_route_not_cheapest() -> None:
     decision = _decision()
     snap = AvailabilitySnapshot(
         observed_at=NOW.isoformat(),

@@ -179,15 +179,52 @@ def consume_selected_route(
             "strategy_authority": STRATEGY_AUTHORITY,
         }
     if isinstance(selected_route, Mapping):
-        model = selected_route.get("model") or selected_route.get("selected_candidate_id")
+        # Bare invented mappings are rejected: only BOD-104-stamped identities
+        # (or ExecutionPathDecision / ConcreteRoute above) may authorize dispatch.
+        authority = selected_route.get("strategy_authority")
+        if authority != STRATEGY_AUTHORITY:
+            raise ExecutionPathError(
+                f"{surface}: selected_route mapping must carry "
+                f"strategy_authority={STRATEGY_AUTHORITY!r} "
+                "(bare invented mappings are rejected)"
+            )
+        model = selected_route.get("model")
         if not isinstance(model, str) or not model.strip():
-            raise ExecutionPathError(f"{surface}: selected_route mapping missing model")
+            raise ExecutionPathError(
+                f"{surface}: selected_route mapping missing non-empty model"
+            )
+        if "provider" not in selected_route:
+            raise ExecutionPathError(
+                f"{surface}: selected_route mapping missing provider "
+                "(refusing invent default)"
+            )
+        if "capability_tier" not in selected_route:
+            raise ExecutionPathError(
+                f"{surface}: selected_route mapping missing capability_tier "
+                "(refusing invent default)"
+            )
+        route_id = selected_route.get("route_id")
+        if not isinstance(route_id, str) or not route_id.strip():
+            raise ExecutionPathError(
+                f"{surface}: selected_route mapping missing non-empty route_id"
+            )
+        provider = selected_route.get("provider")
+        if not isinstance(provider, str):
+            raise ExecutionPathError(
+                f"{surface}: selected_route mapping provider must be a string"
+            )
+        try:
+            capability_tier = int(selected_route["capability_tier"])
+        except (TypeError, ValueError) as exc:
+            raise ExecutionPathError(
+                f"{surface}: selected_route mapping capability_tier must be int-compatible"
+            ) from exc
         return {
-            "route_id": str(selected_route.get("route_id") or model),
+            "route_id": route_id.strip(),
             "gateway": str(selected_route.get("gateway") or ""),
-            "provider": str(selected_route.get("provider") or "unknown"),
-            "model": model,
-            "capability_tier": int(selected_route.get("capability_tier") or 2),
+            "provider": provider,
+            "model": model.strip(),
+            "capability_tier": capability_tier,
             "strategy_authority": STRATEGY_AUTHORITY,
         }
     raise ExecutionPathError(f"{surface}: unsupported selected_route type {type(selected_route)!r}")
