@@ -1,0 +1,121 @@
+# BOD-89 canonical proof contract
+# Local and GitHub Actions invoke: python scripts/proof/run.py --mode <targeted|full>
+# Runner: native (stdlib + repo-pinned tools). Dagger evaluated and deferred — see README.md.
+
+schema_version: 1
+name: verdict-core
+runner: native
+
+modes:
+  targeted:
+    # Story worktree: format/lint/type/schema then targeted tests first.
+    phases:
+      - format
+      - lint
+      - type
+      - schema
+      - unit_targeted
+      - structural
+  full:
+    # Required before PR/merge: targeted first, then full regression + security + build.
+    phases:
+      - format
+      - lint
+      - type
+      - schema
+      - unit_targeted
+      - unit_full
+      - security
+      - secrets
+      - structural
+      - build
+      - acceptance
+      - adversarial
+
+gates:
+  - id: format
+    phase: format
+    classify: format
+    command: ["ruff", "format", "--check", "."]
+
+  - id: lint
+    phase: lint
+    classify: lint
+    command: ["ruff", "check", "."]
+
+  - id: type
+    phase: type
+    classify: type
+    command: ["mypy", "verdict", "--strict"]
+
+  - id: schema
+    phase: schema
+    classify: schema
+    command: ["python", "scripts/validate_contract_schema.py"]
+
+  - id: proof_matrix
+    phase: schema
+    classify: schema
+    command: ["python", "scripts/verify_proof_matrix.py"]
+
+  - id: unit_targeted
+    phase: unit_targeted
+    classify: test
+    command: ["pytest", "{targets}", "-q", "--tb=short"]
+    targets_placeholder: "{targets}"
+
+  - id: unit_full
+    phase: unit_full
+    classify: test
+    command: ["pytest", "tests/", "-q", "--tb=short"]
+
+  - id: security_bandit
+    phase: security
+    classify: security
+    command: ["bandit", "-r", "verdict", "-ll"]
+    required: false
+
+  - id: security_semgrep
+    phase: security
+    classify: security
+    # Semgrep CE — independent static/security gate; pinned local rules (no paid SaaS).
+    command: ["semgrep", "--config", "proof/semgrep.yml", "--error", "--quiet", "verdict"]
+    required: true
+
+  - id: secrets
+    phase: secrets
+    classify: secret
+    # Deterministic local credential-path scan; never uploads secrets externally.
+    command: ["python", "scripts/proof/secrets_scan.py"]
+
+  - id: structural_risk
+    phase: structural
+    classify: structural
+    # Advisory until baseline debt is cleared; still runs for machine-readable signal.
+    command: ["python", "scripts/check_structural_risk.py"]
+    required: false
+
+  - id: ast_grep
+    phase: structural
+    classify: structural
+    # Deterministic AST queries preferred over LLM rewrites when applicable.
+    command: ["ast-grep", "scan", "-r", "proof/ast-grep/", "verdict"]
+    required: false
+
+  - id: build
+    phase: build
+    classify: build
+    command: ["python", "-m", "build", "--wheel"]
+
+  - id: acceptance
+    phase: acceptance
+    classify: acceptance
+    # Light acceptance smoke used in merge proof; full G1-G7 remains release workflow.
+    command: ["python", "scripts/proof/acceptance_smoke.py"]
+
+  - id: promptfoo
+    phase: adversarial
+    classify: adversarial
+    when: llm_boundary
+    required: false
+    command: ["promptfoo", "eval", "-c", "proof/promptfoo/promptfooconfig.yaml", "--no-cache"]

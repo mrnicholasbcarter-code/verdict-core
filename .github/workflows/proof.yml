@@ -1,0 +1,81 @@
+name: Proof
+
+# BOD-89 canonical proof pipeline — same entrypoint as local/agent.
+# Does not replace matrixed install-smoke / multi-Python jobs in ci.yml;
+# those remain complementary. This workflow is the shared DAG contract.
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+  push:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof-targeted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: uv sync --extra dev --extra server --extra dashboard
+      - name: Canonical targeted proof
+        run: |
+          uv run python scripts/proof/run.py \
+            --mode targeted \
+            --targets tests/test_proof_pipeline.py \
+            --report proof-report-targeted.json \
+            --json
+      - name: Upload targeted proof report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-report-targeted
+          path: proof-report-targeted.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  proof-full:
+    runs-on: ubuntu-latest
+    needs: [proof-targeted]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: uv sync --extra dev --extra server --extra dashboard
+      - name: Install Semgrep CE
+        run: uv pip install semgrep
+      - name: Install build tooling
+        run: uv pip install build
+      - name: Canonical full proof (no-cache final mode)
+        run: |
+          uv run python scripts/proof/run.py \
+            --mode full \
+            --no-cache \
+            --otel \
+            --targets tests/test_proof_pipeline.py \
+            --report proof-report-full.json \
+            --json
+      - name: Upload full proof report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-report-full
+          path: proof-report-full.json
+          if-no-files-found: warn
+          retention-days: 30

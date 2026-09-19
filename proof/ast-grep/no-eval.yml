@@ -1,0 +1,7 @@
+# Prefer ast-grep rule files over inline LLM rewrites (BOD-89).
+id: no-eval
+language: python
+rule:
+  pattern: eval($$$)
+message: "Avoid eval(); use deterministic parsers"
+severity: warning
