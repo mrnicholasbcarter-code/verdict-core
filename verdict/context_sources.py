@@ -479,9 +479,7 @@ class NativeMemoryProvider(CapabilityProvider):
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     ) -> ProviderResult:
         if plane is None:
-            return ProviderResult(
-                capability_id, self.provider_id, gap_reason="no_default_location"
-            )
+            return ProviderResult(capability_id, self.provider_id, gap_reason="no_default_location")
         queries: list[str] = [query]
         if hints:
             symbols = hints.get("symbols") or hints.get("target_symbols") or ()
@@ -528,12 +526,7 @@ class NativeMemoryProvider(CapabilityProvider):
 def _run_git(root: Path, *args: str) -> tuple[int, str]:
     try:
         completed = subprocess.run(
-            ["git", *args],
-            cwd=root,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
+            ["git", *args], cwd=root, check=False, capture_output=True, text=True, timeout=10
         )
     except (OSError, subprocess.TimeoutExpired):
         return 1, ""
@@ -579,9 +572,7 @@ class NativeGitProvider(CapabilityProvider):
             if not text:
                 code2, status = _run_git(root, "status", "--porcelain")
                 if code2 != 0 or not status.strip():
-                    return ProviderResult(
-                        capability_id, self.provider_id, gap_reason="not_found"
-                    )
+                    return ProviderResult(capability_id, self.provider_id, gap_reason="not_found")
                 text = status[:max_file_bytes]
             unit = make_unit(
                 slot_type="evidence",
@@ -665,19 +656,19 @@ class NativeTaskProvider(CapabilityProvider):
         else:
             criteria = tuple(hints.get("proof_criteria") or ())
             errors = tuple(hints.get("errors") or ())
-            lines: list[str] = []
+            proof_lines: list[str] = []
             if criteria:
-                lines.append("Proof criteria:")
-                lines.extend(f"- {item}" for item in criteria)
+                proof_lines.append("Proof criteria:")
+                proof_lines.extend(f"- {item}" for item in criteria)
             if errors:
-                lines.append("Active errors:")
-                lines.extend(f"- {item}" for item in errors)
-            if not lines:
+                proof_lines.append("Active errors:")
+                proof_lines.extend(f"- {item}" for item in errors)
+            if not proof_lines:
                 return ProviderResult(capability_id, self.provider_id, gap_reason="not_found")
             unit = make_unit(
                 slot_type="policy",
                 key="task:proof",
-                content="\n".join(lines),
+                content="\n".join(proof_lines),
                 source_uri="task://proof",
                 authority="task-contract",
                 transform_lineage=("raw", "task-proof"),

@@ -27,11 +27,7 @@ from verdict.context_pack import (
     ContextUnit,
     estimate_tokens,
 )
-from verdict.context_sources import (
-    PROVIDER_ID,
-    CapabilityProvider,
-    build_native_providers,
-)
+from verdict.context_sources import PROVIDER_ID, CapabilityProvider, build_native_providers
 from verdict.memory_plane import MemoryPlane, MemorySearchResult
 
 SCHEMA_VERSION = "context-intelligence/v1"
@@ -303,10 +299,7 @@ def plan_context_query(
     if include_optional_graph:
         ordered.extend(["code.graph", "tests.impact"])
     extra = tuple(str(item).strip() for item in extra_capabilities if str(item).strip())
-    per_cap = max(
-        1,
-        min(2, max(1, max_units // max(len(ordered) + len(extra), 1))),
-    )
+    per_cap = max(1, min(2, max(1, max_units // max(len(ordered) + len(extra), 1))))
     hints_base: dict[str, Any] = {
         "task": query,
         "acceptance_criteria": tuple(acceptance_criteria),
@@ -329,11 +322,7 @@ def plan_context_query(
     for cap in extra:
         requests.append(
             CapabilityRequest(
-                capability_id=cap,
-                query=query,
-                max_units=per_cap,
-                max_depth=1,
-                hints=hints_base,
+                capability_id=cap, query=query, max_units=per_cap, max_depth=1, hints=hints_base
             )
         )
     plan_id = f"cq:{_digest_text(query + str(token_budget) + ','.join(ordered))[:16]}"
@@ -361,9 +350,7 @@ def execute_context_query(
     """Execute a capability plan with bounded expansion; never dump the repo."""
     root = repo_root.resolve()
     if plan.max_units > 32:
-        raise ContextIntelligenceError(
-            "repo_dump_refused", "context query plan exceeds unit bound"
-        )
+        raise ContextIntelligenceError("repo_dump_refused", "context query plan exceeds unit bound")
     active = resolver or NativeCapabilityResolver()
     available = tuple(sorted(active.available_capabilities()))
     requested = tuple(req.capability_id for req in plan.requests)
@@ -379,29 +366,21 @@ def execute_context_query(
     for req in plan.requests:
         provider = active.resolve(req.capability_id)
         if provider is None:
-            omitted.append(
-                CoverageGap(req.capability_id, "provider_unavailable", provider_id=None)
-            )
+            omitted.append(CoverageGap(req.capability_id, "provider_unavailable", provider_id=None))
             omissions.append(Omission(req.capability_id, "provider_unavailable", None))
             continue
 
         if len(units) >= plan.max_units:
             stop_reason = "max_units"
-            omitted.append(
-                CoverageGap(req.capability_id, "max_units", provider.provider_id)
-            )
+            omitted.append(CoverageGap(req.capability_id, "max_units", provider.provider_id))
             continue
         if token_used >= plan.token_budget:
             stop_reason = "budget"
-            omitted.append(
-                CoverageGap(req.capability_id, "budget", provider.provider_id)
-            )
+            omitted.append(CoverageGap(req.capability_id, "budget", provider.provider_id))
             continue
         if depth_hits > plan.max_expansion_depth * len(WAVE1_BASELINE_ORDER):
             stop_reason = "depth_limit"
-            omitted.append(
-                CoverageGap(req.capability_id, "depth_limit", provider.provider_id)
-            )
+            omitted.append(CoverageGap(req.capability_id, "depth_limit", provider.provider_id))
             continue
 
         remaining = plan.max_units - len(units)
@@ -438,9 +417,7 @@ def execute_context_query(
         if added:
             used.append(req.capability_id)
         elif result.gap_reason:
-            omitted.append(
-                CoverageGap(req.capability_id, result.gap_reason, provider.provider_id)
-            )
+            omitted.append(CoverageGap(req.capability_id, result.gap_reason, provider.provider_id))
 
     coverage = CapabilityCoverage(
         requested=requested,

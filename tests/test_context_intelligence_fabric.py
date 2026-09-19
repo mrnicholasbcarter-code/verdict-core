@@ -32,13 +32,13 @@ def caller_of_alpha() -> int:
     return alpha_widget(21)
 '''
 
-BETA_SRC = '''\
+BETA_SRC = """\
 from fixture_pkg.alpha import alpha_widget
 
 
 def use_alpha() -> int:
     return alpha_widget(3)
-'''
+"""
 
 ADR_TEXT = """# ADR-9001: Alpha Widget Boundary
 
@@ -69,15 +69,9 @@ def _fresh_vps_fixture(tmp_path: Path) -> tuple[Path, MemoryPlane]:
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "seed"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=root, check=True, capture_output=True)
     (pkg / "alpha.py").write_text(
-        ALPHA_SRC + "\n\ndef unused_helper() -> None:\n    pass\n",
-        encoding="utf-8",
+        ALPHA_SRC + "\n\ndef unused_helper() -> None:\n    pass\n", encoding="utf-8"
     )
 
     plane = MemoryPlane(root / "memory.db")
@@ -171,8 +165,7 @@ def test_bounded_expansion_stops_before_repo_dump(tmp_path: Path) -> None:
     noise.mkdir()
     for index in range(40):
         (noise / f"noise_{index:02d}.py").write_text(
-            f"def noise_{index}():\n    return {index}\n",
-            encoding="utf-8",
+            f"def noise_{index}():\n    return {index}\n", encoding="utf-8"
         )
     try:
         plan = plan_context_query(
@@ -206,10 +199,7 @@ def test_fresh_vps_no_mcp_retrieves_definition_reference_adr_memory(tmp_path: Pa
     try:
         plan = plan_context_query(
             task="Rename alpha_widget and preserve ADR + memory constraints",
-            acceptance_criteria=(
-                "Update definition and references",
-                "Honor ADR_ALPHA_BOUNDARY_OK",
-            ),
+            acceptance_criteria=("Update definition and references", "Honor ADR_ALPHA_BOUNDARY_OK"),
             proof_criteria=("MEM_ALPHA_OK retained", "pytest green"),
             errors=(),
             token_budget=2500,
@@ -224,7 +214,8 @@ def test_fresh_vps_no_mcp_retrieves_definition_reference_adr_memory(tmp_path: Pa
         assert "code.definitions" in caps_used or "code.symbols" in caps_used
         assert "alpha_widget" in joined
         assert any(
-            "beta.py" in unit.source_uri or "caller_of_alpha" in unit.content
+            "beta.py" in unit.source_uri
+            or "caller_of_alpha" in unit.content
             or "use_alpha" in unit.content
             for unit in result.units
         ), "expected at least one reference neighborhood unit"
@@ -303,7 +294,10 @@ def test_native_symbols_definitions_references_on_fixture(tmp_path: Path) -> Non
         assert any(
             "alpha_widget(" in unit.content and "def alpha_widget" not in unit.content
             for unit in ref_result.units
-        ) or any("use_alpha" in unit.content or "caller_of_alpha" in unit.content for unit in ref_result.units)
+        ) or any(
+            "use_alpha" in unit.content or "caller_of_alpha" in unit.content
+            for unit in ref_result.units
+        )
     finally:
         plane.close()
 
@@ -321,7 +315,9 @@ def test_docs_project_retrieves_adr(tmp_path: Path) -> None:
             max_units=4,
         )
         assert any("ADR_ALPHA_BOUNDARY_OK" in unit.content for unit in result.units)
-        assert any("docs/adr" in unit.source_uri or "9001" in unit.source_uri for unit in result.units)
+        assert any(
+            "docs/adr" in unit.source_uri or "9001" in unit.source_uri for unit in result.units
+        )
     finally:
         plane.close()
 
@@ -351,22 +347,19 @@ def test_git_diff_and_repo_state(tmp_path: Path) -> None:
         diff = resolver.resolve("git.diff")
         assert diff is not None
         diff_result = diff.provide(
-            capability_id="git.diff",
-            query="alpha",
-            repo_root=root,
-            max_units=2,
+            capability_id="git.diff", query="alpha", repo_root=root, max_units=2
         )
         assert diff_result.units or diff_result.gap is not None
         if diff_result.units:
-            assert any("unused_helper" in unit.content or "alpha.py" in unit.content for unit in diff_result.units)
+            assert any(
+                "unused_helper" in unit.content or "alpha.py" in unit.content
+                for unit in diff_result.units
+            )
 
         state = resolver.resolve("repo.state")
         assert state is not None
         state_result = state.provide(
-            capability_id="repo.state",
-            query="",
-            repo_root=root,
-            max_units=1,
+            capability_id="repo.state", query="", repo_root=root, max_units=1
         )
         assert state_result.units
         joined = state_result.units[0].content
@@ -385,10 +378,7 @@ def test_task_requirements_and_proof_units() -> None:
         query="Rename alpha_widget",
         repo_root=Path("."),
         max_units=2,
-        hints={
-            "acceptance_criteria": ("Update references",),
-            "task": "Rename alpha_widget",
-        },
+        hints={"acceptance_criteria": ("Update references",), "task": "Rename alpha_widget"},
     )
     proof_result = proof.provide(
         capability_id="task.proof",
