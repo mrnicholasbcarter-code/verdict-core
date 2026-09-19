@@ -149,13 +149,22 @@ def cmd_setup(
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return
+        plan = payload["plan"]
+        stages = payload["stages"]
+        if not isinstance(plan, dict) or not isinstance(stages, list):
+            raise TypeError("bootstrap report must include plan dict and stages list")
         print("Verdict capability bootstrap (dry-run; no changes made)")
-        print(f"Plan: {payload['plan']['plan_id']}")
+        print(f"Plan: {plan['plan_id']}")
         print(f"Scope: {scope}  Mode: {mode.value}")
-        for stage in payload["stages"]:
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
             print(f"- [{stage['stage']}] {stage['status']}: {stage['summary']}")
-        for action in payload["plan"]["actions"]:
-            print(f"  action: {action['description']}")
+        actions = plan.get("actions", [])
+        if isinstance(actions, list):
+            for action in actions:
+                if isinstance(action, dict):
+                    print(f"  action: {action['description']}")
         return
 
     if apply:
@@ -167,14 +176,21 @@ def cmd_setup(
             consent=consent,
         )
         payload = report.to_dict()
+        stages = payload["stages"]
+        if not isinstance(stages, list):
+            raise TypeError("bootstrap report must include stages list")
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            for stage in payload["stages"]:
+            for stage in stages:
+                if not isinstance(stage, dict):
+                    continue
                 print(f"- [{stage['stage']}] {stage['status']}: {stage['summary']}")
         consent_blocked = any(
-            stage["stage"] == "consent" and stage["status"] == "blocked"
-            for stage in payload["stages"]
+            isinstance(stage, dict)
+            and stage.get("stage") == "consent"
+            and stage.get("status") == "blocked"
+            for stage in stages
         )
         if consent_blocked:
             raise SystemExit(2)
@@ -1644,8 +1660,13 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     from verdict.capability_bootstrap import doctor_capability_report
 
     capability_report = doctor_capability_report()
-    covered = sum(1 for item in capability_report["capabilities"] if item["status"] == "covered")
-    total = len(capability_report["capabilities"])  # type: ignore[arg-type]
+    capabilities = capability_report.get("capabilities", [])
+    if not isinstance(capabilities, list):
+        capabilities = []
+    covered = sum(
+        1 for item in capabilities if isinstance(item, dict) and item.get("status") == "covered"
+    )
+    total = len(capabilities)
     console.print(f"  • Capability coverage: [cyan]{covered}/{total}[/] covered (bootstrap view)")
 
     issues_found = []
