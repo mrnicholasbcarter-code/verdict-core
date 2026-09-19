@@ -14,6 +14,7 @@ from verdict.capability_bootstrap import (
     DiscoveredProvider,
     ProviderKind,
     ProviderLifecycle,
+    rollback_bootstrap_actions,
     run_bootstrap,
 )
 from verdict.setup_plan import build_setup_plan
@@ -601,3 +602,131 @@ def test_scoped_setup_plan_actions_stay_in_gateway_scope(
     ]
     assert bootstrap_actions
     assert all("harness" not in action["action_id"] for action in bootstrap_actions)
+
+
+def test_rollback_clears_ownership_and_allows_reapply(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    installs: list[str] = []
+    rollbacks: list[str] = []
+
+    def _install(action: Any) -> dict[str, object]:
+        installs.append(action.action_id)
+        marker = state_dir / "markers" / f"{action.target}.installed"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("ok\n", encoding="utf-8")
+        return {"status": "installed", "marker": str(marker)}
+
+    def _rollback(payload: Any) -> dict[str, object]:
+        rollbacks.append(str(payload["action_id"]))
+        marker = Path(str(payload["result"]["marker"]))
+        if marker.is_file():
+            marker.unlink()
+        return {"status": "uninstalled", "marker": str(marker)}
+
+    applied = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        install_runner=_install,
+        scope=BootstrapScope.GATEWAYS,
+    )
+    assert applied.to_dict()["apply"]["mutated"] is True
+    assert len(installs) == 1
+    marker_path = state_dir / "markers" / "gateway.omniroute.installed"
+    assert marker_path.is_file()
+
+    first_rb = rollback_bootstrap_actions(
+        state_dir=state_dir, provider_ids=("gateway.omniroute",), rollback_runner=_rollback
+    )
+    assert first_rb["mutated"] is True
+    assert first_rb["status"] == "ok"
+    assert len(rollbacks) == 1
+    assert not marker_path.exists()
+    ownership = json.loads((state_dir / "ownership.json").read_text(encoding="utf-8"))
+    assert ownership["managed_actions"] == []
+    assert ownership["rolled_back_actions"]
+    # Backups retained for audit.
+    assert ownership.get("backups")
+
+    second_rb = rollback_bootstrap_actions(
+        state_dir=state_dir, provider_ids=("gateway.omniroute",), rollback_runner=_rollback
+    )
+    assert second_rb["mutated"] is False
+    assert len(rollbacks) == 1, "idempotent rollback must not re-invoke runner"
+
+    reapplied = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        install_runner=_install,
+        scope=BootstrapScope.GATEWAYS,
+    )
+    assert reapplied.to_dict()["apply"]["mutated"] is True
+    assert len(installs) == 2, "rollback must allow a later APPLY to re-authorize"
+
+
+def test_rollback_without_runner_clears_ownership_only(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+
+    def _install(action: Any) -> dict[str, object]:
+        return {"status": "installed", "provider_id": action.provider_id}
+
+    run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        install_runner=_install,
+        scope=BootstrapScope.GATEWAYS,
+    )
+    payload = rollback_bootstrap_actions(state_dir=state_dir)
+    assert payload["mutated"] is True
+    assert payload["status"] == "ok"
+    rolled = payload["rolled_back"]
+    assert isinstance(rolled, list) and rolled
+    assert isinstance(rolled[0], dict)
+    assert rolled[0]["result"]["status"] == "ownership_cleared"
+    ownership = json.loads((state_dir / "ownership.json").read_text(encoding="utf-8"))
+    assert ownership["managed_actions"] == []
+
+
+def test_rollback_empty_state_is_noop(tmp_path: Path) -> None:
+    payload = rollback_bootstrap_actions(state_dir=tmp_path / "missing")
+    assert payload["mutated"] is False
+    assert payload["status"] == "ok"
+    assert payload["rolled_back"] == []
+
+
+def test_rollback_runner_failure_keeps_ownership(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+
+    def _install(action: Any) -> dict[str, object]:
+        return {"status": "installed", "provider_id": action.provider_id}
+
+    run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        install_runner=_install,
+        scope=BootstrapScope.GATEWAYS,
+    )
+
+    def _fail(_payload: Any) -> dict[str, object]:
+        return {"status": "failed", "reason": "simulated"}
+
+    payload = rollback_bootstrap_actions(state_dir=state_dir, rollback_runner=_fail)
+    assert payload["mutated"] is False
+    assert payload["status"] == "blocked"
+    ownership = json.loads((state_dir / "ownership.json").read_text(encoding="utf-8"))
+    assert ownership["managed_actions"], "failed runner must leave ownership intact"

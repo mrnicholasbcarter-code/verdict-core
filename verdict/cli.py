@@ -145,9 +145,39 @@ def cmd_setup(
     allowlist: list[str] | None = None,
     consent: bool = False,
     apply: bool = False,
+    rollback: bool = False,
+    rollback_actions: list[str] | None = None,
+    state_dir: str | None = None,
 ) -> None:
     """Interactive setup wizard, mutation-free plan, or capability bootstrap APPLY."""
-    from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
+    from verdict.capability_bootstrap import (
+        BootstrapMode,
+        BootstrapScope,
+        default_bootstrap_state_dir,
+        rollback_bootstrap_actions,
+        run_bootstrap,
+    )
+
+    if rollback:
+        resolved = Path(state_dir) if state_dir else default_bootstrap_state_dir()
+        payload = rollback_bootstrap_actions(
+            state_dir=resolved,
+            action_ids=tuple(rollback_actions) if rollback_actions else None,
+            provider_ids=tuple(allowlist) if allowlist else None,
+        )
+        if output_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Bootstrap rollback: {payload.get('summary')}")
+            for item in payload.get("rolled_back", []):
+                if isinstance(item, dict):
+                    print(f"- rolled back: {item.get('action_id')}")
+            for item in payload.get("blocked", []):
+                if isinstance(item, dict):
+                    print(f"- blocked: {item.get('action_id')}")
+        if payload.get("status") == "blocked":
+            raise SystemExit(2)
+        return
 
     # Preserve the classic mutation-free setup_plan contract for dry-run / plan
     # unless the caller explicitly requested bootstrap enrichment or APPLY.
@@ -2834,6 +2864,24 @@ def main() -> None:
         default=[],
         help="Non-interactive allowlist provider id (repeatable), e.g. gateway.omniroute",
     )
+    setup_cli_p.add_argument(
+        "--rollback",
+        action="store_true",
+        help="Roll back Verdict-owned bootstrap APPLY mutations (ownership + optional runner)",
+    )
+    setup_cli_p.add_argument(
+        "--rollback-action",
+        dest="rollback_actions",
+        action="append",
+        default=[],
+        help="Specific bootstrap action_id to roll back (repeatable)",
+    )
+    setup_cli_p.add_argument(
+        "--bootstrap-state-dir",
+        dest="bootstrap_state_dir",
+        default=None,
+        help="Override bootstrap ownership/backup directory (APPLY/rollback)",
+    )
 
     route_p = subparsers.add_parser("route", help="Route a single prompt/task")
     route_p.add_argument("task", help="Task description or prompt text")
@@ -3750,7 +3798,15 @@ def main() -> None:
         scope = "all"
         if args.setup_action in {"intelligence", "gateways", "harnesses"}:
             scope = args.setup_action
-        if args.setup_action == "plan" or args.plan:
+        if getattr(args, "rollback", False):
+            cmd_setup(
+                output_json=args.json,
+                allowlist=list(args.allowlist or []),
+                rollback=True,
+                rollback_actions=list(getattr(args, "rollback_actions", None) or []),
+                state_dir=getattr(args, "bootstrap_state_dir", None),
+            )
+        elif args.setup_action == "plan" or args.plan:
             cmd_setup_plan(output_json=args.json, scope=scope, recommended=args.recommended)
         elif args.setup_action in {"intelligence", "gateways", "harnesses"} and not args.apply:
             # Bare scoped subcommands plan bootstrap for that scope (not the legacy wizard).

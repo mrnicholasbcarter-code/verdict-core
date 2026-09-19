@@ -328,6 +328,8 @@ class Certifier(Protocol):
 
 
 InstallRunner = Callable[[BootstrapAction], Mapping[str, Any]]
+# Receives a managed-action ownership record plus optional backup payload.
+RollbackRunner = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 PathResolver = Callable[[str], str | None]
 GatewayProbe = Callable[[str], Mapping[str, Any]]
 
@@ -1020,14 +1022,28 @@ def _ownership_path(state_dir: Path) -> Path:
     return state_dir / "ownership.json"
 
 
+def _empty_ownership() -> dict[str, Any]:
+    return {
+        "schema_version": _OWNERSHIP_SCHEMA,
+        "managed_actions": [],
+        "backups": {},
+        "rolled_back_actions": [],
+    }
+
+
 def _load_ownership(state_dir: Path) -> dict[str, Any]:
     path = _ownership_path(state_dir)
     if not path.is_file():
-        return {"schema_version": _OWNERSHIP_SCHEMA, "managed_actions": [], "backups": {}}
+        return _empty_ownership()
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        return {"schema_version": _OWNERSHIP_SCHEMA, "managed_actions": [], "backups": {}}
-    return dict(raw)
+        return _empty_ownership()
+    ownership = dict(raw)
+    ownership.setdefault("schema_version", _OWNERSHIP_SCHEMA)
+    ownership.setdefault("managed_actions", [])
+    ownership.setdefault("backups", {})
+    ownership.setdefault("rolled_back_actions", [])
+    return ownership
 
 
 def _save_ownership(state_dir: Path, payload: Mapping[str, Any]) -> None:
@@ -1221,6 +1237,195 @@ def apply_bootstrap_actions(
     return consent_stage, apply_stage, {"mutated": bool(succeeded), "actions": applied}
 
 
+def _successful_rollback_result(result: Mapping[str, Any]) -> bool:
+    """True when rollback cleared Verdict ownership and/or undid a mutation."""
+
+    status = str(result.get("status") or "").lower()
+    return status in {
+        "ok",
+        "rolled_back",
+        "uninstalled",
+        "restored",
+        "success",
+        "ownership_cleared",
+    }
+
+
+def _load_backup_payload(ownership: Mapping[str, Any], action_id: str) -> Mapping[str, Any] | None:
+    backups = ownership.get("backups", {})
+    if not isinstance(backups, Mapping):
+        return None
+    raw_path = backups.get(action_id)
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    path = Path(raw_path)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
+def rollback_bootstrap_actions(
+    *,
+    state_dir: Path,
+    action_ids: Sequence[str] | None = None,
+    provider_ids: Sequence[str] | None = None,
+    rollback_runner: RollbackRunner | None = None,
+) -> dict[str, object]:
+    """Reverse Verdict-owned APPLY mutations using ownership + backups.
+
+    Only removes Verdict ownership markers and optional runner-driven undos.
+    Third-party package uninstall runs only when ``rollback_runner`` succeeds;
+    without a runner, ownership is still cleared so APPLY can re-authorize later
+    (matching plan ``undo`` text: upstream uninstall remains operator-driven).
+    """
+
+    ownership = _load_ownership(state_dir)
+    managed_raw = ownership.get("managed_actions", [])
+    managed: list[dict[str, Any]] = [
+        item for item in managed_raw if isinstance(item, dict) and item.get("action_id")
+    ]
+    already = {
+        str(item.get("action_id"))
+        for item in ownership.get("rolled_back_actions", [])
+        if isinstance(item, dict) and item.get("action_id")
+    }
+
+    wanted_actions = frozenset(action_ids) if action_ids is not None else None
+    wanted_providers = frozenset(provider_ids) if provider_ids is not None else None
+
+    candidates: list[dict[str, Any]] = []
+    skipped: list[dict[str, object]] = []
+    for item in managed:
+        action_id = str(item.get("action_id"))
+        provider_id = item.get("provider_id")
+        if wanted_actions is not None and action_id not in wanted_actions:
+            continue
+        if wanted_providers is not None and (
+            not isinstance(provider_id, str) or provider_id not in wanted_providers
+        ):
+            continue
+        if action_id in already:
+            skipped.append({"action_id": action_id, "reason": "already_rolled_back"})
+            continue
+        result = item.get("result")
+        if not isinstance(result, Mapping) or not _successful_apply_result(result):
+            skipped.append({"action_id": action_id, "reason": "not_successfully_applied"})
+            continue
+        candidates.append(item)
+
+    if not candidates and not skipped:
+        return {
+            "schema_version": _OWNERSHIP_SCHEMA,
+            "kind": "capability_bootstrap_rollback",
+            "status": "ok",
+            "mutated": False,
+            "rolled_back": [],
+            "skipped": [],
+            "blocked": [],
+            "summary": "No Verdict-owned bootstrap actions to roll back.",
+        }
+
+    # LIFO: reverse of apply order (file order ≈ apply order).
+    candidates.reverse()
+    rolled_back: list[dict[str, object]] = []
+    blocked: list[dict[str, object]] = []
+    remaining: list[dict[str, Any]] = [
+        item
+        for item in managed
+        if str(item.get("action_id")) not in {str(c.get("action_id")) for c in candidates}
+    ]
+    rolled_log = list(ownership.get("rolled_back_actions", []))
+    if not isinstance(rolled_log, list):
+        rolled_log = []
+
+    for item in candidates:
+        action_id = str(item.get("action_id"))
+        backup = _load_backup_payload(ownership, action_id)
+        runner_payload: dict[str, Any] = {
+            "action_id": action_id,
+            "provider_id": item.get("provider_id"),
+            "kind": item.get("kind"),
+            "result": dict(item.get("result") or {}),
+            "backup": dict(backup) if backup is not None else None,
+        }
+        if rollback_runner is not None:
+            runner_result = dict(rollback_runner(runner_payload))
+            if not _successful_rollback_result(runner_result):
+                blocked.append(
+                    {
+                        "action_id": action_id,
+                        "result": runner_result,
+                        "reason": "rollback_runner_failed",
+                    }
+                )
+                remaining.append(item)
+                continue
+            outcome = runner_result
+        else:
+            outcome = {
+                "status": "ownership_cleared",
+                "note": (
+                    "Verdict ownership markers removed; upstream uninstall not executed "
+                    "(no rollback_runner)."
+                ),
+            }
+
+        rolled_entry = {
+            "action_id": action_id,
+            "provider_id": item.get("provider_id"),
+            "kind": item.get("kind"),
+            "result": outcome,
+        }
+        rolled_log.append(rolled_entry)
+        rolled_back.append(rolled_entry)
+        # Drop from active managed set; keep backup path for audit.
+        backups = ownership.get("backups")
+        if isinstance(backups, dict) and action_id in backups:
+            # Retain backup file; ownership record stays under rolled_back_actions.
+            pass
+
+    ownership["managed_actions"] = remaining
+    ownership["rolled_back_actions"] = rolled_log
+    _save_ownership(state_dir, ownership)
+
+    if blocked and not rolled_back:
+        status = "blocked"
+        summary = "Rollback blocked: rollback_runner failed for all selected actions."
+    elif blocked:
+        status = "partial"
+        summary = f"Rolled back {len(rolled_back)} action(s); {len(blocked)} blocked by runner."
+    elif rolled_back:
+        status = "ok"
+        summary = f"Rolled back {len(rolled_back)} Verdict-owned action(s)."
+    else:
+        status = "ok"
+        summary = "No new rollbacks; selected actions already cleared or ineligible."
+
+    return {
+        "schema_version": _OWNERSHIP_SCHEMA,
+        "kind": "capability_bootstrap_rollback",
+        "status": status,
+        "mutated": bool(rolled_back),
+        "rolled_back": rolled_back,
+        "skipped": skipped,
+        "blocked": blocked,
+        "remaining_managed": [
+            str(item.get("action_id")) for item in remaining if item.get("action_id")
+        ],
+        "summary": summary,
+    }
+
+
+def default_bootstrap_state_dir() -> Path:
+    """Default ownership/backup root for bootstrap APPLY/rollback."""
+
+    return Path.home() / ".verdict" / "bootstrap"
+
+
 def run_bootstrap(
     *,
     providers: Sequence[DiscoveredProvider] | DiscoveredProvider | None = None,
@@ -1309,9 +1514,7 @@ def run_bootstrap(
     )
 
     apply_payload: dict[str, object] = {"mutated": False, "actions": []}
-    resolved_state = (
-        Path(state_dir) if state_dir is not None else Path.home() / ".verdict" / "bootstrap"
-    )
+    resolved_state = Path(state_dir) if state_dir is not None else default_bootstrap_state_dir()
 
     if mode_v is BootstrapMode.APPLY:
         consent_stage, apply_stage, apply_payload = apply_bootstrap_actions(
@@ -1502,8 +1705,10 @@ __all__ = [
     "UnifiedBootstrapPlan",
     "apply_bootstrap_actions",
     "build_bootstrap_plan",
+    "default_bootstrap_state_dir",
     "discover_providers",
     "doctor_capability_report",
     "recommend_capabilities",
+    "rollback_bootstrap_actions",
     "run_bootstrap",
 ]
