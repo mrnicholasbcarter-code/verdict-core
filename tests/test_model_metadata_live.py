@@ -51,9 +51,7 @@ def test_live_agy_gemini_flash_lite_tools_not_unmapped() -> None:
     if models_status is None or models_status.status != "ok":
         pytest.skip("models.dev models.json was not fetched successfully")
 
-    found = lookup_omniroute_id(
-        snapshot, "agy/gemini-3.1-flash-lite", required=("tools",)
-    )
+    found = lookup_omniroute_id(snapshot, "agy/gemini-3.1-flash-lite", required=("tools",))
     assert found.drop is None or found.drop.reason != DROP_UNMAPPED, (
         f"expected unique-leaf join away from unmapped; got drop={found.drop}"
     )
