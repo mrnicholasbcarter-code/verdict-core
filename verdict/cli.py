@@ -516,7 +516,9 @@ def cmd_setup(
     console.print(yaml.dump(config, default_flow_style=False))
 
 
-def cmd_setup_plan(*, output_json: bool = False, scope: str = "all", recommended: bool = False) -> None:
+def cmd_setup_plan(
+    *, output_json: bool = False, scope: str = "all", recommended: bool = False
+) -> None:
     """Print the mutation-free setup / capability-bootstrap plan."""
 
     from verdict.capability_bootstrap import BootstrapMode, BootstrapScope, run_bootstrap
@@ -528,13 +530,9 @@ def cmd_setup_plan(*, output_json: bool = False, scope: str = "all", recommended
         non_interactive=True,
     )
     base = build_setup_plan(
-        bootstrap_providers=bootstrap.providers,
-        include_bootstrap=True,
+        bootstrap_providers=bootstrap.providers, include_bootstrap=True
     ).to_dict()
-    plan: dict[str, Any] = {
-        **base,
-        "bootstrap": bootstrap.to_dict(),
-    }
+    plan: dict[str, Any] = {**base, "bootstrap": bootstrap.to_dict()}
     if output_json:
         print(json.dumps(plan, indent=2, sort_keys=True))
         return
@@ -3339,11 +3337,7 @@ def main() -> None:
         if args.setup_action in {"intelligence", "gateways", "harnesses"}:
             scope = args.setup_action
         if args.setup_action == "plan" or args.plan:
-            cmd_setup_plan(
-                output_json=args.json,
-                scope=scope,
-                recommended=args.recommended,
-            )
+            cmd_setup_plan(output_json=args.json, scope=scope, recommended=args.recommended)
         else:
             cmd_setup(
                 dry_run=args.dry_run,
