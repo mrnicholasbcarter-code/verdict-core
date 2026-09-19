@@ -18,6 +18,7 @@ from verdict.metadata import (
     SOURCE_ARTIFICIAL_ANALYSIS,
     SOURCE_LITELLM,
     SOURCE_MODELS_DEV,
+    SOURCE_MODELS_DEV_MODELS,
     FieldProvenance,
     ModelMetadataError,
     ProvenancedField,
@@ -28,7 +29,9 @@ from verdict.metadata import (
     lookup_omniroute_id,
     refresh_metadata,
 )
+from verdict.metadata.records import CapabilityCaps, ModelMetadataRecord
 from verdict.metadata.sources import apply_soft_scores, parse_models_dev_api, parse_soft_score_table
+from verdict.metadata.store import MetadataSnapshot
 
 FIXTURES = Path(__file__).resolve().parent.parent / "test_fixtures" / "metadata"
 NOW = datetime(2026, 9, 18, 14, 0, tzinfo=timezone.utc)
@@ -168,6 +171,74 @@ class TestMappingAndDrops:
         assert found.admitted_for_caps is True
         assert found.record is not None
         assert found.record.id == "openai/gpt-4o-mini"
+
+    def test_unique_leaf_joins_gateway_prefix_to_models_json(self, tmp_path: Path) -> None:
+        """BOD-121: agy/* inventory id joins via unique models.json leaf."""
+        snapshot = _refresh(tmp_path)
+        found = lookup_omniroute_id(
+            snapshot, "agy/gemini-2.0-flash", required=("tools",)
+        )
+        assert found.drop is None
+        assert found.admitted_for_caps is True
+        assert found.record is not None
+        assert found.record.id == "google/gemini-2.0-flash"
+        cited = found.provenance_for_receipt(("tools",))
+        assert cited["tools"]["source"] == SOURCE_MODELS_DEV_MODELS
+
+    def test_ambiguous_models_json_leaf_is_named_drop(self) -> None:
+        """BOD-121: same leaf on two models.json rows → unmapped, not arbitrary pick."""
+        prov = FieldProvenance(
+            source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT, version="fixture"
+        )
+        tools = ProvenancedField(value=True, provenance=prov)
+        snapshot = MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=FETCHED_AT,
+            sources={},
+            records=(
+                ModelMetadataRecord(
+                    id="google/shared-leaf",
+                    caps=CapabilityCaps(tools=tools),
+                ),
+                ModelMetadataRecord(
+                    id="anthropic/shared-leaf",
+                    caps=CapabilityCaps(tools=tools),
+                ),
+            ),
+        )
+        found = lookup_omniroute_id(snapshot, "agy/shared-leaf", required=("tools",))
+        assert found.admitted_for_caps is False
+        assert found.drop is not None
+        assert found.drop.reason == DROP_UNMAPPED
+        assert found.record is None
+        assert "ambiguous" in (found.drop.detail or "").lower()
+
+    def test_variant_suffix_without_models_json_row_is_named_drop(self, tmp_path: Path) -> None:
+        """BOD-121: no silent strip of effort/variant suffixes to a base leaf."""
+        snapshot = _refresh(tmp_path)
+        found = lookup_omniroute_id(
+            snapshot, "agy/gemini-2.0-flash-high", required=("tools",)
+        )
+        assert found.drop is not None
+        assert found.drop.reason == DROP_UNMAPPED
+        assert found.record is None
+
+    def test_exact_map_beats_unique_leaf(self, tmp_path: Path) -> None:
+        from verdict.metadata.mapping import IdentityMap
+
+        snapshot = _refresh(tmp_path)
+        # Map agy leaf to meta model so exact map wins over google/* unique leaf.
+        mapping = IdentityMap(
+            omniroute_to_models_dev={
+                "agy/gemini-2.0-flash": "meta/llama-3.3-70b-instruct",
+            }
+        )
+        found = lookup_omniroute_id(
+            snapshot, "agy/gemini-2.0-flash", identity_map=mapping
+        )
+        assert found.record is not None
+        assert found.record.id == "meta/llama-3.3-70b-instruct"
+        assert found.drop is None
 
     def test_stale_store_named_drop(self, tmp_path: Path) -> None:
         snapshot = _refresh(tmp_path)

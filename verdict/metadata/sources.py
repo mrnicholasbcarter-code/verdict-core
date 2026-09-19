@@ -225,7 +225,11 @@ def parse_models_dev_api(
 def parse_models_dev_models(
     document: Any, provenance: FieldProvenance
 ) -> dict[str, ModelMetadataRecord]:
-    """Parse models.dev models.json (provider-agnostic id → facts)."""
+    """Parse models.dev models.json (provider-agnostic id → facts).
+
+    Callers should pass provenance with ``source=models.dev.models`` so unique-leaf
+    joins (BOD-121) can distinguish these rows from api.json provider catalogs.
+    """
     if not isinstance(document, Mapping):
         raise ModelMetadataError("models.dev models.json must be an object")
     records: dict[str, ModelMetadataRecord] = {}

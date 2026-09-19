@@ -18,6 +18,7 @@ SourceStatusKind = Literal["ok", "skipped", "error"]
 DropReason = Literal["unmapped", "required_unknown", "stale", "map_target_missing"]
 
 SOURCE_MODELS_DEV = "models.dev"
+SOURCE_MODELS_DEV_MODELS = "models.dev.models"
 SOURCE_LITELLM = "litellm"
 SOURCE_ARTIFICIAL_ANALYSIS = "artificial_analysis"
 SOURCE_ARENA_ELO = "arena_elo"
