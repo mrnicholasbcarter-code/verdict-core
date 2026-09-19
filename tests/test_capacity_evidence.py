@@ -70,11 +70,7 @@ def test_registry_discover_capabilities_observe_without_brand_switch() -> None:
     aggregator = AggregatorJsonCapacityAdapter.from_path(FIXTURES / "aggregator_grok.json")
     registry = default_registry([direct, gateway, aggregator])
 
-    assert set(registry.list_adapters()) == {
-        "direct.codex",
-        "gateway.omniroute",
-        "aggregator.json",
-    }
+    assert set(registry.list_adapters()) == {"direct.codex", "gateway.omniroute", "aggregator.json"}
     caps = registry.capabilities("direct.codex")
     assert caps[CapacitySignal.QUOTA_WINDOWS] is True
     assert registry.discover()
@@ -244,9 +240,7 @@ def test_stale_observation_cannot_overwrite_fresh() -> None:
         authority=EvidenceAuthority.OFFICIAL_CLI,
         observed_at=NOW,
         fresh_until=NOW + timedelta(minutes=5),
-        pools=(
-            CapacityPool(pool_id="codex-weekly", remaining_pct=8.0, status="constrained"),
-        ),
+        pools=(CapacityPool(pool_id="codex-weekly", remaining_pct=8.0, status="constrained"),),
     )
     stale = CapacitySnapshot(
         identity=identity,
@@ -254,9 +248,7 @@ def test_stale_observation_cannot_overwrite_fresh() -> None:
         authority=EvidenceAuthority.GATEWAY_NATIVE,
         observed_at=NOW + timedelta(seconds=1),
         fresh_until=NOW - timedelta(minutes=1),
-        pools=(
-            CapacityPool(pool_id="codex-weekly", remaining_pct=43.0, status="available"),
-        ),
+        pools=(CapacityPool(pool_id="codex-weekly", remaining_pct=43.0, status="available"),),
     )
     kept = stale_cannot_overwrite(fresh, stale, now=NOW)
     assert kept.pools[0].remaining_pct == 8.0
@@ -302,7 +294,10 @@ def test_auth_expired_distinct_from_quota_exhausted() -> None:
     )
     assert auth.errors[0].failure_class is CapacityFailureClass.AUTH_EXPIRED
     assert exhausted.pools[0].status == "exhausted"
-    assert not exhausted.errors or exhausted.errors[0].failure_class is not CapacityFailureClass.AUTH_EXPIRED
+    assert (
+        not exhausted.errors
+        or exhausted.errors[0].failure_class is not CapacityFailureClass.AUTH_EXPIRED
+    )
 
 
 def test_unsupported_gateway_returns_explicit_unknown() -> None:
@@ -342,12 +337,7 @@ def test_aggregator_rejects_secrets_and_bad_version() -> None:
         )
     with pytest.raises(CapacityEvidenceError, match="contract_version"):
         validate_aggregator_document(
-            {
-                "contract_version": "99",
-                "provider_id": "xai",
-                "account_id": "a1",
-                "pools": [],
-            }
+            {"contract_version": "99", "provider_id": "xai", "account_id": "a1", "pools": []}
         )
 
 
@@ -360,18 +350,14 @@ def test_aggregator_from_bytes_is_bounded() -> None:
 def test_connection_identity_rejects_credential_material() -> None:
     with pytest.raises(CapacityEvidenceError, match="credential"):
         ConnectionIdentity(
-            provider_id="openai",
-            account_id="sk-live-abcdef",
-            adapter_id="direct.codex",
+            provider_id="openai", account_id="sk-live-abcdef", adapter_id="direct.codex"
         )
 
 
 def test_unknown_remaining_stays_unknown_in_projections() -> None:
     snap = CapacitySnapshot(
         identity=ConnectionIdentity(
-            provider_id="openai",
-            account_id="acct-unknown",
-            adapter_id="direct.codex",
+            provider_id="openai", account_id="acct-unknown", adapter_id="direct.codex"
         ),
         source_kind="direct_provider",
         authority=EvidenceAuthority.UNKNOWN,
@@ -449,9 +435,7 @@ def test_snapshot_roundtrip_and_digest() -> None:
 
 def test_higher_authority_stale_yields_to_fresh_lower() -> None:
     identity = ConnectionIdentity(
-        provider_id="openai",
-        account_id="acct-codex-a",
-        adapter_id="direct.codex",
+        provider_id="openai", account_id="acct-codex-a", adapter_id="direct.codex"
     )
     stale_official = CapacitySnapshot(
         identity=identity,

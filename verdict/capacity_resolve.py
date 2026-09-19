@@ -72,10 +72,7 @@ def _is_fresher(candidate: CapacitySnapshot, incumbent: CapacitySnapshot, now: d
 
 
 def prefer_snapshot(
-    left: CapacitySnapshot,
-    right: CapacitySnapshot,
-    *,
-    now: datetime | None = None,
+    left: CapacitySnapshot, right: CapacitySnapshot, *, now: datetime | None = None
 ) -> ConflictResolution:
     """Choose preferred observation without averaging.
 
@@ -144,9 +141,7 @@ def prefer_snapshot(
 
 
 def resolve_capacity_snapshots(
-    snapshots: Sequence[CapacitySnapshot],
-    *,
-    now: datetime | None = None,
+    snapshots: Sequence[CapacitySnapshot], *, now: datetime | None = None
 ) -> ResolvedCapacity:
     """Group by account, resolve same-account conflicts, retain both sides."""
 
@@ -185,15 +180,11 @@ def resolve_capacity_snapshots(
     # observers may want to compare (direct 8% vs gateway 43%) are recorded when
     # callers pass them in the same batch with matching account_id.
     return ResolvedCapacity(
-        snapshots=tuple(preferred),
-        conflicts=tuple(conflicts),
-        shared_pool_ids=frozenset(shared),
+        snapshots=tuple(preferred), conflicts=tuple(conflicts), shared_pool_ids=frozenset(shared)
     )
 
 
-def unique_shared_capacity(
-    snapshots: Sequence[CapacitySnapshot],
-) -> dict[str, CapacityPool]:
+def unique_shared_capacity(snapshots: Sequence[CapacitySnapshot]) -> dict[str, CapacityPool]:
     """Map shared_pool_id → one representative pool (no double-counting)."""
 
     found: dict[str, CapacityPool] = {}
@@ -207,10 +198,7 @@ def unique_shared_capacity(
 
 
 def stale_cannot_overwrite(
-    incumbent: CapacitySnapshot,
-    challenger: CapacitySnapshot,
-    *,
-    now: datetime | None = None,
+    incumbent: CapacitySnapshot, challenger: CapacitySnapshot, *, now: datetime | None = None
 ) -> CapacitySnapshot:
     """Return the snapshot that should remain for a concrete pool/account."""
 

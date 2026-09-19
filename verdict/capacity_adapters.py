@@ -36,10 +36,7 @@ class CapacityAdapter(Protocol):
         """Which capacity/balance/reset signals this adapter can observe."""
 
     def observe_capacity(
-        self,
-        identity: ConnectionIdentity | None = None,
-        *,
-        now: datetime | None = None,
+        self, identity: ConnectionIdentity | None = None, *, now: datetime | None = None
     ) -> CapacitySnapshot:
         """Return one normalized CapacitySnapshot (unknown remains unknown)."""
 
@@ -119,8 +116,4 @@ def default_registry(adapters: Iterable[CapacityAdapter] | None = None) -> Capac
     return registry
 
 
-__all__ = [
-    "CapacityAdapter",
-    "CapacityAdapterRegistry",
-    "default_registry",
-]
+__all__ = ["CapacityAdapter", "CapacityAdapterRegistry", "default_registry"]

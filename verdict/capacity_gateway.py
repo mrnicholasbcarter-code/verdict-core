@@ -75,10 +75,7 @@ class GenericGatewayCapacityAdapter:
         )
 
     def observe_capacity(
-        self,
-        identity: ConnectionIdentity | None = None,
-        *,
-        now: datetime | None = None,
+        self, identity: ConnectionIdentity | None = None, *, now: datetime | None = None
     ) -> CapacitySnapshot:
         moment = _utc(now)
         if identity is None:
@@ -152,7 +149,4 @@ def omniroute_capacity_adapter_from_fixtures(
     )
 
 
-__all__ = [
-    "GenericGatewayCapacityAdapter",
-    "omniroute_capacity_adapter_from_fixtures",
-]
+__all__ = ["GenericGatewayCapacityAdapter", "omniroute_capacity_adapter_from_fixtures"]

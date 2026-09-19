@@ -119,10 +119,7 @@ class AggregatorJsonCapacityAdapter:
         )
 
     def observe_capacity(
-        self,
-        identity: ConnectionIdentity | None = None,
-        *,
-        now: datetime | None = None,
+        self, identity: ConnectionIdentity | None = None, *, now: datetime | None = None
     ) -> CapacitySnapshot:
         moment = _utc(now)
         if identity is None:
@@ -130,9 +127,7 @@ class AggregatorJsonCapacityAdapter:
             if not discovered:
                 return CapacitySnapshot(
                     identity=ConnectionIdentity(
-                        provider_id="unknown",
-                        account_id="none",
-                        adapter_id=self._adapter_id,
+                        provider_id="unknown", account_id="none", adapter_id=self._adapter_id
                     ),
                     source_kind="aggregator",
                     authority=EvidenceAuthority.AGGREGATOR,
@@ -200,7 +195,9 @@ class AggregatorJsonCapacityAdapter:
         return snapshot
 
     @classmethod
-    def from_json_bytes(cls, raw: bytes, *, adapter_id: str = "aggregator.json") -> AggregatorJsonCapacityAdapter:
+    def from_json_bytes(
+        cls, raw: bytes, *, adapter_id: str = "aggregator.json"
+    ) -> AggregatorJsonCapacityAdapter:
         if len(raw) > _MAX_JSON_BYTES:
             raise CapacityEvidenceError("aggregator JSON exceeds size bound")
         payload = json.loads(raw.decode("utf-8"))
@@ -208,7 +205,9 @@ class AggregatorJsonCapacityAdapter:
         return cls(adapter_id, documents=documents)
 
     @classmethod
-    def from_path(cls, path: Path, *, adapter_id: str = "aggregator.json") -> AggregatorJsonCapacityAdapter:
+    def from_path(
+        cls, path: Path, *, adapter_id: str = "aggregator.json"
+    ) -> AggregatorJsonCapacityAdapter:
         raw = path.read_bytes()
         return cls.from_json_bytes(raw, adapter_id=adapter_id)
 

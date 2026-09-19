@@ -87,17 +87,12 @@ class FixtureDirectCapacityAdapter:
         )
 
     def observe_capacity(
-        self,
-        identity: ConnectionIdentity | None = None,
-        *,
-        now: datetime | None = None,
+        self, identity: ConnectionIdentity | None = None, *, now: datetime | None = None
     ) -> CapacitySnapshot:
         moment = _utc(now)
         if not self._available:
             target = identity or ConnectionIdentity(
-                provider_id="unknown",
-                account_id="unavailable",
-                adapter_id=self._adapter_id,
+                provider_id="unknown", account_id="unavailable", adapter_id=self._adapter_id
             )
             return CapacitySnapshot(
                 identity=target,
@@ -137,10 +132,7 @@ class FixtureDirectCapacityAdapter:
         return self._parse_fixture(identity, payload, moment)
 
     def _parse_fixture(
-        self,
-        identity: ConnectionIdentity,
-        payload: Mapping[str, Any],
-        moment: datetime,
+        self, identity: ConnectionIdentity, payload: Mapping[str, Any], moment: datetime
     ) -> CapacitySnapshot:
         # Explicit failure fixtures (429, auth-expired, etc.)
         if "error" in payload:
@@ -227,7 +219,4 @@ def codex_direct_adapter_from_fixtures(
     )
 
 
-__all__ = [
-    "FixtureDirectCapacityAdapter",
-    "codex_direct_adapter_from_fixtures",
-]
+__all__ = ["FixtureDirectCapacityAdapter", "codex_direct_adapter_from_fixtures"]

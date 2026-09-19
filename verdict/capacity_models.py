@@ -42,23 +42,11 @@ _SECRET_NAMES = frozenset(
 )
 
 AccessMode = Literal[
-    "api_key",
-    "oauth",
-    "web_session",
-    "no_auth",
-    "local",
-    "upstream_proxy",
-    "unknown",
+    "api_key", "oauth", "web_session", "no_auth", "local", "upstream_proxy", "unknown"
 ]
 PoolUnit = Literal["tokens", "requests", "credits", "usd", "compute", "unknown"]
 PoolStatus = Literal["available", "constrained", "exhausted", "cooldown", "unknown"]
-SourceKind = Literal[
-    "direct_provider",
-    "gateway",
-    "aggregator",
-    "local_history",
-    "unknown",
-]
+SourceKind = Literal["direct_provider", "gateway", "aggregator", "local_history", "unknown"]
 BalanceKind = Literal[
     "prepaid_usd",
     "provider_credits",
@@ -244,7 +232,7 @@ class ConnectionIdentity:
             provider_id=str(value["provider_id"]),
             account_id=str(value["account_id"]),
             adapter_id=str(value["adapter_id"]),
-            access_mode=value.get("access_mode", "unknown"),  # type: ignore[arg-type]
+            access_mode=value.get("access_mode", "unknown"),
             gateway_id=None if value.get("gateway_id") is None else str(value["gateway_id"]),
             workspace_id=(
                 None if value.get("workspace_id") is None else str(value["workspace_id"])
@@ -278,15 +266,11 @@ class CapacityPool:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pool_id", _non_empty("pool_id", self.pool_id))
-        object.__setattr__(self, "remaining_pct", _optional_pct("remaining_pct", self.remaining_pct))
+        object.__setattr__(
+            self, "remaining_pct", _optional_pct("remaining_pct", self.remaining_pct)
+        )
         object.__setattr__(self, "used_pct", _optional_pct("used_pct", self.used_pct))
-        if self.status not in {
-            "available",
-            "constrained",
-            "exhausted",
-            "cooldown",
-            "unknown",
-        }:
+        if self.status not in {"available", "constrained", "exhausted", "cooldown", "unknown"}:
             raise CapacityEvidenceError("status is invalid")
         if self.unit not in {"tokens", "requests", "credits", "usd", "compute", "unknown"}:
             raise CapacityEvidenceError("unit is invalid")
@@ -333,8 +317,8 @@ class CapacityPool:
 
         return cls(
             pool_id=str(value["pool_id"]),
-            status=value.get("status", "unknown"),  # type: ignore[arg-type]
-            unit=value.get("unit", "unknown"),  # type: ignore[arg-type]
+            status=value.get("status", "unknown"),
+            unit=value.get("unit", "unknown"),
             scope=None if value.get("scope") is None else str(value["scope"]),
             remaining_pct=value.get("remaining_pct"),
             used_pct=value.get("used_pct"),
@@ -392,7 +376,7 @@ class Balance:
         _reject_secrets(value, "balance")
         return cls(
             balance_id=str(value["balance_id"]),
-            kind=value.get("kind", "unknown"),  # type: ignore[arg-type]
+            kind=value.get("kind", "unknown"),
             remaining=value.get("remaining"),
             currency_or_unit=(
                 None if value.get("currency_or_unit") is None else str(value["currency_or_unit"])
@@ -517,7 +501,7 @@ class CapacitySnapshot:
         )
         return cls(
             identity=ConnectionIdentity.from_dict(value["identity"]),
-            source_kind=value.get("source_kind", "unknown"),  # type: ignore[arg-type]
+            source_kind=value.get("source_kind", "unknown"),
             authority=EvidenceAuthority(value.get("authority", "unknown")),
             observed_at=_parse_dt(value["observed_at"]) or _utc(),
             pools=tuple(CapacityPool.from_dict(item) for item in value.get("pools", ())),

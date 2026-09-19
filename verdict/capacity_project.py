@@ -20,9 +20,7 @@ def _cooldown_iso(pool: CapacityPool) -> str | None:
 
 
 def project_quota_evidence(
-    snapshot: CapacitySnapshot,
-    *,
-    pool_id: str | None = None,
+    snapshot: CapacitySnapshot, *, pool_id: str | None = None
 ) -> list[QuotaEvidenceInput]:
     """Map pools onto BOD-54 ``QuotaEvidenceInput`` (unknown stays absent/None)."""
 
@@ -94,9 +92,7 @@ def project_runtime_certification_quota(snapshot: CapacitySnapshot) -> Mapping[s
     }
 
 
-def project_execution_path_evidence(
-    snapshots: Sequence[CapacitySnapshot],
-) -> Mapping[str, Any]:
+def project_execution_path_evidence(snapshots: Sequence[CapacitySnapshot]) -> Mapping[str, Any]:
     """Provider-neutral evidence bag for BOD-104 (no brand switches)."""
 
     quota_inputs: list[QuotaEvidenceInput] = []
@@ -119,12 +115,17 @@ def project_execution_path_evidence(
             }
         )
     # Scarcity signals without collapsing into fallback_tier.
-    scarcest = None
+    scarcest: QuotaEvidenceInput | None = None
     for item in quota_inputs:
         remaining = item.get("remaining_pct")
-        if remaining is None:
+        if not isinstance(remaining, (int, float)):
             continue
-        if scarcest is None or float(remaining) < float(scarcest["remaining_pct"]):  # type: ignore[index]
+        current = scarcest.get("remaining_pct") if scarcest is not None else None
+        if (
+            scarcest is None
+            or not isinstance(current, (int, float))
+            or float(remaining) < float(current)
+        ):
             scarcest = item
 
     return {
@@ -136,18 +137,21 @@ def project_execution_path_evidence(
     }
 
 
-def scarcest_quota_evidence(
-    snapshots: Sequence[CapacitySnapshot],
-) -> QuotaEvidenceInput | None:
+def scarcest_quota_evidence(snapshots: Sequence[CapacitySnapshot]) -> QuotaEvidenceInput | None:
     """Single BOD-54 input: scarcest observed remaining_pct (unknown ignored)."""
 
     best: QuotaEvidenceInput | None = None
     for snap in snapshots:
         for item in project_quota_evidence(snap):
             remaining = item.get("remaining_pct")
-            if remaining is None:
+            if not isinstance(remaining, (int, float)):
                 continue
-            if best is None or float(remaining) < float(best["remaining_pct"]):  # type: ignore[arg-type]
+            current = best.get("remaining_pct") if best is not None else None
+            if (
+                best is None
+                or not isinstance(current, (int, float))
+                or float(remaining) < float(current)
+            ):
                 best = item
     return best
 
