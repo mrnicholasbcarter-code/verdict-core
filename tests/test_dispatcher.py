@@ -80,9 +80,7 @@ def test_authorized_runtime_id_binds_exact_match_not_cheapest() -> None:
 def test_unmatched_authorized_runtime_id_raises() -> None:
     with pytest.raises(ExecutionPathError, match="authorized_runtime_id"):
         SwarmDispatcher().dispatch(
-            snapshot(candidate("cheap", cost=0.1)),
-            now=NOW,
-            authorized_runtime_id="missing",
+            snapshot(candidate("cheap", cost=0.1)), now=NOW, authorized_runtime_id="missing"
         )
 
 

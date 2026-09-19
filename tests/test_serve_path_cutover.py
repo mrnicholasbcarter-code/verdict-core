@@ -348,9 +348,9 @@ def _runtime(runtime_id: str, *, cost: float) -> RuntimeCandidate:
 
 def test_consume_selected_route_rejects_bare_invented_mapping() -> None:
     """Phase-6 P0: loose Mapping payloads must not invent dispatch identity."""
-    with pytest.raises(ExecutionPathError, match="strategy_authority|bare invented"):
+    with pytest.raises(ExecutionPathError, match=r"strategy_authority|bare invented"):
         consume_selected_route({"model": "x"})
-    with pytest.raises(ExecutionPathError, match="strategy_authority|bare invented"):
+    with pytest.raises(ExecutionPathError, match=r"strategy_authority|bare invented"):
         consume_selected_route(
             {"model": "x", "provider": "p", "route_id": "r", "capability_tier": 1}
         )

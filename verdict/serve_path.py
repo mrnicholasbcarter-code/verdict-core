@@ -190,13 +190,10 @@ def consume_selected_route(
             )
         model = selected_route.get("model")
         if not isinstance(model, str) or not model.strip():
-            raise ExecutionPathError(
-                f"{surface}: selected_route mapping missing non-empty model"
-            )
+            raise ExecutionPathError(f"{surface}: selected_route mapping missing non-empty model")
         if "provider" not in selected_route:
             raise ExecutionPathError(
-                f"{surface}: selected_route mapping missing provider "
-                "(refusing invent default)"
+                f"{surface}: selected_route mapping missing provider (refusing invent default)"
             )
         if "capability_tier" not in selected_route:
             raise ExecutionPathError(
@@ -210,9 +207,7 @@ def consume_selected_route(
             )
         provider = selected_route.get("provider")
         if not isinstance(provider, str):
-            raise ExecutionPathError(
-                f"{surface}: selected_route mapping provider must be a string"
-            )
+            raise ExecutionPathError(f"{surface}: selected_route mapping provider must be a string")
         try:
             capability_tier = int(selected_route["capability_tier"])
         except (TypeError, ValueError) as exc:
