@@ -111,10 +111,18 @@ class ExecutionPathError(ValueError):
     """Raised when execution-path inputs violate the integrator contract."""
 
 
+_STRATEGY_EXTRA_COST_KINDS: Mapping[str, frozenset[str]] = {
+    "cheap_execute_then_rehydrate_retry": frozenset({"retry", "hydration"}),
+    "cheap_execute_then_bounded_escalate": frozenset({"escalation"}),
+    "switch_equivalent_route": frozenset({"route_switch"}),
+    "cheap_with_assistance": frozenset({"hydration"}),
+}
+
+
 def _required_cost_kinds_for_offer(
     offer: ExecutionPathOffer, *, task_slice: TaskSlice, base_kinds: frozenset[str]
 ) -> frozenset[str]:
-    """Require verification terms only when the task/plan actually needs proof."""
+    """Require verification/recovery terms when the strategy/task needs them."""
 
     kinds = set(base_kinds)
     needs_verification = bool(task_slice.proof_criteria) or bool(
@@ -127,6 +135,13 @@ def _required_cost_kinds_for_offer(
         needs_verification = True
     if not needs_verification:
         kinds.discard("verification")
+    extras = _STRATEGY_EXTRA_COST_KINDS.get(offer.strategy)
+    if extras:
+        # Accept any one of the strategy-specific kinds when multiple listed
+        # (e.g. rehydrate may show as retry OR hydration).
+        present = {term.kind for term in offer.expected_cost.terms}
+        if not (extras & present):
+            kinds.update(extras)
     return frozenset(kinds)
 
 
@@ -410,6 +425,7 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
     assumptions = list(request.assumptions)
     assumptions.append(f"strategy_authority={STRATEGY_AUTHORITY}")
 
+    # Request-level conflicts fail closed — never rank while conflicts remain.
     if request.evidence_conflicts:
         for conflict in request.evidence_conflicts:
             rejected.append(
@@ -418,6 +434,40 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
                 )
             )
             unknowns.append(f"conflict:{conflict}")
+        conflict_payload: dict[str, Any] = {
+            "trajectory_id": request.trajectory_id,
+            "selected_strategy": "blocked",
+            "conflicts": list(request.evidence_conflicts),
+            "when": _format_datetime(when),
+        }
+        return ExecutionPathDecision(
+            selected_strategy="blocked",
+            selected_candidate_id=None,
+            selected_route=None,
+            rejected=tuple(rejected),
+            assistance_plan_id=None,
+            assistance_plan_digest=None,
+            expected_cost=None,
+            expected_cost_terms=(),
+            budget_state=None,
+            tools_surface=(),
+            session_decision=None
+            if request.session_decision is None
+            else request.session_decision.to_dict(),
+            recovery_policy=_recovery_policy_dict(request.recovery_bounds),
+            verification_requirements=tuple(request.task_slice.proof_criteria),
+            assumptions=tuple(
+                dict.fromkeys([*assumptions, "request_evidence_conflicts_fail_closed"])
+            ),
+            unknowns=tuple(dict.fromkeys(unknowns)),
+            freshness={"decision_at": _format_datetime(when)},
+            evidence_digests={},
+            why_selected="blocked_evidence_conflicts",
+            decision_digest=_digest(conflict_payload),
+            trajectory_id=request.trajectory_id,
+            task_slice_id=request.task_slice.slice_id,
+            strategy_selection_reason="evidence_conflicts",
+        )
 
     hard_ids = set(request.hard_excluded_ids)
     shortlist_ids: frozenset[str] | None = None
@@ -535,41 +585,6 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
                 )
             )
             session_pref = None
-
-    if request.evidence_conflicts and not qualified:
-        # Conflicts with no remaining safe path → blocked.
-        conflict_payload: dict[str, Any] = {
-            "trajectory_id": request.trajectory_id,
-            "selected_strategy": "blocked",
-            "conflicts": list(request.evidence_conflicts),
-            "when": _format_datetime(when),
-        }
-        return ExecutionPathDecision(
-            selected_strategy="blocked",
-            selected_candidate_id=None,
-            selected_route=None,
-            rejected=tuple(rejected),
-            assistance_plan_id=None,
-            assistance_plan_digest=None,
-            expected_cost=None,
-            expected_cost_terms=(),
-            budget_state=None,
-            tools_surface=(),
-            session_decision=None
-            if request.session_decision is None
-            else request.session_decision.to_dict(),
-            recovery_policy=_recovery_policy_dict(request.recovery_bounds),
-            verification_requirements=tuple(request.task_slice.proof_criteria),
-            assumptions=tuple(dict.fromkeys(assumptions)),
-            unknowns=tuple(dict.fromkeys(unknowns)),
-            freshness={"decision_at": _format_datetime(when)},
-            evidence_digests={},
-            why_selected="blocked_evidence_conflicts",
-            decision_digest=_digest(conflict_payload),
-            trajectory_id=request.trajectory_id,
-            task_slice_id=request.task_slice.slice_id,
-            strategy_selection_reason="evidence_conflicts",
-        )
 
     if not qualified:
         blocked_payload: dict[str, Any] = {
@@ -810,6 +825,48 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
     )
 
 
+def _stronger_route_cert_ready(item: Any, certification: Any) -> bool:
+    """READY gate for escalate targets (parity with equivalent-plane switch)."""
+
+    from verdict.runtime_certification import ComponentKind, RuntimeCertificationReport
+
+    if not isinstance(certification, RuntimeCertificationReport):
+        # No certification evidence → cannot optimistically escalate.
+        return False
+    if item.gateway_id:
+        ready = False
+        for component in certification.components:
+            if (
+                component.kind is ComponentKind.GATEWAY
+                and (
+                    component.component_id == item.gateway_id
+                    or component.identity == item.gateway_id
+                )
+                and component.state is CertificationState.READY
+            ):
+                ready = True
+                break
+        if not ready:
+            return False
+    provider_listed = any(
+        c.component_id == item.provider or c.identity == item.provider
+        for c in certification.components
+    )
+    if provider_listed:
+        ready = False
+        for component in certification.components:
+            if (
+                component.kind in {ComponentKind.PROVIDER, ComponentKind.GATEWAY}
+                and (component.component_id == item.provider or component.identity == item.provider)
+                and component.state is CertificationState.READY
+            ):
+                ready = True
+                break
+        if not ready:
+            return False
+    return True
+
+
 def apply_bounded_recovery(
     *,
     controller: Any,
@@ -821,17 +878,25 @@ def apply_bounded_recovery(
     stronger_routes: Sequence[Any] = (),
     prequalified_stronger_ids: frozenset[str] = frozenset(),
     now: datetime | None = None,
+    reserve_cash_usd: Any = None,
 ) -> Any:
     """Delegate failure recovery to :class:`BoundedRecoveryController`.
 
-    Escalation candidates are filtered to BOD-104-prequalified stronger routes.
+    Escalation candidates are filtered to BOD-104-prequalified stronger routes
+    that also pass READY certification (same gate as equivalent switch).
+    Reserves against the recovery cash envelope before deciding.
     This does not invent success; cancellation/ambiguous outcomes stay non-success.
     """
 
+    from decimal import Decimal
+
     from verdict.bounded_recovery import BoundedRecoveryController, ExecutionRoute
+    from verdict.cost_ledger import CostLedger, CostLedgerError
 
     if not isinstance(controller, BoundedRecoveryController):
         raise ExecutionPathError("controller must be a BoundedRecoveryController")
+    if not isinstance(ledger, CostLedger):
+        raise ExecutionPathError("ledger must be a CostLedger")
 
     filtered_stronger: list[ExecutionRoute] = []
     for item in stronger_routes:
@@ -840,7 +905,19 @@ def apply_bounded_recovery(
         # Empty prequalification means no approved escalation targets (fail-closed).
         if item.model_id not in prequalified_stronger_ids:
             continue
+        if not _stronger_route_cert_ready(item, certification):
+            continue
         filtered_stronger.append(item)
+
+    cash_amount = (
+        Decimal(str(reserve_cash_usd))
+        if reserve_cash_usd is not None
+        else controller.bounds.estimated_action_cash_usd
+    )
+    try:
+        ledger.reserve(cash_amount, pool="cash", unit="usd", now=now)
+    except CostLedgerError as exc:
+        raise ExecutionPathError(f"recovery_reserve_failed:{exc}") from exc
 
     return controller.decide(
         evidence=evidence,
