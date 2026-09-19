@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from verdict.capacity_models import (
     CapacityEvidenceError,
@@ -107,13 +107,40 @@ class CapacityAdapterRegistry:
         return tuple(self._adapters[adapter_id].diagnose() for adapter_id in self.list_adapters())
 
 
-def default_registry(adapters: Iterable[CapacityAdapter] | None = None) -> CapacityAdapterRegistry:
-    """Build a registry; callers supply adapters (OmniRoute optional)."""
+def default_registry(
+    adapters: Iterable[CapacityAdapter] | None = None, *, include_local: bool = False
+) -> CapacityAdapterRegistry:
+    """Build a registry; callers supply adapters (OmniRoute optional).
+
+    By default the registry stays empty so fixture tests and callers remain
+    explicit. Pass ``include_local=True`` to auto-wire ``discover_local_adapters()``
+    (evidence only — never routing).
+    """
 
     registry = CapacityAdapterRegistry()
-    for adapter in adapters or ():
+    selected: Iterable[CapacityAdapter]
+    if adapters is not None:
+        selected = adapters
+    elif include_local:
+        selected = discover_local_adapters()
+    else:
+        selected = ()
+    for adapter in selected:
         registry.register(adapter)
     return registry
 
 
-__all__ = ["CapacityAdapter", "CapacityAdapterRegistry", "default_registry"]
+def discover_local_adapters(**kwargs: Any) -> tuple[CapacityAdapter, ...]:
+    """Discover live local capacity evidence adapters (BOD-129 follow-up)."""
+
+    from verdict.capacity_live import discover_local_adapters as _discover
+
+    return _discover(**kwargs)
+
+
+__all__ = [
+    "CapacityAdapter",
+    "CapacityAdapterRegistry",
+    "default_registry",
+    "discover_local_adapters",
+]
