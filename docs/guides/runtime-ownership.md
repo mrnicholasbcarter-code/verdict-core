@@ -1,7 +1,10 @@
 # Global runtime ownership runbook
 
-Verdict treats Ruflo/claude-flow and RuVector as optional services. The
-canonical identities and endpoints are defined in [ADR-008](../adr/ADR-008-global-runtime-ownership.md).
+Verdict may still discover optional external runtimes (historical names such as
+Ruflo/claude-flow and RuVector appear in ADR-008 ownership records). Those are
+**optional** operator services, not Core product architecture after BOD-17.
+Canonical identities and endpoints remain defined in
+[ADR-008](../adr/ADR-008-global-runtime-ownership.md).
 
 Inspect without changing processes:
 

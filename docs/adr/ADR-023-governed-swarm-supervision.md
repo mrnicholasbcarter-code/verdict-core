@@ -1,8 +1,10 @@
+> **Status: SUPERSEDED (BOD-17 / BOD-127)** — Governed-swarm / Ruflo supervision is obsolete architecture and has been **deleted** from Core. Canonical dispatch is BOD-104 → BOD-67/`verdict.dispatcher` (authorized `selected_route` only). Documentation hygiene continues under BOD-131. Historical body below is retained for archaeology; do not rewrite paths to `experimental/`.
+
 # ADR-023: Governed Swarm Supervision
 
-**Status**: Accepted
+**Status**: SUPERSEDED (BOD-17)
 **Date**: 2026-08-16
-**Updated**: 2026-08-30
+**Updated**: 2026-09-19
 **Story**: [VERDICT-SWARM-001](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/VERDICT-SWARM-001.md) (verdict-ecosystem)
 
 ## Context

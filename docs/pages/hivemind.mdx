@@ -1,7 +1,10 @@
+> **SUPERSEDED (BOD-17)** — Hivemind / RuVector-as-Core-architecture claims are obsolete.
+> Memory remains under canonical `verdict/memory_*.py`. Docs consolidation: BOD-131.
 
-# Hivemind RAG Structure
+# Hivemind RAG Structure (historical)
 
-Adopted directly into Verdict Core without 3rd-party bloat:
-1. **Hybrid Retrieval**: BM25 + Vector semantic routing.
-2. **Lifecycle Hooks**: Extracted context mapping.
-3. **Local-first Embeddings**: Integrated via RuVector ONNX models.
+This page described an experimental Hivemind RAG adoption path that is **not**
+current Verdict Core architecture. Do not treat RuVector ONNX, hive workspace,
+or SONA/neural modules as product surfaces.
+
+Canonical local-first memory remains the Memory Plane (`verdict/memory_*.py`).

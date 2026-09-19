@@ -75,3 +75,5 @@ this repo has no authority over them.
 - Tracking lives in GitHub Project #5 rather than `.specify/specs/`, since this is portfolio
   operations work (visibility, docs, launch sequencing), not a spec-kit feature change to the
   router itself.
+
+> **BOD-17 outcome:** Core chose **deletion** of Ruflo/swarm/hivemind/SONA/neural modules (not `verdict/experimental/` relocation). Memory plane stayed canonical. See ADR-023 SUPERSEDED and BOD-131.

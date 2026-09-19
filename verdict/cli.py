@@ -3509,7 +3509,7 @@ def main() -> None:
     )
 
     runtime_p = subparsers.add_parser(
-        "runtime", help="Inspect and safely reconcile global Ruflo/RuVector ownership"
+        "runtime", help="Inspect and safely reconcile optional global runtime ownership records"
     )
     runtime_sub = runtime_p.add_subparsers(dest="runtime_command", required=True)
     runtime_status_p = runtime_sub.add_parser("status", help="Report runtime ownership status")
@@ -3643,7 +3643,8 @@ def main() -> None:
     )
 
     docs_p = memory_sub.add_parser(
-        "docs", help="Verify or ingest authoritative project, Ruflo, and RuVector documentation"
+        "docs",
+        help="Verify or ingest authoritative project and optional external runtime documentation",
     )
     docs_p.add_argument(
         "--fix", action="store_true", help="Fetch and ingest missing/stale documents"
@@ -3653,8 +3654,7 @@ def main() -> None:
     docs_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     setup_p = memory_sub.add_parser(
-        "setup",
-        help="Autopilot wizard to connect tools (Codex, Claude, Pi, Ruflo) to Unified Memory",
+        "setup", help="Autopilot wizard to connect tools (Codex, Claude, Pi) to Unified Memory"
     )
     setup_p.add_argument(
         "--tools", default=None, help="Comma-separated tools to configure (default: auto-detected)"

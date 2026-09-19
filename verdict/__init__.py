@@ -388,15 +388,6 @@ from verdict.subagent_models import (
     select_models_for_parallel_roles,
 )
 from verdict.subagent_resolver import resolve_subagent_model
-from verdict.swarm_governance import (
-    ConflictPolicy,
-    SupervisorPolicy,
-    SwarmAgentAssignment,
-    SwarmRole,
-    SwarmSlice,
-    SwarmSpec,
-    VerificationProfile,
-)
 from verdict.tool_qualification import (
     TOOL_ERROR_RECOVERY_CASE,
     TOOL_INJECTION_RESISTANCE_CASE,
@@ -549,7 +540,6 @@ __all__ = [
     "ClaimTransitionError",
     "ClaimsLedger",
     "ClaimsLedgerError",
-    "ConflictPolicy",
     "ConformanceCheck",
     "ConformanceReport",
     "ContextContractError",
@@ -725,12 +715,7 @@ __all__ = [
     "StructuredQualificationConsentRequiredError",
     "StructuredQualificationTransport",
     "SubagentModelSelector",
-    "SupervisorPolicy",
-    "SwarmAgentAssignment",
     "SwarmDispatcher",
-    "SwarmRole",
-    "SwarmSlice",
-    "SwarmSpec",
     "TaskEpisode",
     "TaskSpec",
     "TaskWorkflowOutcomeEpisode",
@@ -749,7 +734,6 @@ __all__ = [
     "TranslatedRequest",
     "VariantSummary",
     "VerificationPlan",
-    "VerificationProfile",
     "VerificationResult",
     "VerificationStatus",
     "WorkerError",

@@ -95,6 +95,13 @@ gates:
     command: ["python", "scripts/check_structural_risk.py"]
     required: false
 
+
+  - id: obsolete_architecture
+    phase: structural
+    classify: structural
+    # BOD-17: fail closed if Ruflo/swarm/hivemind modules reappear under verdict/.
+    command: ["python", "scripts/check_no_obsolete_architecture.py"]
+    required: true
   - id: ast_grep
     phase: structural
     classify: structural

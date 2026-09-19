@@ -156,7 +156,7 @@ def selected_route_dispatch_identity(decision: ExecutionPathDecision) -> dict[st
 def consume_selected_route(
     selected_route: ConcreteRoute | Mapping[str, Any] | ExecutionPathDecision | None,
     *,
-    surface: str = "swarm_or_ruflo",
+    surface: str = "authorized_dispatch",
 ) -> dict[str, Any]:
     """Extract dispatch identity; fail closed if callers try to invent a route."""
 
@@ -217,7 +217,7 @@ def match_candidate_to_selected_route(
             return candidate
     raise ExecutionPathError(
         f"no candidate matches selected_route={sorted(wanted)!r}; "
-        "swarm/ruflo must not invent an alternate"
+        "authorized dispatch must not invent an alternate"
     )
 
 
