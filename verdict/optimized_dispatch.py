@@ -19,6 +19,7 @@ import hashlib
 import json
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from verdict.context_budget import content_looks_secret
@@ -474,11 +475,16 @@ def execute_optimized_dispatch(
     hydrated: HydratedWorkerPack | None = None,
     dry_run: bool = True,
     dispatcher: SwarmDispatcher | None = None,
+    now: datetime | None = None,
 ) -> tuple[DispatchResult, DispatchReceipt]:
     """Hydrate-aware bind of an already-authorized BOD-104 route.
 
     Planning contract: ``dry_run`` defaults to True and no live provider invoke
     is performed. Missing explicit child models are rejected.
+
+    Pass ``now`` (or a dispatcher ``clock``) whenever the availability snapshot
+    uses a frozen fixture timestamp — wall-clock drift otherwise marks 60s TTLs
+    stale and fails closed.
     """
 
     if is_child and (explicit_model is None or not str(explicit_model).strip()):
@@ -502,7 +508,9 @@ def execute_optimized_dispatch(
         dispatch_snapshot = dict(snapshot)
 
     try:
-        result = active.dispatch(dispatch_snapshot, dry_run=dry_run, selected_route=resolved)
+        result = active.dispatch(
+            dispatch_snapshot, dry_run=dry_run, selected_route=resolved, now=now
+        )
     except ExecutionPathError as exc:
         # Named eligibility / unmatched reasons from hard gates.
         raise OptimizedDispatchError(str(exc)) from exc
