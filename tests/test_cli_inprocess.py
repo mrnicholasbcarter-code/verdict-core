@@ -38,6 +38,38 @@ def test_cmd_route_terse_uses_configured_primary(
     assert capsys.readouterr().out.strip() == "test-primary"
 
 
+def test_cmd_route_allow_offline_does_not_enable_legacy_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-127: offline catalog mode must not silently set CONTEXT_ALLOW_LEGACY."""
+    from verdict.serve_path import CONTEXT_ALLOW_LEGACY
+
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text(
+        "primary_model: test-primary\n"
+        "log_path: route-log.jsonl\n"
+        "providers:\n"
+        "  cheap:\n"
+        "    base_url: http://localhost:1234/v1\n"
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeGate:
+        def route(self, _task: str, _criticality: str, context: object = None) -> object:
+            captured["context"] = context
+            from types import SimpleNamespace
+
+            return SimpleNamespace(model="test-primary")
+
+    monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _FakeGate())
+    cli.cmd_route("ping", "low", terse=True, allow_offline=True)
+
+    ctx = captured.get("context")
+    assert ctx is None or CONTEXT_ALLOW_LEGACY not in ctx
+
+
 def test_setup_dry_run_json_is_mutation_free_and_does_not_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
