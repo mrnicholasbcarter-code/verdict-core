@@ -23,9 +23,12 @@ def _completed(stdout: bytes | str, returncode: int = 0) -> MagicMock:
 def test_run_gh_json_parses_and_bounds_failure() -> None:
     with patch("verdict.delivery_ports.subprocess.run", return_value=_completed('{"ok":true}')):
         assert run_gh_json(["api", "x"]) == {"ok": True}
-    with patch(
-        "verdict.delivery_ports.subprocess.run", return_value=_completed("nope", returncode=1)
-    ), pytest.raises(DeliveryError, match="gh failed"):
+    with (
+        patch(
+            "verdict.delivery_ports.subprocess.run", return_value=_completed("nope", returncode=1)
+        ),
+        pytest.raises(DeliveryError, match="gh failed"),
+    ):
         run_gh_json(["api", "x"])
 
 

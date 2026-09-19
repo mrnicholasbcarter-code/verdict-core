@@ -20,20 +20,11 @@ _DEFAULT_TIMEOUT_S = 60
 _MAX_OUTPUT_BYTES = 1_000_000
 
 
-def run_gh_json(
-    args: Sequence[str],
-    *,
-    timeout_s: float = _DEFAULT_TIMEOUT_S,
-) -> Any:
+def run_gh_json(args: Sequence[str], *, timeout_s: float = _DEFAULT_TIMEOUT_S) -> Any:
     """Run ``gh`` and parse JSON stdout. Raises DeliveryError on failure."""
     cmd = ["gh", *list(args)]
     try:
-        completed = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            timeout=timeout_s,
-        )
+        completed = subprocess.run(cmd, check=False, capture_output=True, timeout=timeout_s)
     except FileNotFoundError as exc:
         raise DeliveryError("gh CLI not found on PATH") from exc
     except subprocess.TimeoutExpired as exc:
@@ -85,14 +76,7 @@ class GhCliPort:
     def _repo_args(self) -> list[str]:
         return ["--repo", self.repo] if self.repo else []
 
-    def create_pull_request(
-        self,
-        *,
-        title: str,
-        body: str,
-        head: str,
-        base: str,
-    ) -> str:
+    def create_pull_request(self, *, title: str, body: str, head: str, base: str) -> str:
         payload = run_gh_json(
             [
                 "pr",
@@ -132,11 +116,7 @@ class GhCliPort:
                 timeout_s=self.timeout_s,
             )
             if isinstance(payload, list):
-                return [
-                    _normalize_check_item(item)
-                    for item in payload
-                    if isinstance(item, dict)
-                ]
+                return [_normalize_check_item(item) for item in payload if isinstance(item, dict)]
             return []
 
         if not self.repo:
@@ -166,14 +146,7 @@ class GhCliPort:
 
     def get_mergeability(self, *, pr_url: str) -> tuple[str, str]:
         payload = run_gh_json(
-            [
-                "pr",
-                "view",
-                pr_url,
-                *self._repo_args(),
-                "--json",
-                "mergeable,mergeStateStatus",
-            ],
+            ["pr", "view", pr_url, *self._repo_args(), "--json", "mergeable,mergeStateStatus"],
             timeout_s=self.timeout_s,
         )
         if not isinstance(payload, dict):
@@ -188,14 +161,7 @@ class GhCliPort:
         # merge may return empty stdout; then re-query mergeCommit
         try:
             run_gh_json(
-                [
-                    "pr",
-                    "merge",
-                    pr_url,
-                    *self._repo_args(),
-                    "--squash",
-                    "--delete-branch",
-                ],
+                ["pr", "merge", pr_url, *self._repo_args(), "--squash", "--delete-branch"],
                 timeout_s=self.timeout_s,
             )
         except DeliveryError as exc:
@@ -203,15 +169,7 @@ class GhCliPort:
             if "non-JSON" not in str(exc) and "gh failed" not in str(exc):
                 raise
             subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "merge",
-                    pr_url,
-                    *self._repo_args(),
-                    "--squash",
-                    "--delete-branch",
-                ],
+                ["gh", "pr", "merge", pr_url, *self._repo_args(), "--squash", "--delete-branch"],
                 check=True,
                 capture_output=True,
                 timeout=self.timeout_s,
@@ -265,12 +223,7 @@ class LinearEvidencePort:
         self.evidence_dir = Path(evidence_dir)
 
     def record_delivery_evidence(
-        self,
-        *,
-        issue: str,
-        pr_url: str,
-        merge_sha: str,
-        evidence: Mapping[str, Any],
+        self, *, issue: str, pr_url: str, merge_sha: str, evidence: Mapping[str, Any]
     ) -> None:
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         receipt = {
