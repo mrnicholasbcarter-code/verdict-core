@@ -35,6 +35,11 @@ CODEBASE_MEMORY_AUTHORITY_RANK: Final[int] = 70
 CONTEXT7_AUTHORITY_RANK: Final[int] = 60
 MEMORY_PLANE_AUTHORITY_RANK: Final[int] = 40
 TREE_SITTER_AST_AUTHORITY_RANK: Final[int] = 15
+# Optional security scanners (BOD-126) — never hard Core dependencies.
+NATIVE_SECURITY_AUTHORITY_RANK: Final[int] = 20
+AGENTSHIELD_AUTHORITY_RANK: Final[int] = 75
+GITLEAKS_AUTHORITY_RANK: Final[int] = 65
+SEMGREP_SECURITY_AUTHORITY_RANK: Final[int] = 55
 
 
 @dataclass(frozen=True)
@@ -557,6 +562,131 @@ def make_memory_plane_stub(
     )
 
 
+def _security_capabilities() -> frozenset[str]:
+    return frozenset(
+        {
+            "security.prompt_injection",
+            "security.secrets",
+            "security.agent_config",
+            "security.mcp_config",
+        }
+    )
+
+
+def make_native_security_descriptor(
+    *,
+    health: ProviderHealth = "healthy",
+    authority_rank: int = NATIVE_SECURITY_AUTHORITY_RANK,
+    capabilities: frozenset[str] | None = None,
+    evidence_digest: str | None = None,
+    observed_at: str | None = None,
+    freshness_seconds: float | None = 0.0,
+) -> ProviderDescriptor:
+    """Always-on native trust/injection/secret/config checks (BOD-126)."""
+    return ProviderDescriptor(
+        provider_id="native.verdict.security",
+        brand="verdict",
+        capabilities=capabilities if capabilities is not None else _security_capabilities(),
+        authority_rank=authority_rank,
+        health=health,
+        freshness_seconds=freshness_seconds,
+        cost_latency_class="local",
+        provenance="native-security",
+        fallback_provider_ids=(),
+        observed_at=observed_at,
+        evidence_digest=evidence_digest,
+        hard_dependency=False,
+        notes="Native context-trust pipeline; optional scanners enrich only.",
+    )
+
+
+def make_agentshield_stub(
+    *,
+    health: ProviderHealth = "unavailable",
+    authority_rank: int = AGENTSHIELD_AUTHORITY_RANK,
+    capabilities: frozenset[str] | None = None,
+    evidence_digest: str | None = None,
+    observed_at: str | None = None,
+    freshness_seconds: float | None = None,
+) -> ProviderDescriptor:
+    """Optional AgentShield enrichment stub — never a Core hard dependency."""
+    return ProviderDescriptor(
+        provider_id="adapter.agentshield",
+        brand="agentshield",
+        capabilities=capabilities
+        if capabilities is not None
+        else frozenset({"security.prompt_injection", "security.agent_config"}),
+        authority_rank=authority_rank,
+        health=health,
+        freshness_seconds=freshness_seconds,
+        cost_latency_class="cheap",
+        provenance="adapter-stub",
+        fallback_provider_ids=("native.verdict.security",),
+        observed_at=observed_at,
+        evidence_digest=evidence_digest,
+        hard_dependency=False,
+        notes="Optional AgentShield; native security checks remain the fallback.",
+    )
+
+
+def make_gitleaks_stub(
+    *,
+    health: ProviderHealth = "unavailable",
+    authority_rank: int = GITLEAKS_AUTHORITY_RANK,
+    capabilities: frozenset[str] | None = None,
+    evidence_digest: str | None = None,
+    observed_at: str | None = None,
+    freshness_seconds: float | None = None,
+) -> ProviderDescriptor:
+    """Optional Gitleaks secrets enrichment stub — no product import."""
+    return ProviderDescriptor(
+        provider_id="adapter.gitleaks",
+        brand="gitleaks",
+        capabilities=capabilities if capabilities is not None else frozenset({"security.secrets"}),
+        authority_rank=authority_rank,
+        health=health,
+        freshness_seconds=freshness_seconds,
+        cost_latency_class="cheap",
+        provenance="adapter-stub",
+        fallback_provider_ids=("native.verdict.security",),
+        observed_at=observed_at,
+        evidence_digest=evidence_digest,
+        hard_dependency=False,
+        notes="Optional Gitleaks; native secret heuristics remain the fallback.",
+    )
+
+
+def make_semgrep_security_stub(
+    *,
+    health: ProviderHealth = "unavailable",
+    authority_rank: int = SEMGREP_SECURITY_AUTHORITY_RANK,
+    capabilities: frozenset[str] | None = None,
+    evidence_digest: str | None = None,
+    observed_at: str | None = None,
+    freshness_seconds: float | None = None,
+) -> ProviderDescriptor:
+    """Optional Semgrep security enrichment stub — not BOD-89 CI ownership."""
+    return ProviderDescriptor(
+        provider_id="adapter.semgrep_security",
+        brand="semgrep",
+        capabilities=capabilities
+        if capabilities is not None
+        else frozenset(
+            {"security.agent_config", "security.mcp_config", "security.prompt_injection"}
+        ),
+        authority_rank=authority_rank,
+        health=health,
+        freshness_seconds=freshness_seconds,
+        cost_latency_class="moderate",
+        provenance="adapter-stub",
+        fallback_provider_ids=("native.verdict.security",),
+        observed_at=observed_at,
+        evidence_digest=evidence_digest,
+        hard_dependency=False,
+        notes="Optional Semgrep security enrichment; CI/appsec remains BOD-89.",
+    )
+
+
 def build_default_registry(
     *,
     stale_after_seconds: float = _DEFAULT_STALE_AFTER_SECONDS,
@@ -567,9 +697,13 @@ def build_default_registry(
     registry.register(make_native_verdict_descriptor())
     registry.register(make_tree_sitter_ast_descriptor())
     registry.register(make_memory_plane_stub())
+    registry.register(make_native_security_descriptor())
     registry.register(make_serena_lsp_stub(health=enrichment_health))
     registry.register(make_context7_stub(health=enrichment_health))
     registry.register(make_codebase_memory_stub(health=enrichment_health))
+    registry.register(make_agentshield_stub(health=enrichment_health))
+    registry.register(make_gitleaks_stub(health=enrichment_health))
+    registry.register(make_semgrep_security_stub(health=enrichment_health))
     return registry
 
 
@@ -592,11 +726,15 @@ def describe_registry(registry: SemanticCapabilityRegistry | None = None) -> dic
 
 
 __all__ = [
+    "AGENTSHIELD_AUTHORITY_RANK",
     "CODEBASE_MEMORY_AUTHORITY_RANK",
     "CONTEXT7_AUTHORITY_RANK",
+    "GITLEAKS_AUTHORITY_RANK",
     "MEMORY_PLANE_AUTHORITY_RANK",
     "NATIVE_AUTHORITY_RANK",
+    "NATIVE_SECURITY_AUTHORITY_RANK",
     "REGISTRY_SCHEMA_VERSION",
+    "SEMGREP_SECURITY_AUTHORITY_RANK",
     "SERENA_LSP_AUTHORITY_RANK",
     "TREE_SITTER_AST_AUTHORITY_RANK",
     "ConflictKind",
@@ -609,10 +747,14 @@ __all__ = [
     "SkipReason",
     "build_default_registry",
     "describe_registry",
+    "make_agentshield_stub",
     "make_codebase_memory_stub",
     "make_context7_stub",
+    "make_gitleaks_stub",
     "make_memory_plane_stub",
+    "make_native_security_descriptor",
     "make_native_verdict_descriptor",
+    "make_semgrep_security_stub",
     "make_serena_lsp_stub",
     "make_tree_sitter_ast_descriptor",
     "resolve_capability",

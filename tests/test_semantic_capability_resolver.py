@@ -66,8 +66,15 @@ def test_provider_brand_is_not_embedded_in_semantic_capability_identity() -> Non
         "github",
         "linear",
     )
+    # Protocol-domain allowlist: security.mcp_config names the scan subject (MCP
+    # config), not a provider brand — see semantic_capabilities._BRAND_FREE_ALLOWLIST.
+    _protocol_domain_allow = frozenset({"security.mcp_config"})
     for cap in SEMANTIC_CAPABILITIES:
         lowered = cap.lower()
+        if lowered in _protocol_domain_allow:
+            assert not lowered.startswith("native.")
+            assert "." in cap
+            continue
         for brand in brands:
             assert brand not in lowered, f"capability {cap!r} embeds brand {brand!r}"
         assert not lowered.startswith("native.")
