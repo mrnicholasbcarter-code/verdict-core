@@ -496,9 +496,7 @@ def execute_optimized_dispatch(
     identity = selected_route_dispatch_identity(resolved)
     active = dispatcher or SwarmDispatcher()
     dispatch_snapshot: AvailabilitySnapshot | dict[str, Any]
-    if isinstance(snapshot, AvailabilitySnapshot):
-        dispatch_snapshot = snapshot
-    elif isinstance(snapshot, dict):
+    if isinstance(snapshot, AvailabilitySnapshot) or isinstance(snapshot, dict):
         dispatch_snapshot = snapshot
     else:
         dispatch_snapshot = dict(snapshot)
