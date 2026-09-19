@@ -25,6 +25,11 @@
     "rationale": "Existing CLI and setup hotspot; decomposition tracked by issue #123."
   },
   {
+    "path": "verdict/compaction.py",
+    "max_lines": 802,
+    "rationale": "BOD-69 canonical compaction/checkpoint contract; split deferred after harness adapters stabilize."
+  },
+  {
     "path": "verdict/context_pack.py",
     "max_lines": 887,
     "rationale": "Existing context-pack module; decomposition tracked by issue #123."
