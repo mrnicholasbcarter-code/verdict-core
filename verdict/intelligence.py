@@ -223,6 +223,55 @@ class IntelligenceService:
         else:
             task_str = task
 
+        # BOD-104: when an ExecutionPathDecision is supplied, it is the sole
+        # strategy authority — legacy free-tier/chooser paths dispatch only.
+        # Only trusted in-process ExecutionPathDecision objects are accepted;
+        # client-supplied dicts cannot bypass eligibility/cert/trust gates.
+        if isinstance(context, dict) and context.get("execution_path_decision") is not None:
+            from verdict.execution_path import (
+                ExecutionPathDecision,
+                ExecutionPathError,
+                legacy_selector_must_yield,
+            )
+
+            ep = context["execution_path_decision"]
+            if not isinstance(ep, ExecutionPathDecision):
+                raise ExecutionPathError(
+                    "context['execution_path_decision'] must be an ExecutionPathDecision "
+                    "instance (client-supplied dicts are rejected)"
+                )
+            payload = ep.to_dict()
+            legacy_selector_must_yield(execution_path_decision=ep, legacy_selected_model_id=None)
+            route_info = payload.get("selected_route") or {}
+            model = str(route_info.get("model") or payload.get("selected_candidate_id") or "")
+            provider = str(route_info.get("provider") or "unknown")
+            gateway = str(route_info.get("gateway") or "")
+            if not model:
+                raise ExecutionPathError("BOD-104 decision has no concrete model to dispatch")
+            elapsed = (time.time() - start_t) * 1000
+            safety = [
+                "bod104_execution_path_authority",
+                f"bod104_strategy:{payload.get('selected_strategy')}",
+            ]
+            if gateway:
+                safety.append(f"bod104_gateway:{gateway}")
+            if route_info.get("route_id"):
+                safety.append(f"bod104_route_id:{route_info.get('route_id')}")
+            dec = RoutingDecision(
+                model=model,
+                provider=provider,
+                tier=int(route_info.get("capability_tier") or 2),
+                reason=(f"bod104:{payload.get('selected_strategy')}:{payload.get('why_selected')}"),
+                latency_ms=elapsed,
+                logged=bool(self.log_path),
+                request_id=request_id or "",
+                decision="selected",
+                safety_flags=safety,
+            )
+            if self.log_path:
+                log_decision(self.log_path, task_str, 2, dec, self.log_full_task)
+            return dec
+
         # Fallback to strict heuristic scan
         eff_tier, heuristic_reason = scan(task_str)
 
