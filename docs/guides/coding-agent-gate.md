@@ -61,8 +61,17 @@ wire_api = "responses"
 requires_openai_auth = false
 ```
 
-Cursor: set the OpenAI-compatible base URL to `http://127.0.0.1:8000/v1` in
-models settings.
+Cursor — prefer the Architect-locked CLI (managed provider file + OpenAI sidecar):
+
+```bash
+verdict harness cursor enable
+verdict harness cursor status
+verdict harness cursor certify
+verdict harness cursor disable
+```
+
+See [cursor-harness.md](cursor-harness.md). Manual fallback: set the OpenAI-compatible
+base URL to `http://127.0.0.1:8000/v1` in Cursor Models settings.
 
 Harness-shaped smoke (with Verdict running):
 
@@ -77,11 +86,23 @@ or HTTP 503 with fail-closed deny when the intersection is empty / OmniRoute is 
 
 ## 2. Claude Code SessionStart gate
 
+Prefer the Architect-locked CLI (backs up `~/.claude/settings.json` first):
+
+```bash
+verdict harness claude enable
+verdict harness claude status
+verdict harness claude certify
+verdict harness claude disable
+```
+
+See [claude-harness.md](claude-harness.md).
+
 Claude Code's default traffic is Anthropic Messages (`/v1/messages`). Verdict's
 proxy today is OpenAI-compatible only — full Anthropic Messages passthrough via
-Verdict is a **remaining gap**. Until then:
+Verdict is a **remaining gap** (BOD-102). Until then:
 
-1. Keep **SessionStart** fail-closed via `verdict hook claude-gate`.
+1. Keep **SessionStart** fail-closed via `verdict hook claude-gate` (installed by
+   `verdict harness claude enable`).
 2. Route any OpenAI-compatible side tooling at `http://127.0.0.1:8000/v1`.
 3. Do **not** fall back to `api.anthropic.com` if the local path is down.
 
