@@ -608,11 +608,13 @@ def test_setup_plan_includes_bootstrap_enrichment_actions_when_requested(
 
 
 def test_discovery_from_path_does_not_promote_binary_to_healthy(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_which(name: str) -> str | None:
         return f"/usr/bin/{name}" if name in {"claude", "codex", "hermes"} else None
 
+    empty_home = tmp_path / "home"
+    empty_home.mkdir()
     report = run_bootstrap(
         mode=BootstrapMode.PLAN,
         non_interactive=True,
@@ -622,6 +624,8 @@ def test_discovery_from_path_does_not_promote_binary_to_healthy(
             "health_ok": False,
             "reason": "not probed in fixture",
         },
+        home=empty_home,
+        cwd=tmp_path / "cwd",
     ).to_dict()
     harnesses = [
         item
@@ -634,7 +638,9 @@ def test_discovery_from_path_does_not_promote_binary_to_healthy(
     assert all(item["qualification_state"] != "qualified" for item in harnesses)
 
 
-def test_discovery_accepts_official_binary_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discovery_accepts_official_binary_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Prime ships as `prime-agent`; Codebase Memory MCP as `codebase-memory-mcp`."""
 
     def fake_which(name: str) -> str | None:
@@ -645,6 +651,8 @@ def test_discovery_accepts_official_binary_aliases(monkeypatch: pytest.MonkeyPat
         }
         return aliases.get(name)
 
+    empty_home = tmp_path / "home"
+    empty_home.mkdir()
     report = run_bootstrap(
         mode=BootstrapMode.PLAN,
         non_interactive=True,
@@ -654,6 +662,8 @@ def test_discovery_accepts_official_binary_aliases(monkeypatch: pytest.MonkeyPat
             "health_ok": False,
             "reason": "not probed in fixture",
         },
+        home=empty_home,
+        cwd=tmp_path / "cwd",
     ).to_dict()
     by_id = {item["provider_id"]: item for item in report["providers"]}
     prime = by_id["harness.prime"]
@@ -891,13 +901,15 @@ def test_successful_apply_refreshes_provider_before_certify(tmp_path: Path) -> N
 
 
 def test_omniroute_env_does_not_mark_other_gateways_configured(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
 
     def fake_which(_name: str) -> str | None:
         return None
 
+    empty_home = tmp_path / "home"
+    empty_home.mkdir()
     report = run_bootstrap(
         mode=BootstrapMode.PLAN,
         non_interactive=True,
@@ -911,6 +923,8 @@ def test_omniroute_env_does_not_mark_other_gateways_configured(
             "reason": "unreachable",
         },
         scope=BootstrapScope.GATEWAYS,
+        home=empty_home,
+        cwd=tmp_path / "cwd",
     ).to_dict()
     by_id = {item["provider_id"]: item for item in report["providers"]}
     assert by_id["gateway.omniroute"]["lifecycle"] in {"configured", "installed", "unhealthy"} or (
