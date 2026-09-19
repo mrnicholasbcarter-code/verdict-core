@@ -46,5 +46,8 @@ test('compaction boundary returns the installed Prime compaction contract', asyn
   assert.match(result.compaction.summary, /lease generation/);
   assert.match(result.compaction.summary, /focus on proofs/);
   assert.equal(result.compaction.details.bounded, true);
+  assert.equal(result.compaction.details.semantic_event, 'before_compact');
+  assert.equal(result.compaction.details.contract, 'verdict.compaction');
+  assert.match(result.compaction.summary, /context_pressure_checkpoint/);
   assert.equal((await handlers.session_before_compact({}, {})), undefined);
 });
