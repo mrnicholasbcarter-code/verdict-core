@@ -438,3 +438,136 @@ def test_discovery_from_path_does_not_promote_binary_to_healthy(
     assert all(item["lifecycle"] == "installed" for item in harnesses)
     assert all(item["health_state"] != "healthy" for item in harnesses)
     assert all(item["qualification_state"] != "qualified" for item in harnesses)
+
+
+def test_apply_without_install_runner_is_blocked_and_not_owned(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    first = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        scope=BootstrapScope.GATEWAYS,
+        install_runner=None,
+    ).to_dict()
+    apply_stage = next(stage for stage in first["stages"] if stage["stage"] == "apply")
+    assert apply_stage["status"] == "blocked"
+    assert first["apply"]["mutated"] is False
+    ownership_path = state_dir / "ownership.json"
+    if ownership_path.exists():
+        ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
+        assert ownership.get("managed_actions", []) == []
+
+    # Second run must still attempt (not suppressed by fake ownership).
+    second = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        scope=BootstrapScope.GATEWAYS,
+        install_runner=None,
+    ).to_dict()
+    apply_second = next(stage for stage in second["stages"] if stage["stage"] == "apply")
+    assert apply_second["status"] == "blocked"
+
+
+def test_successful_apply_refreshes_provider_before_certify(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    observed: list[str] = []
+
+    def _install(action: Any) -> dict[str, object]:
+        return {"status": "installed", "provider_id": action.provider_id}
+
+    def _certify(providers: tuple[DiscoveredProvider, ...]) -> dict[str, object]:
+        for item in providers:
+            observed.append(f"{item.provider_id}:{item.lifecycle.value}")
+        return {
+            "summary": "ok",
+            "results": [
+                {
+                    "provider_id": item.provider_id,
+                    "certified": item.lifecycle is not ProviderLifecycle.NOT_INSTALLED,
+                    "reason": item.lifecycle.value,
+                }
+                for item in providers
+            ],
+        }
+
+    report = run_bootstrap(
+        providers=(
+            *_clean_machine(),
+            _provider(
+                "gateway.omniroute",
+                ProviderKind.GATEWAY,
+                frozenset({"gateway.inventory", "gateway.execute"}),
+                lifecycle=ProviderLifecycle.NOT_INSTALLED,
+            ),
+        ),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=True,
+        state_dir=state_dir,
+        scope=BootstrapScope.GATEWAYS,
+        install_runner=_install,
+        certifier=_certify,
+    )
+    assert report.to_dict()["apply"]["mutated"] is True
+    assert any(":installed" in entry for entry in observed), observed
+    installed = [item for item in report.providers if item.lifecycle is ProviderLifecycle.INSTALLED]
+    assert installed, "successful APPLY must refresh providers before certify"
+
+
+def test_omniroute_env_does_not_mark_other_gateways_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
+
+    def fake_which(_name: str) -> str | None:
+        return None
+
+    report = run_bootstrap(
+        mode=BootstrapMode.PLAN,
+        non_interactive=True,
+        path_resolver=fake_which,
+        probe_gateway=lambda provider_id: {
+            "reachable": False,
+            "health_ok": False,
+            "endpoint": "http://127.0.0.1:4000/v1"
+            if provider_id != "gateway.omniroute"
+            else "http://127.0.0.1:20128/v1",
+            "reason": "unreachable",
+        },
+        scope=BootstrapScope.GATEWAYS,
+    ).to_dict()
+    by_id = {item["provider_id"]: item for item in report["providers"]}
+    assert by_id["gateway.omniroute"]["lifecycle"] in {"configured", "installed", "unhealthy"} or (
+        by_id["gateway.omniroute"]["lifecycle"] != "not_installed"
+    )
+    for other in ("gateway.litellm", "gateway.9router"):
+        if other in by_id:
+            assert by_id[other]["lifecycle"] == "not_installed"
+
+
+def test_scoped_setup_plan_actions_stay_in_gateway_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    plan = build_setup_plan(
+        bootstrap_providers=(
+            *_clean_machine(),
+            _provider("gateway.omniroute", ProviderKind.GATEWAY, frozenset({"gateway.inventory"})),
+            _provider("harness.claude_code", ProviderKind.HARNESS, frozenset({"harness.execute"})),
+        ),
+        include_bootstrap=True,
+        bootstrap_scope="gateways",
+    ).to_dict()
+    bootstrap_actions = [
+        action for action in plan["actions"] if str(action["action_id"]).startswith("bootstrap:")
+    ]
+    assert bootstrap_actions
+    assert all("harness" not in action["action_id"] for action in bootstrap_actions)

@@ -638,7 +638,10 @@ def discover_providers(
         if entry.provider_kind is ProviderKind.GATEWAY:
             probe_result = dict(probe(entry.provider_id))
             endpoint = str(probe_result.get("endpoint") or entry.default_endpoint or "")
-            if binary_path or probe_result.get("reachable") or os.getenv("OMNIROUTE_BASE_URL"):
+            omniroute_env = entry.provider_id == "gateway.omniroute" and bool(
+                os.getenv("OMNIROUTE_BASE_URL")
+            )
+            if binary_path or probe_result.get("reachable") or omniroute_env:
                 health_ok = bool(probe_result.get("health_ok"))
                 if health_ok:
                     lifecycle = ProviderLifecycle.HEALTHY
@@ -811,14 +814,47 @@ def recommend_capabilities(
         except Exception:
             decision = None
 
+        candidate_ids_extra: tuple[str, ...] = ()
         if selected is None and decision is not None and decision.selected is not None:
             # Map registry selection onto discovered providers when present.
             for item in candidates:
                 if item.provider_id == decision.selected.provider_id and _is_usable(item):
                     selected = item
                     break
+            # Healthy registry natives (memory/security) may not appear in PATH catalog.
+            if (
+                selected is None
+                and decision.selected.provider_id.startswith("native.")
+                and decision.selected.health == "healthy"
+            ):
+                if (
+                    "memory" in decision.selected.provider_id
+                    or "ast" in decision.selected.provider_id
+                ):
+                    kind = ProviderKind.INTELLIGENCE
+                elif "security" in decision.selected.provider_id:
+                    kind = ProviderKind.SECURITY
+                else:
+                    kind = ProviderKind.OTHER
+                selected = DiscoveredProvider(
+                    provider_id=decision.selected.provider_id,
+                    provider_kind=kind,
+                    capabilities=frozenset({capability_id}),
+                    lifecycle=ProviderLifecycle.HEALTHY,
+                    auth_state="not_required",
+                    health_state="healthy",
+                    qualification_state="qualified",
+                    authority=decision.selected.authority_rank,
+                    freshness="fresh",
+                    install_source="verdict-native",
+                    optional=False,
+                    hard_dependency=False,
+                )
+                candidate_ids_extra = (selected.provider_id,)
 
-        candidate_ids = tuple(item.provider_id for item in candidates)
+        candidate_ids = tuple(
+            dict.fromkeys((*candidate_ids_extra, *(item.provider_id for item in candidates)))
+        )
         # Prefer recommending OmniRoute among missing gateway providers, never hard-dep.
         if capability_id.startswith("gateway.") and "gateway.omniroute" in candidate_ids:
             candidate_ids = (
@@ -992,9 +1028,22 @@ def _save_ownership(state_dir: Path, payload: Mapping[str, Any]) -> None:
     )
 
 
+def _successful_apply_result(result: Mapping[str, Any]) -> bool:
+    """True only when an installer actually completed — not record-only stubs."""
+
+    status = str(result.get("status") or "").lower()
+    return status in {"installed", "ok", "applied", "success", "configured"}
+
+
 def _already_applied(ownership: Mapping[str, Any], action_id: str) -> bool:
     managed = ownership.get("managed_actions", [])
-    return any(isinstance(item, dict) and item.get("action_id") == action_id for item in managed)
+    for item in managed:
+        if not isinstance(item, dict) or item.get("action_id") != action_id:
+            continue
+        result = item.get("result")
+        if isinstance(result, Mapping) and _successful_apply_result(result):
+            return True
+    return False
 
 
 def apply_bootstrap_actions(
@@ -1100,16 +1149,21 @@ def apply_bootstrap_actions(
         result: Mapping[str, Any]
         if action.kind == "install_provider":
             if runner is None:
-                # Record intent only — never silently shell out to third-party installers.
+                # Never silently shell out, and never mark success without a runner.
                 result = {
-                    "status": "recorded",
+                    "status": "blocked",
                     "install_command": action.install_command,
-                    "note": "install command recorded; runner not configured",
+                    "note": "install runner not configured; action left pending",
                 }
-            else:
-                result = runner(action)
+                applied.append({"action_id": action.action_id, "result": dict(result)})
+                continue
+            result = runner(action)
         else:
             result = {"status": "recorded", "kind": action.kind}
+
+        if action.kind == "install_provider" and not _successful_apply_result(result):
+            applied.append({"action_id": action.action_id, "result": dict(result)})
+            continue
 
         ownership.setdefault("managed_actions", []).append(
             {
@@ -1122,13 +1176,40 @@ def apply_bootstrap_actions(
         applied.append({"action_id": action.action_id, "result": dict(result)})
 
     _save_ownership(state_dir, ownership)
+    succeeded: list[dict[str, object]] = []
+    runner_blocked: list[dict[str, object]] = []
+    for item in applied:
+        result_obj = item.get("result")
+        if not isinstance(result_obj, dict):
+            continue
+        result_map: Mapping[str, Any] = result_obj
+        if _successful_apply_result(result_map):
+            succeeded.append(item)
+        elif str(result_map.get("status") or "").lower() == "blocked":
+            runner_blocked.append(item)
+    if runner_blocked and not succeeded:
+        apply_stage = StageResult(
+            stage=StageName.APPLY.value,
+            status="blocked",
+            summary="APPLY blocked: install runner not configured for third-party installs.",
+            details={"blocked": [item["action_id"] for item in runner_blocked], "applied": []},
+        )
+        return consent_stage, apply_stage, {"mutated": False, "actions": applied}
+
     apply_stage = StageResult(
         stage=StageName.APPLY.value,
-        status="ok",
-        summary=f"Applied {len(applied)} Verdict-owned action(s) with backups.",
-        details={"applied": [item["action_id"] for item in applied]},
+        status="ok" if not runner_blocked else "partial",
+        summary=(
+            f"Applied {len(succeeded)} Verdict-owned action(s) with backups."
+            if succeeded
+            else "No successful mutations applied."
+        ),
+        details={
+            "applied": [item["action_id"] for item in succeeded],
+            "blocked": [item["action_id"] for item in runner_blocked],
+        },
     )
-    return consent_stage, apply_stage, {"mutated": True, "actions": applied}
+    return consent_stage, apply_stage, {"mutated": bool(succeeded), "actions": applied}
 
 
 def run_bootstrap(
@@ -1252,9 +1333,67 @@ def run_bootstrap(
             )
         )
 
-    # CERTIFY
+    # CERTIFY — refresh provider observations after successful APPLY so newly
+    # installed providers are not certified from stale pre-apply snapshots.
+    providers_for_cert = normalized
+    if mode_v is BootstrapMode.APPLY and bool(apply_payload.get("mutated")):
+        applied_obj = apply_payload.get("actions", [])
+        applied_actions: list[Any] = list(applied_obj) if isinstance(applied_obj, list) else []
+        installed_ids: set[str] = set()
+        for item in applied_actions:
+            if not isinstance(item, dict):
+                continue
+            result = item.get("result")
+            if not isinstance(result, dict) or not _successful_apply_result(result):
+                continue
+            action_id = str(item.get("action_id") or "")
+            if action_id.startswith("bootstrap:install:") or action_id.startswith(
+                "bootstrap:repair:"
+            ):
+                installed_ids.add(action_id.rsplit(":", 1)[-1])
+
+        if providers is None:
+            providers_for_cert = _filter_scope(
+                discover_providers(
+                    path_resolver=path_resolver, probe_gateway=probe_gateway, scope=scope_v
+                ),
+                scope_v,
+            )
+        elif installed_ids:
+            refreshed: list[DiscoveredProvider] = []
+            for item in normalized:
+                if item.provider_id in installed_ids and item.lifecycle in {
+                    ProviderLifecycle.NOT_INSTALLED,
+                    ProviderLifecycle.INSTALLED,
+                }:
+                    refreshed.append(
+                        DiscoveredProvider(
+                            provider_id=item.provider_id,
+                            provider_kind=item.provider_kind,
+                            capabilities=item.capabilities,
+                            lifecycle=ProviderLifecycle.INSTALLED,
+                            path_or_endpoint=item.path_or_endpoint,
+                            config_sources=item.config_sources,
+                            auth_state=item.auth_state,
+                            health_state="unknown",
+                            qualification_state="unqualified",
+                            authority=item.authority,
+                            freshness="fresh",
+                            managed_by_verdict=True,
+                            install_source=item.install_source,
+                            install_command=item.install_command,
+                            last_probe=item.last_probe,
+                            failure_reason="installed; awaiting live certification",
+                            optional=item.optional,
+                            hard_dependency=item.hard_dependency,
+                        )
+                    )
+                else:
+                    refreshed.append(item)
+            providers_for_cert = tuple(refreshed)
+
     certify = certifier or _default_certifier
-    certification = dict(certify(normalized))
+    certification = dict(certify(providers_for_cert))
     cert_summary = str(certification.get("summary") or "certification complete")
     if any(
         isinstance(item, dict) and item.get("reason") == "installed != healthy"
@@ -1273,7 +1412,7 @@ def run_bootstrap(
     mutation_free = mode_v is not BootstrapMode.APPLY or not bool(apply_payload.get("mutated"))
     return BootstrapReport(
         stages=tuple(stages),
-        providers=normalized,
+        providers=providers_for_cert,
         recommendations=recommendations,
         plan=plan,
         apply=apply_payload,

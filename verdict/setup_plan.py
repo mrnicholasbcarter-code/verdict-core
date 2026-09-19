@@ -162,7 +162,7 @@ def _base_config_actions(config_exists: bool) -> tuple[SetupAction, ...]:
 
 
 def _bootstrap_setup_actions(
-    bootstrap_providers: Sequence[DiscoveredProvider] | None,
+    bootstrap_providers: Sequence[DiscoveredProvider] | None, *, scope: str = "all"
 ) -> tuple[SetupAction, ...]:
     """Translate BOD-124 bootstrap plan actions into SetupAction rows."""
 
@@ -173,7 +173,7 @@ def _bootstrap_setup_actions(
     report = run_bootstrap(
         providers=bootstrap_providers,
         mode=BootstrapMode.RECOMMENDED,
-        scope=BootstrapScope.ALL,
+        scope=BootstrapScope(scope),
         non_interactive=True,
     )
     return tuple(action.to_setup_action() for action in report.plan.actions)
@@ -183,6 +183,7 @@ def build_setup_plan(
     *,
     bootstrap_providers: Sequence[DiscoveredProvider] | None = None,
     include_bootstrap: bool = False,
+    bootstrap_scope: str = "all",
 ) -> SetupPlan:
     """Build a deterministic local setup plan without network or mutations.
 
@@ -194,7 +195,7 @@ def build_setup_plan(
     actions = _base_config_actions(config_exists)
     if include_bootstrap:
         providers = bootstrap_providers if bootstrap_providers is not None else ()
-        actions = actions + _bootstrap_setup_actions(providers)
+        actions = actions + _bootstrap_setup_actions(providers, scope=bootstrap_scope)
     return SetupPlan(
         config_path=_display_config_path(), config_exists=config_exists, actions=actions
     )
