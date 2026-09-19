@@ -230,8 +230,11 @@ class FabricRetrieval:
 class NativeCapabilityResolver:
     """Resolve semantic capabilities to the always-on native Verdict baseline.
 
-    External adapters register later; absence of Serena/MCP must not remove
-    native coverage for Wave-1 capabilities.
+    External adapters register later via ``verdict.capability_registry``
+    (BOD-87); absence of Serena/MCP must not remove native coverage for Wave-1
+    capabilities. Multi-provider authority ranking lives on
+    ``SemanticCapabilityRegistry`` — this class remains the fabric execution
+    bridge to in-process ``CapabilityProvider`` callables.
     """
 
     def __init__(self, providers: Sequence[CapabilityProvider] | None = None) -> None:
@@ -253,6 +256,19 @@ class NativeCapabilityResolver:
 
     def resolve(self, capability_id: str) -> CapabilityProvider | None:
         return self._by_capability.get(capability_id)
+
+    def ranked_provider_id(self, capability_id: str) -> str | None:
+        """Consult BOD-87 registry for highest-authority healthy provider id.
+
+        Fabric execution still uses ``resolve()`` → native callables; this
+        surfaces which enrichment brand would win when adapters are healthy.
+        """
+        from verdict.capability_registry import build_default_registry
+
+        decision = build_default_registry().resolve(capability_id)
+        if decision.selected is None:
+            return None
+        return decision.selected.provider_id
 
 
 def plan_context_query(
