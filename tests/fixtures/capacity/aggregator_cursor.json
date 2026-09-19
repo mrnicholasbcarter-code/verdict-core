@@ -1,0 +1,40 @@
+{
+  "contract_version": "1",
+  "provider_id": "cursor",
+  "account_id": "acct-cursor-1",
+  "access_mode": "oauth",
+  "observed_at": "2026-09-19T12:00:00Z",
+  "pools": [
+    {
+      "pool_id": "cursor-models-monthly",
+      "scope": "cursor-models",
+      "status": "available",
+      "unit": "requests",
+      "remaining_pct": 62.0,
+      "window_seconds": 2592000,
+      "reset_at": "2026-10-01T00:00:00Z",
+      "evidence_id": "cursor-models"
+    },
+    {
+      "pool_id": "cursor-other-models-monthly",
+      "scope": "other-models",
+      "status": "available",
+      "unit": "requests",
+      "remaining_pct": 80.0,
+      "window_seconds": 2592000,
+      "reset_at": "2026-10-01T00:00:00Z",
+      "evidence_id": "cursor-other"
+    },
+    {
+      "pool_id": "cursor-ondemand",
+      "scope": "on-demand",
+      "status": "available",
+      "unit": "usd",
+      "remaining_units": 25.0,
+      "limit_units": 50.0,
+      "remaining_pct": 50.0,
+      "evidence_id": "cursor-ondemand"
+    }
+  ],
+  "balances": []
+}

@@ -1,0 +1,40 @@
+{
+  "contract_version": "1",
+  "provider_id": "xai",
+  "account_id": "acct-grok-1",
+  "access_mode": "api_key",
+  "observed_at": "2026-09-19T12:00:00Z",
+  "fresh_until": "2026-09-19T12:05:00Z",
+  "confidence": 0.7,
+  "pools": [
+    {
+      "pool_id": "grok-build-slice",
+      "scope": "grok-build",
+      "status": "available",
+      "unit": "tokens",
+      "remaining_pct": 74.0,
+      "shared_pool_id": "grok-super-shared",
+      "reset_at": "2026-09-20T12:00:00Z",
+      "evidence_id": "grok-build"
+    },
+    {
+      "pool_id": "grok-chat-slice",
+      "scope": "grok-chat",
+      "status": "available",
+      "unit": "tokens",
+      "remaining_pct": 74.0,
+      "shared_pool_id": "grok-super-shared",
+      "reset_at": "2026-09-20T12:00:00Z",
+      "evidence_id": "grok-chat"
+    }
+  ],
+  "balances": [
+    {
+      "balance_id": "xai-prepaid",
+      "kind": "prepaid_usd",
+      "remaining": 12.5,
+      "currency_or_unit": "usd",
+      "resets": false
+    }
+  ]
+}
