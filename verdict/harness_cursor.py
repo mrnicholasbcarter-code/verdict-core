@@ -368,9 +368,7 @@ def certify(
     health_check: HealthCheck | Callable[[str], bool] | None = None,
     which: Callable[[str], str | None] | None = None,
 ) -> CertifyReport:
-    discovered = discover(
-        cursor_home=cursor_home, settings_path=settings_path, which=which
-    )
+    discovered = discover(cursor_home=cursor_home, settings_path=settings_path, which=which)
     report = status(cursor_home=cursor_home, settings_path=settings_path)
     base = report.base_url or DEFAULT_BASE_URL
     if force:

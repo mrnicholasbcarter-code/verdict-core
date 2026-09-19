@@ -152,9 +152,7 @@ def test_discover_status_certify_redact_secrets(
     assert SECRET not in format_status(report)
 
     cert = certify(
-        cursor_home=cursor_home,
-        health_check=_healthy,
-        which=lambda _name: "/tmp/cursor",
+        cursor_home=cursor_home, health_check=_healthy, which=lambda _name: "/tmp/cursor"
     )
     assert cert.overall == "partial"
     assert any("secrets" in item for item in cert.needs_owner)
