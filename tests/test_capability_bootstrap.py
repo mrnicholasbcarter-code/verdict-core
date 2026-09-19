@@ -440,6 +440,36 @@ def test_discovery_from_path_does_not_promote_binary_to_healthy(
     assert all(item["qualification_state"] != "qualified" for item in harnesses)
 
 
+def test_discovery_accepts_official_binary_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prime ships as `prime-agent`; Codebase Memory MCP as `codebase-memory-mcp`."""
+
+    def fake_which(name: str) -> str | None:
+        aliases = {
+            "prime-agent": "/home/user/.local/bin/prime-agent",
+            "codebase-memory-mcp": "/home/user/.local/bin/codebase-memory-mcp",
+            "claude": "/usr/bin/claude",
+        }
+        return aliases.get(name)
+
+    report = run_bootstrap(
+        mode=BootstrapMode.PLAN,
+        non_interactive=True,
+        path_resolver=fake_which,
+        probe_gateway=lambda _provider_id: {
+            "reachable": False,
+            "health_ok": False,
+            "reason": "not probed in fixture",
+        },
+    ).to_dict()
+    by_id = {item["provider_id"]: item for item in report["providers"]}
+    prime = by_id["harness.prime"]
+    assert prime["lifecycle"] == "installed"
+    assert prime["path_or_endpoint"] == "/home/user/.local/bin/prime-agent"
+    cbm = by_id["adapter.codebase_memory"]
+    assert cbm["lifecycle"] == "installed"
+    assert cbm["path_or_endpoint"] == "/home/user/.local/bin/codebase-memory-mcp"
+
+
 def test_apply_without_install_runner_is_blocked_and_not_owned(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     first = run_bootstrap(
