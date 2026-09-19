@@ -440,9 +440,7 @@ def test_discovery_from_path_does_not_promote_binary_to_healthy(
     assert all(item["qualification_state"] != "qualified" for item in harnesses)
 
 
-def test_discovery_accepts_official_binary_aliases(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_discovery_accepts_official_binary_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prime ships as `prime-agent`; Codebase Memory MCP as `codebase-memory-mcp`."""
 
     def fake_which(name: str) -> str | None:
