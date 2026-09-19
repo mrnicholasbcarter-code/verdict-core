@@ -15,7 +15,6 @@ from verdict.memory_bridge import MemoryHookController
 from verdict.memory_plane import MemoryPlane
 from verdict.models import ModelInfo
 from verdict.receipt_store import ReceiptStore
-from verdict.ruflo_adapter import CapabilityManifest, build_fake_ruflo_adapter
 
 
 class TestEligibilityRunsFirst:
@@ -131,24 +130,11 @@ class TestLearningCannotAffectEligibility:
         pass
 
 
-class TestRufloCannotExecuteOutsideVerdictConstraints:
-    """Prove Ruflo orchestration is bounded by Verdict's constraints."""
+class TestExecutionEnvelopeEnforcesConstraints:
+    """Prove ExecutionEnvelope carries hard constraints for authorized dispatch."""
 
-    def test_ruflo_adapter_rejects_unauthorized_capabilities(self):
-        """RufloAdapter validates capability manifest against Verdict's allowed list."""
-        adapter = build_fake_ruflo_adapter()
-
-        # Manifest requires capability not in Verdict's allowed list
-        manifest = CapabilityManifest(required=["admin_access", "basic_execution"])
-        valid, issues = adapter.validate_capability_manifest(manifest)
-
-        assert not valid
-        assert any("admin_access" in issue for issue in issues)
-
-    def test_ruflo_execution_envelope_enforces_constraints(self):
-        """ExecutionEnvelope contains constraints that Ruflo must respect."""
-        # Verify the envelope structure includes hard constraints
-        # Use contracts.TaskSpec which has 'objective' not 'prompt'
+    def test_execution_envelope_enforces_constraints(self) -> None:
+        """ExecutionEnvelope contains constraints authorized dispatch must respect."""
         from verdict.contracts import TaskSpec as ContractTaskSpec
 
         envelope = ExecutionEnvelope(
@@ -243,7 +229,6 @@ class TestPipelineOrdering:
         # 2. Eligibility gate filters candidates
         # 3. Ranking selects best from eligible
         # 4. Planning creates ExecutionEnvelope
-        # 5. Execution via Ruflo adapter
         # 6. Verification via hooks
         # 7. Learning from outcomes
         pass
@@ -283,21 +268,8 @@ class TestReceiptChainIntegrity:
 class TestContractualBoundaries:
     """Prove contractual boundaries between components."""
 
-    def test_ruflo_adapter_uses_typed_envelopes(self):
-        """All Ruflo communication uses typed request/response envelopes."""
-        build_fake_ruflo_adapter()
-
-        # All methods return typed response objects
-
-        # submit returns RufloSubmitResponse
-        # status returns RufloStatusResponse
-        # pause/resume/cancel/approve/reject return RufloControlResponse
-        # result returns RufloResult
-        pass
-
     def test_execution_envelope_is_versioned_contract(self):
         """ExecutionEnvelope is a v1 contract with schema validation."""
-        # Use the contracts module's TaskSpec which has 'objective' and 'task_type'
         envelope = ExecutionEnvelope(
             task_spec=TaskSpec(objective="test", task_type="test"),
             eligibility_decision={},
@@ -308,14 +280,12 @@ class TestContractualBoundaries:
             evidence_ids=[],
         )
 
-        # Can serialize
         data = envelope.to_dict()
         assert data["schema_version"] == "1"
         assert data["task_spec"]["objective"] == "test"
         assert data["task_spec"]["task_type"] == "test"
         assert "eligibility_decision" in data
         assert "policy_digest" in data
-        # Note: deserialization has a known Contract field coercion issue
 
 
 if __name__ == "__main__":

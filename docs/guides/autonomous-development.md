@@ -29,25 +29,17 @@ surface before editing. Validate both the canonical fixture and negative
 fixtures; a permissive parser or a passing happy-path round trip is not proof
 that a safety contract is frozen.
 
-When a Ruflo/RuVector MCP call times out, documentation lookup and runtime
-health are incomplete—not successful. Record the timeout as an `unknown`
-signal, keep protected work fail-closed, and use the bounded recovery sequence
-below before retrying the task:
+When an optional external MCP/documentation connector times out, documentation
+lookup and runtime health are incomplete—not successful. Record the timeout as
+an `unknown` signal, keep protected work fail-closed, and diagnose with the
+connector's own documented health commands (never invent readiness from a
+timeout). Retry only documented transient transport failures with a finite
+budget; authentication failures, malformed responses, and repeated timeouts
+remain unknown and require degraded-mode handling or a ticket.
 
-```bash
-npx ruflo@latest doctor
-npx ruflo@latest status
-# If the MCP service is not starting, inspect the documented listener first:
-lsof -i :3000
-npx ruflo@latest mcp start
-```
-
-Use `doctor --fix` only when the reported repair is understood and within the
-current task's scope. Do not kill an arbitrary process or turn an MCP timeout
-into a healthy/readiness result. Retry only documented transient transport
-failures with a finite budget; authentication failures, malformed responses,
-and repeated timeouts remain unknown and require degraded-mode handling or a
-ticket. The installed Ruflo version is authoritative if command names differ.
+> Note (BOD-17): Ruflo/swarm/hivemind are **not** Core architecture. Optional
+> Memory Plane archival tool discovery may still mention external names; that
+> is not a product orchestration surface. Docs hygiene: BOD-131.
 
 The output is a short context record containing sources, assumptions,
 limitations, and the evidence commands to run.
@@ -81,7 +73,7 @@ making safety fields arbitrarily permissive.
 Every implementation slice maps to an issue or a newly created issue with
 acceptance criteria. A work package has one owner, a non-overlapping file
 boundary, tests and docs, an independent reviewer, evidence commands, and a
-disposition for discoveries that are not fixed. Use a hierarchical Ruflo swarm
+disposition for discoveries that are not fixed. Use ticket-backed parallel ownership (worktrees / disjoint file boundaries)
 for multi-file, cross-module, security, performance, or cross-repository work.
 Use separate worktrees or disjoint ownership; workers must not revert another
 worker's changes.

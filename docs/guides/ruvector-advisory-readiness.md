@@ -1,17 +1,9 @@
-# RuVector advisory readiness
+> **SUPERSEDED (BOD-17)** — `verdict.ruvector_adapter` was deleted from Core.
+> RuVector/SONA are not current product architecture. Memory Plane remains
+> under `verdict/memory_*.py`. Docs hygiene: BOD-131.
 
-`verdict.ruvector_adapter.RuVectorAdapter` is the optional boundary for a
-RuVector/RVF executable. It negotiates the executable version and declared
-commands through bounded argv-only probes. Shell syntax, unbounded output, and
-raw process diagnostics do not cross the boundary.
+# RuVector advisory readiness (historical)
 
-Readiness is `ready` only when both probes succeed, version output is
-recognized, and all requested commands are advertised. Missing, timed-out,
-truncated, or unsupported capability evidence produces `degraded` or
-`unavailable`; advisory retrieval remains disabled in those states.
-
-This adapter does not access RuVector databases, mutate SONA weights, or
-change deterministic eligibility. It reports a digestable readiness artifact
-that a later storage/retrieval implementation can consume. SONA remains
-observe-only until replay baselines, regression bounds, drift metrics, a kill
-switch, and snapshot rollback are separately proven.
+This guide described an optional `RuVectorAdapter` argv-probe boundary that no
+longer exists in Core. Do not treat RuVector readiness, SONA weights, or
+neural adapters as active Verdict surfaces.

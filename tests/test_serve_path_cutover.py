@@ -34,14 +34,12 @@ from verdict.gateway_adapters import AdapterRouteIdentity
 from verdict.intelligence import IntelligenceService
 from verdict.live_routing import ConcreteIdentity, select_route
 from verdict.models import ModelConfig, ProviderConfig
-from verdict.ruflo_adapter import build_fake_ruflo_adapter
 from verdict.runtime_certification import CertificationState
 from verdict.serve_path import (
     CONTEXT_ALLOW_LEGACY,
     CONTEXT_EP_DECISION,
     CONTEXT_EP_REQUEST,
     CONTEXT_REQUIRE_AUTHORITY,
-    consume_selected_route,
     failover_must_defer_to_bounded_recovery,
     free_tier_feed_identities,
     match_candidate_to_selected_route,
@@ -346,8 +344,6 @@ def _runtime(runtime_id: str, *, cost: float) -> RuntimeCandidate:
         model=runtime_id,
     )
 
-
-def test_swarm_dispatcher_consumes_selected_route() -> None:
     decision = _decision()
     snap = AvailabilitySnapshot(
         observed_at=NOW.isoformat(),
@@ -371,19 +367,6 @@ def test_swarm_fails_closed_without_matching_selected_route() -> None:
     )
     with pytest.raises(ExecutionPathError, match="no candidate matches"):
         SwarmDispatcher().dispatch(snap, selected_route=decision.selected_route, now=NOW)
-
-
-def test_ruflo_submit_binds_selected_route() -> None:
-    from verdict.contracts import TaskSpec
-
-    decision = _decision()
-    identity = consume_selected_route(decision)
-    adapter = build_fake_ruflo_adapter()
-    task = TaskSpec(objective="refactor", task_type="implementation", criticality="medium")
-    response = adapter.submit(task_spec=task, selected_route=identity)
-    assert response.accepted is True
-    with pytest.raises(ExecutionPathError, match="selected_route required"):
-        adapter.submit(task_spec=task, require_selected_route=True)
 
 
 def test_free_tier_is_feed_not_authority() -> None:
@@ -432,40 +415,15 @@ def test_api_route_injects_require_authority(monkeypatch: pytest.MonkeyPatch) ->
     assert ctx.get(CONTEXT_REQUIRE_AUTHORITY) is True
 
 
-def test_ruflo_dispatch_cannot_select_or_alter_route() -> None:
-    """Invariant: RufloAdapter._dispatch is transport-only (BOD-127)."""
-    from verdict.ruflo_adapter import RufloAdapter, RufloProtocolError
-
-    captured: list[tuple[str, dict[str, object]]] = []
-
-    def transport(envelope: dict[str, object]) -> dict[str, object]:
-        method = str(envelope["method"])
-        params = dict(envelope["params"])  # type: ignore[arg-type]
-        captured.append((method, params))
-        return {"task_id": "t1", "accepted": True, "status": "queued", "reason": "ok"}
-
-    live = RufloAdapter(transport=transport)
-    identity = {"model": "cheap-model", "provider": "provider-a", "gateway": "g", "route_id": "r1"}
-    outbound = {
-        "task_spec": {"objective": "x", "task_type": "swarm"},
-        "selected_route": dict(identity),
-    }
-    response = live.assert_dispatch_execute_only("submit", outbound)
-    assert response["accepted"] is True
-    assert captured[0][1]["selected_route"] == identity
-    with pytest.raises(RufloProtocolError, match="selection authority"):
-        live.assert_dispatch_execute_only("submit", {**outbound, "select_route": "evil"})
-
-
 def test_legacy_selectors_are_feeds_not_authority() -> None:
     """select_best_eligible_model remains a feed/compat helper, never serve authority."""
     import inspect
 
     from verdict import serve_path as serve_mod
+    from verdict.dispatcher import SwarmDispatcher as AuthorizedRouteDispatcher
     from verdict.router import select_best_eligible_model
-    from verdict.swarm_dispatcher import SwarmDispatcher as EnvelopeSwarmDispatcher
 
     assert "select_best_eligible_model" not in inspect.getsource(serve_mod)
-    assert "select_best_eligible_model" not in inspect.getsource(EnvelopeSwarmDispatcher.dispatch)
+    assert "select_best_eligible_model" not in inspect.getsource(AuthorizedRouteDispatcher.dispatch)
     src = inspect.getsource(select_best_eligible_model)
     assert "eligible" in src.lower()

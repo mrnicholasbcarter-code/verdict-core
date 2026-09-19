@@ -1,3 +1,5 @@
+> **HISTORICAL / NON-NORMATIVE** — Swarm/Ruflo implementation guide. Modules deleted in BOD-17. Do not treat as current product architecture. See BOD-131 for docs consolidation.
+
 # Governed Swarm Implementation
 
 ## Source snapshot

@@ -15,7 +15,7 @@ This document provides field-by-field comparison between the canonical Python co
 | RuntimeCandidate | `verdict/contracts.py` | `contracts/src/index.ts` | ✅ PARITY |
 | WorkflowPlan | `verdict/contracts.py` | `contracts/src/index.ts` | ✅ PARITY |
 | OutcomeEvent | `verdict/contracts.py` | `contracts/src/index.ts` | ✅ PARITY |
-| SwarmTaskEnvelope | `verdict/swarm_contracts.py` | `contracts/src/index.ts` | ✅ PARITY |
+| SwarmTaskEnvelope | ~~`verdict/swarm_contracts.py`~~ | `contracts/src/index.ts` | ❌ REMOVED (BOD-17 / BOD-127 — obsolete swarm envelope deleted from Core) |
 
 ## Field-by-Field Comparison
 
@@ -73,29 +73,20 @@ This document provides field-by-field comparison between the canonical Python co
 
 ### SwarmTaskEnvelope
 
-| Field | Python Type | TS Type | Match |
-|-------|-------------|---------|-------|
-| objective | str | string | ✅ |
-| allowed_paths | List[str] | string[] | ✅ |
-| budget | SwarmTaskBudget | SwarmTaskBudget | ✅ |
-| required_capabilities | List[str] | string[] | ✅ |
-| model_floor | str | string | ✅ |
-| max_parallelism | int | number | ✅ |
-| timeout_ms | int | number | ✅ |
-| max_iterations | int | number | ✅ |
-| stop_conditions | List[str] | string[] | ✅ |
-| verification_command | Optional[str] | string \| null | ✅ |
-| result_schema | Optional[Dict] | Record<string, unknown> \| null | ✅ |
-| redaction_rules | List[str] | string[] | ✅ |
-| schema_version | str | string | ✅ |
+**REMOVED / superseded (BOD-17 / BOD-127).** Python source `verdict/swarm_contracts.py`
+was deleted from Core. Do not reintroduce a `swarm_contracts` shim. Cross-repo
+compatibility no longer includes `SwarmTaskEnvelope` in `CROSS_REPO_CONTRACTS`.
+TypeScript may retain a historical type until a separate contracts package cleanup;
+Core no longer claims parity for this envelope.
+
 
 ## Validation Results
 
 ### Python Side
 ```bash
 cd /home/nick/dev/verdict-core
-python -m pytest tests/test_contracts.py tests/test_swarm_contracts.py -v
-# 28 + 26 = 54 tests passed
+python -m pytest tests/test_contracts.py tests/test_compatibility_manifest.py -v
+# SwarmTaskEnvelope / test_swarm_contracts.py removed (BOD-17)
 ```
 
 ### TypeScript Side
@@ -140,7 +131,7 @@ npx tsx scripts/parity.ts
 ```bash
 # Full parity check
 cd /home/nick/dev/verdict-core
-python -m pytest tests/test_contracts.py tests/test_swarm_contracts.py -v
+python -m pytest tests/test_contracts.py tests/test_compatibility_manifest.py -v
 
 cd /home/nick/dev/verdict-core/contracts
 npm test

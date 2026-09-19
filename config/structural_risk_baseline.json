@@ -120,16 +120,6 @@
     "rationale": "Existing receipt store module; decomposition tracked by issue #123."
   },
   {
-    "path": "verdict/ruflo_adapter.py",
-    "max_lines": 1012,
-    "rationale": "Existing Ruflo adapter hotspot; decomposition tracked by issue #123."
-  },
-  {
-    "path": "verdict/ruflo_integration.py",
-    "max_lines": 552,
-    "rationale": "Existing Ruflo integration hotspot; decomposition tracked by issue #123."
-  },
-  {
     "path": "verdict/structured_qualification.py",
     "max_lines": 628,
     "rationale": "Existing structured qualification module; decomposition tracked by issue #123."

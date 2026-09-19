@@ -22,7 +22,6 @@ from verdict.contracts import (
     WorkflowPlan,
 )
 from verdict.provider_receipts import canonical_hash
-from verdict.swarm_contracts import SwarmTaskEnvelope
 
 COMPATIBILITY_MANIFEST_SCHEMA_VERSION = "1"
 
@@ -35,7 +34,6 @@ CROSS_REPO_CONTRACTS: tuple[type[Contract], ...] = (
     RuntimeCandidate,
     WorkflowPlan,
     OutcomeEvent,
-    SwarmTaskEnvelope,
 )
 
 

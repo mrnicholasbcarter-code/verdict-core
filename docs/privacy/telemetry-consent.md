@@ -1,3 +1,5 @@
+> **Note (BOD-17):** `tests/privacy/test_telemetry_consent.py` exercised `verdict.swarm_observability`, which was deleted with obsolete swarm architecture. Telemetry-consent product requirements remain; replace coverage under BOD-131 docs/privacy hygiene when a canonical sink exists.
+
 # Telemetry Consent Policy
 
 ## What telemetry contains
