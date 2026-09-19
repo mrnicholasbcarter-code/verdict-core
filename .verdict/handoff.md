@@ -1,63 +1,67 @@
 # Verdict Handoff
 
-Story: BOD-69
+Story: BOD-124 (harness-prime-opencode follow-through)
 Worker/harness: cursor
-Worktree: /home/nick/worktrees/bod-69-checkpoint-compaction
-Branch: feat/bod-69-checkpoint-compaction
-Base SHA: 3ed97fe955d93b81a28f1bd3ee6e0ed74ae9ef97
-Current SHA: 22a5e0657d7245635f3e153b8c867c186fdae441
+Worktree: /home/nick/worktrees/bod-124-harness-prime-opencode
+Branch: feat/bod-124-harness-prime-opencode
+Base SHA: origin/main @ 9926bde (#553 claude/cursor included)
 Previous worker: none
-Objective: Deterministic harness-neutral semantic checkpoint/compaction lifecycle shared with Continuity C03 / BOD-81; reuse handoff.py; do not add a second summarizer or budget stack.
+Objective: Phase-4 harness adapters for Prime Agent + OpenCode (discover/enable/disable/status/certify) mirroring codex/hermes/claude/cursor patterns.
 
 Completed:
-- Implemented `verdict/compaction.py` with semantic events, structured-state compaction, resume projection, READY gate, handoff projection
-- Proof tests in `tests/test_checkpoint_compaction.py` covering AC/proof contract
-- Prime adapter maps `session_before_compact` → `before_compact` and tags `verdict.compaction`
-- Pushed PR https://github.com/mrnicholasbcarter-code/verdict-core/pull/550 and commented Linear BOD-69
+- Implemented `verdict/harness_prime.py` and `verdict/harness_opencode.py`
+- CLI: `verdict harness prime|opencode {discover,enable,disable,status,certify}`
+- Docs: `docs/guides/prime-harness.md`, `opencode-harness.md`; coding-agent-gate updated
+- Temp-dir unit tests (12); refuse OmniRoute `:20128` without `--force`; default Verdict `:8000`; backup+rollback
+- Certify reports `not-installed` when binaries missing; live enable NEEDS_OWNER
+- ruff + mypy --strict clean on new modules
 
 Currently working on:
-- (none — awaiting review/merge)
+- (none — awaiting PR review/merge)
 
 Next exact steps:
-1. Review/merge PR #550
-2. Confirm CI green on feat/bod-69-checkpoint-compaction
+1. Review/merge PR for feat/bod-124-harness-prime-opencode
+2. Live enable with secrets remains NEEDS_OWNER
 
 Acceptance criteria:
-- [x] Extension uses compaction lifecycle; harness-neutral events: before_compact, before_yield, session_end, resume, context_pressure_checkpoint
-- [x] Semantic compaction after verified merge / major handoff / research boundary / issue switch / context pressure — not timer alone
-- [x] Preserve program/goal, completed issue/PR/merge SHA, current/next story, proof, decisions, blockers, worktree/PR mappings
-- [x] Discard shell chatter, duplicate MCP, incorporated searches, verbose transcripts; abandoned approaches → concise failure lesson
-- [x] New session after compaction resolves same active/next story; no regenerate completed research
-- [x] Compaction/checkpoint data bounded and provenance-aware
+- [x] discover/status/enable/disable/certify for prime + opencode
+- [x] Graceful not-installed when prime/opencode/opencode-go missing
+- [x] Unit tests do not require binaries installed
+- [x] Refuse :20128 without --force; default :8000; backup+rollback
+- [x] ruff/mypy clean
 
 Tests/proof executed:
-- `uv run --extra dev pytest tests/test_checkpoint_compaction.py -q` (15 passed)
-- `uv run --extra dev pytest tests/test_worktree_resume.py -q` (17 passed)
-- `uv run --extra dev ruff check/format + mypy --strict` on compaction module + tests
-- `node --test tests/test_prime_context.mjs` (2 passed)
+- `uv run --extra dev pytest tests/test_harness_prime.py tests/test_harness_opencode.py -q` (12 passed)
+- `uv run --extra dev ruff check/format` on new modules + tests
+- `uv run --extra dev mypy --strict verdict/harness_prime.py verdict/harness_opencode.py`
 
 Files changed:
-- verdict/compaction.py
-- tests/test_checkpoint_compaction.py
-- .prime/agent/extensions/verdict-context.ts
-- tests/test_prime_context.mjs
+- verdict/harness_prime.py (new)
+- verdict/harness_opencode.py (new)
+- verdict/cli.py (prime/opencode harness parsers + cmds)
+- tests/test_harness_prime.py (new)
+- tests/test_harness_opencode.py (new)
+- docs/guides/prime-harness.md (new)
+- docs/guides/opencode-harness.md (new)
+- docs/guides/coding-agent-gate.md
 - .verdict/handoff.md
 
 Contracts changed:
-- Canonical `verdict.compaction` semantic checkpoint/compaction lifecycle (shared with BOD-81 / C03)
+- Architect-locked CLI surfaces for prime + opencode harness adapters
 
 Important decisions:
-- One deterministic structured-state compactor — not an LLM summarizer
-- Reuse `estimate_tokens` from context_pack for footprint only; BOD-125 remains sole budget governor
-- Reuse `verdict.handoff.HandoffDocument` for durable projection
+- Rebased onto #553; CLI parsers for prime/opencode sit alongside claude/cursor/codex/hermes
+- Parity includes `not-installed` when binary absent
+- Prime writes `~/.prime/agent/models.json`; OpenCode writes `~/.config/opencode/opencode.json`
+- Never write token values; live enable NEEDS_OWNER
 
 Known failures:
 - (none)
 
 Dependencies/blockers:
-- BOD-68 is parallel — do not touch verdict/delivery.py
+- Live enable with secrets is NEEDS_OWNER
+- Do not touch delivery.py, compaction.py, capacity_*, optimized_dispatch.py
 
 Do not / warnings:
-- Do not reinvent budget accounting inside compaction (BOD-125 owns it)
-- Do not create a second summarizer or second budget stack
+- Do not rewrite claude/cursor/codex/hermes modules
 - Do not force-push main

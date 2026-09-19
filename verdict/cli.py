@@ -27,6 +27,10 @@ from verdict.harness_cursor import DEFAULT_TOKEN_ENV as CURSOR_HARNESS_DEFAULT_T
 from verdict.harness_hermes import DEFAULT_BASE_URL as HERMES_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_hermes import DEFAULT_MODEL as HERMES_HARNESS_DEFAULT_MODEL
 from verdict.harness_hermes import DEFAULT_TOKEN_ENV as HERMES_HARNESS_DEFAULT_TOKEN_ENV
+from verdict.harness_opencode import DEFAULT_BASE_URL as OPENCODE_HARNESS_DEFAULT_BASE_URL
+from verdict.harness_opencode import DEFAULT_TOKEN_ENV as OPENCODE_HARNESS_DEFAULT_TOKEN_ENV
+from verdict.harness_prime import DEFAULT_BASE_URL as PRIME_HARNESS_DEFAULT_BASE_URL
+from verdict.harness_prime import DEFAULT_TOKEN_ENV as PRIME_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.models import ModelInfo, ProviderConfig, TaskSpec
 from verdict.patch_executor import DEFAULT_BASE_URL
 
@@ -3322,6 +3326,93 @@ def main() -> None:
         action="store_true",
         help="Treat Verdict health as ok when probing fails (local proof only)",
     )
+    harness_prime_p = harness_sub.add_parser(
+        "prime", help="Enable, disable, discover, or certify Prime Agent as a Verdict client"
+    )
+    harness_prime_sub = harness_prime_p.add_subparsers(dest="harness_prime_command", required=True)
+    harness_prime_sub.add_parser(
+        "discover", help="Observe Prime Agent install/config without mutating it"
+    )
+    prime_enable_p = harness_prime_sub.add_parser(
+        "enable",
+        help="Backup ~/.prime/agent/models.json and upsert Verdict OpenAI-compatible provider",
+    )
+    prime_enable_p.add_argument(
+        "--base-url",
+        default=PRIME_HARNESS_DEFAULT_BASE_URL,
+        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
+    )
+    prime_enable_p.add_argument(
+        "--token-env",
+        default=PRIME_HARNESS_DEFAULT_TOKEN_ENV,
+        help="Env var name stored as apiKey (never prints the value)",
+    )
+    prime_enable_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Write Prime models.json even if the Verdict health check fails",
+    )
+    harness_prime_sub.add_parser(
+        "disable", help="Restore the pre-enable ~/.prime/agent/models.json backup"
+    )
+    harness_prime_sub.add_parser(
+        "status",
+        help="Show Prime Agent Verdict provider, base URL, and whether the token env is set",
+    )
+    prime_certify_p = harness_prime_sub.add_parser(
+        "certify",
+        help="Evidence-only Prime Agent certification (partial; not-installed when binary missing)",
+    )
+    prime_certify_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Treat Verdict health as ok when probing fails (local proof only)",
+    )
+    harness_opencode_p = harness_sub.add_parser(
+        "opencode",
+        help="Enable, disable, discover, or certify OpenCode as a Verdict OpenAI-compatible client",
+    )
+    harness_opencode_sub = harness_opencode_p.add_subparsers(
+        dest="harness_opencode_command", required=True
+    )
+    harness_opencode_sub.add_parser(
+        "discover", help="Observe OpenCode install/config without mutating it"
+    )
+    opencode_enable_p = harness_opencode_sub.add_parser(
+        "enable",
+        help="Backup ~/.config/opencode/opencode.json and upsert Verdict OpenAI-compatible provider",
+    )
+    opencode_enable_p.add_argument(
+        "--base-url",
+        default=OPENCODE_HARNESS_DEFAULT_BASE_URL,
+        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
+    )
+    opencode_enable_p.add_argument(
+        "--token-env",
+        default=OPENCODE_HARNESS_DEFAULT_TOKEN_ENV,
+        help="Env var name recorded for OpenCode auth (never prints the value)",
+    )
+    opencode_enable_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Write OpenCode config even if the Verdict health check fails",
+    )
+    harness_opencode_sub.add_parser(
+        "disable", help="Restore the pre-enable ~/.config/opencode/opencode.json backup"
+    )
+    harness_opencode_sub.add_parser(
+        "status",
+        help="Show OpenCode Verdict provider, base URL, and whether the token env is set",
+    )
+    opencode_certify_p = harness_opencode_sub.add_parser(
+        "certify",
+        help="Evidence-only OpenCode certification (partial; not-installed when binary missing)",
+    )
+    opencode_certify_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Treat Verdict health as ok when probing fails (local proof only)",
+    )
 
     runtime_p = subparsers.add_parser(
         "runtime", help="Inspect and safely reconcile global Ruflo/RuVector ownership"
@@ -3819,6 +3910,20 @@ def main() -> None:
                 force=getattr(args, "force", False),
                 wrapper=getattr(args, "wrapper", False),
             )
+        elif args.harness_target == "prime":
+            cmd_harness_prime(
+                args.harness_prime_command,
+                base_url=getattr(args, "base_url", PRIME_HARNESS_DEFAULT_BASE_URL),
+                token_env=getattr(args, "token_env", PRIME_HARNESS_DEFAULT_TOKEN_ENV),
+                force=getattr(args, "force", False),
+            )
+        elif args.harness_target == "opencode":
+            cmd_harness_opencode(
+                args.harness_opencode_command,
+                base_url=getattr(args, "base_url", OPENCODE_HARNESS_DEFAULT_BASE_URL),
+                token_env=getattr(args, "token_env", OPENCODE_HARNESS_DEFAULT_TOKEN_ENV),
+                force=getattr(args, "force", False),
+            )
         else:
             raise SystemExit(f"unknown harness: {args.harness_target}")
     elif args.command == "runtime":
@@ -4123,6 +4228,110 @@ def cmd_harness_cursor(
         console.print(f"[bold red]{exc}[/bold red]")
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness cursor command: {command}")
+
+def cmd_harness_prime(
+    command: str,
+    *,
+    base_url: str = PRIME_HARNESS_DEFAULT_BASE_URL,
+    token_env: str = PRIME_HARNESS_DEFAULT_TOKEN_ENV,
+    force: bool = False,
+) -> None:
+    """Discover, enable, disable, status, or certify Prime Agent → Verdict."""
+    from verdict.harness_prime import (
+        HarnessPrimeError,
+        certify,
+        disable,
+        discover,
+        enable,
+        format_certify,
+        format_discover,
+        format_status,
+        status,
+    )
+
+    try:
+        if command == "discover":
+            console.print(format_discover(discover()), end="")
+            return
+        if command == "enable":
+            result = enable(base_url=base_url, token_env=token_env, force=force)
+            console.print("[bold green]Prime Agent harness enabled[/bold green]")
+            console.print(f"  integration: {result.integration}")
+            console.print(f"  base_url: {result.base_url}")
+            console.print(f"  token_env: {result.token_env}")
+            if result.created_backup:
+                console.print(f"  backup: {result.backup_path}")
+            else:
+                console.print(f"  config: {result.config_path}")
+            return
+        if command == "disable":
+            disable()
+            console.print("[bold green]Prime Agent harness disabled[/bold green]")
+            console.print("  restored pre-enable ~/.prime/agent/models.json backup")
+            return
+        if command == "status":
+            console.print(format_status(status()), end="")
+            return
+        if command == "certify":
+            console.print(format_certify(certify(force=force)), end="")
+            return
+    except HarnessPrimeError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    raise SystemExit(f"unknown harness prime command: {command}")
+
+
+def cmd_harness_opencode(
+    command: str,
+    *,
+    base_url: str = OPENCODE_HARNESS_DEFAULT_BASE_URL,
+    token_env: str = OPENCODE_HARNESS_DEFAULT_TOKEN_ENV,
+    force: bool = False,
+) -> None:
+    """Discover, enable, disable, status, or certify OpenCode → Verdict."""
+    from verdict.harness_opencode import (
+        HarnessOpenCodeError,
+        certify,
+        disable,
+        discover,
+        enable,
+        format_certify,
+        format_discover,
+        format_status,
+        status,
+    )
+
+    try:
+        if command == "discover":
+            console.print(format_discover(discover()), end="")
+            return
+        if command == "enable":
+            result = enable(base_url=base_url, token_env=token_env, force=force)
+            console.print("[bold green]OpenCode harness enabled[/bold green]")
+            console.print(f"  integration: {result.integration}")
+            console.print(f"  base_url: {result.base_url}")
+            console.print(f"  model: {result.model}")
+            console.print(f"  token_env: {result.token_env}")
+            if result.created_backup:
+                console.print(f"  backup: {result.backup_path}")
+            else:
+                console.print(f"  config: {result.config_path}")
+            return
+        if command == "disable":
+            disable()
+            console.print("[bold green]OpenCode harness disabled[/bold green]")
+            console.print("  restored pre-enable ~/.config/opencode/opencode.json backup")
+            return
+        if command == "status":
+            console.print(format_status(status()), end="")
+            return
+        if command == "certify":
+            console.print(format_certify(certify(force=force)), end="")
+            return
+    except HarnessOpenCodeError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    raise SystemExit(f"unknown harness opencode command: {command}")
 
 
 def cmd_prove_at_rest(

@@ -73,6 +73,28 @@ verdict harness cursor disable
 See [cursor-harness.md](cursor-harness.md). Manual fallback: set the OpenAI-compatible
 base URL to `http://127.0.0.1:8000/v1` in Cursor Models settings.
 
+Prime Agent — Architect-locked CLI (backs up `~/.prime/agent/models.json`):
+
+```bash
+verdict harness prime enable
+verdict harness prime status
+verdict harness prime certify
+verdict harness prime disable
+```
+
+See [prime-harness.md](prime-harness.md).
+
+OpenCode — Architect-locked CLI (backs up `~/.config/opencode/opencode.json`):
+
+```bash
+verdict harness opencode enable
+verdict harness opencode status
+verdict harness opencode certify
+verdict harness opencode disable
+```
+
+See [opencode-harness.md](opencode-harness.md).
+
 Harness-shaped smoke (with Verdict running):
 
 ```bash
