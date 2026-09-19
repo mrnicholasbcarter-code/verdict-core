@@ -243,6 +243,12 @@ class ChooseReceipt:
     reason: str
     selected_because: str
 
+    @property
+    def selected_model_id(self) -> str | None:
+        if self.selected is None:
+            return None
+        return self.selected.get("model")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_class": self.task_class,
@@ -382,8 +388,52 @@ def choose_route(
     task_class: str,
     requires: Sequence[str] = (),
     explicit_model: str | None = None,
+    execution_path_decision: Any | None = None,
 ) -> ChooseReceipt:
-    """Apply hard eligibility, then the production advisory ranker."""
+    """Apply hard eligibility, then the production advisory ranker.
+
+    BOD-127: when ``execution_path_decision`` is supplied, the chooser is
+    dispatch-only — it yields to BOD-104 and cannot invent a conflicting model.
+    Without an EP decision this remains an evidence/feed helper for assembling
+    offers, not the production serve-path strategy authority.
+    """
+    if execution_path_decision is not None:
+        from verdict.execution_path import ExecutionPathDecision, legacy_selector_must_yield
+        from verdict.serve_path import selected_route_dispatch_identity
+
+        if not isinstance(execution_path_decision, ExecutionPathDecision):
+            raise ChooserError(
+                "invalid_execution_path_decision",
+                "execution_path_decision must be an ExecutionPathDecision instance",
+            )
+        legacy_selector_must_yield(
+            execution_path_decision=execution_path_decision, legacy_selected_model_id=None
+        )
+        identity = selected_route_dispatch_identity(execution_path_decision)
+        selected = {
+            "gateway": str(identity.get("gateway") or ""),
+            "provider": str(identity.get("provider") or "unknown"),
+            "resource_pool": "execution_path",
+            "model": str(identity["model"]),
+            "route_id": str(identity.get("route_id") or identity["model"]),
+        }
+        return ChooseReceipt(
+            task_class=task_class,
+            protected=task_class_is_protected(task_class),
+            selected=selected,
+            evidence_digest=None,
+            evidence_freshness_seconds=None,
+            ranked_fallbacks=(),
+            exclusions=(),
+            ranking_factors={"strategy_authority": "execution_path.optimize_execution_path"},
+            unknown_evidence_fields=(),
+            policy_version=POLICY_VERSION,
+            ranker_version=RANKER_VERSION,
+            explicit_model=explicit_model,
+            reason="bod104_selected_route",
+            selected_because="execution_path_authority",
+        )
+
     candidate_list = list(candidates)
     kept, pre_exclusions = _prefilter(candidate_list, requires)
     by_alias = {candidate.requested_alias: candidate for candidate in candidate_list}

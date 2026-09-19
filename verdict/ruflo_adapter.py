@@ -234,6 +234,8 @@ class RufloSubmitRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
     contract_version: str = RUFLO_ADAPTER_PROTOCOL_VERSION
     submitted_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # BOD-127: concrete route from BOD-104 — Ruflo must not invent selection.
+    selected_route: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -248,6 +250,7 @@ class RufloSubmitRequest:
             "metadata": self.metadata,
             "contract_version": self.contract_version,
             "submitted_at": self.submitted_at,
+            "selected_route": self.selected_route,
         }
 
     @classmethod
@@ -265,6 +268,7 @@ class RufloSubmitRequest:
             metadata=data.get("metadata", {}),
             contract_version=data.get("contract_version", RUFLO_ADAPTER_PROTOCOL_VERSION),
             submitted_at=data.get("submitted_at", datetime.now(timezone.utc).isoformat()),
+            selected_route=data.get("selected_route"),
         )
 
 
@@ -533,11 +537,14 @@ class RufloAdapter:
         return self._capability_manifest
 
     def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Send one request through the configured transport.
+        """Send one request through the configured transport (execute-only).
 
         Accepts either a :class:`RufloTransport` (method-per-operation) or a bare
         callable taking a ``{"method": ..., "params": ...}`` envelope, so both the
         real transports and the test doubles share one call path.
+
+        BOD-127: this method must not select, rank, or substitute routes. It is
+        a pure transport seam — route authority remains BOD-104 / BOD-67.
         """
         transport = self._transport
         if transport is None:
@@ -556,15 +563,57 @@ class RufloAdapter:
 
     def submit(
         self,
-        task_spec: TaskSpec,
+        task_spec: TaskSpec | RufloSubmitRequest,
         workflow_plan: WorkflowPlan | None = None,
         capability_manifest: CapabilityManifest | None = None,
         budget_usd: float | None = None,
         priority: int = 0,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
+        selected_route: dict[str, Any] | None = None,
+        require_selected_route: bool = False,
     ) -> RufloSubmitResponse:
-        """Submit a task/workflow to Ruflo for execution."""
+        """Submit a task/workflow to Ruflo for execution.
+
+        BOD-127: when ``require_selected_route`` is set (or a route is supplied),
+        Ruflo consumes BOD-104 ``selected_route`` and must not invent a model.
+        Accepts either a :class:`TaskSpec` or a pre-built :class:`RufloSubmitRequest`.
+        """
+
+        if isinstance(task_spec, RufloSubmitRequest):
+            request = task_spec
+            route = selected_route if selected_route is not None else request.selected_route
+            if require_selected_route or route is not None:
+                from verdict.serve_path import consume_selected_route
+
+                bound = consume_selected_route(route, surface="ruflo.submit")
+                request = RufloSubmitRequest(
+                    task_spec=request.task_spec,
+                    workflow_plan=request.workflow_plan,
+                    capability_manifest=request.capability_manifest,
+                    budget_usd=request.budget_usd,
+                    priority=request.priority,
+                    idempotency_key=request.idempotency_key,
+                    metadata=request.metadata,
+                    contract_version=request.contract_version,
+                    submitted_at=request.submitted_at,
+                    selected_route=bound,
+                )
+            if self.config.fake_mode or self._transport is None:
+                return self._fake_submit(request)
+            try:
+                response_data = self._dispatch("submit", request.to_dict())
+                return RufloSubmitResponse.from_dict(response_data)
+            except Exception as e:
+                raise RufloUnavailableError(f"Submit failed: {e}") from e
+
+        bound_route: dict[str, Any] | None
+        if require_selected_route or selected_route is not None:
+            from verdict.serve_path import consume_selected_route
+
+            bound_route = consume_selected_route(selected_route, surface="ruflo.submit")
+        else:
+            bound_route = None
 
         # Build request
         request = RufloSubmitRequest(
@@ -575,6 +624,7 @@ class RufloAdapter:
             priority=priority,
             idempotency_key=idempotency_key or str(uuid.uuid4()),
             metadata=metadata or {},
+            selected_route=bound_route,
         )
 
         # Validate capability manifest
@@ -596,6 +646,33 @@ class RufloAdapter:
             return RufloSubmitResponse.from_dict(response_data)
         except Exception as e:
             raise RufloUnavailableError(f"Submit failed: {e}") from e
+
+    def assert_dispatch_execute_only(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Invariant helper: ``_dispatch`` is transport-only (no route selection).
+
+        Returns the transport response unchanged. Callers use this in tests to
+        prove Ruflo cannot re-rank or substitute routes (BOD-127).
+        """
+        forbidden = {
+            "select_route",
+            "choose_route",
+            "select_best",
+            "rank",
+            "optimize_execution_path",
+            "selected_model",
+            "fallback_model",
+        }
+        lowered = {str(k).lower() for k in params}
+        overlap = lowered & forbidden
+        if overlap:
+            raise RufloProtocolError(
+                f"_dispatch must not carry selection authority keys: {sorted(overlap)}"
+            )
+        if method not in {"submit", "status", "control", "result"}:
+            raise RufloProtocolError(f"_dispatch execute-only; unsupported method {method!r}")
+        # Pass through without mutating selected_route / model fields.
+        outbound = dict(params)
+        return self._dispatch(method, outbound)
 
     def status(
         self,

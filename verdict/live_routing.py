@@ -280,7 +280,28 @@ def _sort_key(candidate: Candidate) -> tuple[int, str]:
     return (COST_RANK[identity.cost_class], identity.identity_id)
 
 
-def select_route(candidates: Sequence[Candidate]) -> RouteSelection:
+def select_route(
+    candidates: Sequence[Candidate], *, execution_path_decision: Any | None = None
+) -> RouteSelection:
+    """Select a live-routing candidate.
+
+    BOD-127: when ``execution_path_decision`` is present this is dispatch-only
+    and consumes ``selected_route`` — it must not invent an independent pick.
+    """
+    if execution_path_decision is not None:
+        from verdict.execution_path import legacy_selector_must_yield
+        from verdict.serve_path import selected_route_dispatch_identity
+
+        legacy_selector_must_yield(
+            execution_path_decision=execution_path_decision, legacy_selected_model_id=None
+        )
+        identity = selected_route_dispatch_identity(execution_path_decision)
+        ref = str(identity.get("model") or identity.get("route_id") or "")
+        chosen = Candidate(ref=ref, status="kept", reason=None, identity=None)
+        return RouteSelection(
+            chosen=chosen, paid_used=False, cheaper_available=False, ordered=(chosen,)
+        )
+
     kept = [item for item in candidates if item.status == "kept" and item.identity is not None]
     if not kept:
         raise LiveRoutingError("no_qualified_candidate", "no qualified candidate remains")

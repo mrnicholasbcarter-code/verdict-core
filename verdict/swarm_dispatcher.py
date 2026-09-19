@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -18,9 +19,9 @@ from typing import Any
 from verdict.contracts import AvailabilitySnapshot, RuntimeCandidate
 from verdict.dispatcher import DispatchPolicy, DispatchResult
 from verdict.dispatcher import SwarmDispatcher as BaseSwarmDispatcher
-from verdict.eligibility import EligibilityResult
-from verdict.models import ModelInfo
-from verdict.router import select_best_eligible_model
+from verdict.execution_path import ExecutionPathDecision, ExecutionPathError
+from verdict.serve_path import match_candidate_to_selected_route
+from verdict.session_economics import ConcreteRoute
 from verdict.swarm_contracts import SwarmTaskEnvelope
 
 
@@ -109,15 +110,12 @@ class IterationState:
 
 class SwarmDispatcher:
     """
-    Swarm-aware dispatcher with bounded fan-out, backpressure, and iteration loop.
+    Swarm-aware execution binder with bounded fan-out and backpressure.
 
-    Extends base dispatcher with:
-    - Envelope-based eligibility filtering
-    - Budget-aware candidate selection
-    - Capability matching (required vs optional)
-    - Stop condition enforcement
-    - Fan-out limiting and backpressure
-    - Lower-tier iteration loop with escalation
+    BOD-104 owns strategy/route selection. BOD-67 owns dispatch authorization.
+    This module only validates eligibility of an already-authorized
+    ``selected_route`` against an availability snapshot — it never invents
+    or re-ranks models (BOD-127).
     """
 
     def __init__(
@@ -178,19 +176,26 @@ class SwarmDispatcher:
         snapshot: AvailabilitySnapshot,
         now: datetime | None = None,
         task_id: str | None = None,
+        *,
+        selected_route: ConcreteRoute | Mapping[str, Any] | ExecutionPathDecision | None = None,
+        authorized_runtime_id: str | None = None,
     ) -> Any:
-        """
-        Dispatch with envelope-aware filtering, fan-out limiting, and iteration loop.
+        """Bind ``selected_route`` after envelope/fan-out gates; never invent."""
 
-        Args:
-            snapshot: Availability snapshot with candidates
-            now: Optional timestamp for deterministic results
-            task_id: Optional task ID for iteration tracking
-
-        Returns:
-            DispatchResult with selected candidate or None
-        """
         envelope = getattr(self.policy, "envelope", None)
+
+        if selected_route is None and (
+            not authorized_runtime_id or not str(authorized_runtime_id).strip()
+        ):
+            return DispatchResult(
+                selected=None,
+                explanations=(),
+                eligible=(),
+                dry_run=True,
+                reason="missing_authorized_selected_route",
+                estimated_cost=0.0,
+                escalation_depth=0,
+            )
 
         # Check fan-out availability
         if not self.fan_out.try_acquire() and self.fan_out.is_backpressured():
@@ -203,19 +208,20 @@ class SwarmDispatcher:
                 estimated_cost=0.0,
                 escalation_depth=0,
             )
-            # Could await enqueue here for async version
 
         try:
-            # Use base dispatcher for initial selection
-            result = self._base_dispatcher.dispatch(snapshot, now=now)
+            result = self._base_dispatcher.dispatch(
+                snapshot,
+                now=now,
+                selected_route=selected_route,
+                authorized_runtime_id=authorized_runtime_id,
+            )
 
             if envelope is None:
-                return result  # No envelope, use base behavior
+                return result
 
-            # Filter eligible candidates by envelope rules
             eligible = list(result.eligible) if result.eligible else []
             filtered = self._filter_by_envelope(eligible, envelope)
-
             if not filtered:
                 return DispatchResult(
                     selected=None,
@@ -227,32 +233,18 @@ class SwarmDispatcher:
                     escalation_depth=0,
                 )
 
-            # Re-select from filtered candidates (least cost)
-            model_infos = []
-            for c in filtered:
-                cost = self._get_candidate_cost(c)
-                model_info = ModelInfo(
-                    id=c.runtime_id,
-                    provider=c.provider or "unknown",
-                    capability_tier=1,
-                    capabilities=frozenset(c.capabilities or []),
+            # Re-bind authorized route within envelope filter — never re-rank.
+            if selected_route is not None:
+                selected = match_candidate_to_selected_route(filtered, selected_route)
+            else:
+                selected = next(
+                    (c for c in filtered if c.runtime_id == authorized_runtime_id), None
                 )
-                model_infos.append(model_info)
-
-            best_model, _ = select_best_eligible_model(
-                EligibilityResult(admitted=model_infos), tier=0, configs={}
-            )
-
-            # Find the matching RuntimeCandidate
-            selected = None
-            if best_model:
-                for c in filtered:
-                    if c.runtime_id == best_model.id:
-                        selected = c
-                        break
-
-            if selected is None:
-                selected = min(filtered, key=lambda c: self._get_candidate_cost(c) or float("inf"))
+                if selected is None:
+                    raise ExecutionPathError(
+                        f"no candidate matches authorized_runtime_id={authorized_runtime_id!r} "
+                        "after envelope filtering; swarm must not invent an alternate"
+                    )
 
             cost = self._get_candidate_cost(selected) or 0.0
             return DispatchResult(
@@ -260,7 +252,7 @@ class SwarmDispatcher:
                 explanations=result.explanations,
                 eligible=tuple(filtered),
                 dry_run=True,
-                reason="selected",
+                reason="selected_route",
                 estimated_cost=cost,
                 escalation_depth=0,
             )
@@ -273,15 +265,13 @@ class SwarmDispatcher:
         snapshot: AvailabilitySnapshot,
         now: datetime | None = None,
         task_id: str | None = None,
+        *,
+        selected_route: ConcreteRoute | Mapping[str, Any] | ExecutionPathDecision | None = None,
+        authorized_runtime_id: str | None = None,
     ) -> Any:
-        """
-        Async dispatch with fan-out queue and backpressure handling.
+        """Async dispatch with fan-out queue; still requires selected_route."""
 
-        Waits for fan-out slot if under backpressure.
-        """
-        # Try to acquire fan-out slot
         if not self.fan_out.try_acquire():
-            # Wait for slot with timeout
             try:
                 future = self.fan_out.enqueue()
                 await asyncio.wait_for(future, timeout=self.fan_out.backpressure_timeout)
@@ -297,7 +287,13 @@ class SwarmDispatcher:
                 )
 
         try:
-            return self.dispatch(snapshot, now, task_id)
+            return self.dispatch(
+                snapshot,
+                now,
+                task_id,
+                selected_route=selected_route,
+                authorized_runtime_id=authorized_runtime_id,
+            )
         finally:
             self.fan_out.release()
 
@@ -307,24 +303,21 @@ class SwarmDispatcher:
         task_id: str,
         now: datetime | None = None,
         max_escalation_depth: int | None = None,
+        *,
+        selected_route: ConcreteRoute | Mapping[str, Any] | ExecutionPathDecision | None = None,
+        authorized_runtime_id: str | None = None,
     ) -> Any:
-        """
-        Lower-tier iteration loop with escalation.
+        """Retry the same authorized route under escalation depth bounds.
 
-        Implements the iteration loop:
-        1. Try current tier candidates
-        2. On failure/budget exceed, escalate to next tier
-        3. Track attempts and enforce max attempts
-        4. Return final result after max escalation
+        Escalation may deepen attempts/timeouts but must not invent a different
+        model/provider — that remains BOD-104 + BOD-55 authority.
         """
 
-        envelope = getattr(self.policy, "envelope", None)
         policy = self.policy.base_policy
 
         if max_escalation_depth is None:
             max_escalation_depth = policy.max_escalation_depth
 
-        # Get or create iteration state
         state = self._iteration_state.get(task_id)
         if state is None:
             state = IterationState()
@@ -333,7 +326,6 @@ class SwarmDispatcher:
         state.attempt += 1
         start = time.time()
 
-        # Check if we've exceeded max attempts
         if state.attempt > state.max_attempts:
             return DispatchResult(
                 selected=None,
@@ -345,7 +337,6 @@ class SwarmDispatcher:
                 escalation_depth=state.escalation_depth,
             )
 
-        # Check escalation depth
         if state.escalation_depth >= max_escalation_depth:
             return DispatchResult(
                 selected=None,
@@ -357,24 +348,28 @@ class SwarmDispatcher:
                 escalation_depth=state.escalation_depth,
             )
 
-        # Create modified snapshot for current tier
-        # (simplified: just dispatch with current policy)
-        result = self.dispatch(snapshot, now, task_id)
+        result = self.dispatch(
+            snapshot,
+            now,
+            task_id,
+            selected_route=selected_route,
+            authorized_runtime_id=authorized_runtime_id,
+        )
 
         state.last_result = result
         state.last_elapsed = time.time() - start
 
-        # Check if we should escalate
-        should_escalate = (
-            result.selected is None
-            or (envelope and envelope.budget and result.estimated_cost > envelope.budget.max_usd)
-            or state.last_elapsed > policy.timeout_seconds
-        )
-
-        if should_escalate and state.escalation_depth < max_escalation_depth:
-            # Escalate to next tier
+        # Depth tracking only — never swap to a different unauthorized route.
+        if result.selected is None and state.escalation_depth < max_escalation_depth:
             state.escalation_depth += 1
-            return self.iterate_lower_tier(snapshot, task_id, now, max_escalation_depth)
+            return self.iterate_lower_tier(
+                snapshot,
+                task_id,
+                now,
+                max_escalation_depth,
+                selected_route=selected_route,
+                authorized_runtime_id=authorized_runtime_id,
+            )
 
         return result
 
@@ -536,30 +531,24 @@ def create_swarm_dispatcher(
 
 
 def dispatch_swarm_task(
-    envelope: Any, snapshot: AvailabilitySnapshot, now: datetime | None = None
+    envelope: Any,
+    snapshot: AvailabilitySnapshot,
+    now: datetime | None = None,
+    *,
+    selected_route: ConcreteRoute | Mapping[str, Any] | ExecutionPathDecision | None = None,
+    authorized_runtime_id: str | None = None,
 ) -> Any:
-    """
-    High-level function to dispatch a swarm task.
-
-    Args:
-        envelope: Swarm task envelope with constraints
-        snapshot: Availability snapshot with candidates
-        now: Optional timestamp for deterministic results
-
-    Returns:
-        DispatchResult with selected candidate or None
-    """
+    """Dispatch a swarm task using an already-authorized selected_route."""
     from verdict.swarm_contracts import SwarmTaskEnvelope
 
     if not isinstance(envelope, SwarmTaskEnvelope):
         raise TypeError("envelope must be a SwarmTaskEnvelope")
 
-    # Build dispatch policy from envelope
     policy = SwarmDispatchPolicy(envelope=envelope)
-
-    # Create dispatcher and dispatch
     dispatcher = SwarmDispatcher(policy=policy)
-    return dispatcher.dispatch(snapshot, now)
+    return dispatcher.dispatch(
+        snapshot, now, selected_route=selected_route, authorized_runtime_id=authorized_runtime_id
+    )
 
 
 def create_swarm_dispatch_policy(envelope: Any) -> SwarmDispatchPolicy:
@@ -577,11 +566,14 @@ def dispatch_governed_swarm(
     role: Any | None = None,
     slice_limit: Any | None = None,
     now: datetime | None = None,
+    selected_route: ConcreteRoute | Mapping[str, Any] | ExecutionPathDecision | None = None,
+    authorized_runtime_id: str | None = None,
 ) -> Any:
     """
     Validate a SwarmSpec before any dispatcher or adapter interaction.
 
     Invalid specs fail closed and never reach dispatch/submit call sites.
+    Dispatch still requires an authorized selected_route (BOD-127).
     """
     from verdict.swarm_governance import SwarmSpec
 
@@ -594,7 +586,9 @@ def dispatch_governed_swarm(
         envelope, swarm=validated, role=role, slice_limit=slice_limit
     )
     active_dispatcher = dispatcher if dispatcher is not None else SwarmDispatcher(policy=policy)
-    result = active_dispatcher.dispatch(snapshot, now)
+    result = active_dispatcher.dispatch(
+        snapshot, now, selected_route=selected_route, authorized_runtime_id=authorized_runtime_id
+    )
     if adapter is not None:
         adapter.submit(validated)
     return result

@@ -106,6 +106,7 @@ class IntelligenceService:
         metadata_snapshot: MetadataSnapshot | None = None,
         metadata_store_path: Path | str | None = None,
         identity_map: IdentityMap | None = None,
+        require_execution_path_authority: bool | None = None,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -139,6 +140,9 @@ class IntelligenceService:
         self.metadata_snapshot = metadata_snapshot
         self.metadata_store_path = metadata_store_path
         self.identity_map = identity_map
+        # BOD-127: production/default serve fails closed without BOD-104.
+        # None = derive from profile / VERDICT_REQUIRE_EXECUTION_PATH / context.
+        self.require_execution_path_authority = require_execution_path_authority
         # Cheap path does not require Ruflo/RuVector. Those remain optional
         # swarm/workflow adapters and must not mark routing degraded.
         self.managed_backend_status = "offline" if allow_offline else "not_used"
@@ -223,44 +227,42 @@ class IntelligenceService:
         else:
             task_str = task
 
-        # BOD-104: when an ExecutionPathDecision is supplied, it is the sole
-        # strategy authority — legacy free-tier/chooser paths dispatch only.
-        # Only trusted in-process ExecutionPathDecision objects are accepted;
-        # client-supplied dicts cannot bypass eligibility/cert/trust gates.
-        if isinstance(context, dict) and context.get("execution_path_decision") is not None:
-            from verdict.execution_path import (
-                ExecutionPathDecision,
-                ExecutionPathError,
-                legacy_selector_must_yield,
-            )
+        # BOD-104 / BOD-127: ExecutionPathDecision is sole strategy authority on
+        # the serve path. Legacy free-tier/chooser/ranker paths are feeds or
+        # explicit migration escapes only — never silent inventors.
+        from verdict.execution_path import ExecutionPathError
+        from verdict.serve_path import (
+            LEGACY_NON_AUTHORITY_FLAG,
+            SERVE_PATH_AUTHORITY_FLAG,
+            require_serve_path_decision,
+            resolve_execution_path_decision,
+            selected_route_dispatch_identity,
+            serve_path_authority_required,
+        )
 
-            ep = context["execution_path_decision"]
-            if not isinstance(ep, ExecutionPathDecision):
-                raise ExecutionPathError(
-                    "context['execution_path_decision'] must be an ExecutionPathDecision "
-                    "instance (client-supplied dicts are rejected)"
-                )
+        ep = resolve_execution_path_decision(context if isinstance(context, dict) else None)
+        require_authority = serve_path_authority_required(
+            profile=self.profile,
+            context=context if isinstance(context, dict) else None,
+            require_execution_path_authority=self.require_execution_path_authority,
+        )
+        if ep is not None:
+            require_serve_path_decision(ep, surface="intelligence.route")
+            identity = selected_route_dispatch_identity(ep)
             payload = ep.to_dict()
-            legacy_selector_must_yield(execution_path_decision=ep, legacy_selected_model_id=None)
-            route_info = payload.get("selected_route") or {}
-            model = str(route_info.get("model") or payload.get("selected_candidate_id") or "")
-            provider = str(route_info.get("provider") or "unknown")
-            gateway = str(route_info.get("gateway") or "")
-            if not model:
-                raise ExecutionPathError("BOD-104 decision has no concrete model to dispatch")
             elapsed = (time.time() - start_t) * 1000
             safety = [
-                "bod104_execution_path_authority",
+                SERVE_PATH_AUTHORITY_FLAG,
                 f"bod104_strategy:{payload.get('selected_strategy')}",
             ]
-            if gateway:
-                safety.append(f"bod104_gateway:{gateway}")
-            if route_info.get("route_id"):
-                safety.append(f"bod104_route_id:{route_info.get('route_id')}")
+            if identity.get("gateway"):
+                safety.append(f"bod104_gateway:{identity['gateway']}")
+            if identity.get("route_id"):
+                safety.append(f"bod104_route_id:{identity['route_id']}")
             dec = RoutingDecision(
-                model=model,
-                provider=provider,
-                tier=int(route_info.get("capability_tier") or 2),
+                model=str(identity["model"]),
+                provider=str(identity.get("provider") or "unknown"),
+                tier=int(identity.get("capability_tier") or 2),
                 reason=(f"bod104:{payload.get('selected_strategy')}:{payload.get('why_selected')}"),
                 latency_ms=elapsed,
                 logged=bool(self.log_path),
@@ -271,6 +273,14 @@ class IntelligenceService:
             if self.log_path:
                 log_decision(self.log_path, task_str, 2, dec, self.log_full_task)
             return dec
+        if require_authority:
+            raise ExecutionPathError(
+                "missing ExecutionPathDecision; strategy must come from "
+                "execution_path.optimize_execution_path"
+            )
+
+        # Legacy feed path (explicit migration / non-production only).
+        legacy_safety = [LEGACY_NON_AUTHORITY_FLAG]
 
         # Fallback to strict heuristic scan
         eff_tier, heuristic_reason = scan(task_str)
@@ -307,12 +317,17 @@ class IntelligenceService:
             )
             if offload is not None:
                 elapsed = (time.time() - start_t) * 1000
+                flags = list(offload.safety_flags or [])
+                for flag in legacy_safety:
+                    if flag not in flags:
+                        flags.append(flag)
                 dec = RoutingDecision(
                     **{
                         **offload.__dict__,
                         "latency_ms": elapsed,
                         "logged": bool(self.log_path),
                         "request_id": request_id or offload.request_id,
+                        "safety_flags": flags,
                     }
                 )
                 if self.log_path:
@@ -352,6 +367,9 @@ class IntelligenceService:
                 eligibility_record["protected_fail_closed"] = True
 
         if final_tier == 0 or not best_model:
+            flags = list(legacy_safety)
+            if eligibility_record.get("protected_fail_closed"):
+                flags.append("eligibility_exclusions_applied")
             dec = RoutingDecision(
                 model=self.primary_model,
                 provider="primary",
@@ -369,13 +387,12 @@ class IntelligenceService:
                 transport_outcome="not_sent",
                 quality_outcome="unknown",
                 candidate_states=eligibility_record.get("records", []),
-                safety_flags=(
-                    ["eligibility_exclusions_applied"]
-                    if eligibility_record.get("protected_fail_closed")
-                    else []
-                ),
+                safety_flags=flags,
             )
         else:
+            flags = list(legacy_safety)
+            if eligibility_record.get("protected_fail_closed"):
+                flags.append("eligibility_exclusions_applied")
             dec = RoutingDecision(
                 model=best_model.id,
                 provider=best_model.provider,
@@ -391,11 +408,7 @@ class IntelligenceService:
                 transport_outcome="not_sent",
                 quality_outcome="unknown",
                 candidate_states=eligibility_record.get("records", []),
-                safety_flags=(
-                    ["eligibility_exclusions_applied"]
-                    if eligibility_record.get("protected_fail_closed")
-                    else []
-                ),
+                safety_flags=flags,
             )
 
         elapsed = (time.time() - start_t) * 1000

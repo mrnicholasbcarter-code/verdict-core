@@ -33,7 +33,7 @@ def test_cmd_route_terse_uses_configured_primary(
         "    base_url: http://localhost:1234/v1\n"
     )
 
-    cli.cmd_route("deploy prod", "critical", terse=True)
+    cli.cmd_route("deploy prod", "critical", terse=True, allow_legacy_selector=True)
 
     assert capsys.readouterr().out.strip() == "test-primary"
 
@@ -334,7 +334,7 @@ def test_autodev_packet_create_refuses_existing_path(
 
 
 def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:
-    cli.cmd_route("format docs", "low", terse=False)
+    cli.cmd_route("format docs", "low", terse=False, allow_legacy_selector=True)
 
     out = capsys.readouterr().out
     assert "Routing Decision" in out
