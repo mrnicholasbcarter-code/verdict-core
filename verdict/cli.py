@@ -3212,6 +3212,27 @@ def main() -> None:
 
     subparsers.add_parser("cost-report", help="Estimate token cost from routing decision history")
 
+    resume_p = subparsers.add_parser(
+        "resume", help="Reconstruct durable story resume state (worktree + handoff + prompt)"
+    )
+    resume_p.add_argument("story", help="Linear story id (e.g. BOD-65)")
+    resume_p.add_argument(
+        "--with",
+        dest="with_harness",
+        choices=["claude", "codex", "cursor", "prime"],
+        default=None,
+        help="Optional harness launcher stub (records intent; does not exec yet)",
+    )
+    resume_p.add_argument(
+        "--repo", default=".", help="Repository path used for worktree discovery (default: cwd)"
+    )
+    resume_p.add_argument(
+        "--create",
+        action="store_true",
+        help="Create a story worktree when none exists (reattach-before-create still applies)",
+    )
+    resume_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -3433,8 +3454,65 @@ def main() -> None:
         cmd_metadata(args)
     elif args.command == "cost-report":
         cmd_cost_report()
+    elif args.command == "resume":
+        cmd_resume(
+            args.story,
+            with_harness=getattr(args, "with_harness", None),
+            output_json=args.json,
+            repo=Path(args.repo),
+            create_if_missing=bool(getattr(args, "create", False)),
+        )
     else:
         parser.print_help()
+
+
+def cmd_resume(
+    story: str,
+    *,
+    with_harness: str | None = None,
+    output_json: bool = False,
+    repo: Path | str | None = None,
+    create_if_missing: bool = False,
+) -> dict[str, Any]:
+    """Reconstruct durable resume state for a Linear story (BOD-65/66 foundations).
+
+    Canonical sources: Git worktree/branch/SHA, ``.verdict/handoff.md``, optional
+    ``gh`` PR discovery. Does not read proprietary chat history. ``--with`` records
+    a launcher stub only.
+    """
+    from verdict.resume import resume_story
+    from verdict.worktree_registry import WorktreeRegistryError
+
+    target = Path(repo) if repo is not None else Path.cwd()
+    try:
+        payload = resume_story(
+            target, story, with_harness=with_harness, create_if_missing=create_if_missing
+        )
+    except WorktreeRegistryError as exc:
+        if output_json:
+            print(json.dumps({"error": str(exc), "story": story}, sort_keys=True))
+        else:
+            console.print(f"[bold red]resume failed:[/bold red] {exc}")
+        raise SystemExit(1) from exc
+
+    if output_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return payload
+
+    console.print(f"[bold green]Resume[/bold green] {payload['story_id']}")
+    console.print(f"  worktree: {payload['worktree']}")
+    console.print(f"  branch:   {payload.get('branch')}")
+    console.print(f"  HEAD:     {payload.get('head_sha')}")
+    console.print(f"  dirty:    {payload.get('dirty')}")
+    console.print(f"  reattach: {payload.get('reattach')}")
+    console.print(f"  previous: {payload.get('previous_worker')}")
+    if payload.get("pr_url"):
+        console.print(f"  pr:       {payload['pr_url']} ({payload.get('pr_state')})")
+    if with_harness:
+        console.print(f"  launcher: {with_harness} [yellow](stub — not executed)[/yellow]")
+    console.print("")
+    console.print(payload["resume_prompt"])
+    return payload
 
 
 def cmd_harness_codex(
