@@ -5,7 +5,7 @@ Worker/harness: Cursor (Wave-1 Worker C)
 Worktree: /home/nick/worktrees/bod-65-66-harness
 Branch: feat/bod-65-66-harness-mechanics
 Base SHA: 44fcdc739f2aa088a635e8da2fa3b526b9e06822
-Current SHA: ab277159ac43fc1c15c79a12220a6904ae07bc98
+Current SHA: ac7048ad2dda1ee7736f1ac2248d05411f9b4b11
 Previous worker: none
 Objective: Durable worktree/resume foundation — Git+worktree+branch+Linear+proof+.verdict/handoff.md = resumable state; one-story-one-worktree; reattach-before-create.
 
