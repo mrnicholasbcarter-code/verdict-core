@@ -20,6 +20,9 @@ from verdict.benchmarking import format_benchmark_report, run_reproducible_bench
 from verdict.gate import Gate
 from verdict.harness_codex import DEFAULT_BASE_URL as CODEX_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_codex import DEFAULT_TOKEN_ENV as CODEX_HARNESS_DEFAULT_TOKEN_ENV
+from verdict.harness_hermes import DEFAULT_BASE_URL as HERMES_HARNESS_DEFAULT_BASE_URL
+from verdict.harness_hermes import DEFAULT_MODEL as HERMES_HARNESS_DEFAULT_MODEL
+from verdict.harness_hermes import DEFAULT_TOKEN_ENV as HERMES_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.models import ModelInfo, ProviderConfig, TaskSpec
 from verdict.patch_executor import DEFAULT_BASE_URL
 
@@ -3189,6 +3192,41 @@ def main() -> None:
     harness_codex_sub.add_parser(
         "status", help="Show active Codex provider, base URL, and whether the token env is set"
     )
+    harness_hermes_p = harness_sub.add_parser(
+        "hermes", help="Enable, disable, or inspect Hermes as a Verdict OpenAI-compatible client"
+    )
+    harness_hermes_sub = harness_hermes_p.add_subparsers(
+        dest="harness_hermes_command", required=True
+    )
+    hermes_enable_p = harness_hermes_sub.add_parser(
+        "enable", help="Backup ~/.hermes/config.yaml and point model.provider at Verdict"
+    )
+    hermes_enable_p.add_argument(
+        "--base-url",
+        default=HERMES_HARNESS_DEFAULT_BASE_URL,
+        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
+    )
+    hermes_enable_p.add_argument(
+        "--token-env",
+        default=HERMES_HARNESS_DEFAULT_TOKEN_ENV,
+        help="Env var Hermes should read for the bearer token (default: LLMGATE_AUTH_TOKEN)",
+    )
+    hermes_enable_p.add_argument(
+        "--model",
+        default=HERMES_HARNESS_DEFAULT_MODEL,
+        help="Default model id to set under model.default",
+    )
+    hermes_enable_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Write Hermes config even if the Verdict health check fails",
+    )
+    harness_hermes_sub.add_parser(
+        "disable", help="Restore the pre-enable ~/.hermes/config.yaml backup"
+    )
+    harness_hermes_sub.add_parser(
+        "status", help="Show active Hermes provider, base URL, and whether the token env is set"
+    )
 
     runtime_p = subparsers.add_parser(
         "runtime", help="Inspect and safely reconcile global Ruflo/RuVector ownership"
@@ -3663,6 +3701,14 @@ def main() -> None:
                 token_env=getattr(args, "token_env", CODEX_HARNESS_DEFAULT_TOKEN_ENV),
                 force=getattr(args, "force", False),
             )
+        elif args.harness_target == "hermes":
+            cmd_harness_hermes(
+                args.harness_hermes_command,
+                base_url=getattr(args, "base_url", HERMES_HARNESS_DEFAULT_BASE_URL),
+                token_env=getattr(args, "token_env", HERMES_HARNESS_DEFAULT_TOKEN_ENV),
+                model=getattr(args, "model", HERMES_HARNESS_DEFAULT_MODEL),
+                force=getattr(args, "force", False),
+            )
         else:
             raise SystemExit(f"unknown harness: {args.harness_target}")
     elif args.command == "runtime":
@@ -3822,6 +3868,44 @@ def cmd_harness_codex(
         console.print(f"[bold red]{exc}[/bold red]")
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness codex command: {command}")
+
+
+def cmd_harness_hermes(
+    command: str,
+    *,
+    base_url: str = HERMES_HARNESS_DEFAULT_BASE_URL,
+    token_env: str = HERMES_HARNESS_DEFAULT_TOKEN_ENV,
+    model: str = HERMES_HARNESS_DEFAULT_MODEL,
+    force: bool = False,
+) -> None:
+    """Enable, disable, or inspect Hermes as a Verdict OpenAI-compatible client."""
+    from verdict.harness_hermes import HarnessHermesError, disable, enable, format_status, status
+
+    try:
+        if command == "enable":
+            result = enable(base_url=base_url, token_env=token_env, model=model, force=force)
+            console.print("[bold green]Hermes harness enabled[/bold green]")
+            console.print("  provider: Verdict")
+            console.print(f"  base_url: {result.base_url}")
+            console.print(f"  model: {result.model}")
+            console.print(f"  token_env: {result.token_env}")
+            if result.created_backup:
+                console.print(f"  backup: {result.backup_path}")
+            else:
+                console.print(f"  config: {result.config_path}")
+            return
+        if command == "disable":
+            disable()
+            console.print("[bold green]Hermes harness disabled[/bold green]")
+            console.print("  restored pre-enable ~/.hermes/config.yaml backup")
+            return
+        if command == "status":
+            console.print(format_status(status()), end="")
+            return
+    except HarnessHermesError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise SystemExit(1) from exc
+    raise SystemExit(f"unknown harness hermes command: {command}")
 
 
 def cmd_prove_at_rest(
