@@ -323,6 +323,114 @@ def test_apply_without_consent_or_allowlist_is_blocked(tmp_path: Path) -> None:
     assert report["apply"]["mutated"] is False
 
 
+def test_noninteractive_apply_ignores_blanket_consent_without_allowlist(tmp_path: Path) -> None:
+    """CI/headless: --yes alone must not authorize third-party installs."""
+
+    installs: list[str] = []
+
+    report = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=(),
+        consent=True,
+        state_dir=tmp_path / "state",
+        scope=BootstrapScope.GATEWAYS,
+        install_runner=lambda action: installs.append(action.action_id) or {"status": "installed"},
+    ).to_dict()
+
+    consent_stage = next(stage for stage in report["stages"] if stage["stage"] == "consent")
+    assert consent_stage["status"] == "blocked"
+    assert "allowlist" in consent_stage["summary"].lower()
+    assert installs == []
+    assert report["apply"]["mutated"] is False
+
+
+def test_interactive_consent_authorizes_without_allowlist(tmp_path: Path) -> None:
+    """TTY final --yes authorizes the shown plan without requiring --allow."""
+
+    installs: list[str] = []
+
+    report = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=False,
+        allowlist=(),
+        consent=True,
+        state_dir=tmp_path / "state",
+        scope=BootstrapScope.GATEWAYS,
+        install_runner=lambda action: installs.append(action.action_id) or {"status": "installed"},
+    ).to_dict()
+
+    consent_stage = next(stage for stage in report["stages"] if stage["stage"] == "consent")
+    assert consent_stage["status"] == "ok"
+    assert consent_stage["details"]["policy"] == "interactive_consent"
+    assert installs
+    assert report["apply"]["mutated"] is True
+
+
+def test_noninteractive_allowlist_authorizes_subset_without_consent(tmp_path: Path) -> None:
+    """Explicit --allow is sufficient in non-interactive mode (no --yes required)."""
+
+    from verdict.capability_bootstrap import BootstrapAction, authorize_bootstrap_actions
+
+    installs: list[str] = []
+
+    report = run_bootstrap(
+        providers=_clean_machine(),
+        mode=BootstrapMode.APPLY,
+        non_interactive=True,
+        allowlist=("gateway.omniroute",),
+        consent=False,
+        state_dir=tmp_path / "state",
+        scope=BootstrapScope.GATEWAYS,
+        install_runner=lambda action: (
+            installs.append(action.provider_id or "") or {"status": "installed"}
+        ),
+    ).to_dict()
+
+    consent_stage = next(stage for stage in report["stages"] if stage["stage"] == "consent")
+    assert consent_stage["status"] == "ok"
+    assert consent_stage["details"]["policy"] == "allowlist"
+    assert installs == ["gateway.omniroute"]
+    assert report["apply"]["mutated"] is True
+
+    # Pure gate unit: allowlist matches provider_id; blanket consent ignored when headless.
+    actions = (
+        BootstrapAction(
+            action_id="install:gateway.omniroute",
+            kind="install_provider",
+            description="Install OmniRoute",
+            target="gateway.omniroute",
+            provider_id="gateway.omniroute",
+            requires_consent=True,
+            reversible=True,
+            reason="test",
+            security_impact="third-party",
+            postcondition="installed",
+            undo="uninstall",
+        ),
+        BootstrapAction(
+            action_id="install:adapter.serena_lsp",
+            kind="install_provider",
+            description="Install Serena",
+            target="adapter.serena_lsp",
+            provider_id="adapter.serena_lsp",
+            requires_consent=True,
+            reversible=True,
+            reason="test",
+            security_impact="third-party",
+            postcondition="installed",
+            undo="uninstall",
+        ),
+    )
+    decision = authorize_bootstrap_actions(
+        actions, consent=True, allowlist=("gateway.omniroute",), non_interactive=True
+    )
+    assert [a.provider_id for a in decision.authorized] == ["gateway.omniroute"]
+    assert decision.blocked == ("install:adapter.serena_lsp",)
+
+
 def test_decline_safe_native_only_works(tmp_path: Path) -> None:
     report = run_bootstrap(
         providers=_clean_machine(),
@@ -763,20 +871,14 @@ def test_successful_apply_refreshes_provider_before_certify(tmp_path: Path) -> N
             ],
         }
 
+    # Non-interactive APPLY authorizes only allowlisted provider ids — include the
+    # gateway that the unified plan will propose for this fixture.
     report = run_bootstrap(
-        providers=(
-            *_clean_machine(),
-            _provider(
-                "gateway.omniroute",
-                ProviderKind.GATEWAY,
-                frozenset({"gateway.inventory", "gateway.execute"}),
-                lifecycle=ProviderLifecycle.NOT_INSTALLED,
-            ),
-        ),
+        providers=_clean_machine(),
         mode=BootstrapMode.APPLY,
         non_interactive=True,
-        allowlist=("gateway.omniroute",),
-        consent=True,
+        allowlist=("gateway.omniroute", "gateway.litellm", "gateway.9router"),
+        consent=False,
         state_dir=state_dir,
         scope=BootstrapScope.GATEWAYS,
         install_runner=_install,

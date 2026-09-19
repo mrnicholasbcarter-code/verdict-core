@@ -2856,24 +2856,35 @@ def main() -> None:
     )
     setup_cli_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     setup_cli_p.add_argument(
-        "--non-interactive", action="store_true", help="Do not prompt or mutate state"
+        "--non-interactive",
+        action="store_true",
+        help="Headless/CI mode: no prompts; APPLY only via --allow ( --yes is not enough)",
     )
     setup_cli_p.add_argument(
         "--apply",
         action="store_true",
-        help="Apply authorized bootstrap actions (requires --yes or --allow)",
+        help=(
+            "Apply authorized bootstrap actions "
+            "(interactive: --yes; non-interactive: --allow provider ids)"
+        ),
     )
     setup_cli_p.add_argument(
         "--yes",
         action="store_true",
-        help="Final consent for APPLY (no silent third-party installs without this or --allow)",
+        help=(
+            "Interactive final consent for the shown APPLY plan; "
+            "ignored as blanket auth under --non-interactive (use --allow)"
+        ),
     )
     setup_cli_p.add_argument(
         "--allow",
         dest="allowlist",
         action="append",
         default=[],
-        help="Non-interactive allowlist provider id (repeatable), e.g. gateway.omniroute",
+        help=(
+            "Explicit allowlist provider id (repeatable), e.g. gateway.omniroute; "
+            "required for non-interactive APPLY"
+        ),
     )
     setup_cli_p.add_argument(
         "--rollback",

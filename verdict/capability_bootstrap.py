@@ -3,7 +3,14 @@
 Staged flow: discover → normalize → recommend → preflight → consent → apply → certify.
 
 Setup/DX only — not Core routing, cost ledger, or BOD-104. Third-party software is
-never silently installed: consent or an explicit non-interactive allowlist is required.
+never silently installed. APPLY authorization is unified in
+``authorize_bootstrap_actions``:
+
+* interactive: final ``consent=True`` authorizes the shown plan, or an allowlist
+  may authorize a subset without blanket consent;
+* non-interactive / CI: only an explicit provider (or action) allowlist authorizes
+  mutations — ``consent=True`` alone is insufficient.
+
 When APPLY is authorized, a bounded default ``InstallRunner`` may execute the
 documented OmniRoute install (``npm install -g omniroute``) only — other providers
 still require an explicit runner and otherwise fail closed.
@@ -268,7 +275,11 @@ class UnifiedBootstrapPlan:
             "network_access": "disabled",
             "credential_access": "disabled",
             "actions": [action.to_dict() for action in self.actions],
-            "next": "review this plan; APPLY requires consent or an allowlist",
+            "next": (
+                "review this plan; APPLY requires interactive consent (--yes) "
+                "or an explicit allowlist (--allow); non-interactive APPLY "
+                "requires --allow"
+            ),
         }
 
     @property
@@ -1200,6 +1211,79 @@ def _already_applied(ownership: Mapping[str, Any], action_id: str) -> bool:
     return False
 
 
+def _allowlist_matches(action: BootstrapAction, allow: frozenset[str]) -> bool:
+    """True when allowlist explicitly names this action's provider_id or action_id."""
+
+    if action.provider_id is not None and action.provider_id in allow:
+        return True
+    return action.action_id in allow
+
+
+@dataclass(frozen=True)
+class ConsentAuthorization:
+    """Result of the unified APPLY consent / allowlist gate."""
+
+    authorized: tuple[BootstrapAction, ...]
+    blocked: tuple[str, ...]
+    allowlist: tuple[str, ...]
+    non_interactive: bool
+    consent: bool
+
+    @property
+    def fully_blocked(self) -> bool:
+        return bool(self.blocked) and not self.authorized
+
+
+def authorize_bootstrap_actions(
+    actions: Sequence[BootstrapAction],
+    *,
+    consent: bool,
+    allowlist: Sequence[str],
+    non_interactive: bool,
+) -> ConsentAuthorization:
+    """Authorize pending APPLY actions with one shared consent/allowlist policy.
+
+    Interactive (``non_interactive=False``): ``consent=True`` authorizes every
+    remaining action (final yes for the shown plan). An allowlist may also
+    authorize a subset without blanket consent.
+
+    Non-interactive: only an explicit allowlist entry (``provider_id`` or
+    ``action_id``) authorizes a mutation. ``consent=True`` alone never opens
+    the gate — CI/headless flows must name providers via ``--allow``.
+    """
+
+    allow = frozenset(allowlist)
+    authorized: list[BootstrapAction] = []
+    blocked: list[str] = []
+    # Blanket interactive consent applies only when not headless/CI.
+    interactive_consent = bool(consent) and not non_interactive
+    for action in actions:
+        if _allowlist_matches(action, allow) or interactive_consent:
+            authorized.append(action)
+        else:
+            blocked.append(action.action_id)
+    return ConsentAuthorization(
+        authorized=tuple(authorized),
+        blocked=tuple(blocked),
+        allowlist=tuple(sorted(allow)),
+        non_interactive=non_interactive,
+        consent=consent,
+    )
+
+
+def _consent_blocked_hint(*, non_interactive: bool, consent: bool) -> str:
+    if non_interactive:
+        return (
+            "Non-interactive APPLY requires --allow provider ids "
+            "(e.g. gateway.omniroute); --yes alone is insufficient."
+        )
+    if consent:
+        return "Pass allowlist provider ids to authorize a subset without full-plan consent."
+    return (
+        "Pass consent=True (interactive --yes) or allowlist provider ids (e.g. gateway.omniroute)."
+    )
+
+
 def apply_bootstrap_actions(
     plan: UnifiedBootstrapPlan,
     *,
@@ -1246,25 +1330,33 @@ def apply_bootstrap_actions(
         )
         return consent_stage, apply_stage, {"mutated": False, "actions": [], "idempotent": True}
 
-    allow = frozenset(allowlist)
-    authorized: list[BootstrapAction] = []
-    blocked: list[str] = []
-    for action in remaining:
-        provider_ok = action.provider_id is not None and action.provider_id in allow
-        if consent or provider_ok:
-            authorized.append(action)
-        else:
-            blocked.append(action.action_id)
+    decision = authorize_bootstrap_actions(
+        remaining, consent=consent, allowlist=allowlist, non_interactive=non_interactive
+    )
+    authorized = list(decision.authorized)
+    blocked = list(decision.blocked)
 
-    if blocked and not authorized:
+    if decision.fully_blocked:
+        summary = (
+            "APPLY blocked: non-interactive allowlist required."
+            if non_interactive
+            else "APPLY blocked: consent or allowlist required."
+        )
+        if non_interactive and consent:
+            summary = (
+                "APPLY blocked: non-interactive mode ignores blanket consent; "
+                "pass an explicit allowlist."
+            )
         consent_stage = StageResult(
             stage=StageName.CONSENT.value,
             status="blocked",
-            summary="APPLY blocked: consent or non-interactive allowlist required.",
+            summary=summary,
             details={
                 "blocked_actions": blocked,
                 "non_interactive": non_interactive,
-                "hint": "Pass consent=True or allowlist provider ids (e.g. gateway.omniroute).",
+                "consent": consent,
+                "allowlist": list(decision.allowlist),
+                "hint": _consent_blocked_hint(non_interactive=non_interactive, consent=consent),
             },
         )
         apply_stage = StageResult(
@@ -1282,7 +1374,10 @@ def apply_bootstrap_actions(
         details={
             "authorized": [action.action_id for action in authorized],
             "blocked": blocked,
-            "allowlist": sorted(allow),
+            "allowlist": list(decision.allowlist),
+            "non_interactive": non_interactive,
+            "consent": consent,
+            "policy": ("interactive_consent" if consent and not non_interactive else "allowlist"),
         },
     )
 
@@ -1822,12 +1917,14 @@ __all__ = [
     "BootstrapScope",
     "CapabilityRecommendation",
     "Certifier",
+    "ConsentAuthorization",
     "DiscoveredProvider",
     "ProviderKind",
     "ProviderLifecycle",
     "StageResult",
     "UnifiedBootstrapPlan",
     "apply_bootstrap_actions",
+    "authorize_bootstrap_actions",
     "build_bootstrap_plan",
     "build_default_install_runner",
     "discover_providers",
