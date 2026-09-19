@@ -1158,6 +1158,15 @@ def test_ep_s12_stale_context_rehydrates_same_cheap_before_frontier() -> None:
 
 
 def test_ep_s13_model_deficit_no_endless_same_tier_retry() -> None:
+    from datetime import timedelta
+
+    from verdict.execution_path import apply_bounded_recovery
+    from verdict.runtime_certification import (
+        CertifiedComponent,
+        ComponentKind,
+        RuntimeCertificationReport,
+    )
+
     weak = ExecutionRoute(
         model_id="weak", provider="provider-a", gateway_id="gateway-a", capability_tier=1
     )
@@ -1166,13 +1175,46 @@ def test_ep_s13_model_deficit_no_endless_same_tier_retry() -> None:
     )
     ledger = CostLedger(trajectory_id="traj-104", cash_budget_usd=Decimal("1.00"))
     controller = BoundedRecoveryController(bounds=RecoveryBounds(max_attempts=2))
-    from verdict.execution_path import apply_bounded_recovery
+    cert = RuntimeCertificationReport(
+        certified_at=NOW,
+        expires_at=NOW + timedelta(hours=1),
+        ttl_seconds=3600,
+        components=(
+            CertifiedComponent(
+                component_id="gateway-b",
+                kind=ComponentKind.GATEWAY,
+                identity="gateway-b",
+                state=CertificationState.READY,
+                source="fixture",
+                confidence=1.0,
+                freshness="fresh",
+                observed_at=NOW,
+                expires_at=NOW + timedelta(hours=1),
+            ),
+            CertifiedComponent(
+                component_id="provider-b",
+                kind=ComponentKind.PROVIDER,
+                identity="provider-b",
+                state=CertificationState.READY,
+                source="fixture",
+                confidence=1.0,
+                freshness="fresh",
+                observed_at=NOW,
+                expires_at=NOW + timedelta(hours=1),
+            ),
+        ),
+        memory_authority=None,
+        conflicts=(),
+        probes_used=0,
+        premium_probes_used=0,
+    )
 
     decision = apply_bounded_recovery(
         controller=controller,
         evidence=FailureEvidence(signals=frozenset({"capability_deficit"})),
         route=weak,
         ledger=ledger,
+        certification=cert,
         stronger_routes=(strong,),
         prequalified_stronger_ids=frozenset({"strong"}),
         now=NOW,
@@ -2122,3 +2164,107 @@ def test_ep_mandatory_budget_omission_rejected_even_if_fits() -> None:
     )
     assert decision.selected_strategy == "blocked"
     assert any("budget_omitted_mandatory" in r.reason for r in decision.rejected)
+
+
+def test_ep_request_level_conflicts_fail_closed_even_with_qualified_offer() -> None:
+    """EP-P0-001: request conflicts must block even if an offer is otherwise clean."""
+    cheap = _route("cheap-1")
+    plan = _plan(candidate_id="cheap-1")
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=(
+                _offer(
+                    strategy="direct_cheap",
+                    route=cheap,
+                    plan=plan,
+                    expected=_cost(
+                        "direct_cheap:cheap-1",
+                        assistance=plan.assistance_cost,
+                        execution_tokens=5_000,
+                        is_free=True,
+                    ),
+                    is_cheap=True,
+                ),
+            ),
+            evidence_conflicts=("trust_vs_cert_digest_mismatch",),
+            now=NOW,
+        )
+    )
+    assert decision.selected_strategy == "blocked"
+    assert decision.selected_candidate_id is None
+    assert any("evidence_conflict" in r.reason for r in decision.rejected)
+
+
+def test_ep_escalate_without_ready_cert_does_not_escalate() -> None:
+    """EP-P0-002: escalate requires READY cert (parity with equivalent switch)."""
+    from verdict.execution_path import apply_bounded_recovery
+
+    weak = ExecutionRoute(
+        model_id="weak", provider="provider-a", gateway_id="gateway-a", capability_tier=1
+    )
+    strong = ExecutionRoute(
+        model_id="strong", provider="provider-b", gateway_id="gateway-b", capability_tier=4
+    )
+    ledger = CostLedger(trajectory_id="traj-104", cash_budget_usd=Decimal("1.00"))
+    controller = BoundedRecoveryController(bounds=RecoveryBounds(max_attempts=2))
+    decision = apply_bounded_recovery(
+        controller=controller,
+        evidence=FailureEvidence(signals=frozenset({"capability_deficit"})),
+        route=weak,
+        ledger=ledger,
+        certification=None,
+        stronger_routes=(strong,),
+        prequalified_stronger_ids=frozenset({"strong"}),
+        now=NOW,
+    )
+    assert decision.action is not RecoveryAction.ESCALATE_CAPABILITY
+
+
+def test_ep_escalate_strategy_requires_escalation_cost_term() -> None:
+    """EP-P0-004: cheap_execute_then_bounded_escalate without escalation terms fails qualify."""
+    cheap = _route("cheap-1")
+    paid = _route("paid-1", model="paid", provider="provider-b", tier=3)
+    cheap_plan = _plan(candidate_id="cheap-1", intrinsic=False, assisted=True)
+    paid_plan = _plan(candidate_id="paid-1", digest="sha256:paid")
+    escalate_cost = _cost(
+        "cheap_execute_then_bounded_escalate:cheap-1",
+        assistance=cheap_plan.assistance_cost,
+        execution_tokens=5_000,
+        escalation_tokens=0,
+        is_free=True,
+    )
+    paid_cost = _cost(
+        "direct_paid:paid-1",
+        assistance=paid_plan.assistance_cost,
+        execution_tokens=40_000,
+    )
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=(
+                _offer(
+                    strategy="cheap_execute_then_bounded_escalate",
+                    route=cheap,
+                    plan=cheap_plan,
+                    expected=escalate_cost,
+                    is_cheap=True,
+                ),
+                _offer(
+                    strategy="direct_paid",
+                    route=paid,
+                    plan=paid_plan,
+                    expected=paid_cost,
+                    is_paid=True,
+                ),
+            ),
+            now=NOW,
+        )
+    )
+    assert decision.selected_candidate_id == "paid-1"
+    assert any(
+        "incomplete_expected_cost_missing" in r.reason and r.candidate_id == "cheap-1"
+        for r in decision.rejected
+    )
