@@ -1848,3 +1848,149 @@ def test_ep_session_stay_overridden_when_current_not_capable() -> None:
     )
     assert decision.selected_candidate_id == "capable"
     assert any("stay_blocked" in r.reason for r in decision.rejected)
+
+
+def test_ep_authoritative_session_stay_beats_cheaper_alternate() -> None:
+    """Authoritative STAY must not be bypassed by a slightly cheaper alternate."""
+    current = _route("current")
+    alternate = _route("alt", model="alt-model", provider="provider-b", tier=2)
+    cur_plan = _plan(candidate_id="current", digest="sha256:cur")
+    alt_plan = _plan(candidate_id="alt", digest="sha256:alt")
+    session = SessionRouteDecision(
+        decision="STAY",
+        selected_route_id="current",
+        selected_route=current,
+        reason="hysteresis_hold",
+        override_reasons=(),
+        terms=(),
+        assumptions=(),
+        freshness={},
+        stay_ev=Decimal("0.100"),
+        switch_ev=Decimal("0.099"),
+        mode=DecisionMode.AUTHORITATIVE,
+        authoritative=True,
+        would_decide="STAY",
+        alternatives=(),
+    )
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=(
+                _offer(
+                    strategy="direct_cheap",
+                    route=current,
+                    plan=cur_plan,
+                    expected=_cost(
+                        "direct_cheap:current",
+                        assistance=cur_plan.assistance_cost,
+                        execution_tokens=100_000,
+                    ),
+                    is_cheap=True,
+                ),
+                _offer(
+                    strategy="direct_cheap",
+                    route=alternate,
+                    plan=alt_plan,
+                    expected=_cost(
+                        "direct_cheap:alt",
+                        assistance=alt_plan.assistance_cost,
+                        execution_tokens=99_000,
+                    ),
+                    is_cheap=True,
+                ),
+            ),
+            session_decision=session,
+            now=NOW,
+        )
+    )
+    assert decision.selected_candidate_id == "current"
+    assert decision.selected_strategy == "stay_current_route"
+    assert any("deferred_to_authoritative_session" in r.reason for r in decision.rejected)
+
+
+def test_ep_unbound_trajectory_evidence_rejected() -> None:
+    cheap = _route("cheap-1")
+    plan = _plan(candidate_id="cheap-1")
+    foreign = build_strategy_from_assistance(
+        strategy_id="direct_cheap:cheap-1",
+        trajectory_id="other-traj",
+        assistance=plan.assistance_cost,
+        execution_tokens=10_000,
+        price=PRICE,
+        is_free=True,
+        qualified=True,
+        now=NOW,
+    )
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=(
+                _offer(
+                    strategy="direct_cheap", route=cheap, plan=plan, expected=foreign, is_cheap=True
+                ),
+            ),
+            now=NOW,
+        )
+    )
+    assert decision.selected_strategy == "blocked"
+    assert any("evidence_unbound_trajectory" in r.reason for r in decision.rejected)
+
+
+def test_ep_empty_prequal_blocks_escalation() -> None:
+    weak = ExecutionRoute(
+        model_id="weak", provider="provider-a", gateway_id="gateway-a", capability_tier=1
+    )
+    strong = ExecutionRoute(
+        model_id="strong", provider="provider-b", gateway_id="gateway-b", capability_tier=4
+    )
+    ledger = CostLedger(trajectory_id="traj-104", cash_budget_usd=Decimal("1.00"))
+    controller = BoundedRecoveryController(bounds=RecoveryBounds(max_attempts=2))
+    from verdict.execution_path import apply_bounded_recovery
+
+    decision = apply_bounded_recovery(
+        controller=controller,
+        evidence=FailureEvidence(signals=frozenset({"capability_deficit"})),
+        route=weak,
+        ledger=ledger,
+        stronger_routes=(strong,),
+        prequalified_stronger_ids=frozenset(),
+        now=NOW,
+    )
+    assert decision.action is not RecoveryAction.ESCALATE_CAPABILITY
+    assert decision.outcome is RecoveryOutcome.BLOCKED or decision.action is RecoveryAction.BLOCK
+
+
+def test_ep_intelligence_rejects_client_dict_decision() -> None:
+    import asyncio
+
+    from verdict.execution_path import ExecutionPathError
+    from verdict.intelligence import IntelligenceService
+
+    svc = IntelligenceService(
+        primary_model="anthropic/claude-3-opus",
+        providers={},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+    )
+
+    async def _run() -> None:
+        await svc.route(
+            "refactor module",
+            context={
+                "execution_path_decision": {
+                    "selected_strategy": "direct_cheap",
+                    "selected_candidate_id": "evil",
+                }
+            },
+        )
+
+    try:
+        asyncio.run(_run())
+        raise AssertionError("expected ExecutionPathError")
+    except ExecutionPathError as exc:
+        assert "ExecutionPathDecision" in str(exc)

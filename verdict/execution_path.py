@@ -111,6 +111,25 @@ class ExecutionPathError(ValueError):
     """Raised when execution-path inputs violate the integrator contract."""
 
 
+def _required_cost_kinds_for_offer(
+    offer: ExecutionPathOffer, *, task_slice: TaskSlice, base_kinds: frozenset[str]
+) -> frozenset[str]:
+    """Require verification terms only when the task/plan actually needs proof."""
+
+    kinds = set(base_kinds)
+    needs_verification = bool(task_slice.proof_criteria) or bool(
+        offer.assistance_plan.verification.proof_criteria
+    )
+    if (
+        offer.assistance_plan.verification.kind not in ("", "none")
+        and offer.assistance_plan.verification.kind
+    ):
+        needs_verification = True
+    if not needs_verification:
+        kinds.discard("verification")
+    return frozenset(kinds)
+
+
 @dataclass(frozen=True)
 class ExecutionPathOffer:
     """One complete-strategy alternative with precomputed evidence.
@@ -292,6 +311,8 @@ def _recovery_policy_dict(bounds: RecoveryBounds | None) -> dict[str, Any] | Non
 def _qualify_offer(
     offer: ExecutionPathOffer,
     *,
+    task_slice: TaskSlice,
+    trajectory_id: str,
     hard_excluded_ids: frozenset[str],
     allow_degraded_certification: bool,
     require_complete_cost_kinds: frozenset[str],
@@ -299,6 +320,17 @@ def _qualify_offer(
     """Return a rejection reason, or None if the offer is qualified."""
 
     cid = offer.candidate_id
+    plan_slice = offer.assistance_plan.task_slice
+    if plan_slice.slice_id != task_slice.slice_id:
+        return "evidence_unbound_task_slice_id"
+    if plan_slice.proof_criteria != task_slice.proof_criteria:
+        return "evidence_unbound_proof_criteria"
+    if plan_slice.acceptance_criteria != task_slice.acceptance_criteria:
+        return "evidence_unbound_acceptance_criteria"
+    if offer.expected_cost.trajectory_id != trajectory_id:
+        return "evidence_unbound_trajectory_id"
+    if offer.budget_receipt is not None and offer.budget_receipt.candidate_id != cid:
+        return "evidence_unbound_budget_candidate"
     if offer.hard_excluded or cid in hard_excluded_ids or offer.route.excluded:
         return "hard_excluded_never_restored"
     if offer.route.hard_ineligible or not offer.route.eligible:
@@ -339,8 +371,11 @@ def _qualify_offer(
         return "unknown_price_not_treated_as_free"
     if not offer.expected_cost.qualified:
         return "expected_cost_not_qualified"
+    required_kinds = _required_cost_kinds_for_offer(
+        offer, task_slice=task_slice, base_kinds=require_complete_cost_kinds
+    )
     present_kinds = {term.kind for term in offer.expected_cost.terms}
-    missing = sorted(require_complete_cost_kinds - present_kinds)
+    missing = sorted(required_kinds - present_kinds)
     if missing:
         return f"incomplete_expected_cost_missing:{','.join(missing)}"
     # Opaque auto/* identities never satisfy execution evidence.
@@ -393,6 +428,8 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
     for offer in request.offers:
         reason = _qualify_offer(
             offer,
+            task_slice=request.task_slice,
+            trajectory_id=request.trajectory_id,
             hard_excluded_ids=frozenset(hard_ids),
             allow_degraded_certification=request.allow_degraded_certification,
             require_complete_cost_kinds=request.require_complete_cost_kinds,
@@ -499,20 +536,55 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             strategy_selection_reason="no_qualified_strategies",
         )
 
+    # Authoritative STAY/SWITCH constrains ranking to the session-selected route
+    # when that route remains qualified (preserves hysteresis / hard overrides).
+    rank_pool = list(qualified)
+    if (
+        request.session_decision is not None
+        and request.session_decision.authoritative
+        and session_pref is not None
+    ):
+        session_offers = [offer for offer in qualified if offer.candidate_id == session_pref]
+        if session_offers:
+            assumptions.append("authoritative_session_constrains_selection")
+            for offer in qualified:
+                if offer.candidate_id == session_pref:
+                    continue
+                rejected.append(
+                    RejectedStrategy(
+                        strategy=offer.strategy,
+                        candidate_id=offer.candidate_id,
+                        reason="deferred_to_authoritative_session_route",
+                        expected_cost_strategy_id=offer.expected_cost.strategy_id,
+                    )
+                )
+            rank_pool = session_offers
+
+    # Duplicate strategy_id among the rank pool would map selection ambiguously.
+    seen_ids: dict[str, str] = {}
+    for offer in rank_pool:
+        sid = offer.expected_cost.strategy_id
+        if sid in seen_ids:
+            raise ExecutionPathError(
+                f"duplicate expected_cost.strategy_id {sid!r} among qualified offers "
+                f"({seen_ids[sid]!r} and {offer.candidate_id!r})"
+            )
+        seen_ids[sid] = offer.candidate_id
+
     selection = select_strategy(
-        [offer.expected_cost for offer in qualified], mode="expected_cost", free_first=False
+        [offer.expected_cost for offer in rank_pool], mode="expected_cost", free_first=False
     )
 
     selected_offer: ExecutionPathOffer | None = None
     if selection.selected_strategy_id is not None:
-        for offer in qualified:
+        for offer in rank_pool:
             if offer.expected_cost.strategy_id == selection.selected_strategy_id:
                 selected_offer = offer
                 break
 
     # If economics returned None (unknown cash among all), fall through to blocked.
     if selected_offer is None:
-        for offer in qualified:
+        for offer in rank_pool:
             rejected.append(
                 RejectedStrategy(
                     strategy=offer.strategy,
@@ -566,8 +638,8 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
         elif request.session_decision.decision == "SWITCH":
             selected_strategy = "switch_equivalent_route"
 
-    # Record cost-based rejections for other qualified offers.
-    for offer in qualified:
+    # Record cost-based rejections for other ranked offers.
+    for offer in rank_pool:
         if offer is selected_offer:
             continue
         cash_note = ""
@@ -621,7 +693,7 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
 
     why = (
         f"selected_{selected_strategy}_via_{selection.reason}; "
-        f"complete_expected_cost beats {len(qualified) - 1} qualified alternative(s)"
+        f"complete_expected_cost beats {len(rank_pool) - 1} ranked alternative(s)"
     )
     if selected_offer.expected_cost.cash_usd is not None:
         why += f"; cash_usd={selected_offer.expected_cost.cash_usd}"
@@ -695,7 +767,8 @@ def apply_bounded_recovery(
     for item in stronger_routes:
         if not isinstance(item, ExecutionRoute):
             continue
-        if prequalified_stronger_ids and item.model_id not in prequalified_stronger_ids:
+        # Empty prequalification means no approved escalation targets (fail-closed).
+        if item.model_id not in prequalified_stronger_ids:
             continue
         filtered_stronger.append(item)
 
