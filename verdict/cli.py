@@ -658,24 +658,23 @@ def cmd_route(
 ) -> None:
     """Route a single task.
 
-    BOD-127: default CLI serve requires a BOD-104 ``ExecutionPathDecision``
-    (or ``execution_path_request``) in context. Pass
-    ``allow_legacy_selector=True`` only as an explicit migration escape
-    (offline demos / unit fixtures) — never silent.
+    BOD-127: authority is derived from profile / ``VERDICT_REQUIRE_EXECUTION_PATH``
+    (and production profile). Pass ``allow_legacy_selector=True`` only as an
+    explicit migration escape — never silent. API serve still forces authority.
     """
-    from verdict.serve_path import CONTEXT_ALLOW_LEGACY, CONTEXT_REQUIRE_AUTHORITY
+    from verdict.serve_path import CONTEXT_ALLOW_LEGACY
 
     gate = _build_route_gate(allow_offline=allow_offline)
     if allow_legacy_selector is None:
         allow_legacy_selector = bool(allow_offline)
-    context: dict[str, object] = (
-        {CONTEXT_ALLOW_LEGACY: True}
-        if allow_legacy_selector
-        else {CONTEXT_REQUIRE_AUTHORITY: True}
-    )
+    context: dict[str, object] = {}
+    if allow_legacy_selector:
+        context[CONTEXT_ALLOW_LEGACY] = True
+    # Do not force CONTEXT_REQUIRE_AUTHORITY here — development/smoke CLI must
+    # still route via the legacy feed path; production/env opt-in fail-closed.
 
     if terse:
-        dec = gate.route(task, criticality, context=context)
+        dec = gate.route(task, criticality, context=context or None)
         print(dec.model)
         return
 
@@ -685,7 +684,7 @@ def cmd_route(
         else "[bold green]Evaluating network & heuristics..."
     )
     with console.status(status_label, spinner="dots"):
-        dec, selection = gate.route_with_strategy(task, criticality, context=context)
+        dec, selection = gate.route_with_strategy(task, criticality, context=context or None)
 
     tier_colors = {0: "red", 1: "magenta", 2: "yellow", 3: "green"}
     t_color = tier_colors.get(dec.tier, "white")

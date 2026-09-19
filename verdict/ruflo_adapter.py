@@ -607,12 +607,11 @@ class RufloAdapter:
             except Exception as e:
                 raise RufloUnavailableError(f"Submit failed: {e}") from e
 
+        bound_route: dict[str, Any] | None
         if require_selected_route or selected_route is not None:
             from verdict.serve_path import consume_selected_route
 
-            bound_route: dict[str, Any] | None = consume_selected_route(
-                selected_route, surface="ruflo.submit"
-            )
+            bound_route = consume_selected_route(selected_route, surface="ruflo.submit")
         else:
             bound_route = None
 
