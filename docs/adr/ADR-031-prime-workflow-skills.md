@@ -6,7 +6,7 @@
 
 ## Context
 
-Related: ADR-021 deterministic provider receipts; ADR-023 governed swarm supervision; ADR-030 proof-carrying decision plane. This workflow consumes their authorities and does not replace routing or public wire contracts.
+Related: ADR-021 deterministic provider receipts; ADR-023 governed swarm supervision (**SUPERSEDED BOD-17**); ADR-030 proof-carrying decision plane. This workflow consumes their authorities and does not replace routing or public wire contracts.
 
 The existing autonomous-development guidance does not define checkpoint, receipt, proof-opening or progress-timeout contracts. A stalled session repeated source reads for hours without new verification evidence.
 
