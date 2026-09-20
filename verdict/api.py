@@ -28,6 +28,7 @@ from verdict.availability_cache import AvailabilityCache
 from verdict.catalog import configured_catalog_filters, normalize_catalog
 from verdict.context_inject import InjectionRecord, inject_context_pack
 from verdict.contracts import redact_contract_secrets
+from verdict.cost_ledger import PriceEvidenceInput
 from verdict.effective_capability import (
     AssistanceCost,
     AssistancePlan,
@@ -775,15 +776,16 @@ def _public_execution_path_request(raw: Any, *, task: str) -> ExecutionPathReque
             evidence_digest=evidence_digest,
         )
         is_free = candidate.get("is_free") is True
-        price = candidate.get("price")
+        raw_price = candidate.get("price")
+        price = cast(PriceEvidenceInput, raw_price) if isinstance(raw_price, dict) else None
         if is_free and price is None:
-            price = {
-                "input_usd_per_mtok": "0",
-                "output_usd_per_mtok": "0",
-                "observed_at": now.isoformat(),
-                "evidence_id": evidence_digest,
-            }
-        if not isinstance(price, dict):
+            price = PriceEvidenceInput(
+                input_usd_per_mtok="0",
+                output_usd_per_mtok="0",
+                observed_at=now.isoformat(),
+                evidence_id=evidence_digest,
+            )
+        if price is None:
             raise ExecutionPathError(
                 f"execution_path_request.candidates[{index}].price is required for non-free routes"
             )

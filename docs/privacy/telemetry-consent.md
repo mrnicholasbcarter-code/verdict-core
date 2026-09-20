@@ -5,7 +5,7 @@
 
 # Telemetry Consent Policy
 
-## What telemetry contains
+## Requirements for any future telemetry sink
 
 Telemetry is limited to operational, aggregate signals needed to explain and
 measure execution: event type, correlation identifiers, task or runtime
@@ -14,9 +14,9 @@ allowed by the relevant adapter contract. Prompt text, model output, tool
 arguments, credentials, API keys, cookies, authorization headers, and private
 keys are not telemetry fields.
 
-Telemetry records are redacted before they are written to the local JSONL sink.
-The sink is an observability aid; it is not a source of routing or security
-authority.
+Any future telemetry records must be redacted before they are written or
+transmitted. Such a sink would be an observability aid, not a source of routing
+or security authority.
 
 ## Consent states for any future telemetry sink
 

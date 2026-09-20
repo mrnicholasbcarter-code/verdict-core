@@ -85,7 +85,7 @@ def test_redaction_removes_secrets_from_exception_text() -> None:
 
 
 def test_redaction_removes_quoted_mapping_secrets() -> None:
-    message = api.redact_text('{"api_key":"sk-123", \'token\': \'abc\'}')
+    message = api.redact_text("{\"api_key\":\"sk-123\", 'token': 'abc'}")
 
     assert "sk-123" not in message
     assert "abc" not in message
@@ -97,10 +97,7 @@ def test_unix_socket_auth_mode_is_not_accepted_without_real_peer_auth() -> None:
         monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
         with pytest.raises(ValueError, match="not supported"):
             api.validate_server_security(
-                host="127.0.0.1",
-                token=None,
-                allow_anonymous=False,
-                unix_socket="/tmp/verdict.sock",
+                host="127.0.0.1", token=None, allow_anonymous=False, unix_socket="/tmp/verdict.sock"
             )
 
 
@@ -115,13 +112,10 @@ def test_upstream_hostname_resolution_returns_the_validated_addresses(monkeypatc
 
 def test_pin_upstream_url_connects_to_validated_ip_and_preserves_tls_host(monkeypatch) -> None:
     monkeypatch.setattr(
-        "verdict.security.host_is_allowed",
-        lambda _host, _allowed: ("93.184.216.34",),
+        "verdict.security.host_is_allowed", lambda _host, _allowed: ("93.184.216.34",)
     )
 
-    pinned, headers, extensions = pin_upstream_url(
-        "https://models.example:8443/v1/models", set()
-    )
+    pinned, headers, extensions = pin_upstream_url("https://models.example:8443/v1/models", set())
 
     assert pinned == "https://93.184.216.34:8443/v1/models"
     assert headers == {"host": "models.example:8443"}

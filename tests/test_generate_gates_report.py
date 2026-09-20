@@ -78,7 +78,9 @@ def test_empty_failed_or_invalid_artifact_never_passes(evidence_dir: Path, conte
 
 
 def test_failed_text_artifact_never_passes(evidence_dir: Path):
-    evidence_dir.joinpath("quickstart_test.log").write_text("FAILED: core tests\n", encoding="utf-8")
+    evidence_dir.joinpath("quickstart_test.log").write_text(
+        "FAILED: core tests\n", encoding="utf-8"
+    )
 
     assert _gate(_report(evidence_dir), "G7.1")["status"] == "FAIL"
 
@@ -154,9 +156,7 @@ def test_release_requires_reusable_acceptance_workflow_before_publish():
 
 
 def test_acceptance_evidence_producers_are_non_advisory_and_use_pipefail():
-    body = REPO_ROOT.joinpath(".github/workflows/acceptance-gates.yml").read_text(
-        encoding="utf-8"
-    )
+    body = REPO_ROOT.joinpath(".github/workflows/acceptance-gates.yml").read_text(encoding="utf-8")
 
     assert "workflow_call:" in body
     assert "shell: bash -euo pipefail {0}" in body

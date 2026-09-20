@@ -9,15 +9,12 @@ verdict [global flags] <command> [args]
 | Flag | Description |
 |------|-------------|
 | `-h, --help` | Show help |
-| `--version` | Show version |
-| `--config <path>` | Config file path |
-| `--verbose` | Verbose output |
 
 ---
 
 ## Commands
 
-### `verdict route` / `verdict run` — Select and execute a qualified model
+### `verdict route` — Select and execute a qualified model
 
 ```bash
 verdict route "your task prompt" [flags]
@@ -25,7 +22,7 @@ verdict route "your task prompt" [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--terse` | Emit compact JSON with selected model, request id, transport outcome, and preview |
+| `--terse` | On success, output only the selected model; failures remain structured and explicit |
 | `--criticality <level>` | `low` \| `medium` \| `high` \| `critical` |
 | `--allow-offline` | Disable network discovery/probes; does not enable the legacy selector |
 | `--allow-legacy-selector` | Explicit BOD-127 migration escape for the pre-BOD-104 selector |
@@ -34,11 +31,9 @@ verdict route "your task prompt" [flags]
 ```bash
 verdict route "Write a Rust CLI tool" --terse
 verdict route "Deploy to production" --criticality high
-verdict run "Summarize the current diff" --criticality low
 ```
 
-`run` is an alias for the same live command. With a configured OpenAI-compatible
-provider, these commands perform a completion rather than merely print a routing
+With a configured OpenAI-compatible provider, this command performs a completion rather than merely print a routing
 forecast. `simulate` is the no-send forecasting command. For live OmniRoute
 cheap-path execution, Verdict loads the current inventory, admits only named
 free-tier identities on active providers, requires fresh prove-at-rest evidence,
@@ -57,6 +52,15 @@ The output is intentionally explicit:
 Use `verdict prove-at-rest once --allow-live-probe --json` to refresh health
 evidence. `verdict prove-at-rest status --json` only reads the persisted cycle
 and does not make network requests.
+
+### `verdict run` — Execute through the route path
+
+```bash
+verdict run "Summarize the current diff" [--terse] [--criticality low|medium|high|critical]
+```
+
+`run` is the live alias of `route`, but it does not expose the route command's
+offline or legacy-selector migration flags.
 
 ---
 
@@ -106,24 +110,6 @@ verdict metadata lookup <omniroute_id> [--requires tools,vision,structured,conte
 
 ---
 
-### `verdict policy` — Manage routing policies
-
-```bash
-verdict policy <subcommand> [args]
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| `get [name]` | Show policy |
-| `set <name> <file>` | Set policy from YAML/TOML |
-| `validate <file>` | Validate policy syntax |
-| `list` | List available policies |
-| `delete <name>` | Delete policy |
-| `explain <file>` | Evaluate a redacted policy fixture without execution |
-| `simulate <file>` | Simulate policy and transition decisions offline |
-| `backtest <file>` | Alias for deterministic offline simulation |
-
----
 
 ### `verdict ui` — Launch the Streamlit analytics dashboard
 
@@ -171,35 +157,6 @@ raises; if `log_path` is empty nothing is written.
 
 ---
 
-### `verdict config` — Manage local configuration
-
-```bash
-verdict config <subcommand> [args]
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| `show` | Show effective config |
-| `edit` | Open config in $EDITOR |
-| `get <key>` | Get config value |
-| `set <key> <value>` | Set config value |
-| `reset` | Reset to defaults |
-
----
-
-### `verdict completion` — Generate shell completions
-
-```bash
-verdict completion <shell>
-```
-
-| Shell | Install Command |
-|-------|-----------------|
-| `bash` | `verdict completion bash > /usr/local/etc/bash_completion.d/verdict` |
-| `zsh` | `verdict completion zsh > ~/.zsh/completions/_verdict` |
-| `fish` | `verdict completion fish > ~/.config/fish/completions/verdict.fish` |
-
----
 
 ### `verdict serve` — Launch FastAPI microservice
 
@@ -300,7 +257,7 @@ verdict benchmark [flags]
 
 | Variable | Description |
 |----------|-------------|
-| `VERDICT_CONFIG` | Config file path |
+| `XDG_CONFIG_HOME` | Config root; Verdict reads `$XDG_CONFIG_HOME/verdict/verdict.yaml` when set |
 | `OMNIROUTE_BASE_URL` | OmniRoute endpoint |
 | `LLMGATE_PRIMARY` | Primary model (legacy) |
 | `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile |

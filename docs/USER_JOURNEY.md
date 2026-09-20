@@ -36,10 +36,10 @@ route remains:
 verdict route "summarize this change" --criticality low --terse
 ```
 
-Use `verdict simulate "summarize this change"` for a no-send forecast. An
-offline static-catalog decision requires both `--allow-offline` and the explicit
-`--allow-legacy-selector` migration escape; it reports `transport=not_sent` and
-must not be represented as execution.
+Use `verdict simulate "summarize this change"` for a no-send forecast.
+`--allow-offline` disables live discovery and probes; it exits non-zero with
+`transport_outcome=error` because no provider completion was sent. The separate
+`--allow-legacy-selector` flag is only the explicit pre-BOD-104 migration escape.
 
 ## Mission, failover, and replay
 
