@@ -80,6 +80,10 @@ def fatal_identity_mismatch(selected: str, served: str | None) -> bool:
 
     if not selected or served is None or served == selected:
         return False
+    # A gateway may report a provider-local model id for a namespaced concrete
+    # route. This preserves the selected identity rather than substituting it.
+    if "/" in selected and served == selected.split("/", 1)[1]:
+        return False
     return not is_opaque_alias(selected)
 
 
