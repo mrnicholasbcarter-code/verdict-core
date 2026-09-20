@@ -687,7 +687,10 @@ class IntelligenceService:
                 )
             attempt["transport_outcome"] = transport_outcome
             attempt["executed_model"] = chosen if transport_outcome == "sent" else None
-        verification = {"status": "unknown", "reason": "no verification strategy executed"}
+        verification: dict[str, Any] = {
+            "status": "unknown",
+            "reason": "no verification strategy executed",
+        }
         expected = contract.get("expected_output_contains")
         proof_criteria = tuple(
             str(item).strip()
