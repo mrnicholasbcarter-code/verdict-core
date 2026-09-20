@@ -19,6 +19,7 @@ a model that answered badly is not.
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import time
@@ -35,7 +36,10 @@ DEFAULT_BASE_URL = "http://localhost:20128/v1"
 DEFAULT_SESSION_ID = "verdict-operational-loop"
 
 _FENCE_RE = re.compile(r"```(?:diff|patch)?\s*\n(.*?)(?:\n```|\Z)", re.DOTALL)
-_DIFF_HEADER_RE = re.compile(r"^(?:---|\+\+\+)\s+(\S+)", re.MULTILINE)
+_DIFF_HEADER_RE = re.compile(
+    r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)\s+(.+?)(?:\t.*)?$",
+    re.MULTILINE,
+)
 
 SYSTEM_PROMPT = (
     "You are a patch generator. Reply with a single unified diff and nothing else: "
@@ -403,6 +407,8 @@ def build_unit_prompt(unit: WorkUnit, repo_root: str | Path) -> str:
         sections += ["", "Additional context:", unit.context]
     for path in unit.owned_files:
         target = root / path
+        if target.is_symlink():
+            raise PatchExecutorError(f"owned path is a symlink: {path}")
         try:
             text = target.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
@@ -475,12 +481,21 @@ def parse_patch_paths(diff: str) -> tuple[str, ...]:
     """
     paths: set[str] = set()
     for raw in _DIFF_HEADER_RE.findall(diff):
-        if raw == "/dev/null":
-            continue
         candidate = raw
+        if candidate.startswith('"') and candidate.endswith('"'):
+            try:
+                decoded = ast.literal_eval(candidate)
+            except (SyntaxError, ValueError) as exc:
+                raise PatchExecutorError(f"unusable quoted path in diff header {raw!r}") from exc
+            if not isinstance(decoded, str):
+                raise PatchExecutorError(f"unusable quoted path in diff header {raw!r}")
+            candidate = decoded
+        else:
+            candidate = candidate.split("\t", 1)[0]
+        if candidate == "/dev/null":
+            continue
         if candidate.startswith(("a/", "b/")):
             candidate = candidate[2:]
-        candidate = candidate.split("\t", 1)[0]
         try:
             paths.add(normalize_owned_path(candidate))
         except WorkUnitError as exc:
