@@ -70,6 +70,19 @@ def is_opaque_alias(model: str) -> bool:
     )
 
 
+def fatal_identity_mismatch(selected: str, served: str | None) -> bool:
+    """True when a concrete selected identity was silently substituted.
+
+    Opaque aliases may resolve to a different served member; that remap is
+    observed, not fatal. A concrete selected model that comes back as a
+    different model must fail closed before output is trusted.
+    """
+
+    if not selected or served is None or served == selected:
+        return False
+    return not is_opaque_alias(selected)
+
+
 def retryable_transport_status(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429} or status_code >= 500
 
@@ -209,6 +222,7 @@ __all__ = [
     "RelayAttempt",
     "build_attempts",
     "failure_class",
+    "fatal_identity_mismatch",
     "idempotency_key",
     "is_opaque_alias",
     "protocol_for_surface",

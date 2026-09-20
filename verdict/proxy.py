@@ -136,7 +136,9 @@ class UpstreamProxy:
         )
 
     @staticmethod
-    def _actual_route(response: httpx.Response) -> RouteIdentity | None:
+    def _actual_route(
+        response: httpx.Response, *, requested_model: str | None = None, protocol: str
+    ) -> RouteIdentity | None:
         """Decode an optional adapter-owned route attestation header.
 
         Generic OpenAI providers do not expose this header.  In that case the
@@ -145,13 +147,30 @@ class UpstreamProxy:
         """
 
         raw = response.headers.get("x-verdict-actual-route")
-        if not raw:
+        if raw:
+            try:
+                value = json.loads(raw)
+                return RouteIdentity.from_dict(value) if isinstance(value, dict) else None
+            except (TypeError, ValueError):
+                return None
+        if requested_model is None or response.status_code >= 400:
             return None
         try:
-            value = json.loads(raw)
-            return RouteIdentity.from_dict(value) if isinstance(value, dict) else None
+            value = response.json()
         except (TypeError, ValueError):
             return None
+        served_model = value.get("model") if isinstance(value, dict) else None
+        if not isinstance(served_model, str) or not served_model.strip():
+            return None
+        provider = served_model.split("/", 1)[0] if "/" in served_model else "configured-upstream"
+        return RouteIdentity(
+            gateway="provider-response",
+            provider=provider,
+            connection="response-body",
+            endpoint="provider-response-body",
+            protocol=protocol,
+            model_id=served_model,
+        )
 
     @staticmethod
     def _response_headers(response: httpx.Response) -> list[tuple[str, str]]:
@@ -219,6 +238,12 @@ class UpstreamProxy:
             },
             json_payload=payload,
         )
+        requested_model = payload.get("model") if isinstance(payload.get("model"), str) else None
+        protocol = (
+            "openai.responses"
+            if path.rstrip("/").endswith("responses")
+            else "openai.chat.completions"
+        )
         if payload.get("stream") is not True:
             try:
                 response = await client.send(request)
@@ -226,7 +251,9 @@ class UpstreamProxy:
                     status_code=response.status_code,
                     headers=self._response_headers(response),
                     body=response.content,
-                    actual_route=self._actual_route(response),
+                    actual_route=self._actual_route(
+                        response, requested_model=requested_model, protocol=protocol
+                    ),
                     compatibility_rule_version=compatibility_rule_version,
                 )
             finally:
@@ -234,7 +261,9 @@ class UpstreamProxy:
 
         response = await client.send(request, stream=True)
         response_headers = self._response_headers(response)
-        actual_route = self._actual_route(response)
+        # Streaming response bodies are not buffered here, so only an adapter
+        # attestation header can provide actual-route identity.
+        actual_route = self._actual_route(response, requested_model=None, protocol=protocol)
         if response.status_code >= 400:
             try:
                 buffered_body = await response.aread()

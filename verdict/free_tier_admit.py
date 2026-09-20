@@ -54,6 +54,7 @@ from verdict.eligibility import EligibilityRecord, EligibilityResult, Eligibilit
 from verdict.free_route_harvest import free_status
 from verdict.models import ModelInfo
 from verdict.pack_state import PackState, classify_pack_state
+from verdict.relay import fatal_identity_mismatch
 
 REASON_OPAQUE_AUTO = "opaque_auto"
 REASON_NOT_FREE_TIER = "not_free_tier"
@@ -1069,12 +1070,21 @@ def execute_offload_chat(
         return "error", "timeout"
     except (httpx.HTTPError, ValueError) as exc:
         return "error", type(exc).__name__
-    choices = body.get("choices") if isinstance(body, Mapping) else None
+    if not isinstance(body, Mapping):
+        return "error", "invalid provider response: expected JSON object"
+    served_model = body.get("model")
+    if served_model is not None and not isinstance(served_model, str):
+        return "error", "invalid provider response: model must be a string"
+    if fatal_identity_mismatch(model_id, served_model):
+        return "error", f"identity mismatch: selected {model_id!r}, served {served_model!r}"
+    choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
-        return "sent", ""
+        return "error", "invalid provider response: missing choices"
     message = (choices[0] or {}).get("message") if isinstance(choices[0], Mapping) else {}
     content = message.get("content") if isinstance(message, Mapping) else ""
-    return "sent", str(content or "")
+    if not isinstance(content, str) or not content:
+        return "error", "invalid provider response: missing completion content"
+    return "sent", content
 
 
 def omniroute_endpoint_from_env(

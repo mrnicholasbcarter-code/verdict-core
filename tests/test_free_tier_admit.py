@@ -365,7 +365,11 @@ def test_load_snapshot_and_execute_use_omniroute_paths() -> None:
             body = request.read()
             assert b"openrouter/nvidia/nemotron-3-nano-30b-a3b:free" in body
             return httpx.Response(
-                200, json={"choices": [{"message": {"content": "hello from omniroute"}}]}
+                200,
+                json={
+                    "model": "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
+                    "choices": [{"message": {"content": "hello from omniroute"}}],
+                },
             )
         raise AssertionError(request.url.path)
 
@@ -388,6 +392,40 @@ def test_load_snapshot_and_execute_use_omniroute_paths() -> None:
     assert "/api/free-tier/summary" in seen
     assert "/api/providers" in seen
     assert "/v1/chat/completions" in seen
+
+
+def test_execute_offload_chat_rejects_wrong_served_identity() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "provider/wrong-model",
+                "choices": [{"message": {"content": "must not be accepted"}}],
+            },
+        )
+
+    outcome, reason = execute_offload_chat(
+        "http://127.0.0.1:20128/v1",
+        "provider/selected-model",
+        "ping",
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome == "error"
+    assert "identity mismatch" in reason
+
+
+def test_execute_offload_chat_requires_completion_content() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"model": "provider/selected-model", "choices": []})
+
+    outcome, reason = execute_offload_chat(
+        "http://127.0.0.1:20128/v1",
+        "provider/selected-model",
+        "ping",
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome == "error"
+    assert reason == "invalid provider response: missing choices"
 
 
 def test_parsers_accept_live_omniroute_shapes() -> None:

@@ -127,6 +127,18 @@ def test_in_bounds_patch_is_checked_then_applied(repo: Path) -> None:
     assert "--check" not in runner.calls[1]
 
 
+def test_identity_mismatch_rejects_patch_before_git_apply(repo: Path) -> None:
+    runner = RecordingRunner()
+    executor, _ = _executor(repo, IN_BOUNDS_DIFF, runner, model="other/model")
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "error"
+    assert "identity mismatch" in attempt.reason
+    assert attempt.resolved_model == "other/model"
+    assert runner.calls == []
+
+
 def test_out_of_bounds_patch_is_rejected_before_git_apply(repo: Path) -> None:
     runner = RecordingRunner()
     executor, _ = _executor(repo, OUT_OF_BOUNDS_DIFF, runner)
@@ -250,7 +262,7 @@ def test_default_openai_transport_sends_operational_loop_session_header(
 
         def read(self, limit):
             del limit
-            return b'{"choices":[{"message":{"content":"not-a-diff"}}],"model":"served"}'
+            return b'{"choices":[{"message":{"content":"not-a-diff"}}],"model":"cheap/model"}'
 
     def opener(request, timeout):
         del timeout
@@ -317,7 +329,7 @@ def test_observer_records_requested_alias_distinct_from_served_identity(repo: Pa
 
     executor = PatchExecutor(
         repo,
-        PatchExecutorConfig(model="cheap/alias"),
+        PatchExecutorConfig(model="cheap/alias:free"),
         transport=transport,
         runner=runner,
         observer=seen.append,
@@ -326,10 +338,10 @@ def test_observer_records_requested_alias_distinct_from_served_identity(repo: Pa
     attempt = executor.execute_unit(_unit())
 
     assert attempt.applied
-    assert attempt.model == "cheap/alias"
+    assert attempt.model == "cheap/alias:free"
     assert attempt.resolved_model == "provider/served-v2"
     assert len(seen) == 1
-    assert seen[0].model == "cheap/alias"
+    assert seen[0].model == "cheap/alias:free"
     assert seen[0].resolved_model == "provider/served-v2"
     assert seen[0].outcome == "ok"
     assert seen[0].identity_mismatch is True

@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import yaml
 
 from verdict import cli
 from verdict.execution_packet import ExecutionPacket
+from verdict.models import RoutingDecision
 from verdict.provider_detection import DetectedProvider, DetectionResult
 
 
@@ -21,7 +23,7 @@ def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_cmd_route_terse_uses_configured_primary(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
@@ -33,9 +35,156 @@ def test_cmd_route_terse_uses_configured_primary(
         "    base_url: http://localhost:1234/v1\n"
     )
 
+    monkeypatch.setattr(
+        cli, "execute_offload_chat", lambda *_args, **_kwargs: ("sent", "completed")
+    )
     cli.cmd_route("deploy prod", "critical", terse=True, allow_legacy_selector=True)
 
     assert capsys.readouterr().out.strip() == "test-primary"
+
+
+def test_cmd_route_and_run_send_configured_provider_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BOD-136: default route/run must actually send, not preview with not_sent."""
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text(
+        "primary_model: cheap/model\n"
+        "log_path: route-log.jsonl\n"
+        "providers:\n"
+        "  omniroute:\n"
+        "    base_url: http://127.0.0.1:20128/v1\n"
+        "    api_key_env: OMNIROUTE_API_KEY\n"
+    )
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "test-token")
+
+    sent: list[tuple[str, str, str]] = []
+
+    def fake_send(base_url: str, model_id: str, task: str, **kwargs: object) -> tuple[str, str]:
+        sent.append((base_url, model_id, task))
+        return "sent", "hello from omniroute"
+
+    monkeypatch.setattr("verdict.free_tier_admit.execute_offload_chat", fake_send)
+    monkeypatch.setattr("verdict.cli.execute_offload_chat", fake_send, raising=False)
+
+    selected = RoutingDecision(
+        model="openrouter/free-model",
+        provider="omniroute",
+        tier=3,
+        reason="test selection",
+        decision="selected",
+        transport_outcome="not_sent",
+        request_id="req-bod136",
+    )
+
+    class _LiveGate:
+        providers: ClassVar[dict[str, cli.ProviderConfig]] = {
+            "omniroute": cli.ProviderConfig(
+                base_url="http://127.0.0.1:20128/v1", api_key_env="OMNIROUTE_API_KEY"
+            )
+        }
+
+        def route(self, task: str, criticality: str, context: object = None) -> RoutingDecision:
+            del task, criticality, context
+            return selected
+
+        def route_with_strategy(self, task: str, criticality: str, context: object = None):
+            from verdict.gate import strategy_from_decision
+
+            decision = self.route(task, criticality, context)
+            return decision, strategy_from_decision(decision)
+
+    monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _LiveGate())
+
+    cli.cmd_route("format a bullet list", "low", terse=False)
+    out = capsys.readouterr().out
+    assert sent == [("http://127.0.0.1:20128/v1", "openrouter/free-model", "format a bullet list")]
+    assert '"transport_outcome": "sent"' in out
+    assert "hello from omniroute" in out
+    assert "req-bod136" in out
+
+    sent.clear()
+    cli.cmd_run("format a bullet list", "low", terse=True)
+    assert sent == [("http://127.0.0.1:20128/v1", "openrouter/free-model", "format a bullet list")]
+    assert capsys.readouterr().out.strip() == "openrouter/free-model"
+
+
+def test_cmd_route_identity_mismatch_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text(
+        "primary_model: cheap/model\nproviders:\n  omniroute:\n    base_url: http://127.0.0.1:20128/v1\n"
+    )
+
+    def fake_send(base_url: str, model_id: str, task: str, **kwargs: object) -> tuple[str, str]:
+        del base_url, model_id, task, kwargs
+        return "error", "identity mismatch: selected 'cheap/model', served 'other/model'"
+
+    monkeypatch.setattr("verdict.free_tier_admit.execute_offload_chat", fake_send)
+    monkeypatch.setattr("verdict.cli.execute_offload_chat", fake_send, raising=False)
+
+    selected = RoutingDecision(
+        model="cheap/model",
+        provider="omniroute",
+        tier=3,
+        reason="test selection",
+        decision="selected",
+        transport_outcome="not_sent",
+    )
+
+    class _LiveGate:
+        providers: ClassVar[dict[str, cli.ProviderConfig]] = {
+            "omniroute": cli.ProviderConfig(base_url="http://127.0.0.1:20128/v1")
+        }
+
+        def route(self, task: str, criticality: str, context: object = None) -> RoutingDecision:
+            del task, criticality, context
+            return selected
+
+        def route_with_strategy(self, task: str, criticality: str, context: object = None):
+            from verdict.gate import strategy_from_decision
+
+            decision = self.route(task, criticality, context)
+            return decision, strategy_from_decision(decision)
+
+    monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _LiveGate())
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_route("format docs", "low")
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "identity mismatch" in out
+    assert '"transport_outcome": "error"' in out
+
+
+def test_cmd_route_offline_is_named_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    selected = RoutingDecision(
+        model="cheap/model",
+        provider="omniroute",
+        tier=3,
+        reason="selected but not executed",
+        decision="selected",
+        transport_outcome="not_sent",
+    )
+
+    class _Gate:
+        providers: ClassVar[dict[str, cli.ProviderConfig]] = {}
+
+        def route(self, task: str, criticality: str, context: object = None) -> RoutingDecision:
+            del task, criticality, context
+            return selected
+
+    monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _Gate())
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_route("format docs", "low", terse=True, allow_offline=True)
+    assert exc.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["transport_outcome"] == "error"
+    assert payload["reason"] == "offline routing does not execute a provider completion"
 
 
 def test_cmd_route_allow_offline_does_not_enable_legacy_selector(
@@ -57,14 +206,20 @@ def test_cmd_route_allow_offline_does_not_enable_legacy_selector(
     captured: dict[str, object] = {}
 
     class _FakeGate:
-        def route(self, _task: str, _criticality: str, context: object = None) -> object:
+        def route(self, _task: str, _criticality: str, context: object = None) -> RoutingDecision:
             captured["context"] = context
-            from types import SimpleNamespace
-
-            return SimpleNamespace(model="test-primary")
+            return RoutingDecision(
+                model="test-primary",
+                provider="offline",
+                tier=3,
+                reason="offline selection",
+                decision="selected",
+            )
 
     monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _FakeGate())
-    cli.cmd_route("ping", "low", terse=True, allow_offline=True)
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_route("ping", "low", terse=True, allow_offline=True)
+    assert exc.value.code == 1
 
     ctx = captured.get("context")
     assert ctx is None or CONTEXT_ALLOW_LEGACY not in ctx
@@ -366,11 +521,14 @@ def test_autodev_packet_create_refuses_existing_path(
 
 
 def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:
-    cli.cmd_route("format docs", "low", terse=False, allow_legacy_selector=True)
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_route("format docs", "low", terse=False, allow_legacy_selector=True)
+    assert exc.value.code == 1
 
     out = capsys.readouterr().out
     assert "Routing Decision" in out
     assert "format docs" in out
+    assert '"transport_outcome": "error"' in out
 
 
 def test_cmd_stats_handles_missing_and_populated_logs(
@@ -533,8 +691,12 @@ def test_main_dispatches_help_route_stats_detect(
         "primary_model: anthropic/claude-3-opus-20240229\nproviders: {}\nlog_path: ''\n"
     )
     monkeypatch.setattr(cli.sys, "argv", ["verdict", "route", "hello", "--terse"])
-    cli.main()
-    assert "anthropic/claude-3-opus-20240229" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    route_payload = json.loads(capsys.readouterr().out)
+    assert route_payload["model"] == "anthropic/claude-3-opus-20240229"
+    assert route_payload["transport_outcome"] == "error"
 
     monkeypatch.setattr(
         cli.sys, "argv", ["verdict", "stats", "--log_path", str(tmp_path / "missing.jsonl")]

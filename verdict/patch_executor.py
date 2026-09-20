@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.probes import ProbeTransport, openai_probe_transport
+from verdict.relay import fatal_identity_mismatch
 from verdict.work_unit import WorkUnit, WorkUnitError, normalize_owned_path
 
 DEFAULT_BASE_URL = "http://localhost:20128/v1"
@@ -37,8 +38,7 @@ DEFAULT_SESSION_ID = "verdict-operational-loop"
 
 _FENCE_RE = re.compile(r"```(?:diff|patch)?\s*\n(.*?)(?:\n```|\Z)", re.DOTALL)
 _DIFF_HEADER_RE = re.compile(
-    r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)\s+(.+?)(?:\t.*)?$",
-    re.MULTILINE,
+    r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)\s+(.+?)(?:\t.*)?$", re.MULTILINE
 )
 
 SYSTEM_PROMPT = (
@@ -208,6 +208,20 @@ class PatchExecutor:
             content, usage = self._request_patch(unit)
         except PatchExecutorError as exc:
             return self._attempt(unit, "error", str(exc), started=started)
+        observation = self._last_observation
+        if observation is not None and fatal_identity_mismatch(
+            observation.model, observation.resolved_model
+        ):
+            return self._attempt(
+                unit,
+                "error",
+                (
+                    "provider identity mismatch: "
+                    f"selected {observation.model!r}, served {observation.resolved_model!r}"
+                ),
+                usage=usage,
+                started=started,
+            )
 
         # From here the call succeeded, so anything wrong is the model's output:
         # a refusal to apply, not an infrastructure error.

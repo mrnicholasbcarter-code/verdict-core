@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import hashlib
 import json
 import os
 from collections.abc import AsyncIterator
@@ -27,6 +28,14 @@ from verdict.availability_cache import AvailabilityCache
 from verdict.catalog import configured_catalog_filters, normalize_catalog
 from verdict.context_inject import InjectionRecord, inject_context_pack
 from verdict.contracts import redact_contract_secrets
+from verdict.effective_capability import (
+    AssistanceCost,
+    AssistancePlan,
+    DecompositionRequirement,
+    ProvenanceClaim,
+    TaskSlice,
+    VerificationStrategy,
+)
 from verdict.eligibility import EligibilityGate
 from verdict.evidence import (
     AmbiguousEvidenceSelectorError,
@@ -38,6 +47,8 @@ from verdict.evidence import (
     request_features,
     safe_identifier,
 )
+from verdict.execution_path import ExecutionPathOffer, ExecutionPathRequest
+from verdict.expected_cost import build_strategy_from_assistance
 from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.gate import Gate
 from verdict.guidance import (
@@ -55,6 +66,7 @@ from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, Up
 from verdict.relay import (
     build_attempts,
     failure_class,
+    fatal_identity_mismatch,
     idempotency_key,
     is_opaque_alias,
     protocol_for_surface,
@@ -64,7 +76,10 @@ from verdict.relay import (
     retryable_response_status,
     transition_edge,
 )
+from verdict.runtime_certification import CertificationState
 from verdict.security import bearer_matches, redact_text, validate_server_security
+from verdict.serve_path import CONTEXT_EP_REQUEST
+from verdict.session_economics import ConcreteRoute
 
 
 class _EvidenceStreamAdapter:
@@ -650,6 +665,185 @@ class RouteRequest(BaseModel):
     streaming_required: bool = False
     request_id: str | None = None
     correlation_id: str | None = None
+    execution_path_request: dict[str, Any] | None = None
+    execution_path_decision: dict[str, Any] | None = None
+
+
+def _public_execution_path_request(raw: Any, *, task: str) -> ExecutionPathRequest:
+    """Validate the public JSON optimizer contract and construct trusted types."""
+
+    from verdict.execution_path import EXECUTION_PATH_SCHEMA_VERSION, ExecutionPathError
+
+    if not isinstance(raw, dict):
+        raise ExecutionPathError("execution_path_request must be a JSON object")
+    if raw.get("schema_version") != EXECUTION_PATH_SCHEMA_VERSION:
+        raise ExecutionPathError(
+            f"execution_path_request.schema_version must be {EXECUTION_PATH_SCHEMA_VERSION!r}"
+        )
+    trajectory_id = raw.get("trajectory_id")
+    slice_id = raw.get("slice_id")
+    candidates = raw.get("candidates")
+    if not isinstance(trajectory_id, str) or not trajectory_id.strip():
+        raise ExecutionPathError("execution_path_request.trajectory_id must be non-empty")
+    if not isinstance(slice_id, str) or not slice_id.strip():
+        raise ExecutionPathError("execution_path_request.slice_id must be non-empty")
+    if not isinstance(candidates, list) or not candidates:
+        raise ExecutionPathError("execution_path_request.candidates must be a non-empty array")
+    acceptance = raw.get("acceptance_criteria", [])
+    proof = raw.get("proof_criteria", [])
+    if not isinstance(acceptance, list) or not all(isinstance(item, str) for item in acceptance):
+        raise ExecutionPathError("execution_path_request.acceptance_criteria must be strings")
+    if not isinstance(proof, list) or not proof or not all(isinstance(item, str) for item in proof):
+        raise ExecutionPathError("execution_path_request.proof_criteria must be non-empty strings")
+    task_slice = TaskSlice(
+        slice_id=slice_id.strip(),
+        objective=task,
+        acceptance_criteria=tuple(acceptance),
+        proof_criteria=tuple(proof),
+    )
+    now = datetime.now(timezone.utc)
+    offers: list[ExecutionPathOffer] = []
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            raise ExecutionPathError(
+                f"execution_path_request.candidates[{index}] must be an object"
+            )
+        required_strings = ("route_id", "gateway", "provider", "model")
+        for field_name in required_strings:
+            if not isinstance(candidate.get(field_name), str) or not candidate[field_name].strip():
+                raise ExecutionPathError(
+                    f"execution_path_request.candidates[{index}].{field_name} must be non-empty"
+                )
+        strategy = candidate.get("strategy", "direct_cheap")
+        if not isinstance(strategy, str):
+            raise ExecutionPathError(
+                f"execution_path_request.candidates[{index}].strategy must be a string"
+            )
+        try:
+            capability_tier = int(candidate.get("capability_tier", 2))
+            execution_tokens = int(candidate.get("execution_tokens", 1))
+            verification_tokens = int(candidate.get("verification_tokens", 1))
+        except (TypeError, ValueError) as exc:
+            raise ExecutionPathError(
+                f"execution_path_request.candidates[{index}] token/tier fields must be integers"
+            ) from exc
+        if execution_tokens < 1 or verification_tokens < 1:
+            raise ExecutionPathError(
+                f"execution_path_request.candidates[{index}] execution and verification tokens must be positive"
+            )
+        certification = candidate.get("certification_state")
+        try:
+            certification_state = CertificationState(str(certification))
+        except ValueError as exc:
+            raise ExecutionPathError(
+                f"execution_path_request.candidates[{index}].certification_state is invalid"
+            ) from exc
+        route_id = candidate["route_id"].strip()
+        evidence_payload = json.dumps(candidate, sort_keys=True, separators=(",", ":"))
+        evidence_digest = "sha256:" + hashlib.sha256(evidence_payload.encode()).hexdigest()
+        assistance = AssistanceCost(verification_tokens=verification_tokens)
+        plan = AssistancePlan(
+            plan_id=f"api:{trajectory_id}:{index}",
+            candidate_id=route_id,
+            task_slice=task_slice,
+            required_intrinsic_capabilities=(),
+            required_context_slots=(),
+            required_context_evidence=(),
+            required_tool_capabilities=(),
+            selected_tool_surface=(),
+            decomposition=DecompositionRequirement(required=False),
+            verification=VerificationStrategy(
+                kind="caller_proof_contract", proof_criteria=tuple(proof)
+            ),
+            assistance_cost=assistance,
+            result="sufficient" if candidate.get("eligible") is True else "insufficient",
+            reasons=("public_optimizer_contract",),
+            intrinsic_sufficient=candidate.get("eligible") is True,
+            assisted_sufficient=candidate.get("eligible") is True,
+            assistance_delta=(),
+            provenance=(
+                ProvenanceClaim(
+                    kind="optimizer_contract",
+                    claim=route_id,
+                    source="api:execution_path_request",
+                    digest=evidence_digest,
+                    observed_at=now.isoformat(),
+                    freshness=str(candidate.get("certification_freshness", "unknown")),
+                    fresh=str(candidate.get("certification_freshness", "unknown")) == "fresh",
+                ),
+            ),
+            evidence_digest=evidence_digest,
+        )
+        is_free = candidate.get("is_free") is True
+        price = candidate.get("price")
+        if is_free and price is None:
+            price = {
+                "input_usd_per_mtok": "0",
+                "output_usd_per_mtok": "0",
+                "observed_at": now.isoformat(),
+                "evidence_id": evidence_digest,
+            }
+        if not isinstance(price, dict):
+            raise ExecutionPathError(
+                f"execution_path_request.candidates[{index}].price is required for non-free routes"
+            )
+        route = ConcreteRoute(
+            route_id=route_id,
+            gateway=candidate["gateway"].strip(),
+            provider=candidate["provider"].strip(),
+            model=candidate["model"].strip(),
+            credential_pool=candidate.get("credential_pool"),
+            capability_tier=capability_tier,
+            eligible=candidate.get("eligible") is True,
+            excluded=candidate.get("excluded") is True,
+            exclusion_reason=candidate.get("exclusion_reason"),
+        )
+        expected = build_strategy_from_assistance(
+            strategy_id=f"{strategy}:{route_id}",
+            trajectory_id=trajectory_id.strip(),
+            assistance=assistance,
+            execution_tokens=execution_tokens,
+            price=price,
+            is_free=is_free,
+            qualified=candidate.get("eligible") is True,
+            free_first_preferred=True,
+            now=now,
+        )
+        offers.append(
+            ExecutionPathOffer(
+                strategy=strategy,  # type: ignore[arg-type]
+                route=route,
+                assistance_plan=plan,
+                expected_cost=expected,
+                certification_state=certification_state,
+                certification_freshness=str(candidate.get("certification_freshness", "unknown")),
+                hard_excluded=candidate.get("excluded") is True,
+                is_cheap=is_free or candidate.get("is_cheap") is True,
+                is_paid=candidate.get("is_paid") is True,
+                is_frontier=candidate.get("is_frontier") is True,
+            )
+        )
+    return ExecutionPathRequest(
+        task_slice=task_slice,
+        trajectory_id=trajectory_id.strip(),
+        offers=tuple(offers),
+        assumptions=("public_json_validated_at_api_boundary",),
+        now=now,
+    )
+
+
+def _authority_context(payload: dict[str, Any], *, task: str) -> dict[str, Any]:
+    """Reject raw decisions and replace public JSON with a trusted request."""
+
+    from verdict.execution_path import ExecutionPathError
+
+    if payload.get("execution_path_decision") is not None:
+        raise ExecutionPathError("client-supplied execution_path_decision is not accepted")
+    context = dict(payload)
+    raw = context.get(CONTEXT_EP_REQUEST)
+    if raw is not None:
+        context[CONTEXT_EP_REQUEST] = _public_execution_path_request(raw, task=task)
+    return context
 
 
 async def _route_with_intelligence(
@@ -674,7 +868,15 @@ async def _route_with_intelligence(
 
 @app.post("/v1/route")
 async def route_task(request: Request, req: RouteRequest) -> Response:
-    context = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    raw_context = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    try:
+        context = _authority_context(raw_context, task=req.task)
+    except Exception as exc:
+        from verdict.execution_path import ExecutionPathError
+
+        if isinstance(exc, ExecutionPathError):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise
     decision = await _route_with_intelligence(req.task, req.criticality, context=context)
     route_evidence, evidence_key = _start_evidence(
         decision,
@@ -1184,12 +1386,20 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         payload.get("request_id") if isinstance(payload.get("request_id"), str) else None
     )
     request_id = safe_identifier(client_request_id, prefix="req")
-    decision = await intelligence_instance.route(
-        task,
-        criticality=payload.get("criticality", "medium"),
-        context=payload,
-        request_id=request_id,
-    )
+    try:
+        authority_context = _authority_context(payload, task=task)
+        decision = await intelligence_instance.route(
+            task,
+            criticality=payload.get("criticality", "medium"),
+            context=authority_context,
+            request_id=request_id,
+        )
+    except Exception as exc:
+        from verdict.execution_path import ExecutionPathError
+
+        if isinstance(exc, ExecutionPathError):
+            return _proxy_error(400, str(exc))
+        raise
     if client_request_id is None and decision.request_id:
         # An intelligence that mints its own ids keeps them; precedence stays
         # client id → decision id → generated.
@@ -1296,7 +1506,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             edge = None
         forwarded = dict(payload)
         # Verdict-local controls must never be forwarded to an upstream provider.
-        for local_field in ("request_id", "correlation_id", "criticality", "idempotency_key"):
+        for local_field in (
+            "request_id",
+            "correlation_id",
+            "criticality",
+            "idempotency_key",
+            "execution_path_request",
+            "execution_path_decision",
+        ):
             forwarded.pop(local_field, None)
         forwarded["model"] = attempt.model
         # BOD-111: the hydrated pack the receipt describes is what the upstream
@@ -1321,6 +1538,35 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 surface=surface,
                 result=result,
             )
+            served_model = result.actual_route.model_id if result.actual_route is not None else None
+            if fatal_identity_mismatch(attempt.model, served_model):
+                attempts_used.append(
+                    {
+                        "model": attempt.model,
+                        "served_model": served_model,
+                        "route_key": attempt.route.key,
+                        "outcome": "error",
+                        "failure_class": "identity_mismatch",
+                        "transition_legal": True if index == 0 else bool(edge and edge.legal),
+                        "compatibility_rule_version": result.compatibility_rule_version,
+                        "context_pack": injection.to_dict(),
+                    }
+                )
+                record_attempt_event(
+                    attempt=attempt,
+                    event_type=f"{event_prefix}_attempt_failed",
+                    details={
+                        "status_code": result.status_code,
+                        "failure_class": "identity_mismatch",
+                        "selected_model": attempt.model,
+                        "served_model": served_model,
+                    },
+                )
+                result = None
+                last_error = RuntimeError(
+                    f"identity mismatch: selected {attempt.model!r}, served {served_model!r}"
+                )
+                break
             attempts_used.append(
                 {
                     "model": attempt.model,
