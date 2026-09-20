@@ -256,6 +256,7 @@ def test_upstream_down_does_not_fallback_to_public(monkeypatch) -> None:
         ),
     )
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("LLMGATE_LOG_PATH", "")
 
     with TestClient(api.app) as client:
