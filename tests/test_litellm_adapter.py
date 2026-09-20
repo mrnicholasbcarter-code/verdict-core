@@ -1,11 +1,10 @@
 """Targeted BOD-9 adapter tests — optional LiteLLM adapter, not authority."""
 
-import pytest
 from verdict.litellm_adapter import (
     ADAPTER_ID,
-    is_litellm_route_qualified,
-    adapter_digest,
     SUPPORTED_CAPABILITIES,
+    adapter_digest,
+    is_litellm_route_qualified,
 )
 
 
