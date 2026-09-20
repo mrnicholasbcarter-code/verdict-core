@@ -388,7 +388,7 @@ def test_hydrated_pack_is_injected_and_digest_matches_receipt(monkeypatch, tmp_p
     assert "criticality" not in forwarded
 
 
-def test_empty_pack_is_not_claimed_as_injected(monkeypatch, tmp_path) -> None:
+def test_task_contract_pack_is_injected_without_workspace_files(monkeypatch, tmp_path) -> None:
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
     transport = RecordingTransport()
     _configure(
@@ -408,10 +408,13 @@ def test_empty_pack_is_not_claimed_as_injected(monkeypatch, tmp_path) -> None:
             json={"model": "auto", "messages": user_messages, "criticality": "low"},
         )
     assert response.status_code == 200
-    assert response.headers["x-verdict-pack-injected"] == "false"
-    assert response.headers["x-verdict-pack-state"] == "empty"
-    assert "x-verdict-pack-digest" not in response.headers
-    assert transport.requests[0]["body"]["messages"] == user_messages
+    assert response.headers["x-verdict-pack-injected"] == "true"
+    assert response.headers["x-verdict-pack-state"] == "hydrated"
+    assert response.headers["x-verdict-pack-digest"].startswith("sha256:")
+    forwarded = transport.requests[0]["body"]["messages"]
+    assert forwarded[1:] == user_messages
+    assert forwarded[0]["role"] == "system"
+    assert "summarize this paragraph" in forwarded[0]["content"]
 
 
 # --- BOD-117: serving writes a post-execution outcome receipt --------------------
