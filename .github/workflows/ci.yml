@@ -153,7 +153,11 @@ jobs:
           /tmp/verdict-minimal/bin/python -m pip install --upgrade pip
           /tmp/verdict-minimal/bin/python -m pip install .
           /tmp/verdict-minimal/bin/verdict --help
-          /tmp/verdict-minimal/bin/verdict route "format this README" --criticality low --terse
+          if output=$(/tmp/verdict-minimal/bin/verdict route "format this README" --criticality low --terse --allow-offline 2>&1); then
+            echo "expected offline route to fail closed without provider execution"
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep '"transport_outcome": "error"'
       - name: Server extra smoke
         run: |
           python -m venv /tmp/verdict-server
