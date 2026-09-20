@@ -782,15 +782,7 @@ def _replay_attempt(attempt_repo: Path, repo: Path) -> None:
     # `git diff` never contains untracked files; a worker-created test file was
     # verified in the attempt and must not silently vanish on replay.
     untracked = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(attempt_repo),
-            "ls-files",
-            "-z",
-            "--others",
-            "--exclude-standard",
-        ],
+        ["git", "-C", str(attempt_repo), "ls-files", "-z", "--others", "--exclude-standard"],
         capture_output=True,
         text=True,
         check=True,

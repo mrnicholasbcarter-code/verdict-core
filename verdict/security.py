@@ -13,10 +13,10 @@ from urllib.parse import urlsplit, urlunsplit
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
     re.compile(
-        r'''(?ix)
+        r"""(?ix)
         ((?:["']?)(?:api[_-]?key|token|password|secret)(?:["']?)\s*[=:]\s*)
         (?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s&,;]+)
-        '''
+        """
     ),
 )
 

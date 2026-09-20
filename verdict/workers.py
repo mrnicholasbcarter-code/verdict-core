@@ -186,9 +186,7 @@ class OmniRouteWorkerClient:
         url = f"{self.base_url}/{path.lstrip('/')}"
         if self.transport is None:
             try:
-                url, pinned_headers, extensions = pin_upstream_url(
-                    url, self.allow_private_hosts
-                )
+                url, pinned_headers, extensions = pin_upstream_url(url, self.allow_private_hosts)
             except ValueError as exc:
                 raise WorkerUnavailableError("OmniRoute destination validation failed") from exc
             kwargs["headers"] = {**kwargs.get("headers", {}), **pinned_headers}

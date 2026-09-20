@@ -770,7 +770,7 @@ def cmd_route(
         dec = gate.route(task, criticality, context=context or None)
         dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
         if getattr(dec, "transport_outcome", "not_sent") not in {"sent", "success"}:
-            payload = {
+            error_payload = {
                 "model": getattr(dec, "model", None),
                 "provider": getattr(dec, "provider", None),
                 "transport_outcome": dec.transport_outcome,
@@ -778,7 +778,7 @@ def cmd_route(
                 "request_id": getattr(dec, "request_id", ""),
                 "execute_preview": (dec.execute_preview or "")[:500],
             }
-            print(json.dumps(payload, sort_keys=True))
+            print(json.dumps(error_payload, sort_keys=True))
             raise SystemExit(1)
         print(dec.model)
         return
