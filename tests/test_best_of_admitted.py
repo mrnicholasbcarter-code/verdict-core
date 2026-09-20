@@ -251,7 +251,10 @@ def test_live_cheap_path_executes_context_fabric_and_verification(tmp_path) -> N
         log_full_task=False,
         discovery_ttl=60,
         admit_snapshot=snapshot,
-        offload_executor=lambda model, prompt: ("sent", f"verified:{model}:alpha_widget"),
+        offload_executor=lambda model, prompt: (
+            "sent",
+            f"verified:{model}:alpha_widget:run focused tests",
+        ),
         execute_offload=True,
         passports={GHOST: _passport(GHOST), PROVEN: _passport(PROVEN)},
         confirm_transport=_ok_transport(),
@@ -281,11 +284,52 @@ def test_live_cheap_path_executes_context_fabric_and_verification(tmp_path) -> N
     assert receipt["execution_attempts"][0]["selected_model"] == decision.model
     assert receipt["execution_attempts"][0]["executed_model"] == decision.model
     assert receipt["verification"]["status"] == "passed"
+    assert receipt["verification"]["criteria"] == ["alpha_widget", "run focused tests"]
+    assert receipt["verification"]["failed_criteria"] == []
     coverage = receipt["capability_coverage"]
     assert "code.symbols" in coverage["requested"]
     assert "task.requirements" in coverage["requested"]
     assert "task.proof" in coverage["requested"]
     assert any(item["source_uri"].endswith("widget.py") for item in receipt["included_sources"])
+
+
+def test_live_cheap_path_fails_quality_when_proof_criterion_is_missing(tmp_path) -> None:
+    (tmp_path / "widget.py").write_text("def alpha_widget():\n    return 'ok'\n")
+    (tmp_path / ".git").mkdir()
+    snapshot = _snapshot()
+    svc = IntelligenceService(
+        primary_model=NAMED_DROP,
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=snapshot,
+        offload_executor=lambda model, prompt: ("sent", f"verified:{model}:alpha_widget"),
+        execute_offload=True,
+        passports={GHOST: _passport(GHOST), PROVEN: _passport(PROVEN)},
+        confirm_transport=_ok_transport(),
+        admit_now=NOW,
+        workspace_root=tmp_path,
+        context_roots=(),
+        mcp_root="",
+    )
+
+    decision = asyncio.run(
+        svc.route(
+            "inspect alpha_widget",
+            criticality="low",
+            context={
+                "proof_criteria": ["run focused tests"],
+                "expected_output_contains": "alpha_widget",
+            },
+        )
+    )
+
+    assert decision.transport_outcome == "sent"
+    assert decision.quality_outcome == "failed"
+    assert decision.admit_receipt is not None
+    assert decision.admit_receipt["verification"]["failed_criteria"] == ["run focused tests"]
 
 
 def test_best_of_admitted_selected_because_survives_evidence_embed() -> None:

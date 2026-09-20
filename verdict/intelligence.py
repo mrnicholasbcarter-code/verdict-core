@@ -689,11 +689,23 @@ class IntelligenceService:
             attempt["executed_model"] = chosen if transport_outcome == "sent" else None
         verification = {"status": "unknown", "reason": "no verification strategy executed"}
         expected = contract.get("expected_output_contains")
-        if transport_outcome == "sent" and isinstance(expected, str) and expected:
-            passed = isinstance(preview, str) and expected in preview
+        proof_criteria = tuple(
+            str(item).strip()
+            for item in contract.get("proof_criteria", ())
+            if isinstance(item, str) and item.strip()
+        )
+        required_checks: list[str] = []
+        if isinstance(expected, str) and expected.strip():
+            required_checks.append(expected.strip())
+        required_checks.extend(proof_criteria)
+        if transport_outcome == "sent" and required_checks:
+            output = preview if isinstance(preview, str) else ""
+            failed_checks = [check for check in required_checks if check not in output]
             verification = {
-                "status": "passed" if passed else "failed",
-                "reason": "expected_output_contains",
+                "status": "passed" if not failed_checks else "failed",
+                "reason": "bounded_output_contains",
+                "criteria": required_checks,
+                "failed_criteria": failed_checks,
             }
         receipt_seed = "|".join(
             [chosen, context_pack.pack_digest, transport_outcome, context_pack.prompt_digest]
