@@ -428,6 +428,35 @@ def test_response_byte_budget_stops_scheduling_after_observed_response() -> None
     assert run.observations[1].error == "budget_exhausted"
 
 
+def test_run_duration_is_total_budget_not_single_probe_timeout() -> None:
+    calls: list[str] = []
+
+    def response(model_id, payload, timeout):
+        del payload, timeout
+        calls.append(model_id)
+        time.sleep(0.02)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        }
+
+    run = ProbeRunner(
+        ProbePolicy(timeout_seconds=0.03, max_duration_seconds=0.2, max_models_per_run=3)
+    ).run_with_diagnostics(
+        ["a", "b", "c"],
+        response,
+        provider="fixture",
+        budget=ProbeBudget("fixture", max_requests=3, max_tokens=6, max_duration_seconds=0.2),
+    )
+
+    assert calls == ["a", "b", "c"]
+    assert all(item.availability_state == "ready" for item in run.observations)
+    assert run.diagnostics.max_duration_seconds == 0.2
+
+
 def test_pre_cancelled_run_never_invokes_transport() -> None:
     calls: list[str] = []
     cancel = Event()
