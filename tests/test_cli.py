@@ -7,7 +7,7 @@ import json
 import pytest
 
 from verdict import cli
-from verdict.models import ModelInfo
+from verdict.models import ModelInfo, RoutingDecision
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,14 @@ class TestSubcommandRegistration:
 
 
 class TestCmdRun:
-    def test_run_terse_routes_like_route(self, capsys):
+    def test_run_terse_routes_like_route(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            cli,
+            "_execute_cli_decision",
+            lambda _gate, _task, decision, *, allow_offline: RoutingDecision(
+                **{**decision.__dict__, "transport_outcome": "sent", "execute_preview": "ok"}
+            ),
+        )
         cli.cmd_run("deploy prod", "critical", terse=True)
         assert capsys.readouterr().out.strip() == "anthropic/claude-3-opus-20240229"
 
