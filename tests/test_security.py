@@ -7,7 +7,7 @@ import verdict.api as api
 from verdict.logger import log_decision
 from verdict.models import RoutingDecision
 from verdict.proxy import UpstreamProxy
-from verdict.security import fingerprint_text
+from verdict.security import fingerprint_text, host_is_allowed, pin_upstream_url
 
 
 def test_proxy_requires_bearer_token_by_default(monkeypatch) -> None:
@@ -53,6 +53,15 @@ def test_anonymous_mode_is_loopback_only_and_explicit(monkeypatch) -> None:
         api.validate_server_security(host="0.0.0.0")
 
 
+def test_lifespan_rejects_anonymous_non_loopback_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_HOST", "0.0.0.0")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+
+    with pytest.raises(ValueError, match="loopback-only"), TestClient(api.app):
+        pass
+
+
 def test_upstream_rejects_credentials_unsafe_schemes_and_private_hosts() -> None:
     with pytest.raises(ValueError, match="scheme"):
         UpstreamProxy("file:///etc/passwd")
@@ -73,6 +82,70 @@ def test_redaction_removes_secrets_from_exception_text() -> None:
 
     assert "provider-secret" not in message
     assert "password@example.com" not in message
+
+
+def test_redaction_removes_quoted_mapping_secrets() -> None:
+    message = api.redact_text('{"api_key":"sk-123", \'token\': \'abc\'}')
+
+    assert "sk-123" not in message
+    assert "abc" not in message
+    assert message.count("[redacted]") == 2
+
+
+def test_unix_socket_auth_mode_is_not_accepted_without_real_peer_auth() -> None:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+        with pytest.raises(ValueError, match="not supported"):
+            api.validate_server_security(
+                host="127.0.0.1",
+                token=None,
+                allow_anonymous=False,
+                unix_socket="/tmp/verdict.sock",
+            )
+
+
+def test_upstream_hostname_resolution_returns_the_validated_addresses(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "verdict.security.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+
+    assert host_is_allowed("models.example", set()) == ("93.184.216.34",)
+
+
+def test_pin_upstream_url_connects_to_validated_ip_and_preserves_tls_host(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "verdict.security.host_is_allowed",
+        lambda _host, _allowed: ("93.184.216.34",),
+    )
+
+    pinned, headers, extensions = pin_upstream_url(
+        "https://models.example:8443/v1/models", set()
+    )
+
+    assert pinned == "https://93.184.216.34:8443/v1/models"
+    assert headers == {"host": "models.example:8443"}
+    assert extensions == {"sni_hostname": "models.example"}
+
+
+def test_proxy_builds_real_request_against_pinned_destination(monkeypatch) -> None:
+    proxy = UpstreamProxy("https://models.example/v1", api_key="server-secret")
+    monkeypatch.setattr(
+        "verdict.proxy.pin_upstream_url",
+        lambda url, _allowed: (
+            url.replace("models.example", "93.184.216.34"),
+            {"host": "models.example"},
+            {"sni_hostname": "models.example"},
+        ),
+        raising=False,
+    )
+
+    request = proxy._build_request("GET", "models")
+
+    assert str(request.url) == "https://93.184.216.34/v1/models"
+    assert request.headers["host"] == "models.example"
+    assert request.headers["authorization"] == "Bearer server-secret"
+    assert request.extensions["sni_hostname"] == "models.example"
 
 
 def test_fingerprint_text_is_stable_and_non_plaintext() -> None:

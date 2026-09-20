@@ -268,14 +268,12 @@ class TestDefaultExpiryDerivation:
                 provider="p", model_id="p/model", auth_state="authorized", context_window=80
             )
 
-    def test_default_expiry_is_ttl_after_truncated_qualified_at(self) -> None:
+    def test_default_expiry_is_ttl_after_exact_qualified_at(self) -> None:
         passport = ModelPassport(
             provider="p", model_id="p/model", auth_state="authorized", context_window=80
         )
         assert passport.expires_at is not None
-        expected = passport.qualified_at.replace(second=0, microsecond=0) + timedelta(
-            seconds=PASSPORT_TTL_SECONDS
-        )
+        expected = passport.qualified_at + timedelta(seconds=PASSPORT_TTL_SECONDS)
         assert passport.expires_at == expected
         assert passport.expires_at > passport.qualified_at
 

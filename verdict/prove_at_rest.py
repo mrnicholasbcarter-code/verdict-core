@@ -110,9 +110,7 @@ def passport_from_probe(
         availability_state = "degraded"
         reason = observation.error_class or observation.error or observation.status
     qualified_at = observation.observed_at
-    expires_at = qualified_at.replace(second=0, microsecond=0) + timedelta(
-        seconds=PASSPORT_TTL_SECONDS
-    )
+    expires_at = qualified_at + timedelta(seconds=PASSPORT_TTL_SECONDS)
     return ModelPassport(
         provider=provider,
         model_id=identity_id,

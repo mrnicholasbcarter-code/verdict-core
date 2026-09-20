@@ -101,11 +101,12 @@ class ModelPassport:
         object.__setattr__(self, "qualified_at", _utc(self.qualified_at, "qualified_at"))
         if self.expires_at is _UNSET_EXPIRY:
             # Derive the default expiry from qualified_at so the two never collide.
-            # Mirrors passport_from_observation: truncate to the minute, then add the TTL.
+            # Expiry begins at the exact observation time; truncation can shorten a
+            # one-minute TTL to one second near the end of a minute.
             object.__setattr__(
                 self,
                 "expires_at",
-                self.qualified_at.replace(second=0, microsecond=0) + _ttl_delta(),
+                self.qualified_at + _ttl_delta(),
             )
         for name in ("last_verified_timestamp", "expires_at"):
             object.__setattr__(self, name, _utc(getattr(self, name), name))
@@ -428,7 +429,7 @@ def run_qualification(
     )
 
     qualified_at = current
-    expires_at = current.replace(second=0, microsecond=0) + _ttl_delta()
+    expires_at = current + _ttl_delta()
     return ModelPassport(
         provider=provider,
         model_id=model_id,

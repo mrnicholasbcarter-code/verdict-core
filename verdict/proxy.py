@@ -16,7 +16,7 @@ import httpx
 
 from verdict.capability_passports import RouteIdentity
 from verdict.responses_compatibility import adapt_responses_payload
-from verdict.security import host_is_allowed, validate_upstream_url
+from verdict.security import host_is_allowed, pin_upstream_url, validate_upstream_url
 
 _HOP_BY_HOP_HEADERS = frozenset(
     {
@@ -98,6 +98,28 @@ class UpstreamProxy:
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
 
+    def _build_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json_payload: dict[str, Any] | None = None,
+    ) -> httpx.Request:
+        """Build a credential-bearing request pinned to the validated address."""
+        url = self._url(path)
+        pinned_headers: dict[str, str] = {}
+        extensions: dict[str, str] = {}
+        if self.transport is None:
+            url, pinned_headers, extensions = pin_upstream_url(url, self.allow_private_hosts)
+        return httpx.Request(
+            method,
+            url,
+            headers={**self._headers(), **pinned_headers, **(headers or {})},
+            json=json_payload,
+            extensions=extensions,
+        )
+
     def route_identity(self, model: str, protocol: str) -> RouteIdentity:
         """Describe the configured executable route without reading gateway state."""
 
@@ -145,8 +167,8 @@ class UpstreamProxy:
         """Fetch the configured upstream model catalog without reshaping it."""
         client = self._client()
         try:
-            self._validate_destination()
-            response = await client.get(self._url("models"), headers=self._headers())
+            request = self._build_request("GET", "models")
+            response = await client.send(request)
             return BufferedUpstreamResponse(
                 status_code=response.status_code,
                 headers=self._response_headers(response),
@@ -188,16 +210,14 @@ class UpstreamProxy:
         compatibility_rule_version: str | None = None,
     ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
         client = self._client()
-        self._validate_destination()
-        request = client.build_request(
+        request = self._build_request(
             "POST",
-            self._url(path),
+            path,
             headers={
-                **self._headers(),
                 "content-type": "application/json",
                 **({"idempotency-key": idempotency_key} if idempotency_key else {}),
             },
-            json=payload,
+            json_payload=payload,
         )
         if payload.get("stream") is not True:
             try:

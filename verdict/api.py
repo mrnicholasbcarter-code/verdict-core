@@ -348,7 +348,7 @@ class ModelPassportStore:
     def put(self, passport: ModelPassport, *, now: datetime | None = None) -> None:
         current = now if now is not None else datetime.now(timezone.utc)
         self._entries[(passport.provider, passport.model_id)] = (
-            current.replace(second=0, microsecond=0) + timedelta(seconds=self._ttl),
+            current + timedelta(seconds=self._ttl),
             passport,
         )
 
@@ -537,6 +537,7 @@ def _build_model_passport_store() -> ModelPassportStore:
 async def lifespan(app: FastAPI) -> Any:
     global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
     global guidance_plane_instance
+    validate_server_security(host=os.getenv("LLMGATE_HOST", "127.0.0.1"))
     intelligence_instance = _build_intelligence()
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,
@@ -1146,7 +1147,21 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         raise HTTPException(status_code=503, detail="Proxy not initialized")
 
     max_bytes = int(os.getenv("LLMGATE_MAX_REQUEST_BYTES", str(DEFAULT_MAX_REQUEST_BYTES)))
-    body = await request.body()
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                return _proxy_error(413, "request body exceeds configured size limit")
+        except ValueError:
+            return _proxy_error(400, "content-length must be an integer")
+    body_parts: list[bytes] = []
+    body_size = 0
+    async for chunk in request.stream():
+        body_size += len(chunk)
+        if body_size > max_bytes:
+            return _proxy_error(413, "request body exceeds configured size limit")
+        body_parts.append(chunk)
+    body = b"".join(body_parts)
     if len(body) > max_bytes:
         return _proxy_error(413, "request body exceeds configured size limit")
     try:

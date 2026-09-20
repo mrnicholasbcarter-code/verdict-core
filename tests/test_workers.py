@@ -27,6 +27,22 @@ def _request(task_id: str = "task-1", model: str = "auto/best-free") -> WorkerRe
 
 
 @pytest.mark.asyncio
+async def test_worker_revalidates_destination_before_sending_bearer(monkeypatch) -> None:
+    client = OmniRouteWorkerClient(
+        "http://router.test/v1",
+        api_key="worker-secret",
+    )
+    monkeypatch.setattr(
+        "verdict.workers.pin_upstream_url",
+        lambda _url, _allowed: (_ for _ in ()).throw(ValueError("blocked rebound")),
+        raising=False,
+    )
+
+    with pytest.raises(WorkerUnavailable, match="destination"):
+        await client.discover_models()
+
+
+@pytest.mark.asyncio
 async def test_worker_discovers_live_catalog_and_forwards_selected_model() -> None:
     requests: list[tuple[str, dict[str, Any] | None]] = []
 

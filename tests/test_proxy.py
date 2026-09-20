@@ -224,6 +224,7 @@ def _configure_test_app(monkeypatch, transport: RecordingTransport) -> None:
         ),
     )
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("LLMGATE_LOG_PATH", "")
 
 
@@ -952,6 +953,58 @@ def test_proxy_rejects_oversized_and_malformed_payloads(monkeypatch) -> None:
     assert oversized.status_code == 413
     assert malformed.status_code == 400
     assert transport.requests == []
+
+
+def test_proxy_rejects_oversized_content_length_before_reading_body(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("LLMGATE_MAX_REQUEST_BYTES", "10")
+
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"content-length": "100"},
+            content=b"{}",
+        )
+
+    assert response.status_code == 413
+    assert transport.requests == []
+
+
+def test_proxy_rejects_chunked_body_once_stream_limit_is_crossed(monkeypatch) -> None:
+    import asyncio
+
+    monkeypatch.setenv("LLMGATE_MAX_REQUEST_BYTES", "10")
+    monkeypatch.setattr(api, "intelligence_instance", object())
+    monkeypatch.setattr(api, "proxy_instance", object())
+
+    class _ChunkedRequest:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+        async def stream(self):
+            yield b"123456"
+            await asyncio.sleep(0)
+            yield b"78901"
+
+    response = asyncio.run(api._relay_completion(_ChunkedRequest(), surface="chat"))
+
+    assert response.status_code == 413
+
+
+def test_model_passport_ttl_starts_at_exact_insertion_time() -> None:
+    from datetime import datetime, timezone
+
+    from verdict.model_passports import ModelPassport
+
+    now = datetime(2026, 9, 20, 12, 0, 59, tzinfo=timezone.utc)
+    passport = ModelPassport(model_id="m", provider="p", auth_state="authorized")
+    store = api.ModelPassportStore(ttl_seconds=60)
+
+    store.put(passport, now=now)
+
+    assert store.get("p", "m", now=now.replace(minute=1, second=58)) is passport
 
 
 def test_models_endpoint_forwards_upstream_catalog(monkeypatch) -> None:

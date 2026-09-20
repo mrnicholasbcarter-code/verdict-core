@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from verdict.security import validate_upstream_url
+from verdict.security import pin_upstream_url, validate_upstream_url
 
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429})
 _AUTO_MODEL_ALIASES = {
@@ -164,6 +164,7 @@ class OmniRouteWorkerClient:
             raise ValueError("retry_backoff_seconds must be in the range [0, 10]")
         private_hosts = {"127.0.0.1", "localhost", "::1"}
         private_hosts.update(host.rstrip(".").lower() for host in (allow_private_hosts or set()))
+        self.allow_private_hosts = private_hosts
         self.base_url = validate_upstream_url(base_url, allow_private_hosts=private_hosts).rstrip(
             "/"
         )
@@ -182,11 +183,21 @@ class OmniRouteWorkerClient:
         return headers
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        if self.transport is None:
+            try:
+                url, pinned_headers, extensions = pin_upstream_url(
+                    url, self.allow_private_hosts
+                )
+            except ValueError as exc:
+                raise WorkerUnavailableError("OmniRoute destination validation failed") from exc
+            kwargs["headers"] = {**kwargs.get("headers", {}), **pinned_headers}
+            kwargs["extensions"] = {**kwargs.get("extensions", {}), **extensions}
         async with httpx.AsyncClient(
             transport=self.transport, timeout=self.timeout, follow_redirects=False
         ) as client:
             try:
-                return await client.request(method, f"{self.base_url}/{path.lstrip('/')}", **kwargs)
+                return await client.request(method, url, **kwargs)
             except httpx.TimeoutException as exc:
                 raise WorkerUnavailableError("OmniRoute request timed out") from exc
             except httpx.HTTPError as exc:

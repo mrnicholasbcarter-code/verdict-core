@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import pytest
 from jsonschema import Draft202012Validator
 
@@ -30,7 +31,13 @@ from verdict.metadata import (
     refresh_metadata,
 )
 from verdict.metadata.records import CapabilityCaps, ModelMetadataRecord
-from verdict.metadata.sources import apply_soft_scores, parse_models_dev_api, parse_soft_score_table
+from verdict.metadata.sources import (
+    MODELS_DEV_API_URL,
+    HttpxJsonTransport,
+    apply_soft_scores,
+    parse_models_dev_api,
+    parse_soft_score_table,
+)
 from verdict.metadata.store import MetadataSnapshot
 
 FIXTURES = Path(__file__).resolve().parent.parent / "test_fixtures" / "metadata"
@@ -42,6 +49,20 @@ SCHEMA = json.loads(
     .parent.parent.joinpath("verdict/schemas/model-metadata.v1.json")
     .read_text()
 )
+
+
+def test_metadata_transport_revalidates_redirect_target() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(302, headers={"location": "http://127.0.0.1:9999/private"})
+
+    transport = HttpxJsonTransport(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ModelMetadataError, match="redirect"):
+        transport.get_json(MODELS_DEV_API_URL)
+    assert requests == [MODELS_DEV_API_URL]
 
 
 def _load(name: str) -> object:
