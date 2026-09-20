@@ -151,8 +151,8 @@ A recorded paired run asked the same cheaper identity one exact check twice — 
 **Failover holds without a network.**
 
 ```bash
-uv run python -m verdict failover-proof
-uv run python -m verdict replay <session>
+uv run python -m verdict failover-proof --memory-path /tmp/verdict-failover.db --json
+VERDICT_MEMORY_DB=/tmp/verdict-failover.db uv run python -m verdict replay <session-id> --json
 ```
 
 **Test and gate status.** CI runs the repository's test, lint, format, type, security, CodeQL, OSV, install, build, and contract-parity checks. The current public claim boundary and limitations are in [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md), [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md), and [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md).

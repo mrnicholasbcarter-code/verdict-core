@@ -1,4 +1,7 @@
-> **Note (BOD-17):** `tests/privacy/test_telemetry_consent.py` exercised `verdict.swarm_observability`, which was deleted with obsolete swarm architecture. Telemetry-consent product requirements remain; replace coverage under BOD-131 docs/privacy hygiene when a canonical sink exists.
+> **Current boundary:** the obsolete `verdict.swarm_observability` telemetry sink
+> was deleted with the swarm architecture. Verdict does not currently ship a
+> general-purpose telemetry emitter or a telemetry-consent CLI switch. Decision
+> and outcome logs are local execution receipts, not remote telemetry.
 
 # Telemetry Consent Policy
 
@@ -15,7 +18,7 @@ Telemetry records are redacted before they are written to the local JSONL sink.
 The sink is an observability aid; it is not a source of routing or security
 authority.
 
-## Consent states
+## Consent states for any future telemetry sink
 
 Telemetry is **opt-in**:
 
@@ -33,12 +36,10 @@ emitted by that sink.
 
 ## Verification
 
-The blocking tests are in `tests/privacy/test_telemetry_consent.py`. Run them
-with:
-
-```bash
-uv run pytest tests/privacy/test_telemetry_consent.py -v
-```
-
-The tests assert zero output in the default opt-out state and one redacted
-operational event in the explicit opt-in state.
+There is no current `tests/privacy/test_telemetry_consent.py`; documentation must
+not claim that deleted coverage is a live release gate. The present regression
+gate is `tests/test_bod17_obsolete_architecture_absent.py`, which ensures the
+removed swarm telemetry modules are not reintroduced. If a canonical telemetry
+sink is added, it must add blocking tests that prove default opt-out emits zero
+records and explicit opt-in emits only redacted operational fields before this
+document may claim an implemented consent surface.

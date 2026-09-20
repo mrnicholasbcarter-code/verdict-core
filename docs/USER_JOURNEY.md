@@ -28,12 +28,18 @@ For a credential-free route decision, run the checked-in fixture:
 verdict quickstart --non-interactive --dry-run --json
 ```
 
-For an operator-configured route preview, the syntax is positional. This is a
-local policy decision and does not send the prompt to a model:
+For an operator-configured live route, the syntax is positional. It executes a
+completion through the configured provider and fails closed when no qualified
+route remains:
 
 ```bash
 verdict route "summarize this change" --criticality low --terse
 ```
+
+Use `verdict simulate "summarize this change"` for a no-send forecast. An
+offline static-catalog decision requires both `--allow-offline` and the explicit
+`--allow-legacy-selector` migration escape; it reports `transport=not_sent` and
+must not be represented as execution.
 
 ## Mission, failover, and replay
 
@@ -67,7 +73,7 @@ Each path emits bounded, privacy-safe evidence.
 | Credential-free quickstart | production functional | `quickstart` CLI and fixture tests | demo candidates are not real providers |
 | Autonomous-dev golden path | production functional | `autodev-golden-path` tests | no claim of LLM generation |
 | Forced failover and replay | production functional | `failover-proof` CLI | simulated provider failure |
-| Live provider routing | functional but incomplete | consent-gated transport/probe tests | authorization, quota, health, and live model output are external |
+| Live provider routing | production path, externally contingent | consent-gated probes, execution receipts, and fail-closed identity checks | authorization, quota, health, and live model output remain external |
 | Adaptive/quality/cost claims | simulated only | benchmark fixtures and reports | not a production quality guarantee |
 | Dashboard and ecosystem adapters | functional but incomplete | package/import and focused adapter tests | deployment and cross-repo operation are not proven here |
 | External provider health/quota | missing | not tested in CI | requires live credentials and network |

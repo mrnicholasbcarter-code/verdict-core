@@ -17,7 +17,7 @@ verdict [global flags] <command> [args]
 
 ## Commands
 
-### `verdict route` — Route task to best model
+### `verdict route` / `verdict run` — Select and execute a qualified model
 
 ```bash
 verdict route "your task prompt" [flags]
@@ -25,31 +25,50 @@ verdict route "your task prompt" [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--terse` | Output model name only |
-| `--verbose` | Show full reasoning |
+| `--terse` | Emit compact JSON with selected model, request id, transport outcome, and preview |
 | `--criticality <level>` | `low` \| `medium` \| `high` \| `critical` |
-| `--context <json>` | Additional context for routing |
-| `--policy <name>` | Policy name to use |
+| `--allow-offline` | Disable network discovery/probes; does not enable the legacy selector |
+| `--allow-legacy-selector` | Explicit BOD-127 migration escape for the pre-BOD-104 selector |
 
 **Examples:**
 ```bash
 verdict route "Write a Rust CLI tool" --terse
-verdict route "Deploy to production" --criticality high --context '{"repo":"acme/api"}'
+verdict route "Deploy to production" --criticality high
+verdict run "Summarize the current diff" --criticality low
 ```
+
+`run` is an alias for the same live command. With a configured OpenAI-compatible
+provider, these commands perform a completion rather than merely print a routing
+forecast. `simulate` is the no-send forecasting command. For live OmniRoute
+cheap-path execution, Verdict loads the current inventory, admits only named
+free-tier identities on active providers, requires fresh prove-at-rest evidence,
+runs a bounded confirmation probe, ranks the admitted set, compiles a bounded
+provenance-aware context pack, and then sends `/v1/chat/completions`.
+
+The output is intentionally explicit:
+
+- `transport_outcome=not_sent` is not execution.
+- An empty qualified intersection exits non-zero with `model=no_eligible_target`.
+- Provider-reported model identity must match the selected identity; mismatch
+  fails closed.
+- HTTP success means only that transport succeeded. Quality remains `unknown`
+  until a verifier records a quality outcome.
+
+Use `verdict prove-at-rest once --allow-live-probe --json` to refresh health
+evidence. `verdict prove-at-rest status --json` only reads the persisted cycle
+and does not make network requests.
 
 ---
 
-### `verdict explain` — Show eligibility ranking & freshness
+### Eligibility ranking and freshness
 
-```bash
-verdict explain "your task prompt" [flags]
-```
-
-Shows candidate models, eligibility reasoning, freshness data, exclusion reasons.
+There is no standalone `verdict explain` command. Use `verdict models`,
+`verdict inspect`, and `verdict prove-at-rest status --json`
+to inspect selection, exclusions, and evidence freshness.
 
 ---
 
-### `verdict models` — List/refresh available models
+### `verdict models` — List available models
 
 ```bash
 verdict models [flags]
@@ -57,9 +76,7 @@ verdict models [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--refresh` | Force refresh from OmniRoute |
-| `--provider <name>` | Filter by provider |
-| `--free-only` | Show only free tiers |
+| `--json` | Output machine-readable JSON |
 
 ---
 
@@ -194,7 +211,7 @@ verdict serve [flags]
 |------|-------------|
 | `--host <ip>` | Host (default: 127.0.0.1) |
 | `--port <n>` | Port (default: 8000) |
-| `--workers <n>` | Uvicorn workers |
+| `--dev` | Enable hot-reload development mode |
 
 ---
 
@@ -211,8 +228,10 @@ Scans for local providers (Ollama, LM Studio, etc.) and configured API keys.
 ### `verdict probe` — Run 1-token liveness probe
 
 ```bash
-verdict probe <model_id>
+verdict probe <model_id> [<model_id> ...] --allow-live-probe [--json]
 ```
+
+Network probes require the explicit `--allow-live-probe` consent flag.
 
 ---
 
@@ -239,7 +258,7 @@ verdict doctor [flags]
 ### `verdict check` — Validate config syntax
 
 ```bash
-verdict check [config_file]
+verdict check
 ```
 
 ---
@@ -260,8 +279,7 @@ verdict stats [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--days <n>` | Lookback period |
-| `--format <type>` | `json` \| `table` \| `csv` |
+| `--log_path <path>` | Decision log to summarize |
 
 ---
 
