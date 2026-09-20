@@ -6,7 +6,13 @@ on:
       - 'v*'
 
 jobs:
+  acceptance:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/acceptance-gates.yml
+
   release:
+    needs: acceptance
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

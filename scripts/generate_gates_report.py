@@ -316,13 +316,36 @@ def _resolve_tests(gate: Gate, outcomes: dict[str, list[bool]] | None) -> Derive
 def _resolve_artifacts(gate: Gate, evidence_dir: Path) -> Derived:
     lines = []
     missing = False
+    invalid = False
     for artifact in gate.artifacts:
         path = evidence_dir / artifact
         if path.is_file() and not path.is_symlink():
-            lines.append(f"present: {artifact} ({path.stat().st_size} bytes)")
+            size = path.stat().st_size
+            if size == 0:
+                lines.append(f"FAIL: {artifact} is empty")
+                invalid = True
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                text = ""
+            if re.search(r"(?im)^\s*(?:FAILED|FAIL(?:ED)?[: ])", text):
+                lines.append(f"FAIL: {artifact} records a failed producer")
+                invalid = True
+                continue
+            if path.suffix == ".json":
+                try:
+                    json.loads(text)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    lines.append(f"FAIL: {artifact} is not valid JSON")
+                    invalid = True
+                    continue
+            lines.append(f"present: {artifact} ({size} bytes)")
         else:
             lines.append(f"MISSING: {artifact}")
             missing = True
+    if invalid:
+        return Derived("FAIL", "\n".join(lines))
     return Derived("BLOCKED" if missing else "PASS", "\n".join(lines))
 
 

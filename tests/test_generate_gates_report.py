@@ -62,12 +62,25 @@ def test_a_missing_junit_report_blocks_every_test_backed_gate(evidence_dir: Path
             assert _gate(report, gate.gate_id)["status"] == "BLOCKED"
 
 
-def test_a_present_artifact_passes_its_gate(evidence_dir: Path):
+def test_a_valid_json_artifact_passes_its_gate(evidence_dir: Path):
     evidence_dir.joinpath("benchmark_results.json").write_text("{}", encoding="utf-8")
     report = _report(evidence_dir)
     gate = _gate(report, "G6.2")
     assert gate["status"] == "PASS"
     assert "benchmark_results.json" in gate["evidence"]
+
+
+@pytest.mark.parametrize("contents", ["", "FAILED\n", "not json\n"])
+def test_empty_failed_or_invalid_artifact_never_passes(evidence_dir: Path, contents: str):
+    evidence_dir.joinpath("benchmark_results.json").write_text(contents, encoding="utf-8")
+
+    assert _gate(_report(evidence_dir), "G6.2")["status"] == "FAIL"
+
+
+def test_failed_text_artifact_never_passes(evidence_dir: Path):
+    evidence_dir.joinpath("quickstart_test.log").write_text("FAILED: core tests\n", encoding="utf-8")
+
+    assert _gate(_report(evidence_dir), "G7.1")["status"] == "FAIL"
 
 
 def test_a_failing_test_case_fails_its_gate_rather_than_blocking_it(evidence_dir: Path):
@@ -129,6 +142,25 @@ def test_a_repository_without_a_verifier_step_blocks_the_gate_workflow_check(tmp
 
 def test_this_repository_runs_the_verifier_non_advisorily():
     assert generator._check_gate_workflow(REPO_ROOT).status == "PASS"
+
+
+def test_release_requires_reusable_acceptance_workflow_before_publish():
+    release = REPO_ROOT.joinpath(".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert "uses: ./.github/workflows/acceptance-gates.yml" in release
+    assert "needs: acceptance" in release
+    assert release.index("needs: acceptance") < release.index("npm publish")
+    assert release.index("needs: acceptance") < release.index("gh-action-pypi-publish")
+
+
+def test_acceptance_evidence_producers_are_non_advisory_and_use_pipefail():
+    body = REPO_ROOT.joinpath(".github/workflows/acceptance-gates.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "workflow_call:" in body
+    assert "shell: bash -euo pipefail {0}" in body
+    assert "continue-on-error" not in body
 
 
 def test_advisory_evidence_steps_do_not_taint_the_supply_chain_check():
