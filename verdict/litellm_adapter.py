@@ -4,6 +4,7 @@ Preserves Verdict as strategy authority (BOD-104), not a second router.
 This is an optional adapter that translates LiteLLM gateway responses into
 Verdict evidence/receipt contracts without bypassing admission or context.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -37,6 +38,7 @@ def is_litellm_route_qualified(passport: dict[str, Any] | None) -> bool:
 def adapter_digest(request_body: dict[str, Any]) -> str:
     # Minimal identity for evidence/receipt (no secrets).
     import json
+
     payload = {
         "adapter": ADAPTER_ID,
         "model_preference": request_body.get("model"),
