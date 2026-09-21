@@ -651,6 +651,7 @@ class FreeTierAdmitReceipt:
     receipt_id: str | None = None
     task_profile_digest: str | None = None
     spend_policy: str | None = None
+    candidate_pool: dict[str, Any] | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -699,6 +700,7 @@ class FreeTierAdmitReceipt:
             "receipt_id": self.receipt_id,
             "task_profile_digest": self.task_profile_digest,
             "spend_policy": self.spend_policy,
+            "candidate_pool": None if self.candidate_pool is None else dict(self.candidate_pool),
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
