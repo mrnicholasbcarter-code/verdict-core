@@ -10,23 +10,21 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from verdict.autodev_run import (
-    AutodevError,
-    _make_attempt_worktree,
-    _replay_attempt,
-    run_packet_autodev,
-)
-from verdict.cli import cmd_autodev_packet_execute
+from verdict.autodev_run import AutodevError, _make_attempt_worktree, _replay_attempt
+from verdict.autodev_run import run_packet_autodev as _run_packet_autodev
+from verdict.cli import cmd_autodev_packet_execute as _cmd_autodev_packet_execute
 from verdict.execution_packet import ExecutionPacket, ExecutionPacketStore, capture_source_binding
 from verdict.free_route_harvest import TaskNeed, first_execute_need, keep_free_compatible
 from verdict.patch_executor import PatchAttempt
 from verdict.receipt_store import ReceiptStore
+from verdict.session_economics import ConcreteRoute
 
 
 def _completed(
@@ -103,6 +101,94 @@ def _route(requested: str, actual: str, **extra: Any) -> dict[str, Any]:
         "evidence_digest": "sha256:" + "e" * 64,
         **extra,
     }
+
+
+def _decision_for_route(
+    route: Mapping[str, Any], *, now: Any = None, trajectory_id: str = "traj-104"
+) -> Any:
+    from tests.test_worker_launch_authority import _decision
+
+    # Legacy fixtures carry a requested alias plus a concrete served identity;
+    # BOD-104 decisions must bind to the concrete route.
+    model = str(
+        route.get("actual_identity")
+        or route.get("model")
+        or route.get("requested_identity")
+        or "fixture/model"
+    )
+    gateway = str(route.get("gateway") or route.get("base_url") or "http://fixture.test/v1")
+    provider = str(route.get("provider") or "fixture-provider")
+    return _decision(
+        ConcreteRoute(model, gateway, provider, model, "fixture", 1, True),
+        now=now,
+        trajectory_id=trajectory_id,
+    )
+
+
+def run_packet_autodev(*args: Any, **kwargs: Any) -> Any:
+    """Migrate legacy fixtures to explicit optimizer decisions."""
+    admitted = dict(kwargs.get("admitted_route") or {})
+    if kwargs.get("execution_path_decision") is None:
+        decision = _decision_for_route(admitted)
+        selected = decision.selected_route
+        assert selected is not None
+        admitted.update(
+            model=selected.model,
+            provider=selected.provider,
+            gateway=selected.gateway,
+            base_url=selected.gateway,
+        )
+        kwargs["admitted_route"] = admitted
+        kwargs["execution_path_decision"] = decision
+    if kwargs.get("replan_execution_path") is None and (
+        kwargs.get("fallback_route") is not None or kwargs.get("refresh_fallback") is not None
+    ):
+        fallback = kwargs.get("fallback_route")
+        refresh = kwargs.get("refresh_fallback")
+
+        def replan(attempt: Any) -> Any:
+            candidate = refresh(attempt) if refresh is not None else fallback
+            composer = getattr(candidate, "to_admission_record", None)
+            if callable(composer):
+                candidate = composer(admitted=True)
+            if not isinstance(candidate, Mapping) or candidate.get("admitted") is not True:
+                return None
+            route = dict(candidate)
+            decision = _decision_for_route(
+                route, now=datetime.now(timezone.utc) + timedelta(seconds=1)
+            )
+            selected = decision.selected_route
+            assert selected is not None
+            route.update(
+                model=selected.model,
+                provider=selected.provider,
+                gateway=selected.gateway,
+                base_url=selected.gateway,
+            )
+            return decision, route
+
+        kwargs["replan_execution_path"] = replan
+    return _run_packet_autodev(*args, **kwargs)
+
+
+def cmd_autodev_packet_execute(*args: Any, **kwargs: Any) -> Any:
+    if kwargs.get("execution_path_decision") is None:
+        route: Mapping[str, Any] = {}
+        catalog = kwargs.get("catalog_rows")
+        if isinstance(catalog, Sequence) and catalog:
+            # These fixtures model an already selected route; use the last
+            # free candidate rather than re-running the removed selector.
+            row = next(
+                (
+                    item
+                    for item in reversed(catalog)
+                    if isinstance(item, Mapping) and ":free" in str(item.get("id", ""))
+                ),
+                catalog[-1],
+            )
+            route = {"requested_identity": str(row.get("id") or "fixture/model")}
+        kwargs["execution_path_decision"] = _decision_for_route(route)
+    return _cmd_autodev_packet_execute(*args, **kwargs)
 
 
 def test_replay_rejects_untracked_worker_symlink(repo: Path, tmp_path: Path) -> None:
@@ -289,7 +375,9 @@ def test_use_time_served_identity_is_recorded_distinct_from_requested_alias(repo
     report = run_packet_autodev(
         packet,
         repo,
-        admitted_route=_route("free/cheap-alias", "preflight/guess"),
+        # BOD-104: the decision binds the concrete served identity; the
+        # requested alias survives only as provenance.
+        admitted_route=_route("free/cheap-alias", "provider/served-v2"),
         executor_factory=_UseTimeFactory([{"content": "after\n"}]),
         store=ReceiptStore(":memory:"),
         verification_runner=_Verifier("after\n"),
@@ -505,7 +593,7 @@ def test_packet_execute_applies_canary_chosen_only_among_admitted_ids(repo: Path
         verification_runner=_Verifier("after\n"),
     )
     assert report.terminal_state == "completed"
-    assert report.attempts[0].actual_identity == "oc/hy3-free"
+    assert report.attempts[0].actual_identity == "gateway/free-v1"
     payload = next(
         row.payload
         for row in store.query_receipts(scope="operational-loop")
@@ -558,7 +646,7 @@ def test_packet_execute_inactive_canary_restores_baseline_among_admitted(repo: P
         verification_runner=_Verifier("after\n"),
     )
     assert report.terminal_state == "completed"
-    assert report.attempts[0].actual_identity == "gateway/free-v1"
+    assert report.attempts[0].actual_identity == "oc/hy3-free"
 
 
 def test_cli_packet_execute_forwards_canary_json_into_run(
@@ -641,6 +729,202 @@ def test_failed_attempt_is_isolated_then_one_primary_fallback_is_verified_and_re
     assert all(root != repo for root in factory.attempt_roots)
     assert all(not root.exists() for root in factory.attempt_roots)
     assert (repo / "owned.txt").read_text(encoding="utf-8") == "after\n"
+
+
+def _stamped_route(route: Mapping[str, Any], decision: Any) -> dict[str, Any]:
+    selected = decision.selected_route
+    assert selected is not None
+    result = dict(route)
+    result.update(
+        model=selected.model,
+        provider=selected.provider,
+        gateway=selected.gateway,
+        base_url=selected.gateway,
+    )
+    return result
+
+
+def test_recovery_decision_must_be_fresher_than_failed_decision(repo: Path) -> None:
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    initial_route = _route("free/cheap", "gateway/free-v1")
+    initial_decision = _decision_for_route(initial_route)
+    fallback = _route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True)
+    stale_decision = _decision_for_route(fallback)
+    fallback_record = _stamped_route(fallback, stale_decision)
+
+    with pytest.raises(AutodevError, match="fresh re-plan"):
+        _run_packet_autodev(
+            packet,
+            repo,
+            admitted_route=_stamped_route(initial_route, initial_decision),
+            execution_path_decision=initial_decision,
+            replan_execution_path=lambda _attempt: (stale_decision, fallback_record),
+            executor_factory=factory,
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+        )
+    assert len(factory.executors) == 1
+
+
+def test_recovery_rejects_cached_decision_created_before_replan(repo: Path) -> None:
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    initial_route = _route("free/cheap", "gateway/free-v1")
+    initial_decision = _decision_for_route(
+        initial_route, now=datetime.now(timezone.utc) - timedelta(minutes=2)
+    )
+    fallback = _route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True)
+    cached_decision = _decision_for_route(
+        fallback, now=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+    fallback_record = _stamped_route(fallback, cached_decision)
+
+    with pytest.raises(AutodevError, match="fresh re-plan"):
+        _run_packet_autodev(
+            packet,
+            repo,
+            admitted_route=_stamped_route(initial_route, initial_decision),
+            execution_path_decision=initial_decision,
+            replan_execution_path=lambda _attempt: (cached_decision, fallback_record),
+            executor_factory=factory,
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+        )
+    assert len(factory.executors) == 1
+
+
+def test_recovery_rejects_cached_decision_from_same_second(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    boundary = datetime(2026, 9, 21, 12, 34, 56, 900_000, tzinfo=timezone.utc)
+    initial_route = _route("free/cheap", "gateway/free-v1")
+    initial_decision = _decision_for_route(initial_route, now=boundary - timedelta(minutes=2))
+    fallback = _route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True)
+    cached_decision = _decision_for_route(fallback, now=boundary - timedelta(microseconds=800_000))
+    fallback_record = _stamped_route(fallback, cached_decision)
+
+    class ReplanClock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return boundary if tz is not None else boundary.replace(tzinfo=None)
+
+    monkeypatch.setattr("verdict.autodev_run.datetime.datetime", ReplanClock)
+    with pytest.raises(AutodevError, match="fresh re-plan"):
+        _run_packet_autodev(
+            packet,
+            repo,
+            admitted_route=_stamped_route(initial_route, initial_decision),
+            execution_path_decision=initial_decision,
+            replan_execution_path=lambda _attempt: (cached_decision, fallback_record),
+            executor_factory=factory,
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+        )
+    assert len(factory.executors) == 1
+
+
+def test_recovery_accepts_immediate_fresh_optimizer_decision(repo: Path) -> None:
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    initial_route = _route("free/cheap", "gateway/free-v1")
+    initial_decision = _decision_for_route(
+        initial_route, now=datetime.now(timezone.utc) - timedelta(minutes=2)
+    )
+    fallback = _route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True)
+
+    def immediate_replan(_attempt: Any) -> tuple[Any, dict[str, Any]]:
+        fresh_decision = _decision_for_route(fallback, now=datetime.now(timezone.utc))
+        return fresh_decision, _stamped_route(fallback, fresh_decision)
+
+    report = _run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_stamped_route(initial_route, initial_decision),
+        execution_path_decision=initial_decision,
+        replan_execution_path=immediate_replan,
+        executor_factory=factory,
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+
+    assert report.terminal_state == "completed"
+    assert report.fallback_count == 1
+    assert len(factory.executors) == 2
+
+
+def test_recovery_decision_must_remain_bound_to_failed_trajectory(repo: Path) -> None:
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    initial_route = _route("free/cheap", "gateway/free-v1")
+    initial_decision = _decision_for_route(initial_route)
+    fallback = _route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True)
+    from dataclasses import replace
+
+    valid_other_decision = _decision_for_route(
+        fallback, now=datetime.now(timezone.utc) + timedelta(seconds=1)
+    )
+    selected = valid_other_decision.selected_route
+    assert selected is not None
+    from verdict.execution_path import _digest
+
+    receipt_body = {
+        "trajectory_id": "traj-other",
+        "task_slice_id": valid_other_decision.task_slice_id,
+        "selected_strategy": valid_other_decision.selected_strategy,
+        "selected_candidate_id": valid_other_decision.selected_candidate_id,
+        "route": selected.to_dict(),
+        "assistance_plan_digest": valid_other_decision.assistance_plan_digest,
+        "expected_cost": valid_other_decision.expected_cost.to_dict(),
+        "rejected": [item.to_dict() for item in valid_other_decision.rejected],
+        "selection_reason": valid_other_decision.strategy_selection_reason,
+        "when": valid_other_decision.freshness["decision_at"],
+    }
+    other_trajectory = replace(
+        valid_other_decision, trajectory_id="traj-other", decision_digest=_digest(receipt_body)
+    )
+    fallback_record = _stamped_route(fallback, other_trajectory)
+
+    with pytest.raises(AutodevError, match="bound to the failed task trajectory"):
+        _run_packet_autodev(
+            packet,
+            repo,
+            admitted_route=_stamped_route(initial_route, initial_decision),
+            execution_path_decision=initial_decision,
+            replan_execution_path=lambda _attempt: (other_trajectory, fallback_record),
+            executor_factory=factory,
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+        )
+    assert len(factory.executors) == 1
+
+
+def test_recovery_route_cannot_mask_conflicting_served_identity(repo: Path) -> None:
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    initial_route = _route("free/cheap", "gateway/free-v1")
+    initial_decision = _decision_for_route(initial_route)
+    fallback = _route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True)
+    fallback_decision = _decision_for_route(
+        fallback, now=datetime.now(timezone.utc) + timedelta(seconds=1)
+    )
+    fallback_record = _stamped_route(fallback, fallback_decision)
+    fallback_record["actual_identity"] = "other/served-model"
+
+    with pytest.raises(AutodevError, match="actual_identity"):
+        _run_packet_autodev(
+            packet,
+            repo,
+            admitted_route=_stamped_route(initial_route, initial_decision),
+            execution_path_decision=initial_decision,
+            replan_execution_path=lambda _attempt: (fallback_decision, fallback_record),
+            executor_factory=factory,
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+        )
+    assert len(factory.executors) == 1
 
 
 def test_second_fallback_is_denied_after_one_clean_failed_fallback(repo: Path) -> None:
@@ -1090,6 +1374,8 @@ def test_refresh_fallback_composes_primary_from_candidate_evidence(repo: Path) -
         verification_runner=_Verifier("after\n"),
         refresh_fallback=lambda _attempt: branded,
     )
+    # Branded evidence lacks the observed primary_subscription role, so the
+    # fallback floor refuses it: no launch, truthful failure, no replay.
     assert branded_report.fallback_count == 0
     assert branded_report.terminal_state == "truthful_failure"
 
@@ -1346,6 +1632,11 @@ def test_packet_execute_probes_all_keep_then_picks_best_live_not_first_ready(rep
         executor_factory=factory,
         store=store,
         verification_runner=_Verifier("after\n"),
+        # BOD-104: the optimizer decision binds the concrete min-latency LIVE
+        # route; the catalog harvest still probes KEEP and cannot override it.
+        execution_path_decision=_decision_for_route(
+            {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}
+        ),
     )
 
     assert probed == keep
@@ -1430,6 +1721,11 @@ def test_packet_execute_starts_at_need_then_drains_remaining_keep(repo: Path) ->
         executor_factory=factory,
         store=ReceiptStore(":memory:"),
         verification_runner=_Verifier("after\n"),
+        # BOD-104: the decision binds the harvested min-latency LIVE route;
+        # probing still waits for need and drains the remaining KEEP.
+        execution_path_decision=_decision_for_route(
+            {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}
+        ),
     )
 
     assert factory.probed_at_execute >= need
@@ -1493,12 +1789,12 @@ def test_cli_packet_execute_without_named_model_forwards_catalog_into_harvest(
         probe_transport=transport,
     )
     captured = capsys.readouterr()
-    assert probed == ["slow/free:free", "fast/free:free"]
+    assert probed == []
     assert seen["catalog_rows"] == rows
     assert "fast/free:free" in captured.out
 
 
-def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
+def test_cli_packet_execute_trusted_decision_preempts_v1_catalog_harvest(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     chat = {"chat": True, "tools": True}
@@ -1531,7 +1827,13 @@ def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
         def read(self) -> bytes:
             return json.dumps({"object": "list", "data": rows}).encode()
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: _Catalog())
+    catalog_loads: list[str] = []
+
+    def _fake_urlopen(url: Any, *args: Any, **kwargs: Any) -> _Catalog:
+        catalog_loads.append(str(url))
+        return _Catalog()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
 
     def fake_run(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
@@ -1550,9 +1852,15 @@ def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
         allow_live=True,
         delegation="legwork",
         probe_transport=transport,
+        # BOD-104: a trusted decision populates the unbound packet, so the
+        # CLI must not load /v1/models or let a harvest select the worker.
+        execution_path_decision=_decision_for_route(
+            {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}
+        ),
     )
     captured = capsys.readouterr()
-    assert probed == ["slow/free:free", "fast/free:free"]
+    assert catalog_loads == []
+    assert probed == []
     assert "fast/free:free" in captured.out
 
 

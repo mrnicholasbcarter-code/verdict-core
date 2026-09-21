@@ -21,6 +21,7 @@ provider omitted usage are counted separately rather than estimated.
 
 from __future__ import annotations
 
+import datetime
 import errno
 import hashlib
 import json
@@ -42,7 +43,7 @@ from verdict.context_pack import (
     ContextUnit,
     SlotType,
 )
-from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL, Decomposer, DecompositionConfig
+from verdict.decomposer import Decomposer, DecompositionConfig
 from verdict.execution_packet import ExecutionPacket, capture_source_binding
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
@@ -61,36 +62,21 @@ from verdict.repository_files import (
 from verdict.repository_files import _split as _split_repository_path
 from verdict.work_unit import WorkUnit, normalize_owned_path
 
-# No model name is hardcoded as policy: the default executor route is resolved
-# dynamically from live gateway availability + the eligibility gate. This
-# constant is only the last-resort fallback when no gateway is reachable.
+# Compatibility constant for legacy reporting only. Automatic launch paths do
+# not use a default: they require a concrete BOD-104 selected route.
 DEFAULT_EXECUTOR_MODEL = "unresolved/executor"
 
 
 def _resolve_default_executor_model() -> str:
-    """Resolve the cheap-executor route from live gateway evidence, fail-open to the fallback."""
-    try:
-        from verdict.subagent_models import select_model_for_role
-
-        model = select_model_for_role("scout", dev_mode=True)
-        if model is not None and model.id:
-            return model.id
-    except Exception:
-        pass
-    return DEFAULT_EXECUTOR_MODEL
+    """Reject legacy default selection; callers must provide BOD-104 authority."""
+    raise AutodevError("automatic executor selection is disabled; provide an ExecutionPathDecision")
 
 
 def _resolve_default_orchestrator_model() -> str:
-    """Resolve the orchestrator route from live gateway evidence, fail-open to the fallback."""
-    try:
-        from verdict.subagent_models import select_model_for_role
-
-        model = select_model_for_role("oracle", dev_mode=True)
-        if model is not None and model.id:
-            return model.id
-    except Exception:
-        pass
-    return DEFAULT_ORCHESTRATOR_MODEL
+    """Reject legacy default selection; callers must provide BOD-104 authority."""
+    raise AutodevError(
+        "automatic orchestrator selection is disabled; provide an ExecutionPathDecision"
+    )
 
 
 AUTODEV_SCOPE = "autodev"
@@ -1052,11 +1038,13 @@ def run_packet_autodev(
     repo_path: str | Path,
     *,
     admitted_route: Mapping[str, Any],
+    execution_path_decision: Any = None,
     executor_factory: Any = _default_packet_executor_factory,
     store: ReceiptStore | None = None,
     verification_runner: Any = subprocess.run,
     fallback_route: Mapping[str, Any] | None = None,
     refresh_fallback: Callable[[PacketAttempt], Any] | None = None,
+    replan_execution_path: Callable[[PacketAttempt], Any] | None = None,
     classify_failure: Callable[[PacketAttempt], str | None] = _default_failure_class,
     resume: bool = False,
     worker_evidence: Mapping[str, Any] | None = None,
@@ -1071,7 +1059,34 @@ def run_packet_autodev(
     undelegable_reason: str | None = None,
     frontier_review: Callable[[PacketAttempt], str | None] | None = None,
 ) -> PacketAutodevReport:
-    """Run one admitted packet task in a clean worktree, with one fallback."""
+    """Run one packet task only on the concrete BOD-104-authorized route."""
+    decision = _require_launch_decision(execution_path_decision, surface="packet autodev")
+    selected_route = decision.selected_route
+    assert selected_route is not None  # established by _require_launch_decision
+    selected_model = selected_route.model
+    route_identity_bound = bool(
+        admitted_route.get("requested_identity") or admitted_route.get("model")
+    )
+    _require_route_identity(admitted_route, selected_model, surface="packet autodev")
+    route_provider = str(admitted_route.get("provider") or "")
+    if route_provider and route_provider != selected_route.provider:
+        raise AutodevError(
+            "packet autodev: admitted route provider does not exactly match BOD-104 decision"
+        )
+    route_gateway = str(admitted_route.get("gateway") or "")
+    if route_gateway and route_gateway != selected_route.gateway:
+        raise AutodevError("packet autodev: admitted route gateway does not match BOD-104 decision")
+    endpoint = str(admitted_route.get("base_url") or "")
+    if endpoint and endpoint.rstrip("/") != selected_route.gateway.rstrip("/"):
+        raise AutodevError("packet autodev: executor endpoint must be the BOD-104 selected gateway")
+    admitted_route = {
+        **dict(admitted_route),
+        "model": selected_model,
+        "provider": selected_route.provider,
+        "gateway": selected_route.gateway,
+        "base_url": selected_route.gateway,
+        "execution_path_decision_digest": decision.decision_digest,
+    }
     _enforce_delegation_floor(
         delegation, admitted_route, candidate_routes, undelegable_reason=undelegable_reason
     )
@@ -1080,11 +1095,7 @@ def run_packet_autodev(
             Path(repo_path).resolve(), packet, verification_runner=verification_runner
         )
     pending_keep: list[str] = []
-    if (
-        catalog_rows is not None
-        and probe_transport is not None
-        and not str(admitted_route.get("requested_identity") or "").strip()
-    ):
+    if catalog_rows is not None and probe_transport is not None and not route_identity_bound:
         from verdict.free_route_harvest import harvest_live_route
 
         harvested = harvest_live_route(catalog_rows, probe_transport)
@@ -1099,6 +1110,7 @@ def run_packet_autodev(
         admission_inventory = packet_admission_inventory(floor_routes)
     except ValueError:
         admission_inventory = {"admitted_ids": [], "ranked_ids": []}
+    canary_overlay_ignored = False
     if canary_state:
         admitted = set(admission_inventory.get("admitted_ids") or ())
         overlay = str(
@@ -1109,18 +1121,10 @@ def run_packet_autodev(
             )
             or ""
         )
-        if overlay in admitted:
-            match = next(
-                (
-                    route
-                    for route in floor_routes
-                    if str(route.get("actual_identity") or "") == overlay
-                    or str(route.get("requested_identity") or "") == overlay
-                ),
-                None,
-            )
-            if match is not None:
-                admitted_route = {**admitted_route, **dict(match)}
+        # Canary evidence can be recorded and audited, but it is not a route
+        # selector. The exact BOD-104 route remains the only launch identity.
+        if overlay in admitted and overlay not in {selected_route.route_id, selected_route.model}:
+            canary_overlay_ignored = True
 
     def drain_remaining() -> None:
         if pending_keep and probe_transport is not None:
@@ -1149,6 +1153,11 @@ def run_packet_autodev(
             **payload,
             "family_id": family_id,
             "pack_tag": pack_tag,
+            "strategy_authority": "verdict.execution_path.optimize_execution_path",
+            "execution_path_decision_digest": decision.decision_digest,
+            "execution_path_trajectory_id": decision.trajectory_id,
+            "execution_path_task_slice_id": decision.task_slice_id,
+            "execution_path_strategy": decision.selected_strategy,
         }
         namespaced = None if key is None else f"{key}:{family_id}:{pack_tag}"
         return _packet_event(ledger, stamped, key=namespaced)
@@ -1269,6 +1278,7 @@ def run_packet_autodev(
             "packet_id": packet.packet_id,
             "checkpoint": "before_inference",
             "state": "attempt_started",
+            "canary_ignored": canary_overlay_ignored,
         },
         key=f"packet:{packet.packet_id}:before-inference",
     )
@@ -1280,6 +1290,22 @@ def run_packet_autodev(
     index = 0
     while index < len(routes) and index < 2:
         route = routes[index]
+        # Re-check at the final provider boundary. Harvest/canary/fallback data
+        # may enrich evidence, but it cannot change BOD-104's exact route.
+        identity = str(
+            route.get("model")
+            or route.get("actual_identity")
+            or route.get("requested_identity")
+            or ""
+        )
+        provider = str(route.get("provider") or "")
+        gateway = str(route.get("gateway") or route.get("base_url") or "")
+        if identity != selected_route.model:
+            raise AutodevError("packet autodev: launch model drifted from BOD-104 decision")
+        if provider != selected_route.provider:
+            raise AutodevError("packet autodev: launch provider drifted from BOD-104 decision")
+        if gateway.rstrip("/") != selected_route.gateway.rstrip("/"):
+            raise AutodevError("packet autodev: launch gateway drifted from BOD-104 decision")
         attempt_repo = _make_attempt_worktree(repo, str(packet.source["commit"]))
         try:
             executor = executor_factory(attempt_repo=attempt_repo, route=route, packet=packet)
@@ -1343,7 +1369,15 @@ def run_packet_autodev(
                 actual_identity = served
             else:
                 actual_identity = str(
-                    route.get("actual_identity", getattr(result, "model", "unknown"))
+                    route.get("actual_identity") or getattr(result, "model", None) or "unknown"
+                )
+            from verdict.relay import fatal_identity_mismatch
+
+            if fatal_identity_mismatch(selected_route.model, actual_identity):
+                verified = False
+                reason = (
+                    "provider identity mismatch: BOD-104 selected "
+                    f"{selected_route.model!r}, served {actual_identity!r}"
                 )
             provisional = PacketAttempt(
                 requested_identity,
@@ -1423,17 +1457,66 @@ def run_packet_autodev(
         finally:
             _remove_attempt_worktree(repo, attempt_repo)
 
-        if index == 0 and failure_class is not None:
-            refreshed = (
-                refresh_fallback(attempt) if refresh_fallback is not None else fallback_route
-            )
-            composer = getattr(refreshed, "to_admission_record", None)
-            if callable(composer):
-                refreshed = composer(admitted=True)
-            if _route_is_admitted(refreshed, fallback=True):
-                assert refreshed is not None
-                routes.append(refreshed)
+        if index == 0 and failure_class is not None and replan_execution_path is not None:
+            # Recovery cannot append a selector-picked fallback. The caller must
+            # obtain a fresh BOD-104 decision after classifying the failure.
+            replan_started_at = datetime.datetime.now(datetime.timezone.utc)
+            refreshed = replan_execution_path(attempt)
+            if isinstance(refreshed, tuple) and len(refreshed) == 2:
+                next_decision_raw, next_route_raw = refreshed
+                next_decision = _require_launch_decision(
+                    next_decision_raw, surface="packet autodev recovery"
+                )
+                next_selected = next_decision.selected_route
+                assert next_selected is not None
+                if next_selected.route_id == selected_route.route_id:
+                    raise AutodevError("packet recovery decision must select a new route")
+                if (
+                    next_decision.trajectory_id != decision.trajectory_id
+                    or next_decision.task_slice_id != decision.task_slice_id
+                ):
+                    raise AutodevError(
+                        "packet recovery decision must stay bound to the failed task trajectory"
+                    )
+                if not _decision_is_fresher(next_decision, decision, after=replan_started_at):
+                    raise AutodevError(
+                        "packet recovery decision must be a fresh re-plan issued after "
+                        "the failed decision"
+                    )
+                next_route = dict(next_route_raw)
+                if not _route_is_admitted(next_route, fallback=True):
+                    # A recovery candidate that fails the primary-role fallback
+                    # floor is refused, never launched: bounded recovery ends in
+                    # truthful failure (main-era semantics; BOD-55).
+                    index += 1
+                    continue
+                _require_route_identity(
+                    next_route, next_selected.model, surface="packet autodev recovery"
+                )
+                if str(next_route.get("provider") or "") != next_selected.provider:
+                    raise AutodevError(
+                        "packet recovery provider does not match fresh BOD-104 decision"
+                    )
+                if str(next_route.get("gateway") or next_route.get("base_url") or "").rstrip(
+                    "/"
+                ) != next_selected.gateway.rstrip("/"):
+                    raise AutodevError(
+                        "packet recovery gateway does not match fresh BOD-104 decision"
+                    )
+                next_route.update(
+                    {
+                        "model": next_selected.model,
+                        "provider": next_selected.provider,
+                        "gateway": next_selected.gateway,
+                        "base_url": next_selected.gateway,
+                        "execution_path_decision_digest": next_decision.decision_digest,
+                    }
+                )
+                # The next loop turn uses the newly authorized exact route.
+                routes.append(next_route)
                 fallback_count = 1
+                decision = next_decision
+                selected_route = next_selected
                 with suppress(ValueError):
                     admission_inventory = packet_admission_inventory(routes)
         index += 1
@@ -1682,13 +1765,120 @@ class AutodevReport:
         return "\n".join(lines)
 
 
+def _require_route_identity(
+    record: Mapping[str, Any], selected_model: str, *, surface: str
+) -> None:
+    """Check all concrete identities; a matching alias cannot mask a mismatch."""
+
+    for field_name in ("model", "actual_identity"):
+        value = str(record.get(field_name) or "")
+        if value and value != selected_model:
+            raise AutodevError(
+                f"{surface}: admitted route {field_name} does not exactly match "
+                f"BOD-104 selected model {selected_model!r}"
+            )
+    requested_alias = str(record.get("requested_identity") or "")
+    served_identity = str(record.get("actual_identity") or "")
+    if requested_alias and requested_alias != selected_model and served_identity != selected_model:
+        raise AutodevError(
+            f"{surface}: admitted route model does not exactly match "
+            f"BOD-104 selected model {selected_model!r}"
+        )
+
+
+def _decision_is_fresher(
+    candidate: Any, previous: Any, *, after: datetime.datetime | None = None
+) -> bool:
+    """Require a recovery decision timestamp after both authority and re-plan start."""
+
+    def parse(value: Any) -> datetime.datetime:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+    try:
+        candidate_at = parse(candidate.freshness.get("decision_at"))
+        previous_at = parse(previous.freshness.get("decision_at"))
+        if after is not None:
+            if after.tzinfo is None or candidate_at <= after:
+                return False
+            # Optimizer timestamps come from the caller's request. Reject cached
+            # or fabricated far-future timestamps as well as pre-replan receipts.
+            latest_allowed = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+                seconds=5
+            )
+            if candidate_at > latest_allowed:
+                return False
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    return candidate_at > previous_at
+
+
+def _require_launch_decision(decision: Any, *, surface: str) -> Any:
+    """Require BOD-104 authority and return its concrete launch route."""
+    from verdict.execution_path import ExecutionPathDecision, ExecutionPathError
+    from verdict.serve_path import require_serve_path_decision
+    from verdict.session_economics import ConcreteRoute
+
+    if not isinstance(decision, ExecutionPathDecision):
+        raise AutodevError(
+            f"{surface}: missing ExecutionPathDecision; automatic workers may launch only "
+            "from a trusted BOD-104 decision"
+        )
+    try:
+        trusted = require_serve_path_decision(decision, surface=surface)
+    except ExecutionPathError as exc:
+        raise AutodevError(str(exc)) from exc
+    route = trusted.selected_route
+    if not isinstance(route, ConcreteRoute):
+        raise AutodevError(f"{surface}: decision must contain a concrete provider/model route")
+    if route.hard_ineligible:
+        raise AutodevError(f"{surface}: BOD-104 selected route is hard-ineligible")
+    if trusted.selected_candidate_id != route.route_id:
+        raise AutodevError(f"{surface}: decision candidate does not match its concrete route")
+    if not route.provider.strip() or not route.model.strip() or not route.gateway.strip():
+        raise AutodevError(f"{surface}: decision route requires exact gateway/provider/model")
+    if not trusted.decision_digest or not trusted.trajectory_id or not trusted.task_slice_id:
+        raise AutodevError(f"{surface}: decision is missing its digest or task binding")
+    from verdict.execution_path import _digest
+
+    decision_at = trusted.freshness.get("decision_at")
+    expected_cost = trusted.expected_cost
+    if not isinstance(decision_at, str) or expected_cost is None:
+        raise AutodevError(f"{surface}: decision is missing optimizer receipt evidence")
+    receipt_body = {
+        "trajectory_id": trusted.trajectory_id,
+        "task_slice_id": trusted.task_slice_id,
+        "selected_strategy": trusted.selected_strategy,
+        "selected_candidate_id": trusted.selected_candidate_id,
+        "route": route.to_dict(),
+        "assistance_plan_digest": trusted.assistance_plan_digest,
+        "expected_cost": expected_cost.to_dict(),
+        "rejected": [item.to_dict() for item in trusted.rejected],
+        "selection_reason": trusted.strategy_selection_reason,
+        "when": decision_at,
+    }
+    if _digest(receipt_body) != trusted.decision_digest:
+        raise AutodevError(f"{surface}: ExecutionPathDecision receipt digest is invalid")
+    return trusted
+
+
+def _assert_exact_model(configured: str | None, selected: str, *, surface: str) -> None:
+    # The decision itself supplies the mandatory exact model. A legacy CLI
+    # argument may be omitted, but if supplied it cannot override that route.
+    if configured is not None and configured != selected:
+        raise AutodevError(
+            f"{surface}: configured model {configured!r} does not match "
+            f"BOD-104 selected model {selected!r}"
+        )
+
+
 def run_autodev(
     objective: str,
     repo_path: str | Path,
     *,
+    execution_path_decision: Any = None,
     orchestrator_model: str | None = None,
     executor_model: str | None = None,
-    base_url: str = DEFAULT_BASE_URL,
+    base_url: str | None = None,
     api_key: str | None = None,
     store: ReceiptStore | None = None,
     decomposer: Decomposer | None = None,
@@ -1698,9 +1888,33 @@ def run_autodev(
     runner: Any = subprocess.run,
 ) -> AutodevReport:
     """Decompose ``objective``, execute each unit, verify it, and record it."""
-    # Model routes resolve from live gateway availability, never a hardcoded name.
-    executor_model = executor_model or _resolve_default_executor_model()
-    orchestrator_model = orchestrator_model or _resolve_default_orchestrator_model()
+    # BOD-104 is the only strategy/route authority for automatic worker launch.
+    # Resolve the decision before constructing a provider-backed executor.
+    decision = _require_launch_decision(execution_path_decision, surface="autodev")
+    selected_route = decision.selected_route
+    assert selected_route is not None  # established by _require_launch_decision
+    _assert_exact_model(executor_model, selected_route.model, surface="autodev executor")
+    executor_model = selected_route.model
+    if base_url is not None and base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
+        raise AutodevError(
+            "autodev: configured gateway does not match BOD-104 selected gateway "
+            f"{selected_route.gateway!r}"
+        )
+    base_url = selected_route.gateway
+    if executor is not None:
+        _assert_exact_model(executor.config.model, selected_route.model, surface="autodev executor")
+        if executor.config.base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
+            raise AutodevError("autodev: injected executor gateway does not match BOD-104 decision")
+    if decomposer is not None:
+        _assert_exact_model(
+            decomposer.config.model, selected_route.model, surface="autodev orchestrator"
+        )
+        if decomposer.config.base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
+            raise AutodevError(
+                "autodev: injected decomposer gateway does not match BOD-104 decision"
+            )
+    _assert_exact_model(orchestrator_model, selected_route.model, surface="autodev orchestrator")
+    orchestrator_model = selected_route.model
     repo = Path(repo_path).resolve()
     if not (repo / ".git").exists():
         raise AutodevError(f"not a git repository: {repo}")
@@ -1726,6 +1940,12 @@ def run_autodev(
             {
                 "objective": objective,
                 "orchestrator_model": plan.model,
+                "strategy_authority": "verdict.execution_path.optimize_execution_path",
+                "execution_path_decision_digest": decision.decision_digest,
+                "execution_path_trajectory_id": decision.trajectory_id,
+                "execution_path_task_slice_id": decision.task_slice_id,
+                "execution_path_strategy": decision.selected_strategy,
+                "execution_path_selected_route": decision.selected_route.to_dict(),
                 **outcome.to_dict(),
                 "verification_command": list(unit.verification_command),
                 "owned_files": list(unit.owned_files),

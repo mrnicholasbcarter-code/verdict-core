@@ -1215,17 +1215,55 @@ def cmd_probe(
         sys.exit(1)
 
 
+def _execution_path_decision_from_request_file(path: str, *, task: str) -> Any:
+    """Build the mandatory BOD-104 decision in-process from the public contract."""
+
+    from verdict.execution_path import optimize_execution_path
+    from verdict.subagent_resolver import public_execution_path_request
+
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    return optimize_execution_path(public_execution_path_request(raw, task=task))
+
+
+def _cli_execution_path_decision(
+    parser: argparse.ArgumentParser,
+    request_path: str | None,
+    *,
+    packet_path: str | None = None,
+    task: str | None = None,
+) -> Any:
+    """Load a public request and bind it to the CLI task or packet objective."""
+
+    if request_path is None:
+        return None
+    if task is None:
+        if packet_path is None:
+            parser.error("--execution-path-request requires a task objective")
+        try:
+            packet_raw = json.loads(Path(packet_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            parser.error(f"cannot read packet for execution-path request binding: {exc}")
+        task = str(packet_raw.get("objective") or "") if isinstance(packet_raw, dict) else ""
+        if not task.strip():
+            parser.error("packet must carry a non-empty objective for --execution-path-request")
+    try:
+        return _execution_path_decision_from_request_file(request_path, task=task)
+    except Exception as exc:
+        parser.error(f"execution-path request is invalid: {exc}")
+
+
 def cmd_autodev(
     objective: str,
     repo: str,
     *,
     orchestrator_model: str | None,
     executor_model: str | None,
-    base_url: str,
+    base_url: str | None,
     output_json: bool = False,
     allow_live: bool = False,
     no_mechanical: bool = False,
     dry_run: bool = False,
+    execution_path_decision: Any = None,
 ) -> None:
     """Decompose an objective, execute each unit, verify it, and record the outcome.
 
@@ -1234,15 +1272,29 @@ def cmd_autodev(
     cost without executing any unit.
     """
     from verdict.autodev_run import (
-        _resolve_default_executor_model,
-        _resolve_default_orchestrator_model,
+        AutodevError,
+        _assert_exact_model,
+        _require_launch_decision,
         collect_ruff_evidence,
         run_autodev,
     )
     from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
 
-    orchestrator_model = orchestrator_model or _resolve_default_orchestrator_model()
-    executor_model = executor_model or _resolve_default_executor_model()
+    decision = _require_launch_decision(execution_path_decision, surface="autodev CLI")
+    selected_route = decision.selected_route
+    assert selected_route is not None
+    _assert_exact_model(executor_model, selected_route.model, surface="autodev CLI executor")
+    _assert_exact_model(
+        orchestrator_model, selected_route.model, surface="autodev CLI orchestrator"
+    )
+    executor_model = selected_route.model
+    orchestrator_model = selected_route.model
+    if base_url is not None and base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
+        raise AutodevError(
+            "autodev CLI: --base-url must match the BOD-104 selected gateway "
+            f"{selected_route.gateway!r}"
+        )
+    base_url = selected_route.gateway
     repo_path = Path(repo).resolve()
     if not allow_live:
         message = (
@@ -1287,6 +1339,7 @@ def cmd_autodev(
             repo_path,
             orchestrator_model=orchestrator_model,
             executor_model=executor_model,
+            execution_path_decision=decision,
             base_url=base_url,
             api_key=api_key,
             evidence=evidence,
@@ -1321,6 +1374,7 @@ def cmd_autodev_packet_execute(
     canary_path: str | None = None,
     delegation: str | None = None,
     undelegable_reason: str | None = None,
+    execution_path_decision: Any = None,
 ) -> None:
     """Execute or resume one bounded packet work unit through an admitted route.
 
@@ -1364,9 +1418,72 @@ def cmd_autodev_packet_execute(
             console.print(f"[bold red]refused before any gateway request: {exc}[/bold red]")
         raise SystemExit(1) from exc
 
+    from verdict.autodev_run import _require_launch_decision
+
+    decision = _require_launch_decision(execution_path_decision, surface="packet execute CLI")
+    selected_route = decision.selected_route
+    assert selected_route is not None
     route = dict(packet.route_attempts[-1]) if packet.route_attempts else {}
-    if base_url:
-        route["base_url"] = base_url
+    if base_url and base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
+        message = "--base-url does not match the BOD-104 selected gateway"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    packet_provider = str(route.get("provider") or "")
+    packet_gateway = str(route.get("gateway") or "")
+    packet_endpoint = str(route.get("base_url") or "")
+    if packet_provider and packet_provider != selected_route.provider:
+        message = "packet route provider does not match the BOD-104 ExecutionPathDecision"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    if packet_gateway and packet_gateway != selected_route.gateway:
+        message = "packet route gateway does not match the BOD-104 ExecutionPathDecision"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    if packet_endpoint and packet_endpoint.rstrip("/") != selected_route.gateway.rstrip("/"):
+        message = "packet route endpoint does not match the BOD-104 selected gateway"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    requested = str(route.get("requested_identity") or route.get("model") or "")
+    route_identity = str(route.get("model") or route.get("actual_identity") or requested)
+    route_was_unbound = not requested
+    if route_identity and route_identity != selected_route.model:
+        message = "packet route model does not exactly match the BOD-104 ExecutionPathDecision"
+        if output_json:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            console.print(f"[bold red]{message}[/bold red]")
+        raise SystemExit(1)
+    route["provider"] = selected_route.provider
+    route["gateway"] = selected_route.gateway
+    route["base_url"] = selected_route.gateway
+    if route_was_unbound:
+        # A trusted decision is itself the admission source when a packet has
+        # no historical route attempt. Do not let a later catalog harvest
+        # select a different worker.
+        route["requested_identity"] = selected_route.model
+        route["model"] = selected_route.model
+        route["actual_identity"] = selected_route.model
+        route["admitted"] = True
+        route["evidence_digest"] = next(
+            (
+                digest
+                for digest in decision.evidence_digests.values()
+                if str(digest).startswith("sha256:")
+            ),
+            decision.decision_digest,
+        )
     try:
         refuse_opaque_family_route(route)
     except AutodevError as exc:
@@ -1450,6 +1567,7 @@ def cmd_autodev_packet_execute(
         packet,
         Path(repo).expanduser().resolve(),
         admitted_route=route,
+        execution_path_decision=decision,
         fallback_route=fallback_route,
         resume=resume,
         catalog_rows=catalog_rows,
@@ -3001,14 +3119,18 @@ def main() -> None:
     autodev_p.add_argument(
         "--orchestrator-model",
         default=None,
-        help="Model that decomposes and plans (default: resolved from live gateway availability)",
+        help="Optional model assertion; route is supplied by the BOD-104 ExecutionPathDecision",
     )
     autodev_p.add_argument(
         "--executor-model",
         default=None,
-        help="Cheap route that executes units (default: resolved from live gateway availability)",
+        help="Optional exact model assertion; the BOD-104 decision supplies the worker route",
     )
-    autodev_p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OpenAI-compatible gateway")
+    autodev_p.add_argument(
+        "--base-url",
+        default=None,
+        help="Optional gateway assertion; BOD-104 decision supplies the route",
+    )
     autodev_p.add_argument("--json", action="store_true", help="Emit the machine-readable report")
     autodev_p.add_argument(
         "--allow-live",
@@ -3023,6 +3145,14 @@ def main() -> None:
     autodev_p.add_argument(
         "--dry-run", action="store_true", help="Show the plan and its cost without executing"
     )
+    autodev_p.add_argument(
+        "--execution-path-request",
+        default=None,
+        help=(
+            "public execution-path request JSON; the in-process optimizer "
+            "decision is the launch authority (BOD-104)"
+        ),
+    )
     packet_p = autodev_p.add_subparsers(dest="autodev_action")
     packet_root = packet_p.add_parser("packet", help="Portable packet operations")
     packet_actions = packet_root.add_subparsers(dest="packet_action", required=True)
@@ -3035,6 +3165,14 @@ def main() -> None:
         if action == "resume":
             action_p.add_argument("--model", required=True)
         if action == "execute":
+            action_p.add_argument(
+                "--execution-path-request",
+                default=None,
+                help=(
+                    "public execution-path request JSON; the in-process optimizer "
+                    "decision is the launch authority (BOD-104)"
+                ),
+            )
             action_p.add_argument("--repo", required=True)
             action_p.add_argument(
                 "--allow-live",
@@ -3918,6 +4056,9 @@ def main() -> None:
                 else:
                     cmd_autodev_packet_canary(args.episodes, args.admitted, output_json=args.json)
             elif args.packet_action == "execute":
+                decision = _cli_execution_path_decision(
+                    parser, getattr(args, "execution_path_request", None), packet_path=args.packet
+                )
                 cmd_autodev_packet_execute(
                     args.packet,
                     getattr(args, "repo", "."),
@@ -3930,6 +4071,7 @@ def main() -> None:
                     canary_path=getattr(args, "canary_path", None),
                     delegation=getattr(args, "delegation", None),
                     undelegable_reason=getattr(args, "undelegable_reason", None),
+                    execution_path_decision=decision,
                 )
             else:
                 cmd_autodev_packet(
@@ -3954,6 +4096,9 @@ def main() -> None:
                 allow_live=args.allow_live,
                 no_mechanical=args.no_mechanical,
                 dry_run=args.dry_run,
+                execution_path_decision=_cli_execution_path_decision(
+                    parser, getattr(args, "execution_path_request", None), task=args.objective
+                ),
             )
     elif args.command == "autodev-golden-path":
         cmd_autodev_golden_path(
