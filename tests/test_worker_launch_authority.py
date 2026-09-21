@@ -15,7 +15,7 @@ from verdict.runtime_certification import CertificationState
 from verdict.session_economics import ConcreteRoute
 
 
-def _decision(route: ConcreteRoute):
+def _decision(route: ConcreteRoute, *, now: Any = None, trajectory_id: str = "traj-104"):
     # Local proof-only fixture reuses the canonical BOD-104 contracts and optimizer.
     from tests.test_execution_path import NOW, _budget, _cost, _offer, _plan, _slice
 
@@ -37,7 +37,10 @@ def _decision(route: ConcreteRoute):
     )
     return optimize_execution_path(
         ExecutionPathRequest(
-            task_slice=_slice(), trajectory_id="traj-104", offers=(offer,), now=NOW
+            task_slice=_slice(),
+            trajectory_id=trajectory_id,
+            offers=(offer,),
+            now=NOW if now is None else now,
         )
     )
 
@@ -160,6 +163,7 @@ def test_autodev_launch_uses_decision_model_and_records_authority(tmp_path: Path
     "override, message",
     [
         ({"requested_identity": "other/model"}, "model"),
+        ({"actual_identity": "other/model"}, "actual_identity"),
         ({"provider": "provider-b"}, "provider"),
         ({"gateway": "http://other.test/v1"}, "gateway"),
         ({"base_url": "http://other.test/v1"}, "endpoint"),
@@ -181,6 +185,34 @@ def test_packet_route_must_match_authoritative_decision(
     admitted.update(override)
     invoked: list[bool] = []
     with pytest.raises(AutodevError, match=message):
+        run_packet_autodev(
+            None,
+            tmp_path,
+            admitted_route=admitted,
+            execution_path_decision=_decision(route),
+            executor_factory=lambda **kwargs: invoked.append(True),
+        )
+    assert invoked == []
+
+
+@pytest.mark.parametrize("alias", [None, ""])
+def test_packet_route_cannot_mask_conflicting_served_identity(
+    tmp_path: Path, alias: str | None
+) -> None:
+    route = ConcreteRoute(
+        "candidate", "http://gateway.test/v1", "provider-a", "provider/model", "pool", 1, True
+    )
+    admitted: dict[str, Any] = {
+        "model": route.model,
+        "provider": route.provider,
+        "gateway": route.gateway,
+        "base_url": route.gateway,
+        "actual_identity": "other/model",
+    }
+    if alias is not None:
+        admitted["requested_identity"] = alias
+    invoked: list[bool] = []
+    with pytest.raises(AutodevError, match="actual_identity"):
         run_packet_autodev(
             None,
             tmp_path,

@@ -329,3 +329,159 @@ def test_legacy_default_routes_fail_closed_without_execution_path_decision() -> 
         _resolve_default_executor_model()
     with pytest.raises(AutodevError, match="ExecutionPathDecision"):
         _resolve_default_orchestrator_model()
+
+
+def _public_request_payload() -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "trajectory_id": "traj-cli-authority",
+        "slice_id": "slice-cli-authority",
+        "acceptance_criteria": ["worker launches only on the selected route"],
+        "proof_criteria": ["selected and served identities match"],
+        "candidates": [
+            {
+                "strategy": "direct_cheap",
+                "route_id": "route-selected-model",
+                "gateway": "http://gateway.test/v1",
+                "provider": "provider-a",
+                "model": "provider/model",
+                "capability_tier": 2,
+                "eligible": True,
+                "is_free": True,
+                "execution_tokens": 16,
+                "verification_tokens": 4,
+                "certification_state": "ready",
+                "certification_freshness": "fresh",
+            }
+        ],
+    }
+
+
+def _write_request(path: Path) -> None:
+    path.write_text(json.dumps(_public_request_payload()), encoding="utf-8")
+
+
+def test_cli_request_file_builds_in_process_decision(tmp_path: Path) -> None:
+    from verdict.autodev_run import _require_launch_decision
+    from verdict.cli import _execution_path_decision_from_request_file
+
+    path = tmp_path / "request.json"
+    _write_request(path)
+    decision = _execution_path_decision_from_request_file(str(path), task="bounded task")
+    trusted = _require_launch_decision(decision, surface="test")
+    assert trusted.selected_route.model == "provider/model"
+    assert trusted.task_slice_id == "slice-cli-authority"
+
+
+def test_cli_request_file_rejects_invalid_contract(tmp_path: Path) -> None:
+    from verdict.cli import _execution_path_decision_from_request_file
+    from verdict.execution_path import ExecutionPathError
+
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps({"schema_version": "999"}), encoding="utf-8")
+    with pytest.raises(ExecutionPathError, match="schema_version"):
+        _execution_path_decision_from_request_file(str(path), task="bounded task")
+
+
+def test_cli_main_supplies_in_process_decision_to_autodev(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    import verdict.cli as cli
+
+    path = tmp_path / "request.json"
+    _write_request(path)
+    captured: dict[str, Any] = {}
+
+    def fake_cmd_autodev(*args: Any, **kwargs: Any) -> None:
+        captured["args"] = args
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "cmd_autodev", fake_cmd_autodev)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verdict",
+            "autodev",
+            "--objective",
+            "bounded task",
+            "--repo",
+            str(tmp_path),
+            "--execution-path-request",
+            str(path),
+        ],
+    )
+    cli.main()
+    decision = captured["execution_path_decision"]
+    assert decision.selected_route.model == "provider/model"
+    assert decision.task_slice_id == "slice-cli-authority"
+
+
+def test_cli_packet_execute_binds_request_to_packet_objective(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    import verdict.cli as cli
+
+    packet_path = tmp_path / "packet.json"
+    packet_path.write_text(json.dumps({"objective": "packet task"}), encoding="utf-8")
+    request_path = tmp_path / "request.json"
+    _write_request(request_path)
+    captured: dict[str, Any] = {}
+
+    def fake_execute(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "cmd_autodev_packet_execute", fake_execute)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verdict",
+            "autodev",
+            "packet",
+            "execute",
+            "--packet",
+            str(packet_path),
+            "--repo",
+            str(tmp_path),
+            "--execution-path-request",
+            str(request_path),
+        ],
+    )
+    cli.main()
+    decision = captured["execution_path_decision"]
+    assert decision.task_slice_id == "slice-cli-authority"
+    assert decision.selected_route.model == "provider/model"
+
+
+def test_resolver_main_launches_from_public_request_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    from verdict.subagent_resolver import main as resolver_main
+
+    path = tmp_path / "request.json"
+    _write_request(path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "resolver",
+            "--role",
+            "worker",
+            "--execution-path-request",
+            str(path),
+            "--task",
+            "bounded task",
+            "--json",
+        ],
+    )
+    assert resolver_main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["model_id"] == "provider/model"
+    assert payload["provider"] == "provider-a"

@@ -1215,6 +1215,43 @@ def cmd_probe(
         sys.exit(1)
 
 
+def _execution_path_decision_from_request_file(path: str, *, task: str) -> Any:
+    """Build the mandatory BOD-104 decision in-process from the public contract."""
+
+    from verdict.api import _public_execution_path_request
+    from verdict.execution_path import optimize_execution_path
+
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    return optimize_execution_path(_public_execution_path_request(raw, task=task))
+
+
+def _cli_execution_path_decision(
+    parser: argparse.ArgumentParser,
+    request_path: str | None,
+    *,
+    packet_path: str | None = None,
+    task: str | None = None,
+) -> Any:
+    """Load a public request and bind it to the CLI task or packet objective."""
+
+    if request_path is None:
+        return None
+    if task is None:
+        if packet_path is None:
+            parser.error("--execution-path-request requires a task objective")
+        try:
+            packet_raw = json.loads(Path(packet_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            parser.error(f"cannot read packet for execution-path request binding: {exc}")
+        task = str(packet_raw.get("objective") or "") if isinstance(packet_raw, dict) else ""
+        if not task.strip():
+            parser.error("packet must carry a non-empty objective for --execution-path-request")
+    try:
+        return _execution_path_decision_from_request_file(request_path, task=task)
+    except Exception as exc:
+        parser.error(f"execution-path request is invalid: {exc}")
+
+
 def cmd_autodev(
     objective: str,
     repo: str,
@@ -3108,6 +3145,14 @@ def main() -> None:
     autodev_p.add_argument(
         "--dry-run", action="store_true", help="Show the plan and its cost without executing"
     )
+    autodev_p.add_argument(
+        "--execution-path-request",
+        default=None,
+        help=(
+            "public execution-path request JSON; the in-process optimizer "
+            "decision is the launch authority (BOD-104)"
+        ),
+    )
     packet_p = autodev_p.add_subparsers(dest="autodev_action")
     packet_root = packet_p.add_parser("packet", help="Portable packet operations")
     packet_actions = packet_root.add_subparsers(dest="packet_action", required=True)
@@ -3120,6 +3165,14 @@ def main() -> None:
         if action == "resume":
             action_p.add_argument("--model", required=True)
         if action == "execute":
+            action_p.add_argument(
+                "--execution-path-request",
+                default=None,
+                help=(
+                    "public execution-path request JSON; the in-process optimizer "
+                    "decision is the launch authority (BOD-104)"
+                ),
+            )
             action_p.add_argument("--repo", required=True)
             action_p.add_argument(
                 "--allow-live",
@@ -4003,6 +4056,9 @@ def main() -> None:
                 else:
                     cmd_autodev_packet_canary(args.episodes, args.admitted, output_json=args.json)
             elif args.packet_action == "execute":
+                decision = _cli_execution_path_decision(
+                    parser, getattr(args, "execution_path_request", None), packet_path=args.packet
+                )
                 cmd_autodev_packet_execute(
                     args.packet,
                     getattr(args, "repo", "."),
@@ -4015,6 +4071,7 @@ def main() -> None:
                     canary_path=getattr(args, "canary_path", None),
                     delegation=getattr(args, "delegation", None),
                     undelegable_reason=getattr(args, "undelegable_reason", None),
+                    execution_path_decision=decision,
                 )
             else:
                 cmd_autodev_packet(
@@ -4039,6 +4096,9 @@ def main() -> None:
                 allow_live=args.allow_live,
                 no_mechanical=args.no_mechanical,
                 dry_run=args.dry_run,
+                execution_path_decision=_cli_execution_path_decision(
+                    parser, getattr(args, "execution_path_request", None), task=args.objective
+                ),
             )
     elif args.command == "autodev-golden-path":
         cmd_autodev_golden_path(

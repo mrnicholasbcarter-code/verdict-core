@@ -21,6 +21,7 @@ provider omitted usage are counted separately rather than estimated.
 
 from __future__ import annotations
 
+import datetime
 import errno
 import hashlib
 import json
@@ -1066,26 +1067,7 @@ def run_packet_autodev(
     route_identity_bound = bool(
         admitted_route.get("requested_identity") or admitted_route.get("model")
     )
-    requested_model = str(
-        admitted_route.get("model")
-        or admitted_route.get("actual_identity")
-        or admitted_route.get("requested_identity")
-        or ""
-    )
-    if requested_model and requested_model != selected_model:
-        raise AutodevError(
-            "packet autodev: admitted route model does not exactly match "
-            f"BOD-104 selected model {selected_model!r}"
-        )
-    requested_alias = str(admitted_route.get("requested_identity") or "")
-    served_identity = str(admitted_route.get("actual_identity") or "")
-    if requested_alias and requested_alias != selected_model and served_identity != selected_model:
-        # A requested alias survives only as provenance when the route's
-        # concrete served identity is itself the BOD-104 selected model.
-        raise AutodevError(
-            "packet autodev: admitted route model does not exactly match "
-            f"BOD-104 selected model {selected_model!r}"
-        )
+    _require_route_identity(admitted_route, selected_model, surface="packet autodev")
     route_provider = str(admitted_route.get("provider") or "")
     if route_provider and route_provider != selected_route.provider:
         raise AutodevError(
@@ -1478,6 +1460,7 @@ def run_packet_autodev(
         if index == 0 and failure_class is not None and replan_execution_path is not None:
             # Recovery cannot append a selector-picked fallback. The caller must
             # obtain a fresh BOD-104 decision after classifying the failure.
+            replan_started_at = datetime.datetime.now(datetime.timezone.utc)
             refreshed = replan_execution_path(attempt)
             if isinstance(refreshed, tuple) and len(refreshed) == 2:
                 next_decision_raw, next_route_raw = refreshed
@@ -1488,6 +1471,18 @@ def run_packet_autodev(
                 assert next_selected is not None
                 if next_selected.route_id == selected_route.route_id:
                     raise AutodevError("packet recovery decision must select a new route")
+                if (
+                    next_decision.trajectory_id != decision.trajectory_id
+                    or next_decision.task_slice_id != decision.task_slice_id
+                ):
+                    raise AutodevError(
+                        "packet recovery decision must stay bound to the failed task trajectory"
+                    )
+                if not _decision_is_fresher(next_decision, decision, after=replan_started_at):
+                    raise AutodevError(
+                        "packet recovery decision must be a fresh re-plan issued after "
+                        "the failed decision"
+                    )
                 next_route = dict(next_route_raw)
                 if not _route_is_admitted(next_route, fallback=True):
                     # A recovery candidate that fails the primary-role fallback
@@ -1495,18 +1490,9 @@ def run_packet_autodev(
                     # truthful failure (main-era semantics; BOD-55).
                     index += 1
                     continue
-                if (
-                    str(
-                        next_route.get("model")
-                        or next_route.get("actual_identity")
-                        or next_route.get("requested_identity")
-                        or ""
-                    )
-                    != next_selected.model
-                ):
-                    raise AutodevError(
-                        "packet recovery route model does not match fresh BOD-104 decision"
-                    )
+                _require_route_identity(
+                    next_route, next_selected.model, surface="packet autodev recovery"
+                )
                 if str(next_route.get("provider") or "") != next_selected.provider:
                     raise AutodevError(
                         "packet recovery provider does not match fresh BOD-104 decision"
@@ -1777,6 +1763,53 @@ class AutodevReport:
         for outcome in self.failed:
             lines.append(f"  FAILED {outcome.unit_id}: {outcome.reason}")
         return "\n".join(lines)
+
+
+def _require_route_identity(
+    record: Mapping[str, Any], selected_model: str, *, surface: str
+) -> None:
+    """Check all concrete identities; a matching alias cannot mask a mismatch."""
+
+    for field_name in ("model", "actual_identity"):
+        value = str(record.get(field_name) or "")
+        if value and value != selected_model:
+            raise AutodevError(
+                f"{surface}: admitted route {field_name} does not exactly match "
+                f"BOD-104 selected model {selected_model!r}"
+            )
+    requested_alias = str(record.get("requested_identity") or "")
+    served_identity = str(record.get("actual_identity") or "")
+    if requested_alias and requested_alias != selected_model and served_identity != selected_model:
+        raise AutodevError(
+            f"{surface}: admitted route model does not exactly match "
+            f"BOD-104 selected model {selected_model!r}"
+        )
+
+
+def _decision_is_fresher(
+    candidate: Any, previous: Any, *, after: datetime.datetime | None = None
+) -> bool:
+    """Require a recovery decision timestamp after both authority and re-plan start."""
+
+    def parse(value: Any) -> datetime.datetime:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+    try:
+        candidate_at = parse(candidate.freshness.get("decision_at"))
+        previous_at = parse(previous.freshness.get("decision_at"))
+        if after is not None:
+            if after.tzinfo is None or candidate_at <= after:
+                return False
+            # Optimizer timestamps come from the caller's request. Reject cached
+            # or fabricated far-future timestamps as well as pre-replan receipts.
+            latest_allowed = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+                seconds=5
+            )
+            if candidate_at > latest_allowed:
+                return False
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    return candidate_at > previous_at
 
 
 def _require_launch_decision(decision: Any, *, surface: str) -> Any:
