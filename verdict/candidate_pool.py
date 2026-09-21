@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any
@@ -33,6 +33,7 @@ from verdict.metadata.records import (
     resolve_required_name,
 )
 from verdict.metadata.store import MetadataSnapshot, lookup_omniroute_id, model_id_leaf
+from verdict.task_profile import TaskProfile
 
 # ── Drop / health / probe constants ─────────────────────────────────────────
 
@@ -326,6 +327,7 @@ class CandidatePoolReceipt:
     shortlist_digest: str
     requirements: tuple[str, ...] = ()
     eligible_count: int = 0
+    confirmation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -339,6 +341,7 @@ class CandidatePoolReceipt:
             "uncertainty": list(self.uncertainty),
             "evidence_digest": self.evidence_digest,
             "shortlist_digest": self.shortlist_digest,
+            "confirmation": None if self.confirmation is None else dict(self.confirmation),
         }
 
 
@@ -365,16 +368,31 @@ class _Survivor:
 # ── Public API ──────────────────────────────────────────────────────────────
 
 
+def fingerprint_task_profile(profile: TaskProfile) -> TaskFingerprint:
+    """Adapt the canonical pre-admission TaskProfile without reinterpreting text."""
+
+    return TaskFingerprint(
+        digest=profile.digest,
+        task_family=profile.task_family,
+        required_capabilities=profile.required_capabilities,
+        context_size=profile.min_context,
+        risk=profile.task_class_hint or "unknown",
+        objective_preview=profile.objective_preview,
+    )
+
+
 def build_candidate_pool(
     advertised: Sequence[str],
     *,
     task: str | None = None,
     task_fingerprint: TaskFingerprint | None = None,
+    task_profile: TaskProfile | None = None,
     context: Mapping[str, Any] | None = None,
     metadata: MetadataSnapshot | None,
     identity_map: IdentityMap | None = None,
     health: Mapping[str, RouteHealth] | None = None,
     evidence: Mapping[str, RouteEvidence] | None = None,
+    policy_allowed: Collection[str] | None = None,
     outcomes: Sequence[OutcomeObservation] | None = None,
     top_k: int = 8,
     probe_budget: ProbeBudget | None = None,
@@ -388,9 +406,13 @@ def build_candidate_pool(
     """
     if top_k < 1:
         raise CandidatePoolError("top_k must be >= 1")
-    if task_fingerprint is None:
+    if task_profile is not None and task_fingerprint is not None:
+        raise CandidatePoolError("task_profile and task_fingerprint are mutually exclusive")
+    if task_profile is not None:
+        task_fingerprint = fingerprint_task_profile(task_profile)
+    elif task_fingerprint is None:
         if task is None:
-            raise CandidatePoolError("task or task_fingerprint is required")
+            raise CandidatePoolError("task, task_fingerprint, or task_profile is required")
         task_fingerprint = fingerprint_task(task, context=context)
     requirements = TaskRequirements(
         names=task_fingerprint.required_capabilities,
@@ -405,7 +427,13 @@ def build_candidate_pool(
     discovered = tuple(dict.fromkeys(str(item).strip() for item in advertised if str(item).strip()))
     health_map = dict(health or {})
     evidence_map = dict(evidence or {})
-    outcome_list = tuple(outcomes or ())
+    policy_allowed_ids = None if policy_allowed is None else set(policy_allowed)
+    outcome_list = tuple(
+        sorted(
+            outcomes or (),
+            key=lambda item: json.dumps(item.to_dict(), sort_keys=True, separators=(",", ":")),
+        )
+    )
     budget = probe_budget or ProbeBudget()
 
     hard_drops: list[HardDrop] = []
@@ -415,6 +443,11 @@ def build_candidate_pool(
     alias_groups: dict[str, list[str]] = {}
 
     for route_id in discovered:
+        if policy_allowed_ids is not None and route_id not in policy_allowed_ids:
+            hard_drops.append(
+                HardDrop(route_id, DROP_POLICY, "excluded by upstream spend or eligibility policy")
+            )
+            continue
         if is_opaque_route_id(route_id):
             hard_drops.append(
                 HardDrop(route_id, DROP_OPAQUE_AUTO, "resolver alias is not concrete")
@@ -479,20 +512,30 @@ def build_candidate_pool(
         survivor.confidence = _confidence(features, survivor)
         survivor.needs_probe = _needs_probe(survivor, require_min_qualification)
 
-    # Targeted probe ladder — never probe hard drops; bound by budget.
+    # Build the diverse bounded scope *before* any active probe. A probe may
+    # shrink this scope, but it may never expand into a catalog-wide scan.
+    probe_scope_ids: set[str] | None = None
     probes: list[ProbeRecord] = []
     if probe_fn is not None and budget.max_probes > 0:
+        pre_probe = _portfolio_shortlist(survivors, alias_groups=alias_groups, top_k=top_k)
+        probe_scope_ids = {entry.route_id for entry in pre_probe}
+        probe_scope = [item for item in survivors if item.route_id in probe_scope_ids]
         probes.extend(
             _run_probe_ladder(
-                survivors,
+                probe_scope,
                 budget=budget,
                 probe_fn=probe_fn,
                 require_min_qualification=require_min_qualification,
             )
         )
 
-    # Filter survivors that failed required qualification.
-    eligible = [s for s in survivors if s.qualified]
+    # A probed pool is closed over its pre-probe Top-K. Failed qualification
+    # shrinks the pool; candidates outside it are never silently backfilled.
+    eligible = [
+        s
+        for s in survivors
+        if s.qualified and (probe_scope_ids is None or s.route_id in probe_scope_ids)
+    ]
     if require_min_qualification:
         eligible = [s for s in eligible if not s.needs_probe or _probe_passed(s, probes)]
 
@@ -646,6 +689,11 @@ def _score_features(
     else:
         features["health"] = 0.0
 
+    # Latency is a small tie-breaker, never the main quality signal.
+    latency = ev.latency_ms
+    if latency is not None and latency >= 0:
+        features["latency_fit"] = 1.0 / (1.0 + float(latency) / 1000.0)
+
     # Cost pressure — lower is better when known.
     cost = ev.cost_per_million
     if cost is None:
@@ -681,7 +729,8 @@ def _fuse_score(features: Mapping[str, float]) -> float:
     score += 0.40 * features.get("task_similarity", 0.0)
     score += 0.25 * features.get("eval_score", 0.0)
     score += 0.15 * features.get("health", 0.0)
-    score += 0.10 * features.get("cost_fit", 0.0)
+    score += 0.05 * features.get("cost_fit", 0.0)
+    score += 0.05 * features.get("latency_fit", 0.0)
     score += 0.10 * features.get("context_fit", 0.0)
     score -= 0.30 * features.get("uncertainty_penalty", 0.0)
     return round(score, 6)
@@ -824,16 +873,10 @@ def _portfolio_shortlist(
         if current is None or survivor.score > current.score:
             by_meta[meta_id] = survivor
 
-    # Also collapse near-identical family keys (same leaf) across providers when
-    # they represent the same execution risk (identical leaf name).
-    by_family: dict[str, _Survivor] = {}
-    for survivor in by_meta.values():
-        key = survivor.family_key
-        current = by_family.get(key)
-        if current is None or survivor.score > current.score:
-            by_family[key] = survivor
-
-    ranked = sorted(by_family.values(), key=lambda s: (-s.score, s.route_id))
+    # ``by_meta`` removes only proven aliases that resolve to the same Core
+    # identity. Do not collapse same-leaf IDs across providers: provider
+    # diversity must remain available to the portfolio pass.
+    ranked = sorted(by_meta.values(), key=lambda s: (-s.score, s.route_id))
 
     selected: list[_Survivor] = []
     seen_providers: set[str] = set()
@@ -985,4 +1028,5 @@ __all__ = [
     "TaskFingerprint",
     "build_candidate_pool",
     "fingerprint_task",
+    "fingerprint_task_profile",
 ]

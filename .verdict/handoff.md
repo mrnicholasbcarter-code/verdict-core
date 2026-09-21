@@ -1,68 +1,16 @@
-# Verdict Handoff
+# BOD-142 durable handoff
 
-Story: BOD-124 (harness-prime-opencode follow-through)
-Worker/harness: cursor
-Worktree: /home/nick/worktrees/bod-124-harness-prime-opencode
-Branch: feat/bod-124-harness-prime-opencode
-Base SHA: origin/main @ 9926bde (#553 claude/cursor included)
-Previous worker: none
-Objective: Phase-4 harness adapters for Prime Agent + OpenCode (discover/enable/disable/status/certify) mirroring codex/hermes/claude/cursor patterns.
-
-Completed:
-- Implemented `verdict/harness_prime.py` and `verdict/harness_opencode.py`
-- CLI: `verdict harness prime|opencode {discover,enable,disable,status,certify}`
-- Docs: `docs/guides/prime-harness.md`, `opencode-harness.md`; coding-agent-gate updated
-- Temp-dir unit tests (12); refuse OmniRoute `:20128` without `--force`; default Verdict `:8000`; backup+rollback
-- Certify reports `not-installed` when binaries missing; live enable NEEDS_OWNER
-- ruff + mypy --strict clean on new modules
-- Pushed PR https://github.com/mrnicholasbcarter-code/verdict-core/pull/555 and commented Linear BOD-124
-
-Currently working on:
-- (none — awaiting review/merge)
-
-Next exact steps:
-1. Review/merge PR #555
-2. Live enable with secrets remains NEEDS_OWNER
-
-Acceptance criteria:
-- [x] discover/status/enable/disable/certify for prime + opencode
-- [x] Graceful not-installed when prime/opencode/opencode-go missing
-- [x] Unit tests do not require binaries installed
-- [x] Refuse :20128 without --force; default :8000; backup+rollback
-- [x] ruff/mypy clean
-
-Tests/proof executed:
-- `uv run --extra dev pytest tests/test_harness_prime.py tests/test_harness_opencode.py -q` (12 passed)
-- `uv run --extra dev ruff check/format` on new modules + tests
-- `uv run --extra dev mypy --strict verdict/harness_prime.py verdict/harness_opencode.py`
-
-Files changed:
-- verdict/harness_prime.py (new)
-- verdict/harness_opencode.py (new)
-- verdict/cli.py (prime/opencode harness parsers + cmds)
-- tests/test_harness_prime.py (new)
-- tests/test_harness_opencode.py (new)
-- docs/guides/prime-harness.md (new)
-- docs/guides/opencode-harness.md (new)
-- docs/guides/coding-agent-gate.md
-- .verdict/handoff.md
-
-Contracts changed:
-- Architect-locked CLI surfaces for prime + opencode harness adapters
-
-Important decisions:
-- Rebased onto #553; CLI parsers for prime/opencode sit alongside claude/cursor/codex/hermes
-- Parity includes `not-installed` when binary absent
-- Prime writes `~/.prime/agent/models.json`; OpenCode writes `~/.config/opencode/opencode.json`
-- Never write token values; live enable NEEDS_OWNER
-
-Known failures:
-- (none)
-
-Dependencies/blockers:
-- Live enable with secrets is NEEDS_OWNER
-- Do not touch delivery.py, compaction.py, capacity_*, optimized_dispatch.py
-
-Do not / warnings:
-- Do not rewrite claude/cursor/codex/hermes modules
-- Do not force-push main
+- State: LOCAL_VALIDATION
+- Attempt: `bod-142-a1-20260921T213819Z`
+- Worktree: `/home/nick/dev/verdict-core/.worktrees/bod-142-task-fit-shortlist`
+- Branch: `feat/bod-142-task-fit-shortlist`
+- Base: `c9828a3c2e10ae7c2bc033dd959cd7608985c857`
+- Lease: generation 3, owner `prime-session-01a0c629` (superseded stale generation 2)
+- Packet: `/home/nick/dev/verdict-core/.git/verdict-prime/issues/BOD-142/packet.json`
+- Proof: `/home/nick/dev/verdict-core/.git/verdict-prime/issues/BOD-142/proof.json`
+- PR: none
+- Blockers: none
+- Decisions: hard filters before scoring; `TaskProfile` is canonical input; bounded diverse Top-K before any live confirm; unknown is not positive evidence; candidate pool never selects execution strategy/provider/model; BOD-104 authority stays unchanged.
+- Independent review (dirty diff, xai/grok-4.6 bod142-reviewer-g2): ready to commit; prior HIGH/MEDIUM live-path findings fixed; remaining MEDIUM residuals documented (pool skipped without admit snapshot; offload default-metadata skip for non-authority callers).
+- Validation before commit: STATIC passed; UNIT+INTEGRATION+ACCEPTANCE 166 passed; full pytest 2428 passed / 10 baseline failures (gateway 401, guidance status).
+- Exact next action: commit allowed files, rerun proof on exact HEAD, write proof.json, then open PR.

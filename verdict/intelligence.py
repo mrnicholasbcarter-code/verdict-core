@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from verdict.admit_prove_confirm import gate_admit_prove_confirm
+from verdict.candidate_pool import (
+    HEALTH_OK,
+    CandidatePoolError,
+    CandidatePoolReceipt,
+    RouteEvidence,
+    RouteHealth,
+    build_candidate_pool,
+)
 from verdict.capability_gate import derive_requirements, gate_capability
 from verdict.chooser import ChooserError, apply_best_of_admitted
 from verdict.classifier import classify
@@ -38,12 +46,14 @@ from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.planner import StructuredPlanner
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
-from verdict.task_profile import TaskProfileError, profile_task
+from verdict.task_profile import TaskProfile, TaskProfileError, profile_task
 from verdict.worthiness import classify_worthiness
 
 DEFAULT_PROFILE = "development"
 DEGRADED_PROFILE = "degraded"
 DEFAULT_TIMEOUT_MS = 1000
+DEFAULT_CANDIDATE_TOP_K = 4
+REASON_CANDIDATE_POOL_NOT_SHORTLISTED = "candidate_pool_not_shortlisted"
 TASK_INSTRUCTIONS_OMITTED_REASON = (
     "denied — task instructions exceed the cheap-path context budget and were not packed"
 )
@@ -109,6 +119,7 @@ class IntelligenceService:
         metadata_store_path: Path | str | None = None,
         identity_map: IdentityMap | None = None,
         require_execution_path_authority: bool | None = None,
+        candidate_top_k: int = DEFAULT_CANDIDATE_TOP_K,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -145,6 +156,9 @@ class IntelligenceService:
         # BOD-127: production/default serve fails closed without BOD-104.
         # None = derive from profile / VERDICT_REQUIRE_EXECUTION_PATH / context.
         self.require_execution_path_authority = require_execution_path_authority
+        if candidate_top_k < 1:
+            raise ValueError("candidate_top_k must be >= 1")
+        self.candidate_top_k = candidate_top_k
         # Cheap path does not require Ruflo/RuVector. Those remain optional
         # swarm/workflow adapters and must not mark routing degraded.
         self.managed_backend_status = "offline" if allow_offline else "not_used"
@@ -242,6 +256,11 @@ class IntelligenceService:
             serve_path_authority_required,
         )
 
+        if isinstance(context, dict) and "execution_path_request" in context:
+            context = dict(context)
+            context["execution_path_request"] = self._prepare_execution_path_request(
+                task_str, criticality, context, context["execution_path_request"]
+            )
         ep = resolve_execution_path_decision(context if isinstance(context, dict) else None)
         require_authority = serve_path_authority_required(
             profile=self.profile,
@@ -443,6 +462,198 @@ class IntelligenceService:
                 mapping = None
         return snapshot, mapping
 
+    def _apply_candidate_pool(
+        self,
+        receipt: FreeTierAdmitReceipt,
+        *,
+        profile: TaskProfile,
+        metadata: MetadataSnapshot,
+        identity_map: IdentityMap | None,
+        candidate_universe: Sequence[str] | None = None,
+        policy_allowed: Sequence[str] | None = None,
+    ) -> tuple[FreeTierAdmitReceipt, CandidatePoolReceipt]:
+        """Bound hard-admitted identities before any active confirmation."""
+
+        passports = self.passports or {}
+        advertised = tuple(candidate_universe or receipt.admitted)
+        evidence: dict[str, RouteEvidence] = {}
+        for model_id in advertised:
+            passport = passports.get(model_id)
+            if passport is None:
+                continue
+            cost = passport.token_cost_per_1k
+            evidence[model_id] = RouteEvidence(
+                latency_ms=passport.latency_p95,
+                cost_per_million=None if cost is None else cost * 1000.0,
+            )
+        pool = build_candidate_pool(
+            advertised,
+            task_profile=profile,
+            metadata=metadata,
+            identity_map=identity_map,
+            health={model_id: RouteHealth(state=HEALTH_OK) for model_id in advertised},
+            evidence=evidence,
+            policy_allowed=policy_allowed,
+            top_k=self.candidate_top_k,
+        )
+        hard_admitted = set(receipt.admitted)
+        shortlisted = tuple(
+            item.route_id for item in pool.shortlist if item.route_id in hard_admitted
+        )
+        shortlisted_set = set(shortlisted)
+        hard_drop_ids = {item.route_id for item in pool.hard_drops}
+        existing_drops = {(item.model_id, item.reason) for item in receipt.exclusions}
+        additions = [
+            NamedDrop(item.route_id, item.reason, item.detail)
+            for item in pool.hard_drops
+            if (item.route_id, item.reason) not in existing_drops
+        ]
+        additions.extend(
+            NamedDrop(
+                model_id,
+                REASON_CANDIDATE_POOL_NOT_SHORTLISTED,
+                f"outside bounded Top-{self.candidate_top_k} candidate pool",
+            )
+            for model_id in receipt.admitted
+            if model_id not in shortlisted_set and model_id not in hard_drop_ids
+        )
+        chosen = shortlisted[0] if shortlisted else None
+        return (
+            replace(
+                receipt,
+                admitted=shortlisted,
+                exclusions=receipt.exclusions + tuple(additions),
+                chosen=chosen,
+                empty_intersection=chosen is None,
+                free_admitted=tuple(
+                    item for item in receipt.free_admitted if item in shortlisted_set
+                ),
+                paid_admitted=tuple(
+                    item for item in receipt.paid_admitted if item in shortlisted_set
+                ),
+                candidate_pool=pool.to_dict(),
+            ),
+            pool,
+        )
+
+    def _prepare_execution_path_request(
+        self, task: str, criticality: str, context: dict[str, Any], request: Any
+    ) -> Any:
+        """Qualify live offers, then hand the bounded set to BOD-104.
+
+        Existing requests that already carry a pool receipt are immutable
+        evidence and are not rebuilt. When no live snapshot is configured,
+        compatibility callers retain their original request; production still
+        fails closed later if BOD-104 cannot produce a valid decision.
+        """
+        from verdict.execution_path import ExecutionPathError, ExecutionPathRequest
+
+        if not isinstance(request, ExecutionPathRequest) or request.pool_receipt is not None:
+            return request
+        snapshot, endpoint, live, _fetch_error = self._load_admit_snapshot()
+        if snapshot is None:
+            return request
+        metadata, identity_map = self._load_metadata()
+        if metadata is None:
+            raise ExecutionPathError(
+                "candidate pool requires Core metadata for a live execution-path request"
+            )
+        classification = classify_worthiness(task, criticality=criticality, context=context)
+        planner_caps: tuple[str, ...] = ()
+        try:
+            planned = self.planner.plan(task, context=context).task_spec
+            planner_caps = tuple(planned.required_capabilities)
+        except Exception:
+            planner_caps = ()
+        requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
+        profile = profile_task(task, context=context, requirements=requirements)
+        receipt = expand_admit_for_worthiness(
+            admit_free_tier_active(snapshot),
+            snapshot,
+            task_class=classification.task_class,
+            class_reasons=classification.class_reasons,
+            frontier_allowlist=self.frontier_allowlist,
+            spend_policy=profile.spend_policy,
+            task_profile_digest=profile.digest,
+        )
+        policy_admitted = receipt.admitted
+        receipt = gate_capability(
+            receipt, requirements, snapshot=metadata, identity_map=identity_map, now=self.admit_now
+        )
+        offered_universe = tuple(dict.fromkeys(offer.route.route_id for offer in request.offers))
+        offered_ids = set(offered_universe)
+        offered_admitted = tuple(item for item in receipt.admitted if item in offered_ids)
+        offered_set = set(offered_admitted)
+        receipt = replace(
+            receipt,
+            admitted=offered_admitted,
+            chosen=offered_admitted[0] if offered_admitted else None,
+            empty_intersection=not offered_admitted,
+            free_admitted=tuple(item for item in receipt.free_admitted if item in offered_set),
+            paid_admitted=tuple(item for item in receipt.paid_admitted if item in offered_set),
+        )
+        try:
+            receipt, pool = self._apply_candidate_pool(
+                receipt,
+                profile=profile,
+                metadata=metadata,
+                identity_map=identity_map,
+                candidate_universe=offered_universe,
+                policy_allowed=policy_admitted,
+            )
+        except CandidatePoolError as exc:
+            raise ExecutionPathError(f"candidate pool rejected live offers: {exc}") from exc
+        confirm_transport = self._resolve_confirm_transport(endpoint)
+        confirm_live = bool(
+            live and confirm_transport is not None and self.confirm_transport is None
+        )
+        confirmed = gate_admit_prove_confirm(
+            receipt,
+            passports=self.passports,
+            passport_store_path=self.passport_store_path,
+            confirm_transport=confirm_transport,
+            now=self.admit_now,
+            live=confirm_live,
+            consented=confirm_live or self.confirm_transport is not None,
+            max_confirm_candidates=self.candidate_top_k,
+        )
+        confirmed_ids = set(confirmed.admitted)
+        confirmed = replace(confirmed, candidate_pool=pool.to_dict())
+        pool = replace(
+            pool,
+            confirmation={
+                "receipt_id": confirmed.receipt_id,
+                "admitted": list(confirmed.admitted),
+                "exclusions": [item.to_dict() for item in confirmed.exclusions],
+                "passport": [
+                    item.to_dict() if hasattr(item, "to_dict") else item
+                    for item in confirmed.passport
+                ],
+                "confirm": [
+                    item.to_dict() if hasattr(item, "to_dict") else item
+                    for item in confirmed.confirm
+                ],
+            },
+        )
+        filtered_offers = tuple(
+            offer for offer in request.offers if offer.route.route_id in confirmed_ids
+        )
+        excluded = set(request.hard_excluded_ids)
+        excluded.update(offered_ids - confirmed_ids)
+        assumptions = (
+            *request.assumptions,
+            f"task_profile={profile.digest}",
+            f"candidate_pool={pool.shortlist_digest}",
+            "live_confirm_scope=candidate_pool_shortlist",
+        )
+        return replace(
+            request,
+            offers=filtered_offers,
+            pool_receipt=pool,
+            hard_excluded_ids=frozenset(excluded),
+            assumptions=assumptions,
+        )
+
     def _offload_free_tier(
         self,
         task: str,
@@ -502,13 +713,31 @@ class IntelligenceService:
             task_profile_digest=profile.digest,
         )
         metadata_snapshot, identity_map = self._load_metadata()
+        explicit_metadata = (
+            self.metadata_snapshot is not None or self.metadata_store_path is not None
+        )
+        # Compatibility callers without BOD-104 authority retain the legacy
+        # admit path. Production/authority mode must use the default Core store
+        # as the live shortlist source when it is available.
+        use_candidate_pool = explicit_metadata or self.require_execution_path_authority is True
+        metadata_for_gate = metadata_snapshot if use_candidate_pool else None
+        policy_admitted = receipt.admitted
         receipt = gate_capability(
             receipt,
             requirements,
-            snapshot=metadata_snapshot,
-            identity_map=identity_map,
+            snapshot=metadata_for_gate,
+            identity_map=identity_map if use_candidate_pool else None,
             now=self.admit_now,
         )
+        if metadata_for_gate is not None:
+            receipt, _pool = self._apply_candidate_pool(
+                receipt,
+                profile=profile,
+                metadata=metadata_for_gate,
+                identity_map=identity_map,
+                candidate_universe=policy_admitted,
+                policy_allowed=policy_admitted,
+            )
         confirm_transport = self._resolve_confirm_transport(endpoint)
         # Live OmniRoute confirm requires consent; fixture/injected transports do not.
         confirm_live = bool(
@@ -522,6 +751,7 @@ class IntelligenceService:
             now=self.admit_now,
             live=confirm_live,
             consented=confirm_live or self.confirm_transport is not None,
+            max_confirm_candidates=self.candidate_top_k,
         )
         eligibility = receipt.as_eligibility_result(snapshot)
         if self.eligibility_gate is not None:

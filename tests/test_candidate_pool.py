@@ -426,3 +426,123 @@ def test_missing_metadata_store_with_requirements_fail_closed() -> None:
         build_candidate_pool(
             [FREE_TOOLS], task="tools", context={"tools_required": True}, metadata=None, top_k=1
         )
+
+
+def test_task_profile_is_canonical_candidate_pool_input() -> None:
+    from verdict.task_profile import profile_task
+
+    profile = profile_task(
+        "repair parser",
+        context={"tools_required": True, "task_family": "coding", "spend_policy": "free_only"},
+    )
+    receipt = build_candidate_pool(
+        [FREE_TOOLS],
+        task_profile=profile,
+        metadata=_base_store(),
+        health={FREE_TOOLS: RouteHealth(state=HEALTH_OK)},
+        top_k=1,
+    )
+    assert receipt.task_fingerprint.digest == profile.digest
+    assert receipt.task_fingerprint.task_family == profile.task_family
+    assert receipt.task_fingerprint.required_capabilities == profile.required_capabilities
+
+
+def test_material_quality_beats_latency_tie_breaker() -> None:
+    strong = "strong/qualified-code"
+    fast = "fast/weaker-code"
+    store = _store(
+        (
+            _record(strong, scores=SoftScores(aa_coding=_prov(90.0))),
+            _record(fast, scores=SoftScores(aa_coding=_prov(20.0))),
+        )
+    )
+    receipt = build_candidate_pool(
+        [fast, strong],
+        task="fix code",
+        context={"tools_required": True, "task_family": "coding"},
+        metadata=store,
+        health={strong: RouteHealth(state=HEALTH_OK), fast: RouteHealth(state=HEALTH_OK)},
+        evidence={strong: RouteEvidence(latency_ms=5_000.0), fast: RouteEvidence(latency_ms=1.0)},
+        top_k=2,
+    )
+    assert next(item.route_id for item in receipt.shortlist) == strong
+
+
+def test_active_probes_are_closed_over_bounded_preprobe_topk() -> None:
+    routes = tuple(f"provider-{index}/candidate-{index}" for index in range(8))
+    store = _store(tuple(_record(route) for route in routes))
+    probed: list[str] = []
+
+    def probe(route_id: str, level: str) -> dict[str, Any]:
+        probed.append(route_id)
+        return {"ok": True, "qualified": True, "level": level}
+
+    receipt = build_candidate_pool(
+        routes,
+        task="fix code",
+        context={"tools_required": True},
+        metadata=store,
+        health={route: RouteHealth(state=HEALTH_OK) for route in routes},
+        top_k=2,
+        probe_budget=ProbeBudget(max_probes=20, max_level=PROBE_SMALL_QUAL),
+        probe_fn=probe,
+        require_min_qualification=True,
+    )
+    shortlisted = {item.route_id for item in receipt.shortlist}
+    assert len(set(probed)) <= 2
+    assert set(probed) == shortlisted
+
+
+def test_unknown_quality_is_not_positive_evidence() -> None:
+    known = "known/strong-code"
+    unknown = "unknown/mystery-code"
+    store = _store(
+        (
+            _record(known, scores=SoftScores(aa_coding=_prov(60.0))),
+            _record(unknown, scores=SoftScores()),
+        )
+    )
+    receipt = build_candidate_pool(
+        [unknown, known],
+        task="fix code",
+        context={"tools_required": True},
+        metadata=store,
+        health={known: RouteHealth(state=HEALTH_OK), unknown: RouteHealth(state=HEALTH_OK)},
+        top_k=2,
+    )
+    rows = {item.route_id: item for item in receipt.shortlist}
+    assert "eval_score" not in rows[unknown].score_features
+    assert rows[unknown].confidence < rows[known].confidence
+    assert rows[unknown].score < rows[known].score
+
+
+def test_equivalent_outcome_order_has_same_evidence_digest() -> None:
+    store = _base_store()
+    first = OutcomeObservation(route_id=FREE_TOOLS, task_family="coding", success=True)
+    second = OutcomeObservation(route_id=PAID_TOOLS, task_family="coding", success=False)
+    kwargs = dict(
+        advertised=[FREE_TOOLS, PAID_TOOLS],
+        task="tools required coding",
+        context={"tools_required": True},
+        metadata=store,
+        health={FREE_TOOLS: RouteHealth(state=HEALTH_OK), PAID_TOOLS: RouteHealth(state=HEALTH_OK)},
+        top_k=2,
+    )
+    left = build_candidate_pool(**kwargs, outcomes=[first, second])
+    right = build_candidate_pool(**kwargs, outcomes=[second, first])
+    assert left.evidence_digest == right.evidence_digest
+
+
+def test_same_leaf_different_providers_remain_available_for_diversity() -> None:
+    first = "provider-a/shared-leaf"
+    second = "provider-b/shared-leaf"
+    store = _store((_record(first), _record(second)))
+    receipt = build_candidate_pool(
+        [first, second],
+        task="fix code",
+        context={"tools_required": True},
+        metadata=store,
+        health={first: RouteHealth(state=HEALTH_OK), second: RouteHealth(state=HEALTH_OK)},
+        top_k=2,
+    )
+    assert {item.provider for item in receipt.shortlist} == {"provider-a", "provider-b"}
