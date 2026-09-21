@@ -1218,11 +1218,11 @@ def cmd_probe(
 def _execution_path_decision_from_request_file(path: str, *, task: str) -> Any:
     """Build the mandatory BOD-104 decision in-process from the public contract."""
 
-    from verdict.api import _public_execution_path_request
     from verdict.execution_path import optimize_execution_path
+    from verdict.subagent_resolver import public_execution_path_request
 
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    return optimize_execution_path(_public_execution_path_request(raw, task=task))
+    return optimize_execution_path(public_execution_path_request(raw, task=task))
 
 
 def _cli_execution_path_decision(

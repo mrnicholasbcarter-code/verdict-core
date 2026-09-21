@@ -361,12 +361,18 @@ def _write_request(path: Path) -> None:
     path.write_text(json.dumps(_public_request_payload()), encoding="utf-8")
 
 
-def test_cli_request_file_builds_in_process_decision(tmp_path: Path) -> None:
+def test_cli_request_file_builds_in_process_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
     from verdict.autodev_run import _require_launch_decision
     from verdict.cli import _execution_path_decision_from_request_file
 
     path = tmp_path / "request.json"
     _write_request(path)
+    # The core CLI must work without importing the optional FastAPI server module.
+    monkeypatch.setitem(sys.modules, "verdict.api", None)
     decision = _execution_path_decision_from_request_file(str(path), task="bounded task")
     trusted = _require_launch_decision(decision, surface="test")
     assert trusted.selected_route.model == "provider/model"
