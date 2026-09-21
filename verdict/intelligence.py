@@ -38,6 +38,7 @@ from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.planner import StructuredPlanner
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
+from verdict.task_profile import profile_task
 from verdict.worthiness import classify_worthiness
 
 DEFAULT_PROFILE = "development"
@@ -477,6 +478,10 @@ class IntelligenceService:
         except Exception:
             planner_caps = ()
         requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
+        # BOD-S1: one deterministic profile before admission; the digest and
+        # explicit spend policy ride the receipt so economic decisions are
+        # replayable and never inferred from model names.
+        profile = profile_task(task, context=context, requirements=requirements)
         receipt = admit_free_tier_active(snapshot)
         receipt = expand_admit_for_worthiness(
             receipt,
@@ -484,6 +489,8 @@ class IntelligenceService:
             task_class=classification.task_class,
             class_reasons=classification.class_reasons,
             frontier_allowlist=self.frontier_allowlist,
+            spend_policy=profile.spend_policy,
+            task_profile_digest=profile.digest,
         )
         metadata_snapshot, identity_map = self._load_metadata()
         receipt = gate_capability(
