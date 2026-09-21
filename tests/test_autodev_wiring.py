@@ -8,16 +8,12 @@ from typing import Any
 
 import pytest
 
-from verdict.autodev_run import AUTODEV_SCOPE, DEFAULT_EXECUTOR_MODEL, AutodevError, run_autodev
-from verdict.decomposer import (
-    DEFAULT_ORCHESTRATOR_MODEL,
-    Decomposer,
-    DecompositionConfig,
-    DecompositionError,
-)
-from verdict.models import ModelInfo
+from verdict.autodev_run import AUTODEV_SCOPE, AutodevError
+from verdict.autodev_run import run_autodev as _run_autodev
+from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
 from verdict.patch_executor import PatchExecutor, PatchExecutorConfig
 from verdict.receipt_store import ReceiptStore
+from verdict.session_economics import ConcreteRoute
 
 PLAN = [
     {
@@ -53,6 +49,25 @@ ESCAPING_DIFF = """diff --git a/b.py b/b.py
 """
 
 
+def run_autodev(*args: Any, **kwargs: Any) -> Any:
+    """Supply the explicit optimizer fixture required by the launch API."""
+    if kwargs.get("execution_path_decision") is None:
+        from tests.test_worker_launch_authority import _decision
+
+        kwargs["execution_path_decision"] = _decision(
+            ConcreteRoute(
+                "cheap/model",
+                "http://127.0.0.1:20128/v1",
+                "fixture-provider",
+                "cheap/model",
+                "fixture",
+                1,
+                True,
+            )
+        )
+    return _run_autodev(*args, **kwargs)
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", "."], cwd=tmp_path, check=True)
@@ -76,7 +91,10 @@ def _decomposer(plan: Any, *, usage: dict[str, int] | None = None) -> Decomposer
             body["usage"] = usage
         return {"status_code": 200, "body": body}
 
-    return Decomposer(DecompositionConfig(model="orch/model"), transport=transport)
+    return Decomposer(
+        DecompositionConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
 
 
 def _executor(repo: Path, diffs: dict[str, str]) -> PatchExecutor:
@@ -93,7 +111,11 @@ def _executor(repo: Path, diffs: dict[str, str]) -> PatchExecutor:
             },
         }
 
-    return PatchExecutor(repo, PatchExecutorConfig(model="cheap/model"), transport=transport)
+    return PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
 
 
 def test_decomposition_yields_more_than_one_validated_unit(repo: Path) -> None:
@@ -285,7 +307,11 @@ def test_missing_provider_usage_is_reported_as_unknown(repo: Path) -> None:
         repo,
         store=ReceiptStore(":memory:"),
         decomposer=_decomposer([PLAN[0]]),
-        executor=PatchExecutor(repo, PatchExecutorConfig(model="cheap/model"), transport=transport),
+        executor=PatchExecutor(
+            repo,
+            PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+            transport=transport,
+        ),
         mechanical=False,
     )
 
@@ -293,38 +319,13 @@ def test_missing_provider_usage_is_reported_as_unknown(repo: Path) -> None:
     assert "not estimated" in report.summary()
 
 
-def test_default_routes_resolve_from_live_selector_not_hardcoded_names(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_legacy_default_routes_fail_closed_without_execution_path_decision() -> None:
     from verdict.autodev_run import (
         _resolve_default_executor_model,
         _resolve_default_orchestrator_model,
     )
 
-    def fake_select(role: str, **kwargs: Any) -> ModelInfo:
-        del kwargs
-        model_id = "alt/live-executor" if role == "scout" else "alt/live-orchestrator"
-        return ModelInfo(id=model_id, provider="alt")
-
-    monkeypatch.setattr("verdict.subagent_models.select_model_for_role", fake_select)
-    assert _resolve_default_executor_model() == "alt/live-executor"
-    assert _resolve_default_orchestrator_model() == "alt/live-orchestrator"
-    assert _resolve_default_executor_model() != DEFAULT_EXECUTOR_MODEL
-    assert _resolve_default_orchestrator_model() != DEFAULT_ORCHESTRATOR_MODEL
-
-
-def test_default_routes_fall_back_when_live_selector_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from verdict.autodev_run import (
-        _resolve_default_executor_model,
-        _resolve_default_orchestrator_model,
-    )
-
-    def boom(role: str, **kwargs: Any) -> ModelInfo:
-        del role, kwargs
-        raise RuntimeError("gateway unavailable")
-
-    monkeypatch.setattr("verdict.subagent_models.select_model_for_role", boom)
-    assert _resolve_default_executor_model() == DEFAULT_EXECUTOR_MODEL
-    assert _resolve_default_orchestrator_model() == DEFAULT_ORCHESTRATOR_MODEL
+    with pytest.raises(AutodevError, match="ExecutionPathDecision"):
+        _resolve_default_executor_model()
+    with pytest.raises(AutodevError, match="ExecutionPathDecision"):
+        _resolve_default_orchestrator_model()

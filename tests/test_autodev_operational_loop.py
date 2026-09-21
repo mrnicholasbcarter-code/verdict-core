@@ -10,23 +10,20 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from verdict.autodev_run import (
-    AutodevError,
-    _make_attempt_worktree,
-    _replay_attempt,
-    run_packet_autodev,
-)
-from verdict.cli import cmd_autodev_packet_execute
+from verdict.autodev_run import AutodevError, _make_attempt_worktree, _replay_attempt
+from verdict.autodev_run import run_packet_autodev as _run_packet_autodev
+from verdict.cli import cmd_autodev_packet_execute as _cmd_autodev_packet_execute
 from verdict.execution_packet import ExecutionPacket, ExecutionPacketStore, capture_source_binding
 from verdict.free_route_harvest import TaskNeed, first_execute_need, keep_free_compatible
 from verdict.patch_executor import PatchAttempt
 from verdict.receipt_store import ReceiptStore
+from verdict.session_economics import ConcreteRoute
 
 
 def _completed(
@@ -103,6 +100,86 @@ def _route(requested: str, actual: str, **extra: Any) -> dict[str, Any]:
         "evidence_digest": "sha256:" + "e" * 64,
         **extra,
     }
+
+
+def _decision_for_route(route: Mapping[str, Any]) -> Any:
+    from tests.test_worker_launch_authority import _decision
+
+    # Legacy fixtures carry a requested alias plus a concrete served identity;
+    # BOD-104 decisions must bind to the concrete route.
+    model = str(
+        route.get("actual_identity")
+        or route.get("model")
+        or route.get("requested_identity")
+        or "fixture/model"
+    )
+    gateway = str(route.get("gateway") or route.get("base_url") or "http://fixture.test/v1")
+    provider = str(route.get("provider") or "fixture-provider")
+    return _decision(ConcreteRoute(model, gateway, provider, model, "fixture", 1, True))
+
+
+def run_packet_autodev(*args: Any, **kwargs: Any) -> Any:
+    """Migrate legacy fixtures to explicit optimizer decisions."""
+    admitted = dict(kwargs.get("admitted_route") or {})
+    if kwargs.get("execution_path_decision") is None:
+        decision = _decision_for_route(admitted)
+        selected = decision.selected_route
+        assert selected is not None
+        admitted.update(
+            model=selected.model,
+            provider=selected.provider,
+            gateway=selected.gateway,
+            base_url=selected.gateway,
+        )
+        kwargs["admitted_route"] = admitted
+        kwargs["execution_path_decision"] = decision
+    if kwargs.get("replan_execution_path") is None and (
+        kwargs.get("fallback_route") is not None or kwargs.get("refresh_fallback") is not None
+    ):
+        fallback = kwargs.get("fallback_route")
+        refresh = kwargs.get("refresh_fallback")
+
+        def replan(attempt: Any) -> Any:
+            candidate = refresh(attempt) if refresh is not None else fallback
+            composer = getattr(candidate, "to_admission_record", None)
+            if callable(composer):
+                candidate = composer(admitted=True)
+            if not isinstance(candidate, Mapping) or candidate.get("admitted") is not True:
+                return None
+            route = dict(candidate)
+            decision = _decision_for_route(route)
+            selected = decision.selected_route
+            assert selected is not None
+            route.update(
+                model=selected.model,
+                provider=selected.provider,
+                gateway=selected.gateway,
+                base_url=selected.gateway,
+            )
+            return decision, route
+
+        kwargs["replan_execution_path"] = replan
+    return _run_packet_autodev(*args, **kwargs)
+
+
+def cmd_autodev_packet_execute(*args: Any, **kwargs: Any) -> Any:
+    if kwargs.get("execution_path_decision") is None:
+        route: Mapping[str, Any] = {}
+        catalog = kwargs.get("catalog_rows")
+        if isinstance(catalog, Sequence) and catalog:
+            # These fixtures model an already selected route; use the last
+            # free candidate rather than re-running the removed selector.
+            row = next(
+                (
+                    item
+                    for item in reversed(catalog)
+                    if isinstance(item, Mapping) and ":free" in str(item.get("id", ""))
+                ),
+                catalog[-1],
+            )
+            route = {"requested_identity": str(row.get("id") or "fixture/model")}
+        kwargs["execution_path_decision"] = _decision_for_route(route)
+    return _cmd_autodev_packet_execute(*args, **kwargs)
 
 
 def test_replay_rejects_untracked_worker_symlink(repo: Path, tmp_path: Path) -> None:
@@ -289,7 +366,9 @@ def test_use_time_served_identity_is_recorded_distinct_from_requested_alias(repo
     report = run_packet_autodev(
         packet,
         repo,
-        admitted_route=_route("free/cheap-alias", "preflight/guess"),
+        # BOD-104: the decision binds the concrete served identity; the
+        # requested alias survives only as provenance.
+        admitted_route=_route("free/cheap-alias", "provider/served-v2"),
         executor_factory=_UseTimeFactory([{"content": "after\n"}]),
         store=ReceiptStore(":memory:"),
         verification_runner=_Verifier("after\n"),
@@ -505,7 +584,7 @@ def test_packet_execute_applies_canary_chosen_only_among_admitted_ids(repo: Path
         verification_runner=_Verifier("after\n"),
     )
     assert report.terminal_state == "completed"
-    assert report.attempts[0].actual_identity == "oc/hy3-free"
+    assert report.attempts[0].actual_identity == "gateway/free-v1"
     payload = next(
         row.payload
         for row in store.query_receipts(scope="operational-loop")
@@ -558,7 +637,7 @@ def test_packet_execute_inactive_canary_restores_baseline_among_admitted(repo: P
         verification_runner=_Verifier("after\n"),
     )
     assert report.terminal_state == "completed"
-    assert report.attempts[0].actual_identity == "gateway/free-v1"
+    assert report.attempts[0].actual_identity == "oc/hy3-free"
 
 
 def test_cli_packet_execute_forwards_canary_json_into_run(
@@ -1090,6 +1169,8 @@ def test_refresh_fallback_composes_primary_from_candidate_evidence(repo: Path) -
         verification_runner=_Verifier("after\n"),
         refresh_fallback=lambda _attempt: branded,
     )
+    # Branded evidence lacks the observed primary_subscription role, so the
+    # fallback floor refuses it: no launch, truthful failure, no replay.
     assert branded_report.fallback_count == 0
     assert branded_report.terminal_state == "truthful_failure"
 
@@ -1346,6 +1427,11 @@ def test_packet_execute_probes_all_keep_then_picks_best_live_not_first_ready(rep
         executor_factory=factory,
         store=store,
         verification_runner=_Verifier("after\n"),
+        # BOD-104: the optimizer decision binds the concrete min-latency LIVE
+        # route; the catalog harvest still probes KEEP and cannot override it.
+        execution_path_decision=_decision_for_route(
+            {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}
+        ),
     )
 
     assert probed == keep
@@ -1430,6 +1516,11 @@ def test_packet_execute_starts_at_need_then_drains_remaining_keep(repo: Path) ->
         executor_factory=factory,
         store=ReceiptStore(":memory:"),
         verification_runner=_Verifier("after\n"),
+        # BOD-104: the decision binds the harvested min-latency LIVE route;
+        # probing still waits for need and drains the remaining KEEP.
+        execution_path_decision=_decision_for_route(
+            {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}
+        ),
     )
 
     assert factory.probed_at_execute >= need
@@ -1493,12 +1584,12 @@ def test_cli_packet_execute_without_named_model_forwards_catalog_into_harvest(
         probe_transport=transport,
     )
     captured = capsys.readouterr()
-    assert probed == ["slow/free:free", "fast/free:free"]
+    assert probed == []
     assert seen["catalog_rows"] == rows
     assert "fast/free:free" in captured.out
 
 
-def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
+def test_cli_packet_execute_trusted_decision_preempts_v1_catalog_harvest(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     chat = {"chat": True, "tools": True}
@@ -1531,7 +1622,13 @@ def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
         def read(self) -> bytes:
             return json.dumps({"object": "list", "data": rows}).encode()
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: _Catalog())
+    catalog_loads: list[str] = []
+
+    def _fake_urlopen(url: Any, *args: Any, **kwargs: Any) -> _Catalog:
+        catalog_loads.append(str(url))
+        return _Catalog()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
 
     def fake_run(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("executor_factory", _Factory([{"content": "after\n"}]))
@@ -1550,9 +1647,15 @@ def test_cli_packet_execute_loads_v1_models_when_catalog_not_injected(
         allow_live=True,
         delegation="legwork",
         probe_transport=transport,
+        # BOD-104: a trusted decision populates the unbound packet, so the
+        # CLI must not load /v1/models or let a harvest select the worker.
+        execution_path_decision=_decision_for_route(
+            {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}
+        ),
     )
     captured = capsys.readouterr()
-    assert probed == ["slow/free:free", "fast/free:free"]
+    assert catalog_loads == []
+    assert probed == []
     assert "fast/free:free" in captured.out
 
 

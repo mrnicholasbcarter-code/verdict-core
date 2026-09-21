@@ -23,58 +23,47 @@ import json
 import sys
 from typing import Any
 
-from verdict.subagent_models import select_model_for_role
+from verdict.execution_path import ExecutionPathDecision, ExecutionPathError
+from verdict.serve_path import require_serve_path_decision
 
 
 def resolve_subagent_model(
     role: str,
     *,
+    execution_path_decision: ExecutionPathDecision | None = None,
     protected: bool = False,
     dev_mode: bool = True,
     diversity_from: list[str] | None = None,
     json_output: bool = False,
 ) -> dict[str, Any] | None:
-    """
-    Resolve a subagent role to a concrete model ID.
+    """Resolve a role to the already-authorized BOD-104 concrete route.
 
-    Args:
-        role: One of "scout", "worker", "reviewer", "oracle", "planner",
-              "researcher", "context-builder", "delegate"
-        protected: If True, fail-closed when OmniRoute unavailable
-        dev_mode: If True, allow unverified candidates when not protected
-        diversity_from: Model IDs to exclude for diversity
-        json_output: If True, return JSON dict with model info
-
-    Returns:
-        Dict with model info or None if no eligible model
+    ``role`` remains a caller label for compatibility. It is not a selector:
+    automatic subagent launches must receive an in-process
+    :class:`ExecutionPathDecision` and use its exact route unchanged.
     """
+    del protected, dev_mode, diversity_from
     try:
-        result: dict[str, Any]
-        model = select_model_for_role(
-            role, protected=protected, dev_mode=dev_mode, diversity_from=diversity_from
-        )
-
-        if model is None:
-            result = {"error": f"No eligible model for role: {role}", "role": role}
-        else:
-            result = {
-                "model_id": model.id,
-                "provider": model.provider,
-                "capability_tier": model.capability_tier,
-                "context_window": model.context_window,
-                "capabilities": list(model.capabilities),
-                "role": role,
-                "protected": protected,
-                "dev_mode": dev_mode,
-            }
-
+        decision = require_serve_path_decision(execution_path_decision, surface="subagent resolver")
+        route = decision.selected_route
+        if route is None:
+            raise ExecutionPathError("subagent resolver: decision has no concrete route")
+        result: dict[str, Any] = {
+            "model_id": route.model,
+            "provider": route.provider,
+            "gateway": route.gateway,
+            "route_id": route.route_id,
+            "capability_tier": route.capability_tier,
+            "role": role,
+            "selected_strategy": decision.selected_strategy,
+            "decision_digest": decision.decision_digest,
+            "strategy_authority": "verdict.execution_path.optimize_execution_path",
+        }
         if json_output:
             print(json.dumps(result, indent=2))
-
         return result
-
-    except Exception as e:
-        result = {"error": str(e), "role": role}
+    except (ExecutionPathError, TypeError, ValueError) as exc:
+        result = {"error": str(exc), "role": role}
         if json_output:
             print(json.dumps(result, indent=2))
         return result
