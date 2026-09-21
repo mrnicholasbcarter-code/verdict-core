@@ -372,11 +372,14 @@ class ProbeRunner:
                 max_workers=min(self.policy.max_concurrency, len(pending)),
                 thread_name_prefix="verdict-probe",
             )
-            deadline = time.monotonic() + min(
-                self.policy.timeout_seconds,
-                self.policy.max_duration_seconds,
-                selected_budget.max_duration_seconds,
+            # ``timeout_seconds`` bounds each transport invocation.  The run-wide
+            # deadline is the duration budget; using the per-request timeout here
+            # caused every candidate after the first few to be labelled timeout
+            # without ever being called.
+            run_duration_seconds = min(
+                self.policy.max_duration_seconds, selected_budget.max_duration_seconds
             )
+            deadline = time.monotonic() + run_duration_seconds
             remaining_models = list(pending)
             while remaining_models:
                 if cancel_event and cancel_event.is_set():
@@ -414,15 +417,21 @@ class ProbeRunner:
                 }
                 scheduled_models += len(futures)
                 transport_calls += len(futures)
-                done, not_done = wait(futures, timeout=min(remaining, 0.05))
+                request_deadline = time.monotonic() + self.policy.timeout_seconds
+                done, not_done = wait(
+                    futures, timeout=min(remaining, self.policy.timeout_seconds, 0.05)
+                )
                 while not_done:
                     if cancel_event and cancel_event.is_set():
                         cancellation_requested = True
                         break
                     remaining = deadline - time.monotonic()
-                    if remaining <= 0:
+                    request_remaining = request_deadline - time.monotonic()
+                    if remaining <= 0 or request_remaining <= 0:
                         break
-                    new_done, not_done = wait(not_done, timeout=min(remaining, 0.05))
+                    new_done, not_done = wait(
+                        not_done, timeout=min(remaining, request_remaining, 0.05)
+                    )
                     done.update(new_done)
                 if not_done:
                     for future in not_done:
@@ -487,8 +496,9 @@ class ProbeRunner:
                             remaining_model, observed_at
                         )
                     remaining_models = []
-                elif not_done:
-                    # A timeout ends the bounded run; no later request may be scheduled.
+                elif not_done and time.monotonic() >= deadline:
+                    # Exhausting the run-wide duration budget prevents scheduling
+                    # any later request. A single per-request timeout does not.
                     for remaining_model in remaining_models:
                         results[remaining_model] = self._record_failure(
                             remaining_model, observed_at, now_mono, "timeout", "probe timed out"
@@ -509,9 +519,7 @@ class ProbeRunner:
             max_tokens=selected_budget.max_tokens,
             max_response_bytes=selected_budget.max_response_bytes,
             max_duration_seconds=min(
-                self.policy.timeout_seconds,
-                self.policy.max_duration_seconds,
-                selected_budget.max_duration_seconds,
+                self.policy.max_duration_seconds, selected_budget.max_duration_seconds
             ),
             requested_models=requested_count,
             unique_models=len(unique),

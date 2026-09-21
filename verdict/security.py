@@ -8,11 +8,16 @@ import ipaddress
 import re
 import socket
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
-    re.compile(r"(?i)(api[_-]?key|token|password|secret)(\s*[=:]\s*)[^\s&,;]+"),
+    re.compile(
+        r"""(?ix)
+        ((?:["']?)(?:api[_-]?key|token|password|secret)(?:["']?)\s*[=:]\s*)
+        (?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s&,;]+)
+        """
+    ),
 )
 
 
@@ -66,6 +71,8 @@ def validate_server_security(
         allow_anonymous = _truthy(os.getenv("LLMGATE_ALLOW_ANONYMOUS"))
     if unix_socket and token:
         raise ValueError("configure either bearer authentication or Unix-socket mode, not both")
+    if unix_socket:
+        raise ValueError("Unix-socket authentication is not supported")
     if not token and not unix_socket and not allow_anonymous:
         raise ValueError("production server requires LLMGATE_AUTH_TOKEN or Unix-socket mode")
     if allow_anonymous and not unix_socket:
@@ -110,20 +117,43 @@ def validate_upstream_url(base_url: str, *, allow_private_hosts: set[str] | None
     return normalized
 
 
-def host_is_allowed(host: str, allow_private_hosts: set[str]) -> bool:
-    """Resolve a configured hostname and fail closed for private resolved addresses."""
+def host_is_allowed(host: str, allow_private_hosts: set[str]) -> tuple[str, ...]:
+    """Resolve a hostname once and return every validated transport address."""
     normalized = host.rstrip(".").lower()
     if normalized in {item.rstrip(".").lower() for item in allow_private_hosts}:
-        return True
+        return (normalized,)
     try:
         results = socket.getaddrinfo(normalized, None, type=socket.SOCK_STREAM)
     except OSError as exc:
         raise ValueError("upstream hostname could not be resolved") from exc
-    for result in results:
-        address = ipaddress.ip_address(result[4][0])
+    addresses = tuple(sorted({str(result[4][0]) for result in results}))
+    for raw_address in addresses:
+        address = ipaddress.ip_address(raw_address)
         if _address_is_restricted(address):
             raise ValueError("upstream hostname resolves to a private or non-public address")
-    return True
+    return addresses
+
+
+def pin_upstream_url(
+    url: str, allow_private_hosts: set[str]
+) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Resolve and pin a request URL while preserving its HTTP/TLS identity."""
+    parsed = urlsplit(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError("upstream URL must have a host")
+    addresses = host_is_allowed(host, allow_private_hosts)
+    address = addresses[0]
+    authority_host = f"[{address}]" if ":" in address else address
+    pinned_netloc = f"{authority_host}:{parsed.port}" if parsed.port else authority_host
+    default_port = 443 if parsed.scheme == "https" else 80
+    original_authority = host if parsed.port in {None, default_port} else f"{host}:{parsed.port}"
+    extensions = {"sni_hostname": host} if parsed.scheme == "https" else {}
+    return (
+        urlunsplit((parsed.scheme, pinned_netloc, parsed.path, parsed.query, parsed.fragment)),
+        {"host": original_authority},
+        extensions,
+    )
 
 
 def bearer_matches(provided: str | None, expected: str) -> bool:

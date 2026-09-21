@@ -16,7 +16,7 @@ import httpx
 
 from verdict.capability_passports import RouteIdentity
 from verdict.responses_compatibility import adapt_responses_payload
-from verdict.security import host_is_allowed, validate_upstream_url
+from verdict.security import host_is_allowed, pin_upstream_url, validate_upstream_url
 
 _HOP_BY_HOP_HEADERS = frozenset(
     {
@@ -98,6 +98,28 @@ class UpstreamProxy:
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
 
+    def _build_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json_payload: dict[str, Any] | None = None,
+    ) -> httpx.Request:
+        """Build a credential-bearing request pinned to the validated address."""
+        url = self._url(path)
+        pinned_headers: dict[str, str] = {}
+        extensions: dict[str, str] = {}
+        if self.transport is None:
+            url, pinned_headers, extensions = pin_upstream_url(url, self.allow_private_hosts)
+        return httpx.Request(
+            method,
+            url,
+            headers={**self._headers(), **pinned_headers, **(headers or {})},
+            json=json_payload,
+            extensions=extensions,
+        )
+
     def route_identity(self, model: str, protocol: str) -> RouteIdentity:
         """Describe the configured executable route without reading gateway state."""
 
@@ -114,7 +136,9 @@ class UpstreamProxy:
         )
 
     @staticmethod
-    def _actual_route(response: httpx.Response) -> RouteIdentity | None:
+    def _actual_route(
+        response: httpx.Response, *, requested_model: str | None = None, protocol: str
+    ) -> RouteIdentity | None:
         """Decode an optional adapter-owned route attestation header.
 
         Generic OpenAI providers do not expose this header.  In that case the
@@ -123,13 +147,30 @@ class UpstreamProxy:
         """
 
         raw = response.headers.get("x-verdict-actual-route")
-        if not raw:
+        if raw:
+            try:
+                value = json.loads(raw)
+                return RouteIdentity.from_dict(value) if isinstance(value, dict) else None
+            except (TypeError, ValueError):
+                return None
+        if requested_model is None or response.status_code >= 400:
             return None
         try:
-            value = json.loads(raw)
-            return RouteIdentity.from_dict(value) if isinstance(value, dict) else None
+            value = response.json()
         except (TypeError, ValueError):
             return None
+        served_model = value.get("model") if isinstance(value, dict) else None
+        if not isinstance(served_model, str) or not served_model.strip():
+            return None
+        provider = served_model.split("/", 1)[0] if "/" in served_model else "configured-upstream"
+        return RouteIdentity(
+            gateway="provider-response",
+            provider=provider,
+            connection="response-body",
+            endpoint="provider-response-body",
+            protocol=protocol,
+            model_id=served_model,
+        )
 
     @staticmethod
     def _response_headers(response: httpx.Response) -> list[tuple[str, str]]:
@@ -145,8 +186,8 @@ class UpstreamProxy:
         """Fetch the configured upstream model catalog without reshaping it."""
         client = self._client()
         try:
-            self._validate_destination()
-            response = await client.get(self._url("models"), headers=self._headers())
+            request = self._build_request("GET", "models")
+            response = await client.send(request)
             return BufferedUpstreamResponse(
                 status_code=response.status_code,
                 headers=self._response_headers(response),
@@ -188,16 +229,20 @@ class UpstreamProxy:
         compatibility_rule_version: str | None = None,
     ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
         client = self._client()
-        self._validate_destination()
-        request = client.build_request(
+        request = self._build_request(
             "POST",
-            self._url(path),
+            path,
             headers={
-                **self._headers(),
                 "content-type": "application/json",
                 **({"idempotency-key": idempotency_key} if idempotency_key else {}),
             },
-            json=payload,
+            json_payload=payload,
+        )
+        requested_model = payload.get("model") if isinstance(payload.get("model"), str) else None
+        protocol = (
+            "openai.responses"
+            if path.rstrip("/").endswith("responses")
+            else "openai.chat.completions"
         )
         if payload.get("stream") is not True:
             try:
@@ -206,7 +251,9 @@ class UpstreamProxy:
                     status_code=response.status_code,
                     headers=self._response_headers(response),
                     body=response.content,
-                    actual_route=self._actual_route(response),
+                    actual_route=self._actual_route(
+                        response, requested_model=requested_model, protocol=protocol
+                    ),
                     compatibility_rule_version=compatibility_rule_version,
                 )
             finally:
@@ -214,7 +261,9 @@ class UpstreamProxy:
 
         response = await client.send(request, stream=True)
         response_headers = self._response_headers(response)
-        actual_route = self._actual_route(response)
+        # Streaming response bodies are not buffered here, so only an adapter
+        # attestation header can provide actual-route identity.
+        actual_route = self._actual_route(response, requested_model=None, protocol=protocol)
         if response.status_code >= 400:
             try:
                 buffered_body = await response.aread()

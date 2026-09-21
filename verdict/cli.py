@@ -17,6 +17,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
+from verdict.free_tier_admit import execute_offload_chat, omniroute_endpoint_from_env
 from verdict.gate import Gate
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_claude import DEFAULT_TOKEN_ENV as CLAUDE_HARNESS_DEFAULT_TOKEN_ENV
@@ -682,6 +683,62 @@ def _build_route_gate(allow_offline: bool = False) -> Gate:
     )
 
 
+def _configured_completion_endpoint(
+    providers: dict[str, ProviderConfig] | None,
+) -> tuple[str, str | None] | None:
+    """Return the OpenAI-compatible (base_url, api_key) used for CLI execution."""
+    endpoint = omniroute_endpoint_from_env(providers)
+    if endpoint is not None:
+        return endpoint
+    if not providers:
+        return None
+    for cfg in providers.values():
+        base_url = getattr(cfg, "base_url", "") or ""
+        if not str(base_url).strip():
+            continue
+        key = getattr(cfg, "api_key", None)
+        env_name = getattr(cfg, "api_key_env", None)
+        if not key and env_name:
+            key = os.getenv(str(env_name))
+        return str(base_url).strip(), key
+    return None
+
+
+def _execute_cli_decision(gate: Gate, task: str, dec: Any, *, allow_offline: bool) -> Any:
+    """Send the selected route through the configured provider, or fail closed."""
+    from dataclasses import replace
+
+    from verdict.models import RoutingDecision
+
+    if not isinstance(dec, RoutingDecision):
+        return dec
+    if allow_offline:
+        return replace(
+            dec,
+            transport_outcome="error",
+            reason="offline routing does not execute a provider completion",
+            execute_preview="offline routing does not execute a provider completion",
+        )
+    if dec.decision == "denied":
+        return dec
+    if dec.transport_outcome in {"sent", "success"}:
+        return dec
+    endpoint = _configured_completion_endpoint(getattr(gate, "providers", None))
+    if endpoint is None:
+        return replace(
+            dec,
+            transport_outcome="error",
+            reason="no configured provider endpoint",
+            execute_preview="no configured provider endpoint",
+        )
+    packed = dec.context_pack_prompt or task
+    outcome, preview = execute_offload_chat(endpoint[0], dec.model, packed, api_key=endpoint[1])
+    reason = dec.reason
+    if outcome != "sent":
+        reason = preview or reason
+    return replace(dec, transport_outcome=outcome, execute_preview=preview, reason=reason)
+
+
 def cmd_route(
     task: str,
     criticality: str,
@@ -711,6 +768,18 @@ def cmd_route(
 
     if terse:
         dec = gate.route(task, criticality, context=context or None)
+        dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
+        if getattr(dec, "transport_outcome", "not_sent") not in {"sent", "success"}:
+            error_payload = {
+                "model": getattr(dec, "model", None),
+                "provider": getattr(dec, "provider", None),
+                "transport_outcome": dec.transport_outcome,
+                "reason": getattr(dec, "reason", ""),
+                "request_id": getattr(dec, "request_id", ""),
+                "execute_preview": (dec.execute_preview or "")[:500],
+            }
+            print(json.dumps(error_payload, sort_keys=True))
+            raise SystemExit(1)
         print(dec.model)
         return
 
@@ -721,6 +790,13 @@ def cmd_route(
     )
     with console.status(status_label, spinner="dots"):
         dec, selection = gate.route_with_strategy(task, criticality, context=context or None)
+        dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
+        selection = type(selection)(
+            strategy="DIRECT",
+            model=dec.model,
+            reasoning="CLI route/run dispatched one provider completion directly",
+            timestamp=selection.timestamp,
+        )
 
     tier_colors = {0: "red", 1: "magenta", 2: "yellow", 3: "green"}
     t_color = tier_colors.get(dec.tier, "white")
@@ -751,12 +827,20 @@ def cmd_route(
         )
     )
     # Machine-readable StrategySelection record (issue #265).
-    payload: dict[str, Any] = {"strategy_selection": selection.to_dict()}
+    payload: dict[str, Any] = {
+        "strategy_selection": selection.to_dict(),
+        "transport_outcome": dec.transport_outcome,
+        "model": dec.model,
+        "provider": dec.provider,
+        "request_id": dec.request_id,
+    }
     if dec.admit_receipt:
         payload["admit_receipt"] = dec.admit_receipt
     if dec.execute_preview:
         payload["execute_preview"] = dec.execute_preview[:500]
     print(json.dumps(payload, sort_keys=True))
+    if dec.transport_outcome not in {"sent", "success"}:
+        raise SystemExit(1)
 
 
 def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:

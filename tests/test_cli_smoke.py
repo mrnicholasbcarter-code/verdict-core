@@ -1,5 +1,6 @@
 """Functional smoke tests for the CLI binary."""
 
+import json
 import os
 import subprocess
 
@@ -31,30 +32,48 @@ class TestCLIRoute:
         with open(os.path.join(config_dir, "verdict.yaml"), "w") as f:
             f.write("primary_model: 'anthropic/claude-3-opus-20240229'\nproviders: {}\n")
 
-    def test_route_terse_exits_zero(self):
+    def test_route_terse_offline_fails_closed(self):
         result = subprocess.run(
-            ["verdict", "route", "test prompt", "--terse"], capture_output=True, text=True
-        )
-        assert result.returncode == 0
-
-    def test_route_terse_outputs_model_name(self):
-        result = subprocess.run(
-            ["verdict", "route", "test prompt", "--terse"], capture_output=True, text=True
-        )
-        assert "claude-3-opus-20240229" in result.stdout
-
-    def test_route_verbose_exits_zero(self):
-        result = subprocess.run(["verdict", "route", "test prompt"], capture_output=True, text=True)
-        assert result.returncode == 0
-
-    def test_route_critical_returns_primary(self):
-        result = subprocess.run(
-            ["verdict", "route", "deploy prod", "--criticality", "critical", "--terse"],
+            ["verdict", "route", "test prompt", "--terse", "--allow-offline"],
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0
-        assert "claude-3-opus-20240229" in result.stdout
+        assert result.returncode == 1
+        assert json.loads(result.stdout)["transport_outcome"] == "error"
+
+    def test_route_terse_offline_names_selected_model(self):
+        result = subprocess.run(
+            ["verdict", "route", "test prompt", "--terse", "--allow-offline"],
+            capture_output=True,
+            text=True,
+        )
+        assert json.loads(result.stdout)["model"] == "anthropic/claude-3-opus-20240229"
+
+    def test_route_verbose_offline_fails_closed(self):
+        result = subprocess.run(
+            ["verdict", "route", "test prompt", "--allow-offline"], capture_output=True, text=True
+        )
+        assert result.returncode == 1
+        assert '"transport_outcome": "error"' in result.stdout
+
+    def test_route_critical_offline_names_primary_without_claiming_execution(self):
+        result = subprocess.run(
+            [
+                "verdict",
+                "route",
+                "deploy prod",
+                "--criticality",
+                "critical",
+                "--terse",
+                "--allow-offline",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        payload = json.loads(result.stdout)
+        assert payload["model"] == "anthropic/claude-3-opus-20240229"
+        assert payload["transport_outcome"] == "error"
 
 
 class TestCLISetup:

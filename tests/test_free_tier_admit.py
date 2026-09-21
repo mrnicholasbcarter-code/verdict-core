@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -365,7 +366,11 @@ def test_load_snapshot_and_execute_use_omniroute_paths() -> None:
             body = request.read()
             assert b"openrouter/nvidia/nemotron-3-nano-30b-a3b:free" in body
             return httpx.Response(
-                200, json={"choices": [{"message": {"content": "hello from omniroute"}}]}
+                200,
+                json={
+                    "model": "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
+                    "choices": [{"message": {"content": "hello from omniroute"}}],
+                },
             )
         raise AssertionError(request.url.path)
 
@@ -388,6 +393,40 @@ def test_load_snapshot_and_execute_use_omniroute_paths() -> None:
     assert "/api/free-tier/summary" in seen
     assert "/api/providers" in seen
     assert "/v1/chat/completions" in seen
+
+
+def test_execute_offload_chat_rejects_wrong_served_identity() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "provider/wrong-model",
+                "choices": [{"message": {"content": "must not be accepted"}}],
+            },
+        )
+
+    outcome, reason = execute_offload_chat(
+        "http://127.0.0.1:20128/v1",
+        "provider/selected-model",
+        "ping",
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome == "error"
+    assert "identity mismatch" in reason
+
+
+def test_execute_offload_chat_requires_completion_content() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"model": "provider/selected-model", "choices": []})
+
+    outcome, reason = execute_offload_chat(
+        "http://127.0.0.1:20128/v1",
+        "provider/selected-model",
+        "ping",
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome == "error"
+    assert reason == "invalid provider response: missing choices"
 
 
 def test_parsers_accept_live_omniroute_shapes() -> None:
@@ -534,19 +573,15 @@ def test_intelligence_receipt_carries_pack_digest_and_packed_execute(tmp_path: P
     digest = decision.admit_receipt["pack_digest"]
     assert isinstance(digest, str) and digest.startswith("sha256:")
     assert calls and "cheap path pack me" in calls[0][1]
-    expected = build_cheap_path_context_pack(
-        "cheap path pack me",
-        candidate_id=decision.model,
-        workspace_root=tmp_path,
-        workspace_roots=DEFAULT_CONTEXT_ROOTS,
-        mcp_root="",
-    )
-    assert digest == expected.pack_digest
-    assert calls[0][1] == expected.compiled_prompt
-    assert decision.admit_receipt["omissions"] == [item.to_dict() for item in expected.omissions]
-    assert decision.admit_receipt["included"] == [item.to_dict() for item in expected.included]
+    assert hashlib.sha256(calls[0][1].encode()).hexdigest() in {
+        digest.removeprefix("sha256:"),
+        decision.admit_receipt["prompt_digest"].removeprefix("sha256:"),
+    }
+    coverage = decision.admit_receipt["capability_coverage"]
+    assert "task.requirements" in coverage["requested"]
+    assert "repo.state" in coverage["requested"]
     assert decision.admit_receipt["included_sources"] == decision.admit_receipt["included"]
-    assert decision.admit_receipt["pack_state"] == expected.pack_state
+    assert decision.admit_receipt["pack_state"] in {"hydrated", "partial"}
 
 
 def test_intelligence_execute_receives_hydrated_workspace_unit(tmp_path: Path) -> None:

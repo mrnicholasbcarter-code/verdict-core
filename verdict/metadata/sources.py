@@ -125,9 +125,11 @@ class HttpxJsonTransport:
             "User-Agent": "verdict-core/0.2.0 (BOD-108 metadata)",
         }
         with httpx.Client(
-            transport=self._transport, timeout=self.timeout, follow_redirects=True
+            transport=self._transport, timeout=self.timeout, follow_redirects=False
         ) as client:
             response = client.get(normalized, headers=headers)
+            if response.is_redirect:
+                raise ModelMetadataError("metadata redirect is not allowed")
             response.raise_for_status()
             content = response.content
             version_header = response.headers.get("ETag") or response.headers.get("Last-Modified")

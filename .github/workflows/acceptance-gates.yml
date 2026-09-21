@@ -1,15 +1,15 @@
 name: Acceptance Gates
 
 # The release acceptance gates in ACCEPTANCE_GATES.md, checked against evidence
-# this job generates. It is deliberately not a pull-request check: it reports
-# launch readiness, which is expected to be incomplete before launch, and a red
-# result here must not block ordinary development. It runs on demand, weekly,
-# and on every published release, where a non-passing gate is a real blocker.
+# this job generates. Tag pushes run it before the release workflow is permitted
+# to publish. It also runs on demand and weekly to report current launch readiness.
 
 on:
+  workflow_call:
   workflow_dispatch:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
   schedule:
     - cron: "0 6 * * 1"
 
@@ -20,6 +20,9 @@ jobs:
   acceptance-gates:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash -euo pipefail {0}
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
@@ -36,29 +39,22 @@ jobs:
         run: rm -rf evidence evidence_bundle && mkdir -p evidence
 
       # --- Evidence generation ------------------------------------------------
-      # A failure here must not abort the run. A missing artifact is exactly what
-      # the verifier exists to report; letting a crashed producer kill the job
-      # would turn "no evidence" into "no answer". The verifier step below is the
-      # one that decides the outcome, and it is not advisory.
+      # Every producer is decisive: a failed command must stop the job rather than
+      # leaving a plausible-looking partial artifact for the verifier.
 
       - name: Run the test suite (G1.x-G3.x evidence)
-        continue-on-error: true
         run: pytest tests/ -q --junitxml=evidence/pytest_results.xml
 
       - name: Record the benchmark (G6.2 evidence)
-        continue-on-error: true
         run: python scripts/benchmark.py --output evidence/benchmark_results.json
 
       - name: Record the flagship demo (G7.2 evidence)
-        continue-on-error: true
         run: python scripts/flagship_demo.py > evidence/flagship_demo_output.json
 
       - name: Record the quickstart (G7.1 evidence)
-        continue-on-error: true
         run: python scripts/quickstart.py 2>&1 | tee evidence/quickstart_test.log
 
       - name: Record the committed-credential scan (G5.4 evidence)
-        continue-on-error: true
         run: |
           git ls-files -z | python3 -c '
           import re, sys
@@ -75,7 +71,6 @@ jobs:
           ' | tee evidence/secrets_scan_results.txt
 
       - name: Build the evidence bundle (G6.3 evidence)
-        continue-on-error: true
         run: python scripts/evidence_bundle.py --evidence-dir evidence --output-dir evidence_bundle
 
       # --- Report and verify. Neither of these is advisory. --------------------

@@ -114,14 +114,17 @@ print(json.dumps(resp.json(), indent=2))
         # Step 5: Run a subset of tests
         print("\n🧪 Running core test suite...")
         test_result = run(
-            f"{python} -m pytest tests/test_contracts.py tests/test_models.py -v --tb=short 2>&1 | tail -20",
+            f"{python} -m pytest tests/test_contracts.py tests/test_models.py -q --tb=short",
             cwd=repo_root,
             check=False,
         )
         if test_result.returncode == 0:
             print("✅ Core tests pass")
         else:
-            print("⚠️  Some tests had issues (check output)")
+            print("❌ Core tests failed")
+            print(test_result.stdout)
+            print(test_result.stderr)
+            sys.exit(test_result.returncode)
 
     print("\n" + "=" * 50)
     print("🎉 QUICKSTART PASSED - All systems operational!")

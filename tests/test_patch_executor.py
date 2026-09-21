@@ -127,6 +127,18 @@ def test_in_bounds_patch_is_checked_then_applied(repo: Path) -> None:
     assert "--check" not in runner.calls[1]
 
 
+def test_identity_mismatch_rejects_patch_before_git_apply(repo: Path) -> None:
+    runner = RecordingRunner()
+    executor, _ = _executor(repo, IN_BOUNDS_DIFF, runner, model="other/model")
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "error"
+    assert "identity mismatch" in attempt.reason
+    assert attempt.resolved_model == "other/model"
+    assert runner.calls == []
+
+
 def test_out_of_bounds_patch_is_rejected_before_git_apply(repo: Path) -> None:
     runner = RecordingRunner()
     executor, _ = _executor(repo, OUT_OF_BOUNDS_DIFF, runner)
@@ -250,7 +262,7 @@ def test_default_openai_transport_sends_operational_loop_session_header(
 
         def read(self, limit):
             del limit
-            return b'{"choices":[{"message":{"content":"not-a-diff"}}],"model":"served"}'
+            return b'{"choices":[{"message":{"content":"not-a-diff"}}],"model":"cheap/model"}'
 
     def opener(request, timeout):
         del timeout
@@ -317,7 +329,7 @@ def test_observer_records_requested_alias_distinct_from_served_identity(repo: Pa
 
     executor = PatchExecutor(
         repo,
-        PatchExecutorConfig(model="cheap/alias"),
+        PatchExecutorConfig(model="cheap/alias:free"),
         transport=transport,
         runner=runner,
         observer=seen.append,
@@ -326,10 +338,10 @@ def test_observer_records_requested_alias_distinct_from_served_identity(repo: Pa
     attempt = executor.execute_unit(_unit())
 
     assert attempt.applied
-    assert attempt.model == "cheap/alias"
+    assert attempt.model == "cheap/alias:free"
     assert attempt.resolved_model == "provider/served-v2"
     assert len(seen) == 1
-    assert seen[0].model == "cheap/alias"
+    assert seen[0].model == "cheap/alias:free"
     assert seen[0].resolved_model == "provider/served-v2"
     assert seen[0].outcome == "ok"
     assert seen[0].identity_mismatch is True
@@ -371,3 +383,36 @@ def test_parse_patch_paths_ignores_dev_null_and_strips_prefixes() -> None:
 def test_parse_patch_paths_requires_at_least_one_file() -> None:
     with pytest.raises(PatchExecutorError, match="names no files"):
         parse_patch_paths("@@ -1 +1 @@\n-old\n+new\n")
+
+
+def test_rename_headers_are_part_of_the_patch_boundary() -> None:
+    renamed = """diff --git a/secrets.env b/owned.py
+similarity index 100%
+rename from secrets.env
+rename to owned.py
+"""
+
+    assert parse_patch_paths(renamed) == ("owned.py", "secrets.env")
+
+
+def test_quoted_diff_headers_are_decoded_before_boundary_check() -> None:
+    quoted = '--- "a/old\\tname.py"\n+++ "b/new\\tname.py"\n'
+
+    assert parse_patch_paths(quoted) == ("new\tname.py", "old\tname.py")
+
+
+def test_unquoted_diff_header_with_timestamp_keeps_only_the_path() -> None:
+    timestamped = "--- a/owned.py\t2026-09-20 00:00:00 +0000\n+++ b/owned.py\n"
+
+    assert parse_patch_paths(timestamped) == ("owned.py",)
+
+
+def test_owned_symlink_is_never_inlined_into_the_model_prompt(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret = tmp_path / "host-secret.txt"
+    secret.write_text("must-not-reach-model\n", encoding="utf-8")
+    (repo / "owned.py").symlink_to(secret)
+
+    with pytest.raises(PatchExecutorError, match="symlink"):
+        build_unit_prompt(_unit(), repo)

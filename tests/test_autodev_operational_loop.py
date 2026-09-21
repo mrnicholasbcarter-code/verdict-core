@@ -16,7 +16,12 @@ from typing import Any
 
 import pytest
 
-from verdict.autodev_run import run_packet_autodev
+from verdict.autodev_run import (
+    AutodevError,
+    _make_attempt_worktree,
+    _replay_attempt,
+    run_packet_autodev,
+)
 from verdict.cli import cmd_autodev_packet_execute
 from verdict.execution_packet import ExecutionPacket, ExecutionPacketStore, capture_source_binding
 from verdict.free_route_harvest import TaskNeed, first_execute_need, keep_free_compatible
@@ -98,6 +103,47 @@ def _route(requested: str, actual: str, **extra: Any) -> dict[str, Any]:
         "evidence_digest": "sha256:" + "e" * 64,
         **extra,
     }
+
+
+def test_replay_rejects_untracked_worker_symlink(repo: Path, tmp_path: Path) -> None:
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    attempt = _make_attempt_worktree(repo, head)
+    secret = tmp_path / "host-secret.txt"
+    secret.write_text("must-not-be-replayed\n", encoding="utf-8")
+    (attempt / "leak.txt").symlink_to(secret)
+
+    try:
+        with pytest.raises(AutodevError, match="symlink"):
+            _replay_attempt(attempt, repo)
+        assert not (repo / "leak.txt").exists()
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(attempt)],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+        )
+
+
+def test_replay_preserves_untracked_filename_with_spaces(repo: Path) -> None:
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    attempt = _make_attempt_worktree(repo, head)
+    (attempt / "new evidence.txt").write_text("verified\n", encoding="utf-8")
+
+    try:
+        _replay_attempt(attempt, repo)
+        assert (repo / "new evidence.txt").read_text(encoding="utf-8") == "verified\n"
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(attempt)],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+        )
 
 
 class _WritingExecutor:

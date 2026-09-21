@@ -1,3 +1,4 @@
+import hashlib
 import subprocess
 import time
 from collections.abc import Sequence
@@ -552,6 +553,7 @@ class IntelligenceService:
             endpoint=endpoint,
             live=live,
             task_class=classification.task_class,
+            context=context,
         )
 
     def _load_admit_snapshot(
@@ -581,6 +583,7 @@ class IntelligenceService:
         endpoint: tuple[str, str | None] | None,
         live: bool,
         task_class: str = "ordinary",
+        context: dict[str, Any] | None = None,
     ) -> RoutingDecision:
         eligibility_record = eligibility.to_dict() if eligibility is not None else {}
         if receipt.empty_intersection or not receipt.chosen:
@@ -608,6 +611,14 @@ class IntelligenceService:
             (model.provider for model in eligibility.admitted if model.id == chosen),
             chosen.split("/", 1)[0] if "/" in chosen else "omniroute",
         )
+        contract = context if isinstance(context, dict) else {}
+        acceptance_criteria = tuple(
+            str(item) for item in contract.get("acceptance_criteria", ()) if str(item).strip()
+        )
+        proof_criteria = tuple(
+            str(item) for item in contract.get("proof_criteria", ()) if str(item).strip()
+        )
+        errors = tuple(str(item) for item in contract.get("errors", ()) if str(item).strip())
         # Cheap path: gather real provenance units, compile under budget, then
         # execute. Digest + named omissions land on the admit receipt.
         context_pack = build_cheap_path_context_pack(
@@ -616,6 +627,10 @@ class IntelligenceService:
             workspace_root=self.workspace_root,
             workspace_roots=self.context_roots,
             mcp_root=self.mcp_root,
+            acceptance_criteria=acceptance_criteria,
+            proof_criteria=proof_criteria,
+            errors=errors,
+            use_context_fabric=True,
         )
         receipt = replace(
             receipt,
@@ -626,6 +641,7 @@ class IntelligenceService:
             task_complete=context_pack.task_complete,
             required_sources=context_pack.required_sources,
             prompt_digest=context_pack.prompt_digest,
+            capability_coverage=context_pack.capability_coverage,
         )
         if not context_pack.task_complete:
             # BOD-110: the compiled pack no longer carries the task instructions.
@@ -656,6 +672,12 @@ class IntelligenceService:
             should_execute = live and self.offload_executor is None
         transport_outcome = "not_sent"
         preview: str | None = None
+        attempt: dict[str, Any] = {
+            "attempt": 1,
+            "selected_model": chosen,
+            "executed_model": None,
+            "transport_outcome": "not_sent",
+        }
         if should_execute or self.offload_executor is not None:
             if self.offload_executor is not None:
                 transport_outcome, preview = self.offload_executor(chosen, packed_task)
@@ -663,6 +685,40 @@ class IntelligenceService:
                 transport_outcome, preview = execute_offload_chat(
                     endpoint[0], chosen, packed_task, api_key=endpoint[1]
                 )
+            attempt["transport_outcome"] = transport_outcome
+            attempt["executed_model"] = chosen if transport_outcome == "sent" else None
+        verification: dict[str, Any] = {
+            "status": "unknown",
+            "reason": "no verification strategy executed",
+        }
+        expected = contract.get("expected_output_contains")
+        proof_criteria = tuple(
+            str(item).strip()
+            for item in contract.get("proof_criteria", ())
+            if isinstance(item, str) and item.strip()
+        )
+        required_checks: list[str] = []
+        if isinstance(expected, str) and expected.strip():
+            required_checks.append(expected.strip())
+        required_checks.extend(proof_criteria)
+        if transport_outcome == "sent" and required_checks:
+            output = preview if isinstance(preview, str) else ""
+            failed_checks = [check for check in required_checks if check not in output]
+            verification = {
+                "status": "passed" if not failed_checks else "failed",
+                "reason": "bounded_output_contains",
+                "criteria": required_checks,
+                "failed_criteria": failed_checks,
+            }
+        receipt_seed = "|".join(
+            [chosen, context_pack.pack_digest, transport_outcome, context_pack.prompt_digest]
+        )
+        receipt = replace(
+            receipt,
+            execution_attempts=(attempt,),
+            verification=verification,
+            receipt_id="vrct_" + hashlib.sha256(receipt_seed.encode()).hexdigest()[:24],
+        )
         chooser_owned = bool(receipt.selected_because) and receipt.chosen is not None
         safety_flags = ["free_tier_active_admit", "prove_confirm_admit", "cheap_path_context_pack"]
         if chooser_owned:
@@ -686,7 +742,13 @@ class IntelligenceService:
             task_class=task_class,
             decision="selected",
             transport_outcome=transport_outcome,
-            quality_outcome="unknown",
+            quality_outcome=(
+                "verified"
+                if verification["status"] == "passed"
+                else "failed"
+                if verification["status"] == "failed"
+                else "unknown"
+            ),
             candidate_states=eligibility_record.get("records", []),
             safety_flags=safety_flags,
             admit_receipt=receipt.to_dict(),

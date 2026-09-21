@@ -15,6 +15,7 @@ from starlette.requests import ClientDisconnect
 
 import verdict.api as api
 from verdict.capability_passports import RouteIdentity
+from verdict.execution_path import ExecutionPathRequest
 from verdict.intelligence import ReadinessReport
 from verdict.models import RoutingDecision
 from verdict.proxy import UpstreamProxy
@@ -110,7 +111,10 @@ class RecordingTransport(httpx.AsyncBaseTransport):
                     ],
                 },
             )
-        response_body = b'{"id":"chatcmpl-test","choices":[],"usage":{"total_tokens":4}}'
+        response_body = (
+            b'{"id":"chatcmpl-test","model":"selected-model","choices":[],'
+            b'"usage":{"total_tokens":4}}'
+        )
         if self.stream:
             return httpx.Response(
                 200,
@@ -174,6 +178,49 @@ class ResponsesTransport(RecordingTransport):
         )
 
 
+class WrongModelTransport(RecordingTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        raw_body = await request.aread()
+        body = json.loads(raw_body) if raw_body else None
+        self.requests.append(
+            {"method": request.method, "url": str(request.url), "headers": {}, "body": body}
+        )
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-wrong-model",
+                "model": "other-provider/wrong-model",
+                "choices": [{"message": {"content": "must not be returned"}}],
+            },
+        )
+
+
+def _public_execution_path_payload() -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "trajectory_id": "traj-http-authority",
+        "slice_id": "slice-http-authority",
+        "acceptance_criteria": ["provider completion returned"],
+        "proof_criteria": ["selected and served identities match"],
+        "candidates": [
+            {
+                "strategy": "direct_cheap",
+                "route_id": "route-selected-model",
+                "gateway": "verdict-upstream",
+                "provider": "omniroute",
+                "model": "selected-model",
+                "capability_tier": 2,
+                "eligible": True,
+                "is_free": True,
+                "execution_tokens": 16,
+                "verification_tokens": 4,
+                "certification_state": "ready",
+                "certification_freshness": "fresh",
+            }
+        ],
+    }
+
+
 class FixedIntelligence:
     primary_model = "selected-model"
     providers: ClassVar[dict[str, object]] = {}
@@ -224,6 +271,7 @@ def _configure_test_app(monkeypatch, transport: RecordingTransport) -> None:
         ),
     )
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("LLMGATE_LOG_PATH", "")
 
 
@@ -252,6 +300,77 @@ def test_proxy_preserves_unknown_request_fields_and_uses_server_auth(monkeypatch
     assert forwarded["headers"]["authorization"] == "Bearer server-secret"
     assert forwarded["body"] == {**payload, "model": "selected-model"}
     assert json.loads(response.content)["usage"]["total_tokens"] == 4
+
+
+def test_proxy_fails_closed_when_provider_serves_wrong_model(monkeypatch) -> None:
+    transport = WrongModelTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "preserve all fields"}]},
+        )
+    assert response.status_code == 502
+    assert response.json()["error"]["message"] == "upstream request failed"
+    assert b"must not be returned" not in response.content
+
+
+def test_http_surfaces_accept_validated_execution_path_request_json(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    observed: list[ExecutionPathRequest] = []
+
+    class AuthorityIntelligence(FixedIntelligence):
+        async def route(
+            self,
+            task: str,
+            criticality: str = "medium",
+            context: dict[str, Any] | None = None,
+            *,
+            request_id: str | None = None,
+        ) -> RoutingDecision:
+            assert context is not None
+            execution_path = context.get("execution_path_request")
+            assert isinstance(execution_path, ExecutionPathRequest)
+            observed.append(execution_path)
+            return await super().route(
+                task, criticality=criticality, context=context, request_id=request_id
+            )
+
+    monkeypatch.setattr(api, "_build_intelligence", lambda: AuthorityIntelligence())
+    contract = _public_execution_path_payload()
+    with TestClient(api.app) as client:
+        route = client.post(
+            "/v1/route", json={"task": "preserve all fields", "execution_path_request": contract}
+        )
+        chat = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "execution_path_request": contract,
+            },
+        )
+    assert route.status_code == 200
+    assert chat.status_code == 200
+    assert len(observed) == 2
+    assert transport.requests[0]["body"]["model"] == "selected-model"
+    assert "execution_path_request" not in transport.requests[0]["body"]
+
+
+def test_http_rejects_client_supplied_execution_path_decision(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "execution_path_decision": {"selected_model": "invented"},
+            },
+        )
+    assert response.status_code == 400
+    assert "client-supplied execution_path_decision is not accepted" in response.text
+    assert transport.requests == []
 
 
 def test_buffered_response_exposes_correlated_redacted_evidence(monkeypatch) -> None:
@@ -952,6 +1071,56 @@ def test_proxy_rejects_oversized_and_malformed_payloads(monkeypatch) -> None:
     assert oversized.status_code == 413
     assert malformed.status_code == 400
     assert transport.requests == []
+
+
+def test_proxy_rejects_oversized_content_length_before_reading_body(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("LLMGATE_MAX_REQUEST_BYTES", "10")
+
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions", headers={"content-length": "100"}, content=b"{}"
+        )
+
+    assert response.status_code == 413
+    assert transport.requests == []
+
+
+def test_proxy_rejects_chunked_body_once_stream_limit_is_crossed(monkeypatch) -> None:
+    import asyncio
+
+    monkeypatch.setenv("LLMGATE_MAX_REQUEST_BYTES", "10")
+    monkeypatch.setattr(api, "intelligence_instance", object())
+    monkeypatch.setattr(api, "proxy_instance", object())
+
+    class _ChunkedRequest:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+        async def stream(self):
+            yield b"123456"
+            await asyncio.sleep(0)
+            yield b"78901"
+
+    response = asyncio.run(api._relay_completion(_ChunkedRequest(), surface="chat"))
+
+    assert response.status_code == 413
+
+
+def test_model_passport_ttl_starts_at_exact_insertion_time() -> None:
+    from datetime import datetime, timezone
+
+    from verdict.model_passports import ModelPassport
+
+    now = datetime(2026, 9, 20, 12, 0, 59, tzinfo=timezone.utc)
+    passport = ModelPassport(model_id="m", provider="p", auth_state="authorized")
+    store = api.ModelPassportStore(ttl_seconds=60)
+
+    store.put(passport, now=now)
+
+    assert store.get("p", "m", now=now.replace(minute=1, second=58)) is passport
 
 
 def test_models_endpoint_forwards_upstream_catalog(monkeypatch) -> None:

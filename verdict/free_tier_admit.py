@@ -41,6 +41,7 @@ from verdict.context_budget import (
     ContextBudgetError,
     ContextBudgetGovernor,
 )
+from verdict.context_intelligence import ContextIntelligenceError
 from verdict.context_pack import (
     ContextContractError,
     ContextPackCompiler,
@@ -54,6 +55,7 @@ from verdict.eligibility import EligibilityRecord, EligibilityResult, Eligibilit
 from verdict.free_route_harvest import free_status
 from verdict.models import ModelInfo
 from verdict.pack_state import PackState, classify_pack_state
+from verdict.relay import fatal_identity_mismatch
 
 REASON_OPAQUE_AUTO = "opaque_auto"
 REASON_NOT_FREE_TIER = "not_free_tier"
@@ -179,6 +181,7 @@ class CheapPathContextPack:
     # BOD-128: BudgetReceipt + Context Trust feed for BOD-104 offers.
     budget_receipt: BudgetReceipt | None = None
     context_trust_admitted: bool = True
+    capability_coverage: dict[str, Any] | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -213,6 +216,7 @@ class CheapPathContextPack:
             if self.budget_receipt is None
             else self.budget_receipt.to_dict(),
             "context_trust_admitted": self.context_trust_admitted,
+            "capability_coverage": self.capability_coverage,
         }
 
 
@@ -225,6 +229,11 @@ def build_cheap_path_context_pack(
     workspace_root: Path | str | None = None,
     workspace_roots: Sequence[str] | None = None,
     mcp_root: Path | str | None = None,
+    acceptance_criteria: Sequence[str] = (),
+    proof_criteria: Sequence[str] = (),
+    errors: Sequence[str] = (),
+    memory_path: Path | str | None = None,
+    use_context_fabric: bool = False,
 ) -> CheapPathContextPack:
     """Compile a provenance-rich context pack for cheap-path offload.
 
@@ -270,11 +279,74 @@ def build_cheap_path_context_pack(
                 unit, observed_at=CHEAP_PATH_EPOCH, retrieved_at=CHEAP_PATH_EPOCH, created_at=0.0
             )
         )
+    capability_coverage: dict[str, Any] | None = None
     try:
         gathered = gather_cheap_path_units(
             task, workspace_root=workspace_root, roots=workspace_roots, mcp_root=mcp_root
         )
         units.extend(gathered.units)
+        try:
+            if not use_context_fabric:
+                raise ContextIntelligenceError("disabled", "context fabric not requested")
+            from verdict.context_hydrate import HydrateOmission, resolve_workspace_root
+            from verdict.context_intelligence import execute_context_query, plan_context_query
+            from verdict.documentation_preflight import shared_memory_path
+            from verdict.memory_plane import MemoryPlane
+
+            repo_root = resolve_workspace_root(workspace_root)
+            plane_path = (
+                Path(memory_path).expanduser()
+                if memory_path is not None
+                else shared_memory_path()
+                if workspace_root is None
+                else Path("/__verdict_no_memory__")
+            )
+            plane = MemoryPlane(plane_path) if plane_path.exists() else None
+            try:
+                fabric = execute_context_query(
+                    plan_context_query(
+                        task,
+                        acceptance_criteria=acceptance_criteria,
+                        proof_criteria=proof_criteria,
+                        errors=errors,
+                        token_budget=max(256, token_budget // 2),
+                        max_units=8,
+                        include_optional_graph=True,
+                    ),
+                    repo_root=repo_root,
+                    plane=plane,
+                )
+            finally:
+                if plane is not None:
+                    plane.close()
+            units.extend(fabric.units)
+            capability_coverage = fabric.coverage.to_dict()
+            gathered = replace(
+                gathered,
+                omissions=(
+                    *gathered.omissions,
+                    *(
+                        HydrateOmission(name=f"capability:{item.capability_id}", reason=item.reason)
+                        for item in fabric.coverage.omitted
+                    ),
+                ),
+            )
+        except (OSError, ValueError, ContextIntelligenceError) as exc:
+            if isinstance(exc, ContextIntelligenceError) and exc.code == "disabled":
+                capability_coverage = None
+            else:
+                capability_coverage = {
+                    "requested": [],
+                    "available": [],
+                    "used": [],
+                    "omitted": [
+                        {
+                            "capability_id": "context.fabric",
+                            "reason": "provider_unavailable",
+                            "provider_id": None,
+                        }
+                    ],
+                }
         admitted_units, trust_omissions = _admit_external_units_for_compile(
             units, task_policy=task, epoch=CHEAP_PATH_EPOCH
         )
@@ -359,6 +431,7 @@ def build_cheap_path_context_pack(
         required_sources=gathered.required_uris,
         budget_receipt=budget_receipt,
         context_trust_admitted=True,
+        capability_coverage=capability_coverage,
     )
 
 
@@ -570,6 +643,10 @@ class FreeTierAdmitReceipt:
     task_complete: bool | None = None
     required_sources: tuple[str, ...] = ()
     prompt_digest: str | None = None
+    capability_coverage: dict[str, Any] | None = None
+    execution_attempts: tuple[dict[str, Any], ...] = ()
+    verification: dict[str, Any] | None = None
+    receipt_id: str | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -612,6 +689,10 @@ class FreeTierAdmitReceipt:
             "capability_matches": [dict(item) for item in self.capability_matches],
             "free_admitted": list(self.free_admitted),
             "paid_admitted": list(self.paid_admitted),
+            "capability_coverage": self.capability_coverage,
+            "execution_attempts": [dict(item) for item in self.execution_attempts],
+            "verification": None if self.verification is None else dict(self.verification),
+            "receipt_id": self.receipt_id,
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
@@ -1069,12 +1150,21 @@ def execute_offload_chat(
         return "error", "timeout"
     except (httpx.HTTPError, ValueError) as exc:
         return "error", type(exc).__name__
-    choices = body.get("choices") if isinstance(body, Mapping) else None
+    if not isinstance(body, Mapping):
+        return "error", "invalid provider response: expected JSON object"
+    served_model = body.get("model")
+    if served_model is not None and not isinstance(served_model, str):
+        return "error", "invalid provider response: model must be a string"
+    if fatal_identity_mismatch(model_id, served_model):
+        return "error", f"identity mismatch: selected {model_id!r}, served {served_model!r}"
+    choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
-        return "sent", ""
+        return "error", "invalid provider response: missing choices"
     message = (choices[0] or {}).get("message") if isinstance(choices[0], Mapping) else {}
     content = message.get("content") if isinstance(message, Mapping) else ""
-    return "sent", str(content or "")
+    if not isinstance(content, str) or not content:
+        return "error", "invalid provider response: missing completion content"
+    return "sent", content
 
 
 def omniroute_endpoint_from_env(

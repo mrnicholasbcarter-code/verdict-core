@@ -782,13 +782,17 @@ def _replay_attempt(attempt_repo: Path, repo: Path) -> None:
     # `git diff` never contains untracked files; a worker-created test file was
     # verified in the attempt and must not silently vanish on replay.
     untracked = subprocess.run(
-        ["git", "-C", str(attempt_repo), "ls-files", "--others", "--exclude-standard"],
+        ["git", "-C", str(attempt_repo), "ls-files", "-z", "--others", "--exclude-standard"],
         capture_output=True,
         text=True,
         check=True,
-    ).stdout.split()
+    ).stdout.split("\0")
     for relpath in untracked:
+        if not relpath:
+            continue
         source = attempt_repo / relpath
+        if source.is_symlink():
+            raise AutodevError(f"refusing to replay untracked symlink: {relpath}")
         target = repo / relpath
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
