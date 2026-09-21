@@ -1299,6 +1299,18 @@ def expand_admit_for_worthiness(
 
     # Hard policy filter: remove anyone the economic policy forbids, naming why.
     if policy == SPEND_FREE_ONLY:
+        for identity_id in paid:
+            if not any(
+                drop.model_id == identity_id and drop.reason == REASON_SPEND_POLICY_EXCLUDES_PAID
+                for drop in exclusions
+            ):
+                exclusions.append(
+                    NamedDrop(
+                        identity_id,
+                        REASON_SPEND_POLICY_EXCLUDES_PAID,
+                        "spend_policy=free_only forbids paid identities regardless of score",
+                    )
+                )
         kept = tuple(item for item in remaining if item in free_set)
         for identity_id in remaining:
             if identity_id not in free_set:
@@ -1335,8 +1347,10 @@ def expand_admit_for_worthiness(
     elif policy == SPEND_FREE_PREFERRED:
         # Free candidates keep competing; chosen prefers a qualified free
         # identity whenever one survived (paid stays fallback-only).
-        chosen = chosen if chosen in free_set else (
-            next((item for item in remaining if item in free_set), chosen)
+        chosen = (
+            chosen
+            if chosen in free_set
+            else (next((item for item in remaining if item in free_set), chosen))
         )
 
     return replace(

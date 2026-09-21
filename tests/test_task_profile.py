@@ -14,6 +14,7 @@ import pytest
 
 from verdict.free_tier_admit import (
     REASON_SPEND_POLICY_EXCLUDES_PAID,
+    REASON_WORTHY_EXCLUDES_FREE,
     FreeTierAdmitReceipt,
     NamedDrop,
     OmniRouteAdmitSnapshot,
@@ -80,6 +81,11 @@ def test_unknown_spend_policy_is_refused_not_guessed() -> None:
         normalize_spend_policy("cheapest_possible")
 
 
+def test_non_string_spend_policy_is_refused_not_defaulted() -> None:
+    with pytest.raises(TaskProfileError, match="spend_policy must be a string"):
+        profile_task("repair x", context={"spend_policy": 123})
+
+
 # ── profile determinism ─────────────────────────────────────────────────────
 
 
@@ -126,6 +132,25 @@ def test_free_only_never_admits_paid_and_names_the_exclusion() -> None:
     excluded = {drop.model_id: drop.reason for drop in receipt.exclusions}
     assert excluded["paid/strong"] == REASON_SPEND_POLICY_EXCLUDES_PAID
     assert excluded["paid/frontier-x"] == REASON_SPEND_POLICY_EXCLUDES_PAID
+
+
+def test_free_only_never_admits_paid_for_worthy_tasks() -> None:
+    snapshot = _snapshot(("paid/frontier-a", "paid/strong"))
+    receipt = expand_admit_for_worthiness(
+        _free_receipt(),
+        snapshot,
+        task_class="worthy",
+        class_reasons=("server-classified-worthy",),
+        spend_policy=SPEND_FREE_ONLY,
+    )
+
+    assert receipt.admitted == ()
+    assert receipt.chosen is None
+    assert receipt.paid_admitted == ()
+    assert {drop.reason for drop in receipt.exclusions} >= {
+        REASON_WORTHY_EXCLUDES_FREE,
+        REASON_SPEND_POLICY_EXCLUDES_PAID,
+    }
 
 
 def test_free_preferred_keeps_free_competing_and_marks_paid_fallback() -> None:

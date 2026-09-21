@@ -131,9 +131,7 @@ def profile_task(
         raise TaskProfileError("task must be a string")
     payload = dict(context) if isinstance(context, Mapping) else {}
     reqs = requirements or derive_requirements(task, payload)
-    spend_policy = normalize_spend_policy(
-        payload.get("spend_policy") if isinstance(payload.get("spend_policy"), str | None) else None
-    )
+    spend_policy = normalize_spend_policy(payload.get("spend_policy"))
     hint_raw = payload.get("task_class")
     hint = hint_raw.strip().lower() if isinstance(hint_raw, str) else None
     if hint not in (None, "worthy", "ordinary"):
