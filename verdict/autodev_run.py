@@ -54,9 +54,11 @@ from verdict.patch_executor import (
 from verdict.receipt_store import ReceiptConflictError, ReceiptStore
 from verdict.repository_files import (
     UnsafeRepositoryPathError,
+    hold_repository_dirs,
     read_repository_bytes,
     read_repository_text,
 )
+from verdict.repository_files import _split as _split_repository_path
 from verdict.work_unit import WorkUnit, normalize_owned_path
 
 # No model name is hardcoded as policy: the default executor route is resolved
@@ -827,46 +829,19 @@ def _preflight_replay_destination(repo: Path, relpath: str) -> None:
     The leaf must not exist at all: replay only ever adds worker-created
     files, so a pre-existing destination is a refusal, not an overwrite.
     """
-    parts = tuple(PurePosixPath(relpath).parts)
-    fds: list[int] = []
+    parts = _split_repository_path(relpath)
     try:
-        fds.append(os.open(str(repo), getattr(os, "O_PATH", 0) | os.O_DIRECTORY))
-        for component in parts[:-1]:
+        with hold_repository_dirs(repo, relpath) as (parent_fd, leaf, _):
             try:
-                fds.append(
-                    os.open(
-                        component,
-                        getattr(os, "O_PATH", 0) | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=fds[-1],
-                    )
-                )
+                existing = os.open(leaf, getattr(os, "O_PATH", 0) | os.O_NOFOLLOW, dir_fd=parent_fd)
             except OSError as exc:
-                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                    # ENOTDIR: O_NOFOLLOW met a symlinked directory component.
-                    raise UnsafeRepositoryPathError(
-                        relpath, f"symlink in path component {component!r}", symlink=True
-                    ) from exc
                 if exc.errno == errno.ENOENT:
-                    return  # rest is created confined at write time
-                raise UnsafeRepositoryPathError(
-                    relpath, f"cannot open path component {component!r}"
-                ) from exc
-        leaf = parts[-1]
-        try:
-            existing = os.open(leaf, getattr(os, "O_PATH", 0) | os.O_NOFOLLOW, dir_fd=fds[-1])
-        except OSError as exc:
-            if exc.errno == errno.ELOOP:
-                raise UnsafeRepositoryPathError(
-                    relpath, f"symlink at leaf {leaf!r}", symlink=True
-                ) from exc
-            if exc.errno == errno.ENOENT:
-                return  # the only acceptable destination state
-            raise UnsafeRepositoryPathError(relpath, f"cannot inspect leaf {leaf!r}") from exc
-        os.close(existing)
-        raise UnsafeRepositoryPathError(relpath, f"destination {leaf!r} already exists")
-    finally:
-        for fd in reversed(fds):
-            os.close(fd)
+                    return  # the only acceptable destination state
+                raise UnsafeRepositoryPathError(relpath, f"cannot inspect leaf {leaf!r}") from exc
+            os.close(existing)
+            raise UnsafeRepositoryPathError(relpath, f"destination {leaf!r} already exists")
+    except FileNotFoundError:
+        return  # a missing parent/leaf is created only at confined write time
 
 
 def _create_confined_file(repo: Path, relpath: str, payload: bytes) -> None:
@@ -876,7 +851,7 @@ def _create_confined_file(repo: Path, relpath: str, payload: bytes) -> None:
     descriptors, and the leaf is opened O_CREAT|O_EXCL so a pre-existing
     file or a symlink swapped in after validation can never be overwritten.
     """
-    parts = tuple(PurePosixPath(relpath).parts)
+    parts = _split_repository_path(relpath)
     fds: list[int] = []
     try:
         fds.append(os.open(str(repo), getattr(os, "O_PATH", 0) | os.O_DIRECTORY))

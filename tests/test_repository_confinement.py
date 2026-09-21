@@ -158,3 +158,19 @@ def test_replay_refuses_destination_parent_symlink(tmp_path: Path) -> None:
             check=False,
             capture_output=True,
         )
+
+
+def test_replay_destination_rejects_absolute_and_traversal_paths(tmp_path: Path) -> None:
+    from verdict.autodev_run import _create_confined_file, _preflight_replay_destination
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.txt"
+
+    for relpath in ("../outside.txt", str(outside), "missing/../../outside.txt"):
+        with pytest.raises(UnsafeRepositoryPathError):
+            _preflight_replay_destination(repo, relpath)
+        with pytest.raises(UnsafeRepositoryPathError):
+            _create_confined_file(repo, relpath, b"attacker-controlled")
+
+    assert not outside.exists()
