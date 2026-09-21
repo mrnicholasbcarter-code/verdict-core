@@ -68,6 +68,8 @@ REASON_UNMAPPED = "unmapped"
 REASON_STALE = "stale"
 REASON_PAID_FALLBACK = "paid_fallback"
 REASON_TASK_INSTRUCTIONS_OMITTED = "task_instructions_omitted"
+REASON_SPEND_POLICY_EXCLUDES_PAID = "spend_policy_excludes_paid"
+REASON_SPEND_POLICY_REQUIRES_FRONTIER = "spend_policy_requires_frontier"
 TASK_SOURCE_URI = "urn:verdict:task"
 _COMBO_PREFIXES = frozenset({"claude", "combo"})
 _ALIAS_PREFIXES = frozenset({"oc", "kr", "cf", "or", "nv"})
@@ -647,6 +649,8 @@ class FreeTierAdmitReceipt:
     execution_attempts: tuple[dict[str, Any], ...] = ()
     verification: dict[str, Any] | None = None
     receipt_id: str | None = None
+    task_profile_digest: str | None = None
+    spend_policy: str | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -693,6 +697,8 @@ class FreeTierAdmitReceipt:
             "execution_attempts": [dict(item) for item in self.execution_attempts],
             "verification": None if self.verification is None else dict(self.verification),
             "receipt_id": self.receipt_id,
+            "task_profile_digest": self.task_profile_digest,
+            "spend_policy": self.spend_policy,
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
@@ -1237,11 +1243,30 @@ def expand_admit_for_worthiness(
     task_class: str,
     class_reasons: tuple[str, ...],
     frontier_allowlist: tuple[str, ...] | None = None,
+    spend_policy: str | None = None,
+    task_profile_digest: str | None = None,
 ) -> FreeTierAdmitReceipt:
-    """Ordinary: keep free and add lesser-paid. Worthy: drop free-for-cost, keep frontier paid."""
+    """Ordinary: keep free and add lesser-paid. Worthy: drop free-for-cost, keep frontier paid.
+
+    ``spend_policy`` (BOD-S1) is a hard economic boundary applied *after* class
+    semantics: ``free_only`` can never admit a paid identity regardless of task
+    class or score (every paid candidate gets a named exclusion), and
+    ``frontier_required`` keeps only frontier-class paid identities. Policy
+    decides who may compete; nothing here silently escalates spend.
+    """
+    from verdict.task_profile import (  # lazy: breaks the verdict.__init__ cycle
+        SPEND_FREE_ONLY,
+        SPEND_FREE_PREFERRED,
+        SPEND_FRONTIER_REQUIRED,
+        normalize_spend_policy,
+    )
+
+    policy = normalize_spend_policy(spend_policy)
+    free_set = frozenset(receipt.free_admitted or receipt.admitted)
     paid, extra_drops = _catalog_paid_identities(snapshot, skip=set(receipt.admitted))
     exclusions = list(receipt.exclusions)
     exclusions.extend(extra_drops)
+
     if task_class == "worthy":
         for identity_id in receipt.admitted:
             exclusions.append(
@@ -1263,29 +1288,83 @@ def expand_admit_for_worthiness(
                 )
         remaining = frontier
         chosen = remaining[0] if remaining else None
-        return replace(
-            receipt,
-            admitted=remaining,
-            exclusions=tuple(exclusions),
-            chosen=chosen,
-            empty_intersection=chosen is None,
-            task_class=task_class,
-            class_reasons=class_reasons,
-            free_admitted=receipt.free_admitted or receipt.admitted,
-            paid_admitted=frontier,
+        free_admitted = receipt.free_admitted or receipt.admitted
+        paid_admitted: tuple[str, ...] = frontier
+    else:
+        merged = tuple(dict.fromkeys((*receipt.admitted, *paid)))
+        chosen = receipt.chosen if receipt.chosen in merged else (merged[0] if merged else None)
+        remaining = merged
+        free_admitted = receipt.free_admitted or receipt.admitted
+        paid_admitted = paid
+
+    # Hard policy filter: remove anyone the economic policy forbids, naming why.
+    if policy == SPEND_FREE_ONLY:
+        for identity_id in paid:
+            if not any(
+                drop.model_id == identity_id and drop.reason == REASON_SPEND_POLICY_EXCLUDES_PAID
+                for drop in exclusions
+            ):
+                exclusions.append(
+                    NamedDrop(
+                        identity_id,
+                        REASON_SPEND_POLICY_EXCLUDES_PAID,
+                        "spend_policy=free_only forbids paid identities regardless of score",
+                    )
+                )
+        kept = tuple(item for item in remaining if item in free_set)
+        for identity_id in remaining:
+            if identity_id not in free_set:
+                exclusions.append(
+                    NamedDrop(
+                        identity_id,
+                        REASON_SPEND_POLICY_EXCLUDES_PAID,
+                        "spend_policy=free_only forbids paid identities regardless of score",
+                    )
+                )
+        remaining = kept
+        paid_admitted = ()
+        chosen = chosen if chosen in free_set else (kept[0] if kept else None)
+    elif policy == SPEND_FRONTIER_REQUIRED:
+        allowed = frozenset(frontier_allowlist) if frontier_allowlist else None
+        kept = tuple(
+            item
+            for item in remaining
+            if item not in free_set
+            and (item in allowed if allowed is not None else is_frontier_identity(item))
         )
-    merged = tuple(dict.fromkeys((*receipt.admitted, *paid)))
-    chosen = receipt.chosen if receipt.chosen in merged else (merged[0] if merged else None)
+        for identity_id in remaining:
+            if identity_id not in kept:
+                exclusions.append(
+                    NamedDrop(
+                        identity_id,
+                        REASON_SPEND_POLICY_REQUIRES_FRONTIER,
+                        "spend_policy=frontier_required admits frontier-class paid identities only",
+                    )
+                )
+        remaining = kept
+        paid_admitted = kept
+        chosen = chosen if chosen in kept else (kept[0] if kept else None)
+    elif policy == SPEND_FREE_PREFERRED:
+        # Free candidates keep competing; chosen prefers a qualified free
+        # identity whenever one survived (paid stays fallback-only).
+        chosen = (
+            chosen
+            if chosen in free_set
+            else (next((item for item in remaining if item in free_set), chosen))
+        )
+
     return replace(
         receipt,
-        admitted=merged,
+        admitted=remaining,
         exclusions=tuple(exclusions),
         chosen=chosen,
         empty_intersection=chosen is None,
         task_class=task_class,
         class_reasons=class_reasons,
-        free_admitted=receipt.free_admitted or receipt.admitted,
-        paid_admitted=paid,
+        free_admitted=free_admitted,
+        paid_admitted=paid_admitted,
+        task_profile_digest=task_profile_digest,
+        spend_policy=policy,
     )
 
 
@@ -1299,6 +1378,8 @@ __all__ = [
     "REASON_NOT_FREE_TIER",
     "REASON_OPAQUE_AUTO",
     "REASON_REQUIRED_UNKNOWN",
+    "REASON_SPEND_POLICY_EXCLUDES_PAID",
+    "REASON_SPEND_POLICY_REQUIRES_FRONTIER",
     "REASON_STALE",
     "REASON_TASK_INSTRUCTIONS_OMITTED",
     "REASON_UNMAPPED",
