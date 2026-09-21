@@ -31,6 +31,7 @@ from typing import Any
 
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.relay import fatal_identity_mismatch
+from verdict.repository_files import UnsafeRepositoryPathError, read_repository_text
 from verdict.work_unit import WorkUnit, WorkUnitError, normalize_owned_path
 
 DEFAULT_BASE_URL = "http://localhost:20128/v1"
@@ -420,11 +421,10 @@ def build_unit_prompt(unit: WorkUnit, repo_root: str | Path) -> str:
     if unit.context:
         sections += ["", "Additional context:", unit.context]
     for path in unit.owned_files:
-        target = root / path
-        if target.is_symlink():
-            raise PatchExecutorError(f"owned path is a symlink: {path}")
         try:
-            text = target.read_text(encoding="utf-8")
+            text = read_repository_text(root, path)
+        except UnsafeRepositoryPathError as exc:
+            raise PatchExecutorError(str(exc)) from exc
         except (OSError, UnicodeDecodeError) as exc:
             sections += ["", f"--- {path} (unreadable: {type(exc).__name__}) ---"]
             continue
