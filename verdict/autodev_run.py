@@ -21,10 +21,10 @@ provider omitted usage are counted separately rather than estimated.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 import time
@@ -52,6 +52,13 @@ from verdict.patch_executor import (
     TokenUsage,
 )
 from verdict.receipt_store import ReceiptConflictError, ReceiptStore
+from verdict.repository_files import (
+    UnsafeRepositoryPathError,
+    hold_repository_dirs,
+    read_repository_bytes,
+    read_repository_text,
+)
+from verdict.repository_files import _split as _split_repository_path
 from verdict.work_unit import WorkUnit, normalize_owned_path
 
 # No model name is hardcoded as policy: the default executor route is resolved
@@ -337,9 +344,21 @@ def compile_packet_context(
             normalized = normalize_owned_path(raw_path)
             if normalized in denied_paths or PurePosixPath(normalized).name in denied_names:
                 continue  # authority boundary, not a retrieval failure
-            target = repo / normalized
             try:
-                selected[normalized] = target.read_text(encoding="utf-8")
+                selected[normalized] = read_repository_text(repo, normalized)
+            except UnsafeRepositoryPathError as exc:
+                # Missing files have always been ordinary omissions, even when
+                # their first parent directory does not exist. Preserve that
+                # contract while surfacing symlinks and other unsafe paths.
+                try:
+                    (repo / normalized).lstat()
+                except FileNotFoundError:
+                    if requested:
+                        source_omissions.append((normalized, "absent: no such file"))
+                    continue
+                # A symlinked source would inline host bytes into the worker
+                # prompt; disclose the omission instead of following it.
+                source_omissions.append((normalized, f"unsafe: {exc.reason}"))
             except FileNotFoundError:
                 if requested:
                     source_omissions.append((normalized, "absent: no such file"))
@@ -733,9 +752,10 @@ def _attempt_digest(repo: Path, paths: tuple[str, ...]) -> str:
     digest = hashlib.sha256()
     for path in paths:
         digest.update(path.encode())
-        candidate = repo / path
-        if candidate.is_file():
-            digest.update(candidate.read_bytes())
+        # A path deleted by the attempt still contributes its label; only its
+        # bytes are absent.
+        with suppress(FileNotFoundError):
+            digest.update(read_repository_bytes(repo, path))
     return f"sha256:{digest.hexdigest()}"
 
 
@@ -765,6 +785,30 @@ def _remove_attempt_worktree(repo: Path, attempt_repo: Path) -> None:
 
 
 def _replay_attempt(attempt_repo: Path, repo: Path) -> None:
+    untracked = subprocess.run(
+        ["git", "-C", str(attempt_repo), "ls-files", "-z", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    untracked = [relpath for relpath in untracked if relpath]
+    # Validate every untracked source and destination parent BEFORE any byte
+    # lands in the main repo: a mid-replay refusal must not leave a partially
+    # replayed attempt behind.
+    replayed: list[tuple[str, bytes]] = []
+    for relpath in untracked:
+        try:
+            payload = read_repository_bytes(attempt_repo, relpath)
+        except UnsafeRepositoryPathError as exc:
+            raise AutodevError(
+                f"refusing to replay untracked file {relpath}: {exc.reason}"
+            ) from exc
+        except FileNotFoundError:
+            continue  # vanished between listing and read; nothing to replay
+        replayed.append((relpath, payload))
+    for relpath, _ in replayed:
+        _preflight_replay_destination(repo, relpath)
+
     diff = subprocess.run(
         ["git", "-C", str(attempt_repo), "diff", "--binary", "HEAD"],
         capture_output=True,
@@ -781,21 +825,95 @@ def _replay_attempt(attempt_repo: Path, repo: Path) -> None:
         )
     # `git diff` never contains untracked files; a worker-created test file was
     # verified in the attempt and must not silently vanish on replay.
-    untracked = subprocess.run(
-        ["git", "-C", str(attempt_repo), "ls-files", "-z", "--others", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split("\0")
-    for relpath in untracked:
-        if not relpath:
-            continue
-        source = attempt_repo / relpath
-        if source.is_symlink():
-            raise AutodevError(f"refusing to replay untracked symlink: {relpath}")
-        target = repo / relpath
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+    for relpath, payload in replayed:
+        _create_confined_file(repo, relpath, payload)
+
+
+def _preflight_replay_destination(repo: Path, relpath: str) -> None:
+    """Refuse a replay destination before any byte lands in the main repo.
+
+    Existing parent components must be real directories (a symlinked parent
+    would redirect the write outside the repo); components that do not exist
+    yet are fine because :func:`_create_confined_file` creates them confined.
+    The leaf must not exist at all: replay only ever adds worker-created
+    files, so a pre-existing destination is a refusal, not an overwrite.
+    """
+    _split_repository_path(relpath)
+    try:
+        with hold_repository_dirs(repo, relpath) as (parent_fd, leaf, _):
+            try:
+                existing = os.open(leaf, getattr(os, "O_PATH", 0) | os.O_NOFOLLOW, dir_fd=parent_fd)
+            except OSError as exc:
+                if exc.errno == errno.ENOENT:
+                    return  # the only acceptable destination state
+                raise UnsafeRepositoryPathError(relpath, f"cannot inspect leaf {leaf!r}") from exc
+            os.close(existing)
+            raise UnsafeRepositoryPathError(relpath, f"destination {leaf!r} already exists")
+    except FileNotFoundError:
+        return  # a missing parent/leaf is created only at confined write time
+
+
+def _create_confined_file(repo: Path, relpath: str, payload: bytes) -> None:
+    """Create ``relpath`` under ``repo`` without following any symlink.
+
+    Missing parent directories are created component-wise between held
+    descriptors, and the leaf is opened O_CREAT|O_EXCL so a pre-existing
+    file or a symlink swapped in after validation can never be overwritten.
+    """
+    parts = _split_repository_path(relpath)
+    fds: list[int] = []
+    try:
+        fds.append(os.open(str(repo), getattr(os, "O_PATH", 0) | os.O_DIRECTORY))
+        for component in parts[:-1]:
+            try:
+                fds.append(
+                    os.open(
+                        component,
+                        getattr(os, "O_PATH", 0) | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=fds[-1],
+                    )
+                )
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    # ENOTDIR: O_NOFOLLOW met a symlinked directory component.
+                    raise UnsafeRepositoryPathError(
+                        relpath, f"symlink in path component {component!r}", symlink=True
+                    ) from exc
+                if exc.errno == errno.ENOENT:
+                    os.mkdir(component, 0o755, dir_fd=fds[-1])
+                    fds.append(
+                        os.open(
+                            component,
+                            getattr(os, "O_PATH", 0) | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=fds[-1],
+                        )
+                    )
+                    continue
+                raise UnsafeRepositoryPathError(
+                    relpath, f"cannot open path component {component!r}"
+                ) from exc
+        leaf = parts[-1]
+        try:
+            fd = os.open(
+                leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=fds[-1]
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise UnsafeRepositoryPathError(
+                    relpath, f"symlink at leaf {leaf!r}", symlink=True
+                ) from exc
+            if exc.errno == errno.EEXIST:
+                raise UnsafeRepositoryPathError(
+                    relpath, f"destination {leaf!r} already exists"
+                ) from exc
+            raise
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
 
 
 def designated_primary_fallback(
