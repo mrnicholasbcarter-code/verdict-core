@@ -86,6 +86,60 @@ def test_non_string_spend_policy_is_refused_not_defaulted() -> None:
         profile_task("repair x", context={"spend_policy": 123})
 
 
+def test_route_refuses_invalid_spend_policy_when_admit_snapshot_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from verdict.intelligence import IntelligenceService
+
+    service = IntelligenceService(
+        primary_model="paid/primary",
+        providers={},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+    )
+    monkeypatch.setattr(service, "_load_admit_snapshot", lambda: (None, None, False, None))
+
+    with pytest.raises(TaskProfileError, match="unknown spend_policy"):
+        import asyncio
+
+        asyncio.run(
+            service.route(
+                "summarize this paragraph",
+                criticality="low",
+                context={"spend_policy": "unknown", "allow_legacy_selector": True},
+            )
+        )
+
+
+def test_route_refuses_explicit_spend_policy_when_admit_snapshot_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from verdict.intelligence import IntelligenceService
+
+    service = IntelligenceService(
+        primary_model="paid/primary",
+        providers={},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+    )
+    monkeypatch.setattr(service, "_load_admit_snapshot", lambda: (None, None, False, None))
+
+    with pytest.raises(TaskProfileError, match="cannot enforce explicit spend_policy"):
+        import asyncio
+
+        asyncio.run(
+            service.route(
+                "summarize this paragraph",
+                criticality="low",
+                context={"spend_policy": "free_only", "allow_legacy_selector": True},
+            )
+        )
+
+
 # ── profile determinism ─────────────────────────────────────────────────────
 
 

@@ -38,7 +38,7 @@ from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.planner import StructuredPlanner
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
-from verdict.task_profile import profile_task
+from verdict.task_profile import TaskProfileError, profile_task
 from verdict.worthiness import classify_worthiness
 
 DEFAULT_PROFILE = "development"
@@ -460,6 +460,15 @@ class IntelligenceService:
         """
         snapshot, endpoint, live, _fetch_error = self._load_admit_snapshot()
         if snapshot is None:
+            if isinstance(context, dict) and "spend_policy" in context:
+                # Validate explicitly requested economics even when the live
+                # admit surface is unavailable. The legacy catalog path cannot
+                # enforce spend policy, so fail closed rather than silently
+                # routing a free_only request to a paid candidate.
+                profile_task(task, context=context)
+                raise TaskProfileError(
+                    "cannot enforce explicit spend_policy without an admit snapshot"
+                )
             # Not configured, or live surfaces unavailable: do not starve ranking.
             return None
         classification = classify_worthiness(
