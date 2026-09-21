@@ -54,6 +54,14 @@ def _open_dir(parent_fd: int, component: str, relative_path: str) -> int:
                 relative_path, f"symlink in path component {component!r}", symlink=True
             ) from exc
         if exc.errno == errno.ENOTDIR:
+            # Distinguish a missing ancestor from a symlink or non-directory.
+            # lstat never follows the component if it has itself become a link.
+            try:
+                os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                raise FileNotFoundError(
+                    errno.ENOENT, os.strerror(errno.ENOENT), relative_path
+                ) from exc
             raise UnsafeRepositoryPathError(
                 relative_path,
                 f"symlink or non-directory in path component {component!r}",

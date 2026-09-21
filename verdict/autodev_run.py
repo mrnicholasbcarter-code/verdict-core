@@ -347,6 +347,15 @@ def compile_packet_context(
             try:
                 selected[normalized] = read_repository_text(repo, normalized)
             except UnsafeRepositoryPathError as exc:
+                # Missing files have always been ordinary omissions, even when
+                # their first parent directory does not exist. Preserve that
+                # contract while surfacing symlinks and other unsafe paths.
+                try:
+                    (repo / normalized).lstat()
+                except FileNotFoundError:
+                    if requested:
+                        source_omissions.append((normalized, "absent: no such file"))
+                    continue
                 # A symlinked source would inline host bytes into the worker
                 # prompt; disclose the omission instead of following it.
                 source_omissions.append((normalized, f"unsafe: {exc.reason}"))
@@ -829,7 +838,7 @@ def _preflight_replay_destination(repo: Path, relpath: str) -> None:
     The leaf must not exist at all: replay only ever adds worker-created
     files, so a pre-existing destination is a refusal, not an overwrite.
     """
-    parts = _split_repository_path(relpath)
+    _split_repository_path(relpath)
     try:
         with hold_repository_dirs(repo, relpath) as (parent_fd, leaf, _):
             try:
