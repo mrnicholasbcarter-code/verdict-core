@@ -1798,14 +1798,7 @@ def _decision_is_fresher(
         candidate_at = parse(candidate.freshness.get("decision_at"))
         previous_at = parse(previous.freshness.get("decision_at"))
         if after is not None:
-            # ExecutionPathDecision timestamps are serialized at whole-second
-            # precision. Compare against the re-plan boundary at that same
-            # precision so an immediate, genuinely fresh optimizer result is
-            # not rejected solely because ``after`` retains microseconds.
-            if after.tzinfo is None:
-                return False
-            after_floor = after.astimezone(datetime.timezone.utc).replace(microsecond=0)
-            if candidate_at < after_floor:
+            if after.tzinfo is None or candidate_at <= after:
                 return False
             # Optimizer timestamps come from the caller's request. Reject cached
             # or fabricated far-future timestamps as well as pre-replan receipts.

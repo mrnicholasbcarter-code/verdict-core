@@ -794,6 +794,38 @@ def test_recovery_rejects_cached_decision_created_before_replan(repo: Path) -> N
     assert len(factory.executors) == 1
 
 
+def test_recovery_rejects_cached_decision_from_same_second(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    boundary = datetime(2026, 9, 21, 12, 34, 56, 900_000, tzinfo=timezone.utc)
+    initial_route = _route("free/cheap", "gateway/free-v1")
+    initial_decision = _decision_for_route(initial_route, now=boundary - timedelta(minutes=2))
+    fallback = _route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True)
+    cached_decision = _decision_for_route(fallback, now=boundary - timedelta(microseconds=800_000))
+    fallback_record = _stamped_route(fallback, cached_decision)
+
+    class ReplanClock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return boundary if tz is not None else boundary.replace(tzinfo=None)
+
+    monkeypatch.setattr("verdict.autodev_run.datetime.datetime", ReplanClock)
+    with pytest.raises(AutodevError, match="fresh re-plan"):
+        _run_packet_autodev(
+            packet,
+            repo,
+            admitted_route=_stamped_route(initial_route, initial_decision),
+            execution_path_decision=initial_decision,
+            replan_execution_path=lambda _attempt: (cached_decision, fallback_record),
+            executor_factory=factory,
+            store=ReceiptStore(":memory:"),
+            verification_runner=_Verifier("after\n"),
+        )
+    assert len(factory.executors) == 1
+
+
 def test_recovery_accepts_immediate_fresh_optimizer_decision(repo: Path) -> None:
     packet = _packet(repo)
     factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])

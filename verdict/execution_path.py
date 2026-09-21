@@ -311,7 +311,10 @@ class ExecutionPathDecision:
 
 
 def _format_datetime(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    # Preserve sub-second precision when present. Recovery authority compares
+    # optimizer receipts against an exact re-plan boundary, so truncation would
+    # make a same-second cached decision indistinguishable from a fresh one.
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _digest(payload: Mapping[str, Any]) -> str:
