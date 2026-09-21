@@ -794,6 +794,35 @@ def test_recovery_rejects_cached_decision_created_before_replan(repo: Path) -> N
     assert len(factory.executors) == 1
 
 
+def test_recovery_accepts_immediate_fresh_optimizer_decision(repo: Path) -> None:
+    packet = _packet(repo)
+    factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
+    initial_route = _route("free/cheap", "gateway/free-v1")
+    initial_decision = _decision_for_route(
+        initial_route, now=datetime.now(timezone.utc) - timedelta(minutes=2)
+    )
+    fallback = _route("cc/claude-sonnet-5", "anthropic/sonnet-served", primary=True)
+
+    def immediate_replan(_attempt: Any) -> tuple[Any, dict[str, Any]]:
+        fresh_decision = _decision_for_route(fallback, now=datetime.now(timezone.utc))
+        return fresh_decision, _stamped_route(fallback, fresh_decision)
+
+    report = _run_packet_autodev(
+        packet,
+        repo,
+        admitted_route=_stamped_route(initial_route, initial_decision),
+        execution_path_decision=initial_decision,
+        replan_execution_path=immediate_replan,
+        executor_factory=factory,
+        store=ReceiptStore(":memory:"),
+        verification_runner=_Verifier("after\n"),
+    )
+
+    assert report.terminal_state == "completed"
+    assert report.fallback_count == 1
+    assert len(factory.executors) == 2
+
+
 def test_recovery_decision_must_remain_bound_to_failed_trajectory(repo: Path) -> None:
     packet = _packet(repo)
     factory = _Factory([{"content": "wrong\n"}, {"content": "after\n"}])
