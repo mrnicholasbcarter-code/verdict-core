@@ -419,8 +419,7 @@ class ProbeRunner:
                 transport_calls += len(futures)
                 request_deadline = time.monotonic() + self.policy.timeout_seconds
                 done, not_done = wait(
-                    futures,
-                    timeout=min(remaining, self.policy.timeout_seconds, 0.05),
+                    futures, timeout=min(remaining, self.policy.timeout_seconds, 0.05)
                 )
                 while not_done:
                     if cancel_event and cancel_event.is_set():
@@ -431,8 +430,7 @@ class ProbeRunner:
                     if remaining <= 0 or request_remaining <= 0:
                         break
                     new_done, not_done = wait(
-                        not_done,
-                        timeout=min(remaining, request_remaining, 0.05),
+                        not_done, timeout=min(remaining, request_remaining, 0.05)
                     )
                     done.update(new_done)
                 if not_done:
