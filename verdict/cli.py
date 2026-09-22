@@ -2405,6 +2405,110 @@ def cmd_inspect(
     console.print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def cmd_receipt(
+    action: str,
+    *,
+    receipt_id: str | None = None,
+    attempt_id: str | None = None,
+    scope: str | None = None,
+    db_path: str | None = None,
+    output_json: bool = False,
+) -> None:
+    """Inspect durable RoutingReceiptV1 records from ReceiptStore (BOD-144)."""
+    from pathlib import Path
+
+    from verdict.receipt_store import ReceiptStore
+    from verdict.routing_receipt import attempt_scope, human_summary, load_routing_receipt
+
+    if db_path:
+        db = Path(db_path)
+    else:
+        repo_db = Path.cwd() / ".verdict" / "receipts.db"
+        db = repo_db if repo_db.exists() else (Path.home() / ".verdict" / "receipts.db")
+    # List-all must scan scopes; show/export keep strict scope when a scope is known.
+    store = (
+        ReceiptStore(db, strict_scope=False)
+        if action == "list" and scope is None
+        else ReceiptStore(db, strict_scope=True)
+    )
+
+    if action == "list":
+        rows = store.query_receipts(receipt_type="decision", scope=scope, limit=100)
+        items = []
+        for row in rows:
+            if row.parent_receipt_id:
+                continue
+            payload = row.payload
+            if payload.get("schema_version") != "routing-receipt/v1":
+                continue
+            latest = load_routing_receipt(
+                store,
+                receipt_id=row.receipt_id,
+                scope=row.scope,
+                attempt_id=payload.get("attempt_id"),
+            )
+            view = latest.to_dict() if latest is not None else payload
+            items.append(
+                {
+                    "receipt_id": row.receipt_id,
+                    "scope": row.scope,
+                    "attempt_id": view.get("attempt_id"),
+                    "state": view.get("state"),
+                    "decision_digest": view.get("decision_digest"),
+                    "created_at": view.get("created_at"),
+                }
+            )
+        if output_json:
+            print(json.dumps({"receipts": items}, indent=2, sort_keys=True))
+            return
+        if not items:
+            print("no routing receipts found")
+            return
+        for item in items:
+            print(
+                f"{item['receipt_id']} scope={item['scope']} "
+                f"attempt={item.get('attempt_id')} state={item.get('state')}"
+            )
+        return
+
+    if action == "show":
+        scope_value = scope
+        if scope_value is None and attempt_id is not None:
+            scope_value = attempt_scope(story_id=None, work_unit_id=None, attempt_id=attempt_id)
+        receipt = load_routing_receipt(
+            store, receipt_id=receipt_id, scope=scope_value, attempt_id=attempt_id
+        )
+        if receipt is None and attempt_id is not None and scope is None:
+            # Scan scopes for the attempt.
+            for row in store.query_receipts(receipt_type="decision", limit=500):
+                if row.parent_receipt_id:
+                    continue
+                if row.idempotency_key == attempt_id or row.payload.get("attempt_id") == attempt_id:
+                    receipt = load_routing_receipt(
+                        store, receipt_id=row.receipt_id, scope=row.scope, attempt_id=attempt_id
+                    )
+                    break
+        if receipt is None:
+            raise SystemExit("routing receipt not found")
+        if output_json:
+            print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+            return
+        print(human_summary(receipt))
+        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        return
+
+    if action == "export":
+        receipt = load_routing_receipt(
+            store, receipt_id=receipt_id, scope=scope, attempt_id=attempt_id
+        )
+        if receipt is None:
+            raise SystemExit("routing receipt not found")
+        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        return
+
+    raise SystemExit(f"unknown receipt action: {action}")
+
+
 def cmd_replay(session_id: str, output_json: bool = False) -> None:
     """Replay a recorded execution session from the shared MemoryPlane."""
     try:
@@ -3960,6 +4064,35 @@ def main() -> None:
     inspect_p.add_argument("model_id", help="Model ID to inspect")
     inspect_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    receipt_p = subparsers.add_parser(
+        "receipt", help="Inspect durable RoutingReceiptV1 records (BOD-144)"
+    )
+    receipt_sub = receipt_p.add_subparsers(dest="receipt_action", required=True)
+    receipt_list_p = receipt_sub.add_parser("list", help="List routing receipts")
+    receipt_list_p.add_argument("--scope", default=None, help="Optional receipt scope filter")
+    receipt_list_p.add_argument(
+        "--db",
+        dest="db_path",
+        default=None,
+        help="ReceiptStore sqlite path (default: .verdict/receipts.db)",
+    )
+    receipt_list_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    receipt_show_p = receipt_sub.add_parser("show", help="Show one routing receipt")
+    receipt_show_p.add_argument("receipt_id", nargs="?", default=None, help="Receipt id")
+    receipt_show_p.add_argument("--attempt", dest="attempt_id", default=None, help="Attempt id")
+    receipt_show_p.add_argument("--scope", default=None, help="Receipt scope")
+    receipt_show_p.add_argument(
+        "--db", dest="db_path", default=None, help="ReceiptStore sqlite path"
+    )
+    receipt_show_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    receipt_export_p = receipt_sub.add_parser("export", help="Export one routing receipt as JSON")
+    receipt_export_p.add_argument("receipt_id", nargs="?", default=None, help="Receipt id")
+    receipt_export_p.add_argument("--attempt", dest="attempt_id", default=None, help="Attempt id")
+    receipt_export_p.add_argument("--scope", default=None, help="Receipt scope")
+    receipt_export_p.add_argument(
+        "--db", dest="db_path", default=None, help="ReceiptStore sqlite path"
+    )
+
     replay_p = subparsers.add_parser("replay", help="Replay a recorded execution session")
     replay_p.add_argument("session_id", help="Session ID to replay")
     replay_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -4300,6 +4433,15 @@ def main() -> None:
         cmd_models(output_json=args.json)
     elif args.command == "inspect":
         cmd_inspect(args.model_id, output_json=args.json)
+    elif args.command == "receipt":
+        cmd_receipt(
+            args.receipt_action,
+            receipt_id=getattr(args, "receipt_id", None),
+            attempt_id=getattr(args, "attempt_id", None),
+            scope=getattr(args, "scope", None),
+            db_path=getattr(args, "db_path", None),
+            output_json=bool(getattr(args, "json", False)),
+        )
     elif args.command == "replay":
         cmd_replay(args.session_id, output_json=args.json)
     elif args.command == "simulate":
