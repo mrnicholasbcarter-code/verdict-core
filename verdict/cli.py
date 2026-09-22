@@ -613,7 +613,10 @@ def cmd_setup_plan(
     from verdict.setup_plan import build_setup_plan
 
     if not recommended and scope == "all":
+        from verdict.shared_memory import discover_shared_memory_setup
+
         plan = build_setup_plan().to_dict()
+        plan["shared_memory"] = discover_shared_memory_setup()
         if output_json:
             print(json.dumps(plan, indent=2, sort_keys=True))
             return
@@ -633,9 +636,12 @@ def cmd_setup_plan(
         scope=BootstrapScope(scope),
         non_interactive=True,
     )
+    from verdict.shared_memory import discover_shared_memory_setup
+
     base = build_setup_plan(
         bootstrap_providers=bootstrap.providers, include_bootstrap=True, bootstrap_scope=scope
     ).to_dict()
+    base["shared_memory"] = discover_shared_memory_setup()
     if output_json:
         print(json.dumps({**base, "bootstrap": bootstrap.to_dict()}, indent=2, sort_keys=True))
 
@@ -2025,6 +2031,15 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         )
     elif fix and documentation_report.ingested:
         fixed_issues.append("authoritative documentation preflight repaired")
+
+    from verdict.shared_memory import doctor_shared_memory_report
+
+    shared_memory = doctor_shared_memory_report()
+    ui.status(
+        "Shared memory",
+        str(shared_memory.get("state", "unknown")),
+        str(shared_memory.get("endpoint") or shared_memory.get("provider_id") or ""),
+    )
 
     # 1. Config Check
     config_dir = os.path.join(

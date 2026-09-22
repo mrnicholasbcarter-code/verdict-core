@@ -991,6 +991,8 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
             mcp_local.write_text('{"mcpServers": {}}', encoding="utf-8")
             repaired.append("created_mcp_config")
 
+    from verdict.shared_memory import doctor_shared_memory_report
+
     return {
         "status": "ok" if not issues else "issues_found",
         "issues": issues,
@@ -1002,6 +1004,8 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
             "stale": 0,
             "missing": 0,
         },
+        # Optional advisory shared provider — absence must not flip top-level status.
+        "shared_memory": doctor_shared_memory_report(home_dir=home_dir, cwd=cwd),
     }
 
 
