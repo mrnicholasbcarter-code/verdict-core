@@ -102,6 +102,18 @@ class ExpectedStrategyCost:
         return _status_histogram(self.terms)
 
     @property
+    def resource_token_burden(self) -> Decimal:
+        """Known token burden used only after expected cash ties."""
+        return sum(
+            (
+                term.amount
+                for term in self.terms
+                if term.unit == "tokens" and term.amount is not None and term.status != "unknown"
+            ),
+            Decimal("0"),
+        )
+
+    @property
     def has_unknown_cash(self) -> bool:
         return any(
             term.unit == "usd" and (term.status == "unknown" or term.amount is None)
@@ -286,11 +298,12 @@ def compare_strategies(
         sub_key = (1, Decimal("0")) if sub is None else (0, sub)
         pressure = item.quota_pressure
         pressure_key = (1, Decimal("0")) if pressure is None else (0, pressure)
+        resource_key = item.resource_token_burden
         if mode == "cheapest_qualified":
-            # Tactical: minimize known next/complete cash among qualified.
-            return (cash_key, sub_key, pressure_key, item.strategy_id)
-        # expected_cost: cash first, then subscription opportunity, then pressure.
-        return (cash_key, sub_key, pressure_key, item.strategy_id)
+            # Tactical: minimize known cash, then the estimated token burden.
+            return (cash_key, sub_key, pressure_key, resource_key, item.strategy_id)
+        # Preserve the economic dimensions; resource burden breaks full economic ties.
+        return (cash_key, sub_key, pressure_key, resource_key, item.strategy_id)
 
     ranked_items = sorted(qualified, key=sort_key)
     ranked_ids = tuple(item.strategy_id for item in ranked_items)

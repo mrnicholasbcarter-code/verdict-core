@@ -160,6 +160,8 @@ class ContextPlan:
     token_budget: int = 4096
     output_token_reserve: int = 0
     tool_token_reserve: int = 0
+    estimated_input_tokens: int | None = None
+    candidate_context_window: int | None = None
     required_slot_types: tuple[SlotType, ...] = ()
     retrieval_algorithm: str = "lexical-bm25"
     retrieval_version: str = "local-fts5-v1"
@@ -175,6 +177,12 @@ class ContextPlan:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ContextContractError(f"{name} must be a non-negative integer")
+        for name in ("estimated_input_tokens", "candidate_context_window"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ContextContractError(f"{name} must be a positive integer when set")
         if self.token_budget < 1:
             raise ContextContractError("token_budget must be positive")
         if self.input_token_budget < 1:
@@ -191,6 +199,82 @@ class ContextPlan:
     def input_token_budget(self) -> int:
         return self.token_budget - self.output_token_reserve - self.tool_token_reserve
 
+    @property
+    def estimated_fit(self) -> bool:
+        """Whether the candidate budget can hold the pre-hydration estimate."""
+        return (
+            self.estimated_input_tokens is None
+            or self.estimated_input_tokens <= self.input_token_budget
+        )
+
+    @classmethod
+    def estimate_for_candidate(
+        cls,
+        *,
+        task: str,
+        candidate_id: str,
+        context_window: int,
+        task_family: str = "general",
+        required_capabilities: tuple[str, ...] = (),
+        criteria_count: int = 0,
+        output_token_reserve: int = 1024,
+        tool_token_reserve: int = 512,
+        created_at: str | None = None,
+    ) -> ContextPlan:
+        """Build a bounded plan estimate without retrieving or compiling context.
+
+        The estimate is task-driven and candidate-capped. A larger model window
+        therefore provides headroom but never causes the pack target to grow.
+        """
+        if not isinstance(task, str) or not task.strip():
+            raise ContextContractError("task must be a non-empty string")
+        if isinstance(context_window, bool) or not isinstance(context_window, int):
+            raise ContextContractError("context_window must be a positive integer")
+        if context_window < 1:
+            raise ContextContractError("context_window must be a positive integer")
+        if isinstance(criteria_count, bool) or not isinstance(criteria_count, int):
+            raise ContextContractError("criteria_count must be a non-negative integer")
+        if criteria_count < 0:
+            raise ContextContractError("criteria_count must be a non-negative integer")
+
+        family = task_family.strip().lower() if isinstance(task_family, str) else "general"
+        family_allowance = {
+            "general": 768,
+            "coding": 2048,
+            "reasoning": 1536,
+            "research": 2048,
+            "agentic": 3072,
+        }.get(family, 1024)
+        estimated_input = min(
+            16_384,
+            max(
+                1024,
+                estimate_tokens(task) * 2
+                + family_allowance
+                + 256 * len(tuple(required_capabilities))
+                + 192 * criteria_count,
+            ),
+        )
+        reserves = output_token_reserve + tool_token_reserve
+        target_total = estimated_input + reserves
+        token_budget = min(context_window, target_total)
+        if token_budget <= reserves:
+            # Preserve a valid immutable plan that truthfully reports non-fit.
+            token_budget = min(context_window, reserves + 1)
+        return cls(
+            plan_id=f"prehydrate:{candidate_id}",
+            candidate_id=candidate_id,
+            token_budget=token_budget,
+            output_token_reserve=min(output_token_reserve, max(0, token_budget - 1)),
+            tool_token_reserve=min(
+                tool_token_reserve,
+                max(0, token_budget - min(output_token_reserve, max(0, token_budget - 1)) - 1),
+            ),
+            estimated_input_tokens=estimated_input,
+            candidate_context_window=context_window,
+            created_at=created_at or _now_iso(),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
@@ -202,6 +286,9 @@ class ContextPlan:
             "input_token_budget": self.input_token_budget,
             "output_token_reserve": self.output_token_reserve,
             "tool_token_reserve": self.tool_token_reserve,
+            "estimated_input_tokens": self.estimated_input_tokens,
+            "candidate_context_window": self.candidate_context_window,
+            "estimated_fit": self.estimated_fit,
             "required_slot_types": list(self.required_slot_types),
             "retrieval_algorithm": self.retrieval_algorithm,
             "retrieval_version": self.retrieval_version,
@@ -226,15 +313,28 @@ class ContextPlan:
                 "retrieval_version",
                 "created_at",
             },
-            {"input_token_budget"},
+            {
+                "input_token_budget",
+                "estimated_input_tokens",
+                "candidate_context_window",
+                "estimated_fit",
+            },
             "context_plan",
         )
-        result = cls(**{key: payload[key] for key in payload if key != "input_token_budget"})
+        result = cls(
+            **{
+                key: payload[key]
+                for key in payload
+                if key not in {"input_token_budget", "estimated_fit"}
+            }
+        )
         if (
             payload.get("input_token_budget", result.input_token_budget)
             != result.input_token_budget
         ):
             raise ContextContractError("input_token_budget does not match reserves")
+        if payload.get("estimated_fit", result.estimated_fit) != result.estimated_fit:
+            raise ContextContractError("estimated_fit does not match estimated input")
         return result
 
     @property
