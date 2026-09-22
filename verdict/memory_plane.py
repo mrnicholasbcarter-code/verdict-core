@@ -14,7 +14,10 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+if TYPE_CHECKING:
+    from verdict.memory_outbox import MemoryOutbox
 
 SCHEMA_VERSION = 2
 RecordStatus = Literal["active", "superseded", "tombstone"]
@@ -65,9 +68,10 @@ class MemorySearchResult:
 class MemoryPlane:
     """SQLite/WAL memory store with append-only history and FTS5 retrieval."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, outbox: MemoryOutbox | None = None):
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._outbox = outbox
         self._db = sqlite3.connect(
             self.path, timeout=10, isolation_level=None, check_same_thread=False
         )
@@ -76,6 +80,10 @@ class MemoryPlane:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._initialize()
+        if self._outbox is not None:
+            from verdict.memory_outbox import MemoryOutbox as _MemoryOutbox
+
+            _MemoryOutbox.ensure_schema(self._db)
 
     def _initialize(self) -> None:
         self._db.executescript(
@@ -257,8 +265,11 @@ class MemoryPlane:
                     "SELECT * FROM memories WHERE record_id=?", (normalized.record_id,)
                 ).fetchone()
                 if existing["content_hash"] == normalized.content_hash:
+                    stored = self._from_row(existing)
+                    if self._outbox is not None:
+                        self._outbox.enqueue_in_transaction(self._db, stored)
                     self._db.execute("COMMIT")
-                    return self._from_row(existing)
+                    return stored
                 raise ValueError("record_id already exists with different content")
             previous = self._active_row(normalized.namespace, normalized.scope, normalized.key)
             supersedes = normalized.supersedes or (previous["record_id"] if previous else None)
@@ -286,6 +297,8 @@ class MemoryPlane:
                         stored.scope,
                     ),
                 )
+            if self._outbox is not None and stored.status == "active":
+                self._outbox.enqueue_in_transaction(self._db, stored)
             self._db.execute("COMMIT")
             return stored
         except Exception:

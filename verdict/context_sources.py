@@ -10,6 +10,7 @@ import ast
 import hashlib
 import re
 import subprocess
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,14 @@ from typing import Any, Protocol
 
 from verdict.context_pack import ContextUnit
 from verdict.memory_plane import MemoryPlane
+from verdict.shared_memory import (
+    ProviderErrorCode,
+    ProviderResultStatus,
+    SharedMemoryHit,
+    SharedMemoryProvider,
+    SharedMemoryProviderError,
+    SharedMemoryQuery,
+)
 
 PROVIDER_ID = "native.verdict"
 DEFAULT_MAX_FILE_BYTES = 8_192
@@ -736,6 +745,164 @@ class NativeGraphProvider(CapabilityProvider):
         return ProviderResult(capability_id, self.provider_id, units)
 
 
+class SharedMemoryCapabilityProvider(CapabilityProvider):
+    """Optional shared-memory search. Fail-open advisory evidence only."""
+
+    def __init__(
+        self,
+        provider: SharedMemoryProvider | None = None,
+        *,
+        enabled: bool = True,
+        project: str = "default",
+        scope: str = "default",
+        tenant: str = "default",
+    ) -> None:
+        health = "healthy" if enabled and provider is not None else "disabled"
+        super().__init__(
+            provider_id="adapter.shared_memory",
+            capabilities=frozenset({"memory.search"}),
+            authority="shared-memory-advisory",
+            health=health,
+        )
+        self._provider = provider
+        self._enabled = enabled and provider is not None
+        self._project = project
+        self._scope = scope
+        self._tenant = tenant
+
+    def provide(
+        self,
+        *,
+        capability_id: str,
+        query: str,
+        repo_root: Path,
+        max_units: int = DEFAULT_MAX_UNITS,
+        hints: Mapping[str, Any] | None = None,
+        plane: MemoryPlane | None = None,
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    ) -> ProviderResult:
+        del repo_root, plane
+        if capability_id != "memory.search":
+            return ProviderResult(
+                capability_id, self.provider_id, gap_reason="provider_unavailable"
+            )
+        if not self._enabled or self._provider is None:
+            return ProviderResult(
+                capability_id, self.provider_id, gap_reason="shared_memory_disabled"
+            )
+        project = self._project
+        scope = self._scope
+        tenant = self._tenant
+        if hints:
+            project = str(hints.get("project") or project)
+            scope = str(hints.get("scope") or scope)
+            tenant = str(hints.get("tenant") or tenant)
+        search_query = query
+        if hints:
+            symbols = hints.get("symbols") or hints.get("target_symbols") or ()
+            if isinstance(symbols, str) and symbols.strip():
+                search_query = f"{query} {symbols.strip()}".strip()
+            elif isinstance(symbols, Sequence):
+                extras = " ".join(str(item).strip() for item in symbols if str(item).strip())
+                if extras:
+                    search_query = f"{query} {extras}".strip()
+        try:
+            result = self._provider.search(
+                SharedMemoryQuery(
+                    query=search_query or query,
+                    project=project,
+                    scope=scope,
+                    tenant=tenant,
+                    limit=max(1, min(100, max_units)),
+                )
+            )
+        except SharedMemoryProviderError as exc:
+            reason = {
+                ProviderErrorCode.TIMEOUT: "provider_timeout",
+                ProviderErrorCode.AUTH_FAILED: "provider_auth_failed",
+                ProviderErrorCode.SCHEMA_INCOMPATIBLE: "provider_schema_incompatible",
+                ProviderErrorCode.PROTOCOL_INCOMPATIBLE: "provider_schema_incompatible",
+            }.get(exc.code, "provider_unreachable")
+            return ProviderResult(capability_id, self.provider_id, gap_reason=reason)
+        except Exception:
+            return ProviderResult(
+                capability_id, self.provider_id, gap_reason="provider_unreachable"
+            )
+
+        if result.status is not ProviderResultStatus.AVAILABLE:
+            reason = {
+                ProviderResultStatus.TIMEOUT: "provider_timeout",
+                ProviderResultStatus.AUTH_FAILED: "provider_auth_failed",
+                ProviderResultStatus.INCOMPATIBLE: "provider_schema_incompatible",
+                ProviderResultStatus.MALFORMED: "provider_schema_incompatible",
+                ProviderResultStatus.DEGRADED: "provider_degraded",
+            }.get(result.status, "provider_unreachable")
+            return ProviderResult(capability_id, self.provider_id, gap_reason=reason)
+
+        if not result.hits:
+            return ProviderResult(capability_id, self.provider_id, gap_reason="healthy_zero_hits")
+
+        units: list[ContextUnit] = []
+        filtered = 0
+        for hit in result.hits:
+            unit = _shared_hit_to_unit(hit, max_file_bytes=max_file_bytes)
+            if unit is None:
+                filtered += 1
+                continue
+            units.append(unit)
+            if len(units) >= max_units:
+                break
+        if not units:
+            return ProviderResult(
+                capability_id,
+                self.provider_id,
+                gap_reason="hits_filtered_all" if filtered else "healthy_zero_hits",
+            )
+        return ProviderResult(capability_id, self.provider_id, tuple(units))
+
+
+def _shared_hit_to_unit(hit: SharedMemoryHit, *, max_file_bytes: int) -> ContextUnit | None:
+    envelope = hit.envelope
+    content = envelope.content[:max_file_bytes]
+    if _looks_secret(content):
+        return None
+    observed = envelope.observed_at or envelope.created_at
+    observed_iso = (
+        datetime.fromtimestamp(observed, timezone.utc).isoformat().replace("+00:00", "Z")
+        if observed
+        else _now_iso()
+    )
+    valid_until = None
+    if envelope.expires_at is not None:
+        if envelope.expires_at <= time.time():
+            return None
+        valid_until = (
+            datetime.fromtimestamp(envelope.expires_at, timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    return ContextUnit(
+        unit_id=_digest_text(f"shared:{hit.ref.provider_id}:{hit.ref.external_id}")[:24],
+        slot_type="memory",
+        key=f"shared:{envelope.idempotency_key}",
+        content=content,
+        source_uri=f"shared-memory://{hit.ref.provider_id}/{hit.ref.external_id}",
+        source_digest=f"sha256:{envelope.content_hash}",
+        revision=hit.ref.revision or envelope.revision,
+        observed_at=observed_iso,
+        retrieved_at=_now_iso(),
+        valid_until=valid_until,
+        trust="remote-advisory",
+        authority="shared-memory-advisory",
+        sensitivity=envelope.sensitivity,
+        tenant_scope=envelope.tenant,
+        project_scope=envelope.project,
+        confidence=max(0.0, min(1.0, float(hit.score))),
+        transform_lineage=("raw", "shared-memory-search"),
+        status="active",
+    )
+
+
 def build_native_providers() -> tuple[CapabilityProvider, ...]:
     return (
         NativeCodeProvider(),
@@ -758,6 +925,7 @@ __all__ = [
     "NativeMemoryProvider",
     "NativeTaskProvider",
     "ProviderResult",
+    "SharedMemoryCapabilityProvider",
     "build_native_providers",
     "make_unit",
 ]
