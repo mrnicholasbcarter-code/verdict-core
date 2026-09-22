@@ -227,6 +227,7 @@ def build_cheap_path_context_pack(
     *,
     candidate_id: str,
     token_budget: int = DEFAULT_CHEAP_PATH_TOKEN_BUDGET,
+    context_plan: ContextPlan | None = None,
     extra_slots: Sequence[ContextPackSlot] | None = None,
     workspace_root: Path | str | None = None,
     workspace_roots: Sequence[str] | None = None,
@@ -257,6 +258,10 @@ def build_cheap_path_context_pack(
         raise ValueError("candidate_id must be a non-empty string")
     if isinstance(token_budget, bool) or not isinstance(token_budget, int) or token_budget < 1:
         raise ValueError("token_budget must be a positive integer")
+    if context_plan is not None:
+        if context_plan.candidate_id != candidate_id:
+            raise ValueError("context_plan candidate_id must match candidate_id")
+        token_budget = context_plan.token_budget
 
     from verdict.context_hydrate import (
         CHEAP_PATH_EPOCH,
@@ -353,9 +358,13 @@ def build_cheap_path_context_pack(
             units, task_policy=task, epoch=CHEAP_PATH_EPOCH
         )
         budget_receipt, compile_units, budget_omissions = _allocate_compile_units(
-            admitted_units, candidate_id=candidate_id, token_budget=token_budget
+            admitted_units,
+            candidate_id=candidate_id,
+            token_budget=token_budget,
+            output_token_reserve=0 if context_plan is None else context_plan.output_token_reserve,
+            tool_token_reserve=0 if context_plan is None else context_plan.tool_token_reserve,
         )
-        plan = ContextPlan(
+        plan = context_plan or ContextPlan(
             plan_id=f"cheap:{candidate_id}",
             candidate_id=candidate_id,
             token_budget=budget_receipt.usable_input_budget,
@@ -537,11 +546,21 @@ def _context_units_to_budget_units(units: Sequence[ContextUnit]) -> list[BudgetU
 
 
 def _allocate_compile_units(
-    units: Sequence[ContextUnit], *, candidate_id: str, token_budget: int
+    units: Sequence[ContextUnit],
+    *,
+    candidate_id: str,
+    token_budget: int,
+    output_token_reserve: int = 0,
+    tool_token_reserve: int = 0,
 ) -> tuple[BudgetReceipt, list[ContextUnit], tuple[NamedOmission, ...]]:
     """Allocate via BudgetReceipt; return only included units for compile (no dual budget)."""
     governor = ContextBudgetGovernor()
-    limit = BudgetCandidateLimit(candidate_id=candidate_id, context_limit=token_budget)
+    limit = BudgetCandidateLimit(
+        candidate_id=candidate_id,
+        context_limit=token_budget,
+        output_reserve=output_token_reserve,
+        tool_call_reserve=tool_token_reserve,
+    )
     receipt = governor.allocate(_context_units_to_budget_units(units), limit)
     included_ids = {item.unit_id for item in receipt.included}
     compile_units = [unit for unit in units if unit.unit_id in included_ids]
@@ -652,6 +671,7 @@ class FreeTierAdmitReceipt:
     task_profile_digest: str | None = None
     spend_policy: str | None = None
     candidate_pool: dict[str, Any] | None = None
+    context_plans: tuple[ContextPlan, ...] = ()
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -701,6 +721,7 @@ class FreeTierAdmitReceipt:
             "task_profile_digest": self.task_profile_digest,
             "spend_policy": self.spend_policy,
             "candidate_pool": None if self.candidate_pool is None else dict(self.candidate_pool),
+            "context_plans": [plan.to_dict() for plan in self.context_plans],
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:

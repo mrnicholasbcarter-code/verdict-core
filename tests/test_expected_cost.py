@@ -165,3 +165,89 @@ def test_assistance_and_overlays_share_trajectory() -> None:
     }
     assert strategy.trajectory_id == "traj-shared"
     assert strategy.cash_usd is not None
+
+
+def test_equal_cash_uses_known_token_burden_as_tie_breaker() -> None:
+    light = ExpectedStrategyCost.build(
+        strategy_id="light",
+        trajectory_id="traj-resource",
+        terms=(
+            CostTerm(kind="execution", amount=Decimal("0"), unit="usd", status="estimated"),
+            CostTerm(kind="hydration", amount=Decimal("100"), unit="tokens", status="estimated"),
+        ),
+    )
+    heavy = ExpectedStrategyCost.build(
+        strategy_id="heavy",
+        trajectory_id="traj-resource",
+        terms=(
+            CostTerm(kind="execution", amount=Decimal("0"), unit="usd", status="estimated"),
+            CostTerm(kind="hydration", amount=Decimal("200"), unit="tokens", status="estimated"),
+        ),
+    )
+
+    selected = compare_strategies((heavy, light))
+
+    assert selected.selected_strategy_id == "light"
+    assert light.resource_token_burden == Decimal("100")
+
+
+def test_known_cash_precedes_token_burden() -> None:
+    cheap_heavy = ExpectedStrategyCost.build(
+        strategy_id="cheap-heavy",
+        trajectory_id="traj-resource",
+        terms=(
+            CostTerm(kind="execution", amount=Decimal("0.01"), unit="usd", status="estimated"),
+            CostTerm(kind="execution", amount=Decimal("1000"), unit="tokens", status="estimated"),
+        ),
+    )
+    costly_light = ExpectedStrategyCost.build(
+        strategy_id="costly-light",
+        trajectory_id="traj-resource",
+        terms=(
+            CostTerm(kind="execution", amount=Decimal("0.02"), unit="usd", status="estimated"),
+            CostTerm(kind="execution", amount=Decimal("1"), unit="tokens", status="estimated"),
+        ),
+    )
+
+    assert compare_strategies((costly_light, cheap_heavy)).selected_strategy_id == "cheap-heavy"
+
+
+def test_subscription_and_quota_precede_token_tie_breaker() -> None:
+    economical_heavy = ExpectedStrategyCost.build(
+        strategy_id="economical-heavy",
+        trajectory_id="traj-dimensions",
+        terms=(
+            CostTerm(kind="execution", amount=Decimal("0"), unit="usd", status="estimated"),
+            CostTerm(
+                kind="subscription",
+                amount=Decimal("1"),
+                unit="subscription_units",
+                status="estimated",
+            ),
+            CostTerm(
+                kind="quota_pressure", amount=Decimal("0.1"), unit="quota_units", status="estimated"
+            ),
+            CostTerm(kind="hydration", amount=Decimal("1000"), unit="tokens", status="estimated"),
+        ),
+    )
+    costly_light = ExpectedStrategyCost.build(
+        strategy_id="costly-light",
+        trajectory_id="traj-dimensions",
+        terms=(
+            CostTerm(kind="execution", amount=Decimal("0"), unit="usd", status="estimated"),
+            CostTerm(
+                kind="subscription",
+                amount=Decimal("2"),
+                unit="subscription_units",
+                status="estimated",
+            ),
+            CostTerm(
+                kind="quota_pressure", amount=Decimal("0.2"), unit="quota_units", status="estimated"
+            ),
+            CostTerm(kind="hydration", amount=Decimal("1"), unit="tokens", status="estimated"),
+        ),
+    )
+
+    selected = compare_strategies((costly_light, economical_heavy))
+
+    assert selected.selected_strategy_id == "economical-heavy"

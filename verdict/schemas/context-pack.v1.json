@@ -25,6 +25,7 @@
         "tenant_scope": {"type": "string", "minLength": 1}, "project_scope": {"type": "string", "minLength": 1},
         "token_budget": {"type": "integer", "minimum": 1}, "input_token_budget": {"type": "integer", "minimum": 1},
         "output_token_reserve": {"type": "integer", "minimum": 0}, "tool_token_reserve": {"type": "integer", "minimum": 0},
+        "estimated_input_tokens": {"type": ["integer", "null"], "minimum": 1}, "candidate_context_window": {"type": ["integer", "null"], "minimum": 1}, "estimated_fit": {"type": "boolean"},
         "required_slot_types": {"type": "array", "items": {"$ref": "#/$defs/slot_type"}},
         "retrieval_algorithm": {"type": "string", "minLength": 1}, "retrieval_version": {"type": "string", "minLength": 1}, "created_at": {"$ref": "#/$defs/timestamp"}
       },

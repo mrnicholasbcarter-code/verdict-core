@@ -1,9 +1,11 @@
 import hashlib
+import json
 import subprocess
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +21,15 @@ from verdict.candidate_pool import (
 from verdict.capability_gate import derive_requirements, gate_capability
 from verdict.chooser import ChooserError, apply_best_of_admitted
 from verdict.classifier import classify
+from verdict.context_pack import ContextPlan
+from verdict.cost_ledger import CostTerm
 from verdict.discovery import fetch_models
+from verdict.effective_capability import AssistanceCost, AssistancePlan
 from verdict.eligibility import EligibilityGate
 from verdict.escalation import scan
+from verdict.expected_cost import ExpectedStrategyCost
 from verdict.free_tier_admit import (
+    DEFAULT_CHEAP_PATH_TOKEN_BUDGET,
     FAIL_CLOSED_REASON,
     NO_ELIGIBLE_TARGET,
     FreeTierAdmitReceipt,
@@ -40,7 +47,12 @@ from verdict.free_tier_admit import (
 from verdict.logger import log_decision
 from verdict.metadata.mapping import IdentityMap, load_identity_map
 from verdict.metadata.records import ModelMetadataError
-from verdict.metadata.store import MetadataSnapshot, default_store_path, load_store
+from verdict.metadata.store import (
+    MetadataSnapshot,
+    default_store_path,
+    load_store,
+    lookup_omniroute_id,
+)
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.planner import StructuredPlanner
@@ -48,6 +60,101 @@ from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
 from verdict.task_profile import TaskProfile, TaskProfileError, profile_task
 from verdict.worthiness import classify_worthiness
+
+
+def _bind_context_plan(assistance_plan: AssistancePlan, plan: ContextPlan) -> AssistancePlan:
+    """Attach a plan and bind the mutated assistance payload to a fresh digest."""
+    updated = replace(
+        assistance_plan,
+        context_plan_requirements=plan.to_dict(),
+        assistance_cost=replace(
+            assistance_plan.assistance_cost,
+            context_tokens=plan.estimated_input_tokens or plan.input_token_budget,
+            tool_tokens=max(assistance_plan.assistance_cost.tool_tokens, plan.tool_token_reserve),
+        ),
+    )
+    payload = updated.to_dict()
+    payload.pop("plan_id", None)
+    payload.pop("evidence_digest", None)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    digest = f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+    return replace(updated, plan_id=f"ecp:{digest[7:23]}", evidence_digest=digest)
+
+
+def _cost_with_context_plan(
+    cost: ExpectedStrategyCost, *, new_assistance: AssistanceCost, plan: ContextPlan
+) -> ExpectedStrategyCost:
+    """Rebind hydration/tool/output resource estimates without inventing a price."""
+    targets = {"hydration": new_assistance.context_tokens, "tools": new_assistance.tool_tokens}
+    execution_tokens = next(
+        (
+            int(term.amount)
+            for term in cost.terms
+            if term.kind == "execution" and term.unit == "tokens" and term.amount is not None
+        ),
+        0,
+    )
+    if execution_tokens < plan.output_token_reserve:
+        targets["execution"] = plan.output_token_reserve
+
+    rates: dict[str, tuple[Decimal, CostTerm]] = {}
+    for token_term in cost.terms:
+        if token_term.unit != "tokens" or token_term.amount in (None, Decimal("0")):
+            continue
+        usd_term = next(
+            (
+                item
+                for item in cost.terms
+                if item.kind == token_term.kind
+                and item.unit == "usd"
+                and item.amount is not None
+                and item.status != "unknown"
+            ),
+            None,
+        )
+        if usd_term is not None:
+            usd_amount = usd_term.amount
+            token_amount = token_term.amount
+            assert usd_amount is not None and token_amount is not None
+            rates[token_term.kind] = (usd_amount / token_amount, usd_term)
+
+    revised = [
+        term
+        for term in cost.terms
+        if term.kind not in targets
+        or (
+            term.unit != "tokens"
+            and not (
+                term.unit == "usd"
+                and term.kind in rates
+                and term.status != "unknown"
+                and term.amount is not None
+            )
+        )
+    ]
+    for kind, tokens in targets.items():
+        if tokens <= 0:
+            continue
+        revised.append(
+            CostTerm(kind=kind, amount=Decimal(tokens), unit="tokens", status="estimated")
+        )
+        rate_and_template = rates.get(kind)
+        if rate_and_template is not None:
+            rate, price_template = rate_and_template
+            revised.append(
+                replace(price_template, amount=rate * Decimal(tokens), status="estimated")
+            )
+    return ExpectedStrategyCost.build(
+        strategy_id=cost.strategy_id,
+        trajectory_id=cost.trajectory_id,
+        terms=tuple(revised),
+        policy_mode=cost.policy_mode,
+        free_first_preferred=cost.free_first_preferred,
+        qualified=cost.qualified,
+        is_free=cost.is_free,
+        notes=cost.notes,
+    )
+
 
 DEFAULT_PROFILE = "development"
 DEGRADED_PROFILE = "degraded"
@@ -462,6 +569,48 @@ class IntelligenceService:
                 mapping = None
         return snapshot, mapping
 
+    def _estimate_candidate_context_plans(
+        self,
+        task: str,
+        *,
+        profile: TaskProfile,
+        candidates: Sequence[str],
+        metadata: MetadataSnapshot | None,
+        identity_map: IdentityMap | None,
+        context: dict[str, Any] | None,
+    ) -> tuple[tuple[ContextPlan, ...], frozenset[str]]:
+        """Estimate candidate-capped plans before selection, without hydration."""
+        contract = context if isinstance(context, dict) else {}
+        criteria_count = sum(
+            len(tuple(contract.get(name, ())))
+            for name in ("acceptance_criteria", "proof_criteria")
+            if isinstance(contract.get(name, ()), (list, tuple))
+        )
+        plans: list[ContextPlan] = []
+        cannot_fit: set[str] = set()
+        for candidate_id in candidates:
+            context_window = DEFAULT_CHEAP_PATH_TOKEN_BUDGET
+            if metadata is not None:
+                lookup = lookup_omniroute_id(
+                    metadata, candidate_id, identity_map=identity_map, now=self.admit_now
+                )
+                field = None if lookup.record is None else lookup.record.caps.context
+                if field is not None and isinstance(field.value, (int, float)):
+                    context_window = int(field.value)
+            plan = ContextPlan.estimate_for_candidate(
+                task=task,
+                candidate_id=candidate_id,
+                context_window=context_window,
+                task_family=profile.task_family,
+                required_capabilities=profile.required_capabilities,
+                criteria_count=criteria_count,
+                created_at=None if metadata is None else metadata.refreshed_at,
+            )
+            plans.append(plan)
+            if not plan.estimated_fit:
+                cannot_fit.add(candidate_id)
+        return tuple(plans), frozenset(cannot_fit)
+
     def _apply_candidate_pool(
         self,
         receipt: FreeTierAdmitReceipt,
@@ -635,15 +784,39 @@ class IntelligenceService:
                 ],
             },
         )
-        filtered_offers = tuple(
-            offer for offer in request.offers if offer.route.route_id in confirmed_ids
+        plans, cannot_fit = self._estimate_candidate_context_plans(
+            task,
+            profile=profile,
+            candidates=tuple(confirmed.admitted),
+            metadata=metadata,
+            identity_map=identity_map,
+            context=context,
         )
+        plans_by_id = {plan.candidate_id: plan for plan in plans}
+        confirmed_ids.difference_update(cannot_fit)
+        filtered_offers_list = []
+        for offer in request.offers:
+            if offer.route.route_id not in confirmed_ids:
+                continue
+            plan = plans_by_id[offer.route.route_id]
+            assistance = _bind_context_plan(offer.assistance_plan, plan)
+            filtered_offers_list.append(
+                replace(
+                    offer,
+                    assistance_plan=assistance,
+                    expected_cost=_cost_with_context_plan(
+                        offer.expected_cost, new_assistance=assistance.assistance_cost, plan=plan
+                    ),
+                )
+            )
+        filtered_offers = tuple(filtered_offers_list)
         excluded = set(request.hard_excluded_ids)
         excluded.update(offered_ids - confirmed_ids)
         assumptions = (
             *request.assumptions,
             f"task_profile={profile.digest}",
             f"candidate_pool={pool.shortlist_digest}",
+            *(f"context_plan={plan.candidate_id}:{plan.digest}" for plan in plans),
             "live_confirm_scope=candidate_pool_shortlist",
         )
         return replace(
@@ -753,6 +926,34 @@ class IntelligenceService:
             consented=confirm_live or self.confirm_transport is not None,
             max_confirm_candidates=self.candidate_top_k,
         )
+        plans, cannot_fit = self._estimate_candidate_context_plans(
+            task,
+            profile=profile,
+            candidates=receipt.admitted,
+            metadata=metadata_snapshot,
+            identity_map=identity_map,
+            context=context,
+        )
+        if cannot_fit:
+            plan_admitted = tuple(item for item in receipt.admitted if item not in cannot_fit)
+            receipt = replace(
+                receipt,
+                admitted=plan_admitted,
+                chosen=plan_admitted[0] if plan_admitted else None,
+                empty_intersection=not plan_admitted,
+                exclusions=receipt.exclusions
+                + tuple(
+                    NamedDrop(
+                        item,
+                        "context_plan_budget_insufficient",
+                        "estimated mandatory input plus reserves exceeds candidate window",
+                    )
+                    for item in sorted(cannot_fit)
+                ),
+                context_plans=plans,
+            )
+        else:
+            receipt = replace(receipt, context_plans=plans)
         eligibility = receipt.as_eligibility_result(snapshot)
         if self.eligibility_gate is not None:
             gated = self.eligibility_gate.evaluate(
@@ -867,9 +1068,13 @@ class IntelligenceService:
         errors = tuple(str(item) for item in contract.get("errors", ()) if str(item).strip())
         # Cheap path: gather real provenance units, compile under budget, then
         # execute. Digest + named omissions land on the admit receipt.
+        chosen_plan = next(
+            (plan for plan in receipt.context_plans if plan.candidate_id == chosen), None
+        )
         context_pack = build_cheap_path_context_pack(
             task,
             candidate_id=chosen,
+            context_plan=chosen_plan,
             workspace_root=self.workspace_root,
             workspace_roots=self.context_roots,
             mcp_root=self.mcp_root,
