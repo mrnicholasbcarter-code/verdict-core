@@ -52,16 +52,14 @@ def _reject_auto_or_opaque(value: str, field_name: str) -> str:
     lowered = text.lower()
     if lowered.startswith("auto/") or lowered in {"auto", "default", "*"}:
         raise ControllerLaunchError(
-            "forbidden_identity",
-            f"{field_name} rejects auto/default/opaque identity: {text!r}",
+            "forbidden_identity", f"{field_name} rejects auto/default/opaque identity: {text!r}"
         )
     if "/" not in text and field_name.endswith("provider"):
         # providers may be bare tokens; models often are too — only block known opaques
         pass
     if text.startswith("auto/") or "/auto/" in lowered:
         raise ControllerLaunchError(
-            "forbidden_identity",
-            f"{field_name} rejects auto/* identity: {text!r}",
+            "forbidden_identity", f"{field_name} rejects auto/* identity: {text!r}"
         )
     return text
 
@@ -131,8 +129,7 @@ class OperatorOverride:
             effort = _require_nonempty(self.reasoning_effort, "reasoning_effort")
             if effort.lower().startswith("auto"):
                 raise ControllerLaunchError(
-                    "forbidden_identity",
-                    f"reasoning_effort rejects auto identity: {effort!r}",
+                    "forbidden_identity", f"reasoning_effort rejects auto identity: {effort!r}"
                 )
             object.__setattr__(self, "reasoning_effort", effort)
 
@@ -154,7 +151,9 @@ class PrimeLaunchTarget:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "upstream_provider", _reject_auto_or_opaque(self.upstream_provider, "upstream_provider")
+            self,
+            "upstream_provider",
+            _reject_auto_or_opaque(self.upstream_provider, "upstream_provider"),
         )
         object.__setattr__(
             self, "upstream_model", _reject_auto_or_opaque(self.upstream_model, "upstream_model")
@@ -172,8 +171,7 @@ class PrimeLaunchTarget:
             effort = _require_nonempty(self.reasoning_effort, "reasoning_effort")
             if effort.lower().startswith("auto"):
                 raise ControllerLaunchError(
-                    "forbidden_identity",
-                    f"reasoning_effort rejects auto identity: {effort!r}",
+                    "forbidden_identity", f"reasoning_effort rejects auto identity: {effort!r}"
                 )
             object.__setattr__(self, "reasoning_effort", effort)
 
@@ -193,8 +191,12 @@ class ObservedControllerIdentity:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "session_id", _require_nonempty(self.session_id, "session_id"))
-        object.__setattr__(self, "session_file", _require_nonempty(self.session_file, "session_file"))
-        object.__setattr__(self, "runtime_kind", _require_nonempty(self.runtime_kind, "runtime_kind"))
+        object.__setattr__(
+            self, "session_file", _require_nonempty(self.session_file, "session_file")
+        )
+        object.__setattr__(
+            self, "runtime_kind", _require_nonempty(self.runtime_kind, "runtime_kind")
+        )
         object.__setattr__(self, "provider", _require_nonempty(self.provider, "provider"))
         object.__setattr__(self, "model", _require_nonempty(self.model, "model"))
         object.__setattr__(self, "observed_at", _require_nonempty(self.observed_at, "observed_at"))
@@ -239,7 +241,9 @@ class ControllerLaunchDecision:
                 f"unsupported ControllerLaunchDecision.version: {self.version!r}",
             )
         if self.mode not in ("automatic", "override"):
-            raise ControllerLaunchError("invalid_mode", f"mode must be automatic|override, got {self.mode!r}")
+            raise ControllerLaunchError(
+                "invalid_mode", f"mode must be automatic|override, got {self.mode!r}"
+            )
         object.__setattr__(self, "mission_id", _require_nonempty(self.mission_id, "mission_id"))
         object.__setattr__(self, "story_id", _require_nonempty(self.story_id, "story_id"))
         object.__setattr__(self, "attempt_id", _require_nonempty(self.attempt_id, "attempt_id"))
@@ -267,11 +271,13 @@ class ControllerLaunchDecision:
             )
         if self.mode == "override" and not self.override_provenance:
             raise ControllerLaunchError(
-                "missing_override_provenance",
-                "override mode requires override_provenance",
+                "missing_override_provenance", "override mode requires override_provenance"
             )
         # Reject auto/* in selected route / digests surfaces that carry identity
-        if self.selected_upstream_route.lower().startswith("auto/") or "/auto/" in self.selected_upstream_route.lower():
+        if (
+            self.selected_upstream_route.lower().startswith("auto/")
+            or "/auto/" in self.selected_upstream_route.lower()
+        ):
             raise ControllerLaunchError(
                 "forbidden_identity",
                 f"selected_upstream_route rejects auto/*: {self.selected_upstream_route!r}",
@@ -338,8 +344,7 @@ def validate_controller_decision(
     now = now or _utc_now()
     if decision.attempt_id != attempt_id:
         raise ControllerLaunchError(
-            "attempt_mismatch",
-            f"decision attempt_id {decision.attempt_id!r} != {attempt_id!r}",
+            "attempt_mismatch", f"decision attempt_id {decision.attempt_id!r} != {attempt_id!r}"
         )
     if decision.mission_id != mission.mission_id:
         raise ControllerLaunchError(
@@ -348,8 +353,7 @@ def validate_controller_decision(
         )
     if decision.story_id != mission.story_id:
         raise ControllerLaunchError(
-            "story_mismatch",
-            f"decision story_id {decision.story_id!r} != {mission.story_id!r}",
+            "story_mismatch", f"decision story_id {decision.story_id!r} != {mission.story_id!r}"
         )
 
     body = decision.to_dict()
@@ -383,13 +387,11 @@ def validate_controller_decision(
         for key in ("provider", "model", "source", "reason", "timestamp"):
             if not str(prov.get(key, "")).strip():
                 raise ControllerLaunchError(
-                    "missing_override_provenance",
-                    f"override provenance missing {key}",
+                    "missing_override_provenance", f"override provenance missing {key}"
                 )
         if prov.get("source") != "cli":
             raise ControllerLaunchError(
-                "untrusted_override_source",
-                "override provenance source must be cli",
+                "untrusted_override_source", "override provenance source must be cli"
             )
         if (
             prov["provider"] != decision.prime_target.prime_provider
@@ -428,9 +430,7 @@ def _session_file_under_root(session_file: str | Path, session_dir: str | Path) 
 
 
 def select_owned_root_sessions(
-    roster: Mapping[str, Any] | Sequence[Any] | None,
-    *,
-    session_dir: str | Path,
+    roster: Mapping[str, Any] | Sequence[Any] | None, *, session_dir: str | Path
 ) -> list[dict[str, Any]]:
     """Return owned live root sessions under session_dir.
 
@@ -449,8 +449,7 @@ def select_owned_root_sessions(
             sessions = list(roster.values())
         if sessions is None:
             raise ControllerLaunchError(
-                "malformed_roster",
-                "roster must contain a sessions list or mapping",
+                "malformed_roster", "roster must contain a sessions list or mapping"
             )
     elif isinstance(roster, Sequence) and not isinstance(roster, (str, bytes)):
         sessions = list(roster)
@@ -546,21 +545,15 @@ def observe_owned_controller_identity(
     """
     now = now or _utc_now()
     owned = select_owned_root_sessions(roster, session_dir=session_dir)
-    roots = [
-        row
-        for row in owned
-        if row["runtime_kind"] == "top-level" and row["rlm_depth"] == 0
-    ]
+    roots = [row for row in owned if row["runtime_kind"] == "top-level" and row["rlm_depth"] == 0]
     if not roots:
         raise ControllerLaunchError(
-            "missing_owned_root",
-            f"no owned top-level rlmDepth=0 session under {session_dir}",
+            "missing_owned_root", f"no owned top-level rlmDepth=0 session under {session_dir}"
         )
     if len(roots) > 1:
         ids = [r["session_id"] for r in roots]
         raise ControllerLaunchError(
-            "ambiguous_owned_root",
-            f"multiple owned roots under {session_dir}: {ids}",
+            "ambiguous_owned_root", f"multiple owned roots under {session_dir}: {ids}"
         )
     row = roots[0]
     return ObservedControllerIdentity(
@@ -592,13 +585,11 @@ def verify_observed_controller_identity(
         )
     if observed.runtime_kind != "top-level":
         raise ControllerLaunchError(
-            "identity_mismatch",
-            f"runtime_kind must be top-level, got {observed.runtime_kind!r}",
+            "identity_mismatch", f"runtime_kind must be top-level, got {observed.runtime_kind!r}"
         )
     if observed.rlm_depth != 0:
         raise ControllerLaunchError(
-            "identity_mismatch",
-            f"rlm_depth must be 0, got {observed.rlm_depth}",
+            "identity_mismatch", f"rlm_depth must be 0, got {observed.rlm_depth}"
         )
 
     target = decision.prime_target
@@ -675,13 +666,11 @@ class PersistedAuthoritativeDecision:
             object.__setattr__(self, name, _require_nonempty(getattr(self, name), name))
         if not self.evidence_refs:
             raise ControllerLaunchError(
-                "missing_evidence",
-                "persisted authoritative decision requires evidence_refs",
+                "missing_evidence", "persisted authoritative decision requires evidence_refs"
             )
-        if self.selected_upstream_route.lower().startswith("auto/") or self.selected_upstream_route.lower() in {
-            "auto",
-            "default",
-        }:
+        if self.selected_upstream_route.lower().startswith(
+            "auto/"
+        ) or self.selected_upstream_route.lower() in {"auto", "default"}:
             raise ControllerLaunchError(
                 "forbidden_identity",
                 f"selected_upstream_route rejects auto/default: {self.selected_upstream_route!r}",
@@ -828,10 +817,7 @@ def decide_controller_launch(
 
 
 def fence_owned_root_plan(
-    *,
-    session_dir: str | Path,
-    observed: ObservedControllerIdentity | None,
-    reason_code: str,
+    *, session_dir: str | Path, observed: ObservedControllerIdentity | None, reason_code: str
 ) -> dict[str, Any]:
     """Describe fail-closed fencing actions for an owned root. Does not execute."""
     return {

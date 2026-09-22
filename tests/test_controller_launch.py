@@ -74,7 +74,9 @@ def _target(*, reasoning: str | None = "high") -> PrimeLaunchTarget:
     )
 
 
-def _persisted(*, reasoning: str | None = "high", receipt: str = "receipt://pre-1") -> PersistedAuthoritativeDecision:
+def _persisted(
+    *, reasoning: str | None = "high", receipt: str = "receipt://pre-1"
+) -> PersistedAuthoritativeDecision:
     return PersistedAuthoritativeDecision(
         execution_path_decision_digest="bod104-digest-1",
         selected_upstream_route="omniroute/gc/grok-4.5",
@@ -165,10 +167,7 @@ def test_validate_rejects_stale_and_digest_mismatch() -> None:
 
     with pytest.raises(ControllerLaunchError) as stale:
         validate_controller_decision(
-            decision,
-            mission=mission,
-            attempt_id="attempt-1",
-            now=NOW + timedelta(hours=2),
+            decision, mission=mission, attempt_id="attempt-1", now=NOW + timedelta(hours=2)
         )
     assert stale.value.reason_code == "stale_decision"
 
@@ -393,9 +392,7 @@ def test_verify_observed_identity_exact_match_and_mismatch(tmp_path: Path) -> No
 
 def test_verify_thinking_omission_when_unsupported(tmp_path: Path) -> None:
     mission = _mission()
-    decision = decide_controller_launch(
-        mission, persisted=_persisted(reasoning=None), now=NOW
-    )
+    decision = decide_controller_launch(mission, persisted=_persisted(reasoning=None), now=NOW)
     session_dir = tmp_path / "s"
     session_dir.mkdir()
     session_file = session_dir / "root.json"
@@ -495,7 +492,9 @@ def _ctrl_route(route_id: str, *, provider: str, model: str, tier: int = 2) -> C
     )
 
 
-def _ctrl_plan(candidate_id: str, *, ctx_digest: str, mission: ControllerMission | None = None) -> AssistancePlan:
+def _ctrl_plan(
+    candidate_id: str, *, ctx_digest: str, mission: ControllerMission | None = None
+) -> AssistancePlan:
     m = mission or _mission()
     return AssistancePlan(
         plan_id=f"plan-{candidate_id}",
@@ -513,8 +512,7 @@ def _ctrl_plan(candidate_id: str, *, ctx_digest: str, mission: ControllerMission
         selected_tool_surface=("pytest",),
         decomposition=DecompositionRequirement(required=False),
         verification=VerificationStrategy(
-            kind="pytest",
-            proof_criteria=(m.proof_burden or "controller-launch-proof",),
+            kind="pytest", proof_criteria=(m.proof_burden or "controller-launch-proof",)
         ),
         assistance_cost=AssistanceCost(
             context_tokens=100, tool_tokens=10, planning_tokens=0, verification_tokens=50
@@ -546,11 +544,7 @@ def _ctrl_plan(candidate_id: str, *, ctx_digest: str, mission: ControllerMission
 
 
 def _ctrl_offer(
-    route: ConcreteRoute,
-    *,
-    ctx_digest: str,
-    execution_tokens: int = 8_000,
-    is_free: bool = True,
+    route: ConcreteRoute, *, ctx_digest: str, execution_tokens: int = 8_000, is_free: bool = True
 ) -> ExecutionPathOffer:
     plan = _ctrl_plan(route.route_id, ctx_digest=ctx_digest)
     return ExecutionPathOffer(
@@ -677,10 +671,7 @@ def _hooks(
             "context_plan",
             SimpleNamespace(digest=plan_digest, plan_id=plan_digest, to_dict=_plan_to_dict),
         )
-        payload.setdefault(
-            "context_pack",
-            SimpleNamespace(digest=pack_digest, to_dict=_empty_dict),
-        )
+        payload.setdefault("context_pack", SimpleNamespace(digest=pack_digest, to_dict=_empty_dict))
         payload.setdefault(
             "context_receipt",
             SimpleNamespace(
@@ -748,9 +739,7 @@ def test_select_calls_live_eligibility_before_ranking() -> None:
         order.append("optimize")
         return optimize_execution_path(request)
 
-    hooks, _, persist_calls = _hooks(
-        seed=[strong, weak], prepare=prepare, optimize=optimize
-    )
+    hooks, _, persist_calls = _hooks(seed=[strong, weak], prepare=prepare, optimize=optimize)
     decision = select_controller_launch(_mission(), hooks=hooks, now=NOW)
     assert order == ["prepare", "optimize"]
     assert prepared_calls, "live eligibility prepare must be invoked"
@@ -815,9 +804,7 @@ def test_session_stay_keeps_healthy_route() -> None:
         quota_exhausted=False,
     )
     hooks, _, _ = _hooks(seed=[current_offer, fresh_offer])
-    decision = select_controller_launch(
-        _mission(), hooks=hooks, session_state=session, now=NOW
-    )
+    decision = select_controller_launch(_mission(), hooks=hooks, session_state=session, now=NOW)
     assert decision.session_decision == "STAY"
     assert decision.prime_target.prime_model == "current/model"
 
@@ -845,17 +832,14 @@ def test_session_switch_replaces_ineligible_route() -> None:
         quota_exhausted=True,
     )
     hooks, _, _ = _hooks(seed=[fresh_offer])
-    decision = select_controller_launch(
-        _mission(), hooks=hooks, session_state=session, now=NOW
-    )
+    decision = select_controller_launch(_mission(), hooks=hooks, session_state=session, now=NOW)
     assert decision.session_decision == "SWITCH"
     assert decision.prime_target.prime_model == "new/model"
 
 
 def test_blocked_when_no_eligible_route() -> None:
     offer = _ctrl_offer(
-        _ctrl_route("omniroute/x/y", provider="omniroute", model="x/y"),
-        ctx_digest="ctx-x",
+        _ctrl_route("omniroute/x/y", provider="omniroute", model="x/y"), ctx_digest="ctx-x"
     )
     hooks, _, persist_calls = _hooks(seed=[offer], exclude_ids={"omniroute/x/y"})
     with pytest.raises(ControllerLaunchError) as exc:
@@ -933,7 +917,6 @@ def test_auto_identity_rejected_in_seed_offers() -> None:
     with pytest.raises(ControllerLaunchError) as exc:
         select_controller_launch(_mission(), hooks=hooks, now=NOW)
     assert exc.value.reason_code == "forbidden_identity"
-
 
 
 # ---------------------------------------------------------------------------
@@ -1067,8 +1050,7 @@ def test_production_factory_injected_path_compiles_real_prompt_digest() -> None:
                 replace(
                     offer,
                     assistance_plan=replace(
-                        offer.assistance_plan,
-                        context_plan_requirements=plan.to_dict(),
+                        offer.assistance_plan, context_plan_requirements=plan.to_dict()
                     ),
                 )
             )
@@ -1208,7 +1190,6 @@ def test_select_fails_closed_without_prime_binding() -> None:
     with pytest.raises(ControllerLaunchError) as exc:
         select_controller_launch(_mission(), hooks=hooks, now=NOW)
     assert exc.value.reason_code == "missing_prime_binding"
-
 
 
 def test_seed_eligibility_alone_cannot_launch_without_prepare() -> None:
@@ -1559,10 +1540,7 @@ def test_production_passports_certified_before_automatic_selection(identity) -> 
     assert ranked[0].selected_route is not None
     # Lookup resolves via passport identity_id even when it differs from route_id.
     assert ranked[0].selected_route.model == "gc/grok-4.5"
-    assert identity in {
-        snapshots_seen[0].component_id,
-        ranked[0].selected_route.route_id,
-    }
+    assert identity in {snapshots_seen[0].component_id, ranked[0].selected_route.route_id}
     assert persisted
     assert len(snapshots_seen) == 1
 

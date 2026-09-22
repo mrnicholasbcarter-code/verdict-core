@@ -12,7 +12,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _write_controller_decision(path: Path, *, provider: str = "test", model: str = "exact", reasoning=None) -> Path:
+def _write_controller_decision(
+    path: Path, *, provider: str = "test", model: str = "exact", reasoning=None
+) -> Path:
     """Persisted authoritative BOD-104 decision + receipt ref for supervisor tests."""
     now = datetime.now(timezone.utc)
     payload = {
@@ -170,7 +172,9 @@ def test_main_identity_mismatch_skips_watchdog_and_blocks(tmp_path, monkeypatch)
 
     def boom(**kwargs):
         events.append("verify")
-        raise m.ControllerLaunchError("identity_mismatch", "model observed='wrong' expected='exact'")
+        raise m.ControllerLaunchError(
+            "identity_mismatch", "model observed='wrong' expected='exact'"
+        )
 
     monkeypatch.setattr(m, "run_attempt", wrapped_run_attempt)
     monkeypatch.setattr(m, "verify_startup_controller_identity", boom)
@@ -178,7 +182,16 @@ def test_main_identity_mismatch_skips_watchdog_and_blocks(tmp_path, monkeypatch)
     monkeypatch.setattr(
         m.subprocess,
         "Popen",
-        lambda *a, **k: type("P", (), {"pid": 1, "poll": lambda self: None, "returncode": None, "wait": lambda self, timeout=None: 0})(),
+        lambda *a, **k: type(
+            "P",
+            (),
+            {
+                "pid": 1,
+                "poll": lambda self: None,
+                "returncode": None,
+                "wait": lambda self, timeout=None: 0,
+            },
+        )(),
     )
     monkeypatch.setattr(m, "stop_group", lambda process: events.append("stop_group"))
     monkeypatch.setattr(
@@ -244,7 +257,9 @@ def test_cli_identity_mismatch_blocks_before_mission_watchdog(tmp_path):
         "import json,sys,time\n"
         "from pathlib import Path\n"
         "args=sys.argv\n"
-        "session=Path(args[args.index('--session-dir')+1]) if '--session-dir' in args else next(Path(" + repr(str(state / 'sessions')) + ").glob('*'))\n"
+        "session=Path(args[args.index('--session-dir')+1]) if '--session-dir' in args else next(Path("
+        + repr(str(state / "sessions"))
+        + ").glob('*'))\n"
         f"marker=Path({str(tmp_path / 'stopped')!r})\n"
         "if 'list' in args:\n"
         "  # Roster-only path: never touch mission markers.\n"
@@ -265,10 +280,28 @@ def test_cli_identity_mismatch_blocks_before_mission_watchdog(tmp_path):
         [
             sys.executable,
             str(ROOT / "scripts/prime_supervisor.py"),
-            "--repo", str(repo), "--state-dir", str(state), "--prime", str(fake),
-            "--controller-decision", str(decision), "--provider", "test", "--model", "exact",
-            "--identity-timeout", "1", "--idle-seconds", "30", "--timeout", "60",
-            "--poll-seconds", "5", "--max-restarts", "0",
+            "--repo",
+            str(repo),
+            "--state-dir",
+            str(state),
+            "--prime",
+            str(fake),
+            "--controller-decision",
+            str(decision),
+            "--provider",
+            "test",
+            "--model",
+            "exact",
+            "--identity-timeout",
+            "1",
+            "--idle-seconds",
+            "30",
+            "--timeout",
+            "60",
+            "--poll-seconds",
+            "5",
+            "--max-restarts",
+            "0",
         ],
         capture_output=True,
         text=True,
@@ -788,7 +821,9 @@ def test_resolve_automatic_uses_selector_double(tmp_path):
                 reasoning="high",
             )
             persisted = m.load_persisted_authoritative_decision(decision_path)
-            return m.decide_controller_launch(mission, persisted=persisted, override=override, now=now)
+            return m.decide_controller_launch(
+                mission, persisted=persisted, override=override, now=now
+            )
 
     decision = m.resolve_controller_decision(
         decision_path=None,
@@ -922,8 +957,7 @@ def test_missing_decision_blocks_cli_launch(tmp_path):
     combined = result.stdout + result.stderr
     # Production factory is attempted first; unavailable config fails closed.
     assert (
-        "production_factory_unavailable" in combined
-        or "missing_authoritative_decision" in combined
+        "production_factory_unavailable" in combined or "missing_authoritative_decision" in combined
     )
     checkpoint = json.loads((state / "supervisor.json").read_text())
     assert checkpoint["status"] == "BLOCKED"
@@ -932,7 +966,6 @@ def test_missing_decision_blocks_cli_launch(tmp_path):
         "missing_authoritative_decision",
         None,
     } or "production_factory_unavailable" in checkpoint.get("reason", "")
-
 
 
 def test_automatic_cli_path_uses_module_selector_and_exact_argv(tmp_path, monkeypatch):
@@ -947,13 +980,12 @@ def test_automatic_cli_path_uses_module_selector_and_exact_argv(tmp_path, monkey
     class FakeSelector:
         def select_controller_launch(self, mission, *, override=None, session_state=None, now=None):
             decision_path = _write_controller_decision(
-                tmp_path / "sel.json",
-                provider="omniroute",
-                model="gc/selected",
-                reasoning=None,
+                tmp_path / "sel.json", provider="omniroute", model="gc/selected", reasoning=None
             )
             persisted = m.load_persisted_authoritative_decision(decision_path)
-            return m.decide_controller_launch(mission, persisted=persisted, override=override, now=now)
+            return m.decide_controller_launch(
+                mission, persisted=persisted, override=override, now=now
+            )
 
     monkeypatch.setattr(m, "CONTROLLER_SELECTOR", FakeSelector())
 
@@ -1034,9 +1066,7 @@ def test_automatic_cli_uses_production_factory_and_compiled_prompt_digest(tmp_pa
     launched: list[list[str]] = []
 
     compiled_prompt = (
-        "COMPILED-CONTROLLER-PROMPT\n"
-        "/skill:verdict-resume\n"
-        "exact bytes for digest proof\n"
+        "COMPILED-CONTROLLER-PROMPT\n/skill:verdict-resume\nexact bytes for digest proof\n"
     )
     prompt_digest = "sha256:" + hashlib.sha256(compiled_prompt.encode("utf-8")).hexdigest()
 
@@ -1097,24 +1127,34 @@ def test_automatic_cli_uses_production_factory_and_compiled_prompt_digest(tmp_pa
     monkeypatch.setattr(m, "resolve_controller_decision", fake_resolve)
     monkeypatch.setattr(m, "run_attempt", fake_run_attempt)
     monkeypatch.setattr(m, "stop_owned_daemon", lambda *a, **k: None)
-    monkeypatch.setattr(m, "verify_startup_controller_identity", lambda **k: {
-        "session_id": "s1",
-        "provider": "omniroute",
-        "model": "gc/selected",
-        "thinking_level": None,
-    })
+    monkeypatch.setattr(
+        m,
+        "verify_startup_controller_identity",
+        lambda **k: {
+            "session_id": "s1",
+            "provider": "omniroute",
+            "model": "gc/selected",
+            "thinking_level": None,
+        },
+    )
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "prime_supervisor.py",
-            "--repo", str(repo),
-            "--state-dir", str(state),
-            "--prime", "prime-agent",
+            "--repo",
+            str(repo),
+            "--state-dir",
+            str(state),
+            "--prime",
+            "prime-agent",
             "--skip-identity-verify",
-            "--max-restarts", "0",
-            "--idle-seconds", "30",
-            "--timeout", "60",
+            "--max-restarts",
+            "0",
+            "--idle-seconds",
+            "30",
+            "--timeout",
+            "60",
         ],
     )
     monkeypatch.setenv("VERDICT_TEST_MODE", "1")
@@ -1141,8 +1181,7 @@ def test_production_factory_unavailable_blocks_automatic_cli(tmp_path, monkeypat
 
     def boom_factory(**kwargs):
         raise m.ControllerLaunchError(
-            "production_factory_unavailable",
-            "no trusted prime-target-map.json found",
+            "production_factory_unavailable", "no trusted prime-target-map.json found"
         )
 
     monkeypatch.setattr(m, "CONTROLLER_SELECTOR", None)
@@ -1159,13 +1198,19 @@ def test_production_factory_unavailable_blocks_automatic_cli(tmp_path, monkeypat
         "argv",
         [
             "prime_supervisor.py",
-            "--repo", str(repo),
-            "--state-dir", str(state),
-            "--prime", "prime-agent",
+            "--repo",
+            str(repo),
+            "--state-dir",
+            str(state),
+            "--prime",
+            "prime-agent",
             "--skip-identity-verify",
-            "--max-restarts", "0",
-            "--idle-seconds", "30",
-            "--timeout", "60",
+            "--max-restarts",
+            "0",
+            "--idle-seconds",
+            "30",
+            "--timeout",
+            "60",
         ],
     )
     monkeypatch.setenv("VERDICT_TEST_MODE", "1")
@@ -1189,14 +1234,17 @@ def test_injected_selector_overrides_production_factory(tmp_path, monkeypatch):
                 tmp_path / "sel.json", provider="omniroute", model="gc/injected"
             )
             persisted = m.load_persisted_authoritative_decision(decision_path)
-            return m.decide_controller_launch(mission, persisted=persisted, override=override, now=now)
+            return m.decide_controller_launch(
+                mission, persisted=persisted, override=override, now=now
+            )
 
     monkeypatch.setattr(m, "CONTROLLER_SELECTOR", FakeSelector())
     monkeypatch.setattr(
         m,
         "CONTROLLER_SELECTION_FACTORY",
-        lambda **kwargs: factory_calls.append(kwargs) or (_ for _ in ()).throw(
-            AssertionError("factory must not run when selector injected")
+        lambda **kwargs: (
+            factory_calls.append(kwargs)
+            or (_ for _ in ()).throw(AssertionError("factory must not run when selector injected"))
         ),
     )
     decision = m.resolve_controller_decision(
@@ -1222,7 +1270,9 @@ def test_never_implicitly_loads_state_controller_decision_json(tmp_path, monkeyp
     state = tmp_path / "state"
     state.mkdir()
     # Plant a tempting implicit file.
-    _write_controller_decision(state / "controller_decision.json", provider="trap", model="implicit")
+    _write_controller_decision(
+        state / "controller_decision.json", provider="trap", model="implicit"
+    )
 
     def boom_factory(**kwargs):
         raise m.ControllerLaunchError("production_factory_unavailable", "forced")
@@ -1236,13 +1286,19 @@ def test_never_implicitly_loads_state_controller_decision_json(tmp_path, monkeyp
         "argv",
         [
             "prime_supervisor.py",
-            "--repo", str(repo),
-            "--state-dir", str(state),
-            "--prime", "prime-agent",
+            "--repo",
+            str(repo),
+            "--state-dir",
+            str(state),
+            "--prime",
+            "prime-agent",
             "--skip-identity-verify",
-            "--max-restarts", "0",
-            "--idle-seconds", "30",
-            "--timeout", "60",
+            "--max-restarts",
+            "0",
+            "--idle-seconds",
+            "30",
+            "--timeout",
+            "60",
         ],
     )
     monkeypatch.setenv("VERDICT_TEST_MODE", "1")
@@ -1293,10 +1349,7 @@ def _evidence_backed_offer(
         excluded=False,
     )
     assistance = AssistanceCost(
-        context_tokens=100,
-        tool_tokens=10,
-        planning_tokens=0,
-        verification_tokens=50,
+        context_tokens=100, tool_tokens=10, planning_tokens=0, verification_tokens=50
     )
     plan = AssistancePlan(
         plan_id=f"seed:{route_id}",
@@ -1314,8 +1367,7 @@ def _evidence_backed_offer(
         selected_tool_surface=(),
         decomposition=DecompositionRequirement(required=False),
         verification=VerificationStrategy(
-            kind="controller_proof",
-            proof_criteria=("controller-launch-proof",),
+            kind="controller_proof", proof_criteria=("controller-launch-proof",)
         ),
         assistance_cost=assistance,
         result="sufficient",
@@ -1382,20 +1434,14 @@ def test_production_factory_supplies_session_factories_without_prior_session(tmp
 
     prompt_digest = "sha256:" + hashlib.sha256(compiled_prompt.encode("utf-8")).hexdigest()
     decision_path = _write_controller_decision(
-        tmp_path / "auto-decision.json",
-        provider="omniroute",
-        model="gc/selected",
-        reasoning=None,
+        tmp_path / "auto-decision.json", provider="omniroute", model="gc/selected", reasoning=None
     )
     payload = json.loads(decision_path.read_text())
     payload["selected_prompt_digest"] = prompt_digest
     decision_path.write_text(json.dumps(payload, indent=2) + "\n")
 
     offer = _evidence_backed_offer(
-        route_id="omniroute/gc/selected",
-        provider="omniroute",
-        model="gc/selected",
-        cash_usd="0.12",
+        route_id="omniroute/gc/selected", provider="omniroute", model="gc/selected", cash_usd="0.12"
     )
     cost_calls: list[tuple] = []
     task_calls: list[object] = []
@@ -1587,11 +1633,7 @@ def test_prior_session_uses_valid_factories_or_fails_named(tmp_path):
 
     # SessionState continuity itself is optional; constructing it with valid
     # factory outputs must succeed.
-    session = SessionState(
-        session_id="prior-1",
-        current_route=current,
-        last_served_route=current,
-    )
+    session = SessionState(session_id="prior-1", current_route=current, last_served_route=current)
     assert session.current_route.route_id == "omniroute/gc/current"
 
 
@@ -1618,10 +1660,7 @@ def test_build_production_bundle_injects_session_factories(tmp_path, monkeypatch
     monkeypatch.setattr(m.CS, "build_production_controller_selection_bundle", fake_cs_bundle)
     # Avoid IntelligenceService construction.
     offer = _evidence_backed_offer(
-        route_id="omniroute/gc/selected",
-        provider="omniroute",
-        model="gc/selected",
-        cash_usd="0.05",
+        route_id="omniroute/gc/selected", provider="omniroute", model="gc/selected", cash_usd="0.05"
     )
 
     def seed_offers(mission, when):
@@ -1683,9 +1722,7 @@ def test_prior_session_state_is_pessimistic_until_live_preparation(tmp_path):
     state = tmp_path / "state"
     state.mkdir()
     _write_controller_decision(
-        state / "controller-decision-previous.json",
-        provider="omniroute",
-        model="gc/previous",
+        state / "controller-decision-previous.json", provider="omniroute", model="gc/previous"
     )
 
     prior = m.load_session_state_from_prior(state_dir=state, repo=tmp_path)

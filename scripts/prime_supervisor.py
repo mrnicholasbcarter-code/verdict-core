@@ -138,6 +138,7 @@ def __getattr__(name: str) -> Any:
         return _cs().InjectableControllerSelector
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 # Test/production injection points for automatic Verdict selection. When set,
 # automatic mode (and override mode) call these instead of requiring a
 # pre-authored decision file. Unit tests assign doubles here.
@@ -525,13 +526,17 @@ def load_controller_mission(path: Path | None, *, attempt_id: str) -> Controller
         attempt_id=str(data.get("attempt_id") or attempt_id),
         objective=str(data.get("objective") or "Prime controller supervision"),
         spend_ceiling_usd=data.get("spend_ceiling_usd"),
-        security_floor=None if data.get("security_floor") in (None, "") else str(data["security_floor"]),
+        security_floor=None
+        if data.get("security_floor") in (None, "")
+        else str(data["security_floor"]),
         required_tools=tuple(data.get("required_tools") or ()),
         required_mcp=tuple(data.get("required_mcp") or ()),
         orchestration_burden=None
         if data.get("orchestration_burden") in (None, "")
         else str(data["orchestration_burden"]),
-        context_burden=None if data.get("context_burden") in (None, "") else str(data["context_burden"]),
+        context_burden=None
+        if data.get("context_burden") in (None, "")
+        else str(data["context_burden"]),
         proof_burden=None if data.get("proof_burden") in (None, "") else str(data["proof_burden"]),
         durable_context_refs=tuple(str(x) for x in (data.get("durable_context_refs") or ())),
         task_profile_digest=None
@@ -552,12 +557,7 @@ def _prompt_sha256_digest(prompt: str) -> str:
 
 
 def _supervisor_instruction_unit(
-    *,
-    token: str,
-    state_dir: Path,
-    session_dir: Path,
-    max_issues: int,
-    timeout: float,
+    *, token: str, state_dir: Path, session_dir: Path, max_issues: int, timeout: float
 ) -> Any:
     """ContextUnit carrying supervisor run instructions (compiled into prompt)."""
     from verdict.context_pack import ContextUnit
@@ -614,19 +614,16 @@ def _load_prime_target_map_from_config(repo: Path) -> dict[str, Any]:
         raw = json.loads(path.read_text())
     except (ValueError, OSError) as exc:
         raise ControllerLaunchError(
-            "production_factory_unavailable",
-            f"cannot read prime target map from {path}: {exc}",
+            "production_factory_unavailable", f"cannot read prime target map from {path}: {exc}"
         ) from exc
     if not isinstance(raw, dict):
         raise ControllerLaunchError(
-            "production_factory_unavailable",
-            f"prime target map at {path} must be a JSON object",
+            "production_factory_unavailable", f"prime target map at {path} must be a JSON object"
         )
     entries = raw.get("targets") if "targets" in raw else raw
     if not isinstance(entries, dict) or not entries:
         raise ControllerLaunchError(
-            "production_factory_unavailable",
-            f"prime target map at {path} has no target entries",
+            "production_factory_unavailable", f"prime target map at {path} has no target entries"
         )
     out: dict[str, Any] = {}
     for route_id, value in entries.items():
@@ -676,8 +673,7 @@ def _build_intelligence_service_from_config(*, repo: Path, state_dir: Path) -> A
             for name, value in (raw.get("providers") or {}).items():
                 if isinstance(value, dict):
                     providers[str(name)] = ProviderConfig(
-                        base_url=value.get("base_url", ""),
-                        api_key_env=value.get("api_key_env"),
+                        base_url=value.get("base_url", ""), api_key_env=value.get("api_key_env")
                     )
         except ControllerLaunchError:
             raise
@@ -694,8 +690,7 @@ def _build_intelligence_service_from_config(*, repo: Path, state_dir: Path) -> A
         if not url.endswith("/v1"):
             url = f"{url}/v1"
         providers.setdefault(
-            "omniroute",
-            ProviderConfig(base_url=url, api_key_env="OMNIROUTE_API_KEY"),
+            "omniroute", ProviderConfig(base_url=url, api_key_env="OMNIROUTE_API_KEY")
         )
 
     if not providers:
@@ -736,12 +731,7 @@ def _wrap_context_units_with_supervisor(
 ) -> Callable[..., Any]:
     """Prepend supervisor instruction ContextUnit before compile."""
 
-    def factory(
-        mission: Any,
-        decision: Any,
-        prepared: Any,
-        plan: Any,
-    ) -> tuple[Any, ...]:
+    def factory(mission: Any, decision: Any, prepared: Any, plan: Any) -> tuple[Any, ...]:
         units: list[Any] = [
             _supervisor_instruction_unit(
                 token=token,
@@ -755,9 +745,7 @@ def _wrap_context_units_with_supervisor(
             units.extend(list(base_factory(mission, decision, prepared, plan)))
         else:
             units.extend(
-                list(
-                    _cs()._default_controller_context_units(mission, decision, prepared, plan)
-                )
+                list(_cs()._default_controller_context_units(mission, decision, prepared, plan))
             )
         return tuple(units)
 
@@ -785,13 +773,7 @@ def _mission_required_capability_tier(mission: Any) -> int:
     return 1
 
 
-def _expected_cost_for_route(
-    offers: Any,
-    route: Any,
-    *,
-    role: str,
-    when: datetime,
-) -> Any:
+def _expected_cost_for_route(offers: Any, route: Any, *, role: str, when: datetime) -> Any:
     """Reuse an evidence-backed ExpectedStrategyCost for a concrete route.
 
     Prefer an exact route_id match among seed offers. Fall back to provider/model
@@ -841,8 +823,7 @@ def _expected_cost_for_route(
 
 
 def _build_bod119_session_factories(
-    *,
-    seed_offers: Callable[..., Any] | None,
+    *, seed_offers: Callable[..., Any] | None
 ) -> tuple[Callable[..., Any], Callable[..., Any], Callable[..., Any] | None]:
     """Build BOD-119 cost/task factories from live seed-offer evidence.
 
@@ -994,7 +975,7 @@ def build_production_controller_selection_bundle(
         # missing_session_hooks).
         if kwargs.get("cost_state_factory") is None or kwargs.get("task_state_factory") is None:
             cost_factory, task_factory, wrapped_seed = _build_bod119_session_factories(
-                seed_offers=kwargs.get("seed_offers"),
+                seed_offers=kwargs.get("seed_offers")
             )
             if kwargs.get("cost_state_factory") is None:
                 kwargs["cost_state_factory"] = cost_factory
@@ -1073,8 +1054,7 @@ def build_production_controller_selection_bundle(
         }:
             raise
         raise ControllerLaunchError(
-            "production_factory_unavailable",
-            f"{exc.reason_code}: {exc.detail}",
+            "production_factory_unavailable", f"{exc.reason_code}: {exc.detail}"
         ) from exc
     except Exception as exc:
         raise ControllerLaunchError(
@@ -1086,11 +1066,7 @@ def build_production_controller_selection_bundle(
     return bundle
 
 
-def load_session_state_from_prior(
-    *,
-    state_dir: Path,
-    repo: Path,
-) -> Any | None:
+def load_session_state_from_prior(*, state_dir: Path, repo: Path) -> Any | None:
     """Best-effort BOD-119 SessionState from a prior controller decision/receipt.
 
     Only loads when a prior ``controller-decision-*.json`` under state_dir (or an
@@ -1102,9 +1078,7 @@ def load_session_state_from_prior(
 
     # Prefer newest controller-decision-*.json written by a previous attempt.
     candidates = sorted(
-        state_dir.glob("controller-decision-*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
+        state_dir.glob("controller-decision-*.json"), key=lambda p: p.stat().st_mtime, reverse=True
     )
     if not candidates:
         return None
@@ -1147,11 +1121,7 @@ def load_session_state_from_prior(
         return None
     session_id = str(data.get("attempt_id") or path.stem)
     try:
-        return SessionState(
-            session_id=session_id,
-            current_route=route,
-            last_served_route=route,
-        )
+        return SessionState(session_id=session_id, current_route=route, last_served_route=route)
     except Exception:
         return None
 
@@ -1294,10 +1264,7 @@ def resolve_controller_decision(
         return cast(
             ControllerLaunchDecision,
             selector.select_controller_launch(
-                mission,
-                override=override,
-                session_state=session_state,
-                now=when,
+                mission, override=override, session_state=session_state, now=when
             ),
         )
 
@@ -1317,12 +1284,7 @@ def resolve_controller_decision(
     # 3) Explicit persisted decision file (test/operator input only).
     if decision_path is not None and decision_path.is_file():
         persisted = load_persisted_authoritative_decision(decision_path)
-        return decide_controller_launch(
-            mission,
-            persisted=persisted,
-            override=override,
-            now=when,
-        )
+        return decide_controller_launch(mission, persisted=persisted, override=override, now=when)
 
     # 4) Automatic mode without selector/hooks/file: fail closed.
     raise ControllerLaunchError(
@@ -1334,24 +1296,15 @@ def resolve_controller_decision(
 
 
 def build_supervisor_prime_command(
-    *,
-    prime: str,
-    repo: Path,
-    session_dir: Path,
-    decision: ControllerLaunchDecision,
-    prompt: str,
+    *, prime: str, repo: Path, session_dir: Path, decision: ControllerLaunchDecision, prompt: str
 ) -> list[str]:
     """Exact approved argv. No auto/*, no hidden fallback, no silent thinking downgrade."""
     target = decision.prime_target
-    for label, value in (
-        ("provider", target.prime_provider),
-        ("model", target.prime_model),
-    ):
+    for label, value in (("provider", target.prime_provider), ("model", target.prime_model)):
         lowered = value.lower()
         if lowered.startswith("auto/") or lowered in {"auto", "default"}:
             raise ControllerLaunchError(
-                "forbidden_identity",
-                f"refusing to launch with {label}={value!r}",
+                "forbidden_identity", f"refusing to launch with {label}={value!r}"
             )
     argv = [
         prime,
@@ -1522,9 +1475,7 @@ def main() -> int:
         # Only an explicit --controller-decision may use a persisted decision.
         # Never implicitly load state/controller_decision.json.
         decision_path = (
-            args.controller_decision.resolve()
-            if args.controller_decision is not None
-            else None
+            args.controller_decision.resolve() if args.controller_decision is not None else None
         )
         production_bundle = None
         selector = CONTROLLER_SELECTOR
@@ -1532,14 +1483,12 @@ def main() -> int:
         session_state = CONTROLLER_SESSION_STATE
         # Bare automatic path: when no injected selector/hooks and no explicit
         # decision file, build production selection from real config before resolve.
-        needs_production = (
-            selector is None
-            and selection_hooks is None
-            and decision_path is None
-        )
+        needs_production = selector is None and selection_hooks is None and decision_path is None
         try:
             if needs_production:
-                factory = CONTROLLER_SELECTION_FACTORY or build_production_controller_selection_bundle
+                factory = (
+                    CONTROLLER_SELECTION_FACTORY or build_production_controller_selection_bundle
+                )
                 production_bundle = factory(
                     repo=repo,
                     state_dir=state,
@@ -1599,9 +1548,10 @@ def main() -> int:
             prompt: str
             if production_bundle is not None:
                 compiled = getattr(production_bundle.artifacts, "last_compiled", None)
-                if compiled is None or not str(
-                    getattr(compiled, "compiled_prompt", "") or ""
-                ).strip():
+                if (
+                    compiled is None
+                    or not str(getattr(compiled, "compiled_prompt", "") or "").strip()
+                ):
                     raise ControllerLaunchError(
                         "missing_compiled_prompt",
                         "production selection completed without a compiled prompt artifact",
@@ -1745,19 +1695,35 @@ def main() -> int:
                     if previous.is_dir() and not previous.is_symlink():
                         stop_owned_daemon(args.prime, previous)
                 return recover(attempt, state, args.max_restarts)
-            except (ControllerLaunchError, ValueError, OSError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
+            except (
+                ControllerLaunchError,
+                ValueError,
+                OSError,
+                subprocess.SubprocessError,
+                KeyboardInterrupt,
+            ) as exc:
                 atomic_json(
                     state / "supervisor.json",
                     {
                         "status": "BLOCKED",
                         "attempts": count,
                         "reason": str(exc),
-                        **({"reason_code": exc.reason_code} if isinstance(exc, ControllerLaunchError) else {}),
+                        **(
+                            {"reason_code": exc.reason_code}
+                            if isinstance(exc, ControllerLaunchError)
+                            else {}
+                        ),
                         "observed_at": time.time(),
                     },
                 )
                 raise
-    except (ControllerLaunchError, ValueError, OSError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
+    except (
+        ControllerLaunchError,
+        ValueError,
+        OSError,
+        subprocess.SubprocessError,
+        KeyboardInterrupt,
+    ) as exc:
         print(f"BLOCKED: {exc}", flush=True)
         return 2
 

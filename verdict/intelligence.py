@@ -832,11 +832,7 @@ class IntelligenceService:
         )
 
     def prepare_controller_execution_request(
-        self,
-        task: str,
-        criticality: str,
-        context: dict[str, Any],
-        request: Any,
+        self, task: str, criticality: str, context: dict[str, Any], request: Any
     ) -> Any:
         """Strict controller-mode preparation around live eligibility + ContextPlan.
 

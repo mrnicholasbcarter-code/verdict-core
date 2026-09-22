@@ -57,7 +57,9 @@ from verdict.session_economics import (
     decide_session_route,
 )
 
-PrepareControllerFn = Callable[[str, str, dict[str, Any], ExecutionPathRequest], ExecutionPathRequest]
+PrepareControllerFn = Callable[
+    [str, str, dict[str, Any], ExecutionPathRequest], ExecutionPathRequest
+]
 OptimizeFn = Callable[[ExecutionPathRequest], ExecutionPathDecision]
 SessionDecideFn = Callable[..., SessionRouteDecision]
 BuildReceiptFn = Callable[..., Any]
@@ -107,7 +109,9 @@ class ControllerSelectionHooks:
     decision_ttl: timedelta = timedelta(hours=1)
     cost_state_factory: Callable[[ConcreteRoute, ConcreteRoute, datetime], CostState] | None = None
     task_state_factory: Callable[[ControllerMission], TaskState] | None = None
-    compile_context_digests: Callable[[ExecutionPathDecision, ExecutionPathRequest], Mapping[str, Any]] | None = None
+    compile_context_digests: (
+        Callable[[ExecutionPathDecision, ExecutionPathRequest], Mapping[str, Any]] | None
+    ) = None
 
 
 def _utc_now() -> datetime:
@@ -121,13 +125,14 @@ def _reject_auto_identity(value: str, field_name: str) -> str:
     lowered = text.lower()
     if lowered.startswith("auto/") or lowered in {"auto", "default", "*"} or "/auto/" in lowered:
         raise ControllerLaunchError(
-            "forbidden_identity",
-            f"{field_name} rejects auto/default/opaque identity: {text!r}",
+            "forbidden_identity", f"{field_name} rejects auto/default/opaque identity: {text!r}"
         )
     return text
 
 
-def _reject_identity_shaped_model(value: str, field_name: str, *, gateway: str | None = None) -> str:
+def _reject_identity_shaped_model(
+    value: str, field_name: str, *, gateway: str | None = None
+) -> str:
     """Reject full gateway identity ids used where a leaf/model segment is required.
 
     Example forbidden as ``prime_model`` / ``ConcreteRoute.model``:
@@ -150,10 +155,7 @@ def _reject_identity_shaped_model(value: str, field_name: str, *, gateway: str |
 
 
 def _normalize_passport_identity(
-    identity_id: str,
-    passport: Any,
-    *,
-    gateway: str,
+    identity_id: str, passport: Any, *, gateway: str
 ) -> tuple[str, str, str]:
     """Return ``(provider, leaf_model, route_id)`` from passport + inventory id.
 
@@ -250,8 +252,7 @@ def _selected_context_artifacts(
     ):
         if key not in compiled or not str(compiled[key]).strip():
             raise ControllerLaunchError(
-                "missing_context_digest",
-                f"context compiler omitted required {key}",
+                "missing_context_digest", f"context compiler omitted required {key}"
             )
         digests[key] = str(compiled[key])
     context_plan = compiled.get("context_plan")
@@ -296,10 +297,7 @@ def _mark_prepared_offers_eligible(
 
 
 def _reconcile_session_label_with_ep(
-    session_decision: SessionRouteDecision | None,
-    *,
-    selected_route: ConcreteRoute,
-    fresh: bool,
+    session_decision: SessionRouteDecision | None, *, selected_route: ConcreteRoute, fresh: bool
 ) -> tuple[str, str | None]:
     """Ensure receipt STAY/SWITCH matches ep_decision.selected_route (M3).
 
@@ -366,9 +364,7 @@ def _find_offer(offers: Sequence[ExecutionPathOffer], route_id: str) -> Executio
 
 def _offer_matches_override(offer: ExecutionPathOffer, override: OperatorOverride) -> bool:
     route = offer.route
-    return (
-        route.provider == override.provider and route.model == override.model
-    ) or (
+    return (route.provider == override.provider and route.model == override.model) or (
         route.route_id == override.model
         or route.route_id.endswith(f"/{override.model}")
         or route.route_id == f"{override.provider}/{override.model}"
@@ -414,8 +410,7 @@ def select_controller_launch(
     when = now or _utc_now()
     if override is not None and override.source != "cli":
         raise ControllerLaunchError(
-            "untrusted_override_source",
-            "OperatorOverride.source must be 'cli'",
+            "untrusted_override_source", "OperatorOverride.source must be 'cli'"
         )
 
     try:
@@ -424,14 +419,12 @@ def select_controller_launch(
         raise
     except Exception as exc:
         raise ControllerLaunchError(
-            "seed_offers_failed",
-            f"failed to build live seed offers: {exc}",
+            "seed_offers_failed", f"failed to build live seed offers: {exc}"
         ) from exc
 
     if not seed_offers:
         raise ControllerLaunchError(
-            "no_eligible_route",
-            "no live seed offers available for controller selection",
+            "no_eligible_route", "no live seed offers available for controller selection"
         )
 
     for offer in seed_offers:
@@ -447,13 +440,7 @@ def select_controller_launch(
     for offer in seed_offers:
         assistance = replace(offer.assistance_plan, task_slice=task_slice)
         expected = replace(offer.expected_cost, trajectory_id=trajectory_id)
-        rebound.append(
-            replace(
-                offer,
-                assistance_plan=assistance,
-                expected_cost=expected,
-            )
-        )
+        rebound.append(replace(offer, assistance_plan=assistance, expected_cost=expected))
     seed_offers = tuple(rebound)
     seed_request = ExecutionPathRequest(
         task_slice=task_slice,
@@ -493,8 +480,7 @@ def select_controller_launch(
         raise
     except Exception as exc:
         raise ControllerLaunchError(
-            "eligibility_preparation_failed",
-            f"live eligibility preparation failed: {exc}",
+            "eligibility_preparation_failed", f"live eligibility preparation failed: {exc}"
         ) from exc
 
     # prepare_controller_execution_request is the eligibility authority (M1).
@@ -571,9 +557,7 @@ def select_controller_launch(
             )
         cost_state = hooks.cost_state_factory(session_state.current_route, fresh_route, when)
         task_state = hooks.task_state_factory(mission)
-        session_decision = hooks.decide_session(
-            session_state, fresh_route, cost_state, task_state
-        )
+        session_decision = hooks.decide_session(session_state, fresh_route, cost_state, task_state)
         if session_decision.decision == "BLOCKED":
             raise ControllerLaunchError(
                 "no_eligible_route",
@@ -589,10 +573,7 @@ def select_controller_launch(
             hard_excluded_ids=prepared.hard_excluded_ids,
             now=when,
             assumptions=tuple(
-                [
-                    *prepared.assumptions,
-                    f"session_decision={session_decision.decision}",
-                ]
+                [*prepared.assumptions, f"session_decision={session_decision.decision}"]
             ),
             allow_degraded_certification=prepared.allow_degraded_certification,
             require_complete_cost_kinds=prepared.require_complete_cost_kinds,
@@ -616,9 +597,7 @@ def select_controller_launch(
     # ep_decision.selected_route (session continuity already constrained ranking).
     selected_route = ep_decision.selected_route
     session_label, session_rewrite = _reconcile_session_label_with_ep(
-        session_decision,
-        selected_route=selected_route,
-        fresh=session_state is None,
+        session_decision, selected_route=selected_route, fresh=session_state is None
     )
 
     if hooks.bind_prime_target is None:
@@ -707,15 +686,13 @@ def select_controller_launch(
         raise
     except Exception as exc:
         raise ControllerLaunchError(
-            "receipt_persist_failed",
-            f"failed to persist RoutingReceiptV1 before launch: {exc}",
+            "receipt_persist_failed", f"failed to persist RoutingReceiptV1 before launch: {exc}"
         ) from exc
 
     receipt_ref = getattr(record, "receipt_id", None) or getattr(receipt, "receipt_id", None)
     if not receipt_ref:
         raise ControllerLaunchError(
-            "receipt_persist_failed",
-            "persisted routing receipt missing receipt_id",
+            "receipt_persist_failed", "persisted routing receipt missing receipt_id"
         )
     receipt_ref = f"receipt://{receipt_ref}"
 
@@ -772,12 +749,7 @@ def select_controller_launch(
         task_slice_digest=mission.task_slice_digest or prepared.task_slice.slice_id,
         trajectory_digest=mission.trajectory_digest or prepared.trajectory_id,
     )
-    return decide_controller_launch(
-        mission,
-        persisted=persisted,
-        override=override,
-        now=when,
-    )
+    return decide_controller_launch(mission, persisted=persisted, override=override, now=when)
 
 
 @dataclass
@@ -795,11 +767,7 @@ class InjectableControllerSelector:
         now: datetime | None = None,
     ) -> ControllerLaunchDecision:
         return select_controller_launch(
-            mission,
-            hooks=self.hooks,
-            override=override,
-            session_state=session_state,
-            now=now,
+            mission, hooks=self.hooks, override=override, session_state=session_state, now=now
         )
 
 
@@ -847,8 +815,7 @@ def _prompt_digest_for_bytes(prompt: str | bytes) -> str:
 
 
 def _require_mapping_target(
-    route: ConcreteRoute,
-    target_map: Mapping[str, PrimeLaunchTarget],
+    route: ConcreteRoute, target_map: Mapping[str, PrimeLaunchTarget]
 ) -> PrimeLaunchTarget:
     target = target_map.get(route.route_id)
     if target is None:
@@ -859,21 +826,14 @@ def _require_mapping_target(
             "missing_prime_binding",
             f"no trusted PrimeLaunchTarget mapping for route {route.route_id!r}",
         )
-    if (
-        target.upstream_provider != route.provider
-        or target.upstream_model != route.model
-    ):
+    if target.upstream_provider != route.provider or target.upstream_model != route.model:
         raise ControllerLaunchError(
             "prime_binding_mismatch",
             "trusted PrimeLaunchTarget upstream identity must match selected ConcreteRoute",
         )
     _reject_auto_identity(target.prime_provider, "prime_provider")
-    _reject_identity_shaped_model(
-        target.prime_model, "prime_model", gateway=route.gateway
-    )
-    _reject_identity_shaped_model(
-        target.upstream_model, "upstream_model", gateway=route.gateway
-    )
+    _reject_identity_shaped_model(target.prime_model, "prime_model", gateway=route.gateway)
+    _reject_identity_shaped_model(target.upstream_model, "upstream_model", gateway=route.gateway)
     return target
 
 
@@ -887,11 +847,7 @@ def _passport_is_live_healthy(passport: Any, *, now: datetime) -> bool:
 
 
 def _metadata_price_for_identity(
-    metadata: Any,
-    identity_id: str,
-    *,
-    now: datetime,
-    evidence_id: str,
+    metadata: Any, identity_id: str, *, now: datetime, evidence_id: str
 ) -> PriceEvidenceInput | None:
     if metadata is None:
         return None
@@ -915,10 +871,7 @@ def _metadata_price_for_identity(
 
 
 def _price_from_passport(
-    passport: Any,
-    *,
-    now: datetime,
-    evidence_id: str,
+    passport: Any, *, now: datetime, evidence_id: str
 ) -> PriceEvidenceInput | None:
     cost = getattr(passport, "token_cost_per_1k", None)
     if cost is None:
@@ -1095,19 +1048,17 @@ def _metadata_context_window(record: Any) -> int | None:
 
 
 def _controller_seed_requirements(
-    mission: ControllerMission,
-    *,
-    passport: Any,
-    metadata_record: Any | None,
+    mission: ControllerMission, *, passport: Any, metadata_record: Any | None
 ) -> Any:
     """Build TaskRequirements only from genuine passport/metadata evidence."""
     from verdict.capability_gate import TaskRequirements
 
     names: list[str] = []
     # Passport tool_support is explicit live evidence when True.
-    if bool(getattr(passport, "tool_support", False)) or _metadata_cap_bool(
-        metadata_record, "tools"
-    ) is True:
+    if (
+        bool(getattr(passport, "tool_support", False))
+        or _metadata_cap_bool(metadata_record, "tools") is True
+    ):
         names.append("tools")
     # Prefer explicit True metadata caps; never invent False as evidence.
     for cap_name in ("structured", "vision", "attachment", "reasoning"):
@@ -1179,10 +1130,7 @@ def _controller_seed_candidate_evidence(
 
 
 def _controller_seed_context_snapshot(
-    mission: ControllerMission,
-    *,
-    evidence_digest: str,
-    when: datetime,
+    mission: ControllerMission, *, evidence_digest: str, when: datetime
 ) -> Any:
     """Seed-time ContextEvidenceSnapshot from mission durable refs only."""
     from verdict.effective_capability import ContextEvidenceSnapshot
@@ -1212,10 +1160,7 @@ def _controller_seed_context_snapshot(
 
 
 def _controller_seed_tool_snapshot(
-    mission: ControllerMission,
-    *,
-    evidence_digest: str,
-    when: datetime,
+    mission: ControllerMission, *, evidence_digest: str, when: datetime
 ) -> Any:
     from verdict.effective_capability import ToolSurfaceSnapshot
 
@@ -1251,12 +1196,7 @@ def _controller_seed_required_evidence(mission: ControllerMission) -> tuple[str,
     return tuple(keys)
 
 
-def _enrich_seed_context_plan_requirements(
-    plan: Any,
-    *,
-    route_id: str,
-    when: datetime,
-) -> Any:
+def _enrich_seed_context_plan_requirements(plan: Any, *, route_id: str, when: datetime) -> Any:
     """Ensure ContextPlan reconstruction fields exist without inventing sufficiency."""
     from dataclasses import replace as _replace
 
@@ -1274,10 +1214,7 @@ def _enrich_seed_context_plan_requirements(
 
 
 def _resolve_seed_certification(
-    *,
-    route_id: str,
-    identity_id: str,
-    certification_by_id: Mapping[str, tuple[Any, str]] | None,
+    *, route_id: str, identity_id: str, certification_by_id: Mapping[str, tuple[Any, str]] | None
 ) -> tuple[Any, str]:
     """Require per-route runtime certification evidence; never default UNKNOWN."""
     from verdict.runtime_certification import CertificationState
@@ -1339,10 +1276,7 @@ def _health_claim_for_passport(passport: Any) -> str:
 
 
 def _certify_controller_passports(
-    healthy_passports: Mapping[str, Any],
-    *,
-    now: datetime,
-    certify_runtime_fn: RuntimeCertifyFn,
+    healthy_passports: Mapping[str, Any], *, now: datetime, certify_runtime_fn: RuntimeCertifyFn
 ) -> Mapping[str, tuple[CertificationState, str]]:
     """Translate passport claims into BOD-92 evidence without probes or promotion.
 
@@ -1458,7 +1392,9 @@ def build_evidence_backed_seed_offers(
             "expires_at": str(getattr(passport, "expires_at", "")),
         }
         evidence_digest = "sha256:" + _sha256_hex(
-            json.dumps(evidence_payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+            json.dumps(
+                evidence_payload, sort_keys=True, separators=(",", ":"), default=str
+            ).encode()
         )
 
         is_free = route_id in free_ids or identity_id in free_ids
@@ -1490,9 +1426,7 @@ def build_evidence_backed_seed_offers(
 
         try:
             cert_state, cert_freshness = _resolve_seed_certification(
-                route_id=route_id,
-                identity_id=identity_id,
-                certification_by_id=certification_by_id,
+                route_id=route_id, identity_id=identity_id, certification_by_id=certification_by_id
             )
         except ControllerLaunchError as exc:
             certification_failures.append(f"{route_id}:{exc.reason_code}")
@@ -1506,9 +1440,10 @@ def build_evidence_backed_seed_offers(
             if capability_evidence_by_id and (
                 route_id in capability_evidence_by_id or identity_id in capability_evidence_by_id
             ):
-                candidate = capability_evidence_by_id.get(route_id) or capability_evidence_by_id[
-                    identity_id
-                ]
+                candidate = (
+                    capability_evidence_by_id.get(route_id)
+                    or capability_evidence_by_id[identity_id]
+                )
             else:
                 candidate = _controller_seed_candidate_evidence(
                     route_id=route_id,
@@ -1521,9 +1456,9 @@ def build_evidence_backed_seed_offers(
             if task_requirements_by_id and (
                 route_id in task_requirements_by_id or identity_id in task_requirements_by_id
             ):
-                requirements = task_requirements_by_id.get(route_id) or task_requirements_by_id[
-                    identity_id
-                ]
+                requirements = (
+                    task_requirements_by_id.get(route_id) or task_requirements_by_id[identity_id]
+                )
             else:
                 requirements = _controller_seed_requirements(
                     mission, passport=passport, metadata_record=metadata_record
@@ -1532,9 +1467,9 @@ def build_evidence_backed_seed_offers(
             if context_evidence_by_id and (
                 route_id in context_evidence_by_id or identity_id in context_evidence_by_id
             ):
-                context_snap = context_evidence_by_id.get(route_id) or context_evidence_by_id[
-                    identity_id
-                ]
+                context_snap = (
+                    context_evidence_by_id.get(route_id) or context_evidence_by_id[identity_id]
+                )
             else:
                 context_snap = _controller_seed_context_snapshot(
                     mission, evidence_digest=evidence_digest, when=when
@@ -1631,12 +1566,12 @@ def build_evidence_backed_seed_offers(
     return tuple(offers)
 
 
-
 def build_production_controller_selection_hooks(
     *,
     intelligence_service: Any | None = None,
     prepare_execution_request: PrepareControllerFn | None = None,
-    seed_offers: Callable[[ControllerMission, datetime], Sequence[ExecutionPathOffer]] | None = None,
+    seed_offers: Callable[[ControllerMission, datetime], Sequence[ExecutionPathOffer]]
+    | None = None,
     bind_prime_target: BindTargetFn | None = None,
     prime_target_map: Mapping[str, PrimeLaunchTarget] | None = None,
     load_prime_target_map: Callable[[], Mapping[str, PrimeLaunchTarget]] | None = None,
@@ -1646,8 +1581,7 @@ def build_production_controller_selection_hooks(
     | None = None,
     context_compiler: Any | None = None,
     context_units_for_decision: Callable[
-        [ControllerMission, ExecutionPathDecision, ExecutionPathRequest, Any],
-        Sequence[Any],
+        [ControllerMission, ExecutionPathDecision, ExecutionPathRequest, Any], Sequence[Any]
     ]
     | None = None,
     healthy_passports: Mapping[str, Any] | None = None,
@@ -1730,8 +1664,7 @@ def build_production_controller_selection_hooks(
         except Exception as exc:
             if require_live_sources:
                 raise ControllerLaunchError(
-                    "missing_healthy_passports",
-                    f"failed to load healthy passports: {exc}",
+                    "missing_healthy_passports", f"failed to load healthy passports: {exc}"
                 ) from exc
             passports = {}
         if require_live_sources and not passports:
@@ -1754,14 +1687,12 @@ def build_production_controller_selection_hooks(
         except Exception as exc:
             if require_live_sources:
                 raise ControllerLaunchError(
-                    "missing_metadata",
-                    f"failed to load Core metadata snapshot: {exc}",
+                    "missing_metadata", f"failed to load Core metadata snapshot: {exc}"
                 ) from exc
             metadata = None
         if require_live_sources and metadata is None:
             raise ControllerLaunchError(
-                "missing_metadata",
-                "production factory requires a Core metadata snapshot",
+                "missing_metadata", "production factory requires a Core metadata snapshot"
             )
 
     free_ids = free_identity_ids
