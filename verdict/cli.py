@@ -2405,7 +2405,6 @@ def cmd_inspect(
     console.print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-
 def cmd_receipt(
     action: str,
     *,
@@ -2419,11 +2418,7 @@ def cmd_receipt(
     from pathlib import Path
 
     from verdict.receipt_store import ReceiptStore
-    from verdict.routing_receipt import (
-        attempt_scope,
-        human_summary,
-        load_routing_receipt,
-    )
+    from verdict.routing_receipt import attempt_scope, human_summary, load_routing_receipt
 
     if db_path:
         db = Path(db_path)
@@ -2431,7 +2426,11 @@ def cmd_receipt(
         repo_db = Path.cwd() / ".verdict" / "receipts.db"
         db = repo_db if repo_db.exists() else (Path.home() / ".verdict" / "receipts.db")
     # List-all must scan scopes; show/export keep strict scope when a scope is known.
-    store = ReceiptStore(db, strict_scope=False) if action == "list" and scope is None else ReceiptStore(db, strict_scope=True)
+    store = (
+        ReceiptStore(db, strict_scope=False)
+        if action == "list" and scope is None
+        else ReceiptStore(db, strict_scope=True)
+    )
 
     if action == "list":
         rows = store.query_receipts(receipt_type="decision", scope=scope, limit=100)
@@ -2443,7 +2442,10 @@ def cmd_receipt(
             if payload.get("schema_version") != "routing-receipt/v1":
                 continue
             latest = load_routing_receipt(
-                store, receipt_id=row.receipt_id, scope=row.scope, attempt_id=payload.get("attempt_id")
+                store,
+                receipt_id=row.receipt_id,
+                scope=row.scope,
+                attempt_id=payload.get("attempt_id"),
             )
             view = latest.to_dict() if latest is not None else payload
             items.append(
@@ -4069,7 +4071,10 @@ def main() -> None:
     receipt_list_p = receipt_sub.add_parser("list", help="List routing receipts")
     receipt_list_p.add_argument("--scope", default=None, help="Optional receipt scope filter")
     receipt_list_p.add_argument(
-        "--db", dest="db_path", default=None, help="ReceiptStore sqlite path (default: .verdict/receipts.db)"
+        "--db",
+        dest="db_path",
+        default=None,
+        help="ReceiptStore sqlite path (default: .verdict/receipts.db)",
     )
     receipt_list_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     receipt_show_p = receipt_sub.add_parser("show", help="Show one routing receipt")

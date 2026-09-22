@@ -161,10 +161,7 @@ def _require_string(value: Any, name: str) -> str:
 def _require_digest(value: Any, name: str) -> str:
     text = _require_string(value, name)
     if (
-        not (
-            re.fullmatch(r"sha256:[0-9a-f]{64}", text)
-            or re.fullmatch(r"[0-9a-f]{64}", text)
-        )
+        not (re.fullmatch(r"sha256:[0-9a-f]{64}", text) or re.fullmatch(r"[0-9a-f]{64}", text))
         and not text.startswith(DIGEST_PREFIX)
         and len(text) < 8
     ):
@@ -241,11 +238,25 @@ class EvidenceValue:
         return cls(kind="unknown", value=None, source=source)
 
     @classmethod
-    def estimated(cls, value: Any, *, source: str | None = None, freshness: str | None = None, unit: str | None = None) -> EvidenceValue:
+    def estimated(
+        cls,
+        value: Any,
+        *,
+        source: str | None = None,
+        freshness: str | None = None,
+        unit: str | None = None,
+    ) -> EvidenceValue:
         return cls(kind="estimated", value=value, source=source, freshness=freshness, unit=unit)
 
     @classmethod
-    def observed(cls, value: Any, *, source: str | None = None, freshness: str | None = None, unit: str | None = None) -> EvidenceValue:
+    def observed(
+        cls,
+        value: Any,
+        *,
+        source: str | None = None,
+        freshness: str | None = None,
+        unit: str | None = None,
+    ) -> EvidenceValue:
         return cls(kind="observed", value=value, source=source, freshness=freshness, unit=unit)
 
 
@@ -298,10 +309,14 @@ class RouteRef:
             resource_pool=(
                 str(raw["resource_pool"])
                 if raw.get("resource_pool") is not None
-                else (str(raw["credential_pool"]) if raw.get("credential_pool") is not None else None)
+                else (
+                    str(raw["credential_pool"]) if raw.get("credential_pool") is not None else None
+                )
             ),
             route_id=str(raw["route_id"]) if raw.get("route_id") is not None else None,
-            credential_pool=str(raw["credential_pool"]) if raw.get("credential_pool") is not None else None,
+            credential_pool=str(raw["credential_pool"])
+            if raw.get("credential_pool") is not None
+            else None,
         )
 
 
@@ -465,7 +480,9 @@ class RoutingReceiptV1:
         object.__setattr__(self, "extensions", dict(self.extensions))
         # Compute digest if absent.
         if self.decision_digest is None:
-            object.__setattr__(self, "decision_digest", decision_digest_for(self.to_dict(include_digest=False)))
+            object.__setattr__(
+                self, "decision_digest", decision_digest_for(self.to_dict(include_digest=False))
+            )
         else:
             _require_digest(self.decision_digest, "decision_digest")
 
@@ -529,7 +546,11 @@ class RoutingReceiptV1:
         """Return a copy with updates; recomputes decision_digest."""
         payload = self.to_dict(include_digest=False)
         for key, value in changes.items():
-            if key == "candidate_pipeline" and value is not None and not isinstance(value, (list, tuple)):
+            if (
+                key == "candidate_pipeline"
+                and value is not None
+                and not isinstance(value, (list, tuple))
+            ):
                 raise RoutingReceiptError("candidate_pipeline must be a sequence")
             if key == "decision_digest":
                 continue
@@ -561,7 +582,9 @@ def _identity_from_mapping(raw: Mapping[str, Any] | None) -> RouteRef | None:
             else (str(raw["credential_pool"]) if raw.get("credential_pool") is not None else None)
         ),
         route_id=str(raw["route_id"]) if raw.get("route_id") is not None else None,
-        credential_pool=str(raw["credential_pool"]) if raw.get("credential_pool") is not None else None,
+        credential_pool=str(raw["credential_pool"])
+        if raw.get("credential_pool") is not None
+        else None,
     )
 
 
@@ -578,7 +601,9 @@ def _candidate_rows_from_admit(admit: Any) -> list[CandidateRow]:
             reason = str(payload.get("reason") or REASON_UNMAPPED)
             detail = payload.get("detail")
         elif isinstance(drop, Mapping):
-            candidate_id = str(drop.get("model") or drop.get("route_id") or drop.get("model_id") or "")
+            candidate_id = str(
+                drop.get("model") or drop.get("route_id") or drop.get("model_id") or ""
+            )
             reason = str(drop.get("reason") or REASON_UNMAPPED)
             detail = drop.get("detail")
         else:
@@ -640,11 +665,15 @@ def _candidate_rows_from_admit(admit: Any) -> list[CandidateRow]:
                 CandidateRow(
                     candidate_id=candidate_id,
                     eligible=False,
-                    reason_codes=(normalize_reason_code(str(drop.get("reason") or REASON_UNMAPPED)),),
+                    reason_codes=(
+                        normalize_reason_code(str(drop.get("reason") or REASON_UNMAPPED)),
+                    ),
                     detail=None if drop.get("detail") is None else str(drop.get("detail"))[:512],
                 )
             )
-        probes = {str(p.get("route_id")): p for p in (pool.get("probes") or ()) if isinstance(p, Mapping)}
+        probes = {
+            str(p.get("route_id")): p for p in (pool.get("probes") or ()) if isinstance(p, Mapping)
+        }
         if probes:
             updated: list[CandidateRow] = []
             for row in rows:
@@ -741,7 +770,8 @@ def _candidate_rows_from_admit(admit: Any) -> list[CandidateRow]:
                     candidate_id=row.candidate_id,
                     identity=row.identity,
                     eligible=row.eligible,
-                    reason_codes=row.reason_codes + ((REASON_SELECTED,) if REASON_SELECTED not in row.reason_codes else ()),
+                    reason_codes=row.reason_codes
+                    + ((REASON_SELECTED,) if REASON_SELECTED not in row.reason_codes else ()),
                     detail=row.detail,
                     task_fit=row.task_fit,
                     quality_evidence=row.quality_evidence,
@@ -750,13 +780,21 @@ def _candidate_rows_from_admit(admit: Any) -> list[CandidateRow]:
                     estimated_input_tokens=row.estimated_input_tokens,
                     confirm={
                         "items": [
-                            item.to_dict() if hasattr(item, "to_dict") else dict(item) if isinstance(item, Mapping) else item
+                            item.to_dict()
+                            if hasattr(item, "to_dict")
+                            else dict(item)
+                            if isinstance(item, Mapping)
+                            else item
                             for item in confirm
                         ]
                     },
                     passport={
                         "items": [
-                            item.to_dict() if hasattr(item, "to_dict") else dict(item) if isinstance(item, Mapping) else item
+                            item.to_dict()
+                            if hasattr(item, "to_dict")
+                            else dict(item)
+                            if isinstance(item, Mapping)
+                            else item
                             for item in passport
                         ]
                     },
@@ -858,7 +896,11 @@ def build_routing_receipt(
         ep_dict = ep.to_dict() if hasattr(ep, "to_dict") else dict(ep)
         selected_route = None
         if hasattr(ep, "selected_route") and ep.selected_route is not None:
-            selected_route = ep.selected_route.to_dict() if hasattr(ep.selected_route, "to_dict") else dict(ep.selected_route)
+            selected_route = (
+                ep.selected_route.to_dict()
+                if hasattr(ep.selected_route, "to_dict")
+                else dict(ep.selected_route)
+            )
         elif isinstance(ep_dict.get("selected_route"), Mapping):
             selected_route = dict(ep_dict["selected_route"])
         decision.update(
@@ -940,12 +982,10 @@ def build_routing_receipt(
         return None
 
     hydration = {
-        "context_plan_digest": _plan_digest(context_plan) or (
-            getattr(context_receipt, "plan_digest", None) if context_receipt is not None else None
-        ),
-        "context_pack_digest": _pack_digest(context_pack) or (
-            getattr(context_receipt, "pack_digest", None) if context_receipt is not None else None
-        ),
+        "context_plan_digest": _plan_digest(context_plan)
+        or (getattr(context_receipt, "plan_digest", None) if context_receipt is not None else None),
+        "context_pack_digest": _pack_digest(context_pack)
+        or (getattr(context_receipt, "pack_digest", None) if context_receipt is not None else None),
         "prompt_digest": getattr(admit, "prompt_digest", None) if admit is not None else None,
         "omissions": evidence_snapshot.get("omissions") if evidence_snapshot else [],
     }
@@ -1071,7 +1111,6 @@ def attempt_scope(*, story_id: str | None, work_unit_id: str | None, attempt_id:
     return scope[:512]
 
 
-
 def routing_receipt_allowlist(payload: Mapping[str, Any] | None = None) -> set[str]:
     """Field paths that must survive redaction (measured token/cost evidence)."""
     allowed = {
@@ -1147,7 +1186,10 @@ def persist_routing_receipt(
             idempotency_key=idem,
             event_type="routing_receipt",
             event_id=f"routing-root:{idem}",
-            provenance={"source": "verdict_routing_receipt", "version": ROUTING_RECEIPT_SCHEMA_VERSION},
+            provenance={
+                "source": "verdict_routing_receipt",
+                "version": ROUTING_RECEIPT_SCHEMA_VERSION,
+            },
             allowlist=merged_allowlist,
         )
     except ReceiptConflictError as exc:
@@ -1178,7 +1220,10 @@ def append_routing_receipt_event(
     raw_payload = receipt.to_dict()
     merged_allowlist = routing_receipt_allowlist(raw_payload)
     payload = redact_sensitive_dict(raw_payload, allowlist=merged_allowlist)
-    eid = event_id or f"routing-{event_type}:{receipt.attempt_id or receipt.receipt_id}:{receipt.state}"
+    eid = (
+        event_id
+        or f"routing-{event_type}:{receipt.attempt_id or receipt.receipt_id}:{receipt.state}"
+    )
     try:
         return store.append_event(
             receipt.receipt_id,
@@ -1195,7 +1240,9 @@ def append_routing_receipt_event(
         raise RoutingReceiptPersistError(str(exc)) from exc
 
 
-def _latest_routing_payload(store: ReceiptStore, root: ReceiptRecord, *, scope: str) -> dict[str, Any]:
+def _latest_routing_payload(
+    store: ReceiptStore, root: ReceiptRecord, *, scope: str
+) -> dict[str, Any]:
     """Return the newest routing-receipt payload in the root's event chain."""
     events = [
         item
@@ -1313,7 +1360,9 @@ def link_recovery_attempt(
     (``parent_receipt_id`` / ``final.recovery_of``) under a new attempt scope.
     """
     scope_value = scope or attempt_scope(
-        story_id=previous.story_id, work_unit_id=previous.work_unit_id, attempt_id=previous.attempt_id
+        story_id=previous.story_id,
+        work_unit_id=previous.work_unit_id,
+        attempt_id=previous.attempt_id,
     )
     persist_routing_receipt(store, previous, scope=scope_value)
     nxt = build_routing_receipt(

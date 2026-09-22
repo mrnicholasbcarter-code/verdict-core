@@ -70,9 +70,7 @@ def _pool() -> dict[str, Any]:
 @dataclass(frozen=True)
 class FakeAdmit:
     admitted: tuple[str, ...] = ("omniroute/gc/grok-4.6",)
-    exclusions: tuple[FakeDrop, ...] = (
-        FakeDrop("bad/model", "capability_mismatch", "no tools"),
-    )
+    exclusions: tuple[FakeDrop, ...] = (FakeDrop("bad/model", "capability_mismatch", "no tools"),)
     chosen: str | None = "omniroute/gc/grok-4.6"
     empty_intersection: bool = False
     active_providers: tuple[str, ...] = ()
@@ -337,10 +335,7 @@ def test_redaction_strips_secret_canaries() -> None:
 
 def test_route_ref_resource_pool_contract() -> None:
     ref = RouteRef(
-        gateway="omniroute",
-        provider="gc",
-        model="gc/grok-4.6",
-        credential_pool="pool-1",
+        gateway="omniroute", provider="gc", model="gc/grok-4.6", credential_pool="pool-1"
     )
     payload = ref.to_dict()
     assert payload["resource_pool"] == "pool-1"
@@ -361,10 +356,7 @@ def test_probe_failed_reason_attached_when_probe_fails() -> None:
     ]
     admit = FakeAdmit(candidate_pool=pool)
     receipt = build_routing_receipt(
-        admit=admit,
-        attempt_id="a1",
-        story_id="BOD-144",
-        work_unit_id="u1",
+        admit=admit, attempt_id="a1", story_id="BOD-144", work_unit_id="u1"
     )
     row = next(r for r in receipt.candidate_pipeline if r.candidate_id == "omniroute/gc/grok-4.6")
     assert REASON_PROBE_FAILED in row.reason_codes

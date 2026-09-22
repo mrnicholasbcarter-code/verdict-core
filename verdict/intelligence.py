@@ -1022,7 +1022,6 @@ class IntelligenceService:
             return None, None, False, str(exc)
         return snapshot, endpoint, True, None
 
-
     def _persist_routing_receipt_from_admit(
         self,
         receipt: FreeTierAdmitReceipt,
@@ -1056,9 +1055,7 @@ class IntelligenceService:
             story_id = Path(self.workspace_root).name if self.workspace_root is not None else None
             selected = None
             if receipt.chosen:
-                provider = (
-                    receipt.chosen.split("/", 1)[0] if "/" in receipt.chosen else "omniroute"
-                )
+                provider = receipt.chosen.split("/", 1)[0] if "/" in receipt.chosen else "omniroute"
                 selected = {
                     "gateway": "omniroute",
                     "provider": provider,
@@ -1079,10 +1076,7 @@ class IntelligenceService:
                 work_unit_id=task_class,
                 attempt_id=attempt_id,
                 state="in_progress",
-                extensions={
-                    "routing_decision": decision,
-                    "preview_len": len(preview or ""),
-                },
+                extensions={"routing_decision": decision, "preview_len": len(preview or "")},
             )
             scope = attempt_scope(
                 story_id=routing.story_id,
@@ -1122,10 +1116,7 @@ class IntelligenceService:
         eligibility_record = eligibility.to_dict() if eligibility is not None else {}
         if receipt.empty_intersection or not receipt.chosen:
             self._persist_routing_receipt_from_admit(
-                receipt,
-                task_class=task_class,
-                decision="denied",
-                transport_outcome="not_sent",
+                receipt, task_class=task_class, decision="denied", transport_outcome="not_sent"
             )
             return RoutingDecision(
                 model=NO_ELIGIBLE_TARGET,
