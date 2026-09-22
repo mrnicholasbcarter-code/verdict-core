@@ -1,5 +1,6 @@
 """Tests for expanded tool detection across 9 ecosystems, MCP server config, and 13-hook matrix."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -127,6 +128,9 @@ def test_doctor_and_uninstall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     doc_res = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=False)
     assert doc_res["status"] == "issues_found"
     assert "missing_memory_db" in doc_res["issues"]
+    assert "shared_memory" in doc_res
+    assert doc_res["shared_memory"]["install_action"] == "none"
+    assert "canary-secret" not in json.dumps(doc_res)
 
     # 2. Run doctor with fix=True
     fix_res = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=True)
