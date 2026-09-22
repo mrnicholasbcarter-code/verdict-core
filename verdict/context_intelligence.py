@@ -241,11 +241,11 @@ class NativeCapabilityResolver:
         self._providers: tuple[CapabilityProvider, ...] = tuple(
             providers if providers is not None else build_native_providers()
         )
-        index: dict[str, CapabilityProvider] = {}
+        index: dict[str, list[CapabilityProvider]] = {}
         for provider in self._providers:
             for capability_id in provider.capabilities:
-                index.setdefault(capability_id, provider)
-        self._by_capability = index
+                index.setdefault(capability_id, []).append(provider)
+        self._by_capability = {key: tuple(value) for key, value in index.items()}
 
     @property
     def provider_id(self) -> str:
@@ -255,7 +255,13 @@ class NativeCapabilityResolver:
         return frozenset(self._by_capability)
 
     def resolve(self, capability_id: str) -> CapabilityProvider | None:
-        return self._by_capability.get(capability_id)
+        providers = self._by_capability.get(capability_id)
+        if not providers:
+            return None
+        return providers[0]
+
+    def resolve_all(self, capability_id: str) -> tuple[CapabilityProvider, ...]:
+        return self._by_capability.get(capability_id, ())
 
     def ranked_provider_id(self, capability_id: str) -> str | None:
         """Consult BOD-87 registry for highest-authority healthy provider id.
@@ -380,60 +386,69 @@ def execute_context_query(
     depth_hits = 0
 
     for req in plan.requests:
-        provider = active.resolve(req.capability_id)
-        if provider is None:
+        providers = active.resolve_all(req.capability_id)
+        if not providers:
             omitted.append(CoverageGap(req.capability_id, "provider_unavailable", provider_id=None))
             omissions.append(Omission(req.capability_id, "provider_unavailable", None))
             continue
 
-        if len(units) >= plan.max_units:
-            stop_reason = "max_units"
-            omitted.append(CoverageGap(req.capability_id, "max_units", provider.provider_id))
-            continue
-        if token_used >= plan.token_budget:
-            stop_reason = "budget"
-            omitted.append(CoverageGap(req.capability_id, "budget", provider.provider_id))
-            continue
-        if depth_hits > plan.max_expansion_depth * len(WAVE1_BASELINE_ORDER):
-            stop_reason = "depth_limit"
-            omitted.append(CoverageGap(req.capability_id, "depth_limit", provider.provider_id))
-            continue
-
-        remaining = plan.max_units - len(units)
-        result = provider.provide(
-            capability_id=req.capability_id,
-            query=req.query,
-            repo_root=root,
-            max_units=min(req.max_units, remaining),
-            hints=req.hints,
-            plane=plane,
-        )
-        depth_hits += 1
-        if result.gap_reason and not result.units:
-            reason = result.gap_reason
-            omitted.append(CoverageGap(req.capability_id, reason, provider.provider_id))
-            omissions.append(Omission(req.capability_id, reason, None))
-            continue
-
-        added = False
-        for unit in result.units:
-            if unit.key in seen_keys:
-                continue
-            cost = estimate_tokens(unit.content)
-            if token_used + cost > plan.token_budget and units:
-                stop_reason = "budget"
-                break
-            seen_keys.add(unit.key)
-            units.append(unit)
-            token_used += cost
-            added = True
+        capability_used = False
+        for provider in providers:
             if len(units) >= plan.max_units:
                 stop_reason = "max_units"
+                omitted.append(CoverageGap(req.capability_id, "max_units", provider.provider_id))
                 break
-        if added:
+            if token_used >= plan.token_budget:
+                stop_reason = "budget"
+                omitted.append(CoverageGap(req.capability_id, "budget", provider.provider_id))
+                break
+            if depth_hits > plan.max_expansion_depth * len(WAVE1_BASELINE_ORDER):
+                stop_reason = "depth_limit"
+                omitted.append(CoverageGap(req.capability_id, "depth_limit", provider.provider_id))
+                break
+
+            remaining = plan.max_units - len(units)
+            result = provider.provide(
+                capability_id=req.capability_id,
+                query=req.query,
+                repo_root=root,
+                max_units=min(req.max_units, remaining),
+                hints=req.hints,
+                plane=plane,
+            )
+            depth_hits += 1
+            if result.gap_reason and not result.units:
+                reason = result.gap_reason
+                omitted.append(CoverageGap(req.capability_id, reason, provider.provider_id))
+                omissions.append(Omission(req.capability_id, reason, provider.provider_id))
+                continue
+
+            added = False
+            for unit in result.units:
+                if unit.key in seen_keys:
+                    continue
+                cost = estimate_tokens(unit.content)
+                if token_used + cost > plan.token_budget and units:
+                    stop_reason = "budget"
+                    break
+                seen_keys.add(unit.key)
+                units.append(unit)
+                token_used += cost
+                added = True
+                if len(units) >= plan.max_units:
+                    stop_reason = "max_units"
+                    break
+            if added:
+                capability_used = True
+            elif result.gap_reason:
+                omitted.append(
+                    CoverageGap(req.capability_id, result.gap_reason, provider.provider_id)
+                )
+                omissions.append(
+                    Omission(req.capability_id, result.gap_reason, provider.provider_id)
+                )
+        if capability_used:
             used.append(req.capability_id)
-        elif result.gap_reason:
-            omitted.append(CoverageGap(req.capability_id, result.gap_reason, provider.provider_id))
 
     coverage = CapabilityCoverage(
         requested=requested,
