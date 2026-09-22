@@ -831,6 +831,48 @@ class IntelligenceService:
             assumptions=assumptions,
         )
 
+    def prepare_controller_execution_request(
+        self, task: str, criticality: str, context: dict[str, Any], request: Any
+    ) -> Any:
+        """Strict controller-mode preparation around live eligibility + ContextPlan.
+
+        Unlike the compatibility ``_prepare_execution_path_request`` path, this
+        method fails closed when the admit snapshot or Core metadata is missing.
+        It never accepts a trusted prebuilt pool escape and never invents offers.
+        """
+        from verdict.execution_path import ExecutionPathError, ExecutionPathRequest
+
+        if not isinstance(request, ExecutionPathRequest):
+            raise ExecutionPathError(
+                "controller preparation requires an ExecutionPathRequest with seed offers"
+            )
+        if request.pool_receipt is not None:
+            raise ExecutionPathError(
+                "controller preparation rejects trusted prebuilt pool_receipt escape"
+            )
+        if not request.offers:
+            raise ExecutionPathError(
+                "controller preparation requires non-empty seed offers from live identities"
+            )
+        snapshot, _endpoint, _live, fetch_error = self._load_admit_snapshot()
+        if snapshot is None:
+            detail = "missing live admit snapshot"
+            if fetch_error:
+                detail = f"{detail}: {fetch_error}"
+            raise ExecutionPathError(detail)
+        metadata, _identity_map = self._load_metadata()
+        if metadata is None:
+            raise ExecutionPathError(
+                "controller preparation requires Core metadata for live eligibility"
+            )
+        prepared = self._prepare_execution_path_request(task, criticality, context, request)
+        if prepared is request and request.pool_receipt is None:
+            # Compatibility escape must never succeed in controller mode.
+            raise ExecutionPathError(
+                "controller preparation failed to apply live eligibility/context plans"
+            )
+        return prepared
+
     def _offload_free_tier(
         self,
         task: str,
