@@ -16,18 +16,32 @@ prime-agent model list
 prime-agent --cwd "$PWD" '/verdict-resume'
 ```
 
-For unattended operation use the external supervisor. This exact target was present in
-the inspected host's registry; availability/eligibility must still pass runtime preflight:
+For unattended operation use the external supervisor with a Verdict-selected controller
+decision (BOD-156). Automatic mode omits `--provider`/`--model` and asks Verdict to
+generate the exact decision from live eligibility, ContextPlans, BOD-104, and BOD-119.
+The supervisor persists a RoutingReceiptV1 before launch, never ranks or substitutes,
+and never launches `auto/*`. Missing live eligibility blocks launch.
 
 ```bash
+# Automatic: Verdict generates the controller decision
 python3 scripts/prime_supervisor.py --repo "$PWD" \
-  --provider omniroute-live --model gc/grok-4.6 \
+  --idle-seconds 600 --timeout 3600 --max-restarts 2 --max-issues 5
+
+# Explicit override (both provider and model required; CLI provenance recorded):
+python3 scripts/prime_supervisor.py --repo "$PWD" \
+  --provider omniroute --model gc/grok-4.5 \
+  --override-reason "operator pin for proof" \
   --idle-seconds 600 --timeout 3600 --max-restarts 2 --max-issues 5
 ```
 
-The root target is explicit; each implementation target is selected by Verdict eligibility
-from the live registry and passed explicitly. Do not assume this example remains eligible
-or inexpensive. After integration into main, run the same commands from the main checkout.
+Optional `--thinking` is only valid with an explicit override against a target that
+carries exact supported reasoning evidence; otherwise thinking is omitted, never assumed
+or silently downgraded. Observed roster provider/model/thinking must match the approved
+decision or the supervisor fails closed and fences only the owned root.
+
+See `docs/guides/controller-routing.md` for the controller contract, receipt lifecycle,
+and fail-closed identity rules. Do not assume any example identity remains eligible.
+After integration into main, run the same commands from the main checkout.
 Code-server/VS Code Server may display files and terminals; neither is required.
 
 The interactive shortcut follows the workflow but has no independent external watchdog.
