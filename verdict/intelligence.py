@@ -227,6 +227,8 @@ class IntelligenceService:
         identity_map: IdentityMap | None = None,
         require_execution_path_authority: bool | None = None,
         candidate_top_k: int = DEFAULT_CANDIDATE_TOP_K,
+        receipt_store: Any | None = None,
+        persist_routing_receipts: bool = True,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -266,6 +268,8 @@ class IntelligenceService:
         if candidate_top_k < 1:
             raise ValueError("candidate_top_k must be >= 1")
         self.candidate_top_k = candidate_top_k
+        self.receipt_store = receipt_store
+        self.persist_routing_receipts = persist_routing_receipts
         # Cheap path does not require Ruflo/RuVector. Those remain optional
         # swarm/workflow adapters and must not mark routing degraded.
         self.managed_backend_status = "offline" if allow_offline else "not_used"
@@ -1018,6 +1022,89 @@ class IntelligenceService:
             return None, None, False, str(exc)
         return snapshot, endpoint, True, None
 
+
+    def _persist_routing_receipt_from_admit(
+        self,
+        receipt: FreeTierAdmitReceipt,
+        *,
+        task_class: str,
+        decision: str,
+        transport_outcome: str,
+        verification: dict[str, Any] | None = None,
+        preview: str | None = None,
+        context_pack: Any | None = None,
+    ) -> str | None:
+        """Default-on BOD-144 routing receipt persistence (never blocks routing)."""
+        if not self.persist_routing_receipts:
+            return None
+        try:
+            from verdict.routing_receipt import (
+                attempt_scope,
+                build_routing_receipt,
+                default_receipt_store,
+                finalize_routing_receipt,
+                persist_routing_receipt,
+            )
+
+            store = self.receipt_store or default_receipt_store(
+                Path(self.workspace_root) if self.workspace_root is not None else None
+            )
+            attempt_id = receipt.receipt_id or (
+                "admit-"
+                + hashlib.sha256((receipt.chosen or task_class or "task").encode()).hexdigest()[:16]
+            )
+            story_id = Path(self.workspace_root).name if self.workspace_root is not None else None
+            selected = None
+            if receipt.chosen:
+                provider = (
+                    receipt.chosen.split("/", 1)[0] if "/" in receipt.chosen else "omniroute"
+                )
+                selected = {
+                    "gateway": "omniroute",
+                    "provider": provider,
+                    "model": receipt.chosen,
+                    "resource_pool": "default",
+                    "route_id": receipt.chosen,
+                }
+            routing = build_routing_receipt(
+                admit=receipt,
+                context_pack=context_pack,
+                selected_identity=selected,
+                observed_identity=(
+                    selected if transport_outcome not in {None, "", "not_sent"} else None
+                ),
+                execution_status=transport_outcome,
+                verification=verification,
+                story_id=story_id,
+                work_unit_id=task_class,
+                attempt_id=attempt_id,
+                state="in_progress",
+                extensions={
+                    "routing_decision": decision,
+                    "preview_len": len(preview or ""),
+                },
+            )
+            scope = attempt_scope(
+                story_id=routing.story_id,
+                work_unit_id=routing.work_unit_id,
+                attempt_id=routing.attempt_id,
+            )
+            persist_routing_receipt(store, routing, scope=scope)
+            if decision in {"selected", "denied"}:
+                failed = decision == "denied" or (verification or {}).get("status") == "failed"
+                finalize_routing_receipt(
+                    store,
+                    routing,
+                    scope=scope,
+                    outcome="failed" if failed else "success",
+                    verification=verification,
+                    observed_identity=selected,
+                    execution_status=transport_outcome or "completed",
+                )
+            return routing.receipt_id
+        except Exception:
+            return None
+
     def _decision_from_admit(
         self,
         task: str,
@@ -1034,6 +1121,12 @@ class IntelligenceService:
     ) -> RoutingDecision:
         eligibility_record = eligibility.to_dict() if eligibility is not None else {}
         if receipt.empty_intersection or not receipt.chosen:
+            self._persist_routing_receipt_from_admit(
+                receipt,
+                task_class=task_class,
+                decision="denied",
+                transport_outcome="not_sent",
+            )
             return RoutingDecision(
                 model=NO_ELIGIBLE_TARGET,
                 provider="none",
@@ -1098,6 +1191,13 @@ class IntelligenceService:
             # BOD-110: the compiled pack no longer carries the task instructions.
             # Executing it would send the model context without the request, so
             # the decision is denied with a named reason instead of "hydrated".
+            self._persist_routing_receipt_from_admit(
+                receipt,
+                task_class=task_class,
+                decision="denied",
+                transport_outcome="not_sent",
+                context_pack=context_pack,
+            )
             return RoutingDecision(
                 model=NO_ELIGIBLE_TARGET,
                 provider="none",
@@ -1178,6 +1278,15 @@ class IntelligenceService:
             safety_flags.append(f"worthiness_{receipt.task_class}")
         if receipt.requirements:
             safety_flags.append("capability_hard_gate")
+        self._persist_routing_receipt_from_admit(
+            receipt,
+            task_class=task_class,
+            decision="selected",
+            transport_outcome=transport_outcome,
+            verification=verification,
+            preview=preview,
+            context_pack=context_pack,
+        )
         return RoutingDecision(
             model=chosen,
             provider=provider,

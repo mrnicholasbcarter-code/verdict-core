@@ -640,10 +640,11 @@ class ReceiptStore:
         event_id: str,
         event_type: str,
         terminal_outcome: str | None = None,
+        allowlist: Iterable[str] = (),
     ) -> ReceiptRecord:
         """Append a lifecycle event with terminal idempotency/conflict checks."""
         scope = _validate_scope(scope)
-        clean_payload = redact_sensitive_dict(payload)
+        clean_payload = redact_sensitive_dict(payload, allowlist=allowlist)
         if not event_id or not event_type:
             raise ValueError("event_id and event_type are required")
         conn = self._get_connection()
