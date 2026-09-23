@@ -34,6 +34,7 @@ CAP_FIELDS = (
     "tools",
     "vision",
     "structured",
+    "streaming",
     "reasoning",
     "attachment",
     "context",
@@ -60,6 +61,9 @@ REQUIRED_CAP_ALIASES = {
     "structured": "structured",
     "structured_output": "structured",
     "supports_structured": "structured",
+    "stream": "streaming",
+    "streaming": "streaming",
+    "supports_streaming": "streaming",
     "reasoning": "reasoning",
     "attachment": "attachment",
     "context": "context",
@@ -184,6 +188,7 @@ class CapabilityCaps:
     tools: ProvenancedField | None = None
     vision: ProvenancedField | None = None
     structured: ProvenancedField | None = None
+    streaming: ProvenancedField | None = None
     reasoning: ProvenancedField | None = None
     attachment: ProvenancedField | None = None
     context: ProvenancedField | None = None

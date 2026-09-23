@@ -181,6 +181,7 @@ def _record_from_models_json(record: ModelMetadataRecord) -> bool:
         "tools",
         "vision",
         "structured",
+        "streaming",
         "reasoning",
         "attachment",
         "context",

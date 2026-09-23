@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import subprocess
 import time
 from collections.abc import Sequence
@@ -270,6 +271,12 @@ class IntelligenceService:
         self.candidate_top_k = candidate_top_k
         self.receipt_store = receipt_store
         self.persist_routing_receipts = persist_routing_receipts
+        # Request-time OmniRoute evidence cache. A failed refresh never erases
+        # the last complete snapshot; cold-start authority mode still fails closed.
+        self._admit_snapshot_lkg: OmniRouteAdmitSnapshot | None = None
+        self._admit_snapshot_endpoint: tuple[str, str | None] | None = None
+        self._admit_snapshot_loaded_at: float = 0.0
+        self._admit_snapshot_refresh_error: str | None = None
         # Cheap path does not require Ruflo/RuVector. Those remain optional
         # swarm/workflow adapters and must not mark routing degraded.
         self.managed_backend_status = "offline" if allow_offline else "not_used"
@@ -888,18 +895,30 @@ class IntelligenceService:
         offline unit tests and dead endpoints. Fail-closed empty-intersection
         applies only after a real (live or fixture) snapshot was consulted.
         """
+        explicit_spend = isinstance(context, dict) and "spend_policy" in context
+        authority_required = self.require_execution_path_authority is True or (
+            isinstance(context, dict) and context.get("require_execution_path_authority") is True
+        )
+        explicit_omniroute = (
+            self.admit_snapshot is not None
+            or bool(os.getenv("OMNIROUTE_BASE_URL"))
+            or "omniroute" in self.providers
+        )
+        if not explicit_omniroute and not explicit_spend and not authority_required:
+            # The implicit localhost endpoint is not authority for legacy calls.
+            return None
         snapshot, endpoint, live, _fetch_error = self._load_admit_snapshot()
         if snapshot is None:
-            if isinstance(context, dict) and "spend_policy" in context:
-                # Validate explicitly requested economics even when the live
-                # admit surface is unavailable. The legacy catalog path cannot
-                # enforce spend policy, so fail closed rather than silently
-                # routing a free_only request to a paid candidate.
+            if explicit_spend:
                 profile_task(task, context=context)
-                raise TaskProfileError(
+            if explicit_spend or authority_required:
+                message = (
                     "cannot enforce explicit spend_policy without an admit snapshot"
+                    if explicit_spend
+                    else "cannot enforce authoritative eligibility without a valid OmniRoute snapshot"
                 )
-            # Not configured, or live surfaces unavailable: do not starve ranking.
+                raise TaskProfileError(message + (f" ({_fetch_error})" if _fetch_error else ""))
+            # Compatibility-only offline callers may use the historical path.
             return None
         classification = classify_worthiness(
             task,
@@ -1056,12 +1075,28 @@ class IntelligenceService:
             return (self.admit_snapshot, omniroute_endpoint_from_env(self.providers), False, None)
         endpoint = omniroute_endpoint_from_env(self.providers)
         if endpoint is None or not str(endpoint[0] or "").strip():
-            return None, None, False, None
+            return None, None, False, "omniroute_not_configured"
+        now = time.monotonic()
+        ttl = max(1, int(self.discovery_ttl))
+        if (
+            self._admit_snapshot_lkg is not None
+            and self._admit_snapshot_endpoint == endpoint
+            and now - self._admit_snapshot_loaded_at < ttl
+        ):
+            return self._admit_snapshot_lkg, endpoint, True, self._admit_snapshot_refresh_error
         try:
             snapshot = load_omniroute_admit_snapshot(endpoint[0], endpoint[1])
+            if not snapshot.catalog or not snapshot.connections:
+                raise LiveAdmitError("invalid_empty", "OmniRoute refresh returned incomplete state")
         except LiveAdmitError as exc:
-            # Dead/misconfigured OmniRoute must not fail-closed the offline path.
-            return None, None, False, str(exc)
+            self._admit_snapshot_refresh_error = f"{exc.code}:{exc}"
+            if self._admit_snapshot_lkg is not None and self._admit_snapshot_endpoint == endpoint:
+                return self._admit_snapshot_lkg, endpoint, True, self._admit_snapshot_refresh_error
+            return None, endpoint, True, self._admit_snapshot_refresh_error
+        self._admit_snapshot_lkg = snapshot
+        self._admit_snapshot_endpoint = endpoint
+        self._admit_snapshot_loaded_at = now
+        self._admit_snapshot_refresh_error = None
         return snapshot, endpoint, True, None
 
     def _persist_routing_receipt_from_admit(

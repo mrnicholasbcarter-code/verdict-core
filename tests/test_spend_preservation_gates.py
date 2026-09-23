@@ -91,8 +91,12 @@ def _live_snapshot(*, include_paid: bool = True, include_free: bool = True):
             ]
         )
     if include_paid:
-        catalog.append({"id": PAID_TOOLS, "owned_by": "groq"})
-        catalog.append({"id": FRONTIER, "owned_by": "anthropic"})
+        catalog.append(
+            {"id": PAID_TOOLS, "owned_by": "groq", "pricing": {"input": 1.0, "output": 1.0}}
+        )
+        catalog.append(
+            {"id": FRONTIER, "owned_by": "anthropic", "pricing": {"input": 10.0, "output": 20.0}}
+        )
     return snapshot_from_payloads(
         catalog={"data": catalog},
         free_tier={"perModel": free_tier},
@@ -359,3 +363,35 @@ def test_cheap_variant_markers_take_precedence_over_frontier_family_names() -> N
     assert classify("openai/gpt-4o-mini") == 2
     assert classify("cx/gpt-5.6-sol") == 0
     assert classify("openai/gpt-5.4") == 1
+
+
+def test_streaming_gate_admits_true_rejects_false_and_unknown() -> None:
+    identities = ("p/true", "p/false", "p/unknown")
+    live = snapshot_from_payloads(
+        catalog={"data": [{"id": item, "owned_by": "p"} for item in identities]},
+        free_tier={
+            "perModel": [{"modelId": item.split("/", 1)[1], "provider": "p"} for item in identities]
+        },
+        providers={"connections": [{"provider": "p", "isActive": True, "testStatus": "active"}]},
+    )
+    store = MetadataSnapshot(
+        schema_version="1",
+        refreshed_at=FETCHED,
+        sources={},
+        records=(
+            ModelMetadataRecord(id="p/true", caps=CapabilityCaps(streaming=_prov(True))),
+            ModelMetadataRecord(id="p/false", caps=CapabilityCaps(streaming=_prov(False))),
+            ModelMetadataRecord(id="p/unknown", caps=CapabilityCaps()),
+        ),
+    )
+    gated = gate_capability(
+        admit_free_tier_active(live),
+        derive_requirements("x", {"streaming_required": True}),
+        snapshot=store,
+    )
+    assert gated.admitted == ("p/true",)
+    reasons = {item.model_id: item.reason for item in gated.exclusions}
+    assert reasons["p/false"] == "capability_mismatch"
+    assert reasons["p/unknown"] == "required_unknown"
+    true_row = next(item for item in gated.capability_matches if item["model"] == "p/true")
+    assert true_row["provenance"]["streaming"]["source"] == SOURCE_MODELS_DEV

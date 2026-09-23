@@ -70,6 +70,15 @@ REASON_PAID_FALLBACK = "paid_fallback"
 REASON_TASK_INSTRUCTIONS_OMITTED = "task_instructions_omitted"
 REASON_SPEND_POLICY_EXCLUDES_PAID = "spend_policy_excludes_paid"
 REASON_SPEND_POLICY_REQUIRES_FRONTIER = "spend_policy_requires_frontier"
+# Stable public eligibility diagnostics (BOD-170). Legacy reason strings remain
+# accepted on old receipts, but new production decisions use these names.
+REASON_OPAQUE_ROUTE_DISALLOWED = "opaque_route_disallowed"
+REASON_PROVIDER_NOT_CONNECTED = "provider_not_connected"
+REASON_PROVIDER_INACTIVE = "provider_inactive"
+REASON_PROVIDER_UNHEALTHY = "provider_unhealthy"
+REASON_CREDENTIAL_MISSING = "credential_missing"
+REASON_PRICE_UNKNOWN = "price_unknown"
+REASON_PAID_MODEL_NOT_ALLOWED = "paid_model_not_allowed"
 TASK_SOURCE_URI = "urn:verdict:task"
 _COMBO_PREFIXES = frozenset({"claude", "combo"})
 _ALIAS_PREFIXES = frozenset({"oc", "kr", "cf", "or", "nv"})
@@ -98,6 +107,44 @@ class ProviderConnection:
     name: str | None = None
 
 
+def _provider_connection_usable(connection: ProviderConnection) -> bool:
+    """True only for explicit active and healthy provider evidence."""
+    if not connection.is_active:
+        return False
+    status = (connection.test_status or "").strip().lower()
+    return status in {"active", "healthy", "ok", "ready", "connected"}
+
+
+def _provider_connections_by_name(
+    connections: tuple[ProviderConnection, ...],
+) -> dict[str, ProviderConnection]:
+    """Collapse duplicate rows, preferring a row with explicit healthy evidence."""
+    selected: dict[str, ProviderConnection] = {}
+    for connection in connections:
+        current = selected.get(connection.provider)
+        if current is None or (
+            _provider_connection_usable(connection) and not _provider_connection_usable(current)
+        ):
+            selected[connection.provider] = connection
+    return selected
+
+
+def _provider_rejection(connection: ProviderConnection | None) -> tuple[str, str] | None:
+    """Return a stable fail-closed reason, or None for explicitly healthy."""
+    if connection is None:
+        return REASON_PROVIDER_NOT_CONNECTED, "provider has no OmniRoute connection"
+    if not connection.is_active:
+        return REASON_PROVIDER_INACTIVE, "provider connection is inactive"
+    status = (connection.test_status or "").strip().lower()
+    if status in {"unauthorized", "auth_failed", "authentication_failed", "credential_missing"}:
+        return REASON_CREDENTIAL_MISSING, f"provider connection status={status}"
+    if not status:
+        return REASON_PROVIDER_UNHEALTHY, "provider health status is unknown"
+    if not _provider_connection_usable(connection):
+        return REASON_PROVIDER_UNHEALTHY, f"provider connection status={status}"
+    return None
+
+
 @dataclass(frozen=True)
 class FreeTierModel:
     model_id: str
@@ -110,6 +157,12 @@ class FreeTierModel:
 class CatalogIdentity:
     identity_id: str
     provider: str
+    # Economic status is evidence, not a model-name heuristic. ``price_known``
+    # is true only when OmniRoute supplied parseable pricing on the inventory
+    # row. Free membership still comes exclusively from /api/free-tier/summary.
+    price_known: bool = False
+    input_cost: float | None = None
+    output_cost: float | None = None
 
 
 @dataclass(frozen=True)
@@ -770,8 +823,15 @@ class FreeTierAdmitReceipt:
 def _verdict_for_reason(reason: str) -> EligibilityVerdict:
     mapping = {
         REASON_OPAQUE_AUTO: EligibilityVerdict.OPAQUE_AUTO,
+        REASON_OPAQUE_ROUTE_DISALLOWED: EligibilityVerdict.OPAQUE_AUTO,
         REASON_NOT_FREE_TIER: EligibilityVerdict.NOT_FREE_TIER,
         REASON_INACTIVE_UNCONNECTED: EligibilityVerdict.INACTIVE_UNCONNECTED,
+        REASON_PROVIDER_NOT_CONNECTED: EligibilityVerdict.INACTIVE_UNCONNECTED,
+        REASON_PROVIDER_INACTIVE: EligibilityVerdict.INACTIVE_UNCONNECTED,
+        REASON_PROVIDER_UNHEALTHY: EligibilityVerdict.NOT_LIVE_ELIGIBLE,
+        REASON_CREDENTIAL_MISSING: EligibilityVerdict.NOT_LIVE_ELIGIBLE,
+        REASON_PRICE_UNKNOWN: EligibilityVerdict.REQUIRED_UNKNOWN,
+        REASON_PAID_MODEL_NOT_ALLOWED: EligibilityVerdict.NOT_FREE_TIER,
         REASON_METADATA_GHOST: EligibilityVerdict.METADATA_GHOST,
         "no_passport": EligibilityVerdict.NO_PASSPORT,
         "passport_stale": EligibilityVerdict.PASSPORT_STALE,
@@ -786,6 +846,22 @@ def _verdict_for_reason(reason: str) -> EligibilityVerdict:
         "map_target_missing": EligibilityVerdict.UNMAPPED,
     }
     return mapping.get(reason, EligibilityVerdict.NOT_LIVE_ELIGIBLE)
+
+
+def why_not_model(receipt: FreeTierAdmitReceipt, model_id: str) -> tuple[dict[str, str], ...]:
+    """Return deterministic bounded rejection evidence for one candidate."""
+    if model_id in receipt.admitted:
+        return ()
+    rows = [drop.to_dict() for drop in receipt.exclusions if drop.model_id == model_id]
+    if rows:
+        return tuple(rows)
+    return (
+        {
+            "model": model_id,
+            "reason": "not_discovered",
+            "detail": "candidate was not present in the evaluated inventory",
+        },
+    )
 
 
 def _provider_of(identity_id: str) -> str:
@@ -867,6 +943,34 @@ def parse_free_tier_models(payload: object) -> tuple[FreeTierModel, ...]:
     return tuple(out)
 
 
+def _number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _catalog_prices(row: Mapping[str, Any]) -> tuple[bool, float | None, float | None]:
+    """Parse only explicit OmniRoute inventory pricing; absent means unknown."""
+    pricing = row.get("pricing")
+    source = pricing if isinstance(pricing, Mapping) else row
+
+    def first_present(*names: str) -> object:
+        for name in names:
+            if name in source and source[name] is not None:
+                return source[name]
+        return None
+
+    input_price = _number(first_present("input", "input_cost", "input_cost_per_million", "prompt"))
+    output_price = _number(
+        first_present("output", "output_cost", "output_cost_per_million", "completion")
+    )
+    return input_price is not None and output_price is not None, input_price, output_price
+
+
 def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
     """Parse OpenAI-compatible ``/v1/models`` or a management catalog envelope."""
     rows: list[Any]
@@ -906,7 +1010,16 @@ def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
         provider = (
             owned.strip() if isinstance(owned, str) and owned.strip() else _provider_of(identity_id)
         )
-        out.append(CatalogIdentity(identity_id=identity_id, provider=provider))
+        price_known, input_cost, output_cost = _catalog_prices(row)
+        out.append(
+            CatalogIdentity(
+                identity_id=identity_id,
+                provider=provider,
+                price_known=price_known,
+                input_cost=input_cost,
+                output_cost=output_cost,
+            )
+        )
     return tuple(out)
 
 
@@ -982,17 +1095,14 @@ def resolve_catalog_matches(
     model_id: str, provider: str, catalog: Sequence[CatalogIdentity]
 ) -> tuple[str, ...]:
     """Concrete catalog identities that correspond to one free-tier row."""
+    # Provider ownership is an authoritative part of the catalog identity.
+    # A suffix collision in another provider's inventory must never inherit this
+    # row's free-tier or connection evidence.
     matches = [
         item.identity_id
         for item in catalog
         if item.provider == provider and _matches_free_model(item.identity_id, model_id, provider)
     ]
-    if not matches:
-        matches = [
-            item.identity_id
-            for item in catalog
-            if _matches_free_model(item.identity_id, model_id, provider)
-        ]
     concrete = [item for item in matches if not is_opaque_route_id(item)]
     if not concrete:
         return tuple(matches)
@@ -1002,97 +1112,96 @@ def resolve_catalog_matches(
 
 
 def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitReceipt:
-    """Admit only free-tier ∩ active-provider concrete catalog identities."""
-    active = snapshot.active_providers
+    """Admit concrete identities proven free by metadata and usable provider state.
+
+    `/v1/models` is inventory only. Free authority comes from
+    `/api/free-tier/summary`; connection/health authority comes from
+    `/api/providers`. A model name (including ``:free``) is never evidence.
+    """
     catalog = snapshot.catalog
     exclusions: list[NamedDrop] = []
     admitted: list[str] = []
     admitted_set: set[str] = set()
+    connections = _provider_connections_by_name(snapshot.connections)
 
-    def _admit(identity_id: str) -> None:
-        if identity_id in admitted_set:
-            return
-        admitted_set.add(identity_id)
-        admitted.append(identity_id)
+    def provider_reason(provider: str) -> tuple[str, str] | None:
+        return _provider_rejection(connections.get(provider))
 
+    def admit(identity_id: str) -> None:
+        if identity_id not in admitted_set:
+            admitted_set.add(identity_id)
+            admitted.append(identity_id)
+
+    # Free-tier rows are the sole free authority. Catalog rows that only look
+    # free are deliberately ignored; they may later be considered as paid only
+    # when explicit price metadata exists.
     for row in snapshot.free_tier:
         label = f"{row.provider}/{row.model_id}"
         if is_opaque_route_id(row.model_id) or is_opaque_route_id(label):
-            exclusions.append(NamedDrop(label, REASON_OPAQUE_AUTO, "opaque auto/* alias"))
+            exclusions.append(
+                NamedDrop(label, REASON_OPAQUE_ROUTE_DISALLOWED, "opaque route is not auditable")
+            )
             continue
         if (row.free_type or "").lower() == "discontinued":
-            exclusions.append(
-                NamedDrop(label, REASON_NOT_FREE_TIER, "discontinued free-tier metadata")
-            )
+            exclusions.append(NamedDrop(label, REASON_NOT_FREE_TIER, "free tier discontinued"))
             continue
-        if row.provider not in active:
-            exclusions.append(
-                NamedDrop(
-                    label, REASON_INACTIVE_UNCONNECTED, "provider is not an active connection"
-                )
-            )
+        blocked = provider_reason(row.provider)
+        if blocked is not None:
+            exclusions.append(NamedDrop(label, blocked[0], blocked[1]))
             continue
         matches = resolve_catalog_matches(row.model_id, row.provider, catalog)
         concrete = [item for item in matches if not is_opaque_route_id(item)]
         if not concrete:
-            if matches:
-                exclusions.append(
-                    NamedDrop(label, REASON_OPAQUE_AUTO, "resolved only to opaque aliases")
-                )
-            else:
-                exclusions.append(
-                    NamedDrop(
-                        label,
-                        REASON_METADATA_GHOST,
-                        "free-tier metadata has no concrete catalog identity",
-                    )
-                )
+            reason = REASON_OPAQUE_ROUTE_DISALLOWED if matches else REASON_METADATA_GHOST
+            exclusions.append(
+                NamedDrop(label, reason, "free-tier row has no concrete inventory identity")
+            )
             continue
         for identity_id in concrete:
-            _admit(identity_id)
+            admit(identity_id)
 
+    # Explain catalog candidates that did not enter the authoritative free set.
     free_providers = snapshot.free_tier_providers
     for identity in catalog:
         if identity.identity_id in admitted_set:
             continue
-        if is_opaque_route_id(identity.identity_id):
-            if identity.provider in active and identity.provider in free_providers:
-                exclusions.append(
-                    NamedDrop(identity.identity_id, REASON_OPAQUE_AUTO, "opaque catalog alias")
+        blocked = provider_reason(identity.provider)
+        if blocked is not None:
+            exclusions.append(NamedDrop(identity.identity_id, blocked[0], blocked[1]))
+        elif is_opaque_route_id(identity.identity_id) or _is_combo_identity(identity.identity_id):
+            exclusions.append(
+                NamedDrop(
+                    identity.identity_id,
+                    REASON_OPAQUE_ROUTE_DISALLOWED,
+                    "opaque/combo route is not a concrete auditable identity",
                 )
-            continue
-        if identity.provider not in active:
-            continue
-        if identity.provider not in free_providers:
-            continue
-        if _is_positively_free_identity(identity.identity_id):
-            first = identity.identity_id.split("/", 1)[0]
-            if first in _COMBO_PREFIXES:
-                exclusions.append(
-                    NamedDrop(
-                        identity.identity_id, REASON_OPAQUE_AUTO, "combo-prefixed catalog identity"
-                    )
+            )
+        elif _looks_free_by_name(identity.identity_id):
+            exclusions.append(
+                NamedDrop(
+                    identity.identity_id,
+                    REASON_NOT_FREE_TIER,
+                    "model name is not authoritative free-tier evidence",
                 )
-                continue
-            _admit(identity.identity_id)
+            )
 
     admitted_sorted = tuple(sorted(admitted))
     healthy = frozenset(
-        row.provider
-        for row in snapshot.connections
-        if row.is_active and (row.test_status or "active") == "active"
+        provider
+        for provider, connection in connections.items()
+        if provider_reason(provider) is None
     )
-    chosen = None
-    if admitted_sorted:
-        chosen = sorted(
-            admitted_sorted, key=lambda item: _choose_sort(item, healthy, admitted_sorted)
-        )[0]
+    chosen = (
+        sorted(admitted_sorted, key=lambda item: _choose_sort(item, healthy, admitted_sorted))[0]
+        if admitted_sorted
+        else None
+    )
     return FreeTierAdmitReceipt(
         admitted=admitted_sorted,
         exclusions=tuple(exclusions),
         chosen=chosen,
         empty_intersection=chosen is None,
-        active_providers=tuple(sorted(active)),
+        active_providers=tuple(sorted(healthy)),
         free_tier_providers=tuple(sorted(free_providers)),
         free_admitted=admitted_sorted,
     )
@@ -1238,24 +1347,41 @@ def is_frontier_identity(identity_id: str, allowlist: tuple[str, ...] | None = N
 def _catalog_paid_identities(
     snapshot: OmniRouteAdmitSnapshot, *, skip: set[str]
 ) -> tuple[tuple[str, ...], tuple[NamedDrop, ...]]:
-    """Active-provider catalog identities that are not positively free."""
+    """Return connected concrete identities with explicit non-free pricing."""
     admitted: list[str] = []
     seen: set[str] = set(skip)
     drops: list[NamedDrop] = []
-    active = snapshot.active_providers
+    connections = _provider_connections_by_name(snapshot.connections)
+    free_ids = set(skip)
     for identity in snapshot.catalog:
         identity_id = identity.identity_id
         if identity_id in seen:
             continue
-        if is_opaque_route_id(identity_id):
-            continue
-        if identity.provider not in active:
-            continue
-        if _is_positively_free_identity(identity_id):
-            continue
-        if _is_combo_identity(identity_id):
+        if is_opaque_route_id(identity_id) or _is_combo_identity(identity_id):
             drops.append(
-                NamedDrop(identity_id, REASON_OPAQUE_AUTO, "combo-prefixed catalog identity")
+                NamedDrop(identity_id, REASON_OPAQUE_ROUTE_DISALLOWED, "route is not concrete")
+            )
+            continue
+        blocked = _provider_rejection(connections.get(identity.provider))
+        if blocked is not None:
+            drops.append(NamedDrop(identity_id, blocked[0], blocked[1]))
+            continue
+        if identity_id in free_ids:
+            continue
+        if not identity.price_known:
+            drops.append(
+                NamedDrop(identity_id, REASON_PRICE_UNKNOWN, "authoritative price is unavailable")
+            )
+            continue
+        # An explicit all-zero price is not silently reclassified as paid. It
+        # must appear in authoritative free-tier metadata to be free.
+        if identity.input_cost == 0 and identity.output_cost == 0:
+            drops.append(
+                NamedDrop(
+                    identity_id,
+                    REASON_NOT_FREE_TIER,
+                    "zero inventory price lacks authoritative free-tier membership",
+                )
             )
             continue
         seen.add(identity_id)
@@ -1334,7 +1460,7 @@ def expand_admit_for_worthiness(
                 exclusions.append(
                     NamedDrop(
                         identity_id,
-                        REASON_SPEND_POLICY_EXCLUDES_PAID,
+                        REASON_PAID_MODEL_NOT_ALLOWED,
                         "spend_policy=free_only forbids paid identities regardless of score",
                     )
                 )
@@ -1344,7 +1470,7 @@ def expand_admit_for_worthiness(
                 exclusions.append(
                     NamedDrop(
                         identity_id,
-                        REASON_SPEND_POLICY_EXCLUDES_PAID,
+                        REASON_PAID_MODEL_NOT_ALLOWED,
                         "spend_policy=free_only forbids paid identities regardless of score",
                     )
                 )

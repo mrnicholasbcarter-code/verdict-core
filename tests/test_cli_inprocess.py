@@ -866,7 +866,7 @@ def test_cmd_setup_wires_detected_gateway_into_config_and_env(
 
     cli.cmd_setup()
 
-    assert os.environ.get("OMNIROUTE_BASE_URL") == "http://127.0.0.1:20128"
+    assert os.environ.get("OMNIROUTE_BASE_URL") is None
     config_path = tmp_path / ".config" / "verdict" / "verdict.yaml"
     assert config_path.exists()
     saved = yaml.safe_load(config_path.read_text())
