@@ -34,7 +34,7 @@ from verdict.metadata.records import (
 )
 from verdict.metadata.store import MetadataSnapshot, lookup_omniroute_id
 
-_BOOL_CAPS = frozenset({"tools", "vision", "structured", "reasoning", "attachment"})
+_BOOL_CAPS = frozenset({"tools", "vision", "structured", "reasoning", "attachment", "streaming"})
 _CONTEXT_CAP = "context"
 
 _LOOKUP_REASON: dict[str, str] = {
@@ -81,6 +81,10 @@ def derive_requirements(
         _add("tools", "request.tools")
     if payload.get("vision_required") is True or features.get("vision") is True:
         _add("vision", "request.vision")
+    if payload.get("reasoning_required") is True or payload.get("require_reasoning") is True:
+        _add("reasoning", "request.reasoning")
+    if payload.get("streaming_required") is True or features.get("stream") is True:
+        _add("streaming", "request.streaming")
     structured = payload.get("structured_output_required") is True or payload.get(
         "require_structured_output"
     )
@@ -94,6 +98,8 @@ def derive_requirements(
             "vision": "vision",
             "structured_output": "structured",
             "structured": "structured",
+            "reasoning": "reasoning",
+            "streaming": "streaming",
         }.get(str(cap).strip().lower())
         if mapped:
             _add(mapped, f"planner:{cap}")

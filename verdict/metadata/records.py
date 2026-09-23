@@ -184,6 +184,7 @@ class CapabilityCaps:
     tools: ProvenancedField | None = None
     vision: ProvenancedField | None = None
     structured: ProvenancedField | None = None
+    streaming: ProvenancedField | None = None
     reasoning: ProvenancedField | None = None
     attachment: ProvenancedField | None = None
     context: ProvenancedField | None = None
