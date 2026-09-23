@@ -182,6 +182,17 @@ Validate with `validate_receipt` in `scripts/prime_workflow.py`, then compare so
 COMPLETE means ready for parent local validation. Spawn handles and an empty roster do not
 qualify. Prime `rlm.run` accepts prompt/name/model/thinking, **not cwd**, and returns admission.
 
+### Dynamic worker model selection
+
+`cx/gpt-5.6-sol` remains the controller and is never a worker target. Before every
+`rlm.spawn`, build a `WorkerTask`, intersect live OmniRoute inventory with the separately
+observed Prime registry, and use `verdict.subagent_selection.select_worker_model`. Always pass
+its exact result as `model=selection.model`. Do not use `subagentDefaultModel` and do not omit
+`model`. `/v1/models` and free-provider ordering only discover candidates; the selector requires
+fresh cached one-token inference health and applies status-specific exclusion/cooldown. Ordinary
+work prefers healthy free capacity, then the cheapest healthy paid capacity. Frontier capacity
+requires `protected=True` or `frontier_worthy=True`.
+
 ## Proof and transitions
 
 ```text

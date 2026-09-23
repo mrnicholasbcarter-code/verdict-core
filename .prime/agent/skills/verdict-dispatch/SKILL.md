@@ -16,12 +16,22 @@ dependency readiness, source/worktree ownership and live target immediately befo
    worktree, branch, `stale_after_seconds`, supervisor identity). A live unstale lease blocks:
    stop/supersede that writer first, never race it. PID existence alone is not ownership, and
    `generation` is the fence token that invalidates every superseded writer.
-2. Discover actual models with `prime-agent model list` or `await rlm.find_models(query)`.
-   Use existing Verdict route/explain/chooser to validate capability, privacy, freshness and
-   budget, then persist the exact provider/model, routing evidence and reason. An automatic
-   alias (`auto/*`, `best`, default) is not an exact execution target. Observe any upstream
-   remapping/failover; reject unapproved target substitution rather than relabeling the receipt.
-3. Launch a **synchronous owned** worker with explicit `--cwd`, `--provider`, `--model`,
+2. Select a worker model dynamically for **every** spawn. Treat `cx/gpt-5.6-sol` as the
+   controller only and never select it for a worker. Never read or rely on
+   `subagentDefaultModel`. Discover OmniRoute inventory and Prime registry visibility as two
+   separate facts: call `fetch_omniroute_inventory()`, obtain the current explicit selectors
+   from `await rlm.find_models(...)` / `prime-agent model list`, then call
+   `select_worker_model(WorkerTask(...), inventory_rows=..., prime_selectors=...,
+   probe=openai_health_probe(...), cache=HealthCache())` from
+   `verdict.subagent_selection`. Inventory, `/v1/models`, and free rankings are discovery only.
+   Selection requires a cached fresh one-token inference result, probes candidates as needed,
+   prefers healthy free models then cheapest healthy alternatives, and reserves frontier models
+   for worthy/protected work. A 400/401/402/403/429/5xx/timeout excludes or cools down the route.
+   Persist the exact selector and checked health categories. An automatic alias (`auto/*`,
+   `best`, default) is not an execution target.
+3. Launch a **synchronous owned** worker with the selected explicit target. For RLM this means
+   `await rlm.spawn(prompt, name=..., model=selection.model)`; omitting `model` is forbidden.
+   For the external CLI use explicit `--cwd`, `--provider`, `--model`,
    `-p --mode json` and the packet path. Use the guide's process supervisor for unattended work.
    Give it lean Spec Kit implement, file boundaries, evidence paths, and the receipt schema.
    Under the supervised loop, pass the unique supervisor session directory to child clients; do not detach RLM write workers: the
