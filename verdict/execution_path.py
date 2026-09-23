@@ -540,13 +540,28 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             )
             session_pref = None
 
+    pool_drop_reasons = {
+        drop.route_id: drop.reason
+        for drop in (request.pool_receipt.hard_drops if request.pool_receipt is not None else ())
+        if drop.reason
+    }
+    offered_candidate_ids = {offer.candidate_id for offer in request.offers}
+    for candidate_id, pool_drop_reason in pool_drop_reasons.items():
+        if candidate_id not in offered_candidate_ids:
+            rejected.append(
+                RejectedStrategy(
+                    strategy="blocked", candidate_id=candidate_id, reason=pool_drop_reason
+                )
+            )
     for offer in request.offers:
         if shortlist_ids is not None and offer.candidate_id not in shortlist_ids:
+            drop_reason = pool_drop_reasons.get(offer.candidate_id)
+            rejection_reason = drop_reason if drop_reason else "not_in_candidate_pool_shortlist"
             rejected.append(
                 RejectedStrategy(
                     strategy=offer.strategy,
                     candidate_id=offer.candidate_id,
-                    reason="not_in_candidate_pool_shortlist",
+                    reason=rejection_reason,
                     expected_cost_strategy_id=offer.expected_cost.strategy_id,
                 )
             )
@@ -965,8 +980,31 @@ def legacy_selector_must_yield(
                 selected = fallback
 
     if strategy == "blocked" or selected is None:
+        reasons: list[str] = []
+        raw_rejected = (
+            execution_path_decision.rejected
+            if isinstance(execution_path_decision, ExecutionPathDecision)
+            else execution_path_decision.get("rejected")
+        )
+        if isinstance(raw_rejected, tuple | list):
+            for item in raw_rejected:
+                reason = item.reason if isinstance(item, RejectedStrategy) else None
+                if reason is None and isinstance(item, Mapping):
+                    raw_reason = item.get("reason")
+                    reason = raw_reason if isinstance(raw_reason, str) else None
+                if isinstance(reason, str) and reason.strip() and reason not in reasons:
+                    reasons.append(reason)
+        why = (
+            execution_path_decision.why_selected
+            if isinstance(execution_path_decision, ExecutionPathDecision)
+            else execution_path_decision.get("why_selected")
+        )
+        why_text = why.strip() if isinstance(why, str) else ""
+        detail = f" reasons={','.join(reasons)}" if reasons else ""
+        why_detail = f" why={why_text}" if why_text else ""
         raise ExecutionPathError(
             "BOD-104 strategy authority blocked dispatch; legacy selector must not invent a route"
+            f"{why_detail}{detail}"
         )
     if legacy_selected_model_id is None:
         return

@@ -1199,25 +1199,29 @@ def execute_offload_chat(
 def omniroute_endpoint_from_env(
     providers: Mapping[str, Any] | None = None,
 ) -> tuple[str, str | None] | None:
-    """Return ``(base_url, api_key)`` for OmniRoute when configured."""
+    """Return ``(base_url, api_key)`` for OmniRoute when configured.
+
+    An explicit ``OMNIROUTE_BASE_URL`` or provider config wins. When neither is
+    set, use the same local OmniRoute origin as the serve proxy. This does not
+    probe the network; a dead default still fails open in the snapshot loader.
+    """
     env_url = os.getenv("OMNIROUTE_BASE_URL")
     env_key = os.getenv("OMNIROUTE_API_KEY")
     if env_url and env_url.strip():
         return env_url.strip(), env_key
-    if not providers:
-        return None
-    for name, cfg in providers.items():
-        if name != "omniroute":
-            continue
-        base_url = getattr(cfg, "base_url", "") or ""
-        if not str(base_url).strip():
-            return None
-        key = getattr(cfg, "api_key", None)
-        env_name = getattr(cfg, "api_key_env", None)
-        if not key and env_name:
-            key = os.getenv(str(env_name))
-        return str(base_url).strip(), key or env_key
-    return None
+    if providers:
+        for name, cfg in providers.items():
+            if name != "omniroute":
+                continue
+            base_url = getattr(cfg, "base_url", "") or ""
+            if not str(base_url).strip():
+                return None
+            key = getattr(cfg, "api_key", None)
+            env_name = getattr(cfg, "api_key_env", None)
+            if not key and env_name:
+                key = os.getenv(str(env_name))
+            return str(base_url).strip(), key or env_key
+    return "http://127.0.0.1:20128", env_key
 
 
 def _is_combo_identity(identity_id: str) -> bool:

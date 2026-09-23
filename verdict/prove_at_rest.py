@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -324,8 +324,62 @@ class ProveAtRestStore:
         tmp.write_text(body, encoding="utf-8")
         tmp.replace(self.path)
 
+    def record_confirm(
+        self, identity_id: str, observation: ProbeObservation, *, now: datetime | None = None
+    ) -> None:
+        """Persist one budgeted confirm without replacing the rest of the cycle.
+
+        A successful confirm refreshes that identity's passport. A failed
+        confirm records the failure. Missing state is left untouched because a
+        confirm must not invent a prove cycle.
+        """
+        cycle = self.read()
+        if cycle is None:
+            return
+        current = now or observation.observed_at
+        provider = _provider_of(identity_id)
+        ready = observation.availability_state == "ready" and observation.error is None
+        passport = (
+            passport_from_probe(provider=provider, identity_id=identity_id, observation=observation)
+            if ready
+            else None
+        )
+        result = ProofResult(
+            identity_id=identity_id,
+            provider=provider,
+            status=STATUS_HEALTHY if ready else STATUS_FAILED,
+            reason=(
+                None
+                if ready
+                else (observation.error_class or observation.error or observation.status)
+            ),
+            proved_at=observation.observed_at,
+            latency_ms=observation.latency_ms,
+            http_status=observation.http_status,
+            error_class=observation.error_class,
+            passport=passport,
+        )
+        replaced = False
+        results: list[ProofResult] = []
+        for item in cycle.results:
+            if item.identity_id == identity_id and not replaced:
+                results.append(result)
+                replaced = True
+            else:
+                results.append(item)
+        if not replaced:
+            results.append(result)
+        self.write(
+            replace(
+                cycle,
+                finished_at=current if current >= cycle.started_at else cycle.finished_at,
+                results=tuple(results),
+            )
+        )
+
 
 SnapshotLoader = Callable[[], OmniRouteAdmitSnapshot]
+CycleErrorHandler = Callable[[Exception], None]
 
 
 @dataclass
@@ -342,6 +396,7 @@ class ProveAtRestDaemon:
     clock: Callable[[], datetime] = field(default=_now)
     sleep: Callable[[float], None] = field(default=time.sleep)
     issue_passports: bool = True
+    on_cycle_error: CycleErrorHandler | None = None
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -405,7 +460,14 @@ class ProveAtRestDaemon:
         self._stop.clear()
         last: ProveAtRestCycle | None = None
         while not self._stop.is_set():
-            last = self.run_once()
+            try:
+                last = self.run_once()
+            except Exception as exc:
+                # A transient inventory or probe-plane failure must not kill the
+                # long-running refresher. Keep the last complete state on disk,
+                # surface the named failure to the host, and retry next interval.
+                if self.on_cycle_error is not None:
+                    self.on_cycle_error(exc)
             remaining = float(self.interval_seconds)
             while remaining > 0 and not self._stop.is_set():
                 step = min(0.25, remaining)

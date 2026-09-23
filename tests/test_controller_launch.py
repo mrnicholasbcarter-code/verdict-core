@@ -1168,6 +1168,38 @@ def test_production_factory_seed_offers_use_passport_price_evidence() -> None:
     assert offer.expected_cost.terms
 
 
+def test_expired_authorized_passport_still_seeds_offer() -> None:
+    """Operational expiry must not remove a previously authorized passport."""
+    from verdict.controller_selection import build_evidence_backed_seed_offers
+    from verdict.model_passports import ModelPassport
+    from verdict.runtime_certification import CertificationState
+
+    identity = "omniroute/gc/grok-4.5"
+    expired = ModelPassport(
+        provider="omniroute",
+        model_id=identity,
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=NOW - timedelta(minutes=30),
+        last_verified_timestamp=NOW - timedelta(minutes=30),
+        expires_at=NOW - timedelta(minutes=5),
+        tool_support=True,
+        token_cost_per_1k=0.001,
+    )
+    denied = replace(expired, model_id="omniroute/denied", availability_state="denied")
+    offers = build_evidence_backed_seed_offers(
+        _mission(),
+        NOW,
+        healthy_passports={identity: expired, "omniroute/denied": denied},
+        free_identity_ids=frozenset({identity, "omniroute/denied"}),
+        certification_by_id={
+            identity: (CertificationState.READY, "fresh"),
+            "omniroute/denied": (CertificationState.READY, "fresh"),
+        },
+    )
+    assert [offer.route.route_id for offer in offers] == [identity]
+
+
 def test_select_fails_closed_without_context_compiler() -> None:
     offer = _ctrl_offer(
         _ctrl_route("omniroute/gc/grok-4.5", provider="omniroute", model="gc/grok-4.5"),

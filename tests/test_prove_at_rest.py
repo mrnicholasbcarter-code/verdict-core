@@ -140,6 +140,47 @@ def test_run_once_proves_only_free_intersect_active(tmp_path: Path) -> None:
     assert "opencode/hy3-free" not in passports
 
 
+def test_record_confirm_refreshes_one_passport_without_replacing_cycle(tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    from verdict.probes import ProbeObservation
+
+    store = ProveAtRestStore(path=tmp_path / "state.json")
+    daemon = ProveAtRestDaemon(
+        store=store,
+        snapshot_loader=_fixture_snapshot,
+        transport=_ok_transport([]),
+        live=False,
+        consented=False,
+        clock=lambda: NOW,
+        sleep=lambda _s: None,
+    )
+    cycle = daemon.run_once()
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    later = NOW + timedelta(minutes=30)
+    store.record_confirm(
+        identity,
+        ProbeObservation(
+            model_id=identity,
+            availability_state="ready",
+            status="ok",
+            observed_at=later,
+            latency_ms=12.5,
+            http_status=200,
+        ),
+        now=later,
+    )
+
+    reloaded = store.read()
+    assert reloaded is not None
+    assert reloaded.cycle_id == cycle.cycle_id
+    by_id = {item.identity_id: item for item in reloaded.results}
+    assert by_id[identity].passport is not None
+    assert by_id[identity].passport.qualified_at == later
+    assert by_id["opencode/hy3-free"].status == STATUS_FAILED
+    assert load_healthy_passports(tmp_path / "state.json")[identity].expires_at > later
+
+
 def test_paid_catalog_identity_never_probed_even_if_active(tmp_path: Path) -> None:
     calls: list[str] = []
     snapshot = _snapshot(
@@ -203,6 +244,50 @@ def test_daemon_loop_stops_and_rewrites_state(tmp_path: Path) -> None:
     assert any(item.reason == REASON_NOT_FREE_TIER for item in last.results)
     assert sleeps  # slept once then stop()
     assert (tmp_path / "state.json").exists()
+
+
+def test_daemon_loop_survives_transient_cycle_error_and_retries(tmp_path: Path) -> None:
+    attempts = 0
+    errors: list[Exception] = []
+    snapshot = _snapshot(
+        catalog=[_catalog_row("opencode/hy3-free")],
+        free_tier=[{"modelId": "hy3-free", "provider": "opencode", "freeType": "keyless"}],
+        providers=[{"provider": "opencode", "isActive": True, "testStatus": "active"}],
+    )
+
+    def load_snapshot():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient inventory timeout")
+        return snapshot
+
+    sleeps = 0
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            daemon.stop()
+
+    daemon = ProveAtRestDaemon(
+        store=ProveAtRestStore(path=tmp_path / "state.json"),
+        snapshot_loader=load_snapshot,
+        transport=_ok_transport([]),
+        interval_seconds=0.25,
+        clock=lambda: NOW,
+        sleep=sleep,
+        on_cycle_error=errors.append,
+    )
+
+    last = daemon.run_forever()
+
+    assert attempts == 2
+    assert len(errors) == 1
+    assert str(errors[0]) == "transient inventory timeout"
+    assert last is not None
+    assert last.summary[STATUS_FAILED] == 1
+    assert daemon.status() == last
 
 
 def test_status_empty_store(tmp_path: Path) -> None:

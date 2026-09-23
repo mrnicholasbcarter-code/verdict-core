@@ -838,12 +838,20 @@ def _require_mapping_target(
 
 
 def _passport_is_live_healthy(passport: Any, *, now: datetime) -> bool:
+    """Return whether a stored passport may seed a live controller offer.
+
+    Authorization and a non-denied availability state are stable evidence.
+    Expiry is operational: a previously eligible passport stays seedable so
+    the budgeted confirm can refresh it. Missing, unauthorized, denied, and
+    never-qualified passports stay fail-closed.
+    """
+    del now
     auth = getattr(passport, "auth_state", None)
     availability = getattr(passport, "availability_state", None)
-    expires_at = getattr(passport, "expires_at", None)
-    if auth != "authorized" or availability != "eligible":
+    qualified_at = getattr(passport, "qualified_at", None)
+    if auth != "authorized" or qualified_at is None:
         return False
-    return not (expires_at is not None and expires_at <= now)
+    return availability in {"eligible", "degraded", "quarantined"}
 
 
 def _metadata_price_for_identity(

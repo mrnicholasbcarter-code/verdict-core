@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from verdict.candidate_pool import DROP_CAPABILITY_MISMATCH
+from verdict.candidate_pool import DROP_CAPABILITY_MISMATCH, DROP_UNMAPPED
 from verdict.cost_ledger import PriceEvidenceInput
 from verdict.effective_capability import (
     AssistanceCost,
@@ -281,6 +281,63 @@ def test_missing_hard_capability_is_named_drop_and_cannot_return() -> None:
     assert NO_TOOLS in prepared.hard_excluded_ids
     assert NO_TOOLS not in {offer.route.route_id for offer in prepared.offers}
     assert NO_TOOLS not in probed
+
+
+def test_unmapped_live_offer_keeps_named_drop_for_blocked_decision() -> None:
+    unmapped = "variant/model-low"
+    service = _service([], top_k=4)
+    service.admit_snapshot = snapshot_from_payloads(
+        catalog={
+            "data": [
+                *[
+                    {"id": model_id, "owned_by": model_id.split("/", 1)[0]}
+                    for model_id in (STRONG, FAST, NEW, NO_TOOLS)
+                ],
+                {"id": unmapped, "owned_by": "variant"},
+            ]
+        },
+        free_tier={
+            "perModel": [
+                *[
+                    {
+                        "modelId": model_id.split("/", 1)[1],
+                        "provider": model_id.split("/", 1)[0],
+                        "freeType": "keyless",
+                    }
+                    for model_id in (STRONG, FAST, NEW, NO_TOOLS)
+                ],
+                {"modelId": "model-low", "provider": "variant", "freeType": "keyless"},
+            ]
+        },
+        providers={
+            "connections": [
+                *[
+                    {"provider": provider, "isActive": True, "testStatus": "active"}
+                    for provider in ("quality", "speed", "newco", "limited")
+                ],
+                {"provider": "variant", "isActive": True, "testStatus": "active"},
+            ]
+        },
+    )
+    request = _request(unmapped)
+
+    prepared = service._prepare_execution_path_request(
+        "fix code", "low", _context(request), request
+    )
+
+    assert prepared.pool_receipt is not None
+    drops = {item.route_id: item.reason for item in prepared.pool_receipt.hard_drops}
+    assert drops[unmapped] == DROP_UNMAPPED
+    assert unmapped in prepared.hard_excluded_ids
+    assert prepared.offers == ()
+
+    from verdict.execution_path import optimize_execution_path
+
+    decision = optimize_execution_path(prepared)
+    assert decision.selected_strategy == "blocked"
+    assert [(item.candidate_id, item.reason) for item in decision.rejected] == [
+        (unmapped, DROP_UNMAPPED)
+    ]
 
 
 def test_newly_discovered_candidate_can_top_replayable_diverse_shortlist() -> None:

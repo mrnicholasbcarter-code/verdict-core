@@ -133,6 +133,83 @@ def test_gate_named_drop_no_passport_fail_closed() -> None:
     assert all(not row.fresh for row in gated.passport)
 
 
+def test_live_consent_refreshes_expired_passport_inside_confirm_budget() -> None:
+    """Operational TTL expiry must not empty the pool when a bounded confirm works."""
+    base = admit_free_tier_active(_snapshot())
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    other = "opencode/hy3-free"
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
+    probed: list[str] = []
+
+    def spy(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        probed.append(model_id)
+        return _ok_transport()(model_id, payload, timeout)
+
+    gated = gate_admit_prove_confirm(
+        base,
+        passports={identity: _passport(identity, **expired), other: _passport(other, **expired)},
+        confirm_transport=spy,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=1,
+    )
+    assert probed == [identity]
+    assert gated.chosen == identity
+    refreshed = next(row for row in gated.passport if row.identity_id == identity)
+    assert refreshed.fresh is True
+    named = {item.model_id: item.reason for item in gated.exclusions}
+    assert named[other] == "confirm_budget_exhausted"
+
+    denied = gate_admit_prove_confirm(
+        base,
+        passports={identity: _passport(identity, **expired)},
+        confirm_transport=spy,
+        now=NOW,
+        live=False,
+        consented=False,
+    )
+    assert denied.chosen is None
+    assert REASON_PASSPORT_STALE in {item.reason for item in denied.exclusions}
+
+
+def test_confirm_refresh_persists_when_store_path_is_configured(tmp_path: Path) -> None:
+    base = admit_free_tier_active(_snapshot())
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    path = tmp_path / "state.json"
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
+    ProveAtRestStore(path=path).write(
+        ProveAtRestCycle(
+            cycle_id="cycle-1",
+            started_at=NOW - timedelta(minutes=30),
+            finished_at=NOW - timedelta(minutes=29),
+            results=(
+                ProofResult(
+                    identity_id=identity,
+                    provider="openrouter",
+                    status="healthy",
+                    proved_at=NOW - timedelta(minutes=30),
+                    passport=_passport(identity, **expired),
+                ),
+            ),
+        )
+    )
+
+    gated = gate_admit_prove_confirm(
+        base,
+        passports={identity: _passport(identity, **expired)},
+        passport_store_path=path,
+        confirm_transport=_ok_transport(),
+        now=NOW,
+        live=True,
+        consented=True,
+    )
+
+    assert gated.chosen == identity
+    stored = load_healthy_passports(path)[identity]
+    assert stored.expires_at > NOW
+
+
 def test_gate_named_drop_passport_stale() -> None:
     base = admit_free_tier_active(_snapshot())
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
