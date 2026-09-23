@@ -310,7 +310,9 @@ def cmd_setup(
         if healthy_gateways:
             selected_gateway = healthy_gateways[0]
             config["gateway_url"] = selected_gateway.url
-            os.environ["OMNIROUTE_BASE_URL"] = selected_gateway.url
+            # Persist discovery in Verdict config only. Setup must not mutate
+            # the hosting process environment; doing so leaks routing authority
+            # into later in-process callers and test/application lifecycles.
             ui.console.print(
                 f"\n[bold green]✓ Detected {selected_gateway.display_name} at "
                 f"{selected_gateway.url} — gateway URL saved to config.[/bold green]"

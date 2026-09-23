@@ -15,10 +15,10 @@ from verdict.context_pack import ContextPackSlot
 from verdict.free_tier_admit import (
     FAIL_CLOSED_REASON,
     NO_ELIGIBLE_TARGET,
-    REASON_INACTIVE_UNCONNECTED,
     REASON_METADATA_GHOST,
     REASON_NOT_FREE_TIER,
-    REASON_OPAQUE_AUTO,
+    REASON_OPAQUE_ROUTE_DISALLOWED,
+    REASON_PROVIDER_INACTIVE,
     admit_free_tier_active,
     build_cheap_path_context_pack,
     execute_offload_chat,
@@ -83,8 +83,54 @@ def test_free_intersect_active_wins_concrete_identity() -> None:
     assert "anthropic/claude-3-opus-20240229" not in receipt.admitted
     assert receipt.chosen == "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
     assert receipt.empty_intersection is False
-    opaque = [drop for drop in receipt.exclusions if drop.reason == REASON_OPAQUE_AUTO]
+    opaque = [drop for drop in receipt.exclusions if drop.reason == REASON_OPAQUE_ROUTE_DISALLOWED]
     assert any(drop.model_id.endswith("/auto") for drop in opaque)
+
+
+@pytest.mark.parametrize(
+    "q_connection",
+    [
+        None,
+        {"provider": "q", "isActive": False, "testStatus": "active"},
+        {"provider": "q", "isActive": True, "testStatus": "error"},
+    ],
+    ids=["q-unconnected", "q-inactive", "q-unhealthy"],
+)
+def test_free_row_never_crosses_catalog_provider_binding(
+    q_connection: dict[str, object] | None,
+) -> None:
+    providers: list[dict[str, object]] = [
+        {"provider": "p", "isActive": True, "testStatus": "active"}
+    ]
+    if q_connection is not None:
+        providers.append(q_connection)
+    snapshot = _snapshot(
+        catalog=[_catalog_row("q/m", "q")],
+        free_tier=[{"modelId": "m", "provider": "p", "freeType": "keyless"}],
+        providers=providers,
+    )
+
+    receipt = admit_free_tier_active(snapshot)
+
+    assert receipt.admitted == ()
+    assert receipt.chosen is None
+    assert any(
+        drop.model_id == "p/m" and drop.reason == REASON_METADATA_GHOST
+        for drop in receipt.exclusions
+    )
+
+
+def test_same_provider_owned_alias_remains_a_legitimate_match() -> None:
+    snapshot = _snapshot(
+        catalog=[_catalog_row("alias/m", "p")],
+        free_tier=[{"modelId": "m", "provider": "p", "freeType": "keyless"}],
+        providers=[{"provider": "p", "isActive": True, "testStatus": "active"}],
+    )
+
+    receipt = admit_free_tier_active(snapshot)
+
+    assert receipt.admitted == ("alias/m",)
+    assert receipt.chosen == "alias/m"
 
 
 def test_metadata_ghosts_and_inactive_providers_are_named_drops() -> None:
@@ -119,8 +165,8 @@ def test_metadata_ghosts_and_inactive_providers_are_named_drops() -> None:
     receipt = admit_free_tier_active(snapshot)
     reasons = {drop.model_id: drop.reason for drop in receipt.exclusions}
     assert reasons["openrouter/ghost-model-not-in-catalog"] == REASON_METADATA_GHOST
-    assert reasons["mistral/mistral-large-latest"] == REASON_INACTIVE_UNCONNECTED
-    assert reasons["openrouter/auto"] == REASON_OPAQUE_AUTO
+    assert reasons["mistral/mistral-large-latest"] == REASON_PROVIDER_INACTIVE
+    assert reasons["openrouter/auto"] == REASON_OPAQUE_ROUTE_DISALLOWED
     assert receipt.admitted == ("openrouter/poolside/laguna-s-2.1:free",)
     assert receipt.chosen == "openrouter/poolside/laguna-s-2.1:free"
     assert "mistral/mistral-large-latest" not in receipt.admitted
@@ -152,9 +198,9 @@ def test_empty_intersection_fails_closed() -> None:
     assert receipt.chosen is None
     assert receipt.empty_intersection is True
     named = {drop.reason for drop in receipt.exclusions}
-    assert REASON_OPAQUE_AUTO in named
-    assert REASON_INACTIVE_UNCONNECTED in named
-    assert REASON_METADATA_GHOST in named or REASON_INACTIVE_UNCONNECTED in named
+    assert REASON_OPAQUE_ROUTE_DISALLOWED in named
+    assert REASON_PROVIDER_INACTIVE in named
+    assert REASON_METADATA_GHOST in named or REASON_PROVIDER_INACTIVE in named
 
 
 def test_discontinued_free_tier_is_not_free_tier_drop() -> None:
@@ -168,7 +214,7 @@ def test_discontinued_free_tier_is_not_free_tier_drop() -> None:
     assert any(drop.reason == REASON_NOT_FREE_TIER for drop in receipt.exclusions)
 
 
-def test_catalog_free_suffix_on_active_free_provider_is_admitted() -> None:
+def test_catalog_free_suffix_without_authoritative_row_is_rejected() -> None:
     snapshot = _snapshot(
         catalog=[
             _catalog_row("openrouter/google/gemma-4-31b-it:free"),
@@ -178,9 +224,14 @@ def test_catalog_free_suffix_on_active_free_provider_is_admitted() -> None:
         providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
     )
     receipt = admit_free_tier_active(snapshot)
-    assert "openrouter/google/gemma-4-31b-it:free" in receipt.admitted
+    assert "openrouter/google/gemma-4-31b-it:free" not in receipt.admitted
     assert "openrouter/google/lyria-3-pro-preview" not in receipt.admitted
-    assert receipt.chosen == "openrouter/google/gemma-4-31b-it:free"
+    assert receipt.chosen is None
+    assert any(
+        drop.model_id == "openrouter/google/gemma-4-31b-it:free"
+        and drop.reason == REASON_NOT_FREE_TIER
+        for drop in receipt.exclusions
+    )
 
 
 def _fresh_passport(identity_id: str) -> ModelPassport:
@@ -331,7 +382,7 @@ def test_intelligence_empty_intersection_does_not_select_primary() -> None:
     assert decision.admit_receipt["omissions"] == []
     assert decision.admit_receipt["chosen"] is None
     named = {item["reason"] for item in decision.admit_receipt["exclusions"]}
-    assert REASON_INACTIVE_UNCONNECTED in named
+    assert REASON_PROVIDER_INACTIVE in named
 
 
 def test_load_snapshot_and_execute_use_omniroute_paths() -> None:

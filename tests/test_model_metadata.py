@@ -385,3 +385,32 @@ class TestCliMetadata:
             cli.main()
         assert exc.value.code == 0
         assert "metadata" in capsys.readouterr().out
+
+
+def test_streaming_capability_round_trips_with_provenance_and_schema() -> None:
+    provenance = FieldProvenance(source=SOURCE_MODELS_DEV, fetched_at=FETCHED_AT)
+    record = ModelMetadataRecord(
+        id="p/stream", caps=CapabilityCaps(streaming=ProvenancedField(True, provenance))
+    )
+    restored = ModelMetadataRecord.from_dict(record.to_dict())
+    assert restored.caps.streaming is not None
+    assert restored.caps.streaming.value is True
+    assert restored.caps.streaming.provenance.source == SOURCE_MODELS_DEV
+    document = {
+        "schema_version": "1", "refreshed_at": FETCHED_AT, "sources": {},
+        "records": [record.to_dict()],
+    }
+    Draft202012Validator(SCHEMA).validate(document)
+
+
+def test_models_dev_and_litellm_ingest_streaming_with_source_provenance() -> None:
+    from verdict.metadata.sources import parse_litellm, parse_models_dev_models
+
+    md_prov = FieldProvenance(source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT)
+    llm_prov = FieldProvenance(source=SOURCE_LITELLM, fetched_at=FETCHED_AT)
+    md = parse_models_dev_models({"p/m": {"id": "p/m", "streaming": True}}, md_prov)["p/m"]
+    llm = parse_litellm({"p/m": {"supports_streaming": False}}, llm_prov)["p/m"]
+    assert md.caps.streaming is not None and md.caps.streaming.value is True
+    assert md.caps.streaming.provenance.source == SOURCE_MODELS_DEV_MODELS
+    assert llm.caps.streaming is not None and llm.caps.streaming.value is False
+    assert llm.caps.streaming.provenance.source == SOURCE_LITELLM

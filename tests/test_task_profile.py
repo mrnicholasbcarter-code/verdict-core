@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from verdict.free_tier_admit import (
-    REASON_SPEND_POLICY_EXCLUDES_PAID,
+    REASON_PAID_MODEL_NOT_ALLOWED,
     REASON_WORTHY_EXCLUDES_FREE,
     FreeTierAdmitReceipt,
     NamedDrop,
@@ -37,11 +37,17 @@ def _snapshot(paid_ids: tuple[str, ...]) -> OmniRouteAdmitSnapshot:
     providers = tuple({ident.split("/", 1)[0] for ident in paid_ids})
     return OmniRouteAdmitSnapshot(
         catalog=tuple(
-            CatalogIdentity(identity_id=ident, provider=ident.split("/", 1)[0])
+            CatalogIdentity(
+                identity_id=ident,
+                provider=ident.split("/", 1)[0],
+                price_known=True,
+                input_cost=1.0,
+                output_cost=1.0,
+            )
             for ident in paid_ids
         ),
         free_tier=(),
-        connections=tuple(ProviderConnection(provider=p, is_active=True) for p in providers),
+        connections=tuple(ProviderConnection(provider=p, is_active=True, test_status="active") for p in providers),
     )
 
 
@@ -184,8 +190,8 @@ def test_free_only_never_admits_paid_and_names_the_exclusion() -> None:
     assert receipt.admitted == ("free/one", "free/two")
     assert receipt.paid_admitted == ()
     excluded = {drop.model_id: drop.reason for drop in receipt.exclusions}
-    assert excluded["paid/strong"] == REASON_SPEND_POLICY_EXCLUDES_PAID
-    assert excluded["paid/frontier-x"] == REASON_SPEND_POLICY_EXCLUDES_PAID
+    assert excluded["paid/strong"] == REASON_PAID_MODEL_NOT_ALLOWED
+    assert excluded["paid/frontier-x"] == REASON_PAID_MODEL_NOT_ALLOWED
 
 
 def test_free_only_never_admits_paid_for_worthy_tasks() -> None:
@@ -203,7 +209,7 @@ def test_free_only_never_admits_paid_for_worthy_tasks() -> None:
     assert receipt.paid_admitted == ()
     assert {drop.reason for drop in receipt.exclusions} >= {
         REASON_WORTHY_EXCLUDES_FREE,
-        REASON_SPEND_POLICY_EXCLUDES_PAID,
+        REASON_PAID_MODEL_NOT_ALLOWED,
     }
 
 
@@ -256,7 +262,7 @@ def test_receipt_carries_profile_digest_and_policy() -> None:
     assert payload["task_profile_digest"] == profile.digest
     assert payload["spend_policy"] == SPEND_FREE_ONLY
     assert any(
-        drop.model_id == "paid/strong" and drop.reason == REASON_SPEND_POLICY_EXCLUDES_PAID
+        drop.model_id == "paid/strong" and drop.reason == REASON_PAID_MODEL_NOT_ALLOWED
         for drop in receipt.exclusions
     )
 

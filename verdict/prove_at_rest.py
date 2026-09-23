@@ -24,6 +24,9 @@ from typing import Any
 from uuid import uuid4
 
 from verdict.free_tier_admit import (
+    REASON_INACTIVE_UNCONNECTED,
+    REASON_PROVIDER_INACTIVE,
+    REASON_PROVIDER_NOT_CONNECTED,
     OmniRouteAdmitSnapshot,
     admit_free_tier_active,
     load_omniroute_admit_snapshot,
@@ -428,12 +431,19 @@ class ProveAtRestDaemon:
 
         # Named skips from admit — never probed (inactive, opaque, ghosts, …).
         for drop in receipt.exclusions:
+            # This persisted schema predates the split provider diagnostics.
+            # Preserve its public aggregate reason for old readers.
+            reason = (
+                REASON_INACTIVE_UNCONNECTED
+                if drop.reason in {REASON_PROVIDER_INACTIVE, REASON_PROVIDER_NOT_CONNECTED}
+                else drop.reason
+            )
             results.append(
                 ProofResult(
                     identity_id=drop.model_id,
                     provider=_provider_of(drop.model_id),
                     status=STATUS_SKIPPED,
-                    reason=drop.reason,
+                    reason=reason,
                     proved_at=started,
                 )
             )

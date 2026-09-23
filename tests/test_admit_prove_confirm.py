@@ -320,7 +320,7 @@ def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:
         catalog={
             "data": [
                 {"id": free_plain, "owned_by": "opencode"},
-                {"id": paid, "owned_by": "anthropic"},
+                {"id": paid, "owned_by": "anthropic", "pricing": {"input": 10.0, "output": 20.0}},
             ]
         },
         free_tier={"perModel": [{"modelId": "hy3", "provider": "opencode", "freeType": "keyless"}]},

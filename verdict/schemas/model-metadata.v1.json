@@ -123,6 +123,7 @@
             "tools": {"$ref": "#/$defs/provenanced_bool"},
             "vision": {"$ref": "#/$defs/provenanced_bool"},
             "structured": {"$ref": "#/$defs/provenanced_bool"},
+            "streaming": {"$ref": "#/$defs/provenanced_bool"},
             "reasoning": {"$ref": "#/$defs/provenanced_bool"},
             "attachment": {"$ref": "#/$defs/provenanced_bool"},
             "context": {"$ref": "#/$defs/provenanced_int"},

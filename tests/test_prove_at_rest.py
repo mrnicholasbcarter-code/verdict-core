@@ -10,7 +10,7 @@ import pytest
 from verdict.free_tier_admit import (
     REASON_INACTIVE_UNCONNECTED,
     REASON_NOT_FREE_TIER,
-    REASON_OPAQUE_AUTO,
+    REASON_OPAQUE_ROUTE_DISALLOWED,
     snapshot_from_payloads,
 )
 from verdict.prove_at_rest import (
@@ -127,7 +127,7 @@ def test_run_once_proves_only_free_intersect_active(tmp_path: Path) -> None:
     assert failed.reason is not None
 
     skipped_reasons = {item.reason for item in cycle.results if item.status == STATUS_SKIPPED}
-    assert REASON_OPAQUE_AUTO in skipped_reasons
+    assert REASON_OPAQUE_ROUTE_DISALLOWED in skipped_reasons
     assert REASON_INACTIVE_UNCONNECTED in skipped_reasons
 
     # Persisted and reloadable for later admit.
