@@ -47,7 +47,9 @@ def _snapshot(paid_ids: tuple[str, ...]) -> OmniRouteAdmitSnapshot:
             for ident in paid_ids
         ),
         free_tier=(),
-        connections=tuple(ProviderConnection(provider=p, is_active=True, test_status="active") for p in providers),
+        connections=tuple(
+            ProviderConnection(provider=p, is_active=True, test_status="active") for p in providers
+        ),
     )
 
 

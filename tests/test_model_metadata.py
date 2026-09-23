@@ -397,7 +397,9 @@ def test_streaming_capability_round_trips_with_provenance_and_schema() -> None:
     assert restored.caps.streaming.value is True
     assert restored.caps.streaming.provenance.source == SOURCE_MODELS_DEV
     document = {
-        "schema_version": "1", "refreshed_at": FETCHED_AT, "sources": {},
+        "schema_version": "1",
+        "refreshed_at": FETCHED_AT,
+        "sources": {},
         "records": [record.to_dict()],
     }
     Draft202012Validator(SCHEMA).validate(document)

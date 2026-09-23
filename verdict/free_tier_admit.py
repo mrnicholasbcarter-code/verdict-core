@@ -943,8 +943,6 @@ def parse_free_tier_models(payload: object) -> tuple[FreeTierModel, ...]:
     return tuple(out)
 
 
-
-
 def _number(value: object) -> float | None:
     if isinstance(value, bool):
         return None
@@ -959,15 +957,14 @@ def _catalog_prices(row: Mapping[str, Any]) -> tuple[bool, float | None, float |
     """Parse only explicit OmniRoute inventory pricing; absent means unknown."""
     pricing = row.get("pricing")
     source = pricing if isinstance(pricing, Mapping) else row
+
     def first_present(*names: str) -> object:
         for name in names:
             if name in source and source[name] is not None:
                 return source[name]
         return None
 
-    input_price = _number(
-        first_present("input", "input_cost", "input_cost_per_million", "prompt")
-    )
+    input_price = _number(first_present("input", "input_cost", "input_cost_per_million", "prompt"))
     output_price = _number(
         first_present("output", "output_cost", "output_cost_per_million", "completion")
     )
