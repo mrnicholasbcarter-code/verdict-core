@@ -23,6 +23,7 @@ from verdict.free_tier_admit import (
     build_cheap_path_context_pack,
     execute_offload_chat,
     load_omniroute_admit_snapshot,
+    omniroute_endpoint_from_env,
     snapshot_from_payloads,
 )
 from verdict.intelligence import IntelligenceService
@@ -627,3 +628,21 @@ def test_intelligence_execute_receives_hydrated_workspace_unit(tmp_path: Path) -
     assert included["README.md"].startswith("sha256:")
     assert decision.admit_receipt["included_sources"] == decision.admit_receipt["included"]
     assert decision.admit_receipt["pack_state"] == "hydrated"
+
+
+def test_omniroute_endpoint_defaults_to_local_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset config uses the local OmniRoute origin; explicit config still wins."""
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "test-key")
+
+    assert omniroute_endpoint_from_env(None) == ("http://127.0.0.1:20128", "test-key")
+
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:24000")
+    assert omniroute_endpoint_from_env(None) == ("http://127.0.0.1:24000", "test-key")
+
+    provider = ProviderConfig(base_url="http://127.0.0.1:25000/v1")
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    assert omniroute_endpoint_from_env({"omniroute": provider}) == (
+        "http://127.0.0.1:25000/v1",
+        "test-key",
+    )

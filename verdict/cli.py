@@ -4973,6 +4973,15 @@ def cmd_prove_at_rest(
             f"[bold cyan]prove-at-rest daemon[/bold cyan] interval={interval}s "
             f"state={resolved_state}"
         )
+
+        def report_cycle_error(exc: Exception) -> None:
+            code = getattr(exc, "code", exc.__class__.__name__)
+            console.print(
+                f"[bold red]prove-at-rest cycle failed[/bold red] code={code}: {exc}; "
+                f"retaining last complete state and retrying in {interval}s"
+            )
+
+        daemon.on_cycle_error = report_cycle_error
         try:
             daemon.run_forever()
         except KeyboardInterrupt:

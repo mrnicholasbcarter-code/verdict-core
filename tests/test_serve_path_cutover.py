@@ -208,6 +208,43 @@ def test_require_serve_path_decision_fail_closed_without_ep() -> None:
         require_serve_path_decision(None, surface="api_v1_route")
 
 
+def test_blocked_dispatch_names_unmapped_pool_reason() -> None:
+    from verdict.candidate_pool import (
+        DROP_UNMAPPED,
+        CandidatePoolReceipt,
+        HardDrop,
+        TaskFingerprint,
+    )
+
+    route = _route("agy/gemini-3.7-flash-low", model="agy/gemini-3.7-flash-low")
+    plan = _plan(candidate_id=route.route_id)
+    receipt = CandidatePoolReceipt(
+        task_fingerprint=TaskFingerprint(digest="sha256:task", task_family="chat"),
+        discovered_count=1,
+        hard_drops=(HardDrop(route.route_id, DROP_UNMAPPED, "no unique models.json leaf"),),
+        probes=(),
+        shortlist=(),
+        uncertainty=(f"{route.route_id}:{DROP_UNMAPPED}",),
+        evidence_digest="sha256:evidence",
+        shortlist_digest="sha256:shortlist",
+    )
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-unmapped",
+            offers=(_offer(strategy="direct_cheap", route=route, plan=plan),),
+            pool_receipt=receipt,
+            now=NOW,
+        )
+    )
+    with pytest.raises(ExecutionPathError, match="unmapped") as caught:
+        require_serve_path_decision(decision, surface="intelligence.route")
+    message = str(caught.value)
+    assert "why=no_qualified_complete_strategies" in message
+    assert "reasons=unmapped" in message
+    assert "not_in_candidate_pool_shortlist" not in message
+
+
 def test_resolve_and_dispatch_from_ep_request() -> None:
     cheap = _route("auth-1")
     plan = _plan(candidate_id="auth-1")

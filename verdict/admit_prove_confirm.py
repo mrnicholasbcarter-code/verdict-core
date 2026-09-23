@@ -18,7 +18,12 @@ from typing import Any
 from verdict.free_tier_admit import FreeTierAdmitReceipt, NamedDrop, _choose_sort
 from verdict.model_passports import ModelPassport
 from verdict.probes import ProbeBudget, ProbeObservation, ProbePolicy, ProbeRunner, ProbeTransport
-from verdict.prove_at_rest import load_healthy_passports
+from verdict.prove_at_rest import (
+    ProveAtRestStore,
+    default_state_path,
+    load_healthy_passports,
+    passport_from_probe,
+)
 
 REASON_NO_PASSPORT = "no_passport"
 REASON_PASSPORT_STALE = "passport_stale"
@@ -111,6 +116,20 @@ def passport_is_fresh(passport: ModelPassport, *, now: datetime | None = None) -
     return passport.availability_state == "eligible"
 
 
+def _passport_can_refresh(passport: ModelPassport | None) -> bool:
+    """True when a stored passport may be refreshed by one budgeted live confirm.
+
+    Expiry is operational. Authorization and a non-denied availability state are
+    stable enough to justify one bounded probe. Missing, unauthorized, or denied
+    passports stay fail-closed and are not probed.
+    """
+    if passport is None:
+        return False
+    if passport.auth_state != "authorized":
+        return False
+    return passport.availability_state in {"eligible", "degraded", "quarantined"}
+
+
 def _passport_evidence(
     identity_id: str, passport: ModelPassport | None, *, now: datetime
 ) -> PassportEvidence:
@@ -127,6 +146,50 @@ def _passport_evidence(
         auth_state=passport.auth_state,
         availability_state=passport.availability_state,
     )
+
+
+def _record_refreshed_passport(
+    passport_rows: list[PassportEvidence],
+    identity_id: str,
+    previous: ModelPassport | None,
+    observation: ProbeObservation,
+    *,
+    now: datetime,
+) -> None:
+    """Replace stale passport evidence when the budgeted confirm just succeeded."""
+    if previous is None or passport_is_fresh(previous, now=now):
+        return
+    provider = previous.provider or identity_id.split("/", 1)[0]
+    refreshed = passport_from_probe(
+        provider=provider, identity_id=identity_id, observation=observation
+    )
+    evidence = _passport_evidence(identity_id, refreshed, now=now)
+    for index, row in enumerate(passport_rows):
+        if row.identity_id == identity_id:
+            passport_rows[index] = evidence
+            return
+    passport_rows.append(evidence)
+
+
+def _persist_confirm_observations(
+    observations: Mapping[str, ProbeObservation],
+    *,
+    passport_store_path: Path | None,
+    passports_were_explicit: bool,
+    now: datetime,
+) -> None:
+    """Write probed confirms back to the prove-at-rest cycle.
+
+    An explicit passport map with no store path is an in-memory fixture and
+    must not touch the operator's default store. Production passes the store
+    path even when it also passes a preloaded passport map. A missing cycle is
+    left untouched.
+    """
+    if not observations or (passports_were_explicit and passport_store_path is None):
+        return
+    store = ProveAtRestStore(passport_store_path or default_state_path())
+    for identity_id, observation in observations.items():
+        store.record_confirm(identity_id, observation, now=now)
 
 
 def _confirm_ok(observation: ProbeObservation) -> bool:
@@ -192,6 +255,10 @@ def gate_admit_prove_confirm(
         if evidence.fresh:
             fresh_ids.append(identity_id)
             continue
+        if live and consented and confirm_transport is not None and _passport_can_refresh(passport):
+            # Operational TTL elapsed. Keep the candidate for the bounded
+            # confirm refresh; a failed or unattempted refresh still drops it.
+            continue
         reason = evidence.reason or REASON_NO_PASSPORT
         detail = (
             "no healthy prove-at-rest passport"
@@ -203,22 +270,51 @@ def gate_admit_prove_confirm(
     confirm_rows: list[ConfirmEvidence] = []
     confirmed_ids: list[str] = []
 
-    if not fresh_ids:
-        return _finalize(
-            receipt,
-            admitted=(),
-            exclusions=exclusions,
-            passport_evidence=passport_rows,
-            confirm_evidence=confirm_rows,
-        )
-
     healthy = frozenset(receipt.active_providers)
     # BOD-112: free candidates are confirmed before paid fallbacks, keyed on the
     # authoritative free_admitted set rather than an ID-suffix heuristic.
     free_set = frozenset(receipt.free_admitted) if receipt.free_admitted else None
-    ordered = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
+    # A stored passport is operational evidence with a short TTL. When a live
+    # confirm is consented, refresh only the budgeted shortlist instead of
+    # dropping the whole pool because the background prover is stale. Stable
+    # capability metadata is not re-probed here. Without live consent, an
+    # expired passport still fails closed as passport_stale.
+    if live and consented and confirm_transport is not None:
+        refreshable = [
+            identity_id
+            for identity_id in receipt.admitted
+            if _passport_can_refresh(loaded.get(identity_id))
+        ]
+        ordered_ids = sorted(
+            set(fresh_ids) | set(refreshable),
+            key=lambda item: _choose_sort(item, healthy, free_set),
+        )
+    else:
+        ordered_ids = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
+    ordered = ordered_ids
     shortlist = ordered[:max_confirm_candidates]
     deferred = ordered[max_confirm_candidates:]
+    covered = set(shortlist) | set(deferred)
+    for index, evidence in enumerate(passport_rows):
+        if evidence.fresh or evidence.reason is not None or evidence.identity_id in covered:
+            continue
+        exclusions.append(
+            NamedDrop(
+                evidence.identity_id,
+                REASON_PASSPORT_STALE,
+                "operational passport expired and confirm budget was not spent on it",
+            )
+        )
+        passport_rows[index] = PassportEvidence(
+            identity_id=evidence.identity_id,
+            fresh=False,
+            reason=REASON_PASSPORT_STALE,
+            expires_at=evidence.expires_at,
+            qualified_at=evidence.qualified_at,
+            auth_state=evidence.auth_state,
+            availability_state=evidence.availability_state,
+        )
+
     for identity_id in deferred:
         exclusions.append(
             NamedDrop(identity_id, REASON_CONFIRM_BUDGET, "outside budgeted confirm shortlist")
@@ -230,6 +326,15 @@ def gate_admit_prove_confirm(
                 status=REASON_CONFIRM_BUDGET,
                 error="outside budgeted confirm shortlist",
             )
+        )
+
+    if not shortlist:
+        return _finalize(
+            receipt,
+            admitted=(),
+            exclusions=exclusions,
+            passport_evidence=passport_rows,
+            confirm_evidence=confirm_rows,
         )
 
     if confirm_transport is None:
@@ -286,6 +391,12 @@ def gate_admit_prove_confirm(
         budget=budget,
     )
     by_id = {item.model_id: item for item in observations}
+    _persist_confirm_observations(
+        by_id,
+        passport_store_path=passport_store_path,
+        passports_were_explicit=passports is not None,
+        now=current,
+    )
     for identity_id in shortlist:
         observation = by_id.get(identity_id)
         if observation is None:
@@ -305,6 +416,9 @@ def gate_admit_prove_confirm(
         confirm_rows.append(confirm)
         if confirm.confirmed:
             confirmed_ids.append(identity_id)
+            _record_refreshed_passport(
+                passport_rows, identity_id, loaded.get(identity_id), observation, now=current
+            )
             continue
         reason = (
             REASON_CONFIRM_BUDGET
