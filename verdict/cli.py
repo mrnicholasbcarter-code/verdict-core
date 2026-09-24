@@ -806,33 +806,24 @@ def cmd_route(
             timestamp=selection.timestamp,
         )
 
-    tier_colors = {0: "red", 1: "magenta", 2: "yellow", 3: "green"}
-    t_color = tier_colors.get(dec.tier, "white")
+    from verdict import present
 
-    output = f"""[bold]Task:[/bold] {task[:100]}{"..." if len(task) > 100 else ""}
-
-[bold]Decision:[/bold]
-  Model:     [bold {t_color}]{dec.model}[/bold {t_color}]
-  Provider:  {dec.provider}
-  Tier:      T{dec.tier}
-  Outcome:   {dec.decision}
-  Managed:   {dec.managed_backend_status}
-  Transport: {dec.transport_outcome}
-  Quality:   {dec.quality_outcome}
-  Protected: {str(dec.protected).lower()}
-  Degraded:  {str(dec.degraded_mode).lower()}
-  Latency:   [cyan]{dec.latency_ms:.1f}ms[/cyan]
-  Strategy:  [bold]{selection.strategy}[/bold]
-
-[bold dim]Reason:[/bold dim] [italic]{dec.reason}[/italic]
-"""
-    console.print(
-        Panel(
-            output,
-            title="[bold blue]Routing Decision[/bold blue]",
-            border_style="blue",
-            expand=False,
-        )
+    present.header("Routing Decision")
+    present.kv(
+        {
+            "Task": task[:100] + ("..." if len(task) > 100 else ""),
+            "Model": f"{dec.model}  (T{dec.tier})",
+            "Provider": dec.provider,
+            "Outcome": dec.decision,
+            "Managed": dec.managed_backend_status,
+            "Transport": dec.transport_outcome,
+            "Quality": dec.quality_outcome,
+            "Protected": str(dec.protected).lower(),
+            "Degraded": str(dec.degraded_mode).lower(),
+            "Latency": f"{dec.latency_ms:.1f}ms",
+            "Strategy": selection.strategy,
+            "Reason": dec.reason,
+        }
     )
     # Machine-readable StrategySelection record (issue #265).
     payload: dict[str, Any] = {
@@ -863,8 +854,11 @@ def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = Fa
 
 def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     """Parse JSONL logs and build analytics."""
+    from verdict import present
+
     if not os.path.exists(log_path):
-        console.print(f"[yellow]No log file found at {log_path}[/yellow]")
+        present.header("Routing stats")
+        present.warn("log", f"No log file found at {log_path}")
         return
 
     tiers: dict[int, int] = {}
@@ -893,24 +887,24 @@ def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     total = sum(tiers.values())
     avg_latency = sum(latencies) / len(latencies) if latencies else 0
 
-    table = Table(title="Tier Distribution")
-    table.add_column("Tier", style="bold")
-    table.add_column("Count")
-    table.add_column("Pct")
-
-    for t in sorted(tiers):
-        count = tiers[t]
-        pct = (count / total) * 100 if total > 0 else 0
-        table.add_row(f"T{t}", str(count), f"{pct:.1f}%")
-
-    console.print("\n")
-    console.print(table)
-    console.print(f"\n[bold]Total Requests:[/bold] {total}")
-    console.print(f"[bold]P50 Latency:[/bold] [cyan]{avg_latency:.2f}ms[/cyan]\n")
-
-    console.print("[bold]Top Routed Models:[/bold]")
-    for mod, count in sorted(models.items(), key=lambda x: x[1], reverse=True)[:5]:
-        console.print(f"  {mod}: [bold yellow]{count}[/bold yellow] calls")
+    present.header("Routing stats")
+    present.table(
+        ["Tier", "Count", "Pct"],
+        [
+            (f"T{t}", str(tiers[t]), f"{(tiers[t] / total) * 100 if total > 0 else 0:.1f}%")
+            for t in sorted(tiers)
+        ],
+        title="Tier Distribution",
+    )
+    present.kv({"Total Requests": str(total), "P50 Latency": f"{avg_latency:.2f}ms"})
+    present.section("Top Routed Models")
+    present.table(
+        ["Model", "Calls"],
+        [
+            (mod, str(count))
+            for mod, count in sorted(models.items(), key=lambda x: x[1], reverse=True)[:5]
+        ],
+    )
 
 
 def cmd_benchmark(
@@ -992,13 +986,13 @@ def cmd_quickstart(
 
 def cmd_cost_report() -> None:
     """Calculates and prints the estimated token usage execution cost from historic routing decisions."""
-    import json
+    from verdict import present
 
-    console.print(Panel.fit("[bold green]Verdict Cost and Usage Report[/bold green]"))
+    present.header("Cost and Usage Report")
 
     log_path = "verdict-decisions.jsonl"
     if not os.path.exists(log_path):
-        console.print("[yellow]No routing telemetry found (Verdict decision log missing).[/yellow]")
+        present.warn("log", "No routing telemetry found (Verdict decision log missing).")
         return
 
     total_requests = 0
@@ -1021,17 +1015,17 @@ def cmd_cost_report() -> None:
             except Exception:
                 pass
 
-    table = Table(title="Usage Summary")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="magenta")
-    table.add_row("Total Routing Requests", str(total_requests))
-    table.add_row("T0 (Critical) Forwarded", str(t0_requests))
-    table.add_row("Offloaded Tasks (T1-T3)", str(total_requests - t0_requests))
-
     savings = (total_requests - t0_requests) * 0.005
-    table.add_row("Estimated Savings vs T0 Only", f"${savings:.2f}")
-
-    console.print(table)
+    present.table(
+        ["Metric", "Value"],
+        [
+            ("Total Routing Requests", str(total_requests)),
+            ("T0 (Critical) Forwarded", str(t0_requests)),
+            ("Offloaded Tasks (T1-T3)", str(total_requests - t0_requests)),
+            ("Estimated Savings vs T0 Only", f"${savings:.2f}"),
+        ],
+        title="Usage Summary",
+    )
 
 
 def cmd_detect(
@@ -1971,44 +1965,33 @@ def cmd_catalog(
 
 def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
     """Run the SuggestionService to propose evidence-backed improvements."""
-    from rich.console import Console
-    from rich.panel import Panel
-
+    from verdict import present
     from verdict.suggestions import SuggestionService
 
-    console = Console()
     svc = SuggestionService(log_path=log_path)
+    suggestions = svc.generate_suggestions()
 
-    with console.status("[bold green]Mining telemetry for suggestions...", spinner="dots"):
-        suggestions = svc.generate_suggestions()
-
+    present.header("Verdict Intelligence Suggestions")
     if not suggestions:
-        console.print(
-            "[yellow]No actionable suggestions found. Your routing is optimized![/yellow]"
-        )
+        present.note("No actionable suggestions found. Your routing is optimized!")
         return
 
-    console.print(
-        Panel.fit("[bold blue]Verdict Intelligence Suggestions[/bold blue]", border_style="blue")
-    )
-
     for s in suggestions:
-        category_color = {"performance": "cyan", "reliability": "red", "capacity": "yellow"}.get(
-            s.category, "white"
+        present.section(f"{s.title} ({s.id})")
+        present.kv(
+            {
+                "Category": s.category.title(),
+                "Novelty": s.novelty,
+                "Expires In": s.expiry,
+                "Description": s.description,
+                "Proposed Experiment": s.proposed_next_experiment,
+                "Confidence": f"{s.confidence * 100:.1f}%",
+                "Impact": s.expected_impact,
+                "Evidence (top 3)": (
+                    ", ".join(s.evidence_references) if s.evidence_references else "None"
+                ),
+            }
         )
-        output = f"""[bold {category_color}]{s.title} ({s.id})[/]
-[dim]Category:[/] {s.category.title()}  |  [dim]Novelty:[/] {s.novelty}  |  [dim]Expires In:[/] {s.expiry}
-
-{s.description}
-
-[bold dim]Proposed Next Experiment:[/bold dim]
-[italic]{s.proposed_next_experiment}[/italic]
-
-[dim]Confidence:[/] {s.confidence * 100:.1f}%  |  [dim]Impact:[/] {s.expected_impact}
-[dim]Evidence Events (Top 3):[/] {", ".join(s.evidence_references) if s.evidence_references else "None"}
-"""
-        console.print(output)
-        console.print("---")
 
 
 def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
@@ -2369,9 +2352,12 @@ def cmd_choose(
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            print(payload["selected_because"])
+            from verdict import present
+
+            present.header("Choose route")
+            present.fail(task_class, exc.reason)
             if exc.exclusions:
-                print(
+                present.note(
                     "excluded: "
                     + ", ".join(
                         f"{item.get('model', '?')} ({item.get('reason', 'excluded')})"
@@ -2382,7 +2368,10 @@ def cmd_choose(
     if output_json:
         print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
         return
-    print(human_summary(receipt))
+    from verdict import present
+
+    present.header("Choose route")
+    present.note(human_summary(receipt))
 
 
 def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False) -> None:
@@ -2530,14 +2519,24 @@ def cmd_receipt(
         if output_json:
             print(json.dumps({"receipts": items}, indent=2, sort_keys=True))
             return
+        from verdict import present
+
+        present.header("Routing receipts")
         if not items:
-            print("no routing receipts found")
+            present.note("no routing receipts found")
             return
-        for item in items:
-            print(
-                f"{item['receipt_id']} scope={item['scope']} "
-                f"attempt={item.get('attempt_id')} state={item.get('state')}"
-            )
+        present.table(
+            ["Receipt ID", "Scope", "Attempt", "State"],
+            [
+                (
+                    item["receipt_id"],
+                    item["scope"],
+                    item.get("attempt_id") or "-",
+                    item.get("state") or "-",
+                )
+                for item in items
+            ],
+        )
         return
 
     if action == "show":
@@ -2562,7 +2561,10 @@ def cmd_receipt(
         if output_json:
             print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
             return
-        print(human_summary(receipt))
+        from verdict import present
+
+        present.header("Routing receipt")
+        present.note(human_summary(receipt))
         print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
         return
 
@@ -2591,7 +2593,10 @@ def cmd_replay(session_id: str, output_json: bool = False) -> None:
         if output_json:
             print(json.dumps({"status": "unavailable", "message": message}, sort_keys=True))
         else:
-            console.print(f"[yellow]{message}[/yellow]")
+            from verdict import present
+
+            present.header("Replay session")
+            present.warn("replay", message)
         raise SystemExit(3) from exc
     db_path = os.environ.get("VERDICT_MEMORY_DB", str(Path.home() / ".verdict" / "memory.db"))
     try:
@@ -2601,18 +2606,28 @@ def cmd_replay(session_id: str, output_json: bool = False) -> None:
         if output_json:
             print(json.dumps({"status": "missing", "message": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Replay session")
+            present.fail(session_id, "not found")
         raise SystemExit(1) from exc
     record = session.to_dict()
     if output_json:
         print(json.dumps(record, indent=2, sort_keys=True))
         return
-    console.print(f"[bold cyan]Execution session {session_id}[/bold cyan]")
-    console.print(
-        f"  State: {record['state']}  |  Model: {record['model_id']}  |  "
-        f"Steps: {len(record['steps'])} completed: {len(record['completed_steps'])}"
+    from verdict import present
+
+    present.header("Replay session")
+    present.kv(
+        {
+            "Session ID": session_id,
+            "State": record["state"],
+            "Model": record["model_id"],
+            "Steps": str(len(record["steps"])),
+            "Completed": str(len(record["completed_steps"])),
+            "Task": str(record["task_spec"]),
+        }
     )
-    console.print(f"  Task: {record['task_spec']}")
 
 
 def cmd_simulate(
@@ -2636,18 +2651,22 @@ def cmd_simulate(
     if output_json:
         print(json.dumps(forecast.to_dict(), indent=2, sort_keys=True))
         return
-    table = Table(title="Verdict pre-execution simulation")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="magenta")
-    table.add_row("Model", f"{forecast.model} ({forecast.provider}, T{forecast.tier})")
-    table.add_row("Prompt tokens", str(forecast.prompt_tokens))
-    table.add_row("Completion tokens", str(forecast.completion_tokens))
-    table.add_row("Total tokens", str(forecast.total_tokens))
-    table.add_row("Est. cost", f"${forecast.cost_usd:.6f}")
-    table.add_row("Risk score", f"{forecast.risk_score} / 100")
-    table.add_row("Capacity confidence", f"{forecast.capacity_confidence:.2f}")
-    console.print(table)
-    console.print(f"[dim]{forecast.rationale}[/dim]")
+    from verdict import present
+
+    present.header("Verdict pre-execution simulation")
+    present.table(
+        ["Metric", "Value"],
+        [
+            ("Model", f"{forecast.model} ({forecast.provider}, T{forecast.tier})"),
+            ("Prompt tokens", str(forecast.prompt_tokens)),
+            ("Completion tokens", str(forecast.completion_tokens)),
+            ("Total tokens", str(forecast.total_tokens)),
+            ("Est. cost", f"${forecast.cost_usd:.6f}"),
+            ("Risk score", f"{forecast.risk_score} / 100"),
+            ("Capacity confidence", f"{forecast.capacity_confidence:.2f}"),
+        ],
+    )
+    present.note(forecast.rationale)
 
 
 def default_model_catalog() -> list[ModelInfo]:
@@ -5541,15 +5560,19 @@ def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        from rich.console import Console
+        from verdict import present
 
-        console = Console()
-        console.print("[bold green]Failover proof completed[/bold green]")
-        console.print(f"  Session ID: {proof.mission_id}")
-        console.print("  Initial model: provider-a/model-a")
-        console.print(f"  Replacement model: {proof.replacement_model}")
-        console.print(f"  Completed steps: {list(proof.completed_stages)}")
-        console.print(f"  Digest: {proof.digest}")
+        present.header("Failover proof")
+        present.ok("proof", "completed")
+        present.kv(
+            {
+                "Session ID": proof.mission_id,
+                "Initial model": "provider-a/model-a",
+                "Replacement model": proof.replacement_model,
+                "Completed steps": str(list(proof.completed_stages)),
+                "Digest": proof.digest,
+            }
+        )
 
 
 def _metadata_json_file(path: str | Path | None) -> Any | None:
