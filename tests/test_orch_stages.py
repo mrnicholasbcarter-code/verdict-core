@@ -420,3 +420,83 @@ async def test_run_golden_path_emits_understand_before_plan_started_when_plannin
     types = [e.type for e in events]
     assert "understand" in types and "plan_started" in types
     assert types.index("understand") < types.index("plan_started")
+
+
+async def test_run_golden_path_skips_eligibility_when_summary_all_zeros(tmp_path: Path) -> None:
+    """Verify run_golden_path does not emit eligibility event when summary returns all zeros."""
+    repo = _repo(tmp_path)
+    runs = tmp_path / "runs"
+    node = WorkNode("a", "write a", owned_files=("a.txt",), verification_command=("true",))
+    graph = WorkGraph("g", (node,))
+
+    result = await run_golden_path(
+        "ship the widget",
+        repo=repo,
+        runs_root=runs,
+        selector=_Selector(),
+        executor=_Executor(),
+        classifier=_Classifier(),
+        reviewer=_Reviewer(),
+        graph=graph,
+        run_id="r_zero",
+        summary=lambda: {
+            "discovered": 0,
+            "entitled": 0,
+            "healthy": 0,
+            "available": 0,
+            "eligible": 0,
+        },
+    )
+    assert result.outcome == "COMPLETE", result.reason
+    events_path = runs / "r_zero" / "events.jsonl"
+    from verdict.orchestration.tui import read_events
+
+    events = read_events(events_path)
+    # Should NOT have any eligibility event with empty node_id when all counts are zero
+    eligibility_events = [e for e in events if e.type == "eligibility" and e.node_id == ""]
+    assert len(eligibility_events) == 0, (
+        f"Should not emit eligibility event when all counts are zero, "
+        f"but found {len(eligibility_events)} event(s)"
+    )
+
+
+async def test_run_golden_path_emits_eligibility_when_summary_nonzero(tmp_path: Path) -> None:
+    """Verify run_golden_path emits eligibility event when summary has nonzero counts."""
+    repo = _repo(tmp_path)
+    runs = tmp_path / "runs"
+    node = WorkNode("a", "write a", owned_files=("a.txt",), verification_command=("true",))
+    graph = WorkGraph("g", (node,))
+
+    result = await run_golden_path(
+        "ship the widget",
+        repo=repo,
+        runs_root=runs,
+        selector=_Selector(),
+        executor=_Executor(),
+        classifier=_Classifier(),
+        reviewer=_Reviewer(),
+        graph=graph,
+        run_id="r_nonzero",
+        summary=lambda: {
+            "discovered": 9,
+            "entitled": 4,
+            "healthy": 3,
+            "available": 2,
+            "eligible": 1,
+        },
+    )
+    assert result.outcome == "COMPLETE", result.reason
+    events_path = runs / "r_nonzero" / "events.jsonl"
+    from verdict.orchestration.tui import read_events
+
+    events = read_events(events_path)
+    # Should have exactly one eligibility event with empty node_id
+    eligibility_events = [e for e in events if e.type == "eligibility" and e.node_id == ""]
+    assert len(eligibility_events) == 1, (
+        f"Should emit exactly one eligibility event when counts are nonzero, "
+        f"but found {len(eligibility_events)} event(s)"
+    )
+    # Verify the data includes the expected discovered count
+    assert eligibility_events[0].data["discovered"] == 9, (
+        f"Expected discovered=9, got {eligibility_events[0].data['discovered']}"
+    )
