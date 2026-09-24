@@ -23,3 +23,5 @@ jobs:
         run: ruff format --check .
       - name: Run mypy
         run: mypy verdict --strict
+      - name: Check documentation links
+        run: python scripts/check_doc_links.py
