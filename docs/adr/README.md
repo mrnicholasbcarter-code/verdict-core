@@ -20,8 +20,22 @@ The authoritative lifecycle vocabulary for this index is:
 
 Declared Status fields inside individual ADR files may still use older vocabulary
 (`Accepted`, `Proposed`, `Partially Implemented`, …). **This index's Lifecycle column
-is authoritative for interview/hardening readers.** When they disagree, prefer this index
-and the evidence column.
+is authoritative for interview/hardening readers of `verdict-core`.** When they disagree,
+prefer this index and the evidence column.
+
+### Cross-repo evidence authority
+
+The workspace-level, evidence-hashed ADR audit lives in
+[`verdict-ecosystem` → `docs/ADR_LIFECYCLE.md`](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)
+(and `evidence/ADR_LIFECYCLE.json`). That index classifies ADRs across
+`verdict-core`, `verdict-core-memory`, `verdict-node`, and `verdict-continuity`
+against frozen V2 snapshots.
+
+This `docs/adr/README.md` is the **navigable in-repo product index** for
+interviewers reading `verdict-core` alone. Prefer the ecosystem lifecycle file
+when reconciling duplicates across repos or regenerating hash-backed evidence.
+After this hardening pass, regenerate the ecosystem snapshot so SHAs and
+classifications stay aligned with the updated core index.
 
 ## How to read this index
 
