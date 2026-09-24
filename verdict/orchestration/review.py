@@ -26,12 +26,13 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
 from verdict.orchestration.contracts import (
+    FailureClassification,
     ModelSelector,
     ReviewFinding,
     ReviewResult,
@@ -130,6 +131,7 @@ class OpenCodeReviewer:
         effort: str = "low",
         timeout_seconds: float = 900,
         token_budget: int = 400_000,
+        max_reviewer_attempts: int = 3,
         out_dir: Path,
         runner: OcrRunner | None = None,
     ) -> None:
@@ -140,6 +142,7 @@ class OpenCodeReviewer:
         self._effort = effort
         self._timeout_seconds = float(timeout_seconds)
         self._token_budget = int(token_budget)
+        self._max_reviewer_attempts = max(1, int(max_reviewer_attempts))
         self._out_dir = Path(out_dir)
         self._runner: OcrRunner = runner or _subprocess_runner
 
@@ -162,15 +165,46 @@ class OpenCodeReviewer:
             exclude_routes=exclude_routes,
             exclude_families=exclude_families,
         )
-        chosen, _verdicts = self._selector.select(requirements, now=now)
-        if chosen is None:
-            return ReviewResult(
-                status="ERROR",
-                reviewer=self._REVIEWER_PREFIX,
-                route_id="",
-                detail="no independent reviewer eligible",
+        tried: set[str] = set()
+        last: ReviewResult | None = None
+        for _attempt in range(self._max_reviewer_attempts):
+            chosen, _verdicts = self._selector.select(
+                replace(requirements, exclude_routes=frozenset(exclude_routes | tried)), now=now
             )
-        route_id = chosen.route_id
+            if chosen is None:
+                break
+            result = await self._review_once(
+                chosen.route_id,
+                repo=repo,
+                base_ref=base_ref,
+                head_ref=head_ref,
+                background=background,
+            )
+            if result.status != "ERROR" or not self._provider_failure(result):
+                return result
+            # The REVIEWER's provider failed (504/timeout/quota), not the review:
+            # cool the route down and reselect another independent reviewer.
+            last = result
+            tried.add(chosen.route_id)
+            self._selector.record_failure(
+                chosen.route_id,
+                FailureClassification("upstream_temporary", "REROUTE", 300, "route", result.detail),
+                now=now,
+            )
+        if last is not None:
+            return replace(
+                last, detail=f"{last.detail}; reviewer pool exhausted after {len(tried)}"
+            )
+        return ReviewResult(
+            status="ERROR",
+            reviewer=self._REVIEWER_PREFIX,
+            route_id="",
+            detail="no independent reviewer eligible",
+        )
+
+    async def _review_once(
+        self, route_id: str, *, repo: Path, base_ref: str, head_ref: str, background: str
+    ) -> ReviewResult:
 
         self._out_dir.mkdir(parents=True, exist_ok=True)
         raw_path = self._out_dir / "ocr-raw.json"
@@ -264,6 +298,22 @@ class OpenCodeReviewer:
             route_id=route_id,
             findings=tuple(findings),
             raw_ref=raw_ref,
+        )
+
+    @staticmethod
+    def _provider_failure(result: ReviewResult) -> bool:
+        detail = result.detail.lower()
+        return any(
+            token in detail
+            for token in (
+                "every reviewed item failed",
+                "exited",
+                "timed out",
+                "provider",
+                "504",
+                "429",
+                "503",
+            )
         )
 
     def _error(self, route_id: str, raw_ref: str, detail: str) -> ReviewResult:

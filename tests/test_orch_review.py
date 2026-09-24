@@ -13,6 +13,8 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from verdict.orchestration.contracts import (
     CapacityClass,
     EligibilityStage,
@@ -359,3 +361,73 @@ def test_static_gate_error_on_diff_failure() -> None:
     result = gate.review(repo=Path("/r"), base_ref="a", head_ref="b")
     assert result.status == "ERROR"
     assert "could not compute diff" in result.detail
+
+
+class PoolSelector(FakeSelector):
+    """Returns routes in order, honouring exclude_routes, recording failures."""
+
+    def __init__(self, routes: list[str]) -> None:
+        super().__init__(None)
+        self.routes = routes
+        self.failed: list[str] = []
+
+    def select(
+        self, requirements: TaskRequirements, *, now: datetime
+    ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+        self.requirements = requirements
+        for route in self.routes:
+            if route not in requirements.exclude_routes:
+                return _verdict(route), (_verdict(route),)
+        return None, ()
+
+    def record_failure(
+        self, route_id: str, failure: FailureClassification, *, now: datetime
+    ) -> None:
+        self.failed.append(route_id)
+
+
+class SequenceRunner(FakeRunner):
+    """First review call fails like a reviewer-provider outage, second is clean."""
+
+    def __init__(self, first: OcrRun, second_payload: str) -> None:
+        super().__init__(first)
+        self._second_payload = second_payload
+        self._reviews = 0
+
+    def __call__(self, argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> OcrRun:
+        argv = list(argv)
+        if "--version" in argv:
+            return OcrRun(exit_code=0, stdout="open-code-review v1.12.9\n")
+        self._reviews += 1
+        self.calls.append({"argv": argv, "env": dict(env), "timeout": timeout})
+        if self._reviews == 1:
+            return self._review_run
+        out_path = Path(argv[argv.index("--output") + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(self._second_payload)
+        return OcrRun(exit_code=0)
+
+
+def test_reviewer_provider_outage_reselects_another_independent_reviewer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    clean = (Path(__file__).parent / "fixtures" / "ocr" / "sample-clean.json").read_text()
+    selector = PoolSelector(["cc/slow-reviewer", "cx/good-reviewer"])
+    runner = SequenceRunner(OcrRun(exit_code=1), clean)
+    result = _run(_reviewer(tmp_path, selector, runner))
+    assert result.status == "PASS"
+    assert result.route_id == "cx/good-reviewer"
+    assert selector.failed == ["cc/slow-reviewer"]
+    models = [c["argv"][c["argv"].index("--model") + 1] for c in runner.calls]
+    assert models == ["cc/slow-reviewer", "cx/good-reviewer"]
+
+
+def test_reviewer_pool_exhaustion_is_error_not_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    selector = PoolSelector(["cc/a", "cx/b"])
+    runner = FakeRunner(OcrRun(exit_code=1))
+    result = _run(_reviewer(tmp_path, selector, runner))
+    assert result.status == "ERROR" and "exhausted" in result.detail
