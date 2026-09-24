@@ -190,6 +190,7 @@ class DagRuntime:
         self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
         self._base_sha = ""
         self._integration = run_dir / "worktrees" / "_integration"
+        self._capacity: dict[str, str] = {}
 
     # ------------------------------------------------------------------ state
     def _set(self, run: NodeRun, state: NodeState, **data: Any) -> None:
@@ -280,6 +281,9 @@ class DagRuntime:
     # ------------------------------------------------------------------ node
     async def _drive(self, node_id: str) -> None:
         run = self.nodes[node_id]
+        if run.node.kind in {NodeKind.INTEGRATE, NodeKind.REVIEW}:
+            await self._integrate_node(run)
+            return
         failures: list[FailureClassification] = []
         tried: set[str] = set()
         while True:
@@ -338,6 +342,7 @@ class DagRuntime:
                 rank=choice.rank,
                 attempt=run.attempt,
             )
+            self._capacity[node_id] = choice.capacity_class.value
             if previous and failures:
                 self.events.emit(
                     "reassign",
@@ -357,6 +362,77 @@ class DagRuntime:
                 return
             self._set(run, NodeState.PLANNED, reassign=True)
 
+    async def _integrate_node(self, run: NodeRun) -> None:
+        """Mechanical integration barrier: merge validated dependencies, run the combined check."""
+        node = run.node
+        run.attempt += 1
+        run.route_id = ""
+        self._set(run, NodeState.ADMITTED)
+        self._set(run, NodeState.DISPATCHED)
+        self._set(run, NodeState.RUNNING)
+        try:
+            base = await self._node_base(node)
+        except OrchestrationError as exc:
+            self._set(run, NodeState.TERMINAL_FAILURE, reason="merge_conflict")
+            run.reason = f"integration merge failed: {exc}"
+            self.events.emit(
+                "barrier",
+                node.node_id,
+                name=node.barrier or "integration",
+                ok=False,
+                detail=run.reason[:300],
+            )
+            self._set(run, NodeState.BLOCKED, reason=run.reason)
+            return
+        self.events.emit(
+            "terminal",
+            node.node_id,
+            ok=True,
+            route_id="",
+            attempt=run.attempt,
+            duration_seconds=0.0,
+            reported_model="(mechanical merge)",
+        )
+        self._set(run, NodeState.TERMINAL_SUCCESS)
+        worktree = self.run_dir / "worktrees" / f"{node.node_id}-a{run.attempt}"
+        await self.git.add_worktree(
+            worktree, f"verdict/run-{self.run_dir.name}/{node.node_id}", base
+        )
+        try:
+            ok = True
+            if node.verification_command:
+                code, out = await self.runner(
+                    node.verification_command, worktree, self.policy.verify_timeout_seconds
+                )
+                ok = code == 0
+                self.events.emit(
+                    "verify",
+                    node.node_id,
+                    ok=ok,
+                    exit_code=code,
+                    command=" ".join(node.verification_command),
+                    tail=out[-600:],
+                )
+            self.events.emit(
+                "barrier",
+                node.node_id,
+                name=node.barrier or "integration",
+                ok=ok,
+                detail="combined verification " + ("passed" if ok else "failed"),
+            )
+        finally:
+            await self.git.remove_worktree(worktree)
+        if not ok:
+            run.reason = "integration verification failed"
+            self._set(run, NodeState.REJECTED, reason=run.reason)
+            self._set(run, NodeState.BLOCKED, reason=run.reason)
+            return
+        run.commit = base
+        run.history.append(
+            {"attempt": run.attempt, "route_id": "", "outcome": "validated", "commit": base}
+        )
+        self._set(run, NodeState.VALIDATED, commit=base)
+
     async def _attempt(self, run: NodeRun, failures: list[FailureClassification]) -> bool:
         node = run.node
         worktree = self.run_dir / "worktrees" / f"{node.node_id}-a{run.attempt}"
@@ -375,6 +451,8 @@ class DagRuntime:
                     attempt=run.attempt,
                     worktree=str(worktree),
                     base=base,
+                    provider=route_provider(run.route_id),
+                    capacity_class=self._capacity.get(node.node_id, "unknown"),
                 )
                 self._set(run, NodeState.RUNNING)
                 prompt = self.prompt_for(node, worktree)
@@ -390,6 +468,8 @@ class DagRuntime:
                 duration_seconds=round(terminal.duration_seconds, 2),
                 session_ref=terminal.session_ref,
                 stop_reason=terminal.stop_reason,
+                attempt=run.attempt,
+                fault_injected=terminal.session_ref.startswith("fault-injected"),
             )
             if terminal.ok and terminal.output.strip().upper().startswith("RESULT: BLOCKED"):
                 terminal = WorkerTerminal(
@@ -462,6 +542,7 @@ class DagRuntime:
             route_id=run.route_id,
             evidence=failure.evidence[:300],
             fault_injected=terminal.session_ref.startswith("fault-injected"),
+            attempt=run.attempt,
         )
         if failure.scope != "none" and failure.cooldown_seconds > 0:
             self.selector.record_failure(run.route_id, failure, now=self.now())
@@ -572,7 +653,13 @@ class DagRuntime:
             if len(leaves) == 1
             else await self._merge_commits(leaves, label="integration")
         )
-        self.events.emit("integrate", ok=True, commits=commits, ref=integration)
+        self.events.emit("integrate", ok=True, commits=commits, ref=integration, commit=integration)
+        self.events.emit(
+            "barrier",
+            name="integration",
+            ok=True,
+            detail=f"{len(commits)} validated commit(s) merged",
+        )
         review: ReviewResult | None = None
         if self.policy.require_review:
             if self.reviewer is None:
