@@ -25,28 +25,44 @@ verdict/
 ├── catalog.py               # Model catalog, filters
 ├── cli.py                   # verdict CLI — route, explain, models, policy, dashboard
 ├── contracts.py             # Typed contracts (TaskSpec, RoutingDecision, etc.)
-├── dispatcher.py            # AssignmentExplanation, Dispatcher, SwarmDispatcher
+├── dispatcher.py            # AssignmentExplanation, Dispatcher
 ├── eligibility.py           # EligibilityGate — hard safety floors
 ├── gate.py                  # Gate — composes eligibility + intelligence
 ├── intelligence.py          # IntelligenceService — advisory ranking (cannot bypass gate)
 ├── metadata/                # Core metadata store — models.dev + LiteLLM (BOD-108)
 ├── omniroute.py             # OmniRouteHTTPTransport — inventory/execute/health only
-├── planner.py               # IntakePlanner, PlanningResult
+├── orchestration/           # Goal-to-receipt pipeline (ADR-036)
+│   ├── cli.py               #   CLI entry points: orchestrate, watch, run-receipt, supervise, eligibility
+│   ├── contracts.py         #   WorkGraph, NodeState, RunReceipt, typed faults
+│   ├── eligibility.py       #   DISCOVERED→ENTITLED→HEALTHY→AVAILABLE→TASK_ELIGIBLE→SELECTED ladder
+│   ├── executors.py         #   Worker dispatch — Prime Agent harness calls
+│   ├── planner.py           #   Frontier decomposition → WorkGraph (topology selection)
+│   ├── receipt.py           #   Receipt with SHA-256 event-log digest; completion verdict
+│   ├── recovery.py          #   Same-node reroute, cooldown, pool-exhaustion → FAIL_CLOSED
+│   ├── review.py            #   Independent OCR (open-code-review); reviewer excluded from implementers
+│   ├── run.py               #   Orchestration run loop
+│   ├── runtime.py           #   Run state persistence and resume
+│   ├── supervisor.py        #   Controller health monitor
+│   └── tui.py               #   Live terminal view
+├── planner.py               # IntakePlanner, PlanningResult (single-route path)
 ├── probes.py                # ProbeRunner, 1-token liveness checks
 ├── contracts/               # JSON schemas
 └── schemas/                 # OpenAPI, Pydantic models
 ```
 
 ## Key Flows
+
 **Route flow**: `api.py:route()` → `Gate.route()` → `EligibilityGate.filter()` → `IntelligenceService.rank()` → `Dispatcher.assign()` → `Proxy.forward()`
 
 **Explain flow**: `api.py:route_explain()` → `AvailabilityCache.explain()` → `EligibilityGate.explain()` → returns freshness + eligibility explain record
 
 **Metadata refresh**: `cli.py:cmd_metadata_refresh()` → `metadata.refresh_metadata()` → models.dev + LiteLLM → `~/.verdict/model-metadata.json` (OmniRoute is never metadata SoT)
 
+**Orchestration flow** (ADR-036): `verdict orchestrate <goal>` → `orchestration/planner.py` frontier decomposition → `WorkGraph` (DAG) → `orchestration/eligibility.py` per-node DISCOVERED→SELECTED ladder → `orchestration/run.py` parallel workers via Prime Agent → `orchestration/recovery.py` same-node reroute on quota/rate-limit/timeout → `orchestration/review.py` independent OCR → `orchestration/receipt.py` digest-verified receipt
+
 ## Testing
 ```bash
-pytest -v                    # 321 tests
+pytest -v                    # 2907 tests
 ruff check .                 # lint
 mypy --strict verdict/       # typecheck
 ```
@@ -59,4 +75,5 @@ mypy --strict verdict/       # typecheck
 ## OmniRoute
 - Endpoint: `http://localhost:20128/v1`
 - 3,318+ models, 250+ providers, 107+ free tiers
-- Smart routing: `auto/best-coding`, `auto/best-reasoning`, `auto/best-fast`
+- OmniRoute is transport and inventory only — not a metadata source of truth (ADR-032)
+- Smart routing: `auto/best-coding`, `auto/best-reasoning`, `auto/best-fast` (opaque refs; dropped by eligibility gate, not candidates)

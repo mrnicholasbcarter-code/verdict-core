@@ -51,6 +51,28 @@ verdict simulate "Refactor this Python module to use type hints"
 verdict route "Refactor this Python module to use type hints" --terse
 ```
 
+## Run the Golden Path
+
+The interview golden path runs a full orchestration: goal → frontier plan → DAG → eligibility →
+parallel workers → recovery → independent review → digest-verified receipt.
+
+```bash
+# Full run with chaos flags (faults injected into specific routes)
+verdict orchestrate "Add a tested textkit.stats feature"   --inject "cc/claude-sonnet-4-6=quota,no_final"   --inject "cc/*=rate_limit"
+
+# Live TUI view of a running orchestration
+verdict watch <run-id>
+
+# Verify the receipt (event-log digest) after completion
+verdict run-receipt <run-id>
+
+# Show the eligibility ladder for a route
+verdict eligibility
+```
+
+See [`docs/guides/interview-golden-path.md`](guides/interview-golden-path.md) for prerequisites,
+a full walkthrough, and the recorded scenario matrix (A–J).
+
 ## Configuration
 
 Routing configuration is YAML (not TOML):
@@ -73,9 +95,9 @@ fail-open fallback when no candidate survives the eligibility gates.
 
 ## Next Steps
 
+- [Interview golden path](guides/interview-golden-path.md) — End-to-end orchestration walkthrough
 - [CLI Reference](CLI_REFERENCE.md) — Commands and flags
 - [Configuration](CONFIGURATION.md) — Config paths and environment variables
-- [Architecture](architecture.md) — Gate → eligibility → intelligence → dispatch
-- [User Journey](USER_JOURNEY.md) — End-to-end operator walkthrough
-- [Local Development](guides/local-development.md) — Dev environment setup
+- [Architecture](architecture.md) — Gate → eligibility → intelligence → dispatch → orchestration
+- [User Journey](USER_JOURNEY.md) — Operator walkthrough from install to receipt
 - [Evidence Index](proof/EVIDENCE_INDEX.md) — What claims are currently proven
