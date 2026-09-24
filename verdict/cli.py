@@ -4583,30 +4583,61 @@ def cmd_harness_codex(
     force: bool = False,
 ) -> None:
     """Enable, disable, or inspect Codex as a Verdict OpenAI-compatible client."""
-    from verdict.harness_codex import HarnessCodexError, disable, enable, format_status, status
+    from verdict.harness_codex import HarnessCodexError, disable, enable, status
 
     try:
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]Codex harness enabled[/bold green]")
-            console.print("  provider: verdict")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("Codex harness")
+            present.ok("Codex harness enabled")
+            present.kv(
+                {
+                    "provider": "verdict",
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Codex harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.codex/config.toml backup")
+            from verdict import present
+
+            present.header("Codex harness")
+            present.ok("Codex harness disabled")
+            present.note("restored pre-enable ~/.codex/config.toml backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            report = status()
+            state = (
+                "enabled"
+                if report.enabled
+                else "configured"
+                if report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Codex harness")
+            present.status("Codex harness", "ok" if report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": report.provider or "(none)",
+                    "base URL": report.base_url or "(none)",
+                    "token environment": f"{report.token_env} (set: {'yes' if report.token_env_set else 'no'})",
+                    "config": report.config_path,
+                }
+            )
             return
     except HarnessCodexError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Codex harness")
+        present.fail("Codex harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness codex command: {command}")
 
@@ -4620,31 +4651,63 @@ def cmd_harness_hermes(
     force: bool = False,
 ) -> None:
     """Enable, disable, or inspect Hermes as a Verdict OpenAI-compatible client."""
-    from verdict.harness_hermes import HarnessHermesError, disable, enable, format_status, status
+    from verdict.harness_hermes import HarnessHermesError, disable, enable, status
 
     try:
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, model=model, force=force)
-            console.print("[bold green]Hermes harness enabled[/bold green]")
-            console.print("  provider: Verdict")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  model: {result.model}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("Hermes harness")
+            present.ok("Hermes harness enabled")
+            present.kv(
+                {
+                    "provider": "Verdict",
+                    "base URL": result.base_url,
+                    "model": result.model,
+                    "token environment": result.token_env,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Hermes harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.hermes/config.yaml backup")
+            from verdict import present
+
+            present.header("Hermes harness")
+            present.ok("Hermes harness disabled")
+            present.note("restored pre-enable ~/.hermes/config.yaml backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            report = status()
+            state = (
+                "enabled"
+                if report.enabled
+                else "configured"
+                if report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Hermes harness")
+            present.status("Hermes harness", "ok" if report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": report.provider or "(none)",
+                    "base URL": report.base_url or "(none)",
+                    "model": report.model or "(none)",
+                    "token environment": f"{report.token_env} (set: {'yes' if report.token_env_set else 'no'})",
+                    "config": report.config_path,
+                }
+            )
             return
     except HarnessHermesError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Hermes harness")
+        present.fail("Hermes harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness hermes command: {command}")
 
@@ -4663,40 +4726,113 @@ def cmd_harness_claude(
         disable,
         discover,
         enable,
-        format_certify,
-        format_discover,
-        format_status,
         status,
     )
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.status(
+                "Claude Code installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                    "gate hook": "yes" if discovery.gate_hook_present else "no",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]Claude Code harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.ok("Claude Code harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Claude Code harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.claude/settings.json backup")
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.ok("Claude Code harness disabled")
+            present.note("restored pre-enable ~/.claude/settings.json backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.status(
+                "Claude Code harness", "ok" if status_report.enabled else "warning", state
+            )
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                    "gate hook": "yes" if status_report.gate_hook_present else "no",
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.status(
+                "Claude Code certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessClaudeError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Claude Code harness")
+        present.fail("Claude Code harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness claude command: {command}")
 
@@ -4716,42 +4852,113 @@ def cmd_harness_cursor(
         disable,
         discover,
         enable,
-        format_certify,
-        format_discover,
-        format_status,
         status,
     )
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.status(
+                "Cursor installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                    "settings": discovery.settings_path or "(none)",
+                    "wrapper": discovery.wrapper_path or "(none)",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force, wrapper=wrapper)
-            console.print("[bold green]Cursor harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
-            if result.wrapper_path is not None:
-                console.print(f"  wrapper: {result.wrapper_path}")
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.ok("Cursor harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "wrapper": result.wrapper_path or "(none)",
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Cursor harness disabled[/bold green]")
-            console.print("  restored pre-enable Cursor provider/settings/wrapper backups")
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.ok("Cursor harness disabled")
+            present.note("restored pre-enable Cursor provider/settings/wrapper backups")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.status("Cursor harness", "ok" if status_report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                    "wrapper": "yes" if status_report.wrapper_present else "no",
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.status(
+                "Cursor certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessCursorError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Cursor harness")
+        present.fail("Cursor harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness cursor command: {command}")
 
@@ -4764,46 +4971,110 @@ def cmd_harness_prime(
     force: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Prime Agent → Verdict."""
-    from verdict.harness_prime import (
-        HarnessPrimeError,
-        certify,
-        disable,
-        discover,
-        enable,
-        format_certify,
-        format_discover,
-        format_status,
-        status,
-    )
+    from verdict.harness_prime import HarnessPrimeError, certify, disable, discover, enable, status
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.status(
+                "Prime Agent installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]Prime Agent harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.ok("Prime Agent harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Prime Agent harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.prime/agent/models.json backup")
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.ok("Prime Agent harness disabled")
+            present.note("restored pre-enable ~/.prime/agent/models.json backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.status(
+                "Prime Agent harness", "ok" if status_report.enabled else "warning", state
+            )
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.status(
+                "Prime Agent certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessPrimeError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Prime Agent harness")
+        present.fail("Prime Agent harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness prime command: {command}")
 
@@ -4822,41 +5093,111 @@ def cmd_harness_opencode(
         disable,
         discover,
         enable,
-        format_certify,
-        format_discover,
-        format_status,
         status,
     )
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.status(
+                "OpenCode installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]OpenCode harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  model: {result.model}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.ok("OpenCode harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "model": result.model,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]OpenCode harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.config/opencode/opencode.json backup")
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.ok("OpenCode harness disabled")
+            present.note("restored pre-enable ~/.config/opencode/opencode.json backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.status("OpenCode harness", "ok" if status_report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                    "model": status_report.model or "(none)",
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.status(
+                "OpenCode certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessOpenCodeError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("OpenCode harness")
+        present.fail("OpenCode harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness opencode command: {command}")
 
@@ -4869,52 +5210,119 @@ def cmd_harness_cline(
     force: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Cline → Verdict."""
-    from verdict.harness_cline import (
-        HarnessClineError,
-        certify,
-        disable,
-        discover,
-        enable,
-        format_certify,
-        format_discover,
-        format_status,
-        status,
-    )
+    from verdict.harness_cline import HarnessClineError, certify, disable, discover, enable, status
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("Cline harness")
+            present.status(
+                "Cline installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                    "CLI home": "yes" if discovery.cli_home_present else "no",
+                    "settings": discovery.settings_path or "(none)",
+                    "providers JSON": discovery.providers_json_path or "(none)",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]Cline harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
-            if result.providers_json_path is not None:
-                console.print(f"  providers_json: {result.providers_json_path}")
-            if result.settings_path is not None:
-                console.print(f"  settings: {result.settings_path}")
-            for step in result.ui_steps:
-                console.print(f"  ui: {step}")
+            from verdict import present
+
+            present.header("Cline harness")
+            present.ok("Cline harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "providers JSON": result.providers_json_path or "(none)",
+                    "settings": result.settings_path or "(none)",
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
+            if result.ui_steps:
+                present.section("Manual UI steps")
+                for step in result.ui_steps:
+                    present.note(step)
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Cline harness disabled[/bold green]")
-            console.print("  restored pre-enable Cline provider/settings/providers.json backups")
+            from verdict import present
+
+            present.header("Cline harness")
+            present.ok("Cline harness disabled")
+            present.note("restored pre-enable Cline provider/settings/providers.json backups")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Cline harness")
+            present.status("Cline harness", "ok" if status_report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                    "installed": "yes" if status_report.installed else "no",
+                    "binary": status_report.binary_path or "(none)",
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("Cline harness")
+            present.status(
+                "Cline certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessClineError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Cline harness")
+        present.fail("Cline harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness cline command: {command}")
 
