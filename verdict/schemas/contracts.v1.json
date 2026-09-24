@@ -1329,7 +1329,62 @@
         },
         "execution_constraints": {
           "type": "object",
-          "description": "Hard constraints: budget, latency, concurrency, privacy"
+          "description": "Hard constraints: budget, latency, concurrency, privacy",
+          "properties": {
+            "allowed_models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "allowed_tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "allowed_agents": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "budget_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_request_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_latency_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "risk_ceiling": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ]
+            },
+            "required_verification": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "expires_at": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         },
         "verification_requirements": {
           "$ref": "#/$defs/verification_plan"

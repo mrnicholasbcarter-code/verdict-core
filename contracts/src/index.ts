@@ -596,6 +596,7 @@ const executionEnvelopeConstraintsSchema = z
     max_latency_ms: nonNegativeInteger.optional(),
     risk_ceiling: z.enum(safetyLevels).optional(),
     required_verification: z.array(nonEmptyString).default([]),
+    expires_at: z.string().optional(),
   })
   .strict();
 

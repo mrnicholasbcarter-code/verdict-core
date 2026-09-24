@@ -5,27 +5,27 @@
   "fixtures": {
     "accepted.json": {
       "expected_verdict": "ACCEPT",
-      "sha256": "b920eb54f1cd241deff9cd265367e8001440a1dc19620bafea1e4ea5d48d42da"
+      "sha256": "97a837f11456de4b55268c9e2dc934c54d25e95564a5504977ba7ecca62d382d"
     },
     "denied.json": {
       "expected_verdict": "DENY",
-      "sha256": "96e8de4c539911ca168fdab1548ada8f386d8d6c381557b731a8be6f7e8361ca"
+      "sha256": "5794ee0fcb3a312b4b759894647a0022a171bb59ddc5987035394f80b3e69003"
     },
     "expired.json": {
       "expected_verdict": "EXPIRED",
-      "sha256": "c4fe55cb50fa785ccdc325eb12068d53b57a7824a2ce48e73018e0a48d47ebc6"
+      "sha256": "379b13fec86e05bbf22e096d478a036f2bd11050be3ff55e77f1c11f7365be77"
     },
     "null-defaults.json": {
       "expected_verdict": "ACCEPT",
-      "sha256": "627ed09ad5011a85e3d50815eea0259176570e2f6b1ebc8cdd86b37cdf960257"
+      "sha256": "8fc4ed074044812cb0cac71953b5558aacabf3734e2746e8f3de27cd2c460835"
     },
     "unknown-field.json": {
       "expected_verdict": "REJECT_UNKNOWN",
-      "sha256": "f6c109365b7cfd7733f5dde02461e54786130588e7173091220f1b56e151c300"
+      "sha256": "f693b44eaca50b79f9f17f3e436efdc57f9e3fe5fab6ce58b7cab4f73e98be1d"
     },
     "wrong-digest.json": {
       "expected_verdict": "DIGEST_MISMATCH",
-      "sha256": "e7079dd803d846eb3506bcf74ff6eceba8ec10e2c3984e8ec8c660ed5407bc15"
+      "sha256": "5c53d1544ed7d91bb74d3c733d7c2cc208c9b7745502792e9380912de57ccc57"
     }
   },
   "schema_id": "https://llm-gate.dev/schemas/contracts.v1.json#/$defs/execution_envelope"

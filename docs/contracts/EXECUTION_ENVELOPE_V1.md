@@ -100,7 +100,19 @@ The canonical fixtures are in `contracts/fixtures/execution-envelope/v1/`:
 `manifest.json` contains:
 - `contract_version`: Schema version (currently "1")
 - `schema_id`: JSON Schema reference
+- `evaluation_time`: Fixed timestamp for deterministic verification tests
+- `expected_policy_digest`: The canonical digest expected by the verifier
 - `fixtures`: Map of filename → {sha256, expected_verdict}
+
+**Manifest sha256 values**: The `sha256` field for each fixture is the hash of the **raw file bytes** 
+exactly as written to disk (not canonicalized JSON). This ensures language-neutral verification:
+consumers can verify with any sha256 tool (`sha256sum`, `openssl dgst -sha256`, etc.) or library.
+
+Example verification:
+```bash
+sha256sum contracts/fixtures/execution-envelope/v1/accepted.json
+# Should match manifest.fixtures["accepted.json"].sha256
+```
 
 Consumers can pin to a specific manifest SHA-256 to ensure deterministic test behavior.
 
@@ -150,6 +162,39 @@ MUST verify it.
 
 **Lifetime guidance**: Producers SHOULD keep lifetimes short; consumers MAY enforce a maximum lifetime
 (expires_at - created_at) appropriate to their security requirements.
+
+
+## Execution Constraints Schema
+
+The `execution_constraints` field contains hard constraints that govern execution behavior. 
+
+### Canonical Keys (v1 Schema Parity)
+
+Python, JSON Schema, and TypeScript/Zod contracts are now in parity and enforce the same shape:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `allowed_models` | array of strings | No (default: []) | Permitted model identifiers |
+| `allowed_tools` | array of strings | No (default: []) | Permitted tool names |
+| `allowed_agents` | array of strings | No (default: []) | Permitted agent identifiers |
+| `budget_usd` | number (≥0) | No | Total budget limit in USD |
+| `max_request_usd` | number (≥0) | No | Per-request cost limit in USD |
+| `max_latency_ms` | integer (≥0) | No | Maximum latency in milliseconds |
+| `risk_ceiling` | enum | No | Risk level ceiling: "low", "medium", "high", "critical" |
+| `required_verification` | array of strings | No (default: []) | Required verification check identifiers |
+| `expires_at` | ISO 8601 string | No (schema), **YES (verifier)** | Envelope expiration timestamp |
+
+**Important**: `expires_at` is optional at the schema level (for flexibility), but the verifier
+**REQUIRES** it. Missing `expires_at` returns `EXPIRED` verdict (fail-closed: bounded lifetime required).
+
+### Schema Enforcement
+
+All three implementations reject unknown fields with `additionalProperties: false` (JSON Schema),
+`.strict()` (Zod), or `ContractValidationError` (Python).
+
+The cross-language parity test in `contracts/tests/execution-envelope-fixtures.test.ts` and 
+`tests/test_execution_envelope_fixtures.py` ensures all fixtures pass/fail identically across
+Python and TypeScript.
 
 ## Consumer Integration
 

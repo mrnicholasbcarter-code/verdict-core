@@ -17,10 +17,9 @@ FIXTURES_DIR = Path(__file__).parent.parent / "contracts" / "fixtures" / "execut
 MANIFEST_PATH = FIXTURES_DIR / "manifest.json"
 
 
-def sha256_json(obj):
-    """Compute SHA-256 of canonicalized JSON."""
-    canonical = json.dumps(obj, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def sha256_raw_file(filepath):
+    """Compute SHA-256 of raw file bytes (language-neutral)."""
+    return hashlib.sha256(filepath.read_bytes()).hexdigest()
 
 
 @pytest.fixture
@@ -91,8 +90,8 @@ class TestFixtureGeneration:
             fixture_path = FIXTURES_DIR / filename
             assert fixture_path.exists(), f"Missing fixture: {filename}"
 
-            fixture_data = json.loads(fixture_path.read_text())
-            actual_sha = sha256_json(fixture_data)
+            # Compare raw file bytes sha256 (language-neutral)
+            actual_sha = sha256_raw_file(fixture_path)
 
             assert actual_sha == expected["sha256"], (
                 f"{filename} SHA mismatch: expected {expected['sha256']}, got {actual_sha}"
@@ -326,11 +325,11 @@ class TestManifestIntegrity:
     """Test manifest SHA-256 values match files."""
 
     def test_manifest_sha256_matches_files(self, manifest):
-        """Manifest SHA-256 values match actual fixture files."""
+        """Manifest SHA-256 values match actual fixture files (raw bytes)."""
         for filename, expected in manifest["fixtures"].items():
             fixture_path = FIXTURES_DIR / filename
-            fixture_data = json.loads(fixture_path.read_text())
-            actual_sha = sha256_json(fixture_data)
+            # Compare raw file bytes sha256 (language-neutral)
+            actual_sha = sha256_raw_file(fixture_path)
 
             assert actual_sha == expected["sha256"], (
                 f"{filename}: manifest SHA {expected['sha256']} != actual {actual_sha}"
@@ -471,3 +470,57 @@ class TestAdversarialInputs:
             )
             # Should return a rejection verdict (never ACCEPT on garbage)
             assert verdict != EnvelopeVerdict.ACCEPT, f"Garbage input {garbage} was ACCEPTed"
+
+
+class TestCanonicalConstraintKeys:
+    """Test that ExecutionEnvelope rejects non-canonical execution_constraints keys."""
+
+    def test_from_dict_rejects_unknown_constraint_key(self):
+        """ExecutionEnvelope.from_dict rejects execution_constraints with unknown keys."""
+        from verdict.contracts import (
+            ContractValidationError,
+            ExecutionEnvelope,
+            TaskSpec,
+            VerificationPlan,
+        )
+
+        task_spec = TaskSpec(objective="test", task_type="test")
+        verification = VerificationPlan(checks=[])
+
+        # Build envelope with non-canonical key in execution_constraints
+        envelope_dict = {
+            "task_spec": task_spec.to_dict(),
+            "eligibility_decision": {"admitted": True},
+            "policy_digest": "a" * 64,
+            "allowed_capabilities": ["read"],
+            "execution_constraints": {"max_ms": 5000},  # Non-canonical key
+            "verification_requirements": verification.to_dict(),
+            "evidence_ids": [],
+            "schema_version": "1",
+        }
+
+        # Should raise ContractValidationError for unknown key
+        with pytest.raises(ContractValidationError, match="unknown field"):
+            ExecutionEnvelope.from_dict(envelope_dict)
+
+    def test_verify_rejects_unknown_constraint_key(self, manifest):
+        """verify_execution_envelope returns REJECT_UNKNOWN for unknown constraint keys."""
+        from verdict.contracts import EnvelopeVerdict, verify_execution_envelope
+
+        # Start with accepted fixture
+        fixture_path = FIXTURES_DIR / "accepted.json"
+        fixture = json.loads(fixture_path.read_text())
+
+        # Add a non-canonical key
+        fixture["execution_constraints"]["privacy_level"] = "high"
+
+        # Verify should return REJECT_UNKNOWN (schema validation fails)
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+
+        assert verdict == EnvelopeVerdict.REJECT_UNKNOWN, (
+            f"Expected REJECT_UNKNOWN for non-canonical key, got {verdict}"
+        )

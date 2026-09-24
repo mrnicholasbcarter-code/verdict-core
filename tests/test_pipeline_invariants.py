@@ -145,8 +145,7 @@ class TestExecutionEnvelopeEnforcesConstraints:
             execution_constraints={
                 "budget_usd": 10.0,
                 "max_latency_ms": 30000,
-                "max_concurrency": 1,
-                "privacy_level": "standard",
+                # Canonical v1 keys only - max_concurrency and privacy_level are not in schema
             },
             verification_requirements=VerificationPlan(
                 checks=["output_valid", "cost_within_budget"]
@@ -156,7 +155,7 @@ class TestExecutionEnvelopeEnforcesConstraints:
 
         assert envelope.allowed_capabilities == ["basic_execution", "file_read"]
         assert envelope.execution_constraints["budget_usd"] == 10.0
-        assert envelope.execution_constraints["privacy_level"] == "standard"
+        assert envelope.execution_constraints["max_latency_ms"] == 30000
         assert envelope.evidence_ids == ["evidence_123"]
 
 
