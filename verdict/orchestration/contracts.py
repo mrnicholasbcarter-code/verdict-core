@@ -116,8 +116,9 @@ class WorkNode:
         object.__setattr__(self, "kind", NodeKind(self.kind))
         object.__setattr__(self, "depends_on", tuple(self.depends_on))
         object.__setattr__(self, "owned_files", tuple(_norm_path(p) for p in self.owned_files))
-        object.__setattr__(self, "required_context",
-                           tuple(_norm_path(p) for p in self.required_context))
+        object.__setattr__(
+            self, "required_context", tuple(_norm_path(p) for p in self.required_context)
+        )
         object.__setattr__(self, "acceptance", tuple(self.acceptance))
         object.__setattr__(self, "verification_command", tuple(self.verification_command))
         object.__setattr__(self, "required_capabilities", tuple(self.required_capabilities))
@@ -125,7 +126,9 @@ class WorkNode:
             if not self.owned_files:
                 raise OrchestrationError(f"{self.node_id}: implement node needs owned_files")
             if not self.verification_command:
-                raise OrchestrationError(f"{self.node_id}: implement node needs a verification_command")
+                raise OrchestrationError(
+                    f"{self.node_id}: implement node needs a verification_command"
+                )
         if self.node_id in self.depends_on:
             raise OrchestrationError(f"{self.node_id}: node depends on itself")
 
@@ -134,8 +137,10 @@ class WorkNode:
             candidate = _norm_path(path)
         except OrchestrationError:
             return False
-        return any(candidate == owned or candidate.startswith(owned.rstrip("/") + "/")
-                   for owned in self.owned_files)
+        return any(
+            candidate == owned or candidate.startswith(owned.rstrip("/") + "/")
+            for owned in self.owned_files
+        )
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -149,8 +154,14 @@ class WorkNode:
         if unknown:
             raise OrchestrationError(f"work node has unknown field(s): {unknown}")
         data = dict(value)
-        for key in ("depends_on", "owned_files", "required_context", "acceptance",
-                    "verification_command", "required_capabilities"):
+        for key in (
+            "depends_on",
+            "owned_files",
+            "required_context",
+            "acceptance",
+            "verification_command",
+            "required_capabilities",
+        ):
             if key in data:
                 raw = data[key]
                 if isinstance(raw, str) or not isinstance(raw, Sequence):
@@ -222,15 +233,17 @@ class WorkGraph:
         """Two writers may share a file only if one is an ancestor of the other."""
         writers = [n for n in self.nodes if n.kind is NodeKind.IMPLEMENT]
         for i, left in enumerate(writers):
-            for right in writers[i + 1:]:
-                ordered = (left.node_id in self.ancestors(right.node_id)
-                           or right.node_id in self.ancestors(left.node_id))
+            for right in writers[i + 1 :]:
+                ordered = left.node_id in self.ancestors(
+                    right.node_id
+                ) or right.node_id in self.ancestors(left.node_id)
                 if ordered:
                     continue
                 overlap = sorted(set(left.owned_files) & set(right.owned_files))
                 if overlap:
                     raise OrchestrationError(
-                        f"concurrent nodes {left.node_id} and {right.node_id} both own {overlap}")
+                        f"concurrent nodes {left.node_id} and {right.node_id} both own {overlap}"
+                    )
 
     def digest(self) -> str:
         return canonical_digest(self.to_dict())
@@ -261,13 +274,14 @@ class WorkGraph:
 
 # ---------------------------------------------------------------- eligibility
 
+
 class EligibilityStage(str, Enum):
     """Ordered capacity ladder. A route must pass every stage to be SELECTED."""
 
-    DISCOVERED = "DISCOVERED"    # present in live OmniRoute inventory
-    ENTITLED = "ENTITLED"        # an active provider account/connection backs it
-    HEALTHY = "HEALTHY"          # fresh 1-token inference probe succeeded
-    AVAILABLE = "AVAILABLE"      # no active cooldown / quota-reset window
+    DISCOVERED = "DISCOVERED"  # present in live OmniRoute inventory
+    ENTITLED = "ENTITLED"  # an active provider account/connection backs it
+    HEALTHY = "HEALTHY"  # fresh 1-token inference probe succeeded
+    AVAILABLE = "AVAILABLE"  # no active cooldown / quota-reset window
     TASK_ELIGIBLE = "TASK_ELIGIBLE"  # capabilities, context, frontier policy fit
     SELECTED = "SELECTED"
 
@@ -338,44 +352,63 @@ class TaskRequirements:
 
 # ---------------------------------------------------------------- execution
 
+
 @dataclass(frozen=True)
 class WorkerTerminal:
     """Terminal result of one worker attempt, as observed by the executor adapter."""
 
     ok: bool
     output: str = ""
-    model: str = ""             # route id actually reported by the harness
+    model: str = ""  # route id actually reported by the harness
     stop_reason: str = ""
-    error: str = ""             # raw sanitized error text when ok=False
+    error: str = ""  # raw sanitized error text when ok=False
     status_code: int | None = None
     retry_after_seconds: float | None = None
     duration_seconds: float = 0.0
-    session_ref: str = ""       # harness session/journal pointer for provenance
+    session_ref: str = ""  # harness session/journal pointer for provenance
 
 
 @dataclass(frozen=True)
 class FailureClassification:
     """BOD-152 normalized failure and bounded corrective action."""
 
-    category: str   # e.g. rate_limited, quota_exhausted, authentication, payment_required,
-                    # permission, unsupported, timeout, upstream_temporary,
-                    # transport_temporary, malformed_response, empty_output,
-                    # no_final_answer, model_mismatch, verification_failed,
-                    # ownership_violation, unknown
-    action: str     # REROUTE | RETRY_INFRA | CORRECT_IMPLEMENTATION | REHYDRATE | BLOCK
+    category: str  # e.g. rate_limited, quota_exhausted, authentication, payment_required,
+    # permission, unsupported, timeout, upstream_temporary,
+    # transport_temporary, malformed_response, empty_output,
+    # no_final_answer, model_mismatch, verification_failed,
+    # ownership_violation, unknown
+    action: str  # REROUTE | RETRY_INFRA | CORRECT_IMPLEMENTATION | REHYDRATE | BLOCK
     cooldown_seconds: float
-    scope: str      # "route" | "provider" | "none"
+    scope: str  # "route" | "provider" | "none"
     evidence: str = ""
 
 
 # ---------------------------------------------------------------- events
 
-EVENT_TYPES = frozenset({
-    "run_started", "plan_started", "plan_ready", "topology", "eligibility",
-    "node_state", "selection", "dispatch", "heartbeat", "terminal", "failure",
-    "cooldown", "reassign", "verify", "barrier", "integrate", "review",
-    "remediation", "controller", "run_finished",
-})
+EVENT_TYPES = frozenset(
+    {
+        "run_started",
+        "plan_started",
+        "plan_ready",
+        "topology",
+        "eligibility",
+        "node_state",
+        "selection",
+        "dispatch",
+        "heartbeat",
+        "terminal",
+        "failure",
+        "cooldown",
+        "reassign",
+        "verify",
+        "barrier",
+        "integrate",
+        "review",
+        "remediation",
+        "controller",
+        "run_finished",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -393,13 +426,23 @@ class RunEvent:
             raise OrchestrationError(f"unknown event type {self.type!r}")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"seq": self.seq, "at": self.at, "type": self.type,
-                "node_id": self.node_id, "data": dict(self.data)}
+        return {
+            "seq": self.seq,
+            "at": self.at,
+            "type": self.type,
+            "node_id": self.node_id,
+            "data": dict(self.data),
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> RunEvent:
-        return cls(seq=int(value["seq"]), at=str(value["at"]), type=str(value["type"]),
-                   node_id=str(value.get("node_id", "")), data=dict(value.get("data") or {}))
+        return cls(
+            seq=int(value["seq"]),
+            at=str(value["at"]),
+            type=str(value["type"]),
+            node_id=str(value.get("node_id", "")),
+            data=dict(value.get("data") or {}),
+        )
 
 
 def canonical_digest(value: Any) -> str:
@@ -414,8 +457,20 @@ def route_provider(route_id: str) -> str:
 def route_family(route_id: str) -> str:
     """Coarse model family used for reviewer independence (claude, gpt, gemini, ...)."""
     tail = route_id.lower().split("/")[-1]
-    for family in ("claude", "gpt", "gemini", "grok", "qwen", "deepseek", "glm", "kimi",
-                   "llama", "mistral", "nemotron", "minimax"):
+    for family in (
+        "claude",
+        "gpt",
+        "gemini",
+        "grok",
+        "qwen",
+        "deepseek",
+        "glm",
+        "kimi",
+        "llama",
+        "mistral",
+        "nemotron",
+        "minimax",
+    ):
         if family in tail:
             return family
     return tail.split("-")[0]
@@ -476,8 +531,14 @@ class Reviewer(Protocol):
     """Independent semantic review of an integrated diff (BOD-185)."""
 
     async def review(
-        self, *, repo: Path, base_ref: str, head_ref: str, background: str,
-        exclude_routes: frozenset[str], exclude_families: frozenset[str],
+        self,
+        *,
+        repo: Path,
+        base_ref: str,
+        head_ref: str,
+        background: str,
+        exclude_routes: frozenset[str],
+        exclude_families: frozenset[str],
     ) -> ReviewResult: ...
 
 
