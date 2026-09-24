@@ -352,7 +352,9 @@ def test_wide_layout_shows_controller_history_and_independence() -> None:
             },
         },
     ]
-    text = render_text(events, width=140, plain=False)
+    import re as _re
+
+    text = _re.sub(r"\x1b\[[0-9;]*m", "", render_text(events, width=140, plain=False))
     assert "VERDICT" in text and "CONTROLLER" in text
     assert "QUOTA" in text and "[injected]" in text
     assert "sonnet-5" in text and "gpt-5.5" in text
