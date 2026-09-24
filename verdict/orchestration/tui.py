@@ -761,6 +761,7 @@ def render_text(
     console = Console(
         file=StringIO(),
         width=width,
+        height=200,  # rich ignores an explicit width on TERM=dumb unless height is set too
         record=True,
         force_terminal=not plain,
         color_system=None if plain else "truecolor",
@@ -769,7 +770,6 @@ def render_text(
         highlight=False,
         legacy_windows=False,
     )
-    console.width = width  # TERM=dumb makes rich ignore the constructor width
     console.print(render(RunView.from_events(events), width=width, plain=plain))
     return console.export_text(styles=not plain)
 
