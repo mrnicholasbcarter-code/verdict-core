@@ -78,6 +78,10 @@ def add_parsers(subparsers: Any) -> None:
     rec.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     rec.add_argument("--json", action="store_true")
 
+    from verdict.orchestration import supervisor
+
+    supervisor.add_parser(subparsers)
+
     elig = subparsers.add_parser(
         "eligibility",
         help="Show DISCOVERED -> ENTITLED -> HEALTHY -> AVAILABLE -> TASK_ELIGIBLE -> SELECTED",
@@ -94,7 +98,10 @@ def add_parsers(subparsers: Any) -> None:
 
 
 def dispatch(args: argparse.Namespace) -> int | None:
+    from verdict.orchestration import supervisor
+
     handlers = {
+        "supervise": supervisor.dispatch,
         "orchestrate": _orchestrate,
         "watch": _watch,
         "run-receipt": _receipt,
