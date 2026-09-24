@@ -4157,7 +4157,13 @@ def main() -> None:
     )
     resume_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    from verdict.orchestration import cli as _orchestration_cli
+
+    _orchestration_cli.add_parsers(subparsers)
     args = parser.parse_args()
+    _orchestration_rc = _orchestration_cli.dispatch(args)
+    if _orchestration_rc is not None:
+        sys.exit(_orchestration_rc)
 
     if args.command == "setup":
         scope = "all"

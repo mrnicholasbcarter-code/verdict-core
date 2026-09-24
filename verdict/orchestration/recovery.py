@@ -16,6 +16,12 @@ from verdict.orchestration.contracts import FailureClassification, WorkerTermina
 
 CLASSIFIER_VERSION = "v1"
 
+_GATEWAY_BUSY_RE = re.compile(
+    r"chat_admission_busy|admission capacity is (?:temporarily unavailable|busy)"
+    r"|Structurally heavy chat request capacity is busy",
+    re.IGNORECASE,
+)
+
 # Maximum cooldown cap (24 hours in seconds)
 MAX_COOLDOWN_SECONDS = 86400
 
@@ -148,6 +154,18 @@ class FailureIntelligence:
             parsed_hint = _parse_reset_hint(error_text)
             if parsed_hint:
                 cooldown = parsed_hint
+
+        # Gateway-local admission shed (OmniRoute chat_admission_busy, upstream
+        # issue #13648): the provider/model was never contacted, so it must not
+        # cool down the route or provider. Retry the same route after a short wait.
+        if _GATEWAY_BUSY_RE.search(error_text):
+            return FailureClassification(
+                category="gateway_busy",
+                action="RETRY_INFRA",
+                cooldown_seconds=cooldown or 15.0,
+                scope="none",
+                evidence=_sanitize_error(error_text),
+            )
 
         # Priority 1: explicit status code
         if terminal.status_code is not None:

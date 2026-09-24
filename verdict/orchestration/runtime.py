@@ -355,7 +355,11 @@ class DagRuntime:
             ok = await self._attempt(run, failures)
             if ok:
                 return
-            tried.add(run.route_id)
+            if failures and failures[-1].action == "RETRY_INFRA":
+                # Gateway-local transient: same route is still healthy; wait and retry.
+                await asyncio.sleep(min(failures[-1].cooldown_seconds, 60.0))
+            else:
+                tried.add(run.route_id)
             if failures and failures[-1].action == "BLOCK":
                 run.reason = f"non-recoverable: {failures[-1].category}"
                 self._set(run, NodeState.BLOCKED, reason=run.reason)

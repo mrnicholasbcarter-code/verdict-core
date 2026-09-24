@@ -1,6 +1,6 @@
 """Tests for recovery module: failure classification and recovery budgets."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -413,3 +413,29 @@ class TestClassifierVersion:
     def test_classifier_version_exists(self) -> None:
         """CLASSIFIER_VERSION is defined."""
         assert CLASSIFIER_VERSION == "v1"
+
+
+def test_gateway_admission_shed_is_not_a_model_failure() -> None:
+    from verdict.orchestration.contracts import WorkerTerminal
+
+    fi = FailureIntelligence()
+    for text in (
+        '503: {"message":"Structurally heavy chat request capacity is busy; retry shortly.","code":"chat_admission_busy"}',
+        "OmniRoute request failed (HTTP 503): Chat admission capacity is temporarily unavailable. Retry shortly.",
+    ):
+        result = fi.classify(
+            WorkerTerminal(ok=False, error=text, status_code=503), now=datetime.now(timezone.utc)
+        )
+        assert result.category == "gateway_busy"
+        assert result.action == "RETRY_INFRA"
+        assert result.scope == "none"
+
+
+def test_ordinary_503_still_cools_the_route() -> None:
+    from verdict.orchestration.contracts import WorkerTerminal
+
+    result = FailureIntelligence().classify(
+        WorkerTerminal(ok=False, error="upstream 503 service unavailable", status_code=503),
+        now=datetime.now(timezone.utc),
+    )
+    assert result.category == "upstream_temporary" and result.scope == "route"
