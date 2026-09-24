@@ -260,7 +260,7 @@ async def test_independent_nodes_run_concurrently_and_complete(repo: Path) -> No
 async def test_quota_failure_reassigns_same_node_to_other_provider(repo: Path) -> None:
     graph = WorkGraph("g", (node("a"), node("b")))
     ex = Executor({("a", "cc/s"): "quota"})
-    rt, ev, sel = make(repo, graph, ex, ["cc/s", "cx/g"])
+    rt, ev, _sel = make(repo, graph, ex, ["cc/s", "cx/g"])
     result = await rt.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     reassign = ev.of("reassign", "a")
@@ -274,7 +274,7 @@ async def test_quota_failure_reassigns_same_node_to_other_provider(repo: Path) -
 async def test_failed_node_does_not_cancel_healthy_sibling(repo: Path) -> None:
     graph = WorkGraph("g", (node("a"), node("b"), node("c", ("a",))))
     ex = Executor({("a", "*"): "quota"})
-    rt, ev, _ = make(repo, graph, ex, ["cc/s", "cx/g"], max_attempts_per_node=2)
+    rt, _ev, _ = make(repo, graph, ex, ["cc/s", "cx/g"], max_attempts_per_node=2)
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED
     assert result.nodes["b"].state is NodeState.VALIDATED
@@ -355,14 +355,14 @@ async def test_admission_is_not_success_lifecycle_order(repo: Path) -> None:
 
 async def test_review_failure_blocks_completion(repo: Path) -> None:
     graph = WorkGraph("g", (node("a"),))
-    rt, ev, _ = make(repo, graph, Executor({}), ["cc/s"], reviewer=Reviewer("FAIL", blocking=True))
+    rt, _ev, _ = make(repo, graph, Executor({}), ["cc/s"], reviewer=Reviewer("FAIL", blocking=True))
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED and "review" in result.reason
 
 
 async def test_review_error_fails_closed(repo: Path) -> None:
     graph = WorkGraph("g", (node("a"),))
-    rt, ev, _ = make(repo, graph, Executor({}), ["cc/s"], reviewer=Reviewer("ERROR"))
+    rt, _ev, _ = make(repo, graph, Executor({}), ["cc/s"], reviewer=Reviewer("ERROR"))
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED
 
@@ -396,7 +396,7 @@ async def test_worker_reported_blocked_is_a_failure(repo: Path) -> None:
 
 async def test_no_eligible_model_blocks_with_reason(repo: Path) -> None:
     graph = WorkGraph("g", (node("a"),))
-    rt, ev, sel = make(repo, graph, Executor({}), ["cc/s"])
+    rt, _ev, sel = make(repo, graph, Executor({}), ["cc/s"])
     sel.cool["cc"] = (NOW + timedelta(hours=1)).timestamp()
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED and "no eligible model" in result.reason
