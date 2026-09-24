@@ -16,7 +16,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "fixtures"
   ],
   "scripts": {
     "build": "tsc && node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));const {name,version,description,main,module,types,exports,files,license,author,repository,bugs,homepage,keywords,engines}=p;fs.writeFileSync('dist/package.json',JSON.stringify({name,version,description,main,module,types,exports,files,license,author,repository,bugs,homepage,keywords,engines},null,2))\"",

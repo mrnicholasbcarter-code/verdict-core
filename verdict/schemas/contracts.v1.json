@@ -62,6 +62,9 @@
     },
     "evidence_chain_link": {
       "$ref": "#/$defs/evidence_chain_link"
+    },
+    "execution_envelope": {
+      "$ref": "#/$defs/execution_envelope"
     }
   },
   "$defs": {
@@ -1287,6 +1290,81 @@
           "pattern": "^$|^sha256:[0-9a-f]{64}$"
         },
         "schema_version": {
+          "const": "1"
+        }
+      }
+    },
+    "execution_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_spec",
+        "eligibility_decision",
+        "policy_digest",
+        "allowed_capabilities",
+        "execution_constraints",
+        "verification_requirements",
+        "evidence_ids",
+        "schema_version"
+      ],
+      "properties": {
+        "task_spec": {
+          "$ref": "#/$defs/task_spec"
+        },
+        "eligibility_decision": {
+          "type": "object",
+          "description": "EligibilityGate result with admitted candidates"
+        },
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "description": "SHA-256 digest of compiled Policy for audit trail"
+        },
+        "allowed_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Capabilities Verdict permits for this execution"
+        },
+        "execution_constraints": {
+          "type": "object",
+          "description": "Hard constraints: budget, latency, concurrency, privacy"
+        },
+        "verification_requirements": {
+          "$ref": "#/$defs/verification_plan"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Linked evidence/receipt identifiers for proof chain"
+        },
+        "routing_decision": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/routing_decision"
+            }
+          ],
+          "description": "RoutingDecision if already made"
+        },
+        "created_at": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "date-time"
+            }
+          ]
+        },
+        "schema_version": {
+          "type": "string",
           "const": "1"
         }
       }

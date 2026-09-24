@@ -7,6 +7,8 @@ import math
 import re
 import time
 from dataclasses import MISSING, Field, dataclass, field, fields
+from datetime import datetime
+from enum import Enum
 from types import UnionType
 from typing import Any, ClassVar, TypeVar, cast, get_args, get_origin, get_type_hints
 
@@ -335,10 +337,10 @@ class VerificationPlan(Contract):
 
 @dataclass(frozen=True)
 class ExecutionEnvelope(Contract):
-    """Canonical handoff object between Verdict and Ruflo orchestration.
+    """Canonical execution contract from Core to Node/Cockpit consumers.
 
-    Contains all information needed for Ruflo to execute within Verdict-approved
-    boundaries without requiring callbacks to Verdict for eligibility decisions.
+    Contains all information needed for execution within Verdict-approved
+    boundaries without requiring callbacks to Core for eligibility decisions.
     """
 
     task_spec: TaskSpec
@@ -355,6 +357,69 @@ class ExecutionEnvelope(Contract):
     @classmethod
     def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> ExecutionEnvelope:
         return cls.from_dict({**payload, **overrides})
+
+
+class EnvelopeVerdict(str, Enum):
+    """Verification verdict for ExecutionEnvelope validation."""
+
+    ACCEPT = "ACCEPT"
+    DENY = "DENY"
+    EXPIRED = "EXPIRED"
+    DIGEST_MISMATCH = "DIGEST_MISMATCH"
+    ACCEPT_IGNORING_UNKNOWN = "ACCEPT_IGNORING_UNKNOWN"
+    REJECT_UNKNOWN = "REJECT_UNKNOWN"
+    ACCEPT_DEFAULTS = "ACCEPT_DEFAULTS"
+
+
+def verify_execution_envelope(
+    envelope: ExecutionEnvelope | dict[str, Any],
+    *,
+    now: str | None = None,
+    expected_policy_digest: str | None = None,
+) -> EnvelopeVerdict:
+    """Verify an ExecutionEnvelope for consumer acceptance.
+
+    Fail-closed: wrong digest never ACCEPT, expired never ACCEPT, denied stays DENY.
+
+    Args:
+        envelope: ExecutionEnvelope instance or dict representation
+        now: ISO 8601 timestamp for expiry check (default: current time)
+        expected_policy_digest: Expected SHA-256 digest; if provided, must match
+
+    Returns:
+        EnvelopeVerdict indicating acceptance or rejection reason
+    """
+    # Convert to dict if needed
+    env_dict = envelope.to_dict() if isinstance(envelope, ExecutionEnvelope) else envelope
+
+    # Check eligibility_decision first
+    eligibility = env_dict.get("eligibility_decision", {})
+    if eligibility.get("decision") == "deny" or eligibility.get("denied"):
+        return EnvelopeVerdict.DENY
+
+    # Check policy digest if expected
+    if expected_policy_digest is not None:
+        actual_digest = env_dict.get("policy_digest", "")
+        if actual_digest != expected_policy_digest:
+            return EnvelopeVerdict.DIGEST_MISMATCH
+
+    # Check expiry if envelope has created_at
+    created_at_str = env_dict.get("created_at")
+    if created_at_str and now:
+        try:
+            now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+            # Check if 'expires_at' exists in execution_constraints
+            constraints = env_dict.get("execution_constraints", {})
+            expires_at_str = constraints.get("expires_at")
+            if expires_at_str:
+                expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+                if now_dt >= expires_at:
+                    return EnvelopeVerdict.EXPIRED
+        except (ValueError, TypeError):
+            pass  # Invalid timestamp format, continue
+
+    # All checks passed
+    return EnvelopeVerdict.ACCEPT
 
 
 @dataclass(frozen=True)
