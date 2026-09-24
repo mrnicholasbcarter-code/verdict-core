@@ -230,8 +230,10 @@ Use [`proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) for what is actually ce
 - [ADR-004 Local-first MemoryPlane](adr/ADR-004-local-first-memory-plane.md)
 - [ADR-010 Fail-closed capability passports](adr/ADR-010-fail-closed-capability-passports.md)
 - [ADR-032 Core model metadata store](adr/ADR-032-core-model-metadata-store.md)
-- [ADR-023 Governed swarm supervision](adr/ADR-023-governed-swarm-supervision.md) — **SUPERSEDED** (BOD-17)
-- [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** (BOD-17 / BOD-127)
+- [ADR-023 Governed swarm supervision](adr/ADR-023-governed-swarm-supervision.md) — **SUPERSEDED** by [ADR-035](adr/ADR-035-authorized-selected-route-dispatch.md)
+- [ADR-035 Authorized selected-route dispatch](adr/ADR-035-authorized-selected-route-dispatch.md) — BOD-104 / BOD-67 post-swarm path
+- [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** (BOD-17 / BOD-127 → ADR-035)
+- Cross-repo evidence: [verdict-ecosystem ADR_LIFECYCLE (BOD-169)](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)
 - [Unknown ≠ healthy](guides/unknown-not-healthy.md)
 - [Free-tier admit smoke](guides/free-tier-admit-smoke.md)
 - [Model metadata store](guides/model-metadata-store.md)

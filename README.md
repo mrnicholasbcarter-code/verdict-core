@@ -159,7 +159,7 @@ VERDICT_MEMORY_DB=/tmp/verdict-failover.db uv run python -m verdict replay <sess
 
 ## Architecture
 
-Decisions live in [`docs/adr/`](docs/adr/) — numbered records through ADR-034, indexed with lifecycle status in [`docs/adr/README.md`](docs/adr/README.md). Start with these:
+Decisions live in [`docs/adr/`](docs/adr/) — numbered records through ADR-035, indexed in [`docs/adr/README.md`](docs/adr/README.md) (lifecycle classifications consume the [ecosystem BOD-169 audit](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)). Start with these:
 
 | Area | Record |
 | --- | --- |
@@ -170,6 +170,7 @@ Decisions live in [`docs/adr/`](docs/adr/) — numbered records through ADR-034,
 | Advisory signals stay shadow-only | [ADR-018](docs/adr/ADR-018-shadow-and-counterfactual-evaluation.md) |
 | Cross-repo compatibility gate | [ADR-024](docs/adr/ADR-024-cross-repo-compatibility-gate.md) |
 | Python/TypeScript envelope parity | [ADR-025](docs/adr/ADR-025-node-envelope-enforcement.md) |
+| Post-swarm authorized dispatch | [ADR-035](docs/adr/ADR-035-authorized-selected-route-dispatch.md) |
 
 Python is the reference implementation. [verdict-node](https://github.com/mrnicholasbcarter-code/verdict-node) provides the TypeScript surface; `verdict compat` gates the shared contract.
 

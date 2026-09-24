@@ -17,11 +17,12 @@ supported config/env only, and a fresh-clone certification matrix.
 
 | Action | Item |
 |---|---|
-| Rewrote | `docs/adr/README.md` — BOD-179 lifecycle vocabulary + evidence column for every ADR through 034 |
+| Consumes | [BOD-169](https://linear.app/bodanglin/issue/BOD-169) / [`verdict-ecosystem` ADR_LIFECYCLE](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md) as **cross-repo evidence authority** (0 CURRENT by design) |
+| Rewrote | `docs/adr/README.md` — navigable in-repo index aligned to BOD-169 classifications (PARTIALLY_TRUE / DUPLICATE / SUPERSEDED / …) |
 | Indexed | Previously missing `0001`, `ADR-033`, `ADR-034` |
-| Marked DUPLICATE | `docs/architecture/ADR-EVIDENCE-LEDGER.md`, `docs/architecture/ADR-ORCHESTRATOR-ROUTING.md` (banners + index) |
-| Marked SUPERSEDED | `docs/adr/ADR-ORCHESTRATOR-ROUTING.md`, `ADR-023` (successor BOD-104 → BOD-67 / `dispatcher.py`) |
-| Recorded gaps | Serve-path authority, effective capability/context budget, session economics — shipped without dedicated ADRs |
+| Added | `ADR-035` superseding ADR-023 — closes BOD-169 `MISSING_SUCCESSOR` |
+| Marked DUPLICATE | `docs/architecture/ADR-EVIDENCE-LEDGER.md`, `docs/architecture/ADR-ORCHESTRATOR-ROUTING.md` |
+| Recorded gaps | Session economics, capability/budget governors, CURRENT promotion pending ecosystem re-audit |
 
 ### BOD-180 — Documentation consolidation
 

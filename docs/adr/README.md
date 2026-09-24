@@ -5,123 +5,137 @@ states the context that forced a choice, the decision itself, and the consequenc
 project accepted along with it. ADRs are append-only: a decision that no longer holds is
 superseded by a later record rather than edited away.
 
-## Lifecycle policy (BOD-179)
+## Authority split (BOD-169 → BOD-179)
 
-The authoritative lifecycle vocabulary for this index is:
+| Layer | Owns | Location |
+|---|---|---|
+| **Cross-repo evidence authority** | Exact SHA snapshots, duplicate hashes, conservative lifecycle + evidence levels across Verdict V2 repos | [`verdict-ecosystem` `docs/ADR_LIFECYCLE.md`](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md) + `evidence/ADR_LIFECYCLE.json` ([BOD-169](https://linear.app/bodanglin/issue/BOD-169) — **Done**) |
+| **In-repo navigable index** | Interviewer-facing table for `verdict-core` alone: titles, successors, how to read shipped vs historical | **This file** ([BOD-179](https://linear.app/bodanglin/issue/BOD-179)) |
+
+**Do not invent a competing CURRENT-heavy taxonomy.** BOD-169 deliberately marked
+**0 CURRENT** because source/test path presence alone is not end-to-end runtime proof.
+This index **consumes** those classifications for `verdict-core` rows and only adds:
+
+- successor / predecessor links (including ADR-035 closing ADR-023 `MISSING_SUCCESSOR`)
+- interview navigation (what to read first)
+- banners on local duplicate copies under `docs/architecture/`
+
+After material ADR edits land on `verdict-core` main, regenerate the ecosystem
+snapshot so SHAs and digests stay aligned.
+
+## Lifecycle vocabulary
+
+Shared with BOD-169:
 
 | Lifecycle | Meaning |
 |---|---|
-| `CURRENT` | Decision matches shipped source/tests and is active architecture. |
-| `PARTIALLY_TRUE` | Core claim holds, but parts are incomplete, cross-repo, or inventory is stale. |
-| `SUPERSEDED` | Decision is historical; follow the successor link — do not treat as active. |
-| `DUPLICATE` | Near-identical copy of a canonical record; keep only for inbound-link stability. |
-| `STALE` | Declared status/prose no longer matches the code; needs rewrite or successor ADR. |
-| `INVALID` | Not a product ADR (fixture/template) — excluded from the product index. |
+| `CURRENT` | Full executable semantic proof against an exact snapshot (BOD-169: none yet) |
+| `PARTIALLY_TRUE` | Some source/test evidence exists; full decision contract not proven end-to-end |
+| `SUPERSEDED` | Historical; follow the successor link |
+| `MISSING_SUCCESSOR` | Declares superseded without a named successor ADR (should be closed) |
+| `DUPLICATE` | Copy of a canonical record; keep for inbound-link stability |
+| `STALE` | Declared status/prose no longer matches authority |
+| `INVALID` | Not a product ADR (index file, fixture, template) |
 
 Declared Status fields inside individual ADR files may still use older vocabulary
-(`Accepted`, `Proposed`, `Partially Implemented`, …). **This index's Lifecycle column
-is authoritative for interview/hardening readers of `verdict-core`.** When they disagree,
-prefer this index and the evidence column.
+(`Accepted`, `Proposed`, …). **Lifecycle columns below follow BOD-169** unless a
+newer successor ADR is named in this index.
 
-### Cross-repo evidence authority
+## How to read (interview path)
 
-The workspace-level, evidence-hashed ADR audit lives in
-[`verdict-ecosystem` → `docs/ADR_LIFECYCLE.md`](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)
-(and `evidence/ADR_LIFECYCLE.json`). That index classifies ADRs across
-`verdict-core`, `verdict-core-memory`, `verdict-node`, and `verdict-continuity`
-against frozen V2 snapshots.
-
-This `docs/adr/README.md` is the **navigable in-repo product index** for
-interviewers reading `verdict-core` alone. Prefer the ecosystem lifecycle file
-when reconciling duplicates across repos or regenerating hash-backed evidence.
-After this hardening pass, regenerate the ecosystem snapshot so SHAs and
-classifications stay aligned with the updated core index.
-
-## How to read this index
-
-- Prefer rows marked `CURRENT` when learning what the product does today.
-- Treat `SUPERSEDED` and `DUPLICATE` as history, not instructions.
-- Check the Evidence column before assuming a behaviour is live.
+1. [ADR-0001](0001-verdict-control-plane-invariants.md) — control-plane invariants
+2. [ADR-010](ADR-010-fail-closed-capability-passports.md) — fail-closed passports
+3. [ADR-032](ADR-032-core-model-metadata-store.md) — Core owns metadata; OmniRoute does not
+4. [ADR-035](ADR-035-authorized-selected-route-dispatch.md) — post-swarm dispatch (supersedes 023)
+5. [ADR-015](ADR-015-evidence-authority-and-portable-receipts.md) — receipts
+6. Ecosystem [ADR_LIFECYCLE.md](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md) — evidence bar and cross-repo duplicates
 
 ## Adding a new ADR
 
-1. Take the next free number — check the highest existing file, not the last one you
-   remember.
-2. Name the file `ADR-0NN-short-kebab-title.md` and open it with an `# ADR-0NN: Title` H1.
-3. Include `Status`, `Date`, and `Deciders` fields, then `Context`, `Decision`, and
-   `Consequences` sections.
-4. Cross-reference related records with `Supersedes`, `Amends`, or `Related` fields, and add
-   a row to the table below with an explicit Lifecycle classification and evidence pointer.
+1. Take the next free number — check the highest existing file.
+2. Name the file `ADR-0NN-short-kebab-title.md` with an `# ADR-0NN: Title` H1.
+3. Include `Status`, `Date`, `Deciders`, then `Context` / `Decision` / `Consequences`.
+4. Cross-reference with `Supersedes` / `Amends` / `Related`, add a row below, and
+   request an ecosystem ADR lifecycle re-audit (BOD-169 process) before claiming CURRENT.
 
-## The records
+## The records (`verdict-core`)
 
-| ADR | Decision | Declared status | Lifecycle | Evidence / successor |
-|---|---|---|---|---|
-| [0001](0001-verdict-control-plane-invariants.md) — Control-plane invariants | Hard eligibility before ranking; concrete identity; unknown ≠ healthy. | Accepted | CURRENT | Aligns with `gate` / `eligibility` / `dispatcher` / `metadata` |
-| [001](ADR-001-evidence-ledger.md) — Versioned, privacy-safe execution evidence | Execution evidence is a versioned, tagged envelope; payloads never enter the ledger. | accepted | CURRENT | `verdict/evidence.py`, `evidence_receipts.py`, `receipt_store.py` |
-| [002](ADR-002-orchestrator-routing.md) — Thin-gate routing boundary | Verdict stays a deterministic gate; advisory rankers cannot restore excluded candidates. | accepted | PARTIALLY_TRUE | Thin-gate/`EligibilityGate` still true; Ruflo mentions obsolete (BOD-17). Prefer ADR-0001 + serve_path |
-| [003](ADR-003-platform-neutral-guidance-boundary.md) — Platform-neutral guidance boundary | Guidance is optional, default-off, never in the enforcement path. | proposed for #107 | CURRENT | `verdict/guidance.py`, `tests/test_guidance.py` (declared status stale) |
-| [004](ADR-004-local-first-memory-plane.md) — Local-first memory plane | Versioned `MemoryPlane` with SQLite as durable SoT. | accepted | CURRENT | `verdict/memory_plane.py`, `tests/test_memory_plane.py` |
-| [005](ADR-005-code-intelligence-graph-memory-bridge.md) — Code intelligence graph bridge | Symbol/graph summaries ingested lightly into memory. | Approved | CURRENT | `verdict/code_graph.py`, `memory_bridge.py` |
-| [006](ADR-006-authoritative-documentation-preflight.md) — Documentation preflight | Deterministic docs preflight at the MemoryPlane boundary. | Accepted | CURRENT | `verdict/documentation_preflight.py` |
-| [007](ADR-007-omniroute-catalog-qualification.md) — OmniRoute catalog qualification | Catalog snapshots qualify as sanitized summaries, separately from liveness. | Accepted | PARTIALLY_TRUE | `omniroute_catalog.py`; refresh remains partial under baseline policy |
-| [008](ADR-008-global-runtime-ownership.md) — Global runtime ownership | One versioned contract owns global runtime state. | proposed for #129 | PARTIALLY_TRUE | `runtime_contract.py` exists; service inventory still lists obsolete Ruflo/RuVector entries |
-| [009](ADR-009-durable-memory-write-gate.md) — Durable memory write gate | Lifecycle/session writes pass through `MemoryGate`. | Accepted | CURRENT | `verdict/memory_gate.py`, `tests/test_memory_gate.py` |
-| [010](ADR-010-fail-closed-capability-passports.md) — Fail-closed capability passports | Qualification is a versioned passport for one exact route; absence denies. | Accepted | CURRENT | `capability_passports.py`, passport eligibility tests |
-| [011](ADR-011-omniroute-catalog-qualification-baseline.md) — Catalog baseline ≠ route qualification | Identity/claimed metadata baseline stays separate from route qualification. | Accepted | CURRENT | Pairs with ADR-007 / `omniroute_catalog.py` |
-| [012](ADR-012-consented-budgeted-probes.md) — Consented, budgeted probes | Live probes require explicit consent and a spend budget. | Accepted | CURRENT | `probes.py`, `protocol_probes.py` |
-| [013](ADR-013-independent-protocol-surface-qualification.md) — Independent protocol surfaces | Chat Completions and Responses qualify independently. | Proposed | CURRENT | `protocol_probes.py`, `tests/test_protocol_probes.py` (declared status stale) |
-| [014](ADR-014-tool-and-structured-output-qualification.md) — Tool / structured-output qualification | Strict structured output and tool lifecycles qualify separately. | Accepted | CURRENT | `tool_qualification.py`, `structured_qualification.py` |
-| [015](ADR-015-evidence-authority-and-portable-receipts.md) — Evidence authority + portable receipts | Route evidence splits into related portable records. | accepted | CURRENT | `evidence_receipts.py` |
-| [016](ADR-016-deterministic-policy-and-transition-graphs.md) — Deterministic policy graphs | Hard-policy document compiles before ranking/execution. | Accepted | CURRENT | `policy.py`, `transitions.py` |
-| [017](ADR-017-durable-privacy-safe-receipt-ledger.md) — Durable receipt ledger | Local SQLite ledger is the canonical receipt persistence boundary. | Accepted | CURRENT | `receipt_store.py`, `VERDICT_RECEIPTS_DB` |
-| [018](ADR-018-shadow-and-counterfactual-evaluation.md) — Shadow / counterfactual evaluation | Evaluation artifacts are versioned and payload-free. | Accepted | CURRENT | `verdict/evaluation.py` |
-| [019](ADR-019-runtime-negotiated-passports.md) — Runtime-negotiated passports | Runtime passport records negotiated tool/protocol capabilities. | Accepted | CURRENT | `runtime_passports.py` |
-| [020](ADR-020-gateway-adapter-contracts.md) — Gateway adapter contracts | Provider-neutral adapter contract keeps gateway specifics out of core. | Accepted | CURRENT | `tests/test_gateway_adapters.py` |
-| [021](ADR-021-deterministic-provider-receipts.md) — Deterministic provider receipts | Domain providers emit standardized `ProviderReceipt` payloads. | Accepted | CURRENT | `provider_receipts.py` |
-| [022](ADR-022-context-provider-conformance.md) — Context provider conformance | Shared conformance suite pins provider behaviour across repos. | Accepted | CURRENT | `tests/test_context_provider_conformance.py` |
-| [023](ADR-023-governed-swarm-supervision.md) — Governed swarm supervision | Ruflo/swarm supervision deleted from Core. | SUPERSEDED (BOD-17) | SUPERSEDED | Successor: BOD-104 execution path → BOD-67 / `dispatcher.py` |
-| [024](ADR-024-cross-repo-compatibility-gate.md) — Cross-repo compatibility gate | Compatibility manifest + fail-closed gate CLI. | Partially Implemented | PARTIALLY_TRUE | Core side shipped; downstream repo wiring still open |
-| [025](ADR-025-node-envelope-enforcement.md) — Node envelope enforcement | `verdict-node` enforces the same `ExecutionEnvelope` invariants. | Accepted (body: proposed) | PARTIALLY_TRUE | Core contract + TS parity tests; full node middleware may be cross-repo |
-| [026](ADR-026-responses-compatibility-boundary.md) — Responses compatibility boundary | Compatibility rule applies immediately before HTTP Responses transport. | Accepted | CURRENT | `responses_compatibility.py` |
-| [027](ADR-027-observed-free-status-and-context-omissions.md) — Observed free status | Free status is observed, never inferred from a missing price. | Accepted | CURRENT | `free_route_harvest.py`, free-tier admit tests |
-| [028](ADR-028-launch-gate-tooling.md) — Launch-gate tooling | Release pipeline gains dependency/privacy/HTTP-surface evidence. | Accepted | CURRENT | `verdict/release/evidence.py`, launch-gate tests |
-| [029](ADR-029-portfolio-repositioning-plan.md) — Portfolio repositioning plan | Hygiene, positioning, launch sequencing for the flagship story. | Accepted | PARTIALLY_TRUE | Plan ADR; BOD-17 deletion ≠ experimental relocate |
-| [030](ADR-030-proof-carrying-decision-plane.md) — Proof-carrying decision plane | Verdict owns context→decision→receipt→proof; gateways are optional boundaries. | Accepted | PARTIALLY_TRUE | Large pieces shipped (`claims_ledger`, `prove_at_rest`); productization still tracked |
-| [031](ADR-031-prime-workflow-skills.md) — Project-owned Prime workflow | Skills own resume/hydrate/dispatch/proof/finish with durable leases. | Accepted for implementation | PARTIALLY_TRUE | `harness_prime.py`, `bounded_recovery.py`, Prime tests |
-| [032](ADR-032-core-model-metadata-store.md) — Core owns model metadata | OmniRoute is inventory/execute/health only; Core fetches models.dev + LiteLLM. | Accepted | CURRENT | `verdict/metadata/`, `tests/test_model_metadata.py` |
-| [033](ADR-033-shared-memory-provider.md) — Shared memory provider boundary | Shared recall is advisory; local MemoryPlane remains authority. | Accepted | CURRENT | `shared_memory.py`, `tests/test_shared_memory_provider.py` |
-| [034](ADR-034-memory-outbox-mirror-and-fail-open-shared-recall.md) — Outbox mirror + fail-open shared recall | Durable outbox mirror; shared recall fails open without poisoning local authority. | Accepted | CURRENT | `memory_outbox.py`, `memory_mirror.py` |
+Classifications for 0001–034 match BOD-169's audited rows. ADR-035 is new in this
+hardening pass (successor for ADR-023).
+
+| ADR | Decision | Declared status | Lifecycle (BOD-169) | Evidence | Successor / notes |
+|---|---|---|---|---|---|
+| [0001](0001-verdict-control-plane-invariants.md) — Control-plane invariants | Hard eligibility before ranking; concrete identity; unknown ≠ healthy | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [001](ADR-001-evidence-ledger.md) — Privacy-safe execution evidence | Versioned evidence envelope; payloads never enter the ledger | accepted | PARTIALLY_TRUE | VERIFIED | Canonical over architecture copy |
+| [002](ADR-002-orchestrator-routing.md) — Thin-gate routing boundary | Deterministic gate; advisory rankers cannot restore excluded candidates | accepted | PARTIALLY_TRUE | VERIFIED | Ruflo mentions obsolete (BOD-17) |
+| [003](ADR-003-platform-neutral-guidance-boundary.md) — Guidance boundary | Optional, default-off, never in enforcement path | proposed for #107 | PARTIALLY_TRUE | VERIFIED | Declared status stale vs `guidance.py` |
+| [004](ADR-004-local-first-memory-plane.md) — Local-first memory plane | `MemoryPlane` + SQLite SoT | accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [005](ADR-005-code-intelligence-graph-memory-bridge.md) — Code graph bridge | Lightweight symbol/graph ingest into memory | Approved | PARTIALLY_TRUE | VERIFIED | — |
+| [006](ADR-006-authoritative-documentation-preflight.md) — Docs preflight | Deterministic docs preflight at MemoryPlane boundary | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
+| [007](ADR-007-omniroute-catalog-qualification.md) — Catalog qualification | Catalog snapshots ≠ liveness | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [008](ADR-008-global-runtime-ownership.md) — Global runtime ownership | Versioned global runtime contract | proposed for #129 | PARTIALLY_TRUE | NOT_VERIFIED | Inventory still lists obsolete services |
+| [009](ADR-009-durable-memory-write-gate.md) — Memory write gate | Writes through `MemoryGate` | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [010](ADR-010-fail-closed-capability-passports.md) — Capability passports | Passport required for exact route; absence denies | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [011](ADR-011-omniroute-catalog-qualification-baseline.md) — Catalog baseline | Baseline ≠ route qualification | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [012](ADR-012-consented-budgeted-probes.md) — Consented probes | Live probes need consent + budget | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [013](ADR-013-independent-protocol-surface-qualification.md) — Protocol surfaces | Chat vs Responses qualify independently | Proposed | PARTIALLY_TRUE | VERIFIED | — |
+| [014](ADR-014-tool-and-structured-output-qualification.md) — Tool / structured output | Separate capability qualifications | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [015](ADR-015-evidence-authority-and-portable-receipts.md) — Portable receipts | Split portable evidence records | accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [016](ADR-016-deterministic-policy-and-transition-graphs.md) — Policy graphs | Hard policy compiles before ranking | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [017](ADR-017-durable-privacy-safe-receipt-ledger.md) — Receipt ledger | Local SQLite receipt boundary | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [018](ADR-018-shadow-and-counterfactual-evaluation.md) — Shadow evaluation | Versioned, payload-free evaluation artifacts | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
+| [019](ADR-019-runtime-negotiated-passports.md) — Runtime passports | Negotiated tool/protocol capabilities | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [020](ADR-020-gateway-adapter-contracts.md) — Gateway adapters | Provider-neutral adapter contract | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
+| [021](ADR-021-deterministic-provider-receipts.md) — Provider receipts | Standardized `ProviderReceipt` | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [022](ADR-022-context-provider-conformance.md) — Context conformance | Shared conformance suite | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [023](ADR-023-governed-swarm-supervision.md) — Governed swarm supervision | Ruflo/swarm deleted from Core | SUPERSEDED (BOD-17) | SUPERSEDED | VERIFIED | **Successor: [ADR-035](ADR-035-authorized-selected-route-dispatch.md)** (closes BOD-169 `MISSING_SUCCESSOR`) |
+| [024](ADR-024-cross-repo-compatibility-gate.md) — Compatibility gate | Manifest + fail-closed CLI | Partially Implemented | PARTIALLY_TRUE | NOT_VERIFIED | Downstream wiring open |
+| [025](ADR-025-node-envelope-enforcement.md) — Node envelope | Shared `ExecutionEnvelope` invariants | Accepted (body: proposed) | PARTIALLY_TRUE | VERIFIED | Cross-repo middleware may be incomplete |
+| [026](ADR-026-responses-compatibility-boundary.md) — Responses boundary | Compatibility before HTTP Responses transport | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [027](ADR-027-observed-free-status-and-context-omissions.md) — Observed free status | Free status observed, never inferred from missing price | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [028](ADR-028-launch-gate-tooling.md) — Launch-gate tooling | Release dependency/privacy/HTTP evidence | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
+| [029](ADR-029-portfolio-repositioning-plan.md) — Portfolio repositioning | Hygiene / positioning / launch sequencing | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | Plan ADR |
+| [030](ADR-030-proof-carrying-decision-plane.md) — Proof-carrying decision plane | Context→decision→receipt→proof owned by Verdict | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
+| [031](ADR-031-prime-workflow-skills.md) — Prime workflow skills | Resume/hydrate/dispatch/proof/finish leases | Accepted for implementation | PARTIALLY_TRUE | VERIFIED | — |
+| [032](ADR-032-core-model-metadata-store.md) — Core owns model metadata | OmniRoute inventory/execute/health only | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [033](ADR-033-shared-memory-provider.md) — Shared memory boundary | Shared recall advisory; local MemoryPlane authoritative | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [034](ADR-034-memory-outbox-mirror-and-fail-open-shared-recall.md) — Outbox mirror | Durable outbox; fail-open shared recall | Accepted | PARTIALLY_TRUE | VERIFIED | — |
+| [035](ADR-035-authorized-selected-route-dispatch.md) — Authorized selected-route dispatch | BOD-104 serve path + BOD-67 dispatcher; demoted selectors | Accepted | PARTIALLY_TRUE | *(new — pending ecosystem re-audit)* | Supersedes ADR-023 |
 
 ## Duplicate / superseded copies (retain for inbound links)
 
 | File | Lifecycle | Canonical / successor |
 |---|---|---|
-| [`docs/architecture/ADR-EVIDENCE-LEDGER.md`](../architecture/ADR-EVIDENCE-LEDGER.md) | DUPLICATE | Use [`ADR-001`](ADR-001-evidence-ledger.md) |
-| [`docs/architecture/ADR-ORCHESTRATOR-ROUTING.md`](../architecture/ADR-ORCHESTRATOR-ROUTING.md) | DUPLICATE | Prefer thin-gate slice in [`ADR-002`](ADR-002-orchestrator-routing.md); Ruflo framing obsolete |
-| [`ADR-ORCHESTRATOR-ROUTING.md`](ADR-ORCHESTRATOR-ROUTING.md) | SUPERSEDED | Bannered SUPERSEDED (BOD-17 / BOD-127). Successor: BOD-104 → BOD-67 / `dispatcher.py` |
+| [`docs/architecture/ADR-EVIDENCE-LEDGER.md`](../architecture/ADR-EVIDENCE-LEDGER.md) | DUPLICATE | [`ADR-001`](ADR-001-evidence-ledger.md) |
+| [`docs/architecture/ADR-ORCHESTRATOR-ROUTING.md`](../architecture/ADR-ORCHESTRATOR-ROUTING.md) | DUPLICATE | Prefer [`ADR-002`](ADR-002-orchestrator-routing.md); Ruflo framing obsolete |
+| [`ADR-ORCHESTRATOR-ROUTING.md`](ADR-ORCHESTRATOR-ROUTING.md) | SUPERSEDED | BOD-17 / BOD-127 → [`ADR-035`](ADR-035-authorized-selected-route-dispatch.md) |
 
-## Explicit non-product ADR
+Byte-identical copies in `verdict-core-memory` are classified DUPLICATE by BOD-169;
+`verdict-core` `docs/adr/` remains ownership.
+
+## Explicit non-product
 
 | File | Lifecycle | Reason |
 |---|---|---|
-| `benchmarks/fixtures/legit_workspace/docs/adr/ADR-001-spend.md` | INVALID | Benchmark fixture only — not product architecture |
+| This `README.md` | INVALID (as an ADR record) | Index, not a decision — BOD-169 classification |
+| `benchmarks/fixtures/.../ADR-001-spend.md` | INVALID | Benchmark fixture only |
 
 ## Missing decisions recorded during reconciliation
 
-These behaviours are shipped and referenced by docs/code but do not yet have a dedicated ADR.
-They are recorded here so they are not silently inferred:
+Behaviours shipped and referenced by code/docs that still warrant dedicated ADRs
+or ecosystem re-proof (not silently inferred as CURRENT):
 
-1. **Serve-path authority (BOD-104 / BOD-127)** — `verdict/serve_path.py` + `execution_path` is the sole strategy authority on the API serve path; demoted selectors may still feed candidates but cannot invent routes when authority is required.
-2. **Effective capability + context budget governors (BOD-120 / BOD-125)** — candidate sufficiency is model + context + tools + decomposition + verification, with total agent context accounted and enforced.
-3. **Session economics STAY/SWITCH (BOD-119)** — prompt-cache value and route hysteresis participate in complete expected-cost comparison after hard eligibility.
+1. **Session economics STAY/SWITCH (BOD-119)** — prompt-cache value / hysteresis after hard eligibility.
+2. **Effective capability + context budget (BOD-120 / BOD-125)** — model + context + tools + decomposition + verification.
+3. **Full CURRENT promotion** — requires ecosystem re-audit with executable semantic proof per BOD-169 evidence bar.
 
 ## Ecosystem decision trail
 
 | Decision | Record |
 |---|---|
 | Provider receipt format | [ADR-021](ADR-021-deterministic-provider-receipts.md) |
-| Context provider interface standardization | [ADR-022](ADR-022-context-provider-conformance.md) |
-| SwarmSpec governance model (historical) | [ADR-023](ADR-023-governed-swarm-supervision.md) — SUPERSEDED by BOD-17 |
-| Verdict-ecosystem as extension, not fork | [ADR-024](ADR-024-cross-repo-compatibility-gate.md) |
+| Context provider conformance | [ADR-022](ADR-022-context-provider-conformance.md) |
+| SwarmSpec governance (historical) | [ADR-023](ADR-023-governed-swarm-supervision.md) → [ADR-035](ADR-035-authorized-selected-route-dispatch.md) |
+| Cross-repo compatibility gate | [ADR-024](ADR-024-cross-repo-compatibility-gate.md) |
 | Node envelope enforcement | [ADR-025](ADR-025-node-envelope-enforcement.md) |
+| Authoritative V2 lifecycle audit | [verdict-ecosystem ADR_LIFECYCLE](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md) (BOD-169) |
