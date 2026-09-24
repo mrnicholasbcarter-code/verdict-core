@@ -505,3 +505,294 @@ async def test_review_falls_back_to_route_independence_when_no_other_family(repo
     assert all("cc/s" in c["exclude_routes"] for c in reviewer.calls)
     levels = [e["level"] for e in ev.of("controller") if e.get("state") == "REVIEW_INDEPENDENCE"]
     assert levels == ["family", "route"]
+
+
+# Cooldown wait tests
+@pytest.mark.asyncio
+async def test_short_cooldown_wait(repo: Path) -> None:
+    """When all routes are in short cooldown, wait once and retry."""
+    from unittest.mock import AsyncMock, patch
+
+    from verdict.orchestration import runtime
+
+    # Create a selector that first returns no choice (all in cooldown),
+    # then returns a valid choice on second call
+    class CooldownSelector:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def select(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+            self.call_count += 1
+
+            if self.call_count == 1:
+                # First call: all routes in cooldown (30s from now)
+                cooldown_time = NOW + timedelta(seconds=30)
+                verdicts = (
+                    RouteVerdict(
+                        "provider-a/model-x",
+                        "provider-a",
+                        EligibilityStage.HEALTHY,
+                        EligibilityStage.AVAILABLE,
+                        "cooldown",
+                        cooldown_until=cooldown_time.isoformat(),
+                    ),
+                )
+                return None, verdicts
+            else:
+                # Second call: route available
+                verdict = RouteVerdict(
+                    "provider-a/model-x",
+                    "provider-a",
+                    EligibilityStage.SELECTED,
+                    None,
+                    "ok",
+                    CapacityClass.SUBSCRIPTION,
+                    rank=1,
+                )
+                return verdict, (verdict,)
+
+        def evaluate(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[RouteVerdict, ...]:
+            return self.select(requirements, now=now)[1]
+
+        def record_failure(
+            self, route_id: str, failure: FailureClassification, *, now: datetime
+        ) -> None:
+            pass
+
+        def record_success(self, route_id: str, *, now: datetime) -> None:
+            pass
+
+    selector = CooldownSelector()
+    executor = Executor({("n1", "*"): "ok"}, delay=0.01)
+    events = Events()
+
+    graph = WorkGraph("g", (node("n1"),))
+
+    # Mock _sleep to track calls
+    sleep_mock = AsyncMock()
+
+    with patch.object(runtime, "_sleep", sleep_mock):
+        rt = DagRuntime(
+            repo=repo,
+            run_dir=repo.parent / "run1",
+            graph=graph,
+            selector=selector,
+            executor=executor,
+            classifier=Classifier(),
+            events=events,
+            prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+            reviewer=Reviewer(),
+            policy=RuntimePolicy(max_parallel=1, max_cooldown_wait_seconds=120.0),
+            now=lambda: NOW,
+        )
+        result = await rt.run()
+
+    # Verify we waited
+    sleep_mock.assert_called_once()
+    call_args = sleep_mock.call_args[0][0]
+    assert 30 <= call_args <= 32  # 30s cooldown + 1s buffer
+
+    # Verify we got a cooldown event
+    cooldown_events = events.of("cooldown", "n1")
+    assert len(cooldown_events) == 1
+    assert cooldown_events[0]["category"] == "waiting_for_capacity"
+
+    # Verify run completed successfully
+    assert result.outcome == RunOutcome.COMPLETE
+
+
+@pytest.mark.asyncio
+async def test_long_cooldown_no_wait(repo: Path) -> None:
+    """When cooldown is too long, fail closed immediately without waiting."""
+    from unittest.mock import AsyncMock, patch
+
+    from verdict.orchestration import runtime
+
+    # Create a selector that returns a long cooldown (2 hours)
+    class LongCooldownSelector:
+        def select(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+            cooldown_time = NOW + timedelta(hours=2)
+            verdicts = (
+                RouteVerdict(
+                    "provider-a/model-x",
+                    "provider-a",
+                    EligibilityStage.HEALTHY,
+                    EligibilityStage.AVAILABLE,
+                    "cooldown",
+                    cooldown_until=cooldown_time.isoformat(),
+                ),
+            )
+            return None, verdicts
+
+        def evaluate(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[RouteVerdict, ...]:
+            return self.select(requirements, now=now)[1]
+
+        def record_failure(
+            self, route_id: str, failure: FailureClassification, *, now: datetime
+        ) -> None:
+            pass
+
+        def record_success(self, route_id: str, *, now: datetime) -> None:
+            pass
+
+    selector = LongCooldownSelector()
+    executor = Executor({("n1", "*"): "ok"}, delay=0.01)
+    events = Events()
+
+    graph = WorkGraph("g", (node("n1"),))
+
+    # Mock _sleep to verify it's never called
+    sleep_mock = AsyncMock()
+
+    with patch.object(runtime, "_sleep", sleep_mock):
+        rt = DagRuntime(
+            repo=repo,
+            run_dir=repo.parent / "run1",
+            graph=graph,
+            selector=selector,
+            executor=executor,
+            classifier=Classifier(),
+            events=events,
+            prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+            reviewer=Reviewer(),
+            policy=RuntimePolicy(max_parallel=1, max_cooldown_wait_seconds=120.0),
+            now=lambda: NOW,
+        )
+        result = await rt.run()
+
+    # Verify we never waited
+    sleep_mock.assert_not_called()
+
+    # Verify no cooldown wait event
+    cooldown_events = events.of("cooldown", "n1")
+    assert len(cooldown_events) == 0
+
+    # Verify run blocked
+    assert result.outcome == RunOutcome.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_second_exhaustion_no_second_wait(repo: Path) -> None:
+    """After waiting once, if pool exhausts again, fail closed without a second wait."""
+    from unittest.mock import AsyncMock, patch
+
+    from verdict.orchestration import runtime
+
+    # Create a selector that:
+    # 1. First call: short cooldown
+    # 2. Second call: returns a route
+    # 3. Third call (after failure): short cooldown again
+    class DoubleExhaustSelector:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def select(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+            self.call_count += 1
+
+            if self.call_count == 1:
+                # First: short cooldown
+                cooldown_time = NOW + timedelta(seconds=30)
+                verdicts = (
+                    RouteVerdict(
+                        "provider-a/model-x",
+                        "provider-a",
+                        EligibilityStage.HEALTHY,
+                        EligibilityStage.AVAILABLE,
+                        "cooldown",
+                        cooldown_until=cooldown_time.isoformat(),
+                    ),
+                )
+                return None, verdicts
+            elif self.call_count == 2:
+                # Second: route available
+                verdict = RouteVerdict(
+                    "provider-a/model-x",
+                    "provider-a",
+                    EligibilityStage.SELECTED,
+                    None,
+                    "ok",
+                    CapacityClass.SUBSCRIPTION,
+                    rank=1,
+                )
+                return verdict, (verdict,)
+            else:
+                # Third: short cooldown again, but already waited once
+                # The route should be in tried set, so we need a different route
+                cooldown_time = NOW + timedelta(seconds=30)
+                verdicts = (
+                    RouteVerdict(
+                        "provider-a/model-x",
+                        "provider-a",
+                        EligibilityStage.TASK_ELIGIBLE,
+                        None,
+                        "excluded",
+                    ),
+                    RouteVerdict(
+                        "provider-b/model-y",
+                        "provider-b",
+                        EligibilityStage.HEALTHY,
+                        EligibilityStage.AVAILABLE,
+                        "cooldown",
+                        cooldown_until=cooldown_time.isoformat(),
+                    ),
+                )
+                return None, verdicts
+
+        def evaluate(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[RouteVerdict, ...]:
+            return self.select(requirements, now=now)[1]
+
+        def record_failure(
+            self, route_id: str, failure: FailureClassification, *, now: datetime
+        ) -> None:
+            pass
+
+        def record_success(self, route_id: str, *, now: datetime) -> None:
+            pass
+
+    selector = DoubleExhaustSelector()
+    # Make the first attempt fail with verification error
+    executor = Executor({("n1", "provider-a/model-x"): "badcode"}, delay=0.01)
+    events = Events()
+
+    graph = WorkGraph("g", (node("n1"),))
+
+    # Mock _sleep to track calls
+    sleep_mock = AsyncMock()
+
+    with patch.object(runtime, "_sleep", sleep_mock):
+        rt = DagRuntime(
+            repo=repo,
+            run_dir=repo.parent / "run1",
+            graph=graph,
+            selector=selector,
+            executor=executor,
+            classifier=Classifier(),
+            events=events,
+            prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+            reviewer=Reviewer(),
+            policy=RuntimePolicy(max_parallel=1, max_cooldown_wait_seconds=120.0),
+            now=lambda: NOW,
+        )
+        result = await rt.run()
+
+    # Verify we only waited once (first exhaustion)
+    assert sleep_mock.call_count == 1
+
+    # Verify only one cooldown event
+    cooldown_events = events.of("cooldown", "n1")
+    assert len(cooldown_events) == 1
+
+    # Verify run blocked (second exhaustion)
+    assert result.outcome == RunOutcome.BLOCKED
