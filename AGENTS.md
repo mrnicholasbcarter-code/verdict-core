@@ -37,7 +37,7 @@ verdict/
 │   ├── eligibility.py       #   DISCOVERED→ENTITLED→HEALTHY→AVAILABLE→TASK_ELIGIBLE→SELECTED ladder
 │   ├── executors.py         #   Worker dispatch — Prime Agent harness calls
 │   ├── planner.py           #   Frontier decomposition → WorkGraph (topology selection)
-│   ├── receipt.py           #   Signed receipt with event-log digest
+│   ├── receipt.py           #   Receipt with SHA-256 event-log digest; completion verdict
 │   ├── recovery.py          #   Same-node reroute, cooldown, pool-exhaustion → FAIL_CLOSED
 │   ├── review.py            #   Independent OCR (open-code-review); reviewer excluded from implementers
 │   ├── run.py               #   Orchestration run loop
@@ -58,7 +58,7 @@ verdict/
 
 **Metadata refresh**: `cli.py:cmd_metadata_refresh()` → `metadata.refresh_metadata()` → models.dev + LiteLLM → `~/.verdict/model-metadata.json` (OmniRoute is never metadata SoT)
 
-**Orchestration flow** (ADR-036): `verdict orchestrate <goal>` → `orchestration/planner.py` frontier decomposition → `WorkGraph` (DAG) → `orchestration/eligibility.py` per-node DISCOVERED→SELECTED ladder → `orchestration/run.py` parallel workers via Prime Agent → `orchestration/recovery.py` same-node reroute on quota/rate-limit/timeout → `orchestration/review.py` independent OCR → `orchestration/receipt.py` signed receipt
+**Orchestration flow** (ADR-036): `verdict orchestrate <goal>` → `orchestration/planner.py` frontier decomposition → `WorkGraph` (DAG) → `orchestration/eligibility.py` per-node DISCOVERED→SELECTED ladder → `orchestration/run.py` parallel workers via Prime Agent → `orchestration/recovery.py` same-node reroute on quota/rate-limit/timeout → `orchestration/review.py` independent OCR → `orchestration/receipt.py` digest-verified receipt
 
 ## Testing
 ```bash

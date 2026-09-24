@@ -54,7 +54,7 @@ verdict route "Refactor this Python module to use type hints" --terse
 ## Run the Golden Path
 
 The interview golden path runs a full orchestration: goal → frontier plan → DAG → eligibility →
-parallel workers → recovery → independent review → signed receipt.
+parallel workers → recovery → independent review → digest-verified receipt.
 
 ```bash
 # Full run with chaos flags (faults injected into specific routes)
@@ -63,7 +63,7 @@ verdict orchestrate "Add a tested textkit.stats feature"   --inject "cc/claude-s
 # Live TUI view of a running orchestration
 verdict watch <run-id>
 
-# Inspect the signed receipt after completion
+# Verify the receipt (event-log digest) after completion
 verdict run-receipt <run-id>
 
 # Show the eligibility ladder for a route

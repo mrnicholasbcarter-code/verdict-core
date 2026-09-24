@@ -46,7 +46,7 @@ Use `verdict simulate "summarize this change"` for a no-send forecast.
 `verdict orchestrate` runs the full goal-to-receipt pipeline (ADR-036): frontier
 planner decomposes the goal into a DAG, each node gets an eligible route, workers
 run in parallel, faults trigger same-node reroute, an independent reviewer checks
-output, and a signed receipt is written.
+output, and a digest-verified receipt is written.
 
 ```bash
 # Full run (requires OmniRoute gateway on localhost:20128)
@@ -63,7 +63,7 @@ verdict watch <run-id>
 # Inspect the eligibility ladder
 verdict eligibility
 
-# Inspect the signed receipt after completion
+# Verify the receipt (event-log digest) after completion
 verdict run-receipt <run-id>
 ```
 

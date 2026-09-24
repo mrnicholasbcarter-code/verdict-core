@@ -2,7 +2,7 @@
 
 # Verdict
 
-Cheapest qualified model, named reason for every drop, signed receipt for every decision.
+One goal in, one verified receipt out: dynamic model selection, same-node recovery under real quota and outages, independent review, fail-closed verdict.
 
 Verdict is a fail-closed control plane for LLM-powered workflows. Hard eligibility gates run before advisory ranking — a model that fails any gate cannot be re-admitted by a downstream score.
 
@@ -19,23 +19,21 @@ Verdict is a fail-closed control plane for LLM-powered workflows. Hard eligibili
 
 ## 30-second demo
 
-Three commands. No credentials required for the first two.
+`verdict` needs nothing. `orchestrate` needs a running OmniRoute gateway, `VERDICT_OMNIROUTE_API_KEY` and `ocr` on PATH (see [prerequisites](docs/guides/interview-golden-path.md#prerequisites)).
 
 ```bash
-# Home screen — lists all commands
+# Home screen: gateway status, recent runs, main commands
 verdict
 
 # Full orchestration run with injected chaos (quota exhaustion + rate limit + no-final-answer)
-verdict orchestrate "Add a tested textkit.stats feature" \
-  --inject "cc/claude-sonnet-4-6=quota,no_final" \
-  --inject "cc/claude-sonnet-5=no_final" \
-  --inject "cc/*=rate_limit"
+verdict orchestrate "Add a tested textkit.stats feature" --repo . --scope cc/,cx/ \
+  --inject "#2=route_quota" --inject "#3=no_final" --inject "#5=rate_limit"
 
-# Inspect the signed receipt from the last run
-verdict run-receipt <run-id>
+# Verify a run receipt (event-log digest) and show per-node attempts
+verdict run-receipt .verdict/runs/<run-id>
 ```
 
-Live output from scenario-J (`~/.verdict/evidence/golden-path/live9-tui-140col.txt`, truncated to 25 lines):
+Recorded output of live run `live9`: route quota, then no-final-answer, then a 429 were injected, and each failed node was reassigned (truncated to 25 lines):
 
 ```
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -80,7 +78,7 @@ goal
                  └─ RECOVERY  quota / rate-limit / timeout → same-node reroute → pool exhaustion → FAIL_CLOSED
                      └─ VERIFY  ownership check + per-node tests + integration barrier
                          └─ REVIEW  independent OCR (open-code-review); reviewer excluded from all implementer routes
-                             └─ RECEIPT  signed event-log digest; replayable
+                             └─ RECEIPT  SHA-256 digest of the event log; `run-receipt` re-verifies it
 ```
 
 Three-role split:
@@ -147,7 +145,7 @@ verdict quickstart --non-interactive --dry-run
 
 | Command | Purpose |
 |---|---|
-| `verdict` | Home screen — lists all commands |
+| `verdict` | Home screen: gateway status, recent runs, main commands |
 | `orchestrate` | Goal → frontier plan → DAG → eligibility → parallel workers → recovery → review → receipt |
 | `supervise` | Supervise an orchestration controller |
 | `watch` | Live TUI view of a running orchestration |
