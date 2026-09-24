@@ -400,3 +400,38 @@ async def test_no_eligible_model_blocks_with_reason(repo: Path) -> None:
     sel.cool["cc"] = (NOW + timedelta(hours=1)).timestamp()
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED and "no eligible model" in result.reason
+
+
+async def test_concurrent_selection_spreads_load_across_routes(repo: Path) -> None:
+    graph = WorkGraph("g", (node("a"), node("b"), node("c")), max_parallel=3)
+    inflight: dict[str, str] = {}
+
+    class Spreading(Selector):
+        def select(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+            load = {r: sum(1 for v in inflight.values() if v == r) for r in self.routes}
+            ordered = sorted(self.routes, key=lambda r: (load[r], self.routes.index(r)))
+            original, self.routes = self.routes, ordered
+            try:
+                return super().select(requirements, now=now)
+            finally:
+                self.routes = original
+
+    events = Events()
+    ex = Executor({}, delay=0.2)
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=graph,
+        selector=Spreading(["cc/s", "cc/o", "cx/g"]),
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        now=lambda: NOW,
+        inflight=inflight,
+    )
+    await rt.run()
+    assert {r for _, r in ex.calls} == {"cc/s", "cc/o", "cx/g"}

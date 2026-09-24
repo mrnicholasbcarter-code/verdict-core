@@ -66,7 +66,7 @@ def add_parsers(subparsers: Any) -> None:
     watch.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     watch.add_argument("--once", action="store_true", help="Render the current state and exit")
 
-    rec = subparsers.add_parser("receipt", help="Show and verify a run receipt")
+    rec = subparsers.add_parser("run-receipt", help="Show and verify an orchestration run receipt")
     rec.add_argument("run", help="Run id or run directory")
     rec.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     rec.add_argument("--json", action="store_true")
@@ -90,7 +90,7 @@ def dispatch(args: argparse.Namespace) -> int | None:
     handlers = {
         "orchestrate": _orchestrate,
         "watch": _watch,
-        "receipt": _receipt,
+        "run-receipt": _receipt,
         "eligibility": _eligibility,
     }
     handler = handlers.get(getattr(args, "command", ""))
@@ -126,7 +126,24 @@ def build_selector(gateway: str, *, scope: str, prefer: str, load: Any = None) -
         _state_dir() / "orchestration-health.json",
         prefer_providers=tuple(p.strip() for p in prefer.split(",") if p.strip()),
         load=load,
+        harness_visible=prime_visibility(),
     )
+
+
+def prime_visibility(path: Path | None = None) -> Any:
+    """Harness gate: a route is spawnable only if Prime's registry lists it.
+
+    Reads model ids only (never credentials) from Prime's models.json. Returns
+    None (no gate) when the registry is absent, e.g. for a non-Prime executor.
+    """
+    registry = path or Path.home() / ".prime" / "agent" / "models.json"
+    try:
+        data = json.loads(registry.read_text(encoding="utf-8"))
+        models = data["providers"]["omniroute"]["models"]
+        visible = {str(m["id"]) for m in models if isinstance(m, dict) and m.get("id")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return lambda route_id: route_id in visible
 
 
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
@@ -175,12 +192,12 @@ def _orchestrate(args: argparse.Namespace) -> int:
     if not goal:
         print("BLOCKED: a goal (or --graph/--resume) is required", file=sys.stderr)
         return 2
-    inflight: dict[str, int] = {}
+    inflight: dict[str, str] = {}  # node_id -> route_id, maintained by DagRuntime
     selector = build_selector(
         args.gateway,
         scope=args.scope,
         prefer=args.prefer,
-        load=lambda route: inflight.get(route, 0),
+        load=lambda route: sum(1 for r in inflight.values() if r == route),
     )
     run_id = args.resume or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = runs_root / run_id
@@ -220,6 +237,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             run_id=run_id,
             policy=policy,
             summary=getattr(selector, "summary", None),
+            inflight=inflight,
         )
     )
     stop.set()

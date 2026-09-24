@@ -317,7 +317,9 @@ class EligibilityLadder:
             pref = self._prefer_providers.index(a.provider)
         except ValueError:
             pref = len(self._prefer_providers)
-        return (_CAPACITY_ORDER[a.capacity], pref, -a.fit, self._load(a.route_id), a.route_id)
+        # Load comes before task fit: spreading concurrent nodes across equally
+        # eligible routes of the preferred capacity beats piling onto one route.
+        return (_CAPACITY_ORDER[a.capacity], pref, self._load(a.route_id), -a.fit, a.route_id)
 
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime

@@ -273,6 +273,7 @@ async def run_golden_path(
     policy: RuntimePolicy = RuntimePolicy(),
     constraints: str = "",
     summary: Callable[[], Mapping[str, Any]] | None = None,
+    inflight: dict[str, str] | None = None,
 ) -> GoldenRunResult:
     run_dir = load_or_create_run(runs_root, run_id)
     log = EventLog(run_dir / "events.jsonl")
@@ -334,6 +335,7 @@ async def run_golden_path(
         prompt_for=prompt_for,
         reviewer=reviewer,
         policy=policy,
+        inflight=inflight,
     )
     for node_id, commit in resumed.items():
         if node_id in runtime.nodes:

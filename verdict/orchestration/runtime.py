@@ -108,6 +108,41 @@ class RunResult:
     review: ReviewResult | None
 
 
+# Tool byproducts are never part of a node's deliverable (and never ownership violations).
+BYPRODUCT_EXCLUDES = (
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".coverage",
+    "node_modules/",
+    ".verdict/",
+)
+
+
+def _ensure_local_excludes(cwd: Path) -> None:
+    """Append byproduct patterns to the worktree's info/exclude (untracked, local only)."""
+    git_path = cwd / ".git"
+    try:
+        if git_path.is_file():
+            gitdir = Path(git_path.read_text().split(":", 1)[1].strip())
+            common = gitdir / "commondir"
+            if common.exists():
+                gitdir = (gitdir / common.read_text().strip()).resolve()
+        else:
+            gitdir = git_path
+        exclude = gitdir / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        current = exclude.read_text() if exclude.exists() else ""
+        missing = [p for p in BYPRODUCT_EXCLUDES if p not in current.splitlines()]
+        if missing:
+            with exclude.open("a", encoding="utf-8") as stream:
+                stream.write("\n# verdict orchestration byproducts\n" + "\n".join(missing) + "\n")
+    except OSError:
+        pass
+
+
 class Git:
     """Minimal git worktree operations for node isolation and integration."""
 
@@ -136,6 +171,7 @@ class Git:
             await self.run(("git", "worktree", "prune"), self.repo, 60)
 
     async def changed_files(self, cwd: Path, base: str) -> list[str]:
+        _ensure_local_excludes(cwd)
         await self.call("add", "-A", cwd=cwd)
         out = await self.call("diff", "--cached", "--name-only", base, cwd=cwd)
         return [line for line in out.splitlines() if line.strip()]
@@ -178,6 +214,7 @@ class DagRuntime:
         runner: Runner = subprocess_runner,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         base_ref: str = "HEAD",
+        inflight: dict[str, str] | None = None,
     ) -> None:
         self.repo, self.run_dir, self.graph = repo, run_dir, graph
         self.selector, self.executor, self.classifier = selector, executor, classifier
@@ -186,7 +223,9 @@ class DagRuntime:
         self.base_ref = base_ref
         self.git = Git(repo, runner)
         self.nodes = {n.node_id: NodeRun(n) for n in graph.nodes}
-        self.inflight: dict[str, str] = {}  # node_id -> route_id (for load spreading)
+        # node_id -> route_id. Shared with the selector's load callback so concurrent
+        # selections spread across routes; reserved at SELECTION time, not dispatch.
+        self.inflight: dict[str, str] = inflight if inflight is not None else {}
         self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
         self._base_sha = ""
         self._integration = run_dir / "worktrees" / "_integration"
@@ -343,6 +382,7 @@ class DagRuntime:
                 attempt=run.attempt,
             )
             self._capacity[node_id] = choice.capacity_class.value
+            self.inflight[node_id] = choice.route_id
             if previous and failures:
                 self.events.emit(
                     "reassign",
