@@ -371,7 +371,17 @@ class ExecutionEnvelope(Contract):
     schema_version: str = "1"
 
     def __post_init__(self) -> None:
-        """Validate execution_constraints against canonical schema."""
+        """Validate execution_constraints against canonical schema (keys AND values)."""
+        # policy_digest: must be exactly 64 lowercase hex chars (JSON Schema pattern)
+        if not isinstance(self.policy_digest, str):
+            raise ContractValidationError(
+                f"policy_digest must be a string, got {type(self.policy_digest).__name__}"
+            )
+        if not re.match(r"^[a-f0-9]{64}$", self.policy_digest):
+            raise ContractValidationError(
+                f"policy_digest must be 64 lowercase hex characters, got {self.policy_digest!r}"
+            )
+
         if not isinstance(self.execution_constraints, dict):
             raise ContractValidationError(
                 f"execution_constraints must be a dict, got {type(self.execution_constraints).__name__}"
@@ -381,6 +391,70 @@ class ExecutionEnvelope(Contract):
             raise ContractValidationError(
                 f"execution_constraints has unknown field(s): {', '.join(sorted(unknown))}"
             )
+
+        # Value validation (Zod parity): budget_usd, max_request_usd, max_latency_ms,
+        # risk_ceiling, allowed_*/required_verification arrays, expires_at
+        constraints = self.execution_constraints
+
+        # budget_usd: non-negative number (>= 0, finite)
+        if "budget_usd" in constraints:
+            val = constraints["budget_usd"]
+            if not isinstance(val, (int, float)) or not (0 <= val < float("inf")):
+                raise ContractValidationError(
+                    f"execution_constraints.budget_usd must be a non-negative finite number, got {val!r}"
+                )
+
+        # max_request_usd: non-negative number (>= 0, finite)
+        if "max_request_usd" in constraints:
+            val = constraints["max_request_usd"]
+            if not isinstance(val, (int, float)) or not (0 <= val < float("inf")):
+                raise ContractValidationError(
+                    f"execution_constraints.max_request_usd must be a non-negative finite number, got {val!r}"
+                )
+
+        # max_latency_ms: non-negative integer (>= 0, int)
+        if "max_latency_ms" in constraints:
+            val = constraints["max_latency_ms"]
+            if not isinstance(val, int) or val < 0 or isinstance(val, bool):
+                raise ContractValidationError(
+                    f"execution_constraints.max_latency_ms must be a non-negative integer, got {val!r}"
+                )
+
+        # risk_ceiling: enum from safetyLevels
+        if "risk_ceiling" in constraints:
+            val = constraints["risk_ceiling"]
+            valid_levels = {"unknown", "low", "medium", "high", "critical"}
+            if not isinstance(val, str) or val not in valid_levels:
+                raise ContractValidationError(
+                    f"execution_constraints.risk_ceiling must be one of {sorted(valid_levels)}, got {val!r}"
+                )
+
+        # allowed_models, allowed_tools, allowed_agents, required_verification: arrays of non-empty strings
+        for field_name in [
+            "allowed_models",
+            "allowed_tools",
+            "allowed_agents",
+            "required_verification",
+        ]:
+            if field_name in constraints:
+                val = constraints[field_name]
+                if not isinstance(val, list):
+                    raise ContractValidationError(
+                        f"execution_constraints.{field_name} must be an array, got {type(val).__name__}"
+                    )
+                for i, item in enumerate(val):
+                    if not isinstance(item, str) or not item.strip():
+                        raise ContractValidationError(
+                            f"execution_constraints.{field_name}[{i}] must be a non-empty string, got {item!r}"
+                        )
+
+        # expires_at: string (type check only; datetime validation happens in verify_execution_envelope)
+        if "expires_at" in constraints:
+            val = constraints["expires_at"]
+            if not isinstance(val, str):
+                raise ContractValidationError(
+                    f"execution_constraints.expires_at must be a string, got {type(val).__name__}"
+                )
 
     @classmethod
     def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> ExecutionEnvelope:

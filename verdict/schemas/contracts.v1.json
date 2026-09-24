@@ -1317,7 +1317,7 @@
         },
         "policy_digest": {
           "type": "string",
-          "pattern": "^[a-fA-F0-9]{64}$",
+          "pattern": "^[a-f0-9]{64}$",
           "description": "SHA-256 digest of compiled Policy for audit trail"
         },
         "allowed_capabilities": {
@@ -1334,21 +1334,24 @@
             "allowed_models": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "default": []
             },
             "allowed_tools": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "default": []
             },
             "allowed_agents": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "default": []
             },
@@ -1367,6 +1370,7 @@
             "risk_ceiling": {
               "type": "string",
               "enum": [
+                "unknown",
                 "low",
                 "medium",
                 "high",
@@ -1376,7 +1380,8 @@
             "required_verification": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "default": []
             },

@@ -32,7 +32,7 @@
     ],
     "reason": "test"
   },
-  "policy_digest": "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+  "policy_digest": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
   "allowed_capabilities": [
     "chat"
   ],

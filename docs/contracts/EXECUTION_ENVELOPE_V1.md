@@ -230,6 +230,31 @@ repo_root = Path(__file__).parent.parent
 fixtures = repo_root / "contracts/fixtures/execution-envelope/v1"
 ```
 
+
+## Mutation Corpus
+
+A **mutation corpus** (`contracts/fixtures/execution-envelope/v1-mutations/`) contains test cases that verify Python/Zod validation parity. Each case is a mutation of the accepted fixture plus an expected verdict.
+
+**Manifest** (`v1-mutations/manifest.json`):
+- `cases_digest`: SHA-256 digest of `cases.json` (tamper detection)
+- `source_commit`: The source SHA this corpus was generated against
+- `evaluation_time`: ISO 8601 timestamp used for expiry checks
+- `expected_policy_digest`: The policy digest consumers must match
+
+**Cases** (`v1-mutations/cases.json`):
+Each case has:
+- `id`: unique identifier (e.g., `budget_negative`, `risk_bad_enum`)
+- `base`: the base fixture name (`accepted.json`)
+- `override`: top-level field overrides applied to the base
+- `expected_verdict`: the verdict the Python verifier returns (`ACCEPT`, `DENY`, `EXPIRED`, `DIGEST_MISMATCH`, `REJECT_UNKNOWN`)
+
+**Consumer requirements**:
+1. Run every case through `verify_execution_envelope` with the manifest's `evaluation_time` and `expected_policy_digest`
+2. Assert that the actual verdict matches `expected_verdict` exactly
+3. For Zod/TypeScript consumers: cases with `expected_verdict: REJECT_UNKNOWN` must fail Zod parsing; all other cases must parse successfully (runtime verdicts like `DENY`/`EXPIRED`/`DIGEST_MISMATCH` are beyond Zod's scope)
+
+This corpus proves that Python and Zod reject the same malformed envelopes, closing the validation gap described in BOD-197.
+
 ## Relation to BOD-12 Parity
 
 This work supersedes [BOD-12](https://linear.app/bodanglin/issue/BOD-12) historical TypeScript/Python parity with a **producer/consumer contract model**:

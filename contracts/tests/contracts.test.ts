@@ -249,7 +249,7 @@ describe("Contract Validation", () => {
         schema_version: "1",
       },
       eligibility_decision: { admitted: ["gpt-4o"] },
-      policy_digest: "sha256:abc123",
+      policy_digest: "a1b2c3d4e5f60708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
       allowed_capabilities: ["chat", "codegen"],
       execution_constraints: {
         allowed_models: ["gpt-4o", "claude-3-5-sonnet"],
@@ -275,7 +275,7 @@ describe("Contract Validation", () => {
       const parsed = parseContract("execution_envelope", validEnvelope);
       expect(parsed.task_spec.objective).toBe("Write a TypeScript function");
       expect(parsed.eligibility_decision).toEqual({ admitted: ["gpt-4o"] });
-      expect(parsed.policy_digest).toBe("sha256:abc123");
+      expect(parsed.policy_digest).toBe("a1b2c3d4e5f60708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20");
       expect(parsed.execution_constraints.allowed_models).toEqual(["gpt-4o", "claude-3-5-sonnet"]);
       expect(parsed.verification_requirements.checks).toEqual(["safety_check"]);
     });
@@ -307,10 +307,10 @@ describe("Contract Validation", () => {
     });
 
     it("rejects tampered policy_digest", () => {
-      const tampered = { ...validEnvelope, policy_digest: "sha256:different" };
+      const tampered = { ...validEnvelope, policy_digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
       const parsed = parseContract("execution_envelope", tampered);
       // Parsing succeeds (schema valid) but digest mismatch detected by edge adapter
-      expect(parsed.policy_digest).toBe("sha256:different");
+      expect(parsed.policy_digest).toBe("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     });
 
     it("rejects malformed schema_version", () => {

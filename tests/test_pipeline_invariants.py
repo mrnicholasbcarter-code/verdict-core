@@ -140,7 +140,7 @@ class TestExecutionEnvelopeEnforcesConstraints:
         envelope = ExecutionEnvelope(
             task_spec=ContractTaskSpec(objective="test", criticality="high", task_type="test"),
             eligibility_decision={"eligible": ["model1"], "excluded": ["model2"]},
-            policy_digest="sha256:abc123",
+            policy_digest="abc1230000000000000000000000000000000000000000000000000000000000",
             allowed_capabilities=["basic_execution", "file_read"],
             execution_constraints={
                 "budget_usd": 10.0,
@@ -272,7 +272,7 @@ class TestContractualBoundaries:
         envelope = ExecutionEnvelope(
             task_spec=TaskSpec(objective="test", task_type="test"),
             eligibility_decision={},
-            policy_digest="test",
+            policy_digest="0000000000000000000000000000000000000000000000000000000000000000",
             allowed_capabilities=[],
             execution_constraints={},
             verification_requirements=VerificationPlan(),
