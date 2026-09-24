@@ -126,7 +126,7 @@
     "expected_verdict": "REJECT_UNKNOWN"
   },
   {
-    "id": "digest_upper_valid_hex",
+    "id": "digest_other_valid_hex",
     "base": "accepted.json",
     "override": {
       "policy_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -282,7 +282,7 @@
     "expected_verdict": "REJECT_UNKNOWN"
   },
   {
-    "id": "latency_float",
+    "id": "latency_float_fraction",
     "base": "accepted.json",
     "override": {
       "execution_constraints": {
@@ -323,5 +323,42 @@
       "policy_digest": "abc"
     },
     "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "budget_bool",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 5000,
+        "max_request_usd": 1.0,
+        "budget_usd": true
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "latency_bool",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": false,
+        "max_request_usd": 1.0
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "latency_float_integral",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 1.0,
+        "max_request_usd": 1.0
+      }
+    },
+    "expected_verdict": "ACCEPT"
   }
 ]

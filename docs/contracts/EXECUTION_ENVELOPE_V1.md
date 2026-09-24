@@ -10,6 +10,17 @@ The `ExecutionEnvelope` is the canonical versioned execution contract from verdi
 - **JSON Schema**: `schemas/contracts.v1.json#/$defs/execution_envelope`
 - **Fixtures**: `contracts/fixtures/execution-envelope/v1/`
 
+
+### policy_digest Format
+
+The `policy_digest` field is a **64-character lowercase hexadecimal string** without prefix:
+- Valid: `"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`
+- Invalid: `"sha256:aaaa..."` (prefix not allowed in envelope)
+- Invalid: `"AAAA..."` (uppercase rejected)
+
+**Producer note**: Core's `Policy.digest` emits a `"sha256:"` prefixed value. Producers **must strip the prefix** when building an ExecutionEnvelope. The Zod/Python/JSON Schema pattern is `^[a-f0-9]{64}$`.
+
+
 ## Schema Definition
 
 ```json

@@ -1,7 +1,7 @@
 {
-  "cases_digest": "sha256:46fe3a15058f9ee09529286741367f5c2a7a5a68f7eeb97fca2c0269dacb4299",
+  "cases_digest": "sha256:9f4e29e181987fe7e468f1efdef7393ccaf1297872cc1d78e570cc4c130d211b",
   "source_commit": "15d1f8f9edcd37250655331a425a07d5767a98eb",
-  "evaluation_time": "2026-09-24T23:09:48.351889+00:00",
+  "evaluation_time": "2024-01-15T12:30:00Z",
   "expected_policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "description": "Mutation corpus for ExecutionEnvelope v1: tests Python/Zod validation parity"
 }

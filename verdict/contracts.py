@@ -396,26 +396,50 @@ class ExecutionEnvelope(Contract):
         # risk_ceiling, allowed_*/required_verification arrays, expires_at
         constraints = self.execution_constraints
 
-        # budget_usd: non-negative number (>= 0, finite)
+        # budget_usd: non-negative number (>= 0, finite), not bool
         if "budget_usd" in constraints:
             val = constraints["budget_usd"]
-            if not isinstance(val, (int, float)) or not (0 <= val < float("inf")):
+            if (
+                isinstance(val, bool)
+                or not isinstance(val, (int, float))
+                or not (0 <= val < float("inf"))
+            ):
                 raise ContractValidationError(
                     f"execution_constraints.budget_usd must be a non-negative finite number, got {val!r}"
                 )
 
-        # max_request_usd: non-negative number (>= 0, finite)
+        # max_request_usd: non-negative number (>= 0, finite), not bool
         if "max_request_usd" in constraints:
             val = constraints["max_request_usd"]
-            if not isinstance(val, (int, float)) or not (0 <= val < float("inf")):
+            if (
+                isinstance(val, bool)
+                or not isinstance(val, (int, float))
+                or not (0 <= val < float("inf"))
+            ):
                 raise ContractValidationError(
                     f"execution_constraints.max_request_usd must be a non-negative finite number, got {val!r}"
                 )
 
-        # max_latency_ms: non-negative integer (>= 0, int)
+        # max_latency_ms: non-negative integer (>= 0, int or integral float), not bool
         if "max_latency_ms" in constraints:
             val = constraints["max_latency_ms"]
-            if not isinstance(val, int) or val < 0 or isinstance(val, bool):
+            # Reject bool explicitly (bool is subclass of int in Python)
+            # Accept int or float with .is_integer() == True (Zod z.number().int() accepts 1.0)
+            if isinstance(val, bool):
+                raise ContractValidationError(
+                    f"execution_constraints.max_latency_ms must be a non-negative integer, got {val!r}"
+                )
+            if isinstance(val, int):
+                if val < 0:
+                    raise ContractValidationError(
+                        f"execution_constraints.max_latency_ms must be a non-negative integer, got {val!r}"
+                    )
+            elif isinstance(val, float):
+                if not (val >= 0 and val < float("inf") and val.is_integer()):
+                    raise ContractValidationError(
+                        f"execution_constraints.max_latency_ms must be a non-negative integer, got {val!r}"
+                    )
+            else:
                 raise ContractValidationError(
                     f"execution_constraints.max_latency_ms must be a non-negative integer, got {val!r}"
                 )
