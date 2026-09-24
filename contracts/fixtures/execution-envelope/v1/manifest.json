@@ -1,0 +1,32 @@
+{
+  "contract_version": "1",
+  "evaluation_time": "2024-01-15T12:00:00Z",
+  "expected_policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "fixtures": {
+    "accepted.json": {
+      "expected_verdict": "ACCEPT",
+      "sha256": "b920eb54f1cd241deff9cd265367e8001440a1dc19620bafea1e4ea5d48d42da"
+    },
+    "denied.json": {
+      "expected_verdict": "DENY",
+      "sha256": "96e8de4c539911ca168fdab1548ada8f386d8d6c381557b731a8be6f7e8361ca"
+    },
+    "expired.json": {
+      "expected_verdict": "EXPIRED",
+      "sha256": "c4fe55cb50fa785ccdc325eb12068d53b57a7824a2ce48e73018e0a48d47ebc6"
+    },
+    "null-defaults.json": {
+      "expected_verdict": "ACCEPT",
+      "sha256": "627ed09ad5011a85e3d50815eea0259176570e2f6b1ebc8cdd86b37cdf960257"
+    },
+    "unknown-field.json": {
+      "expected_verdict": "REJECT_UNKNOWN",
+      "sha256": "f6c109365b7cfd7733f5dde02461e54786130588e7173091220f1b56e151c300"
+    },
+    "wrong-digest.json": {
+      "expected_verdict": "DIGEST_MISMATCH",
+      "sha256": "e7079dd803d846eb3506bcf74ff6eceba8ec10e2c3984e8ec8c660ed5407bc15"
+    }
+  },
+  "schema_id": "https://llm-gate.dev/schemas/contracts.v1.json#/$defs/execution_envelope"
+}

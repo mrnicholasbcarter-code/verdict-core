@@ -1,0 +1,45 @@
+{
+  "allowed_capabilities": [],
+  "created_at": "2024-01-15T12:00:00Z",
+  "eligibility_decision": {
+    "decision": "deny",
+    "reason": "policy violation"
+  },
+  "evidence_ids": [],
+  "execution_constraints": {},
+  "policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "routing_decision": null,
+  "schema_version": "1",
+  "task_spec": {
+    "approvals": [],
+    "budget": {},
+    "capabilities": [],
+    "context": null,
+    "context_requirements": {},
+    "criticality": "unknown",
+    "degraded_mode_policy": "deny",
+    "destructive_operation": false,
+    "effort": "unknown",
+    "latency": null,
+    "latency_limit_ms": null,
+    "metadata": {},
+    "objective": "test execution",
+    "parallelism": "serial",
+    "privacy": "unknown",
+    "production_impact": false,
+    "reasoning": "unknown",
+    "required_capabilities": [],
+    "risk": "unknown",
+    "schema_version": "1",
+    "task_type": "test",
+    "tool_requirements": {},
+    "tools": [],
+    "verification": null,
+    "workflow": null
+  },
+  "verification_requirements": {
+    "checks": [],
+    "on_failure": "deny",
+    "schema_version": "1"
+  }
+}
