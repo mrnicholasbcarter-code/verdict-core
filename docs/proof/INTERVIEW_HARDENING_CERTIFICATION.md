@@ -1,5 +1,7 @@
 # Interview hardening certification & cleanup report (BOD-178 → BOD-183)
 
+> **Superseded:** this was a self-reported certification for PR #589. The authoritative, fresh-clone certification with live evidence is [INTERVIEW_GOLDEN_PATH_CERTIFICATION.md](INTERVIEW_GOLDEN_PATH_CERTIFICATION.md).
+
 **Date:** 2026-09-24  
 **Branch:** `cursor/interview-hardening-bod-178-2d40`  
 **Linear:** [BOD-178](https://linear.app/bodanglin/issue/BOD-178) epic;

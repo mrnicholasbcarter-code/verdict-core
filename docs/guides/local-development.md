@@ -4,7 +4,7 @@
 
 - Python 3.10+
 - Node.js 18+ (for verdict-node, verdict-cockpit)
-- Docker (for OmniRoute)
+- OmniRoute (optional, for live routing/orchestration; installed separately)
 - Git
 
 ## Setup
@@ -13,15 +13,12 @@
 
 ```bash
 # Core (Python control plane)
-git clone https://github.com/verdict/verdict-core.git
+git clone https://github.com/mrnicholasbcarter-code/verdict-core.git
 cd verdict-core
 
-# Optional: Other repos
-git clone https://github.com/verdict/verdict-node.git
-git clone https://github.com/verdict/verdict-cockpit.git
-git clone https://github.com/verdict/verdict-risk.git
-git clone https://github.com/verdict/verdict-edge.git
-git clone https://github.com/verdict/verdict-backtest.git
+# Optional: other ecosystem repos (same owner)
+git clone https://github.com/mrnicholasbcarter-code/verdict-node.git
+git clone https://github.com/mrnicholasbcarter-code/verdict-cockpit.git
 ```
 
 ### 2. Python Environment
@@ -39,14 +36,15 @@ pytest -v
 
 ### 3. OmniRoute (Local)
 
-```bash
-# Start OmniRoute for 3,318+ models (90+ free tiers)
-docker run -d -p 20128:20128 omnibus/omniroute
+OmniRoute is an external gateway and is not bundled with Verdict. Install and start it
+per its own documentation, then check that the inventory endpoint answers:
 
-# Verify
-curl http://localhost:20128/v1/models | jq '.data | length'
-# → 3318
+```bash
+curl -s http://localhost:20128/v1/models | jq '.data | length'   # live model count
 ```
+
+For parallel agent workloads, apply the admission settings in
+[the interview golden path prerequisites](interview-golden-path.md#prerequisites).
 
 ### 4. Run Verdict Core Server
 
@@ -66,7 +64,7 @@ curl -X POST http://localhost:8000/v1/route \
 ## Running Tests
 
 ```bash
-# All tests (320 tests at the time of writing; run the command for the current count)
+# All tests (2907 at the time of writing; run the command for the current count)
 pytest -v
 
 # Specific test file
@@ -143,8 +141,8 @@ pip install -e .  # From verdict-core root
 
 ### OmniRoute connection refused
 ```bash
-docker ps | grep omniroute
-# If not running: docker run -d -p 20128:20128 omnibus/omniroute
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:20128/v1/models   # expect 200
+# If not 200, start OmniRoute per its own documentation (e.g. its systemd user service).
 ```
 
 ### Tests failing on import

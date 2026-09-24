@@ -74,6 +74,6 @@ mypy --strict verdict/       # typecheck
 
 ## OmniRoute
 - Endpoint: `http://localhost:20128/v1`
-- 3,318+ models, 250+ providers, 107+ free tiers
+- Thousands of models across dozens of providers; live count via `verdict eligibility` (7,107 ids observed 2026-09-24)
 - OmniRoute is transport and inventory only — not a metadata source of truth (ADR-032)
 - Smart routing: `auto/best-coding`, `auto/best-reasoning`, `auto/best-fast` (opaque refs; dropped by eligibility gate, not candidates)

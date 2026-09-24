@@ -108,8 +108,8 @@ hardening pass (successor for ADR-023).
 
 | File | Lifecycle | Canonical / successor |
 |---|---|---|
-| [`docs/architecture/ADR-EVIDENCE-LEDGER.md`](../architecture/ADR-EVIDENCE-LEDGER.md) | DUPLICATE | [`ADR-001`](ADR-001-evidence-ledger.md) |
-| [`docs/architecture/ADR-ORCHESTRATOR-ROUTING.md`](../architecture/ADR-ORCHESTRATOR-ROUTING.md) | DUPLICATE | Prefer [`ADR-002`](ADR-002-orchestrator-routing.md); Ruflo framing obsolete |
+| [`docs/architecture/ADR-EVIDENCE-LEDGER.md`](../archive/architecture/ADR-EVIDENCE-LEDGER.md) | DUPLICATE | [`ADR-001`](ADR-001-evidence-ledger.md) |
+| [`docs/architecture/ADR-ORCHESTRATOR-ROUTING.md`](../archive/architecture/ADR-ORCHESTRATOR-ROUTING.md) | DUPLICATE | Prefer [`ADR-002`](ADR-002-orchestrator-routing.md); Ruflo framing obsolete |
 | [`ADR-ORCHESTRATOR-ROUTING.md`](ADR-ORCHESTRATOR-ROUTING.md) | SUPERSEDED | BOD-17 / BOD-127 → [`ADR-035`](ADR-035-authorized-selected-route-dispatch.md) |
 
 Byte-identical copies in `verdict-core-memory` are classified DUPLICATE by BOD-169;

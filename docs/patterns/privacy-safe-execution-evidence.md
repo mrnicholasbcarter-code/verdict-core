@@ -1,7 +1,7 @@
 # Pattern: Privacy-Safe Execution Evidence
 
 **Status:** adopted for issue #53
-**Related ADR:** [`ADR-001`](../architecture/ADR-EVIDENCE-LEDGER.md)
+**Related ADR:** [`ADR-001`](../adr/ADR-001-evidence-ledger.md)
 
 ## Intent
 

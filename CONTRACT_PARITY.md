@@ -243,4 +243,4 @@ export const middleware = createMiddleware({
 - **Python Package**: https://pypi.org/project/verdict-core/
 - **TypeScript Contracts**: https://www.npmjs.com/package/@bodanglin/verdict-contracts
 - **TypeScript Middleware**: https://www.npmjs.com/package/@bodanglin/verdict-node
-- **Issues**: https://github.com/verdict/verdict-core/issues
+- **Issues**: https://github.com/mrnicholasbcarter-code/verdict-core/issues
