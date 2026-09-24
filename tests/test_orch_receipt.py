@@ -334,3 +334,19 @@ def test_review_from_event_when_no_review_file(tmp_path: Path) -> None:
     receipt = build_run_receipt(run_dir)
     assert receipt["review"]["status"] == "PASS"
     assert receipt["outcome"] == "COMPLETE"
+
+
+def test_attempt_without_terminal_from_dead_controller_is_abandoned(tmp_path: Path) -> None:
+    from verdict.orchestration.receipt import build_run_receipt
+
+    run_dir = _run(tmp_path, review=PASS)
+    log = EventLog(run_dir / "events.jsonl")
+    # A later controller life re-dispatches node a after a stalled attempt 3.
+    log.emit("dispatch", node_id="a", attempt=3, route_id="cc/hung")
+    log.emit("dispatch", node_id="a", attempt=4, route_id="cx/ok")
+    log.emit("terminal", node_id="a", attempt=4, ok=True, route_id="cx/ok")
+    log.emit("verify", node_id="a", ok=True, command=["pytest"], exit_code=0)
+    receipt = build_run_receipt(run_dir)
+    node_a = next(n for n in receipt["nodes"] if n["node_id"] == "a")
+    outcomes = {a["attempt"]: a["outcome"] for a in node_a["attempts"]}
+    assert outcomes[3] == "abandoned" and outcomes[4] == "success"
