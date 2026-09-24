@@ -155,15 +155,7 @@ about the boundary: this proves the run record was not altered after the fact. I
 attest LLM output quality, and it is not a signature against a tampering author who controls the
 whole machine.
 
-**What is not shipped?** From ADR-036 known limits and story bank evidence: adaptive concurrency
-is not yet implemented (BOD-157); the fix-and-review-again loop after a blocking OCR finding does
-not exist; `WORKER_CRITIC` topology is recorded but a per-node critic pass is not executed
-(only one independent review runs per run on the integrated diff); controller survival is a local
-supervisor process, not a daemon or service unit; dogfood story PRs (BOD-70, 3 merged) and
-harness-independence proof (BOD-188: UNDERSTAND and HYDRATE stages did ship, but full proof did
-not). No merge to `main` and no CI on a merged commit; a blocking OCR finding stops the run as
-`BLOCKED`. ADR-036 is implemented on `feat/interview-golden-path` (PR #590), not merged. No
-live merge or review-loop evidence on `main`.
+**What is not shipped?** See section 7 for shipped vs not shipped detail.
 
 ## 5. Four STAR stories
 
@@ -229,6 +221,16 @@ live merge or review-loop evidence on `main`.
 | 101 remote-tracking refs before cleanup | audit baseline | reconciliation |
 | ~$0.16 routed vs ~$0.52 baseline | deterministic mock over 100 requests; estimates, not invoices | README |
 | version 0.2.0, 36 numbered ADRs | current state | README |
+
+## 7. Shipped vs not shipped
+
+**Shipped on main:** Goal-to-receipt orchestration (ADR-036), eligibility ladder, parallel
+DAG runtime with reassignment/cooldowns, independent OCR review, digest-verified receipts,
+`verdict supervise` stall/resume, home screen and CLI, UNDERSTAND and HYDRATE stages.
+
+**Not shipped:** BOD-157 adaptive concurrency, fix-and-review loop after blocking OCR
+finding, per-node critic pass, interactive Prime root-session survival, BOD-70 dogfood on
+main, BOD-188 full harness-independence proof.
 
 Phrases to avoid: "production deployment", "merged main CI result", "proves the reviewer catches
 every bug". Say instead: certified on a fresh clone, on one host, on an unmerged branch, with
