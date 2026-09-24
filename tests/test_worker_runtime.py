@@ -23,16 +23,21 @@ from verdict.worker_runtime import (
 
 
 def row(name: str) -> dict[str, Any]:
-    return {"id": name, "context_length": 200000,
-            "capabilities": {"tool_calling": True}, "pricing": {"input": 0, "output": 0}}
+    return {
+        "id": name,
+        "context_length": 200000,
+        "capabilities": {"tool_calling": True},
+        "pricing": {"input": 0, "output": 0},
+    }
 
 
 OK = WorkerTerminal("done", "WORKER_OK", True, stop_reason="stop")
 
 
 class Adapter:
-    def __init__(self, results: list[Any], *, spawn_failure: bool = False,
-                 cleanup_failure: bool = False) -> None:
+    def __init__(
+        self, results: list[Any], *, spawn_failure: bool = False, cleanup_failure: bool = False
+    ) -> None:
         self.results = results
         self.calls: list[tuple[str, str]] = []
         self.prompts: list[str] = []
@@ -62,37 +67,63 @@ class Adapter:
 
 def controller(tmp_path: Path, adapter: Adapter, count: int = 2, **kwargs: Any) -> WorkerController:
     rows = [row(f"p{i:03}/free") for i in range(count)]
-    return WorkerController(WorkerTask(), inventory_rows=rows,
+    return WorkerController(
+        WorkerTask(),
+        inventory_rows=rows,
         prime_selectors=[f"omniroute/{r['id']}" for r in rows],
-        probe=lambda c: HealthResult(True, "healthy"), adapter=adapter,
-        cache=HealthCache(tmp_path / "health.json"), **kwargs)
+        probe=lambda c: HealthResult(True, "healthy"),
+        adapter=adapter,
+        cache=HealthCache(tmp_path / "health.json"),
+        **kwargs,
+    )
 
 
-@pytest.mark.parametrize(("terminal", "classification"), [
-    (WorkerTerminal("done", None, False), "child_without_reply"),
-    (WorkerTerminal("done", "early commentary", False, stop_reason="stop"), "child_without_reply"),
-    (WorkerTerminal("done", "", True, stop_reason="stop"), "empty_output"),
-    (WorkerTerminal("done", "  ", True, stop_reason="stop"), "empty_output"),
-    (WorkerTerminal("done", "partial", True, stop_reason="length"), "malformed_result"),
-    (WorkerTerminal("cancelled"), "child_cancelled"),
-    ({"rlm_child_id": "admission"}, "malformed_result"),
-    ("WORKER_OK", "malformed_result"),
-    (ValueError("invalid response"), "malformed_response"),
-    (RuntimeError("worker crashed"), "worker_exception"),
-    (OSError("connection reset"), "transport_temporary"),
-    (TimeoutError(), "timeout"),
-    *[(WorkerTerminal("error", error=f"HTTP {code}"), category) for code, category in [
-        (400, "unsupported"), (401, "authentication"), (402, "payment_required"),
-        (403, "permission"), (429, "rate_limited"), (500, "upstream_temporary"),
-        (502, "upstream_temporary"), (503, "upstream_temporary"), (599, "upstream_temporary")]],
-])
-async def test_each_failure_replaces_same_task(tmp_path: Path, terminal: Any, classification: str) -> None:
+@pytest.mark.parametrize(
+    ("terminal", "classification"),
+    [
+        (WorkerTerminal("done", None, False), "child_without_reply"),
+        (
+            WorkerTerminal("done", "early commentary", False, stop_reason="stop"),
+            "child_without_reply",
+        ),
+        (WorkerTerminal("done", "", True, stop_reason="stop"), "empty_output"),
+        (WorkerTerminal("done", "  ", True, stop_reason="stop"), "empty_output"),
+        (WorkerTerminal("done", "partial", True, stop_reason="length"), "malformed_result"),
+        (WorkerTerminal("cancelled"), "child_cancelled"),
+        ({"rlm_child_id": "admission"}, "malformed_result"),
+        ("WORKER_OK", "malformed_result"),
+        (ValueError("invalid response"), "malformed_response"),
+        (RuntimeError("worker crashed"), "worker_exception"),
+        (OSError("connection reset"), "transport_temporary"),
+        (TimeoutError(), "timeout"),
+        *[
+            (WorkerTerminal("error", error=f"HTTP {code}"), category)
+            for code, category in [
+                (400, "unsupported"),
+                (401, "authentication"),
+                (402, "payment_required"),
+                (403, "permission"),
+                (429, "rate_limited"),
+                (500, "upstream_temporary"),
+                (502, "upstream_temporary"),
+                (503, "upstream_temporary"),
+                (599, "upstream_temporary"),
+            ]
+        ],
+    ],
+)
+async def test_each_failure_replaces_same_task(
+    tmp_path: Path, terminal: Any, classification: str
+) -> None:
     adapter = Adapter([terminal, OK])
     runtime = controller(tmp_path, adapter)
     outcome = await runtime.run("same task")
     assert outcome.state == "SUCCESS"
     assert outcome.output == "WORKER_OK"
-    assert runtime.attempts == [("omniroute/p000/free", classification), ("omniroute/p001/free", "completed")]
+    assert runtime.attempts == [
+        ("omniroute/p000/free", classification),
+        ("omniroute/p001/free", "completed"),
+    ]
     assert adapter.prompts == ["same task", "same task"]
     assert [call[0] for call in adapter.calls] == ["spawn", "delete", "spawn"]
     assert len([e for e in runtime.events if e["event"] == "final"]) == 1
@@ -100,17 +131,25 @@ async def test_each_failure_replaces_same_task(tmp_path: Path, terminal: Any, cl
 
 
 async def test_antigravity_429_after_admission_replaces(tmp_path: Path) -> None:
-    adapter = Adapter([WorkerTerminal("error", error="429 [antigravity/model] quota; retry-after=120"), OK])
+    adapter = Adapter(
+        [WorkerTerminal("error", error="429 [antigravity/model] quota; retry-after=120"), OK]
+    )
     rows = [row("antigravity/model"), row("healthy/free")]
-    runtime = WorkerController(WorkerTask(), inventory_rows=rows,
+    runtime = WorkerController(
+        WorkerTask(),
+        inventory_rows=rows,
         prime_selectors=[f"omniroute/{r['id']}" for r in rows],
-        probe=lambda c: HealthResult(True, "healthy"), adapter=adapter,
-        cache=HealthCache(tmp_path / "health.json"))
+        probe=lambda c: HealthResult(True, "healthy"),
+        adapter=adapter,
+        cache=HealthCache(tmp_path / "health.json"),
+    )
     outcome = await runtime.run("same task")
     assert outcome.state == "SUCCESS"
     assert outcome.candidate and outcome.candidate.route_id == "healthy/free"
     assert runtime.cache._records["provider:antigravity"]["category"] == "rate_limited"
-    assert [e["event"] for e in runtime.events].index("admission") < [e["event"] for e in runtime.events].index("failure")
+    assert [e["event"] for e in runtime.events].index("admission") < [
+        e["event"] for e in runtime.events
+    ].index("failure")
 
 
 async def test_spawn_exception_replaces(tmp_path: Path) -> None:
@@ -138,7 +177,9 @@ async def test_cleanup_failure_is_actionable_not_duplicate_writer(tmp_path: Path
     assert len(adapter.prompts) == 1
 
 
-async def test_multiple_sequential_failures_and_beyond_old_replacement_budget(tmp_path: Path) -> None:
+async def test_multiple_sequential_failures_and_beyond_old_replacement_budget(
+    tmp_path: Path,
+) -> None:
     adapter = Adapter([WorkerTerminal("done")] * 14 + [OK])
     runtime = controller(tmp_path, adapter, count=15)
     assert (await runtime.run("task")).state == "SUCCESS"
@@ -158,6 +199,7 @@ async def test_unique_candidates_exhausted_once(tmp_path: Path) -> None:
 
 async def test_total_budget_bounds_probes(tmp_path: Path) -> None:
     import time
+
     runtime = controller(tmp_path, Adapter([OK]), budget=RuntimeBudget(total_seconds=0.01))
     runtime.probe = lambda c: (time.sleep(0.05), HealthResult(True, "healthy"))[1]
     outcome = await runtime.run("task")
@@ -168,12 +210,18 @@ async def test_total_budget_bounds_probes(tmp_path: Path) -> None:
 def test_healthy_after_old_first_twelve_cutoff(tmp_path: Path) -> None:
     rows = [row(f"p{i:03}/free") for i in range(31)]
     calls = []
+
     def probe(candidate: Any) -> HealthResult:
         calls.append(candidate.selector)
         return HealthResult(candidate.route_id == "p030/free", "probe")
-    result = select_worker_model(WorkerTask(), inventory_rows=rows,
-        prime_selectors=[f"omniroute/{r['id']}" for r in rows], probe=probe,
-        cache=HealthCache(tmp_path / "health.json"))
+
+    result = select_worker_model(
+        WorkerTask(),
+        inventory_rows=rows,
+        prime_selectors=[f"omniroute/{r['id']}" for r in rows],
+        probe=probe,
+        cache=HealthCache(tmp_path / "health.json"),
+    )
     assert result.model == "omniroute/p030/free"
     assert len(calls) == 31
 
@@ -194,16 +242,37 @@ class FileAdapter(PrimeFileAdapter):
         return [self.snapshot]
 
 
-@pytest.mark.parametrize("last", [
-    {"role": "assistant", "stopReason": "stop", "content": []},
-    {"role": "assistant", "stopReason": "error", "errorMessage": "429 antigravity", "content": []},
-    {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "partial"}]},
-])
+@pytest.mark.parametrize(
+    "last",
+    [
+        {"role": "assistant", "stopReason": "stop", "content": []},
+        {
+            "role": "assistant",
+            "stopReason": "error",
+            "errorMessage": "429 antigravity",
+            "content": [],
+        },
+        {
+            "role": "assistant",
+            "stopReason": "length",
+            "content": [{"type": "text", "text": "partial"}],
+        },
+    ],
+)
 async def test_preview_never_overrides_actual_failed_terminal(tmp_path: Path, last: Any) -> None:
-    (tmp_path / "child.jsonl").write_text(json.dumps({"type": "session"}) + "\n" +
-        json.dumps({"message": last}) + "\n")
-    adapter = FileAdapter(tmp_path, {"rlm_child_id": "c", "status": "done", "settled": True,
-                                    "replied_since_task": True, "answer_preview": "WORKER_OK"})
+    (tmp_path / "child.jsonl").write_text(
+        json.dumps({"type": "session"}) + "\n" + json.dumps({"message": last}) + "\n"
+    )
+    adapter = FileAdapter(
+        tmp_path,
+        {
+            "rlm_child_id": "c",
+            "status": "done",
+            "settled": True,
+            "replied_since_task": True,
+            "answer_preview": "WORKER_OK",
+        },
+    )
     terminal = await adapter.collect({"rlm_child_id": "c", "session_dir": str(tmp_path)})
     with pytest.raises(RuntimeError):
         validate_terminal(terminal)
@@ -211,16 +280,43 @@ async def test_preview_never_overrides_actual_failed_terminal(tmp_path: Path, la
 
 async def test_full_journal_not_truncated_preview_or_semantic_sidecar(tmp_path: Path) -> None:
     output = "valid output " * 100
-    (tmp_path / "child.jsonl").write_text(json.dumps({"type": "session"}) + "\n" + json.dumps({
-        "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": output}]}}))
+    (tmp_path / "child.jsonl").write_text(
+        json.dumps({"type": "session"})
+        + "\n"
+        + json.dumps(
+            {
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "stop",
+                    "content": [{"type": "text", "text": output}],
+                }
+            }
+        )
+    )
     (tmp_path / "semantic-edges.jsonl").write_text(json.dumps({"type": "edge"}))
-    adapter = FileAdapter(tmp_path, {"rlm_child_id": "c", "status": "done", "settled": True,
-                                    "replied_since_task": True, "answer_preview": "truncated"})
+    adapter = FileAdapter(
+        tmp_path,
+        {
+            "rlm_child_id": "c",
+            "status": "done",
+            "settled": True,
+            "replied_since_task": True,
+            "answer_preview": "truncated",
+        },
+    )
     terminal = await adapter.collect({"rlm_child_id": "c", "session_dir": str(tmp_path)})
     assert validate_terminal(terminal) == output.strip()
 
 
 async def test_running_reply_not_success(tmp_path: Path) -> None:
-    adapter = FileAdapter(tmp_path, {"rlm_child_id": "c", "status": "running", "settled": False,
-                                    "replied_since_task": True, "answer_preview": "WORKER_OK"})
+    adapter = FileAdapter(
+        tmp_path,
+        {
+            "rlm_child_id": "c",
+            "status": "running",
+            "settled": False,
+            "replied_since_task": True,
+            "answer_preview": "WORKER_OK",
+        },
+    )
     assert await adapter.collect({"rlm_child_id": "c"}) is None

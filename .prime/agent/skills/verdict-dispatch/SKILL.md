@@ -26,9 +26,15 @@ dependency readiness, source/worktree ownership and live target immediately befo
 
    ```python
    import runpy
-   dispatch = runpy.run_path("/home/nick/dev/verdict-core/.prime/agent/skills/verdict-dispatch/scripts/runtime_bridge.py")
+
+   dispatch = runpy.run_path(
+       "/home/nick/dev/verdict-core/.prime/agent/skills/verdict-dispatch/scripts/runtime_bridge.py"
+   )
    operation = dispatch["start"](
-       rlm, bash, "/home/nick/dev/verdict-core", worker_prompt,
+       rlm,
+       bash,
+       "/home/nick/dev/verdict-core",
+       worker_prompt,
        task={"required_capabilities": ["tools"], "coding": True},
        budget={"total_seconds": 900, "attempt_seconds": 180},
    )

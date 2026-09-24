@@ -161,9 +161,7 @@ class HealthCache:
 
 
 def classify_probe_status(
-    status_code: int | None,
-    *, timed_out: bool = False,
-    retry_after_seconds: float | None = None,
+    status_code: int | None, *, timed_out: bool = False, retry_after_seconds: float | None = None
 ) -> HealthResult:
     """Classify launch health without conflating auth, payment, or permission."""
     if timed_out:
@@ -213,11 +211,15 @@ def candidates_from_inventory(
         if route_id in CONTROLLER_MODELS or selector not in visible or _opaque(route_id):
             continue
         raw_capabilities = row.get("capabilities")
-        capabilities = frozenset(
-            str(key)
-            for key, value in raw_capabilities.items()
-            if isinstance(raw_capabilities, Mapping) and value is True
-        ) if isinstance(raw_capabilities, Mapping) else frozenset()
+        capabilities = (
+            frozenset(
+                str(key)
+                for key, value in raw_capabilities.items()
+                if isinstance(raw_capabilities, Mapping) and value is True
+            )
+            if isinstance(raw_capabilities, Mapping)
+            else frozenset()
+        )
         if "tool_calling" in capabilities:
             capabilities = capabilities | {"tools"}
         raw_pricing = row.get("pricing")
@@ -229,7 +231,12 @@ def candidates_from_inventory(
         frontier = any(
             token in lowered
             for token in (
-                "opus", "gpt-5.6", "gpt-6-sol", "gpt-6-astra", "gpt-5.5-pro", "gpt-5.4-pro",
+                "opus",
+                "gpt-5.6",
+                "gpt-6-sol",
+                "gpt-6-astra",
+                "gpt-5.5-pro",
+                "gpt-5.4-pro",
                 "frontier",
             )
         )
@@ -260,21 +267,24 @@ def candidates_from_inventory(
 
 
 def eligible_worker_candidates(
-    task: WorkerTask,
-    inventory_rows: Iterable[Mapping[str, Any]],
-    prime_selectors: Iterable[str],
+    task: WorkerTask, inventory_rows: Iterable[Mapping[str, Any]], prime_selectors: Iterable[str]
 ) -> tuple[LaunchCandidate, ...]:
     """Rank the entire unique eligible pool; never truncate a discovery prefix."""
     required = set(task.required_capabilities)
     if task.reasoning:
         required.add("reasoning")
-    return tuple(sorted(
-        (item for item in candidates_from_inventory(inventory_rows, prime_selectors)
-         if required <= item.capabilities
-         and item.context_tokens >= task.min_context_tokens
-         and (task.allow_frontier or not item.is_frontier)),
-        key=lambda item: _rank_key(item, task),
-    ))
+    return tuple(
+        sorted(
+            (
+                item
+                for item in candidates_from_inventory(inventory_rows, prime_selectors)
+                if required <= item.capabilities
+                and item.context_tokens >= task.min_context_tokens
+                and (task.allow_frontier or not item.is_frontier)
+            ),
+            key=lambda item: _rank_key(item, task),
+        )
+    )
 
 
 def select_worker_model(
@@ -335,10 +345,16 @@ async def execute_with_worker_failover(
     if max_replacements is not None and max_replacements < 0:
         raise ValueError("max_replacements must be non-negative")
     controller = WorkerController(
-        task, inventory_rows=inventory_rows, prime_selectors=prime_selectors,
-        probe=probe, adapter=CallbackAdapter(execute), cache=cache, now=now,
+        task,
+        inventory_rows=inventory_rows,
+        prime_selectors=prime_selectors,
+        probe=probe,
+        adapter=CallbackAdapter(execute),
+        cache=cache,
+        now=now,
         budget=RuntimeBudget(
-            total_seconds=total_timeout_seconds, attempt_seconds=attempt_timeout_seconds,
+            total_seconds=total_timeout_seconds,
+            attempt_seconds=attempt_timeout_seconds,
             max_attempts=None if max_replacements is None else max_replacements + 1,
         ),
     )
@@ -402,15 +418,11 @@ def _exception_retry_after(exc: BaseException, *, now: datetime | None) -> float
         if parsed is not None:
             return parsed
     message = str(exc)
-    retry_match = re.search(
-        r"retry[-_ ]?after[\s:=\"']+(\d+(?:\.\d+)?)", message, re.IGNORECASE
-    )
+    retry_match = re.search(r"retry[-_ ]?after[\s:=\"']+(\d+(?:\.\d+)?)", message, re.IGNORECASE)
     if retry_match:
         return float(retry_match.group(1))
     reset_match = re.search(
-        r"(?:x[-_ ]?)?rate[-_ ]?limit[-_ ]?reset[\s:=\"']+(\d+(?:\.\d+)?)",
-        message,
-        re.IGNORECASE,
+        r"(?:x[-_ ]?)?rate[-_ ]?limit[-_ ]?reset[\s:=\"']+(\d+(?:\.\d+)?)", message, re.IGNORECASE
     )
     return _retry_delay(reset_match.group(1), now=current, reset=True) if reset_match else None
 
@@ -420,17 +432,13 @@ def _malformed_exception(exc: BaseException) -> bool:
         token in str(exc).lower() for token in ("malformed", "invalid response", "decode")
     )
 
+
 # Economic ranking policy (NOT a fallback chain): eligibility, health and task
 # fit always gate first; this only orders the surviving pool.  Subscription
 # capacity is already paid for, so it outranks free-tier and metered capacity.
 # Operators override the provider->class map with VERDICT_CAPACITY_CLASSES,
 # e.g. "cc=claude_subscription,cx=subscription".
-CAPACITY_CLASS_ORDER: tuple[str, ...] = (
-    "claude_subscription",
-    "subscription",
-    "free",
-    "metered",
-)
+CAPACITY_CLASS_ORDER: tuple[str, ...] = ("claude_subscription", "subscription", "free", "metered")
 DEFAULT_PROVIDER_CAPACITY_CLASS: Mapping[str, str] = {
     "cc": "claude_subscription",
     "cx": "subscription",
@@ -559,7 +567,6 @@ def fetch_omniroute_inventory(
     if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
         raise ValueError("OmniRoute /models response has no data array")
     return tuple(item for item in data if isinstance(item, Mapping))
-
 
 
 def _provider_cache_key(selector: str) -> str:

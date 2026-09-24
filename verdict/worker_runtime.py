@@ -3,6 +3,7 @@
 The CLI runs in Verdict's environment. Prime's small kernel bridge supplies only
 native spawn/collect/delete RPCs; provider errors never unwind the controller.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,8 +41,10 @@ class RuntimeBudget:
     max_attempts: int | None = None
 
     def __post_init__(self) -> None:
-        if min(self.total_seconds, self.attempt_seconds, self.probe_seconds,
-               self.cleanup_seconds) <= 0:
+        if (
+            min(self.total_seconds, self.attempt_seconds, self.probe_seconds, self.cleanup_seconds)
+            <= 0
+        ):
             raise ValueError("runtime deadlines must be positive")
         if self.max_attempts is not None and self.max_attempts < 1:
             raise ValueError("max_attempts must be positive")
@@ -58,7 +61,9 @@ class WorkerOutcome:
 
     def render(self) -> str:
         if self.state == "SUCCESS" and self.candidate:
-            return f"SUCCESS model={self.candidate.selector} spawn_id={self.spawn_id}\n{self.output}"
+            return (
+                f"SUCCESS model={self.candidate.selector} spawn_id={self.spawn_id}\n{self.output}"
+            )
         return f"FAIL_CLOSED {self.diagnostic}"
 
 
@@ -94,9 +99,15 @@ class WorkerController:
     """One immutable task, one owned child at a time, exactly one final outcome."""
 
     def __init__(
-        self, task: WorkerTask, *, inventory_rows: Iterable[Mapping[str, Any]],
-        prime_selectors: Iterable[str], probe: Callable[[LaunchCandidate], HealthResult],
-        adapter: WorkerAdapter, cache: HealthCache, budget: RuntimeBudget = RuntimeBudget(),
+        self,
+        task: WorkerTask,
+        *,
+        inventory_rows: Iterable[Mapping[str, Any]],
+        prime_selectors: Iterable[str],
+        probe: Callable[[LaunchCandidate], HealthResult],
+        adapter: WorkerAdapter,
+        cache: HealthCache,
+        budget: RuntimeBudget = RuntimeBudget(),
         now: Callable[[], datetime] | None = None,
         emit: Callable[[dict[str, Any]], None] | None = None,
         validator: Callable[[str], bool] | None = None,
@@ -116,13 +127,26 @@ class WorkerController:
         self.events.append(row)
         self.emit(row)
 
-    def finish(self, state: str, diagnostic: str = "", *, output: str = "",
-               candidate: LaunchCandidate | None = None, spawn_id: str | None = None) -> WorkerOutcome:
+    def finish(
+        self,
+        state: str,
+        diagnostic: str = "",
+        *,
+        output: str = "",
+        candidate: LaunchCandidate | None = None,
+        spawn_id: str | None = None,
+    ) -> WorkerOutcome:
         if self.outcome is None:
-            self.outcome = WorkerOutcome(state, output, diagnostic, candidate, spawn_id,
-                                         tuple(self.attempts))
-            self.event("final", state=state, diagnostic=diagnostic, spawn_id=spawn_id,
-                       final_successful_model=candidate.selector if candidate else None)
+            self.outcome = WorkerOutcome(
+                state, output, diagnostic, candidate, spawn_id, tuple(self.attempts)
+            )
+            self.event(
+                "final",
+                state=state,
+                diagnostic=diagnostic,
+                spawn_id=spawn_id,
+                final_successful_model=candidate.selector if candidate else None,
+            )
         return self.outcome
 
     async def run(self, prompt: str) -> WorkerOutcome:
@@ -131,24 +155,38 @@ class WorkerController:
         try:
             return await self._run(prompt)
         except Exception as exc:
-            return self.finish("FAIL_CLOSED", f"controller infrastructure: {type(exc).__name__}: {exc}; "
-                               "inspect events and restore registry/cache/bridge access")
+            return self.finish(
+                "FAIL_CLOSED",
+                f"controller infrastructure: {type(exc).__name__}: {exc}; "
+                "inspect events and restore registry/cache/bridge access",
+            )
 
     async def _run(self, prompt: str) -> WorkerOutcome:
         deadline = time.monotonic() + self.budget.total_seconds
         previous: str | None = None
         for candidate in self.candidates:
             if time.monotonic() >= deadline:
-                return self.finish("FAIL_CLOSED", "total time budget reached; inspect attempt events; "
-                                   "increase total_seconds or restore provider capacity")
-            if self.budget.max_attempts is not None and len(self.attempts) >= self.budget.max_attempts:
-                return self.finish("FAIL_CLOSED", "replacement budget exhausted; increase max_attempts "
-                                   "or restore provider capacity")
+                return self.finish(
+                    "FAIL_CLOSED",
+                    "total time budget reached; inspect attempt events; "
+                    "increase total_seconds or restore provider capacity",
+                )
+            if (
+                self.budget.max_attempts is not None
+                and len(self.attempts) >= self.budget.max_attempts
+            ):
+                return self.finish(
+                    "FAIL_CLOSED",
+                    "replacement budget exhausted; increase max_attempts "
+                    "or restore provider capacity",
+                )
             health = self.cache.usable(candidate.selector, now=self.now())
             if health is None:
                 try:
-                    health = await asyncio.wait_for(asyncio.to_thread(self.probe, candidate),
-                        min(self.budget.probe_seconds, deadline - time.monotonic()))
+                    health = await asyncio.wait_for(
+                        asyncio.to_thread(self.probe, candidate),
+                        min(self.budget.probe_seconds, deadline - time.monotonic()),
+                    )
                     if not isinstance(health, HealthResult):
                         raise AttemptFailureError("malformed_probe")
                 except Exception as exc:
@@ -157,41 +195,71 @@ class WorkerController:
                     self.cache.record(candidate.selector, health, now=self.now())
                 else:
                     self.cache.record_failure(candidate, health, now=self.now())
-            self.event("health", model=candidate.selector, provider=candidate.route_id.split("/")[0],
-                       classification=health.category, eligible=health.healthy)
+            self.event(
+                "health",
+                model=candidate.selector,
+                provider=candidate.route_id.split("/")[0],
+                classification=health.category,
+                eligible=health.healthy,
+            )
             if not health.healthy:
-                self.event("exclusion", model=candidate.selector, classification=health.category,
-                           cooldown_seconds=_failure_cooldown(health), replacement=True)
+                self.event(
+                    "exclusion",
+                    model=candidate.selector,
+                    classification=health.category,
+                    cooldown_seconds=_failure_cooldown(health),
+                    replacement=True,
+                )
                 previous = candidate.selector
                 continue
             number = len(self.attempts) + 1
-            self.event("selection", attempt=number, model=candidate.selector,
-                       provider=candidate.route_id.split("/")[0], previous_model=previous,
-                       replacement_model=candidate.selector if previous else None)
+            self.event(
+                "selection",
+                attempt=number,
+                model=candidate.selector,
+                provider=candidate.route_id.split("/")[0],
+                previous_model=previous,
+                replacement_model=candidate.selector if previous else None,
+            )
             handle: Mapping[str, Any] | None = None
             spawn_id: str | None = None
             name = f"verdict-{self.operation_id[:10]}-{number}"
             admission_pending = True
             try:
                 attempt_deadline = min(deadline, time.monotonic() + self.budget.attempt_seconds)
-                handle = await asyncio.wait_for(self.adapter.spawn(
-                    prompt, name=name,
-                    model=candidate.selector), max(0.001, attempt_deadline - time.monotonic()))
+                handle = await asyncio.wait_for(
+                    self.adapter.spawn(prompt, name=name, model=candidate.selector),
+                    max(0.001, attempt_deadline - time.monotonic()),
+                )
                 admission_pending = False
                 spawn_id = handle.get("rlm_child_id")
-                if not isinstance(spawn_id, str) or not spawn_id or handle.get("model") != candidate.selector:
+                if (
+                    not isinstance(spawn_id, str)
+                    or not spawn_id
+                    or handle.get("model") != candidate.selector
+                ):
                     raise AttemptFailureError("malformed_admission")
-                self.event("admission", attempt=number, model=candidate.selector,
-                           spawn_id=spawn_id, admitted=True)
+                self.event(
+                    "admission",
+                    attempt=number,
+                    model=candidate.selector,
+                    spawn_id=spawn_id,
+                    admitted=True,
+                )
                 while True:
                     remaining = attempt_deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError("child execution deadline")
                     terminal = await asyncio.wait_for(self.adapter.collect(handle), remaining)
                     if terminal is not None:
-                        self.event("terminal", attempt=number, model=candidate.selector,
-                                   spawn_id=spawn_id, child_state=getattr(terminal, "state", "malformed"),
-                                   replied=getattr(terminal, "replied", False))
+                        self.event(
+                            "terminal",
+                            attempt=number,
+                            model=candidate.selector,
+                            spawn_id=spawn_id,
+                            child_state=getattr(terminal, "state", "malformed"),
+                            replied=getattr(terminal, "replied", False),
+                        )
                         output = validate_terminal(terminal)
                         if not self.validator(output):
                             raise AttemptFailureError("invalid_output")
@@ -205,24 +273,39 @@ class WorkerController:
                 health = self.failure(exc)
                 self.attempts.append((candidate.selector, health.category))
                 self.cache.record_failure(candidate, health, now=self.now())
-                self.event("failure", attempt=number, model=candidate.selector, spawn_id=spawn_id,
-                           classification=health.category, cooldown_seconds=_failure_cooldown(health),
-                           excluded=True, replacement=True)
+                self.event(
+                    "failure",
+                    attempt=number,
+                    model=candidate.selector,
+                    spawn_id=spawn_id,
+                    classification=health.category,
+                    cooldown_seconds=_failure_cooldown(health),
+                    excluded=True,
+                    replacement=True,
+                )
                 if handle is not None:
                     # A timed-out writer must be reaped before a replacement can write.
                     try:
-                        await asyncio.wait_for(self.adapter.delete(handle), self.budget.cleanup_seconds)
+                        await asyncio.wait_for(
+                            self.adapter.delete(handle), self.budget.cleanup_seconds
+                        )
                     except Exception as cleanup:
-                        return self.finish("FAIL_CLOSED", f"cleanup_unconfirmed spawn={spawn_id}: "
-                            f"{cleanup}; stop this owned child before retrying")
+                        return self.finish(
+                            "FAIL_CLOSED",
+                            f"cleanup_unconfirmed spawn={spawn_id}: "
+                            f"{cleanup}; stop this owned child before retrying",
+                        )
                 previous = candidate.selector
                 continue
             self.attempts.append((candidate.selector, "completed"))
             self.cache.record(candidate.selector, HealthResult(True, "healthy"), now=self.now())
             return self.finish("SUCCESS", output=output, candidate=candidate, spawn_id=spawn_id)
         detail = ", ".join(f"{model}:{category}" for model, category in self.attempts)
-        return self.finish("FAIL_CLOSED", "eligible candidates exhausted (including active cooldowns); "
-                           f"restore provider health or refresh discovery; attempts={detail}")
+        return self.finish(
+            "FAIL_CLOSED",
+            "eligible candidates exhausted (including active cooldowns); "
+            f"restore provider health or refresh discovery; attempts={detail}",
+        )
 
     @staticmethod
     def failure(exc: Exception) -> HealthResult:
@@ -233,6 +316,7 @@ class WorkerController:
 
 class CallbackAdapter:
     """Compatibility adapter for terminal-producing callbacks, never spawn callbacks."""
+
     def __init__(self, execute: Callable[[str], Awaitable[WorkerTerminal]]) -> None:
         self.execute = execute
 
@@ -248,18 +332,21 @@ class CallbackAdapter:
 
 def atomic_json(path: Path, value: object) -> None:
     temp = path.with_suffix(".tmp")
+
     def encode(item: Any) -> Any:
         if isinstance(item, (set, frozenset)):
             return sorted(item)
         if isinstance(item, Path):
             return str(item)
         raise TypeError(f"unsupported result field {type(item).__name__}")
+
     temp.write_text(json.dumps(value, default=encode), encoding="utf-8")
     temp.replace(path)
 
 
 class PrimeFileAdapter:
     """RPC transport to the parent kernel; no provider inference in the parent turn."""
+
     def __init__(self, directory: Path) -> None:
         self.directory = directory
 
@@ -306,22 +393,34 @@ class PrimeFileAdapter:
                 files.append(path)
         if len(files) != 1:
             raise AttemptFailureError("missing_terminal_journal")
-        messages = [json.loads(line).get("message", {}) for line in files[0].read_text().splitlines()]
+        messages = [
+            json.loads(line).get("message", {}) for line in files[0].read_text().splitlines()
+        ]
         assistants = [message for message in messages if message.get("role") == "assistant"]
         if not assistants:
-            return WorkerTerminal(str(row.get("status")), replied=row.get("replied_since_task") is True)
+            return WorkerTerminal(
+                str(row.get("status")), replied=row.get("replied_since_task") is True
+            )
         last = assistants[-1]
         expected = handle.get("model")
         if expected is not None and not last.get("errorMessage"):
             actual = f"{last.get('provider')}/{last.get('model')}"
             if actual != expected:
                 raise AttemptFailureError("model_provenance_mismatch")
-        output = "\n".join(block["text"] for block in last.get("content", [])
-                           if isinstance(block, dict) and block.get("type") == "text"
-                           and isinstance(block.get("text"), str))
-        return WorkerTerminal(str(row.get("status")), output,
-                              row.get("replied_since_task") is True,
-                              last.get("errorMessage"), last.get("stopReason"))
+        output = "\n".join(
+            block["text"]
+            for block in last.get("content", [])
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        )
+        return WorkerTerminal(
+            str(row.get("status")),
+            output,
+            row.get("replied_since_task") is True,
+            last.get("errorMessage"),
+            last.get("stopReason"),
+        )
 
     async def delete(self, handle: Mapping[str, Any]) -> None:
         await self.rpc("delete", child_id=handle["rlm_child_id"])
@@ -330,15 +429,22 @@ class PrimeFileAdapter:
 async def cli_run(directory: Path) -> int:
     config = json.loads((directory / "config.json").read_text())
     events = directory / "events.jsonl"
+
     def emit(event: dict[str, Any]) -> None:
         if event["event"] == "final":
             return  # Published exactly once below, after serializing the outcome.
         with events.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(event) + "\n")
+
     try:
         # CLI registry listing is complete; find_models has a bounded search limit.
-        process = await asyncio.create_subprocess_exec("prime-agent", "model", "list",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        process = await asyncio.create_subprocess_exec(
+            "prime-agent",
+            "model",
+            "list",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), 20)
         except TimeoutError:
@@ -347,31 +453,65 @@ async def cli_run(directory: Path) -> int:
             raise
         if process.returncode:
             raise RuntimeError("Prime model registry unavailable: " + stderr.decode()[:500])
-        selectors = ["/".join(line.split()[:2]) for line in stdout.decode().splitlines()[1:]
-                     if len(line.split()) >= 2]
+        selectors = [
+            "/".join(line.split()[:2])
+            for line in stdout.decode().splitlines()[1:]
+            if len(line.split()) >= 2
+        ]
         rows = await asyncio.to_thread(fetch_omniroute_inventory)
         atomic_json(directory / "discovery.json", {"rows": rows, "prime_selectors": selectors})
         task_config = config.get("task", {})
-        task_config["required_capabilities"] = frozenset(task_config.get("required_capabilities", []))
-        controller = WorkerController(WorkerTask(**task_config), inventory_rows=rows,
-            prime_selectors=selectors, probe=openai_health_probe(),
-            adapter=PrimeFileAdapter(directory), cache=HealthCache(),
-            budget=RuntimeBudget(**config.get("budget", {})), emit=emit)
+        task_config["required_capabilities"] = frozenset(
+            task_config.get("required_capabilities", [])
+        )
+        controller = WorkerController(
+            WorkerTask(**task_config),
+            inventory_rows=rows,
+            prime_selectors=selectors,
+            probe=openai_health_probe(),
+            adapter=PrimeFileAdapter(directory),
+            cache=HealthCache(),
+            budget=RuntimeBudget(**config.get("budget", {})),
+            emit=emit,
+        )
         outcome = await controller.run(config["prompt"])
     except Exception as exc:
-        outcome = WorkerOutcome("FAIL_CLOSED", "", f"discovery/runtime unavailable: {exc}; "
-                                "inspect Prime registry and OmniRoute", None, None, ())
+        outcome = WorkerOutcome(
+            "FAIL_CLOSED",
+            "",
+            f"discovery/runtime unavailable: {exc}; inspect Prime registry and OmniRoute",
+            None,
+            None,
+            (),
+        )
         emit({"event": "final", "state": outcome.state, "diagnostic": outcome.diagnostic})
     try:
         atomic_json(directory / "outcome.json", asdict(outcome))
     except Exception as exc:
-        outcome = WorkerOutcome("FAIL_CLOSED", "", f"outcome publication failed: {exc}; "
-                                "restore artifact directory write access", None, None, outcome.attempts)
+        outcome = WorkerOutcome(
+            "FAIL_CLOSED",
+            "",
+            f"outcome publication failed: {exc}; restore artifact directory write access",
+            None,
+            None,
+            outcome.attempts,
+        )
     try:
         with events.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({"event": "final", "state": outcome.state,
-                "diagnostic": outcome.diagnostic, "spawn_id": outcome.spawn_id,
-                "final_successful_model": outcome.candidate.selector if outcome.candidate else None}) + "\n")
+            stream.write(
+                json.dumps(
+                    {
+                        "event": "final",
+                        "state": outcome.state,
+                        "diagnostic": outcome.diagnostic,
+                        "spawn_id": outcome.spawn_id,
+                        "final_successful_model": outcome.candidate.selector
+                        if outcome.candidate
+                        else None,
+                    }
+                )
+                + "\n"
+            )
     except OSError:
         pass  # The explicit stdout outcome is still mandatory when disk access fails.
     print(outcome.render(), flush=True)

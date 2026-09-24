@@ -107,12 +107,7 @@ def test_failed_probe_is_cached_and_not_retried_before_cooldown(tmp_path: Path) 
     cache = _cache(tmp_path)
     task = WorkerTask(required_capabilities=frozenset({"tools"}))
     first = select_worker_model(
-        task,
-        inventory_rows=rows,
-        prime_selectors=visible,
-        probe=probe,
-        cache=cache,
-        now=NOW,
+        task, inventory_rows=rows, prime_selectors=visible, probe=probe, cache=cache, now=NOW
     )
     second = select_worker_model(
         task,
@@ -173,9 +168,7 @@ def test_frontier_is_reserved_unless_task_is_worthy_or_protected(tmp_path: Path)
         now=NOW,
     )
     worthy = select_worker_model(
-        WorkerTask(
-            required_capabilities=frozenset({"tools"}), coding=True, frontier_worthy=True
-        ),
+        WorkerTask(required_capabilities=frozenset({"tools"}), coding=True, frontier_worthy=True),
         inventory_rows=rows,
         prime_selectors=visible,
         probe=lambda candidate: classify_probe_status(200),
@@ -223,9 +216,7 @@ class _Response:
 
 
 def test_probe_requires_real_inference_output_not_only_http_200() -> None:
-    candidate = candidates_from_inventory(
-        [_row("worker/visible")], ["omniroute/worker/visible"]
-    )[0]
+    candidate = candidates_from_inventory([_row("worker/visible")], ["omniroute/worker/visible"])[0]
     invalid = openai_health_probe(
         opener=lambda request, timeout: _Response(200, b'{"object":"list"}')
     )(candidate)
@@ -282,10 +273,7 @@ async def test_antigravity_429_worker_escape_is_isolated_and_next_worker_runs(
         "omniroute/antigravity/claude-opus-4-6-thinking",
         "omniroute/kc/qwen/qwen3.8-27b:free",
     ]
-    assert result.attempts[0] == (
-        "omniroute/antigravity/claude-opus-4-6-thinking",
-        "rate_limited",
-    )
+    assert result.attempts[0] == ("omniroute/antigravity/claude-opus-4-6-thinking", "rate_limited")
     candidate_record = cache._records["omniroute/antigravity/claude-opus-4-6-thinking"]
     provider_record = cache._records["provider:antigravity"]
     assert candidate_record["expires_at"] == provider_record["expires_at"]
@@ -312,9 +300,7 @@ def test_runtime_failures_use_existing_health_policy(failure: BaseException, cat
 
 def test_runtime_429_parses_message_reset_epoch_milliseconds() -> None:
     reset_ms = int((NOW + timedelta(seconds=45)).timestamp() * 1000)
-    failure = RuntimeError(
-        f'antigravity worker failed: 429; x-ratelimit-reset="{reset_ms}"'
-    )
+    failure = RuntimeError(f'antigravity worker failed: 429; x-ratelimit-reset="{reset_ms}"')
     result = classify_worker_failure(failure, now=NOW)
     assert result.category == "rate_limited"
     assert result.retry_after_seconds == pytest.approx(45)
