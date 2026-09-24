@@ -1,37 +1,33 @@
-# Verdict Core Launch Package & Press Release
+# Verdict Core — evidence-backed showcase package
 
-## Press Release / Announcement
+## Announcement draft (branch-qualified)
 
-### FOR IMMEDIATE RELEASE
+**Verdict Core demonstrates goal-to-receipt orchestration with capacity-aware model selection and inspectable failure recovery.**
 
-**Verdict & RuVector Ship Unified Local-First Memory and Evidence Control Plane for Autonomous AI Agents**
+On the `feat/interview-golden-path` branch, Verdict takes a development goal through frontier planning, parallel work units, integration, independent AI code review and a verified run receipt. Verdict owns eligibility and route selection. Prime Agent executes workers. OmniRoute supplies inventory and transport. [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) defines those boundaries.
 
-*New open-source framework eliminates cloud vector database limits, unifies context across 9 AI agent tools, and brings deterministic guidance enforcement to multi-agent swarms.*
+This is a certified branch demonstration, **not** a claim of production deployment or merge to `main`. A [fresh-clone certification](../proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md) records a clean install, `ruff check .`, `mypy --strict verdict/`, **2907 passed** in the full test suite and a live `certlive` run that completed with an integration barrier and a passing independent review. The evidence directory is `~/.verdict/evidence/golden-path/` (local operator artifacts, not checked into the repository).
 
-**SAN FRANCISCO, CA — July 28, 2026** — Today, the Verdict Core team announced the release of **Verdict v0**, a local-first evidence control plane and unified memory system (`MemoryPlane`) designed for autonomous AI coding agents and swarms.
+### What is shown
 
-As developer teams increasingly rely on AI agent tools such as OpenAI Codex, Claude Code, Pi, Ruflo, Cursor, and Hermes, context isolation and cloud embedding usage limits have created major bottlenecks. AI agents frequently lose context across sessions, overwrite each other's work, or burn expensive API calls re-indexing codebase files.
+- **Dynamic, capacity-aware selection:** live discovery, entitlement, health and cooldown checks precede task eligibility and ranking. Capacity class reflects account evidence, not a static provider fallback list. [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md).
+- **Bounded same-node recovery:** quota, 401/402/403, 429, timeout, transport and 5xx scenarios were exercised on live `cc/*` and `cx/*` capacity with tagged fault injections. Receipts name route changes and cooldown scope; `live7` and `live11` demonstrate fail-closed pool exhaustion. [Scenario matrix](../proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md).
+- **Independent review and fail-closed receipt:** after integration, OpenCodeReview reviews the diff on a route that excludes implementers. Missing or failed review cannot produce `COMPLETE`. `events.jsonl` has a digest in `receipt.json`; the completed live runs passed receipt integrity checks. [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md); [certification](../proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md).
 
-Verdict solves this by providing a unified, local-first memory plane (`~/.verdict/memory.db`) powered by a native SQLite + HNSW vector index (`ruvector.db`). Verdict operates 100% offline, allowing AI agents across different harnesses to share session memory, document context, and AST code intelligence graphs in real time under 5 milliseconds.
+The source is at [mrnicholasbcarter-code/verdict-core](https://github.com/mrnicholasbcarter-code/verdict-core).
 
-"Developers shouldn't have to lock themselves into a single AI CLI or pay continuous cloud subscription fees just to keep their AI agents from forgetting what happened in the last session," said Nicholas Carter, Lead Architect of Verdict Core. "Verdict gives AI agents a shared, permanent brain that runs locally on your machine with zero setup friction."
+## Five-minute showcase script
 
-### Key Features of Verdict Core
+Prerequisites and the full procedure are in the [interview golden-path guide](../guides/interview-golden-path.md). The live commands require configured OmniRoute, model entitlement, Prime routes and `ocr`; the credential-free quickstart is a separate fixture and does not prove live-provider availability.
 
-- **Unified Local-First MemoryPlane**: Zero network calls, zero OpenViking dependencies, instant cross-tool session recall.
-- **9-Ecosystem Autopilot**: Automatically detects installed AI agent tools (Codex, Claude Code, Pi, Ruflo, Hermes, Cursor, VSCode, OmniRoute, MCP) and configures memory bridges.
-- **AST Code Intelligence Graph**: Parses Python codebases into entity nodes and edges, calculating architectural bridge nodes and degree hub hotspots without heavy external graph databases.
-- **Platform-Agnostic Guidance Boundary**: Enforces project safety rules and quality invariants across 6-category lifecycle hooks (`on_prompt`, `pre_edit`, `post_command`, `session_end`).
-- **Self-Healing Doctor & Uninstaller**: `verdict doctor --fix` automatically repairs broken MCP definitions or missing memory headers, while `verdict uninstall` provides clean, reversible removal.
+1. **Name the evidence boundary.** Open the [certification](../proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md). State that the branch was fresh-clone tested, not merged to `main`, and the faults below are tagged injections against real route capacity.
+2. **Show eligibility.** Run `verdict eligibility --scope cc/,cx/ --probe --frontier`. Discuss the order of checks; do not claim that a listed catalog entry alone is available.
+3. **Show the goal path.** In a disposable repository with the guide's prerequisites, run `verdict orchestrate "<goal>" --repo /path/to/repo --scope cc/,cx/ --max-parallel 3`. Show planning, separate worker worktrees, validation and integrated review. The recorded demonstration is `certlive` in `~/.verdict/evidence/golden-path/certlive-run/`.
+4. **Show a documented failure, not a fabricated live outage.** Inspect `~/.verdict/evidence/golden-path/live9-run/receipt.json` for model-scoped quota and reassignment, or `live12-run/receipt.json` for a provider-scoped Codex quota and reassignment to Claude. Inspect `live7-run/receipt.json` for the exhausted-pool `BLOCKED` outcome. [Scenario matrix](../proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md).
+5. **Verify the verdict.** Run `verdict watch <run-dir> --once` and `verdict run-receipt <run-dir>` against a recorded run directory. Contrast the review gate and receipt with a response that merely says the work was done.
 
-Verdict Core is open-source and available immediately on GitHub at `https://github.com/mrnicholasbcarter-code/verdict-core` and as a standalone memory engine at `https://github.com/mrnicholasbcarter-code/verdict-core-memory`.
+For a deterministic, credential-free entry point, run `verdict quickstart --non-interactive --dry-run`. The [certification](../proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md) records this gate separately from `certlive`.
 
----
+## Limits to say out loud
 
-## Credibility-First 5-Minute Demo Walkthrough
-
-1. **One-Command Setup**: `verdict memory setup --autopilot` automatically scans the host system, detects installed AI tools (Codex, Claude Code, Cursor, MCP), and links the shared Verdict memory bridge.
-2. **Context Memory Recall**: Demonstrates Codex recording a task session in `.codex/` and Claude Code instantly recalling that session context in `CLAUDE.md` via `MemoryPlane`.
-3. **AST Code Graph Search**: Demonstrates searching for architectural chokepoints (`bridge_nodes`) and calculating blast radius (`get_impact_radius`) across modified modules.
-4. **Rules Enforcement**: Demonstrates `verdict` blocking a dangerous shell command (`rm -rf`) via `pre-command` lifecycle hook.
-5. **Doctor & Reversible Uninstall**: Runs `verdict doctor --fix` to verify system health, followed by `verdict uninstall` showing clean header removal without code disruption.
+A blocking review finding stops the run as `BLOCKED`; automatic remediation and re-review are **not shipped**. Adaptive concurrency is **not shipped**; `--max-parallel` is operator-set. Neither a main-branch merge nor CI on a merged commit is certified here. The recorded faults demonstrate classifications and recovery branches; they are not estimates of provider outage frequency or service-level reliability. [Certification limits](../proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md); [ADR-036 limits](../adr/ADR-036-goal-to-receipt-orchestration.md).
