@@ -85,3 +85,10 @@ exports/
 discovery/
 .mcp.json
 CLAUDE.md.backup-*
+
+# MCP server runtime state (generated at runtime, not source)
+.playwright-mcp/
+.serena/
+
+# Benchmark fixture workspace runtime state
+benchmarks/fixtures/legit_workspace/.verdict/
