@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from verdict.home import PALETTE, HomeState, recent_runs, render_home, run_home
@@ -77,3 +78,13 @@ def test_hostile_run_names_are_sanitized(tmp_path: Path) -> None:
     console = _console()
     run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False)
     assert "\x1b[31m" not in console.file.getvalue()
+
+
+def test_bare_verdict_without_tty_keeps_help_contract(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import verdict.cli as cli
+
+    monkeypatch.setattr(cli.sys, "argv", ["verdict"])
+    cli.main()
+    assert "Available commands" in capsys.readouterr().out

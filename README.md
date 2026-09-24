@@ -159,7 +159,7 @@ VERDICT_MEMORY_DB=/tmp/verdict-failover.db uv run python -m verdict replay <sess
 
 ## Architecture
 
-Decisions live in [`docs/adr/`](docs/adr/) — 30 numbered records, indexed in [`docs/adr/README.md`](docs/adr/README.md). Start with these:
+Decisions live in [`docs/adr/`](docs/adr/) — numbered records through ADR-035, indexed in [`docs/adr/README.md`](docs/adr/README.md) (lifecycle classifications consume the [ecosystem BOD-169 audit](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)). Start with these:
 
 | Area | Record |
 | --- | --- |
@@ -170,6 +170,7 @@ Decisions live in [`docs/adr/`](docs/adr/) — 30 numbered records, indexed in [
 | Advisory signals stay shadow-only | [ADR-018](docs/adr/ADR-018-shadow-and-counterfactual-evaluation.md) |
 | Cross-repo compatibility gate | [ADR-024](docs/adr/ADR-024-cross-repo-compatibility-gate.md) |
 | Python/TypeScript envelope parity | [ADR-025](docs/adr/ADR-025-node-envelope-enforcement.md) |
+| Post-swarm authorized dispatch | [ADR-035](docs/adr/ADR-035-authorized-selected-route-dispatch.md) |
 
 Python is the reference implementation. [verdict-node](https://github.com/mrnicholasbcarter-code/verdict-node) provides the TypeScript surface; `verdict compat` gates the shared contract.
 
@@ -190,15 +191,19 @@ Python is the reference implementation. [verdict-node](https://github.com/mrnich
 
 | Topic | Location |
 | --- | --- |
+| Getting started | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) |
 | End-to-end walkthrough | [`docs/USER_JOURNEY.md`](docs/USER_JOURNEY.md) |
+| Architecture (shipped path) | [`docs/architecture.md`](docs/architecture.md) |
+| Configuration (YAML + env) | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) |
 | Golden path (install → live probe) | [`docs/guides/golden-path.md`](docs/guides/golden-path.md) |
 | Unknown ≠ healthy (fail-closed drops) | [`docs/guides/unknown-not-healthy.md`](docs/guides/unknown-not-healthy.md) |
 | vs LiteLLM / OpenRouter / Portkey | [`docs/guides/comparison.md`](docs/guides/comparison.md) |
 | Claude Code / Codex / Cursor gate | [`docs/guides/coding-agent-gate.md`](docs/guides/coding-agent-gate.md) |
 | Full CLI reference | [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) |
-| Architecture decisions | [`docs/adr/README.md`](docs/adr/README.md) |
+| Architecture decisions (lifecycle index) | [`docs/adr/README.md`](docs/adr/README.md) |
 | Benchmarks and receipts | [`docs/benchmarks/`](docs/benchmarks/) |
 | Evidence index | [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md) |
+| Interview / cleanup certification | [`docs/proof/INTERVIEW_HARDENING_CERTIFICATION.md`](docs/proof/INTERVIEW_HARDENING_CERTIFICATION.md) |
 | Claims audit and v0.3.0 boundary | [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md) · [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md) |
 | Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Security policy | [`SECURITY.md`](SECURITY.md) |

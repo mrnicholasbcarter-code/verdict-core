@@ -7,11 +7,11 @@ Spec Kit and documentation-and-adrs capabilities remain dependencies, not new sk
 
 ## Start
 
-From a checkout containing this change:
+From a contributor checkout of this repository:
 
 ```bash
-cd /home/nick/dev/verdict-core/.worktrees/prime-workflow-skills
-export PATH=/home/nick/.nvm/versions/node/v22.23.1/bin:/home/nick/.local/bin:$PATH
+cd /path/to/verdict-core
+# Ensure `prime-agent` and your preferred Node/Python tooling are on PATH
 prime-agent model list
 prime-agent --cwd "$PWD" '/verdict-resume'
 ```
@@ -78,7 +78,7 @@ Sequential Thinking may help architecture, dependency analysis and stall diagnos
 cannot approve policy, prove tests or alter issue truth. Prefer codebase-memory / code-review-graph
 for code context; source search is the documented fallback when graph coverage is insufficient.
 Basic Memory is a retrieval layer under ADR-030, not the work queue. Use installed
-`documentation-and-adrs` (host: `/home/nick/.agents/skills/documentation-and-adrs/SKILL.md`)
+`documentation-and-adrs` (host skill: `documentation-and-adrs/SKILL.md` from your agent skill path)
 whenever architecture/API/decision documentation changes. Discover it through existing skill
 paths or read that installed file explicitly; do not copy it into these five workflows.
 
@@ -343,13 +343,14 @@ live issue. User MCP settings are execution authority; Prime ignores project MCP
 
 ### Spec Kit in fresh worktrees
 
-Current main tracks `.specify/feature.json` but not the standard Spec Kit shell scripts.
-Do not blindly run a missing `.specify/scripts/bash/setup-plan.sh`, and do not reuse
-the stale feature pointer for another Linear issue. The host already provides
-`/home/nick/.agents/skills/spec-driven-development/SKILL.md` with the approved lean
-specify/plan/tasks/implement method, plus Spec Kit templates under
-`/home/nick/dev/verdict-continuity/.specify/templates` and `speckit-*` skills in the
-configured global skill path.
+The repository no longer tracks a stale `.specify/feature.json` pointer.
+Do not blindly run a missing `.specify/scripts/bash/setup-plan.sh`, and do not
+reuse a leftover feature pointer for another Linear issue.
+
+Prefer project Spec Kit scripts and templates when they exist in the checkout.
+Otherwise use the host-installed Spec Kit / `spec-driven-development` skill and
+global Spec Kit templates from your agent skill path — do not hard-code
+machine-local absolute paths into shared docs.
 
 Read those existing capabilities. If project scripts are present, use them and their hooks.
 If absent, use the existing lean spec-driven-development skill and Spec Kit templates directly

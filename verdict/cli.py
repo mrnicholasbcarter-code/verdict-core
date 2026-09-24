@@ -3123,6 +3123,10 @@ def cmd_mcp(args: Any) -> None:
                 )
 
 
+def _stdout_is_tty() -> bool:
+    return sys.stdout.isatty()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verdict: policy-gated LLM Router")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -4485,7 +4489,9 @@ def main() -> None:
             repo=Path(args.repo),
             create_if_missing=bool(getattr(args, "create", False)),
         )
-    elif args.command is None:
+    elif args.command is None and _stdout_is_tty() and os.getenv("VERDICT_PLAIN") != "1":
+        # Interactive terminals get the Verdict home screen; pipes, CI and tests
+        # keep the historical argparse help contract.
         from verdict.home import run_home
 
         raise SystemExit(run_home())

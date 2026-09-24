@@ -59,6 +59,13 @@ skills-lock.json
 .env.memory
 .verdict/adaptive_state/
 
+# Session/plan artifacts — keep local, do not re-commit
+.verdict/*-PLAN.md
+.verdict/*-plan.md
+.verdict/bod-*-assessment.md
+.verdict/handoff.md
+.verdict/BOD-*-PLAN.md
+
 # Private claim evidence stays outside the repository.
 docs/proof/private_*
 

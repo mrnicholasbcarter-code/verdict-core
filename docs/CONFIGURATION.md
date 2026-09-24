@@ -1,98 +1,102 @@
 # Configuration Reference
 
-Verdict uses TOML configuration with layered precedence:
+> **Shipped behavior (BOD-180 / BOD-182).** Routing configuration is YAML under
+> XDG. A separate TOML path exists only for context-hydration settings.
+> Environment variables listed below are those the current code actually reads.
 
-1. **Defaults** (built-in)
-2. **Global**: `~/.verdict/config.toml`
-3. **Project**: `.verdict/config.toml` (highest priority)
-4. **Environment variables** (override all)
+## Configuration surfaces
+
+| Surface | Path | Owns |
+|---|---|---|
+| Routing / setup YAML | `~/.config/verdict/verdict.yaml` (or `$XDG_CONFIG_HOME/verdict/verdict.yaml`) | `primary_model`, `providers` written by `verdict setup` / detect |
+| Context hydration TOML | `.verdict/config.toml` or `~/.verdict/config.toml` | Narrow `[context]` settings for pack hydration only |
+| Process environment | shell / service env | Overrides for gateway, API, intelligence, receipts, guidance |
+
+There is **no** supported `VERDICT_CONFIG` env var and no full TOML schema for
+eligibility/capacity/telemetry/dashboard. Those sections previously documented
+here were aspirational and have been removed.
 
 ---
 
-## Complete Configuration Schema
+## Routing YAML (`verdict.yaml`)
+
+Written by `verdict setup` and provider detection:
+
+```yaml
+primary_model: anthropic/claude-3-opus-20240229
+providers: {}
+```
+
+Notes:
+
+- `primary_model` is a preferred identity used when resolving defaults. It is
+  **not** a silent fallback when eligibility returns an empty set.
+- Live low-criticality `verdict route` admits a concrete **free-tier ∩ active**
+  identity and fails closed with a named receipt when the intersection is empty.
+  See [`guides/free-tier-admit-smoke.md`](guides/free-tier-admit-smoke.md).
+
+---
+
+## Context hydration TOML (optional)
+
+Used only by context hydration (`verdict/context_hydrate.py`):
 
 ```toml
-# Gateway / routing
-[gateway]
-primary_model = "anthropic/claude-3-opus-20240229"  # Fallback model
-providers = {}  # Provider-specific config
-
-# Intelligence / ranking (advisory only - cannot bypass gate)
-[intelligence]
-profile = "balanced"           # fast | balanced | thorough
-timeout_ms = 8000
-allow_client_model_override = false
-log_path = "verdict-decisions.jsonl"
-log_full_task = false
-discovery_ttl = 60
-frontier_allowlist = []        # Models allowed for frontier tier
-
-# Availability cache (issue #56)
-[availability]
-ttl_seconds = 60
-stale_window_seconds = 30
-omniroute_base_url = "http://localhost:20128"  # Optional
-
-# Eligibility gate (hard safety floors)
-[eligibility]
-capability_required = []       # e.g. ["tools", "vision"]
-min_context_tokens = 4096
-budget_usd_per_1k = 0.0
-privacy_level = "standard"     # standard | strict | paranoid
-
-# Capacity admission (deterministic headroom)
-[capacity]
-enabled = true
-headroom_factor = 1.2
-max_concurrent_per_model = 100
-effort_reservation_pct = 0.15
-
-# Security / redaction
-[security]
-redact_api_keys = true
-redact_pii = true
-allow_private_hosts = false
-
-# Telemetry / SONA feedback loop
-[telemetry]
-enabled = true
-endpoint = "http://localhost:20128/v1/telemetry"
-batch_size = 100
-flush_interval_ms = 5000
-
-# Dashboard
-[dashboard]
-host = "localhost"
-port = 8501
-auto_open = true
+# .verdict/config.toml  (project) or ~/.verdict/config.toml (global)
+[context]
+# Keys accepted by the current hydration reader only.
+# Do not put gateway/routing settings here.
 ```
 
 ---
 
-## Environment Variable Overrides
+## Environment variable overrides
 
-| Variable | Config Path | Example |
-|----------|-------------|---------|
-| `VERDICT_CONFIG` | — | `/path/to/config.toml` |
-| `OMNIROUTE_BASE_URL` | `availability.omniroute_base_url` | `http://localhost:20128` |
-| `LLMGATE_PRIMARY` | `gateway.primary_model` | `anthropic/claude-3-opus-20240229` |
-| `LLMGATE_INTELLIGENCE_PROFILE` | `intelligence.profile` | `thorough` |
-| `LLMGATE_INTELLIGENCE_TIMEOUT_MS` | `intelligence.timeout_ms` | `15000` |
-| `LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE` | `intelligence.allow_client_model_override` | `true` |
-| `LLMGATE_LOG_PATH` | `intelligence.log_path` | `/var/log/verdict.jsonl` |
-| `LLMGATE_DISCOVERY_TTL_SECONDS` | `intelligence.discovery_ttl` | `120` |
-| `LLMGATE_FRONTIER_ALLOWLIST` | `intelligence.frontier_allowlist` | `model1,model2` |
-| `LLMGATE_AVAILABILITY_TTL_SECONDS` | `availability.ttl_seconds` | `60` |
-| `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | `availability.stale_window_seconds` | `30` |
-| `VERDICT_RECEIPTS_DB` | durable API evidence SQLite path | unset; required for authenticated API mode |
-| `VERDICT_EVIDENCE_DB` | legacy alias for the durable evidence path | unset |
+### Gateway / OmniRoute
+
+| Variable | Meaning |
+|----------|---------|
+| `OMNIROUTE_BASE_URL` | Base URL of the local gateway (inventory/execute/health) |
+| `OMNIROUTE_API_KEY` | API key/token for the configured gateway |
+| `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane token for provider-node admin endpoints |
+| `OMNIROUTE_ALLOW_PRIVATE_HOSTS` | Allow private/internal hosts (SSRF guard; default off) |
+| `OMNIROUTE_USAGE_API_KEY_ID` | Usage-reporting API key id |
+
+OmniRoute is **never** Verdict's model-metadata source of truth. Core metadata
+comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032-core-model-metadata-store.md).
+
+### Serve / upstream proxy (`verdict serve`)
+
+| Variable | Meaning |
+|----------|---------|
+| `LLMGATE_PRIMARY` | Preferred upstream identity string |
+| `LLMGATE_UPSTREAM_BASE_URL` | Upstream base URL (defaults may derive from OmniRoute) |
+| `LLMGATE_UPSTREAM_API_KEY` | Upstream API key |
+| `LLMGATE_UPSTREAM_TIMEOUT_MS` | Upstream request timeout |
+| `LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS` | Allow private upstream hosts |
+| `LLMGATE_MODEL_ALLOWLIST` | Comma-separated allowed model ids |
+| `LLMGATE_MODEL_DENYLIST` | Comma-separated denied model ids |
+| `LLMGATE_INTELLIGENCE_PROFILE` | Advisory ranking profile (`fast` / `balanced` / `thorough`) |
+| `LLMGATE_INTELLIGENCE_TIMEOUT_MS` | Intelligence timeout |
+| `LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE` | Allow client-requested model override |
+| `LLMGATE_LOG_PATH` | Decision log path |
+| `LLMGATE_DISCOVERY_TTL_SECONDS` | Discovery TTL |
+| `LLMGATE_FRONTIER_ALLOWLIST` | Comma-separated frontier allowlist |
+| `LLMGATE_AVAILABILITY_TTL_SECONDS` | Availability cache TTL |
+| `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | Availability stale-while-revalidate window |
+
+### Receipts / evidence
+
+| Variable | Meaning |
+|----------|---------|
+| `VERDICT_RECEIPTS_DB` | Durable API evidence SQLite path (required for authenticated API mode) |
+| `VERDICT_EVIDENCE_DB` | Legacy alias for the durable evidence path |
+| `VERDICT_MEMORY_DB` | MemoryPlane SQLite path (failover/replay demos) |
 
 ### Optional platform-neutral guidance
 
 Guidance is an experimental, host-neutral boundary. It is disabled by
-default, does not read `AGENTS.md`, `CLAUDE.md`, or other host instruction
-files, and has no Ruflo, RuVector, Codex, Claude Code, Pi, or provider CLI
-runtime dependency. Enable it explicitly for a process with:
+default, does not read `AGENTS.md` / `CLAUDE.md`, and cannot bypass gates.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -103,56 +107,32 @@ runtime dependency. Enable it explicitly for a process with:
 | `VERDICT_GUIDANCE_MAX_BYTES` | `131072` | Maximum bytes per guidance file |
 | `VERDICT_GUIDANCE_MAX_RULES` | `1000` | Maximum parsed rules |
 
-Both configured paths must remain inside the process repository root. The
-status endpoint is `GET /v1/guidance/status`; the only execution contract is
-the versioned `POST /v1/guidance/execute` envelope:
-
-```json
-{"schema_version":"1","task":{"goal":"review a change","protected_work":true}}
-```
-
-Guidance can return `allow`, `approval_required`, or `deny`, but the response
-always reports `authorization: "unchanged"`; it cannot grant permissions or
-bypass Verdict’s existing gates. Missing, malformed, or timed-out opt-in
-guidance is reported as degraded and does not crash normal API startup.
+Both configured paths must remain inside the process repository root. Status:
+`GET /v1/guidance/status`. Execution contract: versioned
+`POST /v1/guidance/execute`. Guidance may return `allow`, `approval_required`,
+or `deny`, but always reports `authorization: "unchanged"`.
 
 ---
 
-## Example: Production Config
+## Example: local gateway
 
-```toml
-# .verdict/config.toml
-[gateway]
-primary_model = "openai/gpt-4o"
-providers.openai.api_key_env = "OPENAI_API_KEY"
-providers.anthropic.api_key_env = "ANTHROPIC_API_KEY"
+```bash
+export OMNIROUTE_BASE_URL=http://localhost:20128
+# export OMNIROUTE_API_KEY=...   # only when the gateway requires it
 
-[intelligence]
-profile = "thorough"
-timeout_ms = 15000
-frontier_allowlist = ["anthropic/claude-3-opus-20240229", "openai/gpt-4o"]
-
-[availability]
-ttl_seconds = 30
-stale_window_seconds = 15
-omniroute_base_url = "https://omniroute.company.internal/v1"
-
-[eligibility]
-capability_required = ["tools"]
-min_context_tokens = 8192
-budget_usd_per_1k = 0.05
-privacy_level = "strict"
-
-[capacity]
-enabled = true
-headroom_factor = 1.5
-max_concurrent_per_model = 200
-
-[security]
-redact_api_keys = true
-redact_pii = true
-
-[telemetry]
-enabled = true
-endpoint = "https://telemetry.company.internal/v1/ingest"
+verdict detect --json
+verdict models
+verdict route "summarize the change" --terse
 ```
+
+An empty free∩active intersection fails closed. There is no automatic upgrade to
+a frontier model when eligibility returns nothing.
+
+---
+
+## Related
+
+- [Getting Started](GETTING_STARTED.md)
+- [CLI Reference](CLI_REFERENCE.md)
+- [Architecture](architecture.md)
+- [`.env.example`](../.env.example) — commented inventory of supported env keys
