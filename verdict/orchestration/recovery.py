@@ -380,7 +380,7 @@ class FailureIntelligence:
             )
 
         # Ownership violation
-        if terminal.error == "ownership_violation":
+        if terminal.error.startswith("ownership_violation"):
             return FailureClassification(
                 category="ownership_violation",
                 action="REHYDRATE",

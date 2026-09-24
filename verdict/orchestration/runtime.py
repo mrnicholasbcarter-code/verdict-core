@@ -515,6 +515,7 @@ class DagRuntime:
                 attempt=run.attempt,
                 fault_injected=terminal.session_ref.startswith("fault-injected"),
             )
+            self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
             if terminal.ok and terminal.output.strip().upper().startswith("RESULT: BLOCKED"):
                 terminal = WorkerTerminal(
                     ok=False,
@@ -544,6 +545,32 @@ class DagRuntime:
             )
             self._set(run, NodeState.VALIDATED, commit=run.commit)
             return True
+
+    def _save_attempt(
+        self, node_id: str, attempt: int, route_id: str, terminal: WorkerTerminal
+    ) -> None:
+        """Durable per-attempt evidence (sanitized by the executor); never fatal."""
+        import json
+
+        try:
+            directory = self.run_dir / "attempts"
+            directory.mkdir(parents=True, exist_ok=True)
+            record = {
+                "node_id": node_id,
+                "attempt": attempt,
+                "route_id": route_id,
+                "ok": terminal.ok,
+                "reported_model": terminal.model,
+                "stop_reason": terminal.stop_reason,
+                "status_code": terminal.status_code,
+                "error": terminal.error[:2000],
+                "output_tail": terminal.output[-2000:],
+                "duration_seconds": terminal.duration_seconds,
+                "session_ref": terminal.session_ref,
+            }
+            (directory / f"{node_id}-a{attempt}.json").write_text(json.dumps(record, indent=1))
+        except OSError:
+            pass
 
     async def _execute(self, prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
         try:

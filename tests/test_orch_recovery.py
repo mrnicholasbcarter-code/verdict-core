@@ -439,3 +439,13 @@ def test_ordinary_503_still_cools_the_route() -> None:
         now=datetime.now(timezone.utc),
     )
     assert result.category == "upstream_temporary" and result.scope == "route"
+
+
+def test_ownership_violation_with_detail_is_rehydrate_not_cooldown() -> None:
+    from verdict.orchestration.contracts import WorkerTerminal
+
+    result = FailureIntelligence().classify(
+        WorkerTerminal(ok=False, error="ownership_violation: tests/x.py"),
+        now=datetime.now(timezone.utc),
+    )
+    assert result.category == "ownership_violation" and result.scope == "none"
