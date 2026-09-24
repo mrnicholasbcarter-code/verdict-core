@@ -379,3 +379,16 @@ async def test_fault_keys_match_provider_prefix_and_node(tmp_path: Path) -> None
     assert second.ok
     third = await fx.run("x", route_id="cx/gpt-5.5", cwd=tmp_path / "wrap-a1", timeout_seconds=5)
     assert third.status_code == 401
+
+
+async def test_fault_key_by_dispatch_ordinal(tmp_path: Path) -> None:
+    from verdict.orchestration.executors import FaultInjectingExecutor, ScriptedExecutor
+
+    inner = ScriptedExecutor(
+        lambda p, r, c: WorkerTerminal(ok=True, output="RESULT: DONE", model=r)
+    )
+    fx = FaultInjectingExecutor(inner, {"#2": ["quota"]})
+    assert (await fx.run("x", route_id="cc/a", cwd=tmp_path / "n1-a1", timeout_seconds=5)).ok
+    second = await fx.run("x", route_id="cc/b", cwd=tmp_path / "n2-a1", timeout_seconds=5)
+    assert second.status_code == 429
+    assert (await fx.run("x", route_id="cc/b", cwd=tmp_path / "n2-a2", timeout_seconds=5)).ok

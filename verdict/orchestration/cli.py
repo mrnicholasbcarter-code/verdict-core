@@ -56,7 +56,8 @@ def add_parsers(subparsers: Any) -> None:
         metavar="ROUTE=FAULT[,FAULT]",
         help="Chaos: inject faults for a route (quota, rate_limit, auth, payment, "
         "forbidden, server, timeout, transport, empty, no_final, malformed, "
-        "hang, mismatch); ROUTE may be '*'",
+        "hang, mismatch); ROUTE may be an exact route, a provider 'cc/*', "
+        "a node '@node_id', the N-th executor call '#N' (planning is #1), or '*'",
     )
     orch.add_argument(
         "--state-file",

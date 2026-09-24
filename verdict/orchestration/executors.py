@@ -318,6 +318,7 @@ class FaultInjectingExecutor:
     def __init__(self, inner: WorkerExecutor, faults: Mapping[str, list[str]]) -> None:
         self.inner = inner
         self._faults: dict[str, list[str]] = {k: list(v) for k, v in faults.items()}
+        self._dispatches = 0  # worker dispatches seen (planning included), for "#N" keys
 
     def _keys(self, route_id: str, cwd: Path) -> list[str]:
         """Match order: exact route, provider prefix ("cc/*"), node ("@slugify"), "*".
@@ -328,7 +329,9 @@ class FaultInjectingExecutor:
         """
         provider = route_id.split("/", 1)[0] + "/*"
         node = cwd.name.rsplit("-a", 1)[0] if "-a" in cwd.name else cwd.name
-        return [route_id, provider, "@" + node, "*"]
+        # "#N": the N-th executor call of the run, whatever node/route it is. Lets a
+        # chaos run hit a worker without predicting planner-chosen node ids.
+        return [f"#{self._dispatches}", route_id, provider, "@" + node, "*"]
 
     def _pop_fault(self, route_id: str, cwd: Path | None = None) -> str | None:
         for key in self._keys(route_id, cwd or Path(".")):
@@ -340,6 +343,7 @@ class FaultInjectingExecutor:
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
+        self._dispatches += 1
         kind = self._pop_fault(route_id, cwd)
         if kind is None:
             return await self.inner.run(
