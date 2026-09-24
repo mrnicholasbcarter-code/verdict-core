@@ -2,6 +2,8 @@
 
 # Verdict
 
+The LLM router that says no: cheapest qualified model, a named reason for every drop, a receipt for every decision.
+
 One goal in, one verified receipt out: dynamic model selection, same-node recovery under real quota and outages, independent review, fail-closed verdict.
 
 Verdict is a fail-closed control plane for LLM-powered workflows. Hard eligibility gates run before advisory ranking — a model that fails any gate cannot be re-admitted by a downstream score.
@@ -111,31 +113,91 @@ Orchestration is specified in [ADR-036](docs/adr/ADR-036-goal-to-receipt-orchest
 ## Install
 
 ```bash
-pip install verdict-core          # Python 3.10+
+pip install verdict-core
 ```
 
-Development checkout:
+Python 3.10+. The offline proof path needs no API key or gateway.
 
-```bash
-git clone https://github.com/mrnicholasbcarter-code/verdict-core.git
-cd verdict-core
-uv sync --extra dev
-```
+## Quick start
 
-## Quickstart
-
-```bash
-verdict setup                     # interactive config wizard
-verdict models                    # qualified catalog with named drop reasons
-verdict simulate "refactor auth"  # forecast tokens, cost, model — no paid call
-verdict route "refactor auth"     # live route (requires gateway)
-```
-
-Credential-free fixture (no gateway, no key):
+Run the credential-free fixture from an empty directory:
 
 ```bash
 verdict quickstart --non-interactive --dry-run
 ```
+
+The fixture makes one deterministic routing decision, selects `demo/frontier-tools`, and names every excluded candidate:
+
+```text
+Verdict credential-free quickstart
+===================================
+Task: Add structured output to the invoice parser
+Required capabilities: structured_output, tools
+Selected route: demo/frontier-tools
+Excluded candidates: 3
+Receipt: fixture:issue-35 (deterministic_fixture)
+Status: PASS
+- demo/no-tools: missing capability: tools
+- demo/quota-empty: quota exhausted
+- demo/unverified: health unknown
+```
+
+It does not call a provider, read credentials, or write state. The executable source and regression tests are [`verdict/flagship_demo.py`](verdict/flagship_demo.py) and [`tests/test_flagship_demo.py`](tests/test_flagship_demo.py). The [terminal recording](docs/proof/issue-455-quickstart.typescript) captures this command from an isolated wheel installation.
+
+For a contributor checkout:
+
+```bash
+uv sync --extra dev
+uv run python -m verdict quickstart --non-interactive --dry-run
+```
+
+Optional Linux/macOS installer (review the script first):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh | bash
+```
+
+The installer probes for a local gateway, runs setup, and verifies the installation. Live provider execution is separate from this credential-free proof path.
+
+## Live gateway checks
+
+Only run these when a compatible gateway is already running at `http://localhost:20128`:
+
+```bash
+verdict detect --json
+verdict probe task-coding --base-url http://localhost:20128/v1 --allow-live-probe --json
+```
+
+`detect` must show `server_running: true`. `probe` must return `status: ready` for a **named** model. `auto/*` IDs are opaque and are not live proof. A catalog timeout is `blocked`, not success. See [`docs/guides/golden-path.md`](docs/guides/golden-path.md) for the dated live observation and its limitations.
+
+With `OMNIROUTE_BASE_URL` (and `OMNIROUTE_API_KEY` when required) a low-criticality `verdict route` admits a concrete **free-tier ∩ active-provider** identity, prints an `admit_receipt` of named drops, and executes through `/v1/chat/completions`. An empty intersection fails closed instead of falling back to Opus. See [`docs/guides/free-tier-admit-smoke.md`](docs/guides/free-tier-admit-smoke.md). Keep those identities proved in the background with [`verdict prove-at-rest`](docs/guides/prove-at-rest-smoke.md) (free∩active only; paid/frontier never probed).
+
+## Cost comparison
+
+**Deterministic mock — no provider spend.**
+
+```bash
+uv run python -m verdict.routing_demo --mock
+```
+
+The current deterministic mock compares 100 requests using fixed Opus/Sonnet/Haiku price estimates against a class-aware route: approximately **$0.16 routed** versus **$0.52 baseline** in the recorded fixture. The implementation computes routed cost, baseline, and savings; see [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md) for the baseline definition and live/recorded limitations. These are estimates, not observed invoices.
+
+**Context packing — dated live observation, not offline proof.**
+
+A recorded paired run asked the same cheaper identity one exact check twice — unaided, then with a compiled `ContextPack`. The recorded receipt reports `unaided=false`, `packed=true`, and `conclusion=lift`; the run required a compatible live gateway. See [`docs/benchmarks/context-lift.md`](docs/benchmarks/context-lift.md) and the sanitized receipt beside it. A blocked or skipped live run makes no lift claim.
+
+**Failover holds without a network.**
+
+```bash
+uv run python -m verdict failover-proof --memory-path /tmp/verdict-failover.db --json
+VERDICT_MEMORY_DB=/tmp/verdict-failover.db uv run python -m verdict replay <session-id> --json
+```
+
+**Test and gate status.** CI runs the repository's test, lint, format, type, security, CodeQL, OSV, install, build, and contract-parity checks. The current public claim boundary and limitations are in [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md), [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md), and [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md).
+
+## Architecture
+
+Component map, data flow and the orchestration layer: [docs/architecture.md](docs/architecture.md). Decisions: [ADR index](docs/adr/README.md), current orchestration in [ADR-036](docs/adr/ADR-036-goal-to-receipt-orchestration.md).
 
 ## Commands
 

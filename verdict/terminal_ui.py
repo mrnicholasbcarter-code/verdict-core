@@ -98,7 +98,7 @@ class TerminalUI:
         self.console.print()
         name = Text("VERDICT", style="PRIMARY")
         name.append(f"  /  {clean(title)}", style="SECONDARY")
-        subtitle = Text("Spend-Preservation Control Plane", style="MUTED")
+        subtitle = Text("autonomous control plane  ·  plan · select · recover · verify · prove", style="MUTED")
         if self.plain or self.console.width < 40:
             self.console.print(name)
             self.console.print(subtitle)
