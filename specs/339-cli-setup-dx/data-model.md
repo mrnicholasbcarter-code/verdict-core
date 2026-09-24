@@ -12,7 +12,7 @@ The canonical user config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/verdict/ve
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `primary_model` | string | no | `anthropic/claude-3-opus-20240229` | Primary model ID passed to the gate |
+| `primary_model` | string | no | `anthropic/claude-opus-5` | Primary model ID passed to the gate |
 | `gateway_url` | string | no | detected or null | OmniRoute/9router base URL (e.g. `http://localhost:20128`) |
 | `log_path` | string | no | `verdict-decisions.jsonl` | Decision log output path |
 | `providers` | map[string, ProviderConfig] | no | `{}` | Provider-level overrides |

@@ -27,7 +27,7 @@ from verdict.availability import OmniRouteAvailabilityAdapter
 from verdict.availability_cache import AvailabilityCache
 from verdict.catalog import configured_catalog_filters, normalize_catalog
 from verdict.context_inject import InjectionRecord, inject_context_pack
-from verdict.contracts import redact_contract_secrets
+from verdict.contracts import DEFAULT_PRIMARY_MODEL, redact_contract_secrets
 from verdict.cost_ledger import PriceEvidenceInput
 from verdict.effective_capability import (
     AssistanceCost,
@@ -520,7 +520,7 @@ def _build_intelligence() -> IntelligenceService:
     )
     providers: dict[str, ProviderConfig] = {}
     return IntelligenceService(
-        primary_model=os.getenv("LLMGATE_PRIMARY", "anthropic/claude-3-opus-20240229"),
+        primary_model=os.getenv("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
         providers=providers,
         profile=profile,
         log_path=os.getenv("LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),

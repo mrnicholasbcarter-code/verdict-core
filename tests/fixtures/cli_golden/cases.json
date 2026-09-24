@@ -211,7 +211,7 @@
    "name": "inspect",
    "argv": [
     "inspect",
-    "anthropic/claude-3-opus-20240229",
+    "anthropic/claude-opus-5",
     "--json"
    ],
    "exit_code": 0

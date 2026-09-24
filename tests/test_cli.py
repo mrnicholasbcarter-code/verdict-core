@@ -37,7 +37,7 @@ class TestCmdRun:
             ),
         )
         cli.cmd_run("deploy prod", "critical", terse=True)
-        assert capsys.readouterr().out.strip() == "anthropic/claude-3-opus-20240229"
+        assert capsys.readouterr().out.strip() == "anthropic/claude-opus-5"
 
 
 class TestCmdPlan:
@@ -54,12 +54,12 @@ class TestCmdModels:
         cfg_dir = tmp_path / ".config" / "verdict"
         cfg_dir.mkdir(parents=True)
         (cfg_dir / "verdict.yaml").write_text(
-            "primary_model: anthropic/claude-3-opus-20240229\nproviders: {}\n"
+            "primary_model: anthropic/claude-opus-5\nproviders: {}\n"
         )
         cli.cmd_models(output_json=True)
         payload = json.loads(capsys.readouterr().out)
         assert isinstance(payload, list)
-        assert payload[0]["id"] == "anthropic/claude-3-opus-20240229"
+        assert payload[0]["id"] == "anthropic/claude-opus-5"
         assert "tier" in payload[0]
 
     def test_models_table_renders(self, capsys):
@@ -121,7 +121,7 @@ class TestCmdSimulate:
         cfg_dir = tmp_path / ".config" / "verdict"
         cfg_dir.mkdir(parents=True)
         (cfg_dir / "verdict.yaml").write_text(
-            "primary_model: anthropic/claude-3-opus-20240229\nproviders: {}\n"
+            "primary_model: anthropic/claude-opus-5\nproviders: {}\n"
         )
         cli.cmd_simulate("translate the docs", "low", output_json=True)
         payload = json.loads(capsys.readouterr().out)

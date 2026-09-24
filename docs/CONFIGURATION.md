@@ -23,7 +23,7 @@ here were aspirational and have been removed.
 Written by `verdict setup` and provider detection:
 
 ```yaml
-primary_model: anthropic/claude-3-opus-20240229
+primary_model: anthropic/claude-opus-5
 providers: {}
 ```
 

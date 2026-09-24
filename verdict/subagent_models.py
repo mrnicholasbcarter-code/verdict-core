@@ -25,6 +25,7 @@ from verdict.availability import (
     is_opaque_route_id,
 )
 from verdict.availability_cache import AvailabilityCache
+from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.eligibility import EligibilityGate
 from verdict.intelligence import IntelligenceService
 from verdict.models import ModelInfo
@@ -194,7 +195,7 @@ class SubagentModelSelector:
         gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
 
         intelligence = IntelligenceService(
-            primary_model=os.getenv("LLMGATE_PRIMARY", "anthropic/claude-3-opus-20240229"),
+            primary_model=os.getenv("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
             providers={},
             profile=os.getenv("LLMGATE_INTELLIGENCE_PROFILE", "development"),
             log_path=os.getenv("LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),

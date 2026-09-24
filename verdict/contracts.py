@@ -19,6 +19,9 @@ class ContractValidationError(ValueError):
 
 _SECRET_NAMES = {"api_key", "apikey", "authorization", "password", "secret", "token"}
 
+# Default primary model identity for routing and configuration.
+DEFAULT_PRIMARY_MODEL = "anthropic/claude-opus-5"
+
 # These are the safety-sensitive values that v1 intentionally freezes.  Task
 # types, planner modes, provider identifiers, and metadata remain open strings
 # so adding a new workflow integration does not require a contract version bump.

@@ -370,7 +370,7 @@ def test_generate_config_prefers_router_local_then_cloud() -> None:
     assert openrouter_config["providers"]["openrouter"]["api_key_env"] == "OPENROUTER_API_KEY"
 
     empty_config = pd.generate_verdict_config(DetectionResult())
-    assert empty_config == {"primary_model": "anthropic/claude-3-opus-20240229", "providers": {}}
+    assert empty_config == {"primary_model": "anthropic/claude-opus-5", "providers": {}}
 
 
 def test_centralized_routers_port_labels_not_swapped():
