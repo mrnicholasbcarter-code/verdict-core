@@ -2812,7 +2812,10 @@ def cmd_uninstall(purge_data: bool = False) -> None:
     from verdict import present
 
     present.header("Uninstall memory bridge")
-    present.ok("Uninstalled targets", str(res["uninstalled_targets"]))
+    targets = res["uninstalled_targets"]
+    present.ok(
+        "Uninstalled targets", ", ".join(map(str, targets)) if targets else "none were installed"
+    )
     if purge_data:
         present.warn("Purged .verdict memory data directory.")
 
@@ -3117,7 +3120,7 @@ def cmd_hook(args: Any) -> None:
             print(json.dumps(status, indent=2))
         else:
             for k, v in status.items():
-                present.status(k, "ok" if v else "warning", str(v))
+                present.status(k.replace("_", " "), "ok" if v else "missing")
 
 
 def cmd_mcp(args: Any) -> None:
