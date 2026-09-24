@@ -1,0 +1,78 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "verdict-omniroute",
+    "model": "cc/claude-sonnet-4-6"
+  },
+  "message": "Review complete: 0 finding(s) across 1 selected item(s).",
+  "summary": {
+    "files_reviewed": 1,
+    "comments": 0,
+    "total_tokens": 5579,
+    "input_tokens": 5245,
+    "output_tokens": 334,
+    "cache_read_tokens": 2853,
+    "elapsed": "7s"
+  },
+  "tool_calls": {
+    "total": 0,
+    "by_tool": {},
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [],
+  "groups": [
+    {
+      "label": "greet.py",
+      "files": [
+        "greet.py"
+      ]
+    }
+  ],
+  "session_id": "6063c6b8-fee9-4968-ad0b-b4bdb9370ad1",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "6063c6b8-fee9-4968-ad0b-b4bdb9370ad1",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {},
+    "input": {
+      "mode": "range",
+      "requested_from": "HEAD~1",
+      "requested_head": "HEAD",
+      "resolved_base": "b15bc3596f2e6614ded6b85ef2fb57f3c01075c2",
+      "resolved_head": "a34a58c84478c1a5a8ae2f1bc7a4c59c0c85ff48",
+      "exact_range": "b15bc3596f2e6614ded6b85ef2fb57f3c01075c2..a34a58c84478c1a5a8ae2f1bc7a4c59c0c85ff48",
+      "source_artifact_sha256": "0c2c4f481f670c79e33b693cb61b7501686f1b2d5b8a5858490bfe81e1c19194"
+    },
+    "execution": {
+      "ocr_version": "v1.12.9",
+      "provider": "verdict-omniroute",
+      "model": "cc/claude-sonnet-4-6",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "9f33647a25a002db1b7770ce092ffab8b77ef98379e262871a243afd75f798d9",
+      "runtime_config_sha256": "f7ecbb11c4af6ed6ca5221376a0bc487a19e1ef0fde9baae6bd4d8f6620b19fa"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "b89113e93c6c4d1881e8cb4f8b19b519d8a2ba533a58112ca62445e2ecc85eaa",
+          "path": "greet.py",
+          "fingerprint": "dac17f08b9c994113c398ec2714c55977e9b64121b0a01eea144a05fe465aa12"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "b89113e93c6c4d1881e8cb4f8b19b519d8a2ba533a58112ca62445e2ecc85eaa",
+          "path": "greet.py",
+          "fingerprint": "dac17f08b9c994113c398ec2714c55977e9b64121b0a01eea144a05fe465aa12"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 7304
+  }
+}
