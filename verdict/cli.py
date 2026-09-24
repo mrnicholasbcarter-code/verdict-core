@@ -4163,7 +4163,7 @@ def main() -> None:
     args = parser.parse_args()
     _orchestration_rc = _orchestration_cli.dispatch(args)
     if _orchestration_rc is not None:
-        sys.exit(_orchestration_rc)
+        raise SystemExit(_orchestration_rc)
 
     if args.command == "setup":
         scope = "all"
