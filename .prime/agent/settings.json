@@ -1,6 +1,18 @@
 {
   "providerBackupModel": "",
-  "retry": {"enabled": false},
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 3000,
+    "provider": {
+      "timeoutMs": 900000,
+      "maxRetryDelayMs": 30000,
+      "waitForUsage": {
+        "enabled": false,
+        "pauseUntilReset": false
+      }
+    }
+  },
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
