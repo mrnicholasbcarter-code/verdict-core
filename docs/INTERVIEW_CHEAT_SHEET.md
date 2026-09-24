@@ -5,7 +5,7 @@
 One page. Printable. Every number below has a named source. Sources:
 [README](../README.md), [runbook](guides/interview-golden-path.md),
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md),
-[main certification](../../../.verdict/evidence/interview-main/main-certification.md),
+main certification (`~/.verdict/evidence/interview-main/main-certification.md`, local operator evidence),
 [story bank](portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md),
 [branch reconciliation](BRANCH_RECONCILIATION.md).
 
@@ -232,6 +232,5 @@ DAG runtime with reassignment/cooldowns, independent OCR review, digest-verified
 finding, per-node critic pass, interactive Prime root-session survival, BOD-70 dogfood on
 main, BOD-188 full harness-independence proof.
 
-Phrases to avoid: "production deployment", "merged main CI result", "proves the reviewer catches
-every bug". Say instead: certified on a fresh clone, on one host, on an unmerged branch, with
-local operator evidence.
+Phrases to avoid: "production deployment", "proves the reviewer catches every bug". Say instead:
+merged to main with green CI, certified from a fresh clone on one host, with local operator evidence.
