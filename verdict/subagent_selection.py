@@ -10,6 +10,7 @@ import json
 import re
 import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -558,10 +559,12 @@ def fetch_omniroute_inventory(
     base_url: str = DEFAULT_OMNIROUTE_URL, *, timeout_seconds: float = 10.0
 ) -> tuple[Mapping[str, Any], ...]:
     """Fetch discovery rows. The result is not availability evidence."""
-    request = urllib.request.Request(
-        base_url.rstrip("/") + "/models", headers={"Accept": "application/json"}
-    )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    url = base_url.rstrip("/") + "/models"
+    if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
+        raise ValueError(f"OmniRoute base URL must be http(s): {base_url!r}")
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    # Scheme validated above; the gateway URL is operator configuration.
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
         raw = json.loads(response.read(16_777_217))
     data = raw.get("data") if isinstance(raw, Mapping) else None
     if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable, Mapping
@@ -64,8 +65,11 @@ def _get_json(url: str, *, api_key: str | None, timeout: float) -> Any:
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
+        raise OrchestrationError(f"gateway URL must be http(s): {url!r}")
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    # Scheme validated above; the gateway URL is operator configuration.
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
         return json.loads(response.read(64 * 1024 * 1024))
 
 
