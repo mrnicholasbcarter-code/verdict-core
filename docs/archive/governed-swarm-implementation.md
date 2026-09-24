@@ -1,3 +1,7 @@
+> **Archived:** Superseded by [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md).
+> **Status:** BOD-17 removed this architecture from Verdict Core.
+> **Historical record only:** Do not use this document as product documentation.
+
 > **HISTORICAL / NON-NORMATIVE** — Swarm/Ruflo implementation guide. Modules deleted in BOD-17. Do not treat as current product architecture. See BOD-131 for docs consolidation.
 
 # Governed Swarm Implementation

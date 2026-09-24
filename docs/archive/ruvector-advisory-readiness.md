@@ -1,3 +1,7 @@
+> **Archived:** Superseded by [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md).
+> **Status:** BOD-17 removed this architecture from Verdict Core.
+> **Historical record only:** Do not use this document as product documentation.
+
 > **SUPERSEDED (BOD-17)** — `verdict.ruvector_adapter` was deleted from Core.
 > RuVector/SONA are not current product architecture. Memory Plane remains
 > under `verdict/memory_*.py`. Docs hygiene: BOD-131.

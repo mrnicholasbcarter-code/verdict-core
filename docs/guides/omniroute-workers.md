@@ -1,56 +1,15 @@
 # OmniRoute workers
 
-Verdict workers use the local OmniRoute gateway as the single provider boundary.
-They do not contain an OpenRouter key or a provider allowlist.
+OmniRoute is Verdict's gateway boundary for model inventory and model
+execution. It is not the orchestration runtime. The current goal-to-receipt
+runtime is [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md).
 
-## Provider and MCP discovery
+## Catalog-backed worker requests
 
-OmniRoute is the runtime gateway, not merely an OpenAI-compatible URL. Before
-selecting a worker model, treat the gateway as a capability-discovered
-boundary:
-
-1. Read the public model catalog from `GET /v1/models` (or the authenticated
-   management catalog when the deployment exposes it).
-2. Treat catalog membership as identity/configuration evidence only. It is not
-   proof that a provider is healthy, reachable, within quota, or eligible for a
-   particular request.
-3. If management access is configured, discover optional provider/runtime
-   signals from the documented endpoints and use only the capabilities that
-   are actually advertised:
-
-   - `GET /api/models/catalog` — provider-grouped catalog, when enabled.
-   - `GET /api/mcp/status` and `GET /api/mcp/tools` — MCP service status and
-     tool discovery.
-   - `GET /api/free-tier/summary` and
-     `GET /api/quota/pools/{pool_id}/usage` — quota signals, when enabled.
-   - the MCP stream/SSE transport (`/api/mcp/stream` or `/api/mcp/sse`) —
-     optional tool access, when enabled by the deployment.
-
-Management and MCP endpoints normally require the configured OmniRoute bearer
-token. A `401` or an unavailable optional endpoint is an **unknown** signal;
-it must not be converted into “healthy”. Do not read OmniRoute's private
-database or copy provider credentials into Verdict. Capability discovery is
-optional and fail-closed for protected work.
-
-### MCP timeout recovery
-
-An MCP timeout from OmniRoute management (or any optional local connector) is
-not evidence that the provider or worker is ready. Preserve the candidate as
-`unknown`, exclude it from protected work, and diagnose with that service's
-documented health commands. After recovery, retry the bounded MCP/status
-operation and require a fresh, well-formed response; otherwise keep the result
-`unknown`. Transient timeouts may use finite backoff, but repeated timeouts,
-`401`/authorization failures, malformed payloads, and unavailable optional
-endpoints must not be silently retried until they appear healthy.
-
-> Note (BOD-17): Ruflo is not a Core orchestration surface. See BOD-131.
-
-The OpenAI-compatible `/v1/models` endpoint is intentionally useful without
-management credentials in local development, but it still only supplies a
-catalog. Verdict's availability adapter/cache is responsible for normalizing
-health, quota/headroom, freshness, circuit/cooldown, and capability evidence
-before ranking. See [ROUTING_POLICY](../specs/ROUTING_POLICY.md) for the
-eligibility invariant.
+`OmniRouteWorkerClient` fetches `GET /v1/models`, retains a small safe subset
+of each catalog row, and sends OpenAI-compatible chat-completions requests to
+the same configured base URL. It does not embed a provider key or a provider
+allowlist.
 
 ```python
 from verdict import OmniRouteWorkerClient, WorkerPool, WorkerRequest
@@ -69,26 +28,45 @@ results = await pool.run([
 ])
 ```
 
-The client fetches `/v1/models` and chooses only advertised IDs. `auto/*`
-requests prefer OmniRoute's virtual routes (`auto/best-coding`,
-`auto/best-reasoning`, `auto/best-free`, and `auto/fast`) and then fall back to
-advertised `:free` models. An explicit provider-prefixed model must be present
-in the live catalog. This keeps provider rotation, quota state, breakers, and
-model health inside OmniRoute.
+An explicit model must be present in the fetched catalog. For an `auto/*`
+request, the client tries supported catalog aliases and then other advertised
+free or `auto/*` models with the requested capabilities. `WorkerPool` limits
+concurrency, preserves input order, and returns a redacted error for a failed
+item without cancelling unrelated items.
 
-The same rule applies to every lower-tier autonomous worker: use OmniRoute's
-live catalog and documented discovery APIs, never a hard-coded provider
-allowlist. When the gateway cannot provide fresh runtime truth, retain the
-candidate as `unknown` for explanation and exclude it from protected work.
+Only transient request failures receive bounded retries: connection failures,
+timeouts, HTTP 408, 409, 425, 429, and 5xx responses. Authentication and
+malformed-request responses do not retry.
 
-Only transient failures (timeouts, connection failures, 408/409/425/429, and
-5xx responses) trigger bounded failover. Authentication and malformed-request
-responses fail immediately. `WorkerPool` preserves input order and returns a
-redacted error per failed task instead of cancelling unrelated workers.
+## ADR-036 worker selection and Prime dispatch
+
+The ADR-036 path uses a stricter execution boundary than the general worker
+client. Before a node launch, `EligibilityLadder` evaluates live inventory,
+provider connection evidence, probe health, cooldowns, task requirements, and
+current load. A route must also be visible in Prime's OmniRoute model registry
+when that registry is present. The selected concrete route is passed to
+`PrimeHeadlessExecutor`, which invokes `prime-agent` with `--model <route>`.
+
+The lower-level `verdict.subagent_selection` and `verdict.worker_runtime`
+modules support bounded Prime/RLM worker attempts. They select only the
+intersection of live inventory and Prime-visible selectors, cache health
+results, validate a child terminal result, and record failure categories before
+trying another eligible candidate. They do not make OmniRoute a source of
+orchestration policy.
+
+Use the orchestration CLI to see or run this path:
+
+```bash
+verdict eligibility --probe --frontier
+verdict orchestrate "<goal>" --repo /path/to/repository --max-parallel 3
+```
+
+See [interview golden path](interview-golden-path.md) for the complete
+controller, worker, review, and receipt flow.
 
 ## Codex configuration
 
-The local Codex provider is configured as:
+The local Codex provider can use OmniRoute's OpenAI-compatible endpoint:
 
 ```toml
 model = "cx/gpt-5.6-luna-xhigh"
@@ -100,13 +78,6 @@ base_url = "http://127.0.0.1:20128/v1"
 wire_api = "responses"
 ```
 
-`cx/...` is OmniRoute's canonical Codex namespace. `codex/...` remains a
-compatibility alias, but `cx/...` is the preferred spelling for this gateway.
-Worker model IDs can use `auto/*`, or any provider-prefixed ID returned by the
-live catalog (for example `openrouter/...:free` or `kilocode/...`). They inherit
-the parent OmniRoute provider; a worker does not need a second provider block.
-
-The custom Codex agents under `~/.codex/agents/` intentionally use different
-OmniRoute model IDs for exploration, implementation, review, and fast bounded
-tasks. Keep those IDs catalog-backed and re-run `codex doctor --strict-config`
-after changing them.
+Model IDs in external harness configuration must be backed by that harness and
+by the live gateway catalog. Re-run the harness's own configuration validation
+after changing its model configuration.
