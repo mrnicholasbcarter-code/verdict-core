@@ -2668,6 +2668,10 @@ def cmd_memory(args: Any) -> None:
 
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     sub = getattr(args, "memory_command", None)
+    if not (sub in {"docs", "masterdocs"} and getattr(args, "json", False)):
+        from verdict import present
+
+        present.header(f"Memory / {sub or 'help'}")
 
     if sub == "docs":
         from verdict.documentation_preflight import run_documentation_preflight
@@ -2680,7 +2684,9 @@ def cmd_memory(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
         else:
-            console.print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
+            present.kv(docs_report.to_dict(), title="Documentation preflight")
+            if not docs_report.passed:
+                present.fail("documentation preflight", "failed")
         if not docs_report.passed:
             raise SystemExit(1)
         return
@@ -2696,16 +2702,16 @@ def cmd_memory(args: Any) -> None:
             source=getattr(args, "source", "cli"),
         )
         plane.put(rec)
-        console.print(
-            f"[bold green]✓ Memory record put: {rec.key} (ns: {rec.namespace})[/bold green]"
-        )
+        present.ok("Memory record put", f"{rec.key} (ns: {rec.namespace})")
     elif sub == "search":
         results = plane.search(
             args.query, namespace=getattr(args, "namespace", None), limit=getattr(args, "limit", 10)
         )
-        console.print(f"[bold cyan]Found {len(results)} memory record(s):[/bold cyan]")
-        for r in results:
-            console.print(f"- [{r.namespace}:{r.key}] ({r.source}): {r.content[:100]}")
+        present.section(f"Found {len(results)} memory record(s):")
+        present.table(
+            ["Namespace", "Key", "Source", "Content"],
+            [(r.namespace, r.key, r.source, r.content[:100]) for r in results],
+        )
     elif sub == "export":
         from verdict.memory_adapters import ImportPolicy, export_manifest
 
@@ -2721,7 +2727,7 @@ def cmd_memory(args: Any) -> None:
         )
         if export_report.status != "ok":
             raise SystemExit("memory manifest export failed: " + "; ".join(export_report.errors))
-        console.print(f"[bold green]✓ Exported memory manifest to {destination}[/bold green]")
+        present.ok("Exported memory manifest", f"to {destination}")
     elif sub == "import":
         from verdict.memory_adapters import ImportPolicy, import_manifest
 
@@ -2730,9 +2736,10 @@ def cmd_memory(args: Any) -> None:
         policy = ImportPolicy((source.parent,))
         manifest_records, import_report = import_manifest(source, policy=policy)
         count = plane.import_records(manifest_records)
-        console.print(
-            f"[bold green]✓ Imported {count[0]} record(s) ({import_report.duplicates} duplicates; "
-            f"manifest {import_report.manifest_hash})[/bold green]"
+        present.ok(
+            "Imported memory records",
+            f"{count[0]} record(s) ({import_report.duplicates} duplicates; "
+            f"manifest {import_report.manifest_hash})",
         )
     elif sub == "masterdocs":
         db = getattr(args, "db", "MasterDocsRAG.db")
@@ -2748,7 +2755,8 @@ def cmd_memory(args: Any) -> None:
             if getattr(args, "json", False):
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
-                console.print(json.dumps(payload["report"], indent=2, sort_keys=True))
+                present.fail("MasterDocs import", str(result.report.status))
+                present.kv(payload["report"])
             raise SystemExit(1)
         if getattr(args, "dry_run", False):
             payload = result.to_dict()
@@ -2763,7 +2771,8 @@ def cmd_memory(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            console.print(json.dumps(payload["report"], indent=2, sort_keys=True))
+            present.ok("MasterDocs import", str(payload["report"].get("status", "ok")))
+            present.kv(payload["report"])
         return
     elif sub == "graph":
         db = getattr(args, "db", "code_graph.db")
@@ -2771,9 +2780,7 @@ def cmd_memory(args: Any) -> None:
         graph_rep = graph_adapter.ingest_sqlite(
             db, plane, allow_legacy_sqlite=args.allow_legacy_sqlite
         )
-        console.print(
-            f"[bold green]✓ Code graph ingested {graph_rep.records_created} node(s)[/bold green]"
-        )
+        present.ok("Code graph ingested", f"{graph_rep.records_created} node(s)")
     elif sub == "setup":
         report = detect_available_tools()
         tools_to_config = getattr(args, "tools", None)
@@ -2782,17 +2789,19 @@ def cmd_memory(args: Any) -> None:
         else:
             tools_to_config = [t.strip() for t in tools_to_config.split(",") if t.strip()]
 
-        console.print(
-            f"[bold cyan]Detected available AI tools:[/bold cyan] {list(report.preselected_tools)}"
+        present.kv(
+            {
+                "Detected available AI tools": list(report.preselected_tools),
+                "Configuring memory bridge for": tools_to_config,
+            }
         )
-        console.print(f"[bold cyan]Configuring memory bridge for:[/bold cyan] {tools_to_config}")
 
         res = configure_memory_bridge(tools_to_config, plane)
-        console.print(f"[bold green]✓ Configured tools: {res['configured_tools']}[/bold green]")
-        console.print(f"[bold green]✓ Memory database ready: {res['memory_db_path']}[/bold green]")
+        present.ok("Configured tools", str(res["configured_tools"]))
+        present.ok("Memory database ready", str(res["memory_db_path"]))
 
     else:
-        console.print("[bold yellow]Use --help to view memory subcommands.[/bold yellow]")
+        present.warn("Memory", "Use --help to view memory subcommands.")
 
 
 def cmd_uninstall(purge_data: bool = False) -> None:
@@ -2800,9 +2809,15 @@ def cmd_uninstall(purge_data: bool = False) -> None:
     from verdict.memory_bridge import uninstall_memory_bridge
 
     res = uninstall_memory_bridge(home_dir=Path.home(), cwd=Path.cwd(), purge_data=purge_data)
-    console.print(f"[bold green]✓ Uninstalled targets: {res['uninstalled_targets']}[/bold green]")
+    from verdict import present
+
+    present.header("Uninstall memory bridge")
+    targets = res["uninstalled_targets"]
+    present.ok(
+        "Uninstalled targets", ", ".join(map(str, targets)) if targets else "none were installed"
+    )
     if purge_data:
-        console.print("[bold yellow]⚠ Purged .verdict memory data directory.[/bold yellow]")
+        present.warn("Purged .verdict memory data directory.")
 
 
 def cmd_runtime(
@@ -2859,69 +2874,65 @@ def cmd_check() -> None:
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
     )
     config_path = os.path.join(config_dir, "verdict.yaml")
+    from verdict import present
+
+    present.header("Configuration check")
 
     if not os.path.exists(config_path):
-        console.print(
-            f"[bold red]❌ Configuration file (verdict.yaml) is missing at {config_path}.[/bold red]"
-        )
+        present.fail("Configuration file (verdict.yaml) is missing", f"at {config_path}.")
         sys.exit(1)
 
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
     except Exception as exc:
-        console.print(
-            f"[bold red]❌ Configuration file is corrupted/invalid YAML: {exc}[/bold red]"
-        )
+        present.fail("Configuration file is corrupted/invalid YAML", str(exc))
         sys.exit(1)
 
     has_issue = False
 
     primary_model = config.get("primary_model")
     if not primary_model:
-        console.print("[bold red]❌ No primary model configured in verdict.yaml.[/bold red]")
+        present.fail("No primary model configured in verdict.yaml.")
         has_issue = True
     else:
         from verdict.classifier import classify
 
         tier = classify(primary_model)
-        console.print(f"✓ Configured Primary Model: [cyan]{primary_model}[/] (Tier-{tier})")
+        present.ok("Configured Primary Model", f"{primary_model} (Tier-{tier})")
 
     providers = config.get("providers", {})
     if not isinstance(providers, dict):
-        console.print("[bold red]❌ 'providers' section in verdict.yaml is malformed.[/bold red]")
+        present.fail("'providers' section in verdict.yaml is malformed.")
         has_issue = True
     else:
         urls: dict[str, str] = {}
         for name, p_cfg in providers.items():
             if not isinstance(p_cfg, dict):
-                console.print(
-                    f"[bold red]❌ Provider '{name}' config is not a dictionary.[/bold red]"
-                )
+                present.fail(f"Provider '{name}' config is not a dictionary.")
                 has_issue = True
                 continue
             base_url = p_cfg.get("base_url", "")
             if "sk-" in base_url or "api_key" in base_url.lower():
-                console.print(
-                    f"[bold red]❌ Literal API key detected inside host URL for provider '{name}'.[/bold red]"
-                )
+                present.fail(f"Literal API key detected inside host URL for provider '{name}'.")
                 has_issue = True
 
             if base_url:
                 url = base_url.rstrip("/")
                 if url in urls:
-                    console.print(
-                        f"[bold red]❌ Duplicate host URL configured in verdict.yaml: provider '{name}' and '{urls[url]}' have identical hosts: {url}[/bold red]"
+                    present.fail(
+                        "Duplicate host URL configured in verdict.yaml",
+                        f"provider '{name}' and '{urls[url]}' have identical hosts: {url}",
                     )
                     has_issue = True
                 else:
                     urls[url] = name
 
     if has_issue:
-        console.print("[bold red]❌ Config validation failed with issues.[/bold red]")
+        present.fail("Config validation failed with issues.")
         sys.exit(1)
 
-    console.print("[bold green]✓ Configuration file is valid.[/bold green]")
+    present.ok("Configuration file is valid.")
 
 
 def cmd_compat(compat_command: str | None, declared: str | None, output_json: bool) -> None:
@@ -3015,6 +3026,12 @@ def cmd_hook(args: Any) -> None:
     from verdict.memory_plane import MemoryPlane
 
     hook_cmd = getattr(args, "hook_command", None)
+    if hook_cmd != "claude-gate" and not (
+        hook_cmd in {"recall", "configure", "status"} and getattr(args, "json", False)
+    ):
+        from verdict import present
+
+        present.header(f"Hook / {hook_cmd or 'help'}")
     if hook_cmd == "claude-gate":
         base_url = getattr(args, "base_url", "http://127.0.0.1:20128")
         try:
@@ -3049,9 +3066,11 @@ def cmd_hook(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps([r.to_dict() for r in results], indent=2))
         else:
-            console.print(f"[bold cyan]Recall: {len(results)} record(s)[/bold cyan]")
-            for r in results:
-                console.print(f"- [{r.namespace}:{r.key}] ({r.source}): {r.content[:120]}")
+            present.section(f"Recall: {len(results)} record(s)")
+            present.table(
+                ["Namespace", "Key", "Source", "Content"],
+                [(r.namespace, r.key, r.source, r.content[:120]) for r in results],
+            )
 
     elif hook_cmd == "record":
         key = getattr(args, "key", "session")
@@ -3063,11 +3082,9 @@ def cmd_hook(args: Any) -> None:
         )
         write_res = gate.write(req)
         if write_res.allowed:
-            console.print(f"[bold green]✓ Recorded [{namespace}:{key}][/bold green]")
+            present.ok("Recorded", f"[{namespace}:{key}]")
         else:
-            console.print(
-                f"[bold red]✗ Rejected [{namespace}:{key}]: {write_res.reason}[/bold red]"
-            )
+            present.fail(f"Rejected [{namespace}:{key}]", str(write_res.reason))
 
     elif hook_cmd == "configure":
         tools_str = getattr(args, "tools", None)
@@ -3076,9 +3093,8 @@ def cmd_hook(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(res, indent=2))
         else:
-            console.print("[bold green]✓ Memory bridge configured.[/bold green]")
-            console.print(f"  DB: {res['memory_db_path']}")
-            console.print(f"  Targets: {', '.join(res['configured_tools'])}")
+            present.ok("Memory bridge configured.")
+            present.kv({"DB": res["memory_db_path"], "Targets": ", ".join(res["configured_tools"])})
 
     elif hook_cmd == "status":
         codex_agents = Path.home() / ".codex" / "AGENTS.md"
@@ -3104,8 +3120,7 @@ def cmd_hook(args: Any) -> None:
             print(json.dumps(status, indent=2))
         else:
             for k, v in status.items():
-                icon = "✅" if v else "⚠️"
-                console.print(f"{icon} {k}: {v}")
+                present.status(k.replace("_", " "), "ok" if v else "missing")
 
 
 def cmd_mcp(args: Any) -> None:
@@ -3122,10 +3137,11 @@ def cmd_mcp(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(res, indent=2))
         else:
-            console.print(
-                "[bold green]✅ Verdict MCP server initialized across tool environments.[/bold green]"
-            )
-            console.print(f"Memory DB: {res['memory_db_path']}")
+            from verdict import present
+
+            present.header("MCP / init")
+            present.ok("Verdict MCP server initialized across tool environments.")
+            present.kv({"Memory DB": res["memory_db_path"]})
     elif mcp_cmd == "status":
         mcp_file = Path.cwd() / ".mcp.json"
         registered = False
@@ -3140,14 +3156,13 @@ def cmd_mcp(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(status_info, indent=2))
         else:
+            from verdict import present
+
+            present.header("MCP / status")
             if registered:
-                console.print(
-                    "[bold green]✅ Verdict MCP server is registered in .mcp.json[/bold green]"
-                )
+                present.ok("Verdict MCP server", "is registered in .mcp.json")
             else:
-                console.print(
-                    "[yellow]⚠️ Verdict MCP server is not registered in .mcp.json[/yellow]"
-                )
+                present.warn("Verdict MCP server", "is not registered in .mcp.json")
 
 
 def _stdout_is_tty() -> bool:
