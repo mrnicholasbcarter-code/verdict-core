@@ -1,6 +1,6 @@
 # ADR-036: Goal-to-receipt orchestration with capacity-aware, same-node recovery
 
-- **Status:** Accepted: implemented on `feat/interview-golden-path` (not merged to `main` yet)
+- **Status:** Accepted: implemented and merged to `main` via #590 (`4617445`)
 - **Date:** 2026-09-24
 - **Related:** ADR-0001 (eligibility before ranking), ADR-015/017 (receipts), ADR-023 (governed
   supervision, superseded in scope by this ADR for the orchestration runtime), ADR-031 (Prime

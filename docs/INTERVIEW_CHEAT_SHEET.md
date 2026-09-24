@@ -1,11 +1,11 @@
 # Verdict interview cheat sheet
 
-**Describes `main` at commit da61a07, certified from a fresh clone on 2026-09-24.**
+**Describes `main` at commit 43fbff4, certified from a fresh clone on 2026-09-24.**
 
 One page. Printable. Every number below has a named source. Sources:
 [README](../README.md), [runbook](guides/interview-golden-path.md),
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md),
-main certification (`~/.verdict/evidence/interview-main/recert-da61a07.md`, local operator evidence),
+main certification (`~/.verdict/evidence/bod191/bod192/cert-43fbff4/CERT-ROOT-VERIFIED.md`, local operator evidence),
 [story bank](portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md),
 [branch reconciliation](BRANCH_RECONCILIATION.md).
 
@@ -78,8 +78,8 @@ and narrate the same story from receipts:
 
 Fresh `main` rehearsal evidence (most recent):
 ```bash
-verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/clean3    # COMPLETE
-verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/chaos3    # BLOCKED
+verdict run-receipt /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/clean4   # COMPLETE
+verdict run-receipt /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/chaos4   # BLOCKED (review FAIL on a real bug)
 ```
 
 Earlier fallback runs:
@@ -89,9 +89,11 @@ verdict run-receipt ~/.verdict/evidence/golden-path/live9-run    # reassignment 
 verdict watch ~/.verdict/evidence/golden-path/live10-run --once  # supervisor kill + resume
 verdict run-receipt ~/.verdict/evidence/golden-path/live7-run    # pool exhaustion, BLOCKED
 verdict run-receipt ~/.verdict/evidence/golden-path/certlive-run # fresh-clone certification run
+verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/clean3    # COMPLETE
+verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/chaos3    # BLOCKED (pool exhaustion)
 ```
 
-Run ids worth naming: `clean3` (12 tests on integration ref, OCR PASS), `chaos3` (injected faults plus a real
+Run ids worth naming: `clean4` (13 tests on integration ref, OCR PASS on cc/claude-fable-5), `chaos4` (injected planner quota + no-final and a worker 429, recovered by 2 reassignments; the barrier caught a real ownership violation; then the independent review on cc/claude-opus-4-8 found a real bug (requires-python >=3.8 vs `list[str]`), so the run is BLOCKED fail-closed), `clean3` (12 tests on integration ref, OCR PASS), `chaos3` (injected faults plus a real
 ownership violation, fail-closed), `chaos2` (4-attempt reassignment chain, COMPLETE), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
 quota, then pool exhaustion), `live10` (hung controller, killed, resumed), `certlive` (fresh
 clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact.
@@ -203,11 +205,12 @@ whole machine.
 
 | Number | Meaning | Source |
 |---|---|---|
-| 2981 passed on fresh clone of main @ da61a07 | full suite | recert-da61a07 |
-| mypy --strict on 213 files | fresh-clone gate, pass | recert-da61a07 |
-| 270 doc files verified | doc links checked on fresh clone | recert-da61a07 |
-| 12 tests, OCR PASS on cc/claude-fable-5 | rehearsal-3 clean3 run | /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/clean3 |
-| clean3 COMPLETE, chaos3 BLOCKED fail-closed | rehearsal-3 outcomes | /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/chaos3 |
+| 2981 passed + 1 skipped on fresh clone (clean shell) | full suite | cert-43fbff4 |
+| 2982 passed on fresh clone (dirty shell) | full suite with LLMGATE_AUTH_TOKEN=bogus | cert-43fbff4 |
+| mypy --strict on 213 files | fresh-clone gate, pass | cert-43fbff4 |
+| 270 doc files verified | doc links checked on fresh clone | cert-43fbff4 |
+| 13 tests on integration ref, OCR PASS on cc/claude-fable-5 | rehearsal-43fbff4 clean4 run | /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/clean4 |
+| clean4 COMPLETE; chaos4 BLOCKED (review FAIL on real bug) | rehearsal-43fbff4 outcomes | /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/chaos4 |
 | 4-attempt reassignment chain, COMPLETE | rehearsal-2 chaos2 run | /home/nick/.verdict/evidence/interview-main/rehearsal-2/runs/chaos2 |
 | A-J | live scenario matrix, faults injected and tagged | golden-path certification |
 | 4 CPU / 8 GB, OmniRoute v3.8.50 | certification host | golden-path certification |
