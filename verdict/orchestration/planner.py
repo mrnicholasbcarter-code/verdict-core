@@ -258,6 +258,14 @@ def repo_map(
 # ---------------------------------------------------------------- frontier planner
 
 
+class PlanningExecutorError(OrchestrationError):
+    """The planning model call itself failed; carries the structured terminal."""
+
+    def __init__(self, message: str, terminal: WorkerTerminal) -> None:
+        super().__init__(message)
+        self.terminal = terminal
+
+
 class FrontierPlanner:
     """Runs one frontier planning pass (with one repair round) into a validated WorkGraph."""
 
@@ -277,9 +285,10 @@ class FrontierPlanner:
             prompt, route_id=route_id, cwd=repo, timeout_seconds=timeout_seconds
         )
         if not terminal.ok:
-            raise OrchestrationError(
+            raise PlanningExecutorError(
                 "FrontierPlanner: planning executor failed: "
-                f"{terminal.error or terminal.stop_reason or 'unknown error'}"
+                f"{terminal.error or terminal.stop_reason or 'unknown error'}",
+                terminal,
             )
         try:
             return parse_plan(terminal.output, goal), terminal
@@ -292,9 +301,10 @@ class FrontierPlanner:
                 repair_prompt, route_id=route_id, cwd=repo, timeout_seconds=timeout_seconds
             )
             if not repaired.ok:
-                raise OrchestrationError(
+                raise PlanningExecutorError(
                     "FrontierPlanner: repair executor failed: "
-                    f"{repaired.error or repaired.stop_reason or 'unknown error'}"
+                    f"{repaired.error or repaired.stop_reason or 'unknown error'}",
+                    repaired,
                 ) from first_error
             try:
                 graph = parse_plan(repaired.output, goal)

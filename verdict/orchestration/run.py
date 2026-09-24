@@ -150,13 +150,22 @@ async def plan_with_failover(
     executor: WorkerExecutor,
     classifier: FailureClassifier,
     events: Any,
-    max_attempts: int = 3,
+    max_attempts: int = 6,
     timeout_seconds: float = 600,
     constraints: str = "",
     max_parallel: int = 3,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> WorkGraph:
-    """Frontier decomposition with the same controller-model failover as workers."""
+    """Frontier decomposition with the same controller-model failover as workers.
+
+    The planning model is the run's controller intelligence. When its capacity
+    fails (quota, rate limit, auth, no final answer, ...) the failure is
+    classified from the structured terminal, the route or whole provider is
+    cooled down with any parsed reset time, and the NEXT eligible frontier model
+    is selected dynamically. Nothing waits on the exhausted model.
+    """
+    from verdict.orchestration.planner import PlanningExecutorError
+
     tried: set[str] = set()
     last = ""
     for attempt in range(1, max_attempts + 1):
@@ -189,18 +198,30 @@ async def plan_with_failover(
             )
         except OrchestrationError as exc:
             last = f"{choice.route_id}: {exc}"
-            failure = classifier.classify(
-                _terminal_from_error(choice.route_id, str(exc)), now=now()
+            source = (
+                exc.terminal
+                if isinstance(exc, PlanningExecutorError)
+                else _terminal_from_error(choice.route_id, str(exc))
+            )
+            failure = classifier.classify(source, now=now())
+            state = (
+                "QUOTA"
+                if failure.category in {"quota_exhausted", "rate_limited"}
+                else "PLANNER_FAILED"
             )
             events.emit(
                 "controller",
-                state="PLANNER_FAILED",
+                state=state,
                 route_id=choice.route_id,
                 category=failure.category,
                 detail=str(exc)[:300],
+                fault_injected=source.session_ref.startswith("fault-injected"),
             )
             if failure.scope != "none" and failure.cooldown_seconds > 0:
                 selector.record_failure(choice.route_id, failure, now=now())
+                until = datetime.fromtimestamp(
+                    now().timestamp() + failure.cooldown_seconds, timezone.utc
+                )
                 events.emit(
                     "cooldown",
                     key=choice.route_id
@@ -208,11 +229,17 @@ async def plan_with_failover(
                     else route_provider(choice.route_id),
                     scope=failure.scope,
                     category=failure.category,
-                    until="",
+                    until=until.isoformat(timespec="seconds"),
                 )
             tried.add(choice.route_id)
+            events.emit(
+                "controller",
+                state="REPLACING",
+                detail=f"reselecting planner after {failure.category}",
+            )
             continue
         del terminal
+        events.emit("controller", state="HEALTHY", route_id=choice.route_id, detail="plan produced")
         if max_parallel != graph.max_parallel:
             graph = WorkGraph(
                 graph.goal,
