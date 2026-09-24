@@ -4530,7 +4530,7 @@ def main() -> None:
                 present.status(
                     "dev mode",
                     "enabled",
-                    "hot reload on (LLMGATE_AVAILABILITY_PROFILE=development)",
+                    "hot-reload enabled (LLMGATE_AVAILABILITY_PROFILE=development)",
                 )
             start_server(args.port, args.host, reload=args.dev)
         except ImportError:
