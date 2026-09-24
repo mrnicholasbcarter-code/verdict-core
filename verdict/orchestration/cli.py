@@ -167,7 +167,12 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
 
     executor: WorkerExecutor = PrimeHeadlessExecutor()
     faults: dict[str, list[str]] = {}
-    for item in args.inject:
+    injected = list(args.inject)
+    # Supervisor-generation-scoped chaos: VERDICT_CHAOS_G0 applies only to the
+    # first controller life (lets a demo stall generation 0, then resume cleanly).
+    generation = os.environ.get("VERDICT_CONTROLLER_GENERATION", "0")
+    injected.extend(x for x in os.environ.get(f"VERDICT_CHAOS_G{generation}", "").split(";") if x)
+    for item in injected:
         route, _, kinds = item.partition("=")
         faults.setdefault(route.strip(), []).extend(
             k.strip() for k in kinds.split(",") if k.strip()

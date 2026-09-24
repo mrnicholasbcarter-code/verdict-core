@@ -261,7 +261,12 @@ class ControllerSupervisor:
         if self._spawner is not None:
             child_env = dict(self.env) if self.env is not None else None
             return await self._spawner(argv, log_path=log_path, env=child_env), stream
-        environment = {**os.environ, **self.env} if self.env is not None else None
+        generation = str(len(self.generations) - 1 if self.generations else 0)
+        environment = {
+            **os.environ,
+            **(self.env or {}),
+            "VERDICT_CONTROLLER_GENERATION": generation,
+        }
         merged = asyncio.subprocess.STDOUT
         process = await asyncio.create_subprocess_exec(
             *argv, stdout=stream, stderr=merged, start_new_session=True, env=environment
