@@ -27,15 +27,53 @@ MAX_COOLDOWN_SECONDS = 86400
 
 # Common patterns for parsing retry-after hints
 # Callable that takes a Match object and returns float | None
+_DURATION_UNITS = {
+    "d": 86400,
+    "day": 86400,
+    "days": 86400,
+    "h": 3600,
+    "hr": 3600,
+    "hrs": 3600,
+    "hour": 3600,
+    "hours": 3600,
+    "m": 60,
+    "min": 60,
+    "mins": 60,
+    "minute": 60,
+    "minutes": 60,
+    "s": 1,
+    "sec": 1,
+    "secs": 1,
+    "second": 1,
+    "seconds": 1,
+}
+_DURATION_PART = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b", re.IGNORECASE
+)
+
+
+def _parse_duration(text: str) -> float | None:
+    """'2h', '5h 30m', '1 hour 5 minutes', '90s' -> seconds."""
+    total = 0.0
+    found = False
+    for number, unit in _DURATION_PART.findall(text):
+        total += float(number) * _DURATION_UNITS[unit.lower()]
+        found = True
+    return total if found else None
+
+
 RETRY_AFTER_PATTERNS: list[tuple[str, Any]] = [
-    (r"retry-after:\s*(\d+)", lambda m: float(m.group(1))),  # retry-after: N
+    (r"retry-after:\s*(\d+)\b(?!\s*[a-z])", lambda m: float(m.group(1))),  # retry-after: N
     (r"retry after (\d+) seconds", lambda m: float(m.group(1))),  # retry after N seconds
     (r"resets? at ([\d\-T:.Z+]+)", lambda m: _parse_iso8601(m.group(1))),  # resets at ISO8601
+    # "resets in 2h", "reset in 5h 30m", "try again in 3 minutes", "retry after 20s",
+    # "available again in 1 hour 5 minutes"
     (
-        r"resets? in (\d+)h (\d+)m",
-        lambda m: float(m.group(1)) * 3600 + float(m.group(2)) * 60,
-    ),  # resets in Nh Nm
-    (r"try again in (\d+) minutes", lambda m: float(m.group(1)) * 60),  # try again in N minutes
+        r"(?:resets?|try again|retry(?:-after| after)?|available again|reset)\s*(?:in|after)?\s*"
+        r"((?:\d+(?:\.\d+)?\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b"
+        r"[\s,and]*)+)",
+        lambda m: _parse_duration(m.group(1)),
+    ),
 ]
 
 
@@ -188,11 +226,17 @@ class FailureIntelligence:
                 if is_quota:
                     if not cooldown:
                         cooldown = 3600
+                    # A model-scoped cap ("for this model", per-model weekly
+                    # limit) leaves the account's other models usable.
+                    model_scoped = any(
+                        marker in error_lower
+                        for marker in ("for this model", "model usage limit", "per-model")
+                    )
                     return FailureClassification(
                         category="quota_exhausted",
                         action="REROUTE",
                         cooldown_seconds=cooldown,
-                        scope="provider",
+                        scope="route" if model_scoped else "provider",
                         evidence=_sanitize_error(error_text),
                     )
                 else:

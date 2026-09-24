@@ -278,6 +278,7 @@ class PrimeHeadlessExecutor:
 def _fault_terminal(kind: str, route_id: str, session_ref: str) -> WorkerTerminal:
     codes = {
         "quota": 429,
+        "route_quota": 429,
         "rate_limit": 429,
         "auth": 401,
         "payment": 402,
@@ -286,6 +287,9 @@ def _fault_terminal(kind: str, route_id: str, session_ref: str) -> WorkerTermina
     }
     errors = {
         "quota": "You have exceeded your usage limit; resets in 2h",
+        # Model-scoped usage cap (e.g. a per-model weekly limit): the provider's
+        # other models stay usable, so only the route cools down.
+        "route_quota": "model usage limit reached for this model; resets in 2h",
         "rate_limit": "rate limited",
         "auth": "authentication failed",
         "payment": "payment required",

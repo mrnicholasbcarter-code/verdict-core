@@ -449,3 +449,35 @@ def test_ownership_violation_with_detail_is_rehydrate_not_cooldown() -> None:
         now=datetime.now(timezone.utc),
     )
     assert result.category == "ownership_violation" and result.scope == "none"
+
+
+def test_model_scoped_quota_cools_route_not_provider() -> None:
+    from verdict.orchestration.contracts import WorkerTerminal
+
+    result = FailureIntelligence().classify(
+        WorkerTerminal(
+            ok=False,
+            status_code=429,
+            error="model usage limit reached for this model; resets in 2h",
+        ),
+        now=datetime.now(timezone.utc),
+    )
+    assert result.category == "quota_exhausted" and result.scope == "route"
+    assert 7000 <= result.cooldown_seconds <= 7300
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [
+        ("usage limit; resets in 2h", 7200),
+        ("quota exceeded, reset in 5h 30m", 19800),
+        ("please try again in 3 minutes", 180),
+        ("retry after 20s", 20),
+        ("available again in 1 hour 5 minutes", 3900),
+        ("retry-after: 45", 45),
+    ],
+)
+def test_reset_hint_duration_forms(text: str, seconds: int) -> None:
+    from verdict.orchestration.recovery import _parse_reset_hint
+
+    assert _parse_reset_hint(text) == seconds

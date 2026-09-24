@@ -345,10 +345,7 @@ class DagRuntime:
             choice, considered = self.selector.select(requirements, now=self.now())
             counts = _ladder_counts(considered)
             if choice is None:
-                run.reason = "no eligible model: " + "; ".join(
-                    f"{v.route_id}:{v.failed_stage.value if v.failed_stage else '?'}:{v.reason}"
-                    for v in considered[:6]
-                )
+                run.reason = "no eligible model: " + _explain_exhaustion(considered)
                 self.events.emit("eligibility", node_id, **counts, selected=None)
                 self._set(run, NodeState.BLOCKED, reason=run.reason)
                 self.events.emit(
@@ -807,6 +804,32 @@ class DagRuntime:
             "run_finished", outcome=outcome.value, reason=reason, integration_ref=integration
         )
         return RunResult(outcome, reason, self.nodes, integration, review)
+
+
+def _explain_exhaustion(verdicts: Sequence[Any]) -> str:
+    """Why the pool is empty, most relevant first: cooldowns/quota, then health, then fit."""
+    order = {
+        "AVAILABLE": 0,
+        "HEALTHY": 1,
+        "TASK_ELIGIBLE": 2,
+        "SELECTED": 3,
+        "ENTITLED": 4,
+        "DISCOVERED": 5,
+    }
+    ranked = sorted(
+        (v for v in verdicts if getattr(v, "failed_stage", None) is not None),
+        key=lambda v: (order.get(v.failed_stage.value, 9), v.route_id),
+    )
+    parts = [
+        f"{v.route_id}:{v.failed_stage.value}:{v.reason}"
+        + (f" until {v.cooldown_until}" if v.cooldown_until else "")
+        for v in ranked[:8]
+    ]
+    stages: dict[str, int] = {}
+    for v in ranked:
+        stages[v.failed_stage.value] = stages.get(v.failed_stage.value, 0) + 1
+    summary = ", ".join(f"{count} failed {stage}" for stage, count in sorted(stages.items()))
+    return f"[{summary}] " + "; ".join(parts)
 
 
 def _ladder_counts(verdicts: Sequence[Any]) -> dict[str, int]:
