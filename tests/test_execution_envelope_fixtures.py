@@ -419,6 +419,28 @@ class TestAdversarialInputs:
         )
         assert verdict == EnvelopeVerdict.EXPIRED
 
+    def test_contradictory_admitted_and_denied(self, manifest):
+        """eligibility with admitted=True AND denied=True -> DENY (fail-closed)."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["eligibility_decision"] = {"admitted": True, "denied": True}
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.DENY
+
+    def test_contradictory_admitted_and_decision_deny(self, manifest):
+        """eligibility with admitted=True AND decision='deny' -> DENY (fail-closed)."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["eligibility_decision"] = {"admitted": True, "decision": "deny"}
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.DENY
+
     def test_verifier_never_raises_on_garbage(self, manifest):
         """Verifier never raises across a table of garbage inputs."""
         garbage_inputs = [

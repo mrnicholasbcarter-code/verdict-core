@@ -412,6 +412,12 @@ def verify_execution_envelope(
         # Accept only if explicitly admitted
         if eligibility.get("admitted") is not True:
             return EnvelopeVerdict.DENY
+        # Reject contradictory signals (fail-closed)
+        if eligibility.get("denied"):
+            return EnvelopeVerdict.DENY
+        decision = eligibility.get("decision")
+        if decision is not None and decision != "accept":
+            return EnvelopeVerdict.DENY
 
         # Check policy digest (REQUIRED)
         actual_digest = env_dict.get("policy_digest", "")

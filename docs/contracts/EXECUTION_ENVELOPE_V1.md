@@ -127,7 +127,11 @@ assert verdict == EnvelopeVerdict.ACCEPT
 
 1. **Schema Validation**: Parse with `ExecutionEnvelope.from_dict()` first
    - Unknown fields, wrong types, structural errors → `REJECT_UNKNOWN`
-2. **Eligibility**: `eligibility_decision.admitted` must be `True` (anything else → `DENY`)
+2. **Eligibility**: `eligibility_decision.admitted` must be `True` AND no contradictory signals
+   - `admitted` is not `True` → `DENY`
+   - `denied` is truthy → `DENY` (even if `admitted=True`)
+   - `decision` present and not `"accept"` → `DENY` (even if `admitted=True`)
+   - Contradictory signals fail closed
 3. **Digest Mismatch**: Missing, empty, or wrong `policy_digest` → `DIGEST_MISMATCH`
 4. **Expiry** (bounded lifetime REQUIRED):
    - **Missing `execution_constraints.expires_at`** → `EXPIRED`
@@ -143,6 +147,9 @@ assert verdict == EnvelopeVerdict.ACCEPT
 **Why expires_at is REQUIRED**: Envelopes without expiry can be replayed forever. The fail-closed policy
 requires a bounded lifetime. Core producers MUST set `execution_constraints.expires_at`. Consumers
 MUST verify it.
+
+**Lifetime guidance**: Producers SHOULD keep lifetimes short; consumers MAY enforce a maximum lifetime
+(expires_at - created_at) appropriate to their security requirements.
 
 ## Consumer Integration
 
