@@ -1,11 +1,11 @@
 # Verdict interview cheat sheet
 
-**Describes `main` at commit 8954089, certified from a fresh clone on 2026-09-24.**
+**Describes `main` at commit da61a07, certified from a fresh clone on 2026-09-24.**
 
 One page. Printable. Every number below has a named source. Sources:
 [README](../README.md), [runbook](guides/interview-golden-path.md),
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md),
-main certification (`~/.verdict/evidence/interview-main/main-certification.md`, local operator evidence),
+main certification (`~/.verdict/evidence/interview-main/recert-da61a07.md`, local operator evidence),
 [story bank](portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md),
 [branch reconciliation](BRANCH_RECONCILIATION.md).
 
@@ -78,20 +78,21 @@ and narrate the same story from receipts:
 
 Fresh `main` rehearsal evidence (most recent):
 ```bash
-verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal/runs/clean    # COMPLETE
-verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal/runs/chaos    # BLOCKED
+verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/clean3    # COMPLETE
+verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/chaos3    # BLOCKED
 ```
 
-Golden-path reference runs (further fallbacks):
+Earlier fallback runs:
 ```bash
+verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-2/runs/chaos2    # COMPLETE
 verdict run-receipt ~/.verdict/evidence/golden-path/live9-run    # reassignment chain, COMPLETE
 verdict watch ~/.verdict/evidence/golden-path/live10-run --once  # supervisor kill + resume
 verdict run-receipt ~/.verdict/evidence/golden-path/live7-run    # pool exhaustion, BLOCKED
 verdict run-receipt ~/.verdict/evidence/golden-path/certlive-run # fresh-clone certification run
 ```
 
-Run ids worth naming: `clean` (12 tests on integration ref, OCR PASS), `chaos` (provider-scoped
-429, fail-closed), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
+Run ids worth naming: `clean3` (12 tests on integration ref, OCR PASS), `chaos3` (injected faults plus a real
+ownership violation, fail-closed), `chaos2` (4-attempt reassignment chain, COMPLETE), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
 quota, then pool exhaustion), `live10` (hung controller, killed, resumed), `certlive` (fresh
 clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact.
 
@@ -159,15 +160,14 @@ whole machine.
 
 ## 5. Four STAR stories
 
-**Gateway admission is not a model failure.**
-- S/T: parallel agent calls returned `503 chat_admission_busy`, and long turns returned a local
-  `504`; both look like model failures and would cool healthy routes.
-- A: found upstream OmniRoute issue `diegosouzapw/OmniRoute#13648`, recorded the admission /
-  headroom / queue settings, set `rateLimitOverrides.maxWaitMs=120000`, and classified
-  `gateway_busy` as an infrastructure retry that does not penalize the route. Admission to an
-  SSE stream is not a final answer: `no_final_answer` is its own class.
-- R: the certified host ran with those prerequisites and `certlive` completed. This does not
-  claim the upstream bug is fixed or that 503/504 can never recur.
+**The barrier caught a real worker mistake.**
+- S/T: in the `chaos3` rehearsal on main, after injected quota, no-final and 429 faults, a
+  `haiku` worker on both nodes also edited `textkit/__init__.py`, which neither node owned.
+- A: the per-node ownership barrier runs before a node can reach `VALIDATED`. It rejected both
+  attempts (`ownership_violation`), and each node was rehydrated for a newly selected route.
+- R: `impl_rev` passed on `cc/claude-sonnet-5`. `impl_vowels` had no eligible route left
+  (provider `cc` cooled by the 429), so it went `FAIL_CLOSED`: run `BLOCKED`, no unowned edit
+  merged, review not run. The barrier caught this, not a model. It checks paths, not code quality.
 
 **Reviewer independence across a controller restart.**
 - S/T: a resume restored validated commits but dropped their implementer route identities, so
@@ -189,29 +189,28 @@ whole machine.
   showed the reverse. Both runs still ended `BLOCKED` when the worker pool exhausted - planner
   recovery did not manufacture a `COMPLETE`.
 
-**A read-only worker ran a destructive command.**
-- S/T: a worker prompted to stay read-only ran `rm -rf /tmp/vgp && mkdir -p ...` in its own
-  shell tool call to build a scratch HOME; the damage had to be contained and understood.
-- A: the controller noticed the missing directory on its next command, read the worker session
-  journal, deleted that worker, sent explicit rules to the sibling audit workers, and
-  re-dispatched to a different route with an ABSOLUTE RULES block banning destructive commands
-  and requiring private `mktemp -d` scratch.
-- R: loss was confined to `/tmp/vgp` scratch; repo, branches, worktrees and
-  `~/.verdict/evidence` were untouched. Detection was after the fact. A prompt is policy, not an
-  OS-level enforcement boundary; there is no automated shell interception here.
+**Gateway admission is not a model failure.**
+- S/T: parallel agent calls returned `503 chat_admission_busy`, and long turns returned a local
+  `504`; both look like model failures and would cool healthy routes.
+- A: found upstream OmniRoute issue `diegosouzapw/OmniRoute#13648`, recorded the admission /
+  headroom / queue settings, set `rateLimitOverrides.maxWaitMs=120000`, and classified
+  `gateway_busy` as an infrastructure retry that does not penalize the route. Admission to an
+  SSE stream is not a final answer: `no_final_answer` is its own class.
+- R: the certified host ran with those prerequisites and `certlive` completed. This does not
+  claim the upstream bug is fixed or that 503/504 can never recur.
 
 ## 6. Numbers you can quote
 
 | Number | Meaning | Source |
 |---|---|---|
-| 2976 passed, 1 warning | full suite on fresh clone of `main` @ 8954089 | main certification |
-| mypy --strict on 213 files | fresh-clone gate, pass | main certification |
-| 270 doc files verified | doc links checked on fresh clone | main certification |
-| 12 tests, OCR PASS on cc/claude-fable-5 | main rehearsal clean run | main rehearsal |
-| provider-scoped 429 fail-closed | main rehearsal chaos run outcome | main rehearsal |
+| 2981 passed on fresh clone of main @ da61a07 | full suite | recert-da61a07 |
+| mypy --strict on 213 files | fresh-clone gate, pass | recert-da61a07 |
+| 270 doc files verified | doc links checked on fresh clone | recert-da61a07 |
+| 12 tests, OCR PASS on cc/claude-fable-5 | rehearsal-3 clean3 run | /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/clean3 |
+| clean3 COMPLETE, chaos3 BLOCKED fail-closed | rehearsal-3 outcomes | /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs/chaos3 |
+| 4-attempt reassignment chain, COMPLETE | rehearsal-2 chaos2 run | /home/nick/.verdict/evidence/interview-main/rehearsal-2/runs/chaos2 |
 | A-J | live scenario matrix, faults injected and tagged | golden-path certification |
 | 4 CPU / 8 GB, OmniRoute v3.8.50 | certification host | golden-path certification |
-| 24 / 28 / 30 tests | integration-ref suite size in `live2` / `live9` / `certlive` | runbook |
 | 85 -> 16 -> 5 -> 1 -> 1 | `live9` ladder: DISCOVERED, ENTITLED, HEALTHY, AVAILABLE, ELIGIBLE | README |
 | 4 nodes, 3 reassignments, 3 cooldowns | `live9` recorded header line | README |
 | cli.py 5901 -> 4549 lines | BOD-187 parser/dispatch split | repo git log |
@@ -226,7 +225,8 @@ whole machine.
 
 **Shipped on main:** Goal-to-receipt orchestration (ADR-036), eligibility ladder, parallel
 DAG runtime with reassignment/cooldowns, independent OCR review, digest-verified receipts,
-`verdict supervise` stall/resume, home screen and CLI, UNDERSTAND and HYDRATE stages.
+`verdict supervise` stall/resume, home screen and CLI, UNDERSTAND and HYDRATE stages, single
+current Tier-0 default primary model.
 
 **Not shipped:** BOD-157 adaptive concurrency, fix-and-review loop after blocking OCR
 finding, per-node critic pass, interactive Prime root-session survival, BOD-70 dogfood on
