@@ -360,3 +360,22 @@ def test_scripted_async(tmp_path: Path) -> None:
     result = run(ScriptedExecutor(script), "hello", tmp_path)
     assert not result.ok
     assert result.error == "scripted failure"
+
+
+async def test_fault_keys_match_provider_prefix_and_node(tmp_path: Path) -> None:
+    from verdict.orchestration.executors import FaultInjectingExecutor, ScriptedExecutor
+
+    inner = ScriptedExecutor(
+        lambda p, r, c: WorkerTerminal(ok=True, output="RESULT: DONE", model=r)
+    )
+    fx = FaultInjectingExecutor(inner, {"cc/*": ["quota"], "@wrap": ["auth"]})
+    first = await fx.run(
+        "x", route_id="cc/claude-sonnet-5", cwd=tmp_path / "slugify-a1", timeout_seconds=5
+    )
+    assert first.status_code == 429 and first.session_ref == "fault-injected:quota"
+    second = await fx.run(
+        "x", route_id="cc/claude-sonnet-5", cwd=tmp_path / "slugify-a2", timeout_seconds=5
+    )
+    assert second.ok
+    third = await fx.run("x", route_id="cx/gpt-5.5", cwd=tmp_path / "wrap-a1", timeout_seconds=5)
+    assert third.status_code == 401

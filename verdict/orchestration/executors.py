@@ -319,8 +319,19 @@ class FaultInjectingExecutor:
         self.inner = inner
         self._faults: dict[str, list[str]] = {k: list(v) for k, v in faults.items()}
 
-    def _pop_fault(self, route_id: str) -> str | None:
-        for key in (route_id, "*"):
+    def _keys(self, route_id: str, cwd: Path) -> list[str]:
+        """Match order: exact route, provider prefix ("cc/*"), node ("@slugify"), "*".
+
+        The node id is taken from the attempt worktree name ``<node>-a<N>`` so a
+        chaos run can target "the first attempt of node X, whatever route the
+        eligibility ladder picked" without predicting ranking.
+        """
+        provider = route_id.split("/", 1)[0] + "/*"
+        node = cwd.name.rsplit("-a", 1)[0] if "-a" in cwd.name else cwd.name
+        return [route_id, provider, "@" + node, "*"]
+
+    def _pop_fault(self, route_id: str, cwd: Path | None = None) -> str | None:
+        for key in self._keys(route_id, cwd or Path(".")):
             queue = self._faults.get(key)
             if queue:
                 return queue.pop(0)
@@ -329,7 +340,7 @@ class FaultInjectingExecutor:
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
-        kind = self._pop_fault(route_id)
+        kind = self._pop_fault(route_id, cwd)
         if kind is None:
             return await self.inner.run(
                 prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
