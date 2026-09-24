@@ -936,10 +936,17 @@ def cmd_benchmark(
             try:
                 execute_arm = executor_from_env()
             except LiveExecutorUnavailableError as exc:
-                console.print(f"[bold red]❌ {exc}[/bold red]")
+                from verdict import present
+
+                present.header("Benchmark  /  savings")
+                present.fail("live executor", str(exc))
                 raise SystemExit(2) from exc
         report = run_savings_bench(path, execute_arm=execute_arm, live_admit=live_paired)
-        console.print(format_savings_report(report), end="")
+        from verdict import present
+
+        present.header("Benchmark  /  savings")
+        # The report body is a stable text artifact meant for piping; keep it raw.
+        print(format_savings_report(report), end="")
         if output_json:
             output_path = Path(output_json)
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -949,7 +956,11 @@ def cmd_benchmark(
     report = run_reproducible_benchmarks(
         fixture, allow_live_provider=allow_live_provider, live_provider=live_provider
     )
-    console.print(format_benchmark_report(report), end="")
+    from verdict import present
+
+    present.header("Benchmark  /  reproducible")
+    # The report body is a stable text artifact meant for piping; keep it raw.
+    print(format_benchmark_report(report), end="")
 
     if output_json:
         output_path = Path(output_json)
@@ -1319,7 +1330,10 @@ def cmd_autodev(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev")
+            present.fail("consent", message)
         raise SystemExit(2)
 
     api_key = os.getenv("OMNIROUTE_API_KEY")
@@ -1337,13 +1351,19 @@ def cmd_autodev(
         if output_json:
             print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
         else:
-            console.print(f"[bold]{len(plan.units)} unit(s) planned[/bold] by {plan.model}")
-            for unit in plan.units:
-                console.print(
-                    f"  [cyan]{unit.unit_id}[/cyan]  {', '.join(unit.owned_files)}\n"
-                    f"      verify: {' '.join(unit.verification_command)}"
-                )
-            console.print(
+            from verdict import present
+
+            present.header("Autodev  /  dry run")
+            present.ok("plan", f"{len(plan.units)} unit(s) planned by {plan.model}")
+            present.table(
+                ["Unit", "Owned files", "Verify"],
+                [
+                    (unit.unit_id, ", ".join(unit.owned_files), " ".join(unit.verification_command))
+                    for unit in plan.units
+                ],
+                empty="no units planned",
+            )
+            present.note(
                 f"orchestrator tokens: {plan.usage.total_tokens}"
                 f"{'' if plan.usage.reported else ' (not reported by provider)'}"
             )
@@ -1370,7 +1390,39 @@ def cmd_autodev(
     if output_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
-        console.print(report.summary())
+        from verdict import present
+
+        present.header("Autodev")
+        units_line = (
+            f"{len(report.verified)} verified, {len(report.failed)} failed, "
+            f"of {report.units_planned} planned"
+        )
+        if report.failed:
+            present.fail("units", units_line)
+        else:
+            present.ok("units", units_line)
+        tokens = report.to_dict()["tokens"]
+        rows: dict[str, Any] = {
+            "objective": report.objective,
+            "mechanical (zero tokens)": len(report.mechanical),
+            f"model ({report.executor_model})": len(report.outcomes) - len(report.mechanical),
+            "orchestrator tokens": (
+                f"{tokens['orchestrator']['total_tokens']} ({report.orchestrator_model})"
+            ),
+            "executor tokens": tokens["executor"]["total_tokens"],
+        }
+        share = tokens["expensive_share"]
+        if share is not None:
+            rows["expensive share"] = f"{share:.1%} of {tokens['total']} measured tokens"
+        present.kv(rows)
+        if report.unreported_units:
+            present.warn(
+                "usage",
+                f"{len(report.unreported_units)} unit(s) had no provider usage block; "
+                "their tokens are unknown, not estimated",
+            )
+        for outcome in report.failed:
+            present.fail(outcome.unit_id, outcome.reason)
     if report.failed:
         sys.exit(1)
 
@@ -1414,12 +1466,18 @@ def cmd_autodev_packet_execute(
         schema_refusal_receipt,
     )
 
+    def _human_refusal(label: str, message: str) -> None:
+        from verdict import present
+
+        present.header("Autodev packet  /  execute")
+        present.fail(label, message)
+
     if not allow_live:
         message = "packet execute calls live routes and edits the working tree; pass --allow-live"
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("consent", message)
         raise SystemExit(2)
 
     path = Path(packet_path).expanduser().resolve()
@@ -1431,7 +1489,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps(receipt, sort_keys=True))
         else:
-            console.print(f"[bold red]refused before any gateway request: {exc}[/bold red]")
+            _human_refusal("schema", f"refused before any gateway request: {exc}")
         raise SystemExit(1) from exc
 
     from verdict.autodev_run import _require_launch_decision
@@ -1445,7 +1503,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("gateway", message)
         raise SystemExit(1)
     packet_provider = str(route.get("provider") or "")
     packet_gateway = str(route.get("gateway") or "")
@@ -1455,21 +1513,21 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("provider", message)
         raise SystemExit(1)
     if packet_gateway and packet_gateway != selected_route.gateway:
         message = "packet route gateway does not match the BOD-104 ExecutionPathDecision"
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("gateway", message)
         raise SystemExit(1)
     if packet_endpoint and packet_endpoint.rstrip("/") != selected_route.gateway.rstrip("/"):
         message = "packet route endpoint does not match the BOD-104 selected gateway"
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("endpoint", message)
         raise SystemExit(1)
     requested = str(route.get("requested_identity") or route.get("model") or "")
     route_identity = str(route.get("model") or route.get("actual_identity") or requested)
@@ -1479,7 +1537,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("model", message)
         raise SystemExit(1)
     route["provider"] = selected_route.provider
     route["gateway"] = selected_route.gateway
@@ -1506,7 +1564,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": str(exc)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            _human_refusal("route", str(exc))
         raise SystemExit(1) from exc
     if delegation is None:
         # FR-031: the production entry point refuses an unclassified unit by
@@ -1518,7 +1576,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": message, "missing": "delegation"}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("delegation", message)
         raise SystemExit(1)
     if prefer_non_primary and route.get("primary") is True:
         message = (
@@ -1532,7 +1590,7 @@ def cmd_autodev_packet_execute(
                 )
             )
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("route", message)
         raise SystemExit(1)
     fallback_route = None
     if primary_fallback:
@@ -1576,7 +1634,7 @@ def cmd_autodev_packet_execute(
             if output_json:
                 print(json.dumps({"error": message}, sort_keys=True))
             else:
-                console.print(f"[bold red]{message}[/bold red]")
+                _human_refusal("canary", message)
             raise SystemExit(1)
         canary_state = loaded
     report = run_packet_autodev(
@@ -1601,9 +1659,17 @@ def cmd_autodev_packet_execute(
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        console.print(
-            f"[bold]{report.terminal_state}[/bold] ({payload['proof_level']}) "
-            f"fallbacks={report.fallback_count} checkpoints={len(report.checkpoints)}"
+        from verdict import present
+
+        present.header("Autodev packet  /  execute")
+        state = str(report.terminal_state)
+        present.status("terminal state", "ok" if state == "completed" else "failed", state)
+        present.kv(
+            {
+                "proof level": payload["proof_level"],
+                "fallbacks": report.fallback_count,
+                "checkpoints": len(report.checkpoints),
+            }
         )
     if report.terminal_state != "completed":
         raise SystemExit(1)
@@ -1623,7 +1689,10 @@ def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) 
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev packet  /  shadow")
+            present.fail("episodes", message)
         raise SystemExit(1)
     report = shadow_learning_report(episodes)
     print(json.dumps(report, indent=2, sort_keys=True))
@@ -1640,7 +1709,10 @@ def cmd_autodev_packet_canary(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev packet  /  canary")
+            present.fail("inputs", message)
         raise SystemExit(1)
     payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
     if isinstance(payload, dict) and "episodes" in payload:
@@ -1653,7 +1725,10 @@ def cmd_autodev_packet_canary(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev packet  /  canary")
+            present.fail("inputs", message)
         raise SystemExit(1)
     report = shadow_learning_report(episodes)
     print(
@@ -1673,7 +1748,10 @@ def cmd_autodev_packet_canary_rollback(state_path: str, *, output_json: bool = F
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev packet  /  canary rollback")
+            present.fail("state", message)
         raise SystemExit(1)
     print(json.dumps(rollback_shadow_canary(state), indent=2, sort_keys=True))
 
@@ -1734,9 +1812,15 @@ def cmd_autodev_packet(
             if output_json:
                 print(json.dumps(data, indent=2, sort_keys=True))
             else:
-                console.print(
-                    f"[bold]{data['pair_id']}[/bold] parity={data['parity_claimed']} "
-                    f"unknown={len(data['unknown_facets'])}"
+                from verdict import present
+
+                present.header("Autodev packet  /  compare")
+                present.kv(
+                    {
+                        "pair": data["pair_id"],
+                        "parity claimed": data["parity_claimed"],
+                        "unknown facets": len(data["unknown_facets"]),
+                    }
                 )
             return
         else:
@@ -1746,17 +1830,24 @@ def cmd_autodev_packet(
         if output_json:
             print(json.dumps(receipt, sort_keys=True))
         else:
-            console.print(
-                f"[bold red]refused {receipt['encountered_schema_version']!r} — "
+            from verdict import present
+
+            present.header(f"Autodev packet  /  {action}")
+            present.fail(
+                "schema",
+                f"refused {receipt['encountered_schema_version']!r} — "
                 f"supported: {', '.join(receipt['supported_schema_versions'])} "
-                f"(no gateway request issued)[/bold red]"
+                f"(no gateway request issued)",
             )
         raise SystemExit(1) from exc
     except (ExecutionPacketError, OSError, ValueError) as exc:
         if output_json:
             print(json.dumps({"error": str(exc)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            from verdict import present
+
+            present.header(f"Autodev packet  /  {action}")
+            present.fail("packet", str(exc))
         raise SystemExit(1) from exc
 
     data = packet.to_dict()
@@ -1765,9 +1856,16 @@ def cmd_autodev_packet(
     if output_json:
         print(json.dumps(data, indent=2, sort_keys=True))
     else:
-        console.print(
-            f"[bold]{packet.packet_id}[/bold] v{packet.packet_version} "
-            f"{packet.proof_level.value}\nnext: {packet.next_safe_action}"
+        from verdict import present
+
+        present.header(f"Autodev packet  /  {action}")
+        present.kv(
+            {
+                "packet": packet.packet_id,
+                "version": f"v{packet.packet_version}",
+                "proof level": packet.proof_level.value,
+                "next safe action": packet.next_safe_action,
+            }
         )
 
 
@@ -1794,8 +1892,16 @@ def cmd_autodev_golden_path(
     if output_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
-        console.print(report.summary())
-        console.print(f"report digest: {report.report_digest}")
+        from verdict import present
+
+        present.header("Autodev golden path")
+        accepted = report.decision == "accepted"
+        present.status("decision", "ok" if accepted else "failed", report.decision)
+        for receipt in report.stages:
+            status_value = receipt.status.value
+            stage_state = "ok" if status_value == "passed" else "failed"
+            present.status(receipt.stage.value, stage_state, status_value)
+        present.note(f"report digest: {report.report_digest}")
     if report.decision != "accepted":
         raise SystemExit(1)
 
@@ -1804,7 +1910,9 @@ def _report_autodev_failure(reason: str, *, output_json: bool) -> None:
     if output_json:
         print(json.dumps({"error": "decomposition failed", "reason": reason}, sort_keys=True))
     else:
-        console.print(f"[bold red]decomposition failed:[/bold red] {reason}")
+        from verdict import present
+
+        present.fail("decomposition failed", reason)
 
 
 def _probe_result_payload(observation: Any) -> dict[str, Any]:
@@ -4630,26 +4738,35 @@ def cmd_resume(
         if output_json:
             print(json.dumps({"error": str(exc), "story": story}, sort_keys=True))
         else:
-            console.print(f"[bold red]resume failed:[/bold red] {exc}")
+            from verdict import present
+
+            present.header("Resume")
+            present.fail("resume", str(exc))
         raise SystemExit(1) from exc
 
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return payload
 
-    console.print(f"[bold green]Resume[/bold green] {payload['story_id']}")
-    console.print(f"  worktree: {payload['worktree']}")
-    console.print(f"  branch:   {payload.get('branch')}")
-    console.print(f"  HEAD:     {payload.get('head_sha')}")
-    console.print(f"  dirty:    {payload.get('dirty')}")
-    console.print(f"  reattach: {payload.get('reattach')}")
-    console.print(f"  previous: {payload.get('previous_worker')}")
+    from verdict import present
+
+    present.header(f"Resume  /  {payload['story_id']}")
+    rows: dict[str, Any] = {
+        "worktree": payload["worktree"],
+        "branch": payload.get("branch"),
+        "HEAD": payload.get("head_sha"),
+        "dirty": payload.get("dirty"),
+        "reattach": payload.get("reattach"),
+        "previous": payload.get("previous_worker"),
+    }
     if payload.get("pr_url"):
-        console.print(f"  pr:       {payload['pr_url']} ({payload.get('pr_state')})")
+        rows["pr"] = f"{payload['pr_url']} ({payload.get('pr_state')})"
+    present.kv(rows)
     if with_harness:
-        console.print(f"  launcher: {with_harness} [yellow](stub — not executed)[/yellow]")
-    console.print("")
-    console.print(payload["resume_prompt"])
+        present.warn("launcher", f"{with_harness} (stub — not executed)")
+    present.section("Resume prompt")
+    # The prompt body is meant for copy/paste into a harness; keep it raw.
+    print(payload["resume_prompt"])
     return payload
 
 
