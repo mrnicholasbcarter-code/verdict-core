@@ -1109,23 +1109,28 @@ def cmd_detect(
             config = generate_verdict_config(result)
             print(yaml.dump(config, default_flow_style=False))
         else:
-            console.print(format_detection_report(result, verbose=verbose))
-            console.print("\n[bold]Gateways (HTTP-validated):[/bold]")
+            from verdict import present
+
+            present.header("Provider detection")
+            # Keep the established provider report as a note so its detailed
+            # wording remains available while presentation owns the framing.
+            present.note(format_detection_report(result, verbose=verbose))
+            present.section("Gateways (HTTP-validated)")
             if healthy_gateways:
-                for g in healthy_gateways:
-                    console.print(
-                        f"  [green]✓[/green] {g.display_name} ({g.identity}) at {g.url} "
-                        f"[dim](port {g.port})[/dim]"
-                    )
-                if len(healthy_gateways) > 1:
-                    console.print(f"[yellow]{multi_gateway_message}[/yellow]")
-            else:
-                console.print(f"[yellow]{no_gateway_message}[/yellow]")
-                console.print(
-                    "[dim]To start OmniRoute: npm install -g omniroute && omniroute serve[/dim]"
+                present.table(
+                    ["Gateway", "Identity", "URL", "Port"],
+                    [(g.display_name, g.identity, g.url, g.port) for g in healthy_gateways],
                 )
+                if len(healthy_gateways) > 1:
+                    present.warn("gateway selection", multi_gateway_message)
+            else:
+                present.warn("gateway", no_gateway_message)
+                present.note("To start OmniRoute: npm install -g omniroute && omniroute serve")
     except Exception as e:
-        console.print(f"[bold red]Detection failed: {e}[/bold red]")
+        from verdict import present
+
+        present.header("Provider detection")
+        present.fail("Detection failed", str(e))
         import traceback
 
         traceback.print_exc()
@@ -1164,7 +1169,10 @@ def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -
     if output_json:
         print(encoded)
     else:
-        console.print_json(encoded)
+        from verdict import present
+
+        present.header("Runtime certification")
+        present.note(encoded)
 
 
 def cmd_probe(
@@ -1188,7 +1196,10 @@ def cmd_probe(
         if output_json:
             print(json.dumps({"error": message, "diagnostics": None}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Probe")
+            present.fail("probe", message)
         raise SystemExit(2)
     if transport is None:
         from verdict.probes import openai_probe_transport
@@ -1208,21 +1219,21 @@ def cmd_probe(
         print(json.dumps({"diagnostics": run.diagnostics.to_dict(), "results": results}, indent=2))
         return
 
-    table = Table(title=f"Verdict probe  ({_redact(base_url)})")
-    table.add_column("Model", style="cyan")
-    table.add_column("Status")
-    table.add_column("HTTP")
-    table.add_column("Latency (ms)")
-    for entry in results:
-        ok = entry.get("ok")
-        status = "[green]LIVE[/green]" if ok else f"[red]DOWN[/red] {entry.get('error', '')}"
-        table.add_row(
-            str(entry["model"]),
-            status,
-            str(entry.get("http_status", "-")),
-            str(entry.get("latency_ms", "-")),
-        )
-    console.print(table)
+    from verdict import present
+
+    present.header(f"Probe  /  {_redact(base_url)}")
+    present.table(
+        ["Model", "Status", "HTTP", "Latency (ms)"],
+        [
+            (
+                str(entry["model"]),
+                "LIVE" if entry.get("ok") else f"DOWN {entry.get('error', '')}",
+                str(entry.get("http_status", "-")),
+                str(entry.get("latency_ms", "-")),
+            )
+            for entry in results
+        ],
+    )
     if not all(e.get("ok") for e in results):
         sys.exit(1)
 
@@ -1856,7 +1867,10 @@ def cmd_catalog(
         if output_json:
             print(json.dumps({"error": message, "probes": None}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Catalog qualification")
+            present.fail("catalog", message)
         raise SystemExit(2)
 
     paths = [
@@ -1932,7 +1946,25 @@ def cmd_catalog(
     if output_json:
         print(json.dumps(report_payload, sort_keys=True))
     else:
-        console.print_json(json.dumps(report_payload))
+        from verdict import present
+
+        present.header("Catalog qualification")
+        present.status("catalog", "ok" if report.passed else "failed")
+        snapshot = report.snapshot
+        if snapshot:
+            present.kv(
+                {
+                    "source": snapshot.source_url,
+                    "rows": snapshot.row_count,
+                    "fresh until": snapshot.fresh_until,
+                }
+            )
+        if report.errors:
+            present.table(["Issue"], [(error,) for error in report.errors])
+        if reconciliation:
+            present.status("projection reconciliation", "ok" if reconciliation.passed else "failed")
+        if probe_summary:
+            present.note(f"probes: {json.dumps(probe_summary.to_dict(), sort_keys=True)}")
     if not report.passed or (reconciliation is not None and not reconciliation.passed):
         sys.exit(1)
 
@@ -2840,13 +2872,26 @@ def cmd_runtime(
         if output_json:
             print(json.dumps(payload, sort_keys=True))
         else:
-            console.print(f"[bold red]Runtime operation blocked:[/] {exc}")
+            from verdict import present
+
+            present.header("Runtime")
+            present.fail("Runtime operation blocked", str(exc))
         raise SystemExit(2) from exc
 
     if output_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
-        console.print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        from verdict import present
+
+        data = report.to_dict()
+        present.header(f"Runtime  /  {operation}")
+        present.kv(
+            {key: value for key, value in data.items() if not isinstance(value, (dict, list))}
+        )
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                present.note(f"{key}: {json.dumps(value, sort_keys=True)}")
+        present.status("runtime", "ok" if report.passed else "failed")
     if operation == "explain":
         return
     if not report.passed:
@@ -4938,7 +4983,6 @@ def cmd_prove_at_rest(
     )
 
     resolved_state = Path(state_path).expanduser() if state_path else default_state_path()
-
     if prove_command == "status":
         cycle = ProveAtRestStore(path=resolved_state).read()
         if cycle is None:
@@ -4946,29 +4990,25 @@ def cmd_prove_at_rest(
             if output_json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
-                console.print(f"[yellow]No prove-at-rest state at {resolved_state}[/yellow]")
+                from verdict import present
+
+                present.header("Prove at rest")
+                present.warn("prove-at-rest", f"No prove-at-rest state at {resolved_state}")
             return
         payload = cycle.to_dict()
         payload["state_path"] = str(resolved_state)
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return
+        from verdict import present
+
         summary = cycle.summary
-        console.print(
-            f"[bold cyan]prove-at-rest[/bold cyan] cycle={cycle.cycle_id} "
-            f"healthy={summary.get('healthy', 0)} failed={summary.get('failed', 0)} "
-            f"skipped={summary.get('skipped', 0)}"
+        present.header("Prove at rest  /  status")
+        present.kv({"cycle": cycle.cycle_id, "state": resolved_state, **summary})
+        present.table(
+            ["Status", "Identity", "Reason"],
+            [(item.status, item.identity_id, item.reason or "-") for item in cycle.results],
         )
-        console.print(f"  state: {resolved_state}")
-        for item in cycle.results:
-            if item.status == "healthy":
-                style = "green"
-            elif item.status == "failed":
-                style = "red"
-            else:
-                style = "yellow"
-            detail = f" ({item.reason})" if item.reason else ""
-            console.print(f"  [{style}]{item.status}[/{style}] {item.identity_id}{detail}")
         return
 
     if prove_command in {"once", "daemon"} and not allow_live_probe:
@@ -4976,7 +5016,10 @@ def cmd_prove_at_rest(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Prove at rest")
+            present.fail("prove-at-rest", message)
         raise SystemExit(2)
 
     try:
@@ -4992,7 +5035,10 @@ def cmd_prove_at_rest(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Prove at rest")
+            present.fail("prove-at-rest", message)
         raise SystemExit(2) from exc
 
     if prove_command == "once":
@@ -5002,28 +5048,30 @@ def cmd_prove_at_rest(
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
+            from verdict import present
+
             summary = cycle.summary
-            console.print(
-                f"[bold green]prove-at-rest once[/bold green] "
-                f"healthy={summary.get('healthy', 0)} failed={summary.get('failed', 0)} "
-                f"skipped={summary.get('skipped', 0)}"
-            )
-            console.print(f"  wrote {resolved_state}")
+            present.header("Prove at rest  /  once")
+            present.kv({"state": resolved_state, **summary})
+            present.status("prove-at-rest", "failed" if summary.get("failed", 0) else "ok")
         if cycle.summary.get("failed", 0):
             raise SystemExit(1)
         return
 
     if prove_command == "daemon":
-        console.print(
-            f"[bold cyan]prove-at-rest daemon[/bold cyan] interval={interval}s "
-            f"state={resolved_state}"
-        )
+        from verdict import present
+
+        if not output_json:
+            present.header("Prove at rest  /  daemon")
+            present.kv({"interval": f"{interval}s", "state": resolved_state})
 
         def report_cycle_error(exc: Exception) -> None:
             code = getattr(exc, "code", exc.__class__.__name__)
-            console.print(
-                f"[bold red]prove-at-rest cycle failed[/bold red] code={code}: {exc}; "
-                f"retaining last complete state and retrying in {interval}s"
+            if output_json:
+                return
+            present.fail(
+                "prove-at-rest cycle failed",
+                f"code={code}: {exc}; retaining last complete state and retrying in {interval}s",
             )
 
         daemon.on_cycle_error = report_cycle_error
@@ -5045,7 +5093,7 @@ def cmd_prove_at_rest(
                     )
                 )
             else:
-                console.print("[yellow]prove-at-rest daemon stopped[/yellow]")
+                present.warn("prove-at-rest daemon", "prove-at-rest daemon stopped")
         return
 
     raise SystemExit(f"unknown prove-at-rest command: {prove_command}")
@@ -5139,15 +5187,16 @@ def cmd_metadata_refresh(
     )
     clock = now or datetime.now(timezone.utc)
     try:
-        if offline:
-            transport = file_transport(
+        transport = (
+            file_transport(
                 models_dev_api=_metadata_json_file(models_dev_api_file),
                 models_dev_models=_metadata_json_file(models_dev_models_file),
                 litellm=_metadata_json_file(litellm_file),
                 fetched_at=clock.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             )
-        else:
-            transport = None
+            if offline
+            else None
+        )
         snapshot = refresh_metadata(
             transport=transport,
             mapping_path=mapping_path,
@@ -5160,7 +5209,10 @@ def cmd_metadata_refresh(
         if output_json:
             print(json.dumps({"error": str(exc)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            from verdict import present
+
+            present.header("Metadata  /  refresh")
+            present.fail("metadata refresh", str(exc))
         raise SystemExit(1) from exc
     report = {
         "schema_version": snapshot.schema_version,
@@ -5179,14 +5231,21 @@ def cmd_metadata_refresh(
     if output_json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return
-    console.print("[bold green]Core metadata store refreshed[/bold green]")
-    console.print(f"  records: {report['record_count']}")
-    console.print(f"  mapping drops: {report['drop_count']}")
-    console.print(f"  store: {report['store']}")
-    for name, status in snapshot.sources.items():
-        console.print(
-            f"  {name}: {status.status}" + (f" ({status.reason})" if status.reason else "")
-        )
+    from verdict import present
+
+    present.header("Metadata  /  refresh")
+    present.ok("Core metadata store refreshed")
+    present.kv(
+        {
+            "records": report["record_count"],
+            "mapping drops": report["drop_count"],
+            "store": report["store"],
+        }
+    )
+    present.table(
+        ["Source", "Status", "Reason"],
+        [(name, status.status, status.reason or "-") for name, status in snapshot.sources.items()],
+    )
 
 
 def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool = False) -> None:
@@ -5199,7 +5258,10 @@ def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool
         if output_json:
             print(json.dumps({"error": str(exc), "store": str(resolved)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            from verdict import present
+
+            present.header("Metadata  /  show")
+            present.fail("metadata", str(exc))
         raise SystemExit(1) from exc
     payload = {
         "store": str(resolved),
@@ -5212,8 +5274,12 @@ def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
-    console.print(f"[bold cyan]Core metadata[/bold cyan] {snapshot.refreshed_at}")
-    console.print(f"  records: {len(snapshot.records)}  store: {resolved}")
+    from verdict import present
+
+    present.header("Metadata  /  show")
+    present.kv(
+        {"refreshed": snapshot.refreshed_at, "records": len(snapshot.records), "store": resolved}
+    )
 
 
 def cmd_metadata_lookup(
@@ -5241,24 +5307,34 @@ def cmd_metadata_lookup(
         if output_json:
             print(json.dumps({"error": str(exc)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            from verdict import present
+
+            present.header("Metadata  /  lookup")
+            present.fail("metadata lookup", str(exc))
         raise SystemExit(1) from exc
     payload = found.to_dict()
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
+    from verdict import present
+
+    present.header("Metadata  /  lookup")
     if found.drop is not None:
-        console.print(f"[yellow]named drop[/yellow] {found.drop.reason}: {omniroute_id}")
+        present.warn("named drop", f"{found.drop.reason}: {omniroute_id}")
         if found.drop.detail:
-            console.print(f"  {found.drop.detail}")
+            present.note(found.drop.detail)
         return
     assert found.record is not None
-    console.print(f"[green]mapped[/green] {omniroute_id} → {found.record.id}")
-    for name, cited in found.provenance_for_receipt().items():
-        console.print(
-            f"  {name}: {cited.get('source')} {cited.get('version') or cited.get('fetched_at')}"
-        )
-
-
-if __name__ == "__main__":
-    main()
+    present.ok("mapped", f"{omniroute_id} → {found.record.id}")
+    present.table(
+        ["Source", "Version"],
+        [
+            (
+                name,
+                cited.get("source", "")
+                + " "
+                + str(cited.get("version") or cited.get("fetched_at") or ""),
+            )
+            for name, cited in found.provenance_for_receipt().items()
+        ],
+    )
