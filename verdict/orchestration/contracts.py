@@ -397,8 +397,10 @@ class FailureClassification:
 EVENT_TYPES = frozenset(
     {
         "run_started",
+        "understand",
         "plan_started",
         "plan_ready",
+        "hydrate",
         "topology",
         "eligibility",
         "node_state",
