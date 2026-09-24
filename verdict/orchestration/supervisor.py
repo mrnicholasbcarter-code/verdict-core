@@ -198,14 +198,22 @@ class ControllerSupervisor:
         self.generations: list[dict[str, Any]] = []
         self._clock, self._sleep, self._spawner = clock, sleep, spawner
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        self._start_seq = 0
 
     # -------------------------------------------------------------- run state
     def _emit(self, **data: Any) -> None:
         emit_event(self.run_dir / EVENTS_FILE, "controller", **data)
 
-    def _finished(self) -> _Watch | None:
-        """The run's own verdict, once the controller wrote ``run_finished``."""
+    def _finished(self, after_seq: int = 0) -> _Watch | None:
+        """The run's own verdict for THIS supervision (events after ``after_seq``).
+
+        A resumed run already contains ``run_finished`` from earlier controller
+        lives; only a verdict written after supervision started may end it.
+        """
         for event in reversed(read_events(self.run_dir / EVENTS_FILE)):
+            seq = event.get("seq")
+            if isinstance(seq, int) and seq <= after_seq:
+                break
             if event.get("type") == "run_finished":
                 raw = event.get("data")
                 data = raw if isinstance(raw, dict) else {}
@@ -296,7 +304,7 @@ class ControllerSupervisor:
         """Bounded liveness loop for one controller life."""
         last_progress, last_advance = (-2, ""), self._clock()
         while True:
-            finished = self._finished()
+            finished = self._finished(self._start_seq)
             if finished is not None:
                 return finished
             self._scan(record, log_path)
@@ -306,7 +314,7 @@ class ControllerSupervisor:
             if waiter.done():
                 self._scan(record, log_path)
                 exited = _Watch("EXITED", reason="controller exited without run_finished")
-                return self._finished() or exited
+                return self._finished(self._start_seq) or exited
             now = self._clock()
             if now >= deadline:
                 return _Watch("DEADLINE", reason="total deadline exceeded")
@@ -317,6 +325,8 @@ class ControllerSupervisor:
     # -------------------------------------------------------------- main loop
     async def run(self) -> SupervisorOutcome:
         deadline = self._clock() + self.total_deadline_seconds
+        prior = [e.get("seq") for e in read_events(self.run_dir / EVENTS_FILE)]
+        self._start_seq = max((s for s in prior if isinstance(s, int)), default=0)
         generation, restarts = 0, 0
         while True:
             argv = list(self.command_factory(generation))
@@ -382,7 +392,7 @@ class ControllerSupervisor:
     def _fail_closed(self, reason: str, restarts: int) -> SupervisorOutcome:
         """Last controller life is spent: leave a BLOCKED verdict in the event log."""
         self._emit(state="FAILED_CLOSED", detail=reason[:300])
-        if self._finished() is None:
+        if self._finished(self._start_seq) is None:
             path = self.run_dir / EVENTS_FILE
             emit_event(path, "run_finished", outcome="BLOCKED", reason=reason[:500])
         return SupervisorOutcome("BLOCKED", reason, restarts, self.generations)

@@ -585,3 +585,29 @@ def test_read_events_ignores_torn_tail(tmp_path: Path) -> None:
     events = read_events(path)
     assert [e["seq"] for e in events] == [1]
     assert read_events(tmp_path / "missing.jsonl") == []
+
+
+def test_prior_run_finished_does_not_end_a_new_supervision(tmp_path: Path) -> None:
+    """A resumed run already holds run_finished from an earlier life; it must be ignored."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    old = {
+        "seq": 1,
+        "at": "2026-09-24T00:00:00Z",
+        "type": "run_finished",
+        "node_id": "",
+        "data": {"outcome": "BLOCKED", "reason": "earlier life"},
+    }
+    (run_dir / "events.jsonl").write_text(json.dumps(old) + "\n")
+    script = write_controller(
+        tmp_path,
+        "ok.py",
+        """
+emit("run_started", goal="g")
+emit("run_finished", outcome="COMPLETE", reason="new life")
+""",
+    )
+    outcome = run_supervisor(
+        ControllerSupervisor(lambda g: argv_for(script, run_dir), run_dir, **FAST)
+    )
+    assert outcome.state == "COMPLETE" and outcome.reason == "new life"
