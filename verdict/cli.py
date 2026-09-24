@@ -14,7 +14,6 @@ import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
-from rich.table import Table
 
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from verdict.free_tier_admit import execute_offload_chat, omniroute_endpoint_from_env
