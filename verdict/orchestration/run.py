@@ -369,9 +369,20 @@ async def run_golden_path(
             runtime.nodes[node_id].state = NodeState.VALIDATED
             runtime.nodes[node_id].commit = commit
     result = await runtime.run()
-    receipt_path = write_run_receipt(run_dir)
-    receipt = json.loads(receipt_path.read_text())
-    outcome, reason = completion_verdict(receipt)
+    try:
+        receipt_path = write_run_receipt(run_dir)
+        receipt = json.loads(receipt_path.read_text())
+        outcome, reason = completion_verdict(receipt)
+    except Exception as exc:  # evidence failure is BLOCKED, never a crash
+        events.emit(
+            "controller", state="RECEIPT_FAILED", detail=f"{type(exc).__name__}: {exc}"[:300]
+        )
+        return GoldenRunResult(
+            run_dir,
+            RunOutcome.BLOCKED.value,
+            f"receipt could not be built: {type(exc).__name__}: {exc}",
+            run_dir / "receipt.json",
+        )
     if outcome != result.outcome.value:
         # The receipt is authoritative: a runtime COMPLETE without evidence is BLOCKED.
         events.emit(

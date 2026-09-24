@@ -450,3 +450,36 @@ def test_planner_free_text_capabilities_are_normalized_to_model_vocabulary() -> 
     assert a.required_capabilities == ("tools",)
     assert a.min_context_tokens == WORKER_MIN_CONTEXT_TOKENS
     assert graph.node("i").required_capabilities == ()
+
+
+def test_planner_boolean_barrier_and_odd_risk_are_normalized() -> None:
+    import json
+
+    from verdict.orchestration.planner import parse_plan
+
+    text = json.dumps(
+        {
+            "nodes": [
+                {
+                    "node_id": "a",
+                    "objective": "do a",
+                    "owned_files": ["a.py"],
+                    "verification_command": ["true"],
+                    "barrier": False,
+                    "risk": "LOW",
+                },
+                {
+                    "node_id": "i",
+                    "objective": "integrate",
+                    "kind": "integrate",
+                    "depends_on": ["a"],
+                    "verification_command": ["true"],
+                    "barrier": True,
+                    "risk": "critical",
+                },
+            ]
+        }
+    )
+    graph = parse_plan(text, "g")
+    assert graph.node("a").barrier == "" and graph.node("a").risk == "low"
+    assert graph.node("i").barrier == "integration" and graph.node("i").risk == "medium"

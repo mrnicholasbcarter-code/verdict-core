@@ -111,6 +111,15 @@ class WorkNode:
     def __post_init__(self) -> None:
         if not self.node_id.strip() or not self.objective.strip():
             raise OrchestrationError("node_id and objective are required")
+        # Planner models sometimes emit barrier=true/false; normalize to a name.
+        if isinstance(self.barrier, bool):
+            object.__setattr__(self, "barrier", "integration" if self.barrier else "")
+        elif not isinstance(self.barrier, str):
+            object.__setattr__(self, "barrier", str(self.barrier))
+        if not isinstance(self.risk, str) or self.risk.lower() not in {"low", "medium", "high"}:
+            object.__setattr__(self, "risk", "medium")
+        else:
+            object.__setattr__(self, "risk", self.risk.lower())
         if self.risk not in {"low", "medium", "high"}:
             raise OrchestrationError(f"{self.node_id}: risk must be low|medium|high")
         object.__setattr__(self, "kind", NodeKind(self.kind))

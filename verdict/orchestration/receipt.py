@@ -321,7 +321,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         if event.type == "barrier":
             name = str(event.data.get("name") or event.node_id or "integration")
             barriers[name] = {"name": name, "ok": event.data.get("ok") is True, "seq": event.seq}
-    declared = sorted({n.barrier for n in graph.nodes if n.barrier})
+    declared = sorted({str(n.barrier) for n in graph.nodes if n.barrier})
     missing = [name for name in declared if name not in barriers]
     integration_ok = bool(barriers) and not missing and all(b["ok"] for b in barriers.values())
 
