@@ -453,3 +453,35 @@ async def test_worktrees_are_cleaned_after_success(repo: Path) -> None:
         ["git", "worktree", "list"], cwd=repo, capture_output=True, text=True
     ).stdout
     assert len(listed.strip().splitlines()) == 1
+
+
+async def test_already_satisfied_node_validates_when_check_passes(repo: Path) -> None:
+    (repo / "a.txt").write_text("present\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "a"], cwd=repo, check=True)
+
+    class Noop(Executor):
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            return WorkerTerminal(ok=True, output="RESULT: DONE already present", model=route_id)
+
+    rt, ev, _ = make(repo, WorkGraph("g", (node("a"),)), Noop({}), ["cc/s"])
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert any(b["name"] == "no_change" for b in ev.of("barrier", "a"))
+
+
+async def test_no_change_with_failing_check_is_rejected(repo: Path) -> None:
+    class Noop(Executor):
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+
+    rt, ev, _ = make(
+        repo, WorkGraph("g", (node("a"),)), Noop({}), ["cc/s"], max_attempts_per_node=1
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ev.of("verify", "a")[0]["ok"] is False

@@ -690,7 +690,15 @@ class DagRuntime:
             if outside:
                 return "ownership_violation: " + ", ".join(outside[:8])
             if not changed:
-                return "verification_failed: worker produced no changes"
+                # Already satisfied (e.g. the planner scheduled a file that exists).
+                # Acceptance is the verification command, not the size of the diff.
+                self.events.emit(
+                    "barrier",
+                    node.node_id,
+                    name="no_change",
+                    ok=True,
+                    detail="no file changes; accepted only if verification passes",
+                )
         if node.verification_command:
             code, out = await self.runner(
                 node.verification_command, worktree, self.policy.verify_timeout_seconds
