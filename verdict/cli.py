@@ -1058,7 +1058,11 @@ def cmd_detect(
         elif output_config:
             print(yaml.dump({"providers": {}}, default_flow_style=False))
         else:
-            console.print_json(json.dumps(payload, sort_keys=True))
+            from verdict import present
+
+            present.header("Provider detection (offline)")
+            present.kv({"network access": "no", "credentials read": "no"})
+            present.note("Offline mode reports nothing by design. Run `verdict detect` to probe.")
         return
 
     try:
@@ -2372,23 +2376,25 @@ def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False
             )
         )
         return
-    table = Table(title="Verdict model catalog")
-    table.add_column("ID", style="cyan")
-    table.add_column("Provider")
-    table.add_column("Tier")
-    table.add_column("Context")
-    table.add_column("Cost/1k", justify="right")
-    table.add_column("State")
-    for m in catalog:
-        table.add_row(
-            m.id,
-            m.provider,
-            f"T{m.capability_tier}",
-            str(m.context_window) if m.context_window > 0 else "-",
-            f"${m.cost_per_1k:.4f}" if m.cost_per_1k else "-",
-            m.availability_state,
-        )
-    console.print(table)
+    from verdict import present
+
+    present.header("Model catalog")
+    present.table(
+        ["ID", "Provider", "Tier", "Context", "Cost/1k", "State"],
+        [
+            (
+                m.id,
+                m.provider,
+                f"T{m.capability_tier}",
+                str(m.context_window) if m.context_window > 0 else "-",
+                f"${m.cost_per_1k:.4f}" if m.cost_per_1k else "-",
+                m.availability_state,
+            )
+            for m in catalog
+        ],
+        empty="catalog is empty",
+    )
+    present.note(f"{len(catalog)} model(s). Live eligibility: verdict eligibility --probe")
 
 
 def cmd_inspect(
@@ -2403,7 +2409,10 @@ def cmd_inspect(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Model inspect")
+            present.fail(model_id, "not found in catalog")
         raise SystemExit(1)
     model = matches[0]
     payload: dict[str, Any] = {
@@ -2418,8 +2427,19 @@ def cmd_inspect(
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
-    console.print(Panel(f"[bold cyan]{model.id}[/bold cyan]", title="Model inspect"))
-    console.print(json.dumps(payload, indent=2, sort_keys=True))
+    from verdict import present
+
+    present.header(f"Model inspect  /  {model.id}")
+    present.kv(
+        {
+            "provider": model.provider,
+            "tier": f"T{model.capability_tier}",
+            "context window": model.context_window or "-",
+            "cost per 1k": f"${model.cost_per_1k:.4f}" if model.cost_per_1k else "-",
+            "capabilities": ", ".join(sorted(model.capabilities)) or "-",
+            "availability": model.availability_state,
+        }
+    )
 
 
 def cmd_receipt(
@@ -2917,12 +2937,11 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
         if output_json:
             print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
         else:
-            console.print(
-                f"[bold]Cross-repo compatibility manifest[/] (schema {manifest.schema_version})"
-            )
-            console.print(f"manifest_hash: [cyan]{manifest.manifest_hash}[/]")
-            for name, digest in sorted(manifest.contracts.items()):
-                console.print(f"  {name}: {digest}")
+            from verdict import present
+
+            present.header("Compatibility manifest")
+            present.kv({"schema": manifest.schema_version, "manifest hash": manifest.manifest_hash})
+            present.table(["Contract", "Digest"], sorted(manifest.contracts.items()))
         return
 
     if compat_command == "check":
@@ -2931,7 +2950,10 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
             if output_json:
                 print(json.dumps({"allowed": False, "reason": reason}, indent=2))
             else:
-                console.print(f"[bold red]❌ {reason}[/bold red] (failing closed)")
+                from verdict import present
+
+                present.header("Compatibility check")
+                present.fail("compatibility", f"{reason} (failing closed)")
             sys.exit(1)
 
         if not os.path.exists(declared or ""):
@@ -2954,9 +2976,10 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
             if output_json:
                 print(json.dumps({"allowed": True, "reason": None}, indent=2))
             else:
-                console.print(
-                    "[bold green]✓ Compatible with current verdict-core contracts.[/bold green]"
-                )
+                from verdict import present
+
+                present.header("Compatibility check")
+                present.ok("compatibility", "matches the current verdict-core contracts")
             return
 
         if output_json:
@@ -2971,12 +2994,16 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
                 )
             )
         else:
-            console.print(f"[bold red]❌ Compatibility check failed: {result.reason}[/bold red]")
-            for name in result.mismatched_contracts:
-                console.print(f"  - {name}")
+            from verdict import present
+
+            present.header("Compatibility check")
+            present.fail("compatibility", str(result.reason))
+            present.table(["Mismatched contract"], [(n,) for n in result.mismatched_contracts])
         sys.exit(1)
 
-    console.print("[bold red]❌ Unknown compat subcommand. Use 'manifest' or 'check'.[/bold red]")
+    from verdict import present
+
+    present.fail("compat", "unknown subcommand; use 'manifest' or 'check'")
     sys.exit(1)
 
 
