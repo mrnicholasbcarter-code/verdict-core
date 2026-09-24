@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.intelligence import DEGRADED_PROFILE, IntelligenceService
 from verdict.models import ProviderConfig, RoutingDecision
 
@@ -73,7 +74,7 @@ def resolve_default_providers(allow_offline: bool = False) -> tuple[str, dict[st
     config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "verdict"
     config_path = config_dir / "verdict.yaml"
 
-    primary_model = "anthropic/claude-3-opus-20240229"
+    primary_model = DEFAULT_PRIMARY_MODEL
     providers: dict[str, ProviderConfig] = {}
 
     if config_path.exists():
@@ -118,7 +119,7 @@ class Gate:
 
     def __init__(
         self,
-        primary_model: str = "anthropic/claude-3-opus-20240229",
+        primary_model: str = DEFAULT_PRIMARY_MODEL,
         providers: dict[str, ProviderConfig] | None = None,
         log_path: str = "verdict-decisions.jsonl",
         log_full_task: bool = False,
@@ -131,7 +132,7 @@ class Gate:
             resolved_primary, resolved_providers = resolve_default_providers(
                 allow_offline=allow_offline
             )
-            if primary_model == "anthropic/claude-3-opus-20240229" and resolved_primary:
+            if primary_model == DEFAULT_PRIMARY_MODEL and resolved_primary:
                 primary_model = resolved_primary
             providers = resolved_providers
 

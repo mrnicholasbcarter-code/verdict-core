@@ -79,7 +79,7 @@ _Research agent: core-cli-research. Updated: 2026-09-05._
 | `LLMGATE_UPSTREAM_BASE_URL` | `http://localhost:20128/v1` | Upstream routing target |
 | `LLMGATE_UPSTREAM_API_KEY` | None (falls back to `OMNIROUTE_API_KEY`) | Upstream auth |
 | `LLMGATE_UPSTREAM_TIMEOUT_MS` | `30000` | Upstream timeout |
-| `LLMGATE_PRIMARY` | `anthropic/claude-3-opus-20240229` | Primary model ID |
+| `LLMGATE_PRIMARY` | `anthropic/claude-opus-5` | Primary model ID |
 | `LLMGATE_LOG_PATH` | `verdict-decisions.jsonl` | Decision log |
 | `LLMGATE_DISCOVERY_TTL_SECONDS` | `60` | Discovery cache TTL |
 | `LLMGATE_AVAILABILITY_PROFILE` | `development` | Triggers live probes when `production` |

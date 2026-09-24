@@ -688,14 +688,14 @@ def test_main_dispatches_help_route_stats_detect(
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "verdict.yaml").write_text(
-        "primary_model: anthropic/claude-3-opus-20240229\nproviders: {}\nlog_path: ''\n"
+        "primary_model: anthropic/claude-opus-5\nproviders: {}\nlog_path: ''\n"
     )
     monkeypatch.setattr(cli.sys, "argv", ["verdict", "route", "hello", "--terse"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 1
     route_payload = json.loads(capsys.readouterr().out)
-    assert route_payload["model"] == "anthropic/claude-3-opus-20240229"
+    assert route_payload["model"] == "anthropic/claude-opus-5"
     assert route_payload["transport_outcome"] == "error"
 
     monkeypatch.setattr(
@@ -900,7 +900,7 @@ def test_cmd_doctor_all_healthy(
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text(
         "schema_version: 1\n"
-        "primary_model: anthropic/claude-3-opus-20240229\n"
+        "primary_model: anthropic/claude-opus-5\n"
         "log_path: route-log.jsonl\n"
         "gateway_url: http://localhost:11434/v1\n"
         "providers:\n"
@@ -1099,7 +1099,7 @@ def test_cmd_doctor_issues_and_duplicates(
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text(
-        "primary_model: anthropic/claude-3-opus-20240229\n"
+        "primary_model: anthropic/claude-opus-5\n"
         "log_path: route-log.jsonl\n"
         "providers:\n"
         "  ollama:\n"
@@ -1404,7 +1404,7 @@ def test_cmd_check_valid_config(
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text(
-        "primary_model: anthropic/claude-3-opus-20240229\n"
+        "primary_model: anthropic/claude-opus-5\n"
         "log_path: route-log.jsonl\n"
         "providers:\n"
         "  ollama:\n"
@@ -1425,7 +1425,7 @@ def test_cmd_check_invalid_config(
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text(
-        "primary_model: anthropic/claude-3-opus-20240229\n"
+        "primary_model: anthropic/claude-opus-5\n"
         "log_path: route-log.jsonl\n"
         "providers:\n"
         "  ollama:\n"

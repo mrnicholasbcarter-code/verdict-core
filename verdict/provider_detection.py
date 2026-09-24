@@ -19,6 +19,8 @@ from typing import Any, TypedDict
 import httpx
 import yaml
 
+from verdict.contracts import DEFAULT_PRIMARY_MODEL
+
 
 class ServerInfo(TypedDict, total=False):
     cli_name: str
@@ -707,7 +709,7 @@ def format_detection_report(result: DetectionResult, verbose: bool = False) -> s
 
 def generate_verdict_config(result: DetectionResult) -> dict[str, Any]:
     """Generate suggested verdict.yaml config from detection results."""
-    config: dict[str, Any] = {"primary_model": "anthropic/claude-3-opus-20240229", "providers": {}}
+    config: dict[str, Any] = {"primary_model": DEFAULT_PRIMARY_MODEL, "providers": {}}
 
     # Prioritize centralized routers
     routers = [p for p in result.centralized_routers if p.server_running]
@@ -741,13 +743,13 @@ def generate_verdict_config(result: DetectionResult) -> dict[str, Any]:
                 "base_url": "https://openrouter.ai/api/v1",
                 "api_key_env": "OPENROUTER_API_KEY",
             }
-            config["primary_model"] = "anthropic/claude-3-opus-20240229"
+            config["primary_model"] = DEFAULT_PRIMARY_MODEL
         elif provider.id == "anthropic":
             config["providers"]["anthropic"] = {
                 "base_url": "https://api.anthropic.com",
                 "api_key_env": "ANTHROPIC_API_KEY",
             }
-            config["primary_model"] = "claude-3-opus-20240229"
+            config["primary_model"] = DEFAULT_PRIMARY_MODEL.split("/", 1)[1]
         return config
 
     return config

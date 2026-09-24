@@ -30,7 +30,7 @@ class TestCLIRoute:
         config_dir = os.path.expanduser("~/.config/verdict")
         os.makedirs(config_dir, exist_ok=True)
         with open(os.path.join(config_dir, "verdict.yaml"), "w") as f:
-            f.write("primary_model: 'anthropic/claude-3-opus-20240229'\nproviders: {}\n")
+            f.write("primary_model: 'anthropic/claude-opus-5'\nproviders: {}\n")
 
     def test_route_terse_offline_fails_closed(self):
         result = subprocess.run(
@@ -47,7 +47,7 @@ class TestCLIRoute:
             capture_output=True,
             text=True,
         )
-        assert json.loads(result.stdout)["model"] == "anthropic/claude-3-opus-20240229"
+        assert json.loads(result.stdout)["model"] == "anthropic/claude-opus-5"
 
     def test_route_verbose_offline_fails_closed(self):
         result = subprocess.run(
@@ -72,7 +72,7 @@ class TestCLIRoute:
         )
         assert result.returncode == 1
         payload = json.loads(result.stdout)
-        assert payload["model"] == "anthropic/claude-3-opus-20240229"
+        assert payload["model"] == "anthropic/claude-opus-5"
         assert payload["transport_outcome"] == "error"
 
 

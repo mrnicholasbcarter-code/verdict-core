@@ -86,7 +86,7 @@ routing configuration SoT.
 
 ```yaml
 # ~/.config/verdict/verdict.yaml
-primary_model: anthropic/claude-3-opus-20240229   # preferred identity when eligible
+primary_model: anthropic/claude-opus-5   # preferred identity when eligible
 providers: {}
 ```
 

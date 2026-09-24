@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from verdict.contracts import DEFAULT_PRIMARY_MODEL
+
 
 def _load_py_module(name: str, path: Path) -> types.ModuleType:
     """Load a sibling/repo module by path without importing the heavy package root."""
@@ -649,7 +651,7 @@ def _build_intelligence_service_from_config(*, repo: Path, state_dir: Path) -> A
 
     config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "verdict"
     config_path = config_dir / "verdict.yaml"
-    primary_model = os.environ.get("LLMGATE_PRIMARY", "anthropic/claude-3-opus-20240229")
+    primary_model = os.environ.get("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL)
     providers: dict[str, ProviderConfig] = {}
     log_path = "verdict-decisions.jsonl"
     profile = os.environ.get("LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE)

@@ -2,7 +2,7 @@
   "capacity_confidence": 0.75,
   "completion_tokens": 16,
   "cost_usd": 0.0,
-  "model": "anthropic/claude-3-opus-20240229",
+  "model": "anthropic/claude-opus-5",
   "prompt_tokens": 3,
   "provider": "anthropic",
   "rationale": "criticality=medium targets T2; capacity_confidence=0.75",

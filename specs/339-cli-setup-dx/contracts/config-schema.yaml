@@ -14,9 +14,9 @@ additionalProperties: false
 properties:
   primary_model:
     type: string
-    description: "Primary model ID used for routing. Example: anthropic/claude-3-opus-20240229"
+    description: "Primary model ID used for routing. Example: anthropic/claude-opus-5"
     examples:
-      - "anthropic/claude-3-opus-20240229"
+      - "anthropic/claude-opus-5"
       - "cc/claude-sonnet-5"
 
   gateway_url:

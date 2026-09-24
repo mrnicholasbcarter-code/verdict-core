@@ -4,10 +4,10 @@ set -e
 # Verdict headless quickstart script
 # Usage: curl -sSL https://.../quickstart.sh | bash -s -- [options]
 # Options:
-#   --primary-model MODEL   Set the Tier-0 critical model (default: anthropic/claude-3-opus-20240229)
+#   --primary-model MODEL   Set the Tier-0 critical model (default: anthropic/claude-opus-5)
 #   --lite                  Do not install the rich TUI CLI elements (engine only)
 
-PRIMARY_MODEL="anthropic/claude-3-opus-20240229"
+PRIMARY_MODEL="anthropic/claude-opus-5"
 INSTALL_TARGET="verdict-core @ git+https://github.com/mrnicholasbcarter-code/verdict-core.git"
 
 while [[ "$#" -gt 0 ]]; do

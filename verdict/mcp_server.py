@@ -124,7 +124,7 @@ TOOLS_SCHEMA = [
             "properties": {
                 "model_id": {
                     "type": "string",
-                    "description": "Model identifier (e.g., 'anthropic/claude-3-5-sonnet').",
+                    "description": "Model identifier (e.g., 'anthropic/claude-opus-5').",
                 },
                 "required_capabilities": {
                     "type": "array",

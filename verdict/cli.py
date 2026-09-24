@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
+from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.free_tier_admit import execute_offload_chat, omniroute_endpoint_from_env
 from verdict.gate import Gate
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
@@ -380,15 +381,14 @@ def cmd_setup(
                         )
                         if selected_model == "Enter a custom model ID":
                             config["primary_model"] = Prompt.ask(
-                                "Enter custom primary model ID",
-                                default="anthropic/claude-3-opus-20240229",
+                                "Enter custom primary model ID", default=DEFAULT_PRIMARY_MODEL
                             )
                         else:
                             config["primary_model"] = selected_model
                     else:
                         config["primary_model"] = Prompt.ask(
                             "No models returned from server. Enter primary model ID (Tier-0)",
-                            default="anthropic/claude-3-opus-20240229",
+                            default=DEFAULT_PRIMARY_MODEL,
                         )
                 else:
                     use_auto = False
@@ -548,7 +548,7 @@ def cmd_setup(
         try:
             config["primary_model"] = Prompt.ask(
                 "[bold]Primary model[/bold] (Tier-0, never offloaded)",
-                default="anthropic/claude-3-opus-20240229",
+                default=DEFAULT_PRIMARY_MODEL,
             )
 
             config["providers"] = {}
@@ -668,7 +668,7 @@ def _build_route_gate(allow_offline: bool = False) -> Gate:
         for name, cfg in omniroute.items():
             providers.setdefault(name, cfg)
         return Gate(
-            primary_model=raw.get("primary_model", "anthropic/claude-3-opus-20240229"),
+            primary_model=raw.get("primary_model", DEFAULT_PRIMARY_MODEL),
             providers=providers,
             log_path=raw.get("log_path", "verdict-decisions.jsonl"),
             allow_offline=allow_offline,
@@ -676,9 +676,7 @@ def _build_route_gate(allow_offline: bool = False) -> Gate:
     providers = {"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")}
     providers.update(omniroute)
     return Gate(
-        primary_model="anthropic/claude-3-opus-20240229",
-        providers=providers,
-        allow_offline=allow_offline,
+        primary_model=DEFAULT_PRIMARY_MODEL, providers=providers, allow_offline=allow_offline
     )
 
 
@@ -2780,7 +2778,7 @@ def default_model_catalog() -> list[ModelInfo]:
 
     from verdict.classifier import classify
 
-    primary = str(raw.get("primary_model", "anthropic/claude-3-opus-20240229"))
+    primary = str(raw.get("primary_model", DEFAULT_PRIMARY_MODEL))
     models.append(
         ModelInfo(
             id=primary,

@@ -46,7 +46,7 @@ uv run python -m verdict route "Summarize this sentence in five words." --critic
 
 Expect:
 
-- **Model** is a concrete catalog identity (not `anthropic/claude-3-opus-20240229`, not `auto/*`)
+- **Model** is a concrete catalog identity (not `anthropic/claude-opus-5`, not `auto/*`)
 - **Outcome** `selected` (or `denied` if the live intersection is genuinely empty)
 - **Transport** `sent` on a successful execute
 - JSON blob includes `admit_receipt` with `admitted`, named `exclusions`
