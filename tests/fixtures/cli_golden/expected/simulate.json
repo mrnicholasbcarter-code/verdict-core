@@ -1,0 +1,12 @@
+{
+  "capacity_confidence": 0.75,
+  "completion_tokens": 16,
+  "cost_usd": 0.0,
+  "model": "anthropic/claude-3-opus-20240229",
+  "prompt_tokens": 3,
+  "provider": "anthropic",
+  "rationale": "criticality=medium targets T2; capacity_confidence=0.75",
+  "risk_score": 15,
+  "tier": 0,
+  "total_tokens": 19
+}

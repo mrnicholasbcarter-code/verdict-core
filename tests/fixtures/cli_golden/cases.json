@@ -1,0 +1,432 @@
+{
+ "source_commit": "4b259787cf81ae012bfb79e5c419fb251c3652a3",
+ "cases": [
+  {
+   "name": "autodev-packet-canary",
+   "argv": [
+    "autodev",
+    "packet",
+    "canary",
+    "--episodes",
+    "{IN}/episodes.json",
+    "--admitted",
+    "{IN}/admitted.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "autodev-packet-canary-rollback",
+   "argv": [
+    "autodev",
+    "packet",
+    "canary",
+    "--rollback",
+    "{IN}/canary-state.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "autodev-packet-compare-refused",
+   "argv": [
+    "autodev",
+    "packet",
+    "compare",
+    "--packet",
+    "{IN}/packet.json",
+    "--a",
+    "{IN}/family-a.json",
+    "--b",
+    "{IN}/family-b.json",
+    "--json"
+   ],
+   "exit_code": 1
+  },
+  {
+   "name": "autodev-packet-create",
+   "argv": [
+    "autodev",
+    "packet",
+    "create",
+    "--from",
+    "{IN}/packet-input.json",
+    "--packet",
+    "{IN}/packet.json",
+    "--json"
+   ],
+   "exit_code": 0,
+   "produces": [
+    "packet.json"
+   ]
+  },
+  {
+   "name": "autodev-packet-execute-refused",
+   "argv": [
+    "autodev",
+    "packet",
+    "execute",
+    "--packet",
+    "{IN}/packet.json",
+    "--repo",
+    "{RUN}",
+    "--json"
+   ],
+   "exit_code": 2
+  },
+  {
+   "name": "autodev-packet-inspect",
+   "argv": [
+    "autodev",
+    "packet",
+    "inspect",
+    "--packet",
+    "{IN}/packet.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "autodev-packet-resume",
+   "argv": [
+    "autodev",
+    "packet",
+    "resume",
+    "--packet",
+    "{IN}/packet.json",
+    "--model",
+    "model-a",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "autodev-packet-shadow",
+   "argv": [
+    "autodev",
+    "packet",
+    "shadow",
+    "--episodes",
+    "{IN}/episodes.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "autodev-packet-validate",
+   "argv": [
+    "autodev",
+    "packet",
+    "validate",
+    "--packet",
+    "{IN}/packet.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "catalog-refused",
+   "argv": [
+    "catalog",
+    "--probe",
+    "--json"
+   ],
+   "exit_code": 2
+  },
+  {
+   "name": "choose",
+   "argv": [
+    "choose",
+    "--task-class",
+    "implementation",
+    "--candidates-json",
+    "{IN}/candidate-input.json",
+    "--json"
+   ],
+   "exit_code": 1
+  },
+  {
+   "name": "choose-success",
+   "argv": [
+    "choose",
+    "--task-class",
+    "implementation",
+    "--candidates-json",
+    "{IN}/candidate-good.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "compat-check",
+   "argv": [
+    "compat",
+    "check",
+    "--declared",
+    "{IN}/compat-manifest.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "compat-manifest",
+   "argv": [
+    "compat",
+    "manifest",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "detect-offline",
+   "argv": [
+    "detect",
+    "--offline",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "hook-recall",
+   "argv": [
+    "hook",
+    "recall",
+    "unmatched",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "hook-status",
+   "argv": [
+    "hook",
+    "status",
+    "--db-path",
+    "{HOME}/memory.db",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "inspect",
+   "argv": [
+    "inspect",
+    "anthropic/claude-3-opus-20240229",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "inspect-missing",
+   "argv": [
+    "inspect",
+    "missing/model",
+    "--json"
+   ],
+   "exit_code": 1
+  },
+  {
+   "name": "mcp-status",
+   "argv": [
+    "mcp",
+    "status",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "memory-masterdocs-refused",
+   "argv": [
+    "memory",
+    "masterdocs",
+    "--db",
+    "{IN}/missing-masterdocs.db",
+    "--dry-run",
+    "--json"
+   ],
+   "exit_code": 1
+  },
+  {
+   "name": "metadata-lookup",
+   "argv": [
+    "metadata",
+    "lookup",
+    "foo/model",
+    "--store",
+    "{IN}/nonexistent-metadata.json",
+    "--json"
+   ],
+   "exit_code": 1
+  },
+  {
+   "name": "metadata-lookup-admitted",
+   "argv": [
+    "metadata",
+    "lookup",
+    "groq/llama-3.3-70b-versatile",
+    "--store",
+    "{IN}/metadata-store-fixed.json",
+    "--mapping",
+    "{REPO}/test_fixtures/metadata/omniroute_map.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "metadata-lookup-fixed",
+   "argv": [
+    "metadata",
+    "lookup",
+    "openrouter/openai/gpt-4o-mini",
+    "--store",
+    "{IN}/metadata-store-fixed.json",
+    "--mapping",
+    "{REPO}/test_fixtures/metadata/omniroute_map.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "metadata-show",
+   "argv": [
+    "metadata",
+    "show",
+    "--store",
+    "{IN}/nonexistent-metadata.json",
+    "--json"
+   ],
+   "exit_code": 1
+  },
+  {
+   "name": "metadata-show-fixed",
+   "argv": [
+    "metadata",
+    "show",
+    "--store",
+    "{IN}/metadata-store-fixed.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "models",
+   "argv": [
+    "models",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "plan",
+   "argv": [
+    "plan",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "probe-refused",
+   "argv": [
+    "probe",
+    "model-a",
+    "--json"
+   ],
+   "exit_code": 2
+  },
+  {
+   "name": "prove-at-rest-daemon-refused",
+   "argv": [
+    "prove-at-rest",
+    "daemon",
+    "--json"
+   ],
+   "exit_code": 2
+  },
+  {
+   "name": "prove-at-rest-once-refused",
+   "argv": [
+    "prove-at-rest",
+    "once",
+    "--json"
+   ],
+   "exit_code": 2
+  },
+  {
+   "name": "prove-at-rest-status",
+   "argv": [
+    "prove-at-rest",
+    "status",
+    "--state-path",
+    "{IN}/no-proof.json",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "quickstart",
+   "argv": [
+    "quickstart",
+    "--json",
+    "--non-interactive",
+    "--dry-run"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "receipt-list",
+   "argv": [
+    "receipt",
+    "list",
+    "--db",
+    "{HOME}/receipts-empty.db",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "replay-missing",
+   "argv": [
+    "replay",
+    "missing-session",
+    "--json"
+   ],
+   "exit_code": 1
+  },
+  {
+   "name": "runtime-reconcile",
+   "argv": [
+    "runtime",
+    "reconcile",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "runtime-status",
+   "argv": [
+    "runtime",
+    "status",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "setup-plan",
+   "argv": [
+    "setup",
+    "plan",
+    "--json"
+   ],
+   "exit_code": 0
+  },
+  {
+   "name": "simulate",
+   "argv": [
+    "simulate",
+    "Add two numbers",
+    "--json"
+   ],
+   "exit_code": 0
+  }
+ ]
+}

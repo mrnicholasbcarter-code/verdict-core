@@ -1,0 +1,74 @@
+{
+  "actions": [],
+  "contract_version": "1",
+  "errors": [],
+  "operation": "runtime",
+  "passed": true,
+  "processes": [],
+  "services": [
+    {
+      "command_markers": [
+        "ruflo-daemon"
+      ],
+      "contract_version": "1",
+      "display_name": "Ruflo/claude-flow global daemon",
+      "endpoint": null,
+      "global_state_root": "{HOME}/.claude-flow",
+      "health": "not-applicable",
+      "health_endpoint": null,
+      "kind": "daemon",
+      "launcher_env": "VERDICT_RUFLO_DAEMON_COMMAND",
+      "lock_path": "{HOME}/.verdict/runtime/ruflo-daemon.lock",
+      "owner_pid": null,
+      "pid_path": "{HOME}/.verdict/runtime/ruflo-daemon.pid",
+      "port_state": "not-applicable",
+      "service_id": "ruflo-daemon",
+      "state_path": "{HOME}/.verdict/runtime/ruflo-daemon.ownership.json",
+      "status": "unavailable"
+    },
+    {
+      "command_markers": [
+        "ruflo-global-mcp",
+        "20133"
+      ],
+      "contract_version": "1",
+      "display_name": "Ruflo global MCP bridge",
+      "endpoint": "http://127.0.0.1:20133/mcp",
+      "global_state_root": "{HOME}/.claude-flow",
+      "health": "unavailable",
+      "health_endpoint": "http://127.0.0.1:20133/healthz",
+      "kind": "mcp",
+      "launcher_env": "VERDICT_RUFLO_MCP_COMMAND",
+      "lock_path": "{HOME}/.verdict/runtime/ruflo-mcp.lock",
+      "owner_pid": null,
+      "pid_path": "{HOME}/.verdict/runtime/ruflo-mcp.pid",
+      "port_state": "available",
+      "service_id": "ruflo-mcp",
+      "state_path": "{HOME}/.verdict/runtime/ruflo-mcp.ownership.json",
+      "status": "unavailable"
+    },
+    {
+      "command_markers": [
+        "ruvector-global-mcp",
+        "20130"
+      ],
+      "contract_version": "1",
+      "display_name": "RuVector global MCP bridge",
+      "endpoint": "http://127.0.0.1:20130/mcp",
+      "global_state_root": "{HOME}/.ruvector",
+      "health": "unavailable",
+      "health_endpoint": "http://127.0.0.1:20130/healthz",
+      "kind": "mcp",
+      "launcher_env": "VERDICT_RUVECTOR_MCP_COMMAND",
+      "lock_path": "{HOME}/.verdict/runtime/ruvector-mcp.lock",
+      "owner_pid": null,
+      "pid_path": "{HOME}/.verdict/runtime/ruvector-mcp.pid",
+      "port_state": "available",
+      "service_id": "ruvector-mcp",
+      "state_path": "{HOME}/.verdict/runtime/ruvector-mcp.ownership.json",
+      "status": "unavailable"
+    }
+  ],
+  "state_dir": "{HOME}/.verdict/runtime",
+  "status": "ready"
+}

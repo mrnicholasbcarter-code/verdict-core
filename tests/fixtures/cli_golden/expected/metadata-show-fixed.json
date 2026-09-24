@@ -1,0 +1,59 @@
+{
+  "drops": [
+    {
+      "detail": "map target missing/not-in-fixture was not present in fetched models.dev data",
+      "omniroute_id": "ghost/unmapped-target",
+      "reason": "map_target_missing"
+    }
+  ],
+  "record_count": 4,
+  "refreshed_at": "2099-01-01T00:00:00Z",
+  "schema_version": "1",
+  "sources": {
+    "arena_elo": {
+      "reason": "Arena Elo durable path is Hugging Face dataset lmarena-ai/leaderboard-dataset; huggingface_hub is not a core dependency. Supply a fixture to store Elo.",
+      "source": "arena_elo",
+      "status": "skipped"
+    },
+    "artificial_analysis": {
+      "reason": "Artificial Analysis free API requires an API key (~100 req/day) and is not a core dependency; supply a fixture payload to store scores.",
+      "source": "artificial_analysis",
+      "status": "skipped"
+    },
+    "bfcl": {
+      "reason": "BFCL scores are Hugging Face CSVs (gorilla-llm/Berkeley-Function-Calling-Leaderboard) with no stable unauthenticated JSON API. Supply a fixture to store tool_quality.",
+      "source": "bfcl",
+      "status": "skipped"
+    },
+    "litellm": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "record_count": 3,
+      "source": "litellm",
+      "status": "ok",
+      "url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+      "version": "fixture"
+    },
+    "models.dev": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "record_count": 2,
+      "source": "models.dev",
+      "status": "ok",
+      "url": "https://models.dev/api.json",
+      "version": "fixture"
+    },
+    "models.dev.models": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "record_count": 2,
+      "source": "models.dev.models",
+      "status": "ok",
+      "url": "https://models.dev/models.json",
+      "version": "fixture"
+    },
+    "open_llm_leaderboard": {
+      "reason": "Open LLM Leaderboard is Hugging Face dataset open-llm-leaderboard/contents; huggingface_hub is not a core dependency. Supply a fixture to store scores.",
+      "source": "open_llm_leaderboard",
+      "status": "skipped"
+    }
+  },
+  "store": "{IN}/metadata-store-fixed.json"
+}

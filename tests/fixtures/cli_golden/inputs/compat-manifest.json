@@ -1,0 +1,12 @@
+{
+  "contracts": {
+    "AvailabilitySnapshot": "sha256:9fdcdbe78f23e583001ed8f2292ce5668061f7dbc5d839f3b2536f92630e2b0e",
+    "OutcomeEvent": "sha256:e993fb10752ee36e1a77fe38c85345f77f5975a93eaad78ccb0560004d64013f",
+    "RoutingDecisionContract": "sha256:c1bd1b4ff2503e59c74737a85c7c6c470592f36d7b999b4c5d67a39d06f79892",
+    "RuntimeCandidate": "sha256:8fc6ab26992374dc8642df68219b3a68a912a5087b61547c1be2032746f4f8cb",
+    "TaskSpec": "sha256:161837be44785ac6057373eac32d1c0c2ba53b1b7e706f57e235c5e0f75c56d2",
+    "WorkflowPlan": "sha256:f1f18b28116f1ec4b833c8fc580d5b1935a3ecc689a0b2f48b5ba3cbad5e00c4"
+  },
+  "manifest_hash": "sha256:50b4c424d4903fab971691ab1437024c199ae2300f1958d8ec3f34210e1e2fd1",
+  "schema_version": "1"
+}

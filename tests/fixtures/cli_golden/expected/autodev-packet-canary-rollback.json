@@ -1,0 +1,7 @@
+{
+  "active": false,
+  "admission_unchanged": true,
+  "baseline": "model-a",
+  "chosen": "model-a",
+  "improvement": false
+}

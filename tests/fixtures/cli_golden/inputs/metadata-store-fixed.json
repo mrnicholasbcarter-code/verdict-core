@@ -1,0 +1,433 @@
+{
+  "conflicts": [
+    {
+      "detail": "models.dev value kept; LiteLLM differed",
+      "field": "output_cost_per_million",
+      "id": "groq/llama-3.3-70b-versatile",
+      "primary_source": "models.dev",
+      "secondary_source": "litellm"
+    },
+    {
+      "detail": "models.dev value kept; LiteLLM differed",
+      "field": "tools",
+      "id": "openai/gpt-4o-mini",
+      "primary_source": "models.dev",
+      "secondary_source": "litellm"
+    }
+  ],
+  "drops": [
+    {
+      "detail": "map target missing/not-in-fixture was not present in fetched models.dev data",
+      "omniroute_id": "ghost/unmapped-target",
+      "reason": "map_target_missing"
+    }
+  ],
+  "mapping": {
+    "digest": "sha256:e554c7242476967615d8c4d7d25ece6fb6102ec026d4f2b841e6c756b7a4a543",
+    "entry_count": 3,
+    "path": "test_fixtures/metadata/omniroute_map.json"
+  },
+  "records": [
+    {
+      "caps": {
+        "attachment": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "google/gemini-2.0-flash",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "context": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "google/gemini-2.0-flash",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": 1048576
+        },
+        "max_output": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "google/gemini-2.0-flash",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": 8192
+        },
+        "reasoning": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "google/gemini-2.0-flash",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": false
+        },
+        "structured": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "google/gemini-2.0-flash",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "tools": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "google/gemini-2.0-flash",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "vision": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "google/gemini-2.0-flash",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": true
+        }
+      },
+      "display_name": "Gemini 2.0 Flash",
+      "id": "google/gemini-2.0-flash",
+      "provider": "google",
+      "scores": {}
+    },
+    {
+      "caps": {
+        "attachment": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": false
+        },
+        "context": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 131072
+        },
+        "input_cost_per_million": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 0.59
+        },
+        "max_input": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "litellm",
+            "version": "fixture"
+          },
+          "value": 131072
+        },
+        "max_output": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 32768
+        },
+        "output_cost_per_million": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 0.79
+        },
+        "reasoning": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": false
+        },
+        "structured": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "litellm",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "tools": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "vision": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "groq/llama-3.3-70b-versatile",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": false
+        }
+      },
+      "display_name": "Llama 3.3 70B",
+      "id": "groq/llama-3.3-70b-versatile",
+      "omniroute_ids": [
+        "groq/llama-3.3-70b-versatile"
+      ],
+      "provider": "groq",
+      "scores": {}
+    },
+    {
+      "caps": {
+        "attachment": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "meta/llama-3.3-70b-instruct",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": false
+        },
+        "context": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "meta/llama-3.3-70b-instruct",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": 131072
+        },
+        "max_input": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "meta/llama-3.3-70b-instruct",
+            "source": "litellm",
+            "version": "fixture"
+          },
+          "value": 131072
+        },
+        "max_output": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "meta/llama-3.3-70b-instruct",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": 32768
+        },
+        "reasoning": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "meta/llama-3.3-70b-instruct",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": false
+        },
+        "structured": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "meta/llama-3.3-70b-instruct",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "tools": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "meta/llama-3.3-70b-instruct",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "vision": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "meta/llama-3.3-70b-instruct",
+            "source": "models.dev.models",
+            "version": "fixture"
+          },
+          "value": false
+        }
+      },
+      "display_name": "Llama 3.3 70B Instruct",
+      "id": "meta/llama-3.3-70b-instruct",
+      "omniroute_ids": [
+        "openrouter/meta-llama/llama-3.3-70b-instruct:free"
+      ],
+      "provider": "meta",
+      "scores": {}
+    },
+    {
+      "caps": {
+        "attachment": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "context": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 128000
+        },
+        "input_cost_per_million": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 0.15
+        },
+        "max_input": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 128000
+        },
+        "max_output": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 16384
+        },
+        "output_cost_per_million": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": 0.6
+        },
+        "reasoning": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": false
+        },
+        "structured": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "tools": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": true
+        },
+        "vision": {
+          "provenance": {
+            "fetched_at": "2099-01-01T00:00:00Z",
+            "raw_id": "openai/gpt-4o-mini",
+            "source": "models.dev",
+            "version": "fixture"
+          },
+          "value": true
+        }
+      },
+      "display_name": "GPT-4o mini",
+      "id": "openai/gpt-4o-mini",
+      "provider": "openai",
+      "scores": {}
+    }
+  ],
+  "refreshed_at": "2099-01-01T00:00:00Z",
+  "schema_version": "1",
+  "sources": {
+    "arena_elo": {
+      "reason": "Arena Elo durable path is Hugging Face dataset lmarena-ai/leaderboard-dataset; huggingface_hub is not a core dependency. Supply a fixture to store Elo.",
+      "source": "arena_elo",
+      "status": "skipped"
+    },
+    "artificial_analysis": {
+      "reason": "Artificial Analysis free API requires an API key (~100 req/day) and is not a core dependency; supply a fixture payload to store scores.",
+      "source": "artificial_analysis",
+      "status": "skipped"
+    },
+    "bfcl": {
+      "reason": "BFCL scores are Hugging Face CSVs (gorilla-llm/Berkeley-Function-Calling-Leaderboard) with no stable unauthenticated JSON API. Supply a fixture to store tool_quality.",
+      "source": "bfcl",
+      "status": "skipped"
+    },
+    "litellm": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "record_count": 3,
+      "source": "litellm",
+      "status": "ok",
+      "url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+      "version": "fixture"
+    },
+    "models.dev": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "record_count": 2,
+      "source": "models.dev",
+      "status": "ok",
+      "url": "https://models.dev/api.json",
+      "version": "fixture"
+    },
+    "models.dev.models": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "record_count": 2,
+      "source": "models.dev.models",
+      "status": "ok",
+      "url": "https://models.dev/models.json",
+      "version": "fixture"
+    },
+    "open_llm_leaderboard": {
+      "reason": "Open LLM Leaderboard is Hugging Face dataset open-llm-leaderboard/contents; huggingface_hub is not a core dependency. Supply a fixture to store scores.",
+      "source": "open_llm_leaderboard",
+      "status": "skipped"
+    }
+  }
+}
