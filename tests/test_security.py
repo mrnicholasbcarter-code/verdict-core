@@ -62,6 +62,44 @@ def test_lifespan_rejects_anonymous_non_loopback_configuration(monkeypatch) -> N
         pass
 
 
+def test_anonymous_non_loopback_client_is_rejected(monkeypatch) -> None:
+    """BOD-202: anonymous mode must block requests from non-loopback peers."""
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    with TestClient(api.app, client=("203.0.113.5", 5000)) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 403
+
+
+def test_anonymous_loopback_client_is_allowed(monkeypatch) -> None:
+    """BOD-202: anonymous mode must allow loopback peers."""
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    with TestClient(api.app, client=("127.0.0.1", 5000)) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code not in {401, 403}
+
+
+def test_health_is_open_for_non_loopback_client(monkeypatch) -> None:
+    """BOD-202: /health must remain accessible regardless of peer address."""
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+
+    with TestClient(api.app, client=("203.0.113.5", 5000)) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+
+
 def test_upstream_rejects_credentials_unsafe_schemes_and_private_hosts() -> None:
     with pytest.raises(ValueError, match="scheme"):
         UpstreamProxy("file:///etc/passwd")
