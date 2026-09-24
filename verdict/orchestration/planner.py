@@ -15,6 +15,7 @@ import subprocess
 import textwrap
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from verdict.orchestration.contracts import (
     NodeKind,
@@ -136,7 +137,10 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
         - depends_on, owned_files, required_context, acceptance, required_capabilities
           are lists of strings.
         - verification_command is a list of strings (an argv list), for example
-          ["pytest", "-q", "tests/test_x.py"].
+          ["python3", "-m", "pytest", "-q", "tests/test_x.py"].
+        - required_capabilities uses ONLY model features from: tools, reasoning,
+          vision, structured_output (Verdict selects the model; describe work
+          in "objective"/"acceptance", not here).
 
         RULES:
         1. Decompose into 2-8 nodes total.
@@ -178,6 +182,51 @@ def _extract_json_object(text: str) -> str:
     raise OrchestrationError("parse_plan: unterminated JSON object in planner output")
 
 
+# Model-capability vocabulary Verdict understands. Planner models describe WORK
+# ("edit files", "run pytest"); Verdict alone decides MODEL requirements, so free
+# text never reaches the eligibility ladder.
+KNOWN_MODEL_CAPABILITIES = frozenset({"tools", "reasoning", "vision", "structured_output"})
+_CAPABILITY_ALIASES = {
+    "tool_calling": "tools",
+    "tool_use": "tools",
+    "function_calling": "tools",
+    "thinking": "reasoning",
+    "json": "structured_output",
+}
+WORKER_MIN_CONTEXT_TOKENS = 32_000  # agent system prompt + tools + hydrated node context
+
+
+def normalize_node_requirements(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Map planner-proposed requirements onto Verdict's capability vocabulary.
+
+    - every code-writing worker needs tool calling (it edits files and runs checks);
+    - unknown capability phrases are dropped (recorded in ``acceptance`` context
+      is unnecessary: they describe work, not model features);
+    - min_context_tokens is floored at what a real agent turn needs.
+    """
+    data = dict(item)
+    raw = data.get("required_capabilities") or []
+    caps: set[str] = set()
+    if isinstance(raw, list):
+        for value in raw:
+            key = str(value).strip().lower().replace(" ", "_").replace("-", "_")
+            key = _CAPABILITY_ALIASES.get(key, key)
+            if key in KNOWN_MODEL_CAPABILITIES:
+                caps.add(key)
+    kind = str(data.get("kind", "implement"))
+    if kind in {"implement", "research", "review"}:
+        caps.add("tools")
+    if data.get("reasoning") is True:
+        caps.add("reasoning")
+    data["required_capabilities"] = sorted(caps)
+    try:
+        requested = int(data.get("min_context_tokens") or 0)
+    except (TypeError, ValueError):
+        requested = 0
+    data["min_context_tokens"] = max(requested, WORKER_MIN_CONTEXT_TOKENS)
+    return data
+
+
 def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
     """Parse frontier output (tolerant of fences/prose) into a validated, topologized WorkGraph."""
     raw = _extract_json_object(text)
@@ -196,7 +245,7 @@ def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
         if not isinstance(item, Mapping):
             raise OrchestrationError(f"parse_plan: node[{i}] must be an object")
         try:
-            nodes.append(WorkNode.from_dict(item))
+            nodes.append(WorkNode.from_dict(normalize_node_requirements(item)))
         except (OrchestrationError, TypeError) as exc:
             raise OrchestrationError(f"parse_plan: node[{i}]: {exc}") from exc
 

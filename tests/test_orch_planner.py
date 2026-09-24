@@ -416,3 +416,37 @@ async def test_frontier_planner_raises_when_repair_executor_fails(tmp_path: Path
             "ship it", repo=repo, executor=executor, route_id="cc/claude-sonnet-5"
         )
     assert len(executor.calls) == 2
+
+
+def test_planner_free_text_capabilities_are_normalized_to_model_vocabulary() -> None:
+    import json
+
+    from verdict.orchestration.planner import WORKER_MIN_CONTEXT_TOKENS, parse_plan
+
+    text = json.dumps(
+        {
+            "nodes": [
+                {
+                    "node_id": "a",
+                    "objective": "do a",
+                    "owned_files": ["a.py"],
+                    "verification_command": ["true"],
+                    "required_capabilities": ["edit files", "run pytest", "Tool Calling"],
+                    "min_context_tokens": 1000,
+                },
+                {
+                    "node_id": "i",
+                    "objective": "integrate",
+                    "kind": "integrate",
+                    "depends_on": ["a"],
+                    "verification_command": ["true"],
+                    "required_capabilities": ["run pytest"],
+                },
+            ]
+        }
+    )
+    graph = parse_plan(text, "g")
+    a = graph.node("a")
+    assert a.required_capabilities == ("tools",)
+    assert a.min_context_tokens == WORKER_MIN_CONTEXT_TOKENS
+    assert graph.node("i").required_capabilities == ()
