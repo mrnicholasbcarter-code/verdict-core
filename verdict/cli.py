@@ -4507,14 +4507,17 @@ def main() -> None:
 
             spec = importlib.util.find_spec("verdict.dashboard")
             if not spec or not spec.origin:
-                console.print("[bold red]❌ Dashboard module missing.[/bold red]")
+                from verdict import present
+
+                present.fail("dashboard", "module missing")
                 sys.exit(1)
             subprocess.run([sys.executable, "-m", "streamlit", "run", spec.origin])
 
         except ImportError:
-            console.print("[bold red]❌ UI dependencies not found.[/bold red]")
-            console.print("Please install the UI package suite:")
-            console.print('  [bold cyan]pipx install "verdict-core[all]" --force[/bold cyan]')
+            from verdict import present
+
+            present.fail("dashboard", "UI dependencies not found")
+            present.note('Install them with: pipx install "verdict-core[all]" --force')
             sys.exit(1)
     elif args.command == "serve":
         try:
@@ -4522,15 +4525,19 @@ def main() -> None:
 
             if args.dev:
                 os.environ["LLMGATE_AVAILABILITY_PROFILE"] = "development"
-                console.print(
-                    "[bold cyan]🔥 Dev mode: hot-reload enabled "
-                    "(LLMGATE_AVAILABILITY_PROFILE=development)[/bold cyan]"
+                from verdict import present
+
+                present.status(
+                    "dev mode",
+                    "enabled",
+                    "hot reload on (LLMGATE_AVAILABILITY_PROFILE=development)",
                 )
             start_server(args.port, args.host, reload=args.dev)
         except ImportError:
-            console.print("[bold red]❌ Server dependencies not found.[/bold red]")
-            console.print("Please install the FastAPI server suite:")
-            console.print('  [bold cyan]pipx install "verdict-core[all]" --force[/bold cyan]')
+            from verdict import present
+
+            present.fail("server", "FastAPI dependencies not found")
+            present.note('Install them with: pipx install "verdict-core[all]" --force')
             sys.exit(1)
     elif args.command == "probe":
         cmd_probe(
