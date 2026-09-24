@@ -1,9 +1,11 @@
 # Verdict interview cheat sheet
 
+**Describes `main` at commit 8954089, certified from a fresh clone on 2026-09-24.**
+
 One page. Printable. Every number below has a named source. Sources:
 [README](../README.md), [runbook](guides/interview-golden-path.md),
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md),
-[certification](proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md),
+main certification (`~/.verdict/evidence/interview-main/main-certification.md`, local operator evidence),
 [story bank](portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md),
 [branch reconciliation](BRANCH_RECONCILIATION.md).
 
@@ -24,6 +26,8 @@ Prerequisites (from the runbook): OmniRoute on `127.0.0.1:20128` with the admiss
 limiter drop-ins, `VERDICT_OMNIROUTE_API_KEY` exported, `ocr` on PATH, and every usable route
 listed in Prime's `~/.prime/agent/models.json`.
 
+Note: Codex capacity may be exhausted. The demo runs on Claude routes only: pass `--scope cc/`.
+
 ```bash
 # 0. Scratch repo, so the demo never touches real work
 DEMO=$(mktemp -d)/demo && mkdir -p "$DEMO" && cd "$DEMO" && git init -q .
@@ -32,11 +36,11 @@ DEMO=$(mktemp -d)/demo && mkdir -p "$DEMO" && cd "$DEMO" && git init -q .
 verdict
 
 # 2. Dynamic eligibility - no model is chosen by hand
-verdict eligibility --scope cc/,cx/ --probe --frontier
+verdict eligibility --scope cc/ --probe --frontier
 
 # 3. One goal -> plan -> parallel workers -> review -> receipt, with chaos
 verdict orchestrate "Add textkit/stats.py and textkit/case.py with tests; full suite must pass" \
-  --repo "$DEMO" --scope cc/,cx/ --max-parallel 3 \
+  --repo "$DEMO" --scope cc/ --max-parallel 3 \
   --inject "#2=route_quota" --inject "#3=no_final" --inject "#5=rate_limit"
 
 # 4. Inspect the run afterwards
@@ -66,12 +70,19 @@ Optional fifth step if there is time - controller survival:
 
 ```bash
 VERDICT_CHAOS_G0="#2=hang" verdict supervise --run-id demo --runs-dir "$DEMO/.verdict/runs" \
-  --stall-seconds 90 -- "<goal>" --repo "$DEMO" --scope cc/,cx/
+  --stall-seconds 90 -- "<goal>" --repo "$DEMO" --scope cc/
 ```
 
 **Fallback if the gateway or a model is down.** Do not retry live. Switch to recorded evidence
-in `~/.verdict/evidence/golden-path/` and narrate the same story from receipts:
+and narrate the same story from receipts:
 
+Fresh `main` rehearsal evidence (most recent):
+```bash
+verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal/runs/clean    # COMPLETE
+verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal/runs/chaos    # BLOCKED
+```
+
+Golden-path reference runs (further fallbacks):
 ```bash
 verdict run-receipt ~/.verdict/evidence/golden-path/live9-run    # reassignment chain, COMPLETE
 verdict watch ~/.verdict/evidence/golden-path/live10-run --once  # supervisor kill + resume
@@ -79,10 +90,10 @@ verdict run-receipt ~/.verdict/evidence/golden-path/live7-run    # pool exhausti
 verdict run-receipt ~/.verdict/evidence/golden-path/certlive-run # fresh-clone certification run
 ```
 
-Run ids worth naming: `live2` (3 parallel nodes, 24 tests on the integration ref), `live9`
-(route quota, then no-final, then 429; 28 tests), `live7` (planner quota, then pool exhaustion,
-fail-closed), `live10` (hung controller, killed, resumed), `certlive` (fresh clone, 30 tests).
-Say plainly: these are local operator evidence files, not a public CI artifact.
+Run ids worth naming: `clean` (12 tests on integration ref, OCR PASS), `chaos` (provider-scoped
+429, fail-closed), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
+quota, then pool exhaustion), `live10` (hung controller, killed, resumed), `certlive` (fresh
+clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact.
 
 ## 3. Architecture in six bullets
 
@@ -144,14 +155,7 @@ about the boundary: this proves the run record was not altered after the fact. I
 attest LLM output quality, and it is not a signature against a tampering author who controls the
 whole machine.
 
-**What is not shipped?** From ADR-036's known limits: worker concurrency is operator-set
-(default 3), not adapted from outcomes (BOD-157). `WORKER_CRITIC` and `SOLO` topologies are
-selected and recorded, but a per-node critic pass is not executed; independent review runs once
-per run on the integrated diff. Controller survival is a local supervisor process, not a daemon
-or service unit. From the certification's "not certified here": no merge to `main` and no CI on
-a merged commit, and no remediation / re-review loop - a blocking OCR finding stops the run as
-`BLOCKED`. ADR-036 is implemented on `feat/interview-golden-path` (PR #590), not merged.
-`--no-review` ends the run `BLOCKED` by design.
+**What is not shipped?** See section 7 for shipped vs not shipped detail.
 
 ## 5. Four STAR stories
 
@@ -200,15 +204,17 @@ a merged commit, and no remediation / re-review loop - a blocking OCR finding st
 
 | Number | Meaning | Source |
 |---|---|---|
-| 2907 passed, 0 failed | full suite on a fresh clone of `feat/interview-golden-path` @ `bafdfb5` | certification |
-| 2961 collected | tests collected on the current branch in this worktree | local `pytest --collect-only -q` |
-| A-J | live scenario matrix, faults injected and tagged | certification |
-| 4 CPU / 8 GB, OmniRoute v3.8.50 | certification host | certification |
-| 24 / 28 / 30 tests | integration-ref suite size in `live2` / `live9` / `certlive` | runbook, certification |
+| 2976 passed, 1 warning | full suite on fresh clone of `main` @ 8954089 | main certification |
+| mypy --strict on 213 files | fresh-clone gate, pass | main certification |
+| 270 doc files verified | doc links checked on fresh clone | main certification |
+| 12 tests, OCR PASS on cc/claude-fable-5 | main rehearsal clean run | main rehearsal |
+| provider-scoped 429 fail-closed | main rehearsal chaos run outcome | main rehearsal |
+| A-J | live scenario matrix, faults injected and tagged | golden-path certification |
+| 4 CPU / 8 GB, OmniRoute v3.8.50 | certification host | golden-path certification |
+| 24 / 28 / 30 tests | integration-ref suite size in `live2` / `live9` / `certlive` | runbook |
 | 85 -> 16 -> 5 -> 1 -> 1 | `live9` ladder: DISCOVERED, ENTITLED, HEALTHY, AVAILABLE, ELIGIBLE | README |
 | 4 nodes, 3 reassignments, 3 cooldowns | `live9` recorded header line | README |
-| mypy --strict on 206 files | fresh-clone gate, pass | certification |
-| cli.py 5901 -> 4549 lines | BOD-187 parser/dispatch split, commit `d48058e` | repo git log |
+| cli.py 5901 -> 4549 lines | BOD-187 parser/dispatch split | repo git log |
 | 69 -> 8 local branches, 29 -> 8 worktrees | branch reconciliation (BOD-190) | reconciliation |
 | 52 local branches removed | each PR MERGED or ancestor of `origin/main` | reconciliation |
 | 79 remote branches deleted | operator-authorized, after a verified bundle backup | reconciliation |
@@ -216,6 +222,15 @@ a merged commit, and no remediation / re-review loop - a blocking OCR finding st
 | ~$0.16 routed vs ~$0.52 baseline | deterministic mock over 100 requests; estimates, not invoices | README |
 | version 0.2.0, 36 numbered ADRs | current state | README |
 
-Phrases to avoid: "production deployment", "merged main CI result", "proves the reviewer catches
-every bug". Say instead: certified on a fresh clone, on one host, on an unmerged branch, with
-local operator evidence.
+## 7. Shipped vs not shipped
+
+**Shipped on main:** Goal-to-receipt orchestration (ADR-036), eligibility ladder, parallel
+DAG runtime with reassignment/cooldowns, independent OCR review, digest-verified receipts,
+`verdict supervise` stall/resume, home screen and CLI, UNDERSTAND and HYDRATE stages.
+
+**Not shipped:** BOD-157 adaptive concurrency, fix-and-review loop after blocking OCR
+finding, per-node critic pass, interactive Prime root-session survival, BOD-70 dogfood on
+main, BOD-188 full harness-independence proof.
+
+Phrases to avoid: "production deployment", "proves the reviewer catches every bug". Say instead:
+merged to main with green CI, certified from a fresh clone on one host, with local operator evidence.
