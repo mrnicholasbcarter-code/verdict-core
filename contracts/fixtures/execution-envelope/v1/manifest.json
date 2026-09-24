@@ -1,5 +1,7 @@
 {
   "contract_version": "1",
+  "evaluation_time": "2024-01-15T12:00:00Z",
+  "expected_policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "fixtures": {
     "accepted.json": {
       "expected_verdict": "ACCEPT",
@@ -14,11 +16,11 @@
       "sha256": "c4fe55cb50fa785ccdc325eb12068d53b57a7824a2ce48e73018e0a48d47ebc6"
     },
     "null-defaults.json": {
-      "expected_verdict": "ACCEPT_DEFAULTS",
+      "expected_verdict": "ACCEPT",
       "sha256": "cc89d8eb7c564570696b363c91f2e3902ec0a661c7ca510ecd0a2b6098f9a7a5"
     },
     "unknown-field.json": {
-      "expected_verdict": "ACCEPT_IGNORING_UNKNOWN",
+      "expected_verdict": "REJECT_UNKNOWN",
       "sha256": "f6c109365b7cfd7733f5dde02461e54786130588e7173091220f1b56e151c300"
     },
     "wrong-digest.json": {

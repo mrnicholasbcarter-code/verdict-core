@@ -58,13 +58,14 @@ All ExecutionEnvelope instances carry `"schema_version": "1"`. This version is i
 
 ### Unknown Field Handling
 
-Consumers MUST handle unknown fields gracefully according to the `additionalProperties: false` schema contract:
+**v1 consumers MUST reject unknown fields. Additive fields require a schema_version bump.**
 
 1. **Python (Core)**: `Contract.from_dict()` rejects unknown fields with `ContractValidationError`
-2. **TypeScript/Node/Cockpit**: Consumers SHOULD validate against the schema and MAY reject unknown fields
-3. **Test fixture**: `unknown-field.json` includes an additive field; expected verdict is `ACCEPT_IGNORING_UNKNOWN`
+2. **Verification**: `verify_execution_envelope()` returns `REJECT_UNKNOWN` for unknown fields
+3. **Test fixture**: `unknown-field.json` includes an additive field; expected verdict is `REJECT_UNKNOWN`
+4. **Schema**: `additionalProperties: false` on ExecutionEnvelope definition
 
-**Recommendation**: Consumers should log warnings for unknown fields but continue processing to enable forward compatibility.
+This strict policy ensures that all parties agree on the exact contract shape. Future additive changes require incrementing `schema_version` from "1" to "2".
 
 ### Null vs Missing
 
@@ -91,8 +92,8 @@ The canonical fixtures are in `contracts/fixtures/execution-envelope/v1/`:
 | `denied.json` | `DENY` | Eligibility decision denies execution |
 | `expired.json` | `EXPIRED` | Envelope expired (expires_at in the past) |
 | `wrong-digest.json` | `DIGEST_MISMATCH` | policy_digest does not match expected |
-| `unknown-field.json` | `ACCEPT_IGNORING_UNKNOWN` | Contains an unknown additive field |
-| `null-defaults.json` | `ACCEPT_DEFAULTS` | Optional fields are null/absent |
+| `unknown-field.json` | `REJECT_UNKNOWN` | Contains an unknown field (v1 rejects) |
+| `null-defaults.json` | `ACCEPT` | Optional fields are null but envelope valid |
 
 ### Manifest
 
@@ -121,10 +122,20 @@ assert verdict == EnvelopeVerdict.ACCEPT
 
 ### Verification Rules (Fail-Closed)
 
-1. **Eligibility Denial**: If `eligibility_decision.decision == "deny"` → `DENY`
-2. **Digest Mismatch**: If `policy_digest != expected_policy_digest` → `DIGEST_MISMATCH`
-3. **Expiry**: If `now >= execution_constraints.expires_at` → `EXPIRED`
-4. **Otherwise**: `ACCEPT`
+**All parameters are REQUIRED. Any malformed or skipped check returns a rejection verdict, never ACCEPT.**
+
+1. **Malformed Input**: Unknown fields, non-dict input, parsing errors → `REJECT_UNKNOWN`
+2. **Eligibility**: `eligibility_decision.admitted` must be `True` (anything else → `DENY`)
+3. **Digest Mismatch**: Missing, empty, or wrong `policy_digest` → `DIGEST_MISMATCH`
+4. **Expiry**:
+   - Unparseable `now` or `expires_at` → `EXPIRED`
+   - Timezone-naive timestamps → `EXPIRED`
+   - `now >= execution_constraints.expires_at` → `EXPIRED`
+5. **All checks passed**: `ACCEPT`
+
+**Parameters:**
+- `now`: ISO 8601 timestamp (REQUIRED, must include timezone)
+- `expected_policy_digest`: SHA-256 hex digest (REQUIRED)
 
 ## Consumer Integration
 

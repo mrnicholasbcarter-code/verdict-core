@@ -164,13 +164,15 @@ def generate_fixtures(output_dir: Path):
         "denied.json": (fixture_denied(), "DENY"),
         "expired.json": (fixture_expired(), "EXPIRED"),
         "wrong-digest.json": (fixture_wrong_digest(), "DIGEST_MISMATCH"),
-        "unknown-field.json": (fixture_unknown_field(), "ACCEPT_IGNORING_UNKNOWN"),
-        "null-defaults.json": (fixture_null_defaults(), "ACCEPT_DEFAULTS"),
+        "unknown-field.json": (fixture_unknown_field(), "REJECT_UNKNOWN"),
+        "null-defaults.json": (fixture_null_defaults(), "ACCEPT"),
     }
 
     manifest = {
         "contract_version": "1",
         "schema_id": "https://llm-gate.dev/schemas/contracts.v1.json#/$defs/execution_envelope",
+        "evaluation_time": FIXED_NOW,
+        "expected_policy_digest": CANONICAL_DIGEST,
         "fixtures": {},
     }
 

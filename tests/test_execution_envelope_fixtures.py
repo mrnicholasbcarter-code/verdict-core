@@ -34,9 +34,8 @@ def all_fixtures(manifest):
     """Load all test fixtures."""
     fixtures = {}
     for filename in manifest["fixtures"]:
-        if filename != "unknown-field.json":  # Skip unknown-field for Contract.from_dict
-            fixture_path = FIXTURES_DIR / filename
-            fixtures[filename] = json.loads(fixture_path.read_text())
+        fixture_path = FIXTURES_DIR / filename
+        fixtures[filename] = json.loads(fixture_path.read_text())
     return fixtures
 
 
@@ -124,63 +123,181 @@ class TestSchemaValidation:
 
 
 class TestVerificationLogic:
-    """Test verify_execution_envelope returns expected verdicts."""
+    """Test verify_execution_envelope returns expected verdicts for all fixtures."""
 
-    def test_accepted_fixture(self):
+    def test_all_fixtures_match_manifest_verdicts(self, manifest, all_fixtures):
+        """Every fixture returns the verdict specified in the manifest."""
+        eval_time = manifest["evaluation_time"]
+        expected_digest = manifest["expected_policy_digest"]
+
+        for filename, fixture in all_fixtures.items():
+            expected_verdict = manifest["fixtures"][filename]["expected_verdict"]
+            verdict = verify_execution_envelope(
+                fixture, now=eval_time, expected_policy_digest=expected_digest
+            )
+            assert verdict.value == expected_verdict, (
+                f"{filename}: expected {expected_verdict}, got {verdict.value}"
+            )
+
+    def test_accepted_fixture(self, manifest):
         """accepted.json returns ACCEPT."""
         fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
         verdict = verify_execution_envelope(
-            fixture, now="2024-01-15T12:30:00Z", expected_policy_digest="a" * 64
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
         )
         assert verdict == EnvelopeVerdict.ACCEPT
 
-    def test_denied_fixture(self):
+    def test_denied_fixture(self, manifest):
         """denied.json returns DENY."""
         fixture = json.loads((FIXTURES_DIR / "denied.json").read_text())
-        verdict = verify_execution_envelope(fixture)
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
         assert verdict == EnvelopeVerdict.DENY
 
-    def test_expired_fixture(self):
+    def test_expired_fixture(self, manifest):
         """expired.json returns EXPIRED."""
         fixture = json.loads((FIXTURES_DIR / "expired.json").read_text())
         verdict = verify_execution_envelope(
             fixture,
-            now="2024-01-15T12:00:00Z",  # After expiry
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
         )
         assert verdict == EnvelopeVerdict.EXPIRED
 
-    def test_wrong_digest_fixture(self):
+    def test_wrong_digest_fixture(self, manifest):
         """wrong-digest.json returns DIGEST_MISMATCH."""
         fixture = json.loads((FIXTURES_DIR / "wrong-digest.json").read_text())
         verdict = verify_execution_envelope(
             fixture,
-            expected_policy_digest="a" * 64,  # Fixture has "b" * 64
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
         )
         assert verdict == EnvelopeVerdict.DIGEST_MISMATCH
 
-    def test_null_defaults_fixture(self):
-        """null-defaults.json returns ACCEPT."""
+    def test_null_defaults_fixture(self, manifest):
+        """null-defaults.json returns ACCEPT (optional fields null but valid)."""
         fixture = json.loads((FIXTURES_DIR / "null-defaults.json").read_text())
-        verdict = verify_execution_envelope(fixture)
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
         assert verdict == EnvelopeVerdict.ACCEPT
+
+    def test_unknown_field_fixture(self, manifest):
+        """unknown-field.json returns REJECT_UNKNOWN."""
+        fixture = json.loads((FIXTURES_DIR / "unknown-field.json").read_text())
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.REJECT_UNKNOWN
+
+
+class TestFailClosed:
+    """Test fail-closed semantics: no ACCEPT when checks are skipped or malformed."""
+
+    def test_missing_policy_digest(self, manifest):
+        """Missing policy_digest -> DIGEST_MISMATCH."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["policy_digest"] = ""
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.DIGEST_MISMATCH
+
+    def test_empty_eligibility_decision(self, manifest):
+        """Empty eligibility_decision {} -> DENY."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["eligibility_decision"] = {}
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.DENY
+
+    def test_admitted_false(self, manifest):
+        """admitted=false -> DENY."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["eligibility_decision"]["admitted"] = False
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.DENY
+
+    def test_unparseable_expires_at(self, manifest):
+        """Unparseable expires_at -> EXPIRED."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["execution_constraints"]["expires_at"] = "not-a-timestamp"
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.EXPIRED
+
+    def test_naive_timestamp_expires_at(self, manifest):
+        """Timezone-naive expires_at -> EXPIRED."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["execution_constraints"]["expires_at"] = "2024-01-15T13:00:00"  # No timezone
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.EXPIRED
+
+    def test_naive_timestamp_now(self, manifest):
+        """Timezone-naive now parameter -> EXPIRED."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        verdict = verify_execution_envelope(
+            fixture,
+            now="2024-01-15T12:00:00",  # No timezone
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.EXPIRED
+
+    def test_eligibility_decision_as_string(self, manifest):
+        """eligibility_decision as string -> DENY."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["eligibility_decision"] = "accept"
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.DENY
 
 
 class TestVerificationMutations:
     """Test verification behavior under mutations."""
 
-    def test_flip_digest_char_causes_mismatch(self):
+    def test_flip_digest_char_causes_mismatch(self, manifest):
         """Changing one char in policy_digest causes DIGEST_MISMATCH."""
         fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
-        original_digest = fixture["policy_digest"]
+        original_digest = manifest["expected_policy_digest"]
 
         # Flip one character
         mutated_digest = "b" + original_digest[1:]
         fixture["policy_digest"] = mutated_digest
 
-        verdict = verify_execution_envelope(fixture, expected_policy_digest=original_digest)
+        verdict = verify_execution_envelope(
+            fixture, now=manifest["evaluation_time"], expected_policy_digest=original_digest
+        )
         assert verdict == EnvelopeVerdict.DIGEST_MISMATCH
 
-    def test_move_time_past_expiry_causes_expired(self):
+    def test_move_time_past_expiry_causes_expired(self, manifest):
         """Moving evaluation time past expiry causes EXPIRED."""
         fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
 
@@ -188,23 +305,21 @@ class TestVerificationMutations:
         verdict = verify_execution_envelope(
             fixture,
             now="2024-01-15T14:00:00Z",  # After expires_at: 13:00:00Z
+            expected_policy_digest=manifest["expected_policy_digest"],
         )
         assert verdict == EnvelopeVerdict.EXPIRED
 
-    def test_denied_never_becomes_accept(self):
+    def test_denied_never_becomes_accept(self, manifest):
         """Denied envelope stays DENY regardless of other conditions."""
         fixture = json.loads((FIXTURES_DIR / "denied.json").read_text())
 
         # Try with correct digest
-        fixture["policy_digest"] = "a" * 64
-        verdict1 = verify_execution_envelope(
-            fixture, expected_policy_digest="a" * 64, now="2024-01-01T00:00:00Z"
+        verdict = verify_execution_envelope(
+            fixture,
+            now="2024-01-01T00:00:00Z",
+            expected_policy_digest=manifest["expected_policy_digest"],
         )
-        assert verdict1 == EnvelopeVerdict.DENY
-
-        # Try with no expiry check
-        verdict2 = verify_execution_envelope(fixture)
-        assert verdict2 == EnvelopeVerdict.DENY
+        assert verdict == EnvelopeVerdict.DENY
 
 
 class TestManifestIntegrity:
@@ -230,7 +345,7 @@ class TestContractParsing:
         fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
         envelope = ExecutionEnvelope.from_dict(fixture)
         assert envelope.schema_version == "1"
-        assert envelope.policy_digest == "a" * 64
+        assert len(envelope.policy_digest) == 64
 
     def test_parse_null_defaults(self):
         """Can parse null-defaults.json with None values."""
