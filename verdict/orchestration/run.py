@@ -272,17 +272,21 @@ def load_or_create_run(root: Path, run_id: str | None) -> Path:
     return run_dir
 
 
-def prior_validated(run_dir: Path) -> dict[str, str]:
-    """Resume support: node_id -> commit for nodes VALIDATED in a previous controller life."""
+def prior_validated(run_dir: Path) -> dict[str, tuple[str, str]]:
+    """Resume support: node_id -> (commit, implementer route) for VALIDATED nodes.
+
+    The implementer route is restored so reviewer independence survives a
+    controller restart (a resumed run must still exclude who wrote the code).
+    """
     path = run_dir / "events.jsonl"
     if not path.exists():
         return {}
-    done: dict[str, str] = {}
+    done: dict[str, tuple[str, str]] = {}
     for event in EventLog(path).read():
         if event.type == "node_state" and event.data.get("state") == NodeState.VALIDATED.value:
             commit = str(event.data.get("commit") or "")
             if commit:
-                done[event.node_id] = commit
+                done[event.node_id] = (commit, str(event.data.get("route_id") or ""))
     return done
 
 
@@ -364,10 +368,11 @@ async def run_golden_path(
         policy=policy,
         inflight=inflight,
     )
-    for node_id, commit in resumed.items():
+    for node_id, (commit, route_id) in resumed.items():
         if node_id in runtime.nodes:
             runtime.nodes[node_id].state = NodeState.VALIDATED
             runtime.nodes[node_id].commit = commit
+            runtime.nodes[node_id].route_id = route_id
     result = await runtime.run()
     try:
         receipt_path = write_run_receipt(run_dir)

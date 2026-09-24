@@ -240,3 +240,42 @@ def test_check_results_are_projected() -> None:
     )
     assert view.barriers[0].ok is False and view.verifications[0].detail.endswith("(exit 1)")
     assert view.integrations[0].detail == "2 commit(s)"
+
+
+def test_follow_skips_previous_controller_life(tmp_path) -> None:
+    import json as _json
+
+    from rich.console import Console
+
+    from verdict.orchestration.tui import follow
+
+    path = tmp_path / "events.jsonl"
+    rows = [
+        {
+            "seq": 1,
+            "at": "2026-09-24T00:00:00Z",
+            "type": "run_finished",
+            "node_id": "",
+            "data": {"outcome": "BLOCKED", "reason": "old life"},
+        },
+        {
+            "seq": 2,
+            "at": "2026-09-24T00:01:00Z",
+            "type": "run_started",
+            "node_id": "",
+            "data": {"goal": "g"},
+        },
+        {
+            "seq": 3,
+            "at": "2026-09-24T00:02:00Z",
+            "type": "run_finished",
+            "node_id": "",
+            "data": {"outcome": "COMPLETE", "reason": "new life"},
+        },
+    ]
+    path.write_text("\n".join(_json.dumps(r) for r in rows) + "\n")
+    console = Console(file=__import__("io").StringIO(), force_terminal=False, width=100)
+    view = follow(path, console=console, start_seq=1, poll_seconds=0, max_polls=3)
+    text = console.file.getvalue()
+    assert "old life" not in text and "new life" in text
+    assert view.final

@@ -688,6 +688,14 @@ def read_events(path: Path) -> list[RunEvent]:
     return events
 
 
+def _event_seq(event: RunEvent | Mapping[str, Any]) -> int:
+    value = event.seq if isinstance(event, RunEvent) else event.get("seq", 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def follow(
     events_path: Path,
     *,
@@ -696,12 +704,19 @@ def follow(
     stop_when_final: bool = True,
     poll_seconds: float = 0.25,
     max_polls: int | None = None,
+    start_seq: int = 0,
 ) -> RunView:
-    """Live-tail a JSONL events file; plain mode prints one narrative line per event."""
+    """Live-tail a JSONL events file; plain mode prints one narrative line per event.
+
+    ``start_seq`` skips events from earlier controller lives of a resumed run, so
+    a previous ``run_finished`` cannot end (or mislabel) the current live view.
+    """
     target = console or Console()
     plain = plain_mode(console)
     width = target.width or 100
     view, seen, polls = RunView(), 0, 0
+    if start_seq:
+        seen = sum(1 for e in read_events(events_path) if _event_seq(e) <= start_seq)
     live = (
         None
         if plain

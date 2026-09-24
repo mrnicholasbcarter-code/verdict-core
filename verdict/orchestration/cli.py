@@ -236,11 +236,13 @@ def _orchestrate(args: argparse.Namespace) -> int:
     )
     events_path = run_dir / "events.jsonl"
     events_path.touch()
+    prior_seq = sum(1 for line in events_path.read_text().splitlines() if line.strip())
     stop = threading.Event()
     viewer = None
     if not args.json:
         viewer = threading.Thread(
-            target=lambda: follow(events_path, stop_when_final=True), daemon=True
+            target=lambda: follow(events_path, stop_when_final=True, start_seq=prior_seq),
+            daemon=True,
         )
         viewer.start()
     result = asyncio.run(
