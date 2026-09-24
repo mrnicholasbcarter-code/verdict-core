@@ -4485,6 +4485,10 @@ def main() -> None:
             repo=Path(args.repo),
             create_if_missing=bool(getattr(args, "create", False)),
         )
+    elif args.command is None:
+        from verdict.home import run_home
+
+        raise SystemExit(run_home())
     else:
         parser.print_help()
 
