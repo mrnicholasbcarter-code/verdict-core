@@ -357,7 +357,8 @@ async def run_golden_path(
         )
     if summary is not None:
         counts = {k: v for k, v in summary().items() if isinstance(v, int) and k != "node_id"}
-        events.emit("eligibility", "", **counts)
+        if any(v > 0 for v in counts.values()):
+            events.emit("eligibility", "", **counts)
     graph_path = run_dir / GRAPH_FILE
     events.emit("understand", **_task_profile(goal, repo, graph))
     try:
