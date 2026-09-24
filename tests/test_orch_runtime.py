@@ -435,3 +435,21 @@ async def test_concurrent_selection_spreads_load_across_routes(repo: Path) -> No
     )
     await rt.run()
     assert {r for _, r in ex.calls} == {"cc/s", "cc/o", "cx/g"}
+
+
+async def test_worktrees_are_cleaned_after_success(repo: Path) -> None:
+    integrate = WorkNode(
+        "i",
+        "integrate",
+        kind=NodeKind.INTEGRATE,
+        depends_on=("a", "b"),
+        verification_command=("sh", "-c", "test -f a.txt && test -f b.txt"),
+    )
+    graph = WorkGraph("g", (node("a"), node("b"), integrate))
+    rt, _, _ = make(repo, graph, Executor({}), ["cc/s", "cx/g"])
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    listed = subprocess.run(
+        ["git", "worktree", "list"], cwd=repo, capture_output=True, text=True
+    ).stdout
+    assert len(listed.strip().splitlines()) == 1

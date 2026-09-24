@@ -534,6 +534,8 @@ class DagRuntime:
             run.commit = await self.git.commit_all(
                 worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
             )
+            # The commit is durable on its branch; the checkout is no longer needed.
+            await self.git.remove_worktree(worktree)
             self.selector.record_success(run.route_id, now=self.now())
             run.history.append(
                 {
