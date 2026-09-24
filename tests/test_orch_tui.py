@@ -279,3 +279,81 @@ def test_follow_skips_previous_controller_life(tmp_path) -> None:
     text = console.file.getvalue()
     assert "old life" not in text and "new life" in text
     assert view.final
+
+
+def test_wide_layout_shows_controller_history_and_independence() -> None:
+    from verdict.orchestration.tui import render_text
+
+    events = [
+        {
+            "seq": 1,
+            "at": "2026-09-24T00:00:00Z",
+            "type": "run_started",
+            "node_id": "",
+            "data": {"goal": "g"},
+        },
+        {
+            "seq": 2,
+            "at": "2026-09-24T00:00:01Z",
+            "type": "plan_started",
+            "node_id": "",
+            "data": {"route_id": "cc/claude-fable-5"},
+        },
+        {
+            "seq": 3,
+            "at": "2026-09-24T00:00:02Z",
+            "type": "controller",
+            "node_id": "",
+            "data": {"state": "QUOTA", "route_id": "cc/claude-fable-5", "detail": "usage limit"},
+        },
+        {
+            "seq": 4,
+            "at": "2026-09-24T00:00:03Z",
+            "type": "dispatch",
+            "node_id": "a",
+            "data": {"route_id": "cc/claude-sonnet-5", "attempt": 1},
+        },
+        {
+            "seq": 5,
+            "at": "2026-09-24T00:00:04Z",
+            "type": "terminal",
+            "node_id": "a",
+            "data": {"ok": False, "route_id": "cc/claude-sonnet-5"},
+        },
+        {
+            "seq": 6,
+            "at": "2026-09-24T00:00:05Z",
+            "type": "failure",
+            "node_id": "a",
+            "data": {
+                "category": "quota_exhausted",
+                "action": "REROUTE",
+                "route_id": "cc/claude-sonnet-5",
+                "fault_injected": True,
+            },
+        },
+        {
+            "seq": 7,
+            "at": "2026-09-24T00:00:06Z",
+            "type": "terminal",
+            "node_id": "a",
+            "data": {"ok": True, "route_id": "cx/gpt-5.5"},
+        },
+        {
+            "seq": 8,
+            "at": "2026-09-24T00:00:07Z",
+            "type": "controller",
+            "node_id": "",
+            "data": {
+                "state": "REVIEW_INDEPENDENCE",
+                "level": "family",
+                "excluded_routes": ["cx/gpt-5.5"],
+                "reviewer_route": "cc/claude-opus-4-8",
+            },
+        },
+    ]
+    text = render_text(events, width=140, plain=False)
+    assert "VERDICT" in text and "CONTROLLER" in text
+    assert "QUOTA" in text and "[injected]" in text
+    assert "sonnet-5" in text and "gpt-5.5" in text
+    assert "excluded implementers: cx/gpt-5.5" in text

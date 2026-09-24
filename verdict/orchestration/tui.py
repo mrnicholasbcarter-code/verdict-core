@@ -31,6 +31,7 @@ from verdict.terminal_ui import TOKENS, clean
 
 STAGES: tuple[str, ...] = (
     "GOAL",
+    "CONTROLLER",
     "PLAN",
     "DAG",
     "SELECT",
@@ -165,6 +166,7 @@ class Failure:
     action: str
     route_id: str
     evidence: str = ""
+    fault_injected: bool = False
 
 
 @dataclass
@@ -201,6 +203,9 @@ class RunView:
         self.verifications: list[CheckResult] = []
         self.integrations: list[CheckResult] = []
         self.controller: list[tuple[str, str]] = []
+        self.controller_route = ""
+        self.controller_state = ""
+        self.review_independence = ""
         self.remediation_rounds = 0
         self.review: ReviewView | None = None
         self.outcome = ""
@@ -244,7 +249,10 @@ class RunView:
         self.goal = _t(data.get("goal", ""), 200)
 
     def _on_plan_started(self, node_id: str, data: dict[str, Any]) -> None:
-        self._note(f"planning on {_t(data.get('route_id', 'unassigned'), 64)}")
+        route = _t(data.get("route_id", "unassigned"), 64)
+        self.controller_route = route
+        self.controller_state = "PLANNING"
+        self.controller.append(("PLANNING", f"frontier decomposition on {route}"))
 
     def _on_plan_ready(self, node_id: str, data: dict[str, Any]) -> None:
         for raw in _seq(data.get("nodes")):
@@ -327,6 +335,7 @@ class RunView:
                 _t(data.get("action", ""), 40),
                 _t(data.get("route_id", ""), 64),
                 _t(data.get("evidence", ""), 90),
+                bool(data.get("fault_injected")),
             )
         )
 
@@ -384,7 +393,20 @@ class RunView:
         self.remediation_rounds = _i(data.get("round")) or self.remediation_rounds + 1
 
     def _on_controller(self, node_id: str, data: dict[str, Any]) -> None:
-        self.controller.append((_t(data.get("state", ""), 32), _t(data.get("detail", ""), 70)))
+        state = _t(data.get("state", ""), 32)
+        detail = _t(data.get("detail", ""), 70)
+        if state == "REVIEW_INDEPENDENCE":
+            excluded = ", ".join(_t(r, 48) for r in _seq(data.get("excluded_routes")))
+            level = _t(data.get("level", ""), 16)
+            self.review_independence = f"{level}-level; excluded implementers: {excluded or 'none'}"
+            if data.get("reviewer_route"):
+                self.review_independence += f"; reviewer {_t(data.get('reviewer_route'), 48)}"
+            return
+        route = _t(data.get("route_id", ""), 64)
+        if route:
+            self.controller_route = route
+        self.controller_state = state or self.controller_state
+        self.controller.append((state, detail + (f" [{route}]" if route else "")))
 
     def _on_run_finished(self, node_id: str, data: dict[str, Any]) -> None:
         self.outcome = _t(data.get("outcome", ""), 24).upper()
@@ -395,7 +417,9 @@ class RunView:
     def ladder(self) -> str:
         if not self.eligibility:
             return "no eligibility evidence yet"
-        return " -> ".join(f"{k} {self.eligibility[k]}" for k in LADDER if k in self.eligibility)
+        return " > ".join(
+            f"{k.upper()} {self.eligibility[k]}" for k in LADDER if k in self.eligibility
+        )
 
     def counts(self) -> dict[str, int]:
         totals: dict[str, int] = {}
@@ -527,21 +551,38 @@ def _workers(view: RunView, plain: bool) -> Table:
         show_edge=False,
         header_style="" if plain else TOKENS["MUTED"],
     )
-    for name in ("node", "state", "route", "provider", "att", "elapsed"):
+    for name in ("node", "state", "route", "provider", "att", "elapsed", "history"):
         table.add_column(name, overflow="fold")
     for node in view.nodes.values():
         glyph, token = _glyph(node.glyph_key(), plain)
         table.add_row(
             Text(node.node_id),
             Text(f"{glyph} {node.state.value}", style=_style(token, plain)),
-            Text(node.route_id or "-"),
+            Text(short_route(node.route_id) if node.route_id else "-"),
             Text(node.provider or "-"),
             Text(str(node.attempt)),
             Text(node.elapsed(view.now)),
+            Text(_history(node, plain)),
         )
     if not view.nodes:
-        table.add_row(*(Text(x) for x in ("-", "no workers yet", "-", "-", "-", "-")))
+        table.add_row(*(Text(x) for x in ("-", "no workers yet", "-", "-", "-", "-", "-")))
     return table
+
+
+def short_route(route_id: str) -> str:
+    """cc/claude-haiku-4-5-20251001 -> haiku-4-5; cx/gpt-5.5 -> gpt-5.5 (display only)."""
+    tail = route_id.split("/")[-1] or "merge"
+    tail = tail.removeprefix("claude-")
+    parts = tail.split("-")
+    if len(parts) > 1 and parts[-1].isdigit() and len(parts[-1]) >= 8:
+        parts = parts[:-1]
+    return "-".join(parts)[:18]
+
+
+def _history(node: NodeView, plain: bool) -> str:
+    ok, bad, arrow = ("+", "x", ">") if plain else ("✓", "✗", "→")
+    steps = [f"{short_route(r)}{ok if o == 'ok' else bad}" for r, o in node.history]
+    return f" {arrow} ".join(steps[-4:]) if steps else "-"
 
 
 def _banner(view: RunView, plain: bool, width: int) -> RenderableType:
@@ -566,8 +607,8 @@ def _select_lines(view: RunView) -> list[str]:
     return [
         f"ladder: {view.ladder()}",
         *(
-            f"{n.node_id} -> {n.route_id} ({n.capacity_class or 'unknown'}, "
-            f"rank {'-' if n.rank is None else n.rank})"
+            f"{n.node_id} -> {n.route_id}  "
+            f"[{n.capacity_class or 'unknown'} #{'-' if n.rank is None else n.rank}]"
             for n in view.nodes.values()
             if n.route_id
         ),
@@ -578,13 +619,14 @@ def _trouble_lines(view: RunView) -> list[str]:
     lines = [
         f"{f.node_id or 'run'}: {f.category} -> {f.action}"
         f"{' on ' + f.route_id if f.route_id else ''}"
+        f"{' [injected]' if f.fault_injected else ''}"
         for f in view.failures
     ]
     lines += [
         f"{r.node_id}: {r.from_route or 'unassigned'} -> {r.to_route or 'unassigned'} ({r.reason})"
         for r in view.reassignments
     ]
-    return lines + [f"controller {state} {detail}".strip() for state, detail in view.controller]
+    return lines
 
 
 def _review_lines(view: RunView) -> list[str]:
@@ -596,47 +638,120 @@ def _review_lines(view: RunView) -> list[str]:
         f"{review.route_id or 'unassigned'} "
         f"({review.blocking} blocking / {review.findings} findings)"
     ]
+    if view.review_independence:
+        lines.append(f"independence: {view.review_independence}")
     if view.remediation_rounds:
         lines.append(f"remediation rounds: {view.remediation_rounds}")
     return lines
 
 
+def _controller_lines(view: RunView) -> list[str]:
+    head = []
+    if view.controller_route or view.controller_state:
+        head.append(
+            f"frontier controller: {view.controller_route or '-'} "
+            f"[{view.controller_state or 'UNKNOWN'}]"
+        )
+    return head + [f"{state} {detail}".strip() for state, detail in view.controller]
+
+
 def render(view: RunView, *, width: int = 100, plain: bool = False) -> RenderableType:
-    """Compact dashboard: one clearly labelled section per orchestration stage."""
-    checks = [
-        f"{'PASS' if c.ok else 'FAIL'} {c.label} {c.detail}".strip()
-        for c in [*view.verifications, *view.barriers, *view.integrations]
-    ]
-    bodies: list[tuple[str, RenderableType]] = [
-        ("GOAL", Text(view.goal or "no goal recorded")),
-        ("PLAN", _lines(_plan_lines(view), "no plan recorded")),
-        (
-            "DAG",
-            _lines(
-                [f"L{i}: " + ", ".join(layer) for i, layer in enumerate(view.layers)],
-                "no layers planned",
-            ),
+    """Interview dashboard: one screen, one labelled block per orchestration stage.
+
+    Layout (wide terminals): header, then GOAL, then CONTROLLER | PLAN+DAG side by
+    side, SELECT, WORKERS (full width), QUOTA/COOLDOWN | FAILURE/REASSIGN side by
+    side, VERIFY | REVIEW side by side, then the COMPLETE/BLOCKED banner. Narrow or
+    plain terminals stack the same blocks vertically.
+    """
+    checks_ok = [c for c in (*view.verifications, *view.barriers, *view.integrations) if c.ok]
+    checks_bad = [c for c in (*view.verifications, *view.barriers, *view.integrations) if not c.ok]
+    verify_lines = (
+        [f"{len(checks_ok)} passed, {len(checks_bad)} failed"]
+        + [f"FAIL {c.label} {c.detail}".strip() for c in checks_bad[-4:]]
+        + [f"PASS {c.label} {c.detail}".strip() for c in view.verifications if c.ok][-4:]
+    )
+    dag = [f"L{i}: " + ", ".join(layer) for i, layer in enumerate(view.layers)]
+    plan = [*_plan_lines(view)[:2], "", *dag] if dag else _plan_lines(view)
+    blocks: dict[str, RenderableType] = {
+        "GOAL": Text(view.goal or "no goal recorded"),
+        "CONTROLLER": _lines(_controller_lines(view)[-6:], "no controller events"),
+        "PLAN / DAG": _lines(plan, "no plan recorded"),
+        "SELECT": _lines(_select_lines(view), "nothing selected yet"),
+        "WORKERS": _workers(view, plain),
+        "QUOTA/COOLDOWN": _lines(
+            [
+                f"{c.key} [{c.scope}] {c.category} until {c.until[11:19] or '-'}"
+                for c in view.cooldowns.values()
+            ],
+            "no active cooldowns",
         ),
-        ("SELECT", _lines(_select_lines(view), "nothing selected yet")),
-        ("WORKERS", _workers(view, plain)),
-        (
-            "QUOTA/COOLDOWN",
-            _lines(
-                [
-                    f"{c.key} [{c.scope}] {c.category} until {c.until}"
-                    for c in view.cooldowns.values()
-                ],
-                "no active cooldowns",
-            ),
-        ),
-        ("FAILURE/REASSIGN", _lines(_trouble_lines(view), "no failures recorded")),
-        ("VERIFY", _lines(checks, "no verification evidence")),
-        ("REVIEW", _lines(_review_lines(view), "no review recorded")),
-    ]
-    blocks = [_section(title, body, plain=plain, width=width) for title, body in bodies]
+        "FAILURE/REASSIGN": _lines(_trouble_lines(view)[-8:], "no failures recorded"),
+        "VERIFY": _lines(verify_lines, "no verification evidence"),
+        "REVIEW": _lines(_review_lines(view), "no review recorded"),
+    }
+    out: list[RenderableType] = [_header(view, plain, width)]
+    wide = not plain and width >= 110
+    rows: list[tuple[str, ...]] = (
+        [
+            ("GOAL",),
+            ("CONTROLLER", "PLAN / DAG"),
+            ("SELECT",),
+            ("WORKERS",),
+            ("QUOTA/COOLDOWN", "FAILURE/REASSIGN"),
+            ("VERIFY", "REVIEW"),
+        ]
+        if wide
+        else [(name,) for name in blocks]
+    )
+    for row in rows:
+        if len(row) == 1:
+            out.append(_section(row[0], blocks[row[0]], plain=plain, width=width))
+            continue
+        half = width // 2
+        grid = Table.grid(expand=False)
+        grid.add_column(width=half)
+        grid.add_column(width=width - half)
+        grid.add_row(
+            *(
+                _section(name, blocks[name], plain=plain, width=w)
+                for name, w in zip(row, (half, width - half), strict=True)
+            )
+        )
+        out.append(grid)
     if view.final:
-        blocks.append(_banner(view, plain, width))
-    return Group(*blocks)
+        out.append(_banner(view, plain, width))
+    return Group(*out)
+
+
+def _header(view: RunView, plain: bool, width: int) -> RenderableType:
+    counts = view.counts()
+    status = view.outcome or (
+        "RUNNING"
+        if any(n.state.value in {"RUNNING", "DISPATCHED", "ADMITTED"} for n in view.nodes.values())
+        else "PLANNING"
+    )
+    summary = (
+        f"{status}  |  nodes {len(view.nodes)}  running {counts.get('running', 0)}  "
+        f"validated {counts.get('validated', 0)}  failed {counts.get('failed', 0)}  "
+        f"reassignments {len(view.reassignments)}  cooldowns {len(view.cooldowns)}"
+    )
+    if plain:
+        return Group(Text("VERDICT  autonomous control plane"), Text(summary), Text(""))
+    title = Text("VERDICT", style=TOKENS["PRIMARY"])
+    title.append("  autonomous control plane", style=TOKENS["SECONDARY"])
+    line = Text(
+        summary,
+        style=TOKENS["ACCENT"]
+        if not view.outcome
+        else TOKENS["SUCCESS" if view.outcome == "COMPLETE" else "ERROR"],
+    )
+    return Panel(
+        Group(title, line),
+        border_style=TOKENS["PRIMARY"],
+        box=box.HEAVY,
+        padding=(0, 1),
+        width=width,
+    )
 
 
 def render_text(
