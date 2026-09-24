@@ -50,7 +50,11 @@ def fixture_accepted():
         eligibility_decision={"decision": "accept", "admitted": True},
         policy_digest=CANONICAL_DIGEST,
         allowed_capabilities=["read", "write"],
-        execution_constraints={"max_usd": 1.0, "max_ms": 5000, "expires_at": FIXED_EXPIRY},
+        execution_constraints={
+            "max_request_usd": 1.0,
+            "max_latency_ms": 5000,
+            "expires_at": FIXED_EXPIRY,
+        },
         verification_requirements=verification,
         evidence_ids=["evidence-001"],
         routing_decision={"routed_to": "node-1", "decision": "accept"},
@@ -112,7 +116,7 @@ def fixture_wrong_digest():
         eligibility_decision={"decision": "accept", "admitted": True},
         policy_digest="b" * 64,  # Wrong digest
         allowed_capabilities=["read"],
-        execution_constraints={"max_usd": 1.0, "expires_at": FIXED_EXPIRY},
+        execution_constraints={"max_request_usd": 1.0, "expires_at": FIXED_EXPIRY},
         verification_requirements=verification,
         evidence_ids=["evidence-003"],
         routing_decision={"routed_to": "node-3", "decision": "accept"},
@@ -181,11 +185,13 @@ def generate_fixtures(output_dir: Path):
     for filename, (fixture_data, expected_verdict) in fixtures.items():
         # Write fixture with sorted keys for determinism
         fixture_path = output_dir / filename
-        fixture_path.write_text(json.dumps(fixture_data, indent=2, sort_keys=True) + "\n")
+        fixture_json = json.dumps(fixture_data, indent=2, sort_keys=True) + "\n"
+        fixture_path.write_text(fixture_json)
 
-        # Add to manifest
+        # Add to manifest with raw file bytes sha256 (language-neutral)
+        file_sha256 = hashlib.sha256(fixture_json.encode("utf-8")).hexdigest()
         manifest["fixtures"][filename] = {
-            "sha256": sha256_json(fixture_data),
+            "sha256": file_sha256,
             "expected_verdict": expected_verdict,
         }
 

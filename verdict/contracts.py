@@ -95,6 +95,22 @@ _OUTCOME_VALUES = frozenset(
 # repo.  Naming the pattern once keeps the evidence chain and the per-check
 # digests from drifting apart.
 _DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
+
+# Canonical execution_constraints keys (v1 schema parity: Python, JSON Schema, Zod)
+_CANONICAL_CONSTRAINT_KEYS = frozenset(
+    {
+        "allowed_models",
+        "allowed_tools",
+        "allowed_agents",
+        "budget_usd",
+        "max_request_usd",
+        "max_latency_ms",
+        "risk_ceiling",
+        "required_verification",
+        "expires_at",
+    }
+)
+
 # ISO 8601 with an optional fractional part and an optional offset.  A link
 # without a parseable instant cannot be ordered against its neighbours, so the
 # format is pinned rather than accepted as free text.
@@ -353,6 +369,18 @@ class ExecutionEnvelope(Contract):
     routing_decision: dict[str, Any] | None = None  # RoutingDecision if already made
     created_at: str | None = None
     schema_version: str = "1"
+
+    def __post_init__(self) -> None:
+        """Validate execution_constraints against canonical schema."""
+        if not isinstance(self.execution_constraints, dict):
+            raise ContractValidationError(
+                f"execution_constraints must be a dict, got {type(self.execution_constraints).__name__}"
+            )
+        unknown = set(self.execution_constraints.keys()) - _CANONICAL_CONSTRAINT_KEYS
+        if unknown:
+            raise ContractValidationError(
+                f"execution_constraints has unknown field(s): {', '.join(sorted(unknown))}"
+            )
 
     @classmethod
     def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> ExecutionEnvelope:
