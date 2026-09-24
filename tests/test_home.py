@@ -88,3 +88,14 @@ def test_bare_verdict_without_tty_keeps_help_contract(
     monkeypatch.setattr(cli.sys, "argv", ["verdict"])
     cli.main()
     assert "Available commands" in capsys.readouterr().out
+
+
+def test_python_dash_m_verdict_cli_still_runs_main() -> None:
+    """`python -m verdict.cli` is a documented entry point; its __main__ guard must survive refactors."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "verdict.cli", "--help"], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0 and "orchestrate" in proc.stdout

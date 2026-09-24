@@ -5907,3 +5907,7 @@ def cmd_metadata_lookup(
             for name, cited in found.provenance_for_receipt().items()
         ],
     )
+
+
+if __name__ == "__main__":
+    main()
