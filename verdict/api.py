@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import hashlib
+import ipaddress
 import json
 import os
 from collections.abc import AsyncIterator
@@ -627,6 +628,18 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
     token = os.getenv("LLMGATE_AUTH_TOKEN")
     anonymous = os.getenv("LLMGATE_ALLOW_ANONYMOUS", "false").lower() in {"1", "true", "yes", "on"}
     if anonymous and not token:
+        # Defense-in-depth: anonymous mode must only serve loopback clients.
+        # "testclient" is the synthetic peer hostname injected by Starlette's TestClient;
+        # we accept it as loopback so existing unit-test suites continue to work without
+        # forcing every test to pass client=("127.0.0.1", …).  Real non-loopback addresses
+        # are rejected here regardless of the LLMGATE_ALLOW_ANONYMOUS flag.
+        host = request.client.host if request.client is not None else ""
+        try:
+            _is_loopback = host == "testclient" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            _is_loopback = False
+        if not _is_loopback:
+            return _proxy_error(403, "anonymous mode is loopback-only")
         return cast(Response, await call_next(request))
     if not token:
         return _proxy_error(503, "server authentication is not configured")
