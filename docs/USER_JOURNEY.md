@@ -1,4 +1,4 @@
-# User journey: install → provider → route → mission → failover → replay
+# User journey: install → provider → route → orchestrate → mission → failover → replay
 
 This is the shortest truthful path through Verdict Core. The commands below are
 local and bounded unless explicitly marked as an optional live-provider
@@ -41,6 +41,35 @@ Use `verdict simulate "summarize this change"` for a no-send forecast.
 `transport_outcome=error` because no provider completion was sent. The separate
 `--allow-legacy-selector` flag is only the explicit pre-BOD-104 migration escape.
 
+## Orchestrate: goal to receipt
+
+`verdict orchestrate` runs the full goal-to-receipt pipeline (ADR-036): frontier
+planner decomposes the goal into a DAG, each node gets an eligible route, workers
+run in parallel, faults trigger same-node reroute, an independent reviewer checks
+output, and a signed receipt is written.
+
+```bash
+# Full run (requires OmniRoute gateway on localhost:20128)
+verdict orchestrate "Add a tested textkit.stats feature"
+
+# With chaos flags (quota + no-final-answer injected for specific routes)
+verdict orchestrate "Add a tested textkit.stats feature" \
+  --inject "cc/claude-sonnet-4-6=quota,no_final" \
+  --inject "cc/*=rate_limit"
+
+# Live TUI view while a run is in progress
+verdict watch <run-id>
+
+# Inspect the eligibility ladder
+verdict eligibility
+
+# Inspect the signed receipt after completion
+verdict run-receipt <run-id>
+```
+
+See [`docs/guides/interview-golden-path.md`](guides/interview-golden-path.md) for
+prerequisites, scenario matrix (A–J), and recorded evidence.
+
 ## Mission, failover, and replay
 
 The offline proof path is credential-free:
@@ -72,6 +101,7 @@ Each path emits bounded, privacy-safe evidence.
 | Contracts and eligibility gates | production functional | contract, security, and eligibility tests | provider behavior remains external |
 | Credential-free quickstart | production functional | `quickstart` CLI and fixture tests | demo candidates are not real providers |
 | Autonomous-dev golden path | production functional | `autodev-golden-path` tests | no claim of LLM generation |
+| Goal-to-receipt orchestration | production functional (live, faults injected) | INTERVIEW_GOLDEN_PATH_CERTIFICATION.md, scenarios A–J, 2907 tests | requires OmniRoute gateway; reviewer requires `ocr` on PATH |
 | Forced failover and replay | production functional | `failover-proof` CLI | simulated provider failure |
 | Live provider routing | production path, externally contingent | consent-gated probes, execution receipts, and fail-closed identity checks | authorization, quota, health, and live model output remain external |
 | Adaptive/quality/cost claims | simulated only | benchmark fixtures and reports | not a production quality guarantee |
