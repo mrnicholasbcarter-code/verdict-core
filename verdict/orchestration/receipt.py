@@ -255,6 +255,11 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
         )
     else:
         final_state = NodeState.PLANNED.value
+    for number, row in attempts.items():
+        # A dispatched attempt with no terminal that is not the node's live attempt
+        # was abandoned (controller stall/crash) — never counted as success.
+        if row["outcome"] == "running" and (number != max(attempts) or final_state != "RUNNING"):
+            row["outcome"] = "abandoned"
     record: dict[str, Any] = {
         "node_id": node_id,
         "kind": kind,

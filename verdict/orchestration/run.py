@@ -290,6 +290,20 @@ def prior_validated(run_dir: Path) -> dict[str, tuple[str, str]]:
     return done
 
 
+def prior_attempts(run_dir: Path) -> dict[str, int]:
+    """node_id -> highest attempt number dispatched in previous controller lives."""
+    path = run_dir / "events.jsonl"
+    if not path.exists():
+        return {}
+    highest: dict[str, int] = {}
+    for event in EventLog(path).read():
+        if event.type == "dispatch":
+            number = event.data.get("attempt")
+            if isinstance(number, int):
+                highest[event.node_id] = max(highest.get(event.node_id, 0), number)
+    return highest
+
+
 async def run_golden_path(
     goal: str,
     *,
@@ -368,6 +382,18 @@ async def run_golden_path(
         policy=policy,
         inflight=inflight,
     )
+    # Attempts dispatched by an earlier controller life keep their numbers; the
+    # next attempt continues after them so the receipt never merges two lives.
+    for node_id, attempts in prior_attempts(run_dir).items():
+        if node_id in runtime.nodes and node_id not in resumed:
+            runtime.nodes[node_id].attempt = attempts
+            if attempts:
+                events.emit(
+                    "controller",
+                    state="ABANDONED_ATTEMPT",
+                    node_id=node_id,
+                    detail=f"{attempts} attempt(s) from a previous controller life",
+                )
     for node_id, (commit, route_id) in resumed.items():
         if node_id in runtime.nodes:
             runtime.nodes[node_id].state = NodeState.VALIDATED

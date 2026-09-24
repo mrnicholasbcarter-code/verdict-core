@@ -103,3 +103,14 @@ async def test_resume_restores_implementer_routes_for_review_independence(tmp_pa
     )
     assert result.outcome == "COMPLETE", result.reason
     assert "cc/implementer" in reviewer.calls[0]["exclude_routes"]
+
+
+def test_prior_attempts_continue_numbering(tmp_path: Path) -> None:
+    from verdict.orchestration.run import prior_attempts
+
+    run_dir = tmp_path / "r"
+    run_dir.mkdir()
+    log = EventLog(run_dir / "events.jsonl")
+    log.emit("dispatch", node_id="a", attempt=1, route_id="cc/x")
+    log.emit("dispatch", node_id="a", attempt=2, route_id="cx/y")
+    assert prior_attempts(run_dir) == {"a": 2}
