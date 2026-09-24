@@ -52,8 +52,9 @@ mypy --strict verdict/       # typecheck
 ```
 
 ## Configuration
-- Global: `~/.verdict/config.toml`
-- Project: `.verdict/config.toml` (takes precedence)
+- Routing YAML: `~/.config/verdict/verdict.yaml` (or `$XDG_CONFIG_HOME/verdict/verdict.yaml`)
+- Context hydration TOML (narrow): `.verdict/config.toml` / `~/.verdict/config.toml`
+- See `docs/CONFIGURATION.md` for the supported env surface.
 
 ## OmniRoute
 - Endpoint: `http://localhost:20128/v1`

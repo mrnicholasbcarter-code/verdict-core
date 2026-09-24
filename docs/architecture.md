@@ -1,6 +1,10 @@
 # Architecture Overview
 
-## High-Level Architecture
+> **Shipped behavior (BOD-180).** This page describes the live control-plane path.
+> Design-only specifications under `docs/architecture/*_SPECIFICATION.md` are
+> **not** additional shipped behaviour unless linked from an ADR marked CURRENT.
+
+## High-level architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -9,7 +13,7 @@
 │                                                                              │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │
 │  │    GATE      │───▶│ ELIGIBILITY  │───▶│ INTELLIGENCE │                  │
-│  │  (Policy)    │    │   (Filter)   │    │  (Ranking)   │                  │
+│  │  (compose)   │    │   (hard)     │    │  (advisory)  │                  │
 │  └──────────────┘    └──────────────┘    └──────────────┘                  │
 │        │                    │                    │                          │
 │        ▼                    ▼                    ▼                          │
@@ -21,81 +25,92 @@
 │                              │                                              │
 │                              ▼                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │                    OMNIROUTE TRANSPORT                                 │  │
-│  │  250+ providers, 90+ free tiers, auto-fallback, RTK compression       │  │
+│  │  SERVE PATH / EXECUTION PATH (BOD-104) → DISPATCHER → PROXY           │  │
+│  │  OmniRoute (optional): inventory / execute / health only              │  │
+│  │  Core metadata (models.dev + LiteLLM): capability SoT                 │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Core Components
+**Invariant:** hard eligibility runs before advisory ranking. A model excluded by
+a gate cannot be restored by a score, similarity signal, or cost heuristic.
+
+## Core components
 
 ### 1. Gate (`verdict/gate.py`)
 
-**Deterministic policy enforcement** — hard safety floors that cannot be bypassed.
+Composes eligibility + intelligence and exposes the routing entry points:
 
 ```python
 class Gate:
-    def check(self, task: TaskSpec, candidates: list[ModelInfo]) -> GateResult:
-        # 1. Capability check
-        # 2. Budget check  
-        # 3. Privacy check
-        # 4. Capacity check (headroom)
-        # 5. Availability check (delegates to EligibilityGate)
+    def route(self, task: TaskSpec, ...) -> RoutingDecision: ...
+    def route_with_strategy(self, task: TaskSpec, ...) -> RoutingDecision: ...
 ```
 
-**Checks:**
-- Capability requirements (tools, vision, reasoning, structured output)
-- Budget per 1k tokens
-- Privacy level (standard/strict/paranoid)
-- Capacity admission with deterministic effort reservations
+`Gate` does **not** expose a `check()` API. Policy floors are applied through
+`EligibilityGate.evaluate` and related passport/capability gates on the serve path.
 
 ### 2. Eligibility Gate (`verdict/eligibility.py`)
 
-**Availability-aware filtering** with explicit unknown handling.
+Availability-aware hard filtering with explicit unknown handling:
 
 ```python
 class EligibilityGate:
-    def filter(self, candidates: list[AvailabilityCandidate]) -> EligibilityResult:
-        # Partition into: eligible, unknown, ineligible
-        # Unknown = explicit unknown/error state (fail-closed for protected work)
-        # Ineligible = failed capability/budget/privacy checks
+    def evaluate(
+        self,
+        models: list[ModelInfo],
+        *,
+        protected: bool = False,
+        dev_mode: bool = False,
+    ) -> list[EligibilityRecord]: ...
 ```
 
-**Key invariant:** Unknown models are NEVER eligible for protected work (capability_required=True).
+**Key invariant:** unknown / error availability is never treated as healthy for
+protected work when fail-closed mode is enabled.
 
 ### 3. Intelligence Service (`verdict/intelligence.py`)
 
-**Advisory ranking** — cannot bypass hard gate. Provides:
-- Historical outcome signals from MemoryPlane (`verdict/memory_*`)
-- Expected value estimation
+**Advisory ranking only** — cannot bypass hard gates. Orders already-eligible
+candidates using historical MemoryPlane signals and expected-value estimates.
 
-Canonical durable memory is MemoryPlane (`verdict/memory_*`); Ruflo/swarm
+Canonical durable memory is MemoryPlane (`verdict/memory_*`). Ruflo/swarm
 learning is not part of Core after BOD-17.
 
 ### 4. Availability Cache (`verdict/availability_cache.py`)
 
-**Bounded SWR cache** (issue #56):
+Bounded SWR cache (issue #56):
 
 - **Cache key**: provider + model + policy_version
 - **TTL**: configurable (default 60s)
 - **Stale window**: configurable (default 30s) — serve stale, trigger async refresh
 - **Explicit states**: fresh, stale, unknown, error, refreshing
-- **Isolation**: provider/model/policy-version prevents cross-contamination
-- **Explain endpoint**: `GET /v1/route/explain` surfaces observed_at, expires_at, age, source, confidence, candidate/eligible counts, refresh/error state
+- **Explain endpoint**: `GET /v1/route/explain` surfaces freshness + eligibility explain records
 
-### 5. OmniRoute Transport (`verdict/omniroute.py`)
+### 5. Serve path / execution path (`verdict/serve_path.py`, BOD-104)
 
-Native integration with OmniRoute gateway:
-- HTTP transport with connection pooling
-- WebSocket for real-time updates
-- Catalog identity and liveness only — **not** capability metadata SoT
+On the API serve path, BOD-104 execution-path authority is required. Demoted
+legacy selectors may still feed candidate sets, but they are not routing
+authority when `require_execution_path_authority` is set (BOD-127 cutover).
 
-Harness adapters (Claude Code, Codex, Cursor, Cline, …) are Verdict-managed on
-`:8000`. OmniRoute on `:20128` is optional upstream transport behind Verdict —
-never the harness base URL.
+### 6. Dispatcher (`verdict/dispatcher.py`)
 
-### 5b. Core metadata store (`verdict/metadata/`)
+Binds an authorized `selected_route`, hydrates the execution plan, and emits
+assignment explanation. `SwarmDispatcher` retains a historical class name but is
+authorize-only dispatch after BOD-17 — not Ruflo swarm supervision.
+
+### 7. OmniRoute transport (`verdict/omniroute.py`)
+
+Optional HTTP transport for catalog inventory, execute, and health evidence:
+
+- HTTP catalog/runtime only
+- **Not** capability metadata SoT
+- **Not** WebSocket/RTK/auto-fallback product surface inside Verdict
+
+Harness adapters (Claude Code, Codex, Cursor, …) talk to Verdict. OmniRoute on
+`:20128` is optional upstream transport behind Verdict — never the harness base URL.
+
+### 8. Core metadata store (`verdict/metadata/`)
 
 Independently fetched model caps from models.dev (primary) and LiteLLM
 (secondary). Each field carries `source` + `version|fetched_at`. Soft ranks are
@@ -104,89 +119,64 @@ and [ADR-032](adr/ADR-032-core-model-metadata-store.md).
 
 ---
 
-## Data Flow
+## Data flow
 
-### Request Routing
+### Request routing
 
 ```
 Client Request
      │
      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ POST /v1/route (or /v1/chat/completions)                        │
+│ POST /v1/route  (or OpenAI-compatible /v1/chat/completions)     │
 └─────────────────────────────────────────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ GATE: Build TaskSpec from request                               │
-│ - Extract capability requirements                                │
-│ - Extract budget from context                                    │
-│ - Extract privacy level                                          │
+│ GATE.route / route_with_strategy                                │
+│ - Build TaskSpec                                                │
+│ - Compose eligibility + intelligence                            │
 └─────────────────────────────────────────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ ELIGIBILITY: Filter candidates via AvailabilityCache            │
-│ - Get cached availability report                                 │
-│ - Partition: eligible / unknown / ineligible                    │
-│ - Unknown models: explicit unknown state                        │
+│ ELIGIBILITY.evaluate                                            │
+│ - AvailabilityCache report                                      │
+│ - Partition: eligible / unknown / ineligible (+ named reasons)  │
+│ - Protected work: unknown/error fail closed                     │
 └─────────────────────────────────────────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ INTELLIGENCE: Rank eligible candidates (advisory)               │
-│ - Historical outcomes via MemoryPlane (`verdict/memory_*`)       │
-│ - Expected value estimation                                      │
+│ INTELLIGENCE.rank (advisory)                                    │
+│ - Orders kept candidates only                                   │
+│ - Cannot restore hard-excluded models                           │
 └─────────────────────────────────────────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ DISPATCHER: hydrate → bind authorized route (BOD-104 / BOD-67)  │
-│ - optimized_dispatch hydrates, then binds selected_route         │
-│ - SwarmDispatcher is the BOD-127 binder (legacy class name)      │
-│ - Apply capacity admission; emit telemetry                       │
+│ SERVE PATH / EXECUTION PATH (BOD-104) → DISPATCHER              │
+│ - Authorize selected_route                                      │
+│ - Hydrate ContextPack / tools plan                              │
+│ - Empty eligible set → blocked (no silent frontier fallback)    │
 └─────────────────────────────────────────────────────────────────┘
      │
      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ PROXY: Forward to upstream (OpenAI-compatible)                  │
-│ - Rewrite model field                                            │
-│ - Stream response                                                │
+│ PROXY: forward to upstream (OpenAI-compatible)                  │
+│ - Bind concrete identity                                        │
+│ - Stream / return response                                      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Explainability Contract (`/v1/route/explain`)
+## Explainability (`/v1/route/explain`)
 
-Returns per-model freshness + eligibility reasoning:
-
-```json
-{
-  "policy_version": "policy-2026-07-13.1",
-  "cached_models": ["openai/gpt-4o", "anthropic/claude-3-opus"],
-  "cache_state": "configured",
-  "gate": {
-    "eligible": ["openai/gpt-4o"],
-    "exclusions": {
-      "anthropic/claude-3-opus": "quota exhausted"
-    }
-  },
-  "model": {
-    "model_id": "openai/gpt-4o",
-    "observed_at": "2026-07-20T10:30:00Z",
-    "expires_at": "2026-07-20T10:31:00Z",
-    "age_seconds": 45.2,
-    "source": "omniroute:http",
-    "confidence": 0.92,
-    "candidate_count": 3,
-    "eligible_count": 2,
-    "refreshing": false,
-    "refresh_error": null,
-    "errors": []
-  }
-}
-```
+Returns freshness + eligibility explain records from
+`AvailabilityCache.explain` and `EligibilityGate` explain surfaces. Exact JSON
+shape is versioned with the API; treat the OpenAPI schema and live
+`/v1/route/explain` response as authoritative over any pasted example.
 
 ---
 
@@ -203,19 +193,8 @@ uv run python scripts/validate_contract_schema.py
 The v1 boundary rejects missing or blank objectives, wrong JSON types, secret
 bearing fields, unknown fields, negative/non-finite budget and latency values,
 unknown safety enums, and workflow steps whose actions are not in the safe v1
-action vocabulary. `metadata`, `context`, and signal payloads remain open JSON
-objects for forward-compatible integration data; that openness does not relax
-validation of the safety fields around them. `schema_version` defaults to
-`"1"` for Python callers that omit it, but any declared version other than
-`"1"` is rejected. Legacy payloads must enter through
-`contract_from_legacy_dict`, which performs an explicit compatibility mapping.
-
-The Python loader and JSON Schema are tested together with canonical valid and
-invalid fixtures. The TypeScript declarations in `contracts/index.ts` are a
-consumer-facing compatibility surface; full TypeScript runtime parity is
-tracked separately and must not be treated as a policy bypass.
-
-Contracts include:
+action vocabulary. `schema_version` defaults to `"1"` for Python callers that
+omit it; any declared version other than `"1"` is rejected.
 
 | Contract | Purpose |
 |----------|---------|
@@ -230,32 +209,30 @@ Contracts include:
 
 ## Security
 
-- **API key redaction**: All keys stripped from logs/telemetry
-- **PII masking**: Email, phone, SSN, credit card patterns redacted
-- **Private host blocking**: RFC1918, localhost, metadata endpoints blocked
-- **Fail-closed**: Unknown availability = ineligible for protected work
+- **API key redaction**: keys stripped from logs/telemetry
+- **PII masking**: common secret/PII patterns redacted
+- **Private host blocking**: RFC1918, localhost, metadata endpoints blocked by default
+- **Fail-closed**: unknown availability is ineligible for protected work
 
 ---
 
-## Performance Targets
+## Performance
 
-| Operation | p50 | p99 |
-|-----------|-----|-----|
-| Gate check | 2 ms | 5 ms |
-| Eligibility filter | 3 ms | 8 ms |
-| Intelligence rank | 10 ms | 30 ms |
-| Cache get (hit) | 0.5 ms | 1 ms |
-| Cache get (miss + refresh) | 50 ms | 200 ms |
-| Proxy forward | 5 ms | 20 ms |
+No CI-backed latency SLA is currently claimed for Gate/Eligibility/Intelligence.
+Treat any historical p50/p99 tables as **unmeasured targets**, not shipped proof.
+Use [`proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) for what is actually certified.
 
 ---
 
 ## Related
 
-- [Eligibility Gate Deep Dive](architecture/eligibility-gate.md)
-- [Intelligence Service](architecture/intelligence-service.md)
-- [Proxy Layer](architecture/proxy-layer.md)
-- [Telemetry Loop](architecture/telemetry-loop.md)
+- [ADR index (lifecycle-classified)](adr/README.md)
 - [ADR-004 Local-first MemoryPlane](adr/ADR-004-local-first-memory-plane.md)
-- [ADR-023 Governed swarm supervision](adr/ADR-023-governed-swarm-supervision.md) — **SUPERSEDED** (BOD-17; Ruflo/swarm deleted from Core)
+- [ADR-010 Fail-closed capability passports](adr/ADR-010-fail-closed-capability-passports.md)
+- [ADR-032 Core model metadata store](adr/ADR-032-core-model-metadata-store.md)
+- [ADR-023 Governed swarm supervision](adr/ADR-023-governed-swarm-supervision.md) — **SUPERSEDED** (BOD-17)
 - [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** (BOD-17 / BOD-127)
+- [Unknown ≠ healthy](guides/unknown-not-healthy.md)
+- [Free-tier admit smoke](guides/free-tier-admit-smoke.md)
+- [Model metadata store](guides/model-metadata-store.md)
+- Design-only specs under [`architecture/`](architecture/) — label as planned unless an ADR marks them CURRENT

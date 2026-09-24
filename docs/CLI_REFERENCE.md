@@ -273,6 +273,8 @@ verdict benchmark [flags]
 | `0` | Success |
 | `1` | General error |
 | `2` | Invalid arguments |
-| `3` | Config error |
-| `4` | Upstream unavailable |
-| `5` | No eligible models |
+| `3` | Config / usage error |
+
+The CLI raises `SystemExit(1|2|3)` only. There is no shipped exit code `4` or `5`.
+Empty eligibility is reported in the receipt / command output and typically exits
+non-zero via the general error path rather than a dedicated code.
