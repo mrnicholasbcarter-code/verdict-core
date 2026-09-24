@@ -228,7 +228,10 @@ def candidates_from_inventory(
         lowered = route_id.lower()
         frontier = any(
             token in lowered
-            for token in ("opus", "gpt-5.6", "gpt-5.5-pro", "gpt-5.4-pro", "frontier")
+            for token in (
+                "opus", "gpt-5.6", "gpt-6-sol", "gpt-6-astra", "gpt-5.5-pro", "gpt-5.4-pro",
+                "frontier",
+            )
         )
         result.append(
             LaunchCandidate(
@@ -417,11 +420,55 @@ def _malformed_exception(exc: BaseException) -> bool:
         token in str(exc).lower() for token in ("malformed", "invalid response", "decode")
     )
 
+# Economic ranking policy (NOT a fallback chain): eligibility, health and task
+# fit always gate first; this only orders the surviving pool.  Subscription
+# capacity is already paid for, so it outranks free-tier and metered capacity.
+# Operators override the provider->class map with VERDICT_CAPACITY_CLASSES,
+# e.g. "cc=claude_subscription,cx=subscription".
+CAPACITY_CLASS_ORDER: tuple[str, ...] = (
+    "claude_subscription",
+    "subscription",
+    "free",
+    "metered",
+)
+DEFAULT_PROVIDER_CAPACITY_CLASS: Mapping[str, str] = {
+    "cc": "claude_subscription",
+    "cx": "subscription",
+}
+
+
+def provider_capacity_classes() -> dict[str, str]:
+    """Provider-prefix -> capacity class, with an operator env override."""
+    import os
+
+    mapping = dict(DEFAULT_PROVIDER_CAPACITY_CLASS)
+    raw = os.environ.get("VERDICT_CAPACITY_CLASSES", "")
+    for item in raw.split(","):
+        if "=" not in item:
+            continue
+        provider, _, klass = item.partition("=")
+        provider, klass = provider.strip().lower(), klass.strip()
+        if provider and klass in CAPACITY_CLASS_ORDER:
+            mapping[provider] = klass
+    return mapping
+
+
+def capacity_class(candidate: LaunchCandidate) -> str:
+    """Economic class of a candidate: subscription, free, or metered."""
+    provider = candidate.route_id.split("/", 1)[0].strip().lower()
+    mapped = provider_capacity_classes().get(provider)
+    if mapped is not None:
+        return mapped
+    return "free" if candidate.is_free else "metered"
+
+
 def _rank_key(candidate: LaunchCandidate, task: WorkerTask) -> tuple[Any, ...]:
-    # Free always wins. Within the same cost class prefer suitability, then cost.
+    # Capacity class first (subscription before free before metered), then task
+    # suitability, then marginal cost.  Frontier routes only reach this point
+    # when the task is frontier-worthy; otherwise they were filtered out.
     suitability = candidate.coding_score if task.coding else candidate.reasoning_score
     return (
-        0 if candidate.is_free else 1,
+        CAPACITY_CLASS_ORDER.index(capacity_class(candidate)),
         -suitability,
         candidate.input_cost + candidate.output_cost,
         1 if candidate.is_frontier else 0,
