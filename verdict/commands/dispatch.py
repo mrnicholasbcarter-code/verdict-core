@@ -27,6 +27,11 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     # Existing integrations monkeypatch verdict.cli.cmd_* and provider helpers.
     # Keep those lookups dynamic until the compatibility contract is migrated.
     from verdict import cli as legacy
+    from verdict.orchestration import cli as orchestration_cli
+
+    orchestration_rc = orchestration_cli.dispatch(args)
+    if orchestration_rc is not None:
+        raise SystemExit(orchestration_rc)
 
     if args.command == "setup":
         scope = "all"
