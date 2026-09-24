@@ -58,6 +58,12 @@ def add_parsers(subparsers: Any) -> None:
         "forbidden, server, timeout, transport, empty, no_final, malformed, "
         "hang, mismatch); ROUTE may be '*'",
     )
+    orch.add_argument(
+        "--state-file",
+        help="Health/cooldown state file (default ~/.verdict/"
+        "orchestration-health.json); chaos runs use a per-run file so injected "
+        "faults never cool down real capacity for later runs",
+    )
     orch.add_argument("--plain", action="store_true", help="ASCII narrative instead of live view")
     orch.add_argument("--json", action="store_true", help="Print the final receipt JSON")
 
@@ -101,7 +107,9 @@ def _state_dir() -> Path:
     return Path(os.environ.get("VERDICT_HOME", Path.home() / ".verdict"))
 
 
-def build_selector(gateway: str, *, scope: str, prefer: str, load: Any = None) -> Any:
+def build_selector(
+    gateway: str, *, scope: str, prefer: str, load: Any = None, state_file: Path | None = None
+) -> Any:
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
     from verdict.subagent_selection import LaunchCandidate, openai_health_probe
@@ -123,7 +131,7 @@ def build_selector(gateway: str, *, scope: str, prefer: str, load: Any = None) -
         rows,
         connections,
         probe,
-        _state_dir() / "orchestration-health.json",
+        state_file or (_state_dir() / "orchestration-health.json"),
         prefer_providers=tuple(p.strip() for p in prefer.split(",") if p.strip()),
         load=load,
         harness_visible=prime_visibility(),
@@ -159,6 +167,15 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
     if faults:
         executor = FaultInjectingExecutor(executor, faults)
     return executor
+
+
+def _chaos_state(args: argparse.Namespace, runs_root: Path) -> Path | None:
+    if args.state_file:
+        return Path(args.state_file)
+    if args.inject:
+        run_id = args.resume or "chaos"
+        return runs_root / run_id / "chaos-health.json"
+    return None
 
 
 def _resolve_run(value: str, runs_dir: str) -> Path:
@@ -198,6 +215,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         scope=args.scope,
         prefer=args.prefer,
         load=lambda route: sum(1 for r in inflight.values() if r == route),
+        state_file=_chaos_state(args, runs_root),
     )
     run_id = args.resume or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = runs_root / run_id
