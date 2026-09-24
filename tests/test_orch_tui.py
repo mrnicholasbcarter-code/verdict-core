@@ -351,6 +351,13 @@ def test_wide_layout_shows_controller_history_and_independence() -> None:
                 "reviewer_route": "cc/claude-opus-4-8",
             },
         },
+        {
+            "seq": 9,
+            "at": "2026-09-24T00:00:08Z",
+            "type": "review",
+            "node_id": "",
+            "data": {"status": "PASS", "reviewer": "ocr", "route_id": "cc/claude-opus-4-8"},
+        },
     ]
     import re as _re
 
