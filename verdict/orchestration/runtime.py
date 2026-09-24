@@ -154,6 +154,7 @@ class Git:
     def __init__(self, repo: Path, runner: Runner = subprocess_runner) -> None:
         self.repo = repo
         self.run = runner
+        self._worktree_lock = asyncio.Lock()
 
     async def call(self, *args: str, cwd: Path | None = None, timeout: float = 120) -> str:
         code, out = await self.run(("git", *args), cwd or self.repo, timeout)
@@ -164,16 +165,22 @@ class Git:
     async def head(self, cwd: Path | None = None) -> str:
         return await self.call("rev-parse", "HEAD", cwd=cwd)
 
-    async def add_worktree(self, path: Path, branch: str, base: str) -> None:
-        if path.exists():
-            await self.remove_worktree(path)
-        await self.call("worktree", "add", "-f", "-B", branch, str(path), base)
-
-    async def remove_worktree(self, path: Path) -> None:
+    async def _remove_worktree_unlocked(self, path: Path) -> None:
+        """Internal unlocked version to avoid deadlock when called from add_worktree."""
         code, _ = await self.run(("git", "worktree", "remove", "--force", str(path)), self.repo, 60)
         if code != 0 and path.exists():
             shutil.rmtree(path, ignore_errors=True)
             await self.run(("git", "worktree", "prune"), self.repo, 60)
+
+    async def add_worktree(self, path: Path, branch: str, base: str) -> None:
+        async with self._worktree_lock:
+            if path.exists():
+                await self._remove_worktree_unlocked(path)
+            await self.call("worktree", "add", "-f", "-B", branch, str(path), base)
+
+    async def remove_worktree(self, path: Path) -> None:
+        async with self._worktree_lock:
+            await self._remove_worktree_unlocked(path)
 
     async def changed_files(self, cwd: Path, base: str) -> list[str]:
         _ensure_local_excludes(cwd)
