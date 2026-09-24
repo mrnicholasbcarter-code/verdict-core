@@ -796,3 +796,96 @@ async def test_second_exhaustion_no_second_wait(repo: Path) -> None:
 
     # Verify run blocked (second exhaustion)
     assert result.outcome == RunOutcome.BLOCKED
+
+
+async def test_worktree_admin_operations_are_serialized() -> None:
+    """Regression: worktree add/remove must be serialized to prevent concurrent .git/worktrees/* corruption."""
+    import tempfile
+
+    from verdict.orchestration.runtime import Git, subprocess_runner
+
+    # Track overlapping calls
+    admin_active = 0
+    admin_max_overlap = 0
+    non_admin_active = 0
+    non_admin_max_overlap = 0
+
+    # Wrap the runner to track overlap
+    async def tracking_runner(argv: tuple[str, ...], cwd: Path, timeout: float) -> tuple[int, str]:
+        nonlocal admin_active, admin_max_overlap, non_admin_active, non_admin_max_overlap
+
+        # Detect admin operations
+        is_admin = (
+            len(argv) >= 3 and argv[1] == "worktree" and argv[2] in ("add", "remove", "prune")
+        )
+
+        if is_admin:
+            admin_active += 1
+            admin_max_overlap = max(admin_max_overlap, admin_active)
+            await asyncio.sleep(0.05)  # Brief delay to increase chance of overlap
+        else:
+            non_admin_active += 1
+            non_admin_max_overlap = max(non_admin_max_overlap, non_admin_active)
+            await asyncio.sleep(0.01)
+
+        result = await subprocess_runner(argv, cwd, timeout)
+
+        if is_admin:
+            admin_active -= 1
+        else:
+            non_admin_active -= 1
+
+        return result
+
+    # Create a temporary git repo
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo = Path(tmpdir) / "test-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+        (repo / "README").write_text("test")
+        subprocess.run(["git", "add", "README"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+        git = Git(repo, tracking_runner)
+
+        # Test: concurrent add_worktree calls should be serialized (max_overlap == 1)
+        wt_dir = repo.parent / "worktrees"
+        wt_dir.mkdir(exist_ok=True)
+
+        paths = [wt_dir / f"wt{i}" for i in range(5)]
+
+        # Run concurrent add_worktree operations
+        admin_active = admin_max_overlap = 0
+        await asyncio.gather(
+            *[git.add_worktree(p, f"branch{i}", "HEAD") for i, p in enumerate(paths)]
+        )
+
+        # Admin operations must be serialized
+        assert admin_max_overlap == 1, f"Expected admin overlap=1, got {admin_max_overlap}"
+
+        # Clean up worktrees
+        await asyncio.gather(*[git.remove_worktree(p) for p in paths])
+
+        # Test: non-admin operations (rev-parse) should still run in parallel
+        admin_active = admin_max_overlap = non_admin_active = non_admin_max_overlap = 0
+
+        # Create one worktree for the test
+        test_wt = wt_dir / "test"
+        await git.add_worktree(test_wt, "test-branch", "HEAD")
+
+        # Run concurrent rev-parse (non-admin) calls
+        admin_max_overlap = non_admin_max_overlap = 0
+        results = await asyncio.gather(*[git.head(cwd=test_wt) for _ in range(5)])
+
+        # Non-admin operations should overlap (parallel execution)
+        assert non_admin_max_overlap > 1, (
+            f"Expected non-admin overlap>1, got {non_admin_max_overlap}"
+        )
+
+        # All should return the same SHA
+        assert len(set(results)) == 1
+
+        # Cleanup
+        await git.remove_worktree(test_wt)
