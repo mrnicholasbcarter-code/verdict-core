@@ -8,7 +8,9 @@
     "decision": "accept"
   },
   "evidence_ids": [],
-  "execution_constraints": {},
+  "execution_constraints": {
+    "expires_at": "2024-01-15T13:00:00Z"
+  },
   "policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "routing_decision": null,
   "schema_version": "1",

@@ -376,6 +376,7 @@ def verify_execution_envelope(
 
     Fail-closed: all parameters required, unknown fields rejected, malformed input rejected,
     wrong digest never ACCEPT, expired never ACCEPT, denied stays DENY.
+    Never raises on untrusted input; returns REJECT_UNKNOWN for malformed data.
 
     Args:
         envelope: ExecutionEnvelope instance or dict representation
@@ -385,39 +386,58 @@ def verify_execution_envelope(
     Returns:
         EnvelopeVerdict indicating acceptance or rejection reason
     """
-    # Convert to dict if ExecutionEnvelope instance
-    if isinstance(envelope, ExecutionEnvelope):
-        env_dict = envelope.to_dict()
-    elif isinstance(envelope, dict):
-        env_dict = envelope
-    else:
-        return EnvelopeVerdict.REJECT_UNKNOWN
-
-    # Check eligibility_decision FIRST: MUST be dict and positively admit
-    eligibility = env_dict.get("eligibility_decision", {})
-    if not isinstance(eligibility, dict):
-        return EnvelopeVerdict.DENY
-    # Accept only if explicitly admitted
-    if eligibility.get("admitted") is not True:
-        return EnvelopeVerdict.DENY
-
-    # Check policy digest (REQUIRED)
-    actual_digest = env_dict.get("policy_digest", "")
-    if not actual_digest or actual_digest != expected_policy_digest:
-        return EnvelopeVerdict.DIGEST_MISMATCH
-
-    # Check expiry (fail-closed: unparseable -> EXPIRED)
     try:
-        now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
-        # Reject timezone-naive timestamps
-        if now_dt.tzinfo is None:
-            return EnvelopeVerdict.EXPIRED
-    except (ValueError, TypeError, AttributeError):
-        return EnvelopeVerdict.EXPIRED
+        # Parse dict input with ExecutionEnvelope.from_dict FIRST to validate schema
+        # This rejects unknown fields, wrong types, etc.
+        # Do this before accessing nested fields to avoid AttributeError
+        if isinstance(envelope, dict):
+            try:
+                ExecutionEnvelope.from_dict(envelope)
+                env_dict = envelope  # Use original dict for field access
+            except (ContractValidationError, AttributeError, TypeError, ValueError):
+                # Schema-invalid: unknown fields, wrong types, etc.
+                return EnvelopeVerdict.REJECT_UNKNOWN
+        elif isinstance(envelope, ExecutionEnvelope):
+            env_dict = envelope.to_dict()
+        else:
+            return EnvelopeVerdict.REJECT_UNKNOWN
 
-    constraints = env_dict.get("execution_constraints", {})
-    expires_at_str = constraints.get("expires_at")
-    if expires_at_str:
+        # Now check specific conditions that return specific verdicts
+        # These checks run AFTER schema validation, so we know the structure is valid
+
+        # Check eligibility_decision: MUST be dict and positively admit
+        eligibility = env_dict.get("eligibility_decision", {})
+        if not isinstance(eligibility, dict):
+            return EnvelopeVerdict.DENY
+        # Accept only if explicitly admitted
+        if eligibility.get("admitted") is not True:
+            return EnvelopeVerdict.DENY
+
+        # Check policy digest (REQUIRED)
+        actual_digest = env_dict.get("policy_digest", "")
+        if not actual_digest or actual_digest != expected_policy_digest:
+            return EnvelopeVerdict.DIGEST_MISMATCH
+
+        # Check expiry: expires_at is REQUIRED
+        # Missing expires_at means the envelope never expires, which is too permissive
+        constraints = env_dict.get("execution_constraints", {})
+        if not isinstance(constraints, dict):
+            return EnvelopeVerdict.REJECT_UNKNOWN
+
+        expires_at_str = constraints.get("expires_at")
+        if not expires_at_str:
+            # No expiry -> EXPIRED (fail-closed: envelope must have bounded lifetime)
+            return EnvelopeVerdict.EXPIRED
+
+        # Parse expiry (fail-closed: unparseable -> EXPIRED)
+        try:
+            now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+            # Reject timezone-naive timestamps
+            if now_dt.tzinfo is None:
+                return EnvelopeVerdict.EXPIRED
+        except (ValueError, TypeError, AttributeError):
+            return EnvelopeVerdict.EXPIRED
+
         try:
             expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
             # Reject timezone-naive timestamps
@@ -428,16 +448,14 @@ def verify_execution_envelope(
         except (ValueError, TypeError, AttributeError):
             return EnvelopeVerdict.EXPIRED
 
-    # Parse with from_dict to validate schema (rejects unknown fields)
-    # Do this AFTER specific checks so we return specific verdicts for known issues
-    try:
-        if isinstance(envelope, dict):
-            ExecutionEnvelope.from_dict(envelope)
-    except (ContractValidationError, AttributeError, TypeError, ValueError):
-        return EnvelopeVerdict.REJECT_UNKNOWN
+        # All checks passed
+        return EnvelopeVerdict.ACCEPT
 
-    # All checks passed
-    return EnvelopeVerdict.ACCEPT
+    except Exception:
+        # Final guard: never raise on untrusted input
+        # This catches any unexpected errors (e.g., from malformed nested structures)
+        # and returns the safe rejection verdict
+        return EnvelopeVerdict.REJECT_UNKNOWN
 
 
 @dataclass(frozen=True)

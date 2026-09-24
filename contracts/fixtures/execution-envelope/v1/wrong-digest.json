@@ -11,6 +11,7 @@
     "evidence-003"
   ],
   "execution_constraints": {
+    "expires_at": "2024-01-15T13:00:00Z",
     "max_usd": 1.0
   },
   "policy_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

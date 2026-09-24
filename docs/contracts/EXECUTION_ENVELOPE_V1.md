@@ -93,7 +93,7 @@ The canonical fixtures are in `contracts/fixtures/execution-envelope/v1/`:
 | `expired.json` | `EXPIRED` | Envelope expired (expires_at in the past) |
 | `wrong-digest.json` | `DIGEST_MISMATCH` | policy_digest does not match expected |
 | `unknown-field.json` | `REJECT_UNKNOWN` | Contains an unknown field (v1 rejects) |
-| `null-defaults.json` | `ACCEPT` | Optional fields are null but envelope valid |
+| `null-defaults.json` | `ACCEPT` | Optional fields (routing_decision, created_at) are null |
 
 ### Manifest
 
@@ -123,19 +123,26 @@ assert verdict == EnvelopeVerdict.ACCEPT
 ### Verification Rules (Fail-Closed)
 
 **All parameters are REQUIRED. Any malformed or skipped check returns a rejection verdict, never ACCEPT.**
+**The verifier never raises on untrusted input; malformed data returns `REJECT_UNKNOWN`.**
 
-1. **Malformed Input**: Unknown fields, non-dict input, parsing errors → `REJECT_UNKNOWN`
+1. **Schema Validation**: Parse with `ExecutionEnvelope.from_dict()` first
+   - Unknown fields, wrong types, structural errors → `REJECT_UNKNOWN`
 2. **Eligibility**: `eligibility_decision.admitted` must be `True` (anything else → `DENY`)
 3. **Digest Mismatch**: Missing, empty, or wrong `policy_digest` → `DIGEST_MISMATCH`
-4. **Expiry**:
+4. **Expiry** (bounded lifetime REQUIRED):
+   - **Missing `execution_constraints.expires_at`** → `EXPIRED`
    - Unparseable `now` or `expires_at` → `EXPIRED`
    - Timezone-naive timestamps → `EXPIRED`
-   - `now >= execution_constraints.expires_at` → `EXPIRED`
+   - `now >= expires_at` → `EXPIRED`
 5. **All checks passed**: `ACCEPT`
 
 **Parameters:**
 - `now`: ISO 8601 timestamp (REQUIRED, must include timezone)
 - `expected_policy_digest`: SHA-256 hex digest (REQUIRED)
+
+**Why expires_at is REQUIRED**: Envelopes without expiry can be replayed forever. The fail-closed policy
+requires a bounded lifetime. Core producers MUST set `execution_constraints.expires_at`. Consumers
+MUST verify it.
 
 ## Consumer Integration
 

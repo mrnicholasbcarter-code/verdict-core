@@ -17,7 +17,7 @@
     },
     "null-defaults.json": {
       "expected_verdict": "ACCEPT",
-      "sha256": "cc89d8eb7c564570696b363c91f2e3902ec0a661c7ca510ecd0a2b6098f9a7a5"
+      "sha256": "627ed09ad5011a85e3d50815eea0259176570e2f6b1ebc8cdd86b37cdf960257"
     },
     "unknown-field.json": {
       "expected_verdict": "REJECT_UNKNOWN",
@@ -25,7 +25,7 @@
     },
     "wrong-digest.json": {
       "expected_verdict": "DIGEST_MISMATCH",
-      "sha256": "939310ac54fd9cf407b5e33c97090ad4250d7dc69e88c30a43bd5b230c3a8f24"
+      "sha256": "e7079dd803d846eb3506bcf74ff6eceba8ec10e2c3984e8ec8c660ed5407bc15"
     }
   },
   "schema_id": "https://llm-gate.dev/schemas/contracts.v1.json#/$defs/execution_envelope"

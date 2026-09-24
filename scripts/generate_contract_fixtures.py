@@ -112,7 +112,7 @@ def fixture_wrong_digest():
         eligibility_decision={"decision": "accept", "admitted": True},
         policy_digest="b" * 64,  # Wrong digest
         allowed_capabilities=["read"],
-        execution_constraints={"max_usd": 1.0},
+        execution_constraints={"max_usd": 1.0, "expires_at": FIXED_EXPIRY},
         verification_requirements=verification,
         evidence_ids=["evidence-003"],
         routing_decision={"routed_to": "node-3", "decision": "accept"},
@@ -139,11 +139,13 @@ def fixture_null_defaults():
         eligibility_decision={"decision": "accept", "admitted": True},
         policy_digest=CANONICAL_DIGEST,
         allowed_capabilities=["read"],
-        execution_constraints={},
+        execution_constraints={
+            "expires_at": FIXED_EXPIRY  # expires_at is REQUIRED for ACCEPT
+        },
         verification_requirements=verification,
         evidence_ids=[],
-        routing_decision=None,  # Explicitly null
-        created_at=None,  # Explicitly null
+        routing_decision=None,  # Explicitly null (optional)
+        created_at=None,  # Explicitly null (optional)
         schema_version="1",
     )
     return envelope.to_dict()

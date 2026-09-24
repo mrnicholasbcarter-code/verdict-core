@@ -204,7 +204,7 @@ class TestFailClosed:
     """Test fail-closed semantics: no ACCEPT when checks are skipped or malformed."""
 
     def test_missing_policy_digest(self, manifest):
-        """Missing policy_digest -> DIGEST_MISMATCH."""
+        """Empty policy_digest -> REJECT_UNKNOWN (schema validation fails)."""
         fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
         fixture["policy_digest"] = ""
         verdict = verify_execution_envelope(
@@ -212,7 +212,7 @@ class TestFailClosed:
             now=manifest["evaluation_time"],
             expected_policy_digest=manifest["expected_policy_digest"],
         )
-        assert verdict == EnvelopeVerdict.DIGEST_MISMATCH
+        assert verdict == EnvelopeVerdict.REJECT_UNKNOWN
 
     def test_empty_eligibility_decision(self, manifest):
         """Empty eligibility_decision {} -> DENY."""
@@ -269,7 +269,7 @@ class TestFailClosed:
         assert verdict == EnvelopeVerdict.EXPIRED
 
     def test_eligibility_decision_as_string(self, manifest):
-        """eligibility_decision as string -> DENY."""
+        """eligibility_decision as string -> REJECT_UNKNOWN (schema validation fails)."""
         fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
         fixture["eligibility_decision"] = "accept"
         verdict = verify_execution_envelope(
@@ -277,7 +277,7 @@ class TestFailClosed:
             now=manifest["evaluation_time"],
             expected_policy_digest=manifest["expected_policy_digest"],
         )
-        assert verdict == EnvelopeVerdict.DENY
+        assert verdict == EnvelopeVerdict.REJECT_UNKNOWN
 
 
 class TestVerificationMutations:
@@ -359,3 +359,93 @@ class TestContractParsing:
         fixture = json.loads((FIXTURES_DIR / "unknown-field.json").read_text())
         with pytest.raises(ContractValidationError, match="unknown field"):
             ExecutionEnvelope.from_dict(fixture)
+
+
+class TestAdversarialInputs:
+    """Test that the verifier never raises on garbage/malformed inputs."""
+
+    def test_execution_constraints_as_string(self, manifest):
+        """execution_constraints as string -> REJECT_UNKNOWN (never raises)."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["execution_constraints"] = "x"
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.REJECT_UNKNOWN
+
+    def test_execution_constraints_as_none(self, manifest):
+        """execution_constraints as None -> REJECT_UNKNOWN (never raises)."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["execution_constraints"] = None
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.REJECT_UNKNOWN
+
+    def test_execution_constraints_as_list(self, manifest):
+        """execution_constraints as list -> REJECT_UNKNOWN (never raises)."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["execution_constraints"] = ["constraint1", "constraint2"]
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.REJECT_UNKNOWN
+
+    def test_task_spec_as_list(self, manifest):
+        """task_spec as list -> REJECT_UNKNOWN (never raises)."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["task_spec"] = ["task1", "task2"]
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.REJECT_UNKNOWN
+
+    def test_missing_expires_at(self, manifest):
+        """Missing expires_at -> EXPIRED (envelope must have bounded lifetime)."""
+        fixture = json.loads((FIXTURES_DIR / "accepted.json").read_text())
+        fixture["execution_constraints"] = {}  # No expires_at
+        verdict = verify_execution_envelope(
+            fixture,
+            now=manifest["evaluation_time"],
+            expected_policy_digest=manifest["expected_policy_digest"],
+        )
+        assert verdict == EnvelopeVerdict.EXPIRED
+
+    def test_verifier_never_raises_on_garbage(self, manifest):
+        """Verifier never raises across a table of garbage inputs."""
+        garbage_inputs = [
+            1,
+            None,
+            "x",
+            [],
+            {},
+            {"eligibility_decision": None},
+            {"eligibility_decision": "accept"},
+            {"eligibility_decision": {"admitted": True}, "policy_digest": 123},
+            {
+                "eligibility_decision": {"admitted": True},
+                "policy_digest": "a" * 64,
+                "execution_constraints": "bad",
+            },
+        ]
+
+        for garbage in garbage_inputs:
+            # Should never raise, always return a verdict
+            verdict = verify_execution_envelope(
+                garbage,
+                now=manifest["evaluation_time"],
+                expected_policy_digest=manifest["expected_policy_digest"],
+            )
+            assert isinstance(verdict, EnvelopeVerdict), (
+                f"Garbage input {garbage} caused non-verdict return"
+            )
+            # Should return a rejection verdict (never ACCEPT on garbage)
+            assert verdict != EnvelopeVerdict.ACCEPT, f"Garbage input {garbage} was ACCEPTed"
