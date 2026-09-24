@@ -325,3 +325,17 @@ The following directories were found untracked in the repo and are not covered b
 | `verdict.worthiness` | 1 | 1 | 0 | KEEP |
 
 </details>
+
+
+## Controller review corrections (2026-09-24)
+
+The audit is advisory. Nothing was deleted. The controller re-checked the script candidates:
+
+| Candidate | Correction |
+|---|---|
+| `scripts/proof/acceptance_smoke.py` | **KEEP.** It is invoked by `proof/contract.yaml` (`command: ["python", "scripts/proof/acceptance_smoke.py"]`) through `scripts/proof/run.py`. |
+| `scripts/ingest_dependency_docs.py` | **KEEP (entry point).** It is a thin CLI wrapper over `verdict.dependency_ingest.ingest_dependency_docs`, which is library code with tests. Candidate for a `verdict` subcommand later. |
+| `scripts/proof/secrets_scan.py` | **REMOVE-CANDIDATE, confirmed.** CI writes `secrets_scan_results.txt` with an inline command and never calls this script. It is left in place until the owner decides. |
+
+`.serena/` was dropped from the proposed `.gitignore` additions because `.serena/project.yml` and
+`.serena/.gitignore` are tracked.
