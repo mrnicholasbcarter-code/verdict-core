@@ -77,7 +77,7 @@ The `MasterDocsAdapter` is the only sanctioned path from a legacy MasterDocsRAG 
 
 ### Path and Quarantine Policy
 
-- Quarantined path components (case-insensitive) include cache, generated, temp, vendor, and related variants (`_QUARANTINED_PARTS`). Paths whose stem matches `(?:[._-](?:generated|gen|tmp|temp))$` are also quarantined.
+- Quarantined path components (case-insensitive) include cache, generated, temp, vendor, and related variants (`_QUARANTINED_PARTS`). Paths whose stem ends with a `generated`, `gen`, `tmp`, or `temp` suffix separated by `.`, `_`, or `-` (the `_GENERATED_NAME` pattern in `verdict/memory_masterdocs_support.py`) are also quarantined.
 - `allow_tmp=False` (the default) additionally rejects `tmp`/`/tmp/` locations. Quarantined paths are reported in `quarantined_paths` and counted in `quarantined`, and their content is never emitted as canonical chunks.
 - Reads are bounded by `DEFAULT_MAX_CONTENT_BYTES = 1_048_576` per document and `limit` rows per pass (default 1000). Oversized content is truncated/skipped per the bounded-read policy.
 

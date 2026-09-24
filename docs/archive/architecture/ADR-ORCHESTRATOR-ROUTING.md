@@ -1,9 +1,9 @@
 # ADR: Orchestrator-Driven Routing Architecture
 
 > **DUPLICATE / STALE (BOD-179).** Prefer the thin-gate slice in
-> [`docs/adr/ADR-002-orchestrator-routing.md`](../adr/ADR-002-orchestrator-routing.md).
+> [`docs/adr/ADR-002-orchestrator-routing.md`](../../adr/ADR-002-orchestrator-routing.md).
 > The longform supersession trail is
-> [`docs/adr/ADR-ORCHESTRATOR-ROUTING.md`](../adr/ADR-ORCHESTRATOR-ROUTING.md)
+> [`docs/adr/ADR-ORCHESTRATOR-ROUTING.md`](../../adr/ADR-ORCHESTRATOR-ROUTING.md)
 > (SUPERSEDED by BOD-17 / BOD-127 → BOD-104 / `dispatcher.py`).
 > Ruflo/SONA framing in this copy is obsolete.
 

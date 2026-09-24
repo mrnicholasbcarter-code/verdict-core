@@ -1,9 +1,12 @@
 # Enforcement & Learning Policy
 
-**Status:** Active
-**Authority:** Governs how Verdict enforces routing decisions and how the
-learning loop closes. The former LLM-gate name is retained only for legacy
-compatibility.
+**Status:** Archived (historical design record)
+**Archived:** BOD-17 removed the Ruflo/SONA learning-loop architecture this
+policy describes from Core. The enforcement-boundary sections remain useful
+history; the learning-loop sections do not describe shipped behavior. See
+[ADR-023](../../adr/ADR-023-governed-swarm-supervision.md) (superseded) and
+[ADR-036](../../adr/ADR-036-goal-to-receipt-orchestration.md) (current
+orchestration).
 **Related ADR:** `ADR-ORCHESTRATOR-ROUTING.md`
 **Related Policy:** `ROUTING_POLICY.md`
 
