@@ -485,3 +485,23 @@ async def test_no_change_with_failing_check_is_rejected(repo: Path) -> None:
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED
     assert ev.of("verify", "a")[0]["ok"] is False
+
+
+async def test_review_falls_back_to_route_independence_when_no_other_family(repo: Path) -> None:
+    class FamilyStrict(Reviewer):
+        async def review(self, **kwargs: Any) -> ReviewResult:
+            self.calls.append(kwargs)
+            if kwargs["exclude_families"]:
+                return ReviewResult(
+                    "ERROR", "fake-ocr", "", detail="no independent reviewer eligible"
+                )
+            return ReviewResult("PASS", "fake-ocr", "cc/other")
+
+    reviewer = FamilyStrict()
+    rt, ev, _ = make(repo, WorkGraph("g", (node("a"),)), Executor({}), ["cc/s"], reviewer=reviewer)
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE
+    assert [c["exclude_families"] for c in reviewer.calls][-1] == frozenset()
+    assert all("cc/s" in c["exclude_routes"] for c in reviewer.calls)
+    levels = [e["level"] for e in ev.of("controller") if e.get("state") == "REVIEW_INDEPENDENCE"]
+    assert levels == ["family", "route"]

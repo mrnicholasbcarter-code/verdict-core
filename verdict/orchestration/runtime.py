@@ -746,24 +746,43 @@ class DagRuntime:
                     "review required but no reviewer configured",
                     integration=integration,
                 )
+            # Independence policy: the reviewer must not be any route that wrote code in
+            # this run. Prefer a different model family too; if no other family has
+            # capacity, fall back to route-level independence (recorded as such).
             implementers = frozenset(r.route_id for r in self.nodes.values() if r.route_id)
             families = frozenset(route_family(r) for r in implementers)
-            try:
-                review = await self.reviewer.review(
-                    repo=self.repo,
-                    base_ref=self._base_sha,
-                    head_ref=integration,
-                    background=self.graph.goal,
-                    exclude_routes=implementers,
-                    exclude_families=frozenset() if len(families) > 3 else families,
+            review = None
+            for level, excluded_families in (("family", families), ("route", frozenset())):
+                try:
+                    candidate = await self.reviewer.review(
+                        repo=self.repo,
+                        base_ref=self._base_sha,
+                        head_ref=integration,
+                        background=self.graph.goal,
+                        exclude_routes=implementers,
+                        exclude_families=excluded_families,
+                    )
+                except Exception as exc:  # fail closed
+                    candidate = ReviewResult(
+                        status="ERROR",
+                        reviewer="unknown",
+                        route_id="",
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
+                review = candidate
+                self.events.emit(
+                    "controller",
+                    state="REVIEW_INDEPENDENCE",
+                    level=level,
+                    excluded_routes=sorted(implementers),
+                    excluded_families=sorted(excluded_families),
+                    reviewer_route=candidate.route_id,
                 )
-            except Exception as exc:  # fail closed
-                review = ReviewResult(
-                    status="ERROR",
-                    reviewer="unknown",
-                    route_id="",
-                    detail=f"{type(exc).__name__}: {exc}",
-                )
+                if not (
+                    candidate.status == "ERROR" and "no independent reviewer" in candidate.detail
+                ):
+                    break
+            assert review is not None
             self.events.emit(
                 "review",
                 status=review.status,
