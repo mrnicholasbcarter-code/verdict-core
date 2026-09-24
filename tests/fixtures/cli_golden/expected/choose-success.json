@@ -1,0 +1,42 @@
+{
+  "evidence_digest": "sha256:1ba8461e7389a53bb8965170b7f11e13656723e82c814b40c6c83e9315978d98",
+  "evidence_freshness_seconds": 1.0,
+  "exclusions": [],
+  "explicit_model": null,
+  "policy_version": "chooser-policy/v1",
+  "protected": false,
+  "ranked_fallbacks": [
+    {
+      "gateway": "gw-b",
+      "model": "premium/model",
+      "provider": "provider-b",
+      "resource_pool": "subscription_premium",
+      "route_id": "route-premium"
+    }
+  ],
+  "ranker_version": "chooser-ranker/v1",
+  "ranking_factors": {
+    "explicit_model_wins": false,
+    "quality": "observed_headroom_then_quota_unknown_never_promoted",
+    "resource_class_order": [
+      "free",
+      "subscription_worker",
+      "local",
+      "subscription_premium",
+      "metered"
+    ]
+  },
+  "reason": "selected",
+  "selected": {
+    "gateway": "gw-a",
+    "model": "free/model",
+    "provider": "provider-a",
+    "resource_pool": "free",
+    "route_id": "route-free"
+  },
+  "selected_because": "selected because ordinary task class implementation prefers eligible free capacity over more expensive classes; beat 1 other admitted candidate(s) on observed prove quality",
+  "task_class": "implementation",
+  "unknown_evidence_fields": [
+    "quota"
+  ]
+}

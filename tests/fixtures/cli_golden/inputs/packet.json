@@ -1,0 +1,89 @@
+{
+  "authority": {
+    "denied_paths": [
+      ".env"
+    ],
+    "destructive": false,
+    "max_attempts": 2,
+    "max_concurrency": 1,
+    "max_spend_usd": 0.25,
+    "network": false,
+    "owned_paths": [
+      "verdict/headroom.py",
+      "tests/test_headroom.py"
+    ],
+    "production": false,
+    "tools": [
+      "read",
+      "patch",
+      "test"
+    ]
+  },
+  "checkpoint_refs": [],
+  "context_refs": [
+    {
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "proof_level": "source-only",
+      "ref": "verdict/headroom.py"
+    }
+  ],
+  "decisions": [
+    {
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ref": "spec.md"
+    }
+  ],
+  "failure_history": [],
+  "integrity_digest": "sha256:a52e43bb2377f938af1d12287f4efaeda7323a529b65b8533b9385117387385f",
+  "intent": {
+    "acceptance": [
+      "Missing endpoint never reports 100 percent."
+    ],
+    "goal": "Represent missing headroom as unknown.",
+    "limitations": [
+      "Quota may remain unknown."
+    ],
+    "non_goals": [
+      "Implement provider quota clients."
+    ]
+  },
+  "next_safe_action": "Run the focused red test.",
+  "packet_id": "packet-headroom-unknown",
+  "packet_version": 1,
+  "parent_integrity_digest": null,
+  "proof_level": "source-only",
+  "receipt_refs": [],
+  "route_attempts": [],
+  "schema_version": "1",
+  "source": {
+    "branch": "feature/operational-loop",
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "dirty_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "lock_digests": {
+      "uv.lock": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "repository": "git@github.com:example/verdict.git",
+    "worktree": "/workspace/verdict"
+  },
+  "story_id": "US1",
+  "story_version": "1",
+  "tasks": [
+    {
+      "dependencies": [],
+      "description": "Implement fail-closed headroom.",
+      "status": "pending",
+      "task_id": "T1"
+    }
+  ],
+  "transitions": [],
+  "verification": {
+    "argv": [
+      "uv",
+      "run",
+      "pytest",
+      "-q",
+      "tests/test_headroom.py"
+    ],
+    "timeout_seconds": 120
+  }
+}

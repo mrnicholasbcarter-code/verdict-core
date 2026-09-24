@@ -1,9 +1,16 @@
 # Autonomous Development Loop — Operational Contract
 
 **Status:** Approved (operational contract)
-**Date:** 2026-08-03
+**Date:** 2026-08-03 (revised for BOD-17: swarm/Ruflo coordination removed)
 **Applies to:** Every backlog issue worked by the Verdict autonomous development
 workflow (see `verdict/workflows/autodev.py`, `FEATURE_LIFECYCLE_GATE.md`).
+
+> Historical note: earlier revisions of this contract described a
+> queen/worker "swarm" coordination step backed by Ruflo/RuVector. That
+> coordination model was removed from Core (BOD-17); see
+> [ADR-023](../adr/ADR-023-governed-swarm-supervision.md) (superseded) and
+> [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) (current
+> goal-to-receipt orchestration).
 
 ## The Loop
 
@@ -18,8 +25,7 @@ after merge, it finds the next available issue and repeats.
 │    - derive an implementation path from what's documented    │
 ├─────────────────────────────────────────────────────────────┤
 │ 2. RETRIEVE context before deciding                          │
-│    - memory / RAG / ADRs / prior sessions / evidence         │
-│    - query Code Review Graph, OpenViking, Ruflo/RuVector     │
+│    - memory plane / ADRs / prior sessions / evidence         │
 ├─────────────────────────────────────────────────────────────┤
 │ 3. PARALLEL RESEARCH (best available solution)               │
 │    - a research subagent benchmarks public/open-source       │
@@ -30,11 +36,11 @@ after merge, it finds the next available issue and repeats.
 │ 5. SPLIT into vertical slices of atomic work                 │
 │    - disjoint file scopes, one writer per shared file        │
 ├─────────────────────────────────────────────────────────────┤
-│ 6. SWARM until finished                                      │
-│    - queen/worker subagent swarm (bounded), OR              │
-│    - a loop mechanism driving the autodev workflow           │
+│ 6. EXECUTE until finished                                    │
+│    - the 12-stage autodev workflow, or the ADR-036           │
+│      goal-to-receipt orchestrator (verdict orchestrate)      │
 ├─────────────────────────────────────────────────────────────┤
-│ 7. PARENT REVIEW + VERIFY subagent results                   │
+│ 7. REVIEW + VERIFY results                                   │
 │    - run full suite; confirm nothing regressed              │
 ├─────────────────────────────────────────────────────────────┤
 │ 8. IMPLEMENT + VERIFY                                        │
@@ -51,16 +57,15 @@ after merge, it finds the next available issue and repeats.
 
 ## Coordination Choice
 
-The swarm step (6) may run as either:
+The execution step (6) may run as either:
 
-- **Bounded queen/worker subagent swarm** — for multi-file, cross-module work
-  (1 coordinator + up to 2 write workers + 2 read-only scouts; disjoint file
-  scopes; no overlapping write ownership).
-- **A loop mechanism driving `verdict/workflows/autodev.py`** — for work that
-  fits the 12-stage workflow.
-
-Selection: use the queen/worker swarm for independent slices that can run in
-parallel; use the autodev workflow for sequential stage-gated work.
+- **The 12-stage autodev workflow** (`verdict/workflows/autodev.py`,
+  `verdict autodev`) — for sequential stage-gated work.
+- **Goal-to-receipt orchestration** ([ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md),
+  `verdict orchestrate`) — for goal decomposition into routed, receipted
+  attempts. See [docs/guides/interview-golden-path.md](../guides/interview-golden-path.md)
+  for the end-to-end proof path (`verdict orchestrate | supervise | watch |
+  run-receipt | eligibility`).
 
 ## Verification Before Merge (step 8/9)
 
@@ -81,5 +86,6 @@ If CI fails, fix and re-run until it passes. Then merge.
 |-----|------|
 | `FEATURE_LIFECYCLE_GATE.md` | Per-feature lifecycle (audit → … → verify) |
 | `verdict/workflows/autodev.py` | The 12-stage workflow implementation |
+| [`ADR-036`](../adr/ADR-036-goal-to-receipt-orchestration.md) | Goal-to-receipt orchestration (current coordination model) |
 | **`AUTONOMOUS_DEV_LOOP.md`** | The full operational loop incl. PR/CI/merge/repeat |
-| `release-checklists.md` | Static/QA/security release gates |
+| `RELEASE_CHECKLIST.md` (repo root) | Static/QA/security release gates |

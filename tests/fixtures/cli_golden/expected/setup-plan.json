@@ -1,0 +1,41 @@
+{
+  "actions": [
+    {
+      "action_id": "create-config",
+      "description": "Create a minimal Verdict configuration after explicit consent.",
+      "kind": "write_config",
+      "postcondition": "A validated minimal configuration exists at the planned target.",
+      "reason": "A missing configuration is required before an operator can apply setup.",
+      "requires_consent": true,
+      "reversible": true,
+      "security_impact": "Creates only local configuration; credentials remain environment/keyring references.",
+      "target": "config",
+      "undo": "Remove the newly created configuration after confirming it was not modified."
+    }
+  ],
+  "config": {
+    "exists": false,
+    "path": "$XDG_CONFIG_HOME/verdict/verdict.yaml"
+  },
+  "credential_access": "disabled",
+  "kind": "setup_plan",
+  "mode": "dry-run",
+  "mutation_free": true,
+  "network_access": "disabled",
+  "next": "review this plan before a future setup apply command",
+  "plan_digest": "sha256:3861c2935c4e6c027a4c500edf7d42c0d30d45197385ff660af809911b8a4621",
+  "plan_id": "sha256:3861c2935c4e6c027a4c500edf7d42c0d30d45197385ff660af809911b8a4621",
+  "schema_version": "1",
+  "shared_memory": {
+    "auth_state": "not-configured",
+    "configured": false,
+    "endpoint": null,
+    "install_action": "none",
+    "installed": false,
+    "mutated": false,
+    "provider_id": "mcp-memory-service",
+    "state": "not-installed",
+    "token_env": "VERDICT_SHARED_MEMORY_TOKEN"
+  },
+  "status": "planned"
+}

@@ -1,0 +1,11 @@
+{
+  "admitted_for_caps": false,
+  "drop": {
+    "detail": "no explicit OmniRoute\u2192models.dev map, no identity match, and no unique models.json leaf",
+    "omniroute_id": "openrouter/openai/gpt-4o-mini",
+    "reason": "unmapped"
+  },
+  "omniroute_id": "openrouter/openai/gpt-4o-mini",
+  "provenance": {},
+  "record": null
+}

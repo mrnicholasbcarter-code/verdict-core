@@ -1,0 +1,30 @@
+{
+  "records": [],
+  "report": {
+    "adapter_version": "2",
+    "bytes_read": 0,
+    "chunks_emitted": 0,
+    "content_hashes": [],
+    "documents_accepted": 0,
+    "documents_seen": 0,
+    "duplicates": 0,
+    "ingest_timestamp": 0.0,
+    "ingested": 0,
+    "issues": [
+      {
+        "category": "unavailable",
+        "path": "<source>",
+        "reason": "private MasterDocs SQLite input is disabled; use a validated manifest"
+      }
+    ],
+    "manifest_hash": null,
+    "operation": "masterdocs-ingest",
+    "quarantined": 0,
+    "quarantined_paths": [],
+    "rejected": 0,
+    "schema_version": "1",
+    "skipped": 0,
+    "status": "unavailable",
+    "total_found": 0
+  }
+}

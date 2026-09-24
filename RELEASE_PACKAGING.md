@@ -1,20 +1,21 @@
 # Verdict Core - Release Packaging & Support Documentation
 
-This directory contains the release packaging, support posture, and public issue templates for the Verdict project.
+This document describes the release packaging, support posture, and public issue templates for the Verdict project.
 
-## Structure
+## Related Files
 
 ```
-release-support/
-├── SUPPORT.md              # Support policy document
-├── RELEASE_CHECKLIST.md    # Release validation checklist
-├── RELEASE_PACKAGING.md    # Packaging procedures
-├── VERSIONING.md           # Versioning scheme
-└── ISSUE_TEMPLATES/        # GitHub issue templates
-    ├── bug_report.yml
-    ├── feature_request.yml
-    ├── documentation.yml
-    └── reproducibility.yml
+SUPPORT.md                  # Support policy document (repo root)
+RELEASE_CHECKLIST.md        # Release validation checklist (repo root)
+RELEASE_PACKAGING.md        # Packaging procedures (this file)
+VERSIONING.md               # Versioning scheme (repo root)
+.github/ISSUE_TEMPLATE/     # GitHub issue templates
+├── bug_report.yml
+├── feature_request.yml
+├── documentation.yml
+├── question.yml
+├── reproducibility.yml
+└── security_vulnerability.yml
 ```
 
 ## Release Process
@@ -61,7 +62,7 @@ We follow [Semantic Versioning](https://semver.org/):
 
 ### Support Policy
 
-See [SUPPORT.md](../SUPPORT.md) for:
+See [SUPPORT.md](SUPPORT.md) for:
 - Supported versions
 - Response times
 - Security reporting
@@ -73,5 +74,6 @@ Located in `.github/ISSUE_TEMPLATE/`:
 - **bug_report.yml** - Bug reports
 - **feature_request.yml** - Feature requests
 - **documentation.yml** - Documentation issues
+- **question.yml** - Questions
 - **reproducibility.yml** - Reproducibility reports
-- **documentation.yml** - Documentation feedback
+- **security_vulnerability.yml** - Security vulnerability reports

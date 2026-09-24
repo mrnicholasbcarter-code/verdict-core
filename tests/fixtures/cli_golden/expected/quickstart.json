@@ -1,0 +1,160 @@
+{
+  "candidates": [
+    {
+      "model": "demo/frontier-tools",
+      "reason": "eligible",
+      "rejected": false,
+      "state": "eligible"
+    },
+    {
+      "model": "demo/no-tools",
+      "reason": "missing capability: tools",
+      "rejected": true,
+      "state": "capability_mismatch"
+    },
+    {
+      "model": "demo/quota-empty",
+      "reason": "quota exhausted",
+      "rejected": true,
+      "state": "quota_exhausted"
+    },
+    {
+      "model": "demo/unverified",
+      "reason": "health unknown",
+      "rejected": true,
+      "state": "unknown"
+    }
+  ],
+  "decision": {
+    "adaptive_influence": {},
+    "candidate_snapshot": "fixture:issue-35",
+    "correlation_id": null,
+    "decision_id": null,
+    "exclusions": [
+      {
+        "model": "demo/no-tools",
+        "reason": "missing capability: tools",
+        "rejected": true,
+        "state": "capability_mismatch"
+      },
+      {
+        "model": "demo/quota-empty",
+        "reason": "quota exhausted",
+        "rejected": true,
+        "state": "quota_exhausted"
+      },
+      {
+        "model": "demo/unverified",
+        "reason": "health unknown",
+        "rejected": true,
+        "state": "unknown"
+      }
+    ],
+    "explanation": "Selected the only candidate satisfying required capabilities and fresh healthy availability; excluded all hard-gate failures.",
+    "fallback_plan": [],
+    "planner_mode": "deterministic_fixture",
+    "policy_floor": "high",
+    "policy_version": "demo-policy-1",
+    "receipt": null,
+    "request_id": null,
+    "schema_version": "1",
+    "selected_route": {
+      "provider": "demo",
+      "runtime_id": "demo/frontier-tools"
+    },
+    "task_spec": {
+      "approvals": [],
+      "budget": {},
+      "capabilities": [],
+      "context": null,
+      "context_requirements": {},
+      "criticality": "unknown",
+      "degraded_mode_policy": "deny",
+      "destructive_operation": false,
+      "effort": "medium",
+      "latency": null,
+      "latency_limit_ms": null,
+      "metadata": {
+        "fixture": "issue-35"
+      },
+      "objective": "Add structured output to the invoice parser",
+      "parallelism": "serial",
+      "privacy": "trusted_upstream",
+      "production_impact": false,
+      "reasoning": "medium",
+      "required_capabilities": [
+        "tools",
+        "structured_output"
+      ],
+      "risk": "high",
+      "schema_version": "1",
+      "task_type": "coding",
+      "tool_requirements": {},
+      "tools": [
+        "repository",
+        "test_runner"
+      ],
+      "verification": {
+        "checks": [
+          "unit_tests",
+          "schema_validation"
+        ]
+      },
+      "workflow": null
+    }
+  },
+  "eligible": [
+    "demo/frontier-tools"
+  ],
+  "receipt": {
+    "mode": "deterministic_fixture",
+    "receipt_id": "fixture:issue-35"
+  },
+  "requirements": {
+    "protected": true,
+    "required": [
+      "structured_output",
+      "tools"
+    ]
+  },
+  "task_spec": {
+    "approvals": [],
+    "budget": {},
+    "capabilities": [],
+    "context": null,
+    "context_requirements": {},
+    "criticality": "unknown",
+    "degraded_mode_policy": "deny",
+    "destructive_operation": false,
+    "effort": "medium",
+    "latency": null,
+    "latency_limit_ms": null,
+    "metadata": {
+      "fixture": "issue-35"
+    },
+    "objective": "Add structured output to the invoice parser",
+    "parallelism": "serial",
+    "privacy": "trusted_upstream",
+    "production_impact": false,
+    "reasoning": "medium",
+    "required_capabilities": [
+      "tools",
+      "structured_output"
+    ],
+    "risk": "high",
+    "schema_version": "1",
+    "task_type": "coding",
+    "tool_requirements": {},
+    "tools": [
+      "repository",
+      "test_runner"
+    ],
+    "verification": {
+      "checks": [
+        "unit_tests",
+        "schema_validation"
+      ]
+    },
+    "workflow": null
+  }
+}

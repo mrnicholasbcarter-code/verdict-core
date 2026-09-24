@@ -1,45 +1,40 @@
-> **Current boundary:** the obsolete `verdict.swarm_observability` telemetry sink
-> was deleted with the swarm architecture. Verdict does not currently ship a
-> general-purpose telemetry emitter or a telemetry-consent CLI switch. Decision
-> and outcome logs are local execution receipts, not remote telemetry.
-
 # Telemetry Consent Policy
+
+## Current boundary
+
+Verdict does not currently ship a general-purpose telemetry emitter or a
+telemetry-consent CLI switch. Routing evidence and orchestration receipts are
+local execution records, not remote telemetry.
 
 ## Requirements for any future telemetry sink
 
-Telemetry is limited to operational, aggregate signals needed to explain and
-measure execution: event type, correlation identifiers, task or runtime
-identifiers, bounded timing/cost counters, status, and other fields explicitly
-allowed by the relevant adapter contract. Prompt text, model output, tool
-arguments, credentials, API keys, cookies, authorization headers, and private
-keys are not telemetry fields.
+Telemetry must be limited to operational, aggregate signals needed to explain
+and measure execution: event type, bounded correlation or runtime identifiers,
+bounded timing or cost counters, status, and fields explicitly allowed by the
+adapter contract. Prompt text, model output, tool arguments, credentials, API
+keys, cookies, authorization headers, and private keys are not telemetry
+fields.
 
-Any future telemetry records must be redacted before they are written or
+Any future telemetry record must be redacted before it is written or
 transmitted. Such a sink would be an observability aid, not a source of routing
 or security authority.
 
 ## Consent states for any future telemetry sink
 
-Telemetry is **opt-in**:
+Telemetry must be opt-in:
 
-- **Opt-out / no consent (default):** no telemetry event is written or
-  transmitted. The sink may be constructed, but an emit request is discarded
-  before it reaches the output file.
-- **Opt-in / explicit consent:** the caller must pass an explicit boolean
-  consent decision when constructing the telemetry sink. Events are written to
-  the configured local sink after sensitive-value redaction.
+- **No consent (default):** no telemetry event is written or transmitted.
+- **Explicit consent:** the caller supplies an explicit consent decision to the
+  telemetry sink. Only redacted, allowed operational fields may be emitted to
+  its configured destination.
 
-Consent is not inferred from the presence of a configuration file, an API key,
-a provider selection, or a prior unrelated permission. A caller may revoke
-consent by constructing a sink without consent; subsequent events are not
-emitted by that sink.
+Consent must not be inferred from a configuration file, API key, provider
+selection, or an unrelated permission. Revocation must stop subsequent events
+from that sink.
 
-## Verification
+## Verification before implementation claims
 
-There is no current `tests/privacy/test_telemetry_consent.py`; documentation must
-not claim that deleted coverage is a live release gate. The present regression
-gate is `tests/test_bod17_obsolete_architecture_absent.py`, which ensures the
-removed swarm telemetry modules are not reintroduced. If a canonical telemetry
-sink is added, it must add blocking tests that prove default opt-out emits zero
-records and explicit opt-in emits only redacted operational fields before this
-document may claim an implemented consent surface.
+This policy does not describe an implemented telemetry surface. A future
+canonical sink must add blocking tests showing that the default emits zero
+records and explicit consent emits only redacted allowed fields before this
+document can claim implementation.

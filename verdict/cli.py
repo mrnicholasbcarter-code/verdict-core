@@ -12,9 +12,7 @@ from typing import Any, NoReturn
 
 import yaml
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Prompt
-from rich.table import Table
 
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from verdict.free_tier_admit import execute_offload_chat, omniroute_endpoint_from_env
@@ -43,12 +41,11 @@ console = Console()
 
 def _print_detection_banner() -> None:
     """Print the detection banner."""
-    console.print(
-        Panel.fit(
-            "[bold blue]Verdict Provider Detection[/bold blue]\n"
-            "Scanning for local servers, CLIs, API keys, and routers...",
-            border_style="blue",
-        )
+    ui = TerminalUI(console)
+    ui.panel(
+        "Verdict Provider Detection",
+        "Scanning for local servers, CLIs, API keys, and routers...",
+        tone="INFO",
     )
 
 
@@ -259,15 +256,17 @@ def cmd_setup(
                 )
                 return
         except yaml.YAMLError as e:
-            ui.console.print(
-                f"[yellow]⚠️  Existing config at {existing_config_path} is not valid YAML: {e}[/yellow]"
+            ui.panel(
+                "Invalid YAML",
+                f"Existing config at {existing_config_path} is not valid YAML: {e}",
+                tone="WARNING",
             )
             try:
                 overwrite = Prompt.ask("Overwrite it?", default="Y")
             except (KeyboardInterrupt, EOFError):
                 overwrite = "n"
             if not overwrite.lower().startswith("y"):
-                ui.console.print("[yellow]Setup cancelled.[/yellow]")
+                ui.status("Setup", "skipped", "Cancelled.")
                 sys.exit(1)
 
     # First, run auto-detection to show user what's available
@@ -291,7 +290,7 @@ def cmd_setup(
             )
             ui.status(provider.name, state, provider.base_url or "")
     except Exception as e:
-        ui.console.print(f"[yellow]Detection skipped: {e}[/yellow]")
+        ui.status("Detection", "warn", str(e))
 
     ui.section("Configure routing")
 
@@ -313,17 +312,18 @@ def cmd_setup(
             # Persist discovery in Verdict config only. Setup must not mutate
             # the hosting process environment; doing so leaks routing authority
             # into later in-process callers and test/application lifecycles.
-            ui.console.print(
-                f"\n[bold green]✓ Detected {selected_gateway.display_name} at "
-                f"{selected_gateway.url} — gateway URL saved to config.[/bold green]"
+            ui.status(
+                "Gateway detected",
+                "ok",
+                f"{selected_gateway.display_name} at {selected_gateway.url}",
             )
             if len(healthy_gateways) > 1:
+                ui.section("Multiple gateways found")
                 ui.console.print(
-                    "[dim]Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the "
-                    "above to select a different one.[/dim]"
+                    "[dim]Set OMNIROUTE_BASE_URL to one of the above to select a different one.[/dim]"
                 )
     except Exception as e:
-        ui.console.print(f"[yellow]Gateway detection skipped: {e}[/yellow]")
+        ui.status("Gateway detection", "warn", str(e))
 
     running_providers = []
     if detected_result:
@@ -337,7 +337,7 @@ def cmd_setup(
 
     # Pre-select based on detection if running in automated test/input context where "done" or empty is passed
     if running_providers:
-        ui.console.print("\n[bold cyan]Auto-detection found active providers![/bold cyan]")
+        ui.section("Auto-detection found active providers")
         try:
             should_auto = Prompt.ask(
                 "Would you like to auto-configure Verdict using a detected provider?", default="y"
@@ -372,9 +372,7 @@ def cmd_setup(
                     # Retrieve models
                     models = selected_provider.models
                     if models:
-                        ui.console.print(
-                            f"\n[cyan]Detected models for {selected_provider.name}:[/cyan]"
-                        )
+                        ui.section(f"Detected models for {selected_provider.name}")
                         # Add an option for custom
                         model_options = [*list(models), "Enter a custom model ID"]
                         selected_model = select_from_list(
@@ -422,11 +420,9 @@ def cmd_setup(
                             to_sync.append((p.name, prov_name, url_to_check, node_name))
 
             if to_sync:
-                ui.console.print(
-                    "\n[bold cyan]Syncing detected system providers to OmniRoute/9Router:[/bold cyan]"
-                )
+                ui.section("Syncing detected system providers to OmniRoute/9Router")
                 for name, _p_name, url, _ in to_sync:
-                    ui.console.print(f"  • Found active [green]{name}[/]: [dim]{url}[/]")
+                    ui.status("Found active", "ok", f"{name}: {url}")
 
                 if (
                     Prompt.ask(
@@ -445,17 +441,15 @@ def cmd_setup(
                         }
                         res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                         if res:
-                            ui.console.print(
-                                f"  [green]✓[/] Successfully registered node: {node_name}"
-                            )
+                            ui.status("Node registered", "ok", node_name)
                         else:
-                            ui.console.print(f"  [red]✗[/] Failed to register node: {node_name}")
+                            ui.status("Node registration failed", "failed", node_name)
         except (KeyboardInterrupt, EOFError):
             pass
 
     # Prompt user about adding free providers like gemini/antigravity for local fallback routing
     try:
-        ui.console.print("\n[bold cyan]Fallback Models Configuration:[/bold cyan]")
+        ui.section("Fallback Models Configuration")
         if (
             Prompt.ask(
                 "Setup free fallback endpoints (Gemini Free, OpenRouter Free) for local offloads?",
@@ -466,29 +460,29 @@ def cmd_setup(
         ):
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not gemini_key:
-                ui.console.print(
-                    "\n[yellow]⚠️  GEMINI_API_KEY is not configured in your environment.[/yellow]"
+                ui.panel(
+                    "GEMINI_API_KEY missing",
+                    'Get a free Gemini API key at: https://aistudio.google.com/\nThen set it: export GEMINI_API_KEY="your_key"',
+                    tone="WARNING",
                 )
-                ui.console.print("  Get a free Gemini API key at: https://aistudio.google.com/")
-                ui.console.print('  Then select it: export GEMINI_API_KEY="your_key"')
 
             or_key = os.getenv("OPENROUTER_API_KEY")
             if not or_key:
-                ui.console.print(
-                    "\n[yellow]⚠️  OPENROUTER_API_KEY is not configured in your environment.[/yellow]"
+                ui.panel(
+                    "OPENROUTER_API_KEY missing",
+                    'Get an OpenRouter key at: https://openrouter.ai/keys\nThen set it: export OPENROUTER_API_KEY="your_key"',
+                    tone="WARNING",
                 )
-                ui.console.print("  Get an OpenRouter key at: https://openrouter.ai/keys")
-                ui.console.print('  Then select it: export OPENROUTER_API_KEY="your_key"')
 
             fallback_options = [
                 "Google Gemini Free Tier (https://generativelanguage.googleapis.com)",
                 "OpenRouter Free Models (https://openrouter.ai/api/v1)",
             ]
 
-            ui.console.print("\nAvailable free fallback endpoints:")
+            ui.section("Available free fallback endpoints")
             selected_fallbacks = []
             for i, opt in enumerate(fallback_options, 1):
-                ui.console.print(f"  [green]{i}[/]: {opt}")
+                ui.status(f"{i}", "info", opt)
 
             choices = Prompt.ask(
                 "Enter endpoints to add (e.g. '1, 2' or 'all', or 'done')", default="all"
@@ -510,11 +504,9 @@ def cmd_setup(
                     }
                     res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                     if res:
-                        ui.console.print("  [green]✓[/] Registered Gemini Free fallback node")
+                        ui.status("Gemini Free fallback", "ok", "Registered")
                     else:
-                        ui.console.print(
-                            "  [red]✗[/] Failed to register Gemini Free fallback node (OmniRoute not running)"
-                        )
+                        ui.status("Gemini Free fallback", "failed", "OmniRoute not running")
                 elif idx == 2:
                     payload = {
                         "provider": "openrouter",
@@ -525,32 +517,31 @@ def cmd_setup(
                     }
                     res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                     if res:
-                        ui.console.print("  [green]✓[/] Registered OpenRouter Free fallback node")
+                        ui.status("OpenRouter Free fallback", "ok", "Registered")
                     else:
-                        ui.console.print("  [red]✗[/] Failed to register OpenRouter Free node")
+                        ui.status("OpenRouter Free fallback", "failed", "Registration failed")
     except (KeyboardInterrupt, EOFError):
         pass
 
     if not use_auto:
         if not running_providers:
-            ui.console.print(
-                "\n[bold yellow]⚠️  No active providers or routers running on this machine.[/bold yellow]"
+            ui.panel(
+                "No active providers or routers",
+                "To run OmniRoute (centralized router recommended for Verdict):\n  npm install -g omniroute\n  omniroute serve",
+                tone="WARNING",
             )
-            ui.console.print("To run OmniRoute (centralized router recommended for Verdict):")
-            ui.console.print("  [bold]npm install -g omniroute[/bold]")
-            ui.console.print("  [bold]omniroute serve[/bold]\n")
 
             try:
                 should_manual = Prompt.ask(
                     "Would you like to manually configure Verdict right now anyway?", default="y"
                 )
                 if not should_manual.lower().startswith("y"):
-                    ui.console.print(
-                        "\n[yellow]Setup cancelled. Please start your provider/router and try again.[/yellow]"
+                    ui.status(
+                        "Setup", "cancelled", "Please start your provider/router and try again."
                     )
                     return
             except (KeyboardInterrupt, EOFError):
-                ui.console.print("\n[yellow]Setup input interrupted.[/yellow]")
+                ui.status("Setup input", "interrupted", "")
                 return
 
         ui.section("Manual configuration")
@@ -574,7 +565,7 @@ def cmd_setup(
                     "api_key_env": api_key_env or None,
                 }
         except (KeyboardInterrupt, EOFError):
-            ui.console.print("\n[yellow]Manual configuration input interrupted.[/yellow]")
+            ui.status("Manual configuration", "interrupted", "")
             return
 
     # Review the exact file write before mutating an interactive installation.
@@ -603,9 +594,9 @@ def cmd_setup(
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False)
 
-    ui.console.print(f"\n[bold green]✓ Saved configuration to {config_path}![/bold green]")
-    ui.console.print("[dim]Configuration contents:[/dim]")
-    ui.console.print(yaml.dump(config, default_flow_style=False))
+    ui.status("Configuration", "saved", f"Written to {config_path}")
+    ui.section("Configuration contents")
+    print(yaml.dump(config, default_flow_style=False))
 
 
 def cmd_setup_plan(
@@ -806,33 +797,24 @@ def cmd_route(
             timestamp=selection.timestamp,
         )
 
-    tier_colors = {0: "red", 1: "magenta", 2: "yellow", 3: "green"}
-    t_color = tier_colors.get(dec.tier, "white")
+    from verdict import present
 
-    output = f"""[bold]Task:[/bold] {task[:100]}{"..." if len(task) > 100 else ""}
-
-[bold]Decision:[/bold]
-  Model:     [bold {t_color}]{dec.model}[/bold {t_color}]
-  Provider:  {dec.provider}
-  Tier:      T{dec.tier}
-  Outcome:   {dec.decision}
-  Managed:   {dec.managed_backend_status}
-  Transport: {dec.transport_outcome}
-  Quality:   {dec.quality_outcome}
-  Protected: {str(dec.protected).lower()}
-  Degraded:  {str(dec.degraded_mode).lower()}
-  Latency:   [cyan]{dec.latency_ms:.1f}ms[/cyan]
-  Strategy:  [bold]{selection.strategy}[/bold]
-
-[bold dim]Reason:[/bold dim] [italic]{dec.reason}[/italic]
-"""
-    console.print(
-        Panel(
-            output,
-            title="[bold blue]Routing Decision[/bold blue]",
-            border_style="blue",
-            expand=False,
-        )
+    present.header("Routing Decision")
+    present.kv(
+        {
+            "Task": task[:100] + ("..." if len(task) > 100 else ""),
+            "Model": f"{dec.model}  (T{dec.tier})",
+            "Provider": dec.provider,
+            "Outcome": dec.decision,
+            "Managed": dec.managed_backend_status,
+            "Transport": dec.transport_outcome,
+            "Quality": dec.quality_outcome,
+            "Protected": str(dec.protected).lower(),
+            "Degraded": str(dec.degraded_mode).lower(),
+            "Latency": f"{dec.latency_ms:.1f}ms",
+            "Strategy": selection.strategy,
+            "Reason": dec.reason,
+        }
     )
     # Machine-readable StrategySelection record (issue #265).
     payload: dict[str, Any] = {
@@ -863,8 +845,11 @@ def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = Fa
 
 def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     """Parse JSONL logs and build analytics."""
+    from verdict import present
+
     if not os.path.exists(log_path):
-        console.print(f"[yellow]No log file found at {log_path}[/yellow]")
+        present.header("Routing stats")
+        present.warn("log", f"No log file found at {log_path}")
         return
 
     tiers: dict[int, int] = {}
@@ -893,24 +878,24 @@ def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     total = sum(tiers.values())
     avg_latency = sum(latencies) / len(latencies) if latencies else 0
 
-    table = Table(title="Tier Distribution")
-    table.add_column("Tier", style="bold")
-    table.add_column("Count")
-    table.add_column("Pct")
-
-    for t in sorted(tiers):
-        count = tiers[t]
-        pct = (count / total) * 100 if total > 0 else 0
-        table.add_row(f"T{t}", str(count), f"{pct:.1f}%")
-
-    console.print("\n")
-    console.print(table)
-    console.print(f"\n[bold]Total Requests:[/bold] {total}")
-    console.print(f"[bold]P50 Latency:[/bold] [cyan]{avg_latency:.2f}ms[/cyan]\n")
-
-    console.print("[bold]Top Routed Models:[/bold]")
-    for mod, count in sorted(models.items(), key=lambda x: x[1], reverse=True)[:5]:
-        console.print(f"  {mod}: [bold yellow]{count}[/bold yellow] calls")
+    present.header("Routing stats")
+    present.table(
+        ["Tier", "Count", "Pct"],
+        [
+            (f"T{t}", str(tiers[t]), f"{(tiers[t] / total) * 100 if total > 0 else 0:.1f}%")
+            for t in sorted(tiers)
+        ],
+        title="Tier Distribution",
+    )
+    present.kv({"Total Requests": str(total), "P50 Latency": f"{avg_latency:.2f}ms"})
+    present.section("Top Routed Models")
+    present.table(
+        ["Model", "Calls"],
+        [
+            (mod, str(count))
+            for mod, count in sorted(models.items(), key=lambda x: x[1], reverse=True)[:5]
+        ],
+    )
 
 
 def cmd_benchmark(
@@ -943,10 +928,17 @@ def cmd_benchmark(
             try:
                 execute_arm = executor_from_env()
             except LiveExecutorUnavailableError as exc:
-                console.print(f"[bold red]❌ {exc}[/bold red]")
+                from verdict import present
+
+                present.header("Benchmark  /  savings")
+                present.fail("live executor", str(exc))
                 raise SystemExit(2) from exc
         report = run_savings_bench(path, execute_arm=execute_arm, live_admit=live_paired)
-        console.print(format_savings_report(report), end="")
+        from verdict import present
+
+        present.header("Benchmark  /  savings")
+        # The report body is a stable text artifact meant for piping; keep it raw.
+        print(format_savings_report(report), end="")
         if output_json:
             output_path = Path(output_json)
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -956,7 +948,11 @@ def cmd_benchmark(
     report = run_reproducible_benchmarks(
         fixture, allow_live_provider=allow_live_provider, live_provider=live_provider
     )
-    console.print(format_benchmark_report(report), end="")
+    from verdict import present
+
+    present.header("Benchmark  /  reproducible")
+    # The report body is a stable text artifact meant for piping; keep it raw.
+    print(format_benchmark_report(report), end="")
 
     if output_json:
         output_path = Path(output_json)
@@ -992,13 +988,13 @@ def cmd_quickstart(
 
 def cmd_cost_report() -> None:
     """Calculates and prints the estimated token usage execution cost from historic routing decisions."""
-    import json
+    from verdict import present
 
-    console.print(Panel.fit("[bold green]Verdict Cost and Usage Report[/bold green]"))
+    present.header("Cost and Usage Report")
 
     log_path = "verdict-decisions.jsonl"
     if not os.path.exists(log_path):
-        console.print("[yellow]No routing telemetry found (Verdict decision log missing).[/yellow]")
+        present.warn("log", "No routing telemetry found (Verdict decision log missing).")
         return
 
     total_requests = 0
@@ -1021,17 +1017,17 @@ def cmd_cost_report() -> None:
             except Exception:
                 pass
 
-    table = Table(title="Usage Summary")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="magenta")
-    table.add_row("Total Routing Requests", str(total_requests))
-    table.add_row("T0 (Critical) Forwarded", str(t0_requests))
-    table.add_row("Offloaded Tasks (T1-T3)", str(total_requests - t0_requests))
-
     savings = (total_requests - t0_requests) * 0.005
-    table.add_row("Estimated Savings vs T0 Only", f"${savings:.2f}")
-
-    console.print(table)
+    present.table(
+        ["Metric", "Value"],
+        [
+            ("Total Routing Requests", str(total_requests)),
+            ("T0 (Critical) Forwarded", str(t0_requests)),
+            ("Offloaded Tasks (T1-T3)", str(total_requests - t0_requests)),
+            ("Estimated Savings vs T0 Only", f"${savings:.2f}"),
+        ],
+        title="Usage Summary",
+    )
 
 
 def cmd_detect(
@@ -1058,7 +1054,11 @@ def cmd_detect(
         elif output_config:
             print(yaml.dump({"providers": {}}, default_flow_style=False))
         else:
-            console.print_json(json.dumps(payload, sort_keys=True))
+            from verdict import present
+
+            present.header("Provider detection (offline)")
+            present.kv({"network access": "no", "credentials read": "no"})
+            present.note("Offline mode reports nothing by design. Run `verdict detect` to probe.")
         return
 
     try:
@@ -1105,23 +1105,28 @@ def cmd_detect(
             config = generate_verdict_config(result)
             print(yaml.dump(config, default_flow_style=False))
         else:
-            console.print(format_detection_report(result, verbose=verbose))
-            console.print("\n[bold]Gateways (HTTP-validated):[/bold]")
+            from verdict import present
+
+            present.header("Provider detection")
+            # Keep the established provider report as a note so its detailed
+            # wording remains available while presentation owns the framing.
+            present.note(format_detection_report(result, verbose=verbose))
+            present.section("Gateways (HTTP-validated)")
             if healthy_gateways:
-                for g in healthy_gateways:
-                    console.print(
-                        f"  [green]✓[/green] {g.display_name} ({g.identity}) at {g.url} "
-                        f"[dim](port {g.port})[/dim]"
-                    )
-                if len(healthy_gateways) > 1:
-                    console.print(f"[yellow]{multi_gateway_message}[/yellow]")
-            else:
-                console.print(f"[yellow]{no_gateway_message}[/yellow]")
-                console.print(
-                    "[dim]To start OmniRoute: npm install -g omniroute && omniroute serve[/dim]"
+                present.table(
+                    ["Gateway", "Identity", "URL", "Port"],
+                    [(g.display_name, g.identity, g.url, g.port) for g in healthy_gateways],
                 )
+                if len(healthy_gateways) > 1:
+                    present.warn("gateway selection", multi_gateway_message)
+            else:
+                present.warn("gateway", no_gateway_message)
+                present.note("To start OmniRoute: npm install -g omniroute && omniroute serve")
     except Exception as e:
-        console.print(f"[bold red]Detection failed: {e}[/bold red]")
+        from verdict import present
+
+        present.header("Provider detection")
+        present.fail("Detection failed", str(e))
         import traceback
 
         traceback.print_exc()
@@ -1160,7 +1165,10 @@ def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -
     if output_json:
         print(encoded)
     else:
-        console.print_json(encoded)
+        from verdict import present
+
+        present.header("Runtime certification")
+        present.note(encoded)
 
 
 def cmd_probe(
@@ -1184,7 +1192,10 @@ def cmd_probe(
         if output_json:
             print(json.dumps({"error": message, "diagnostics": None}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Probe")
+            present.fail("probe", message)
         raise SystemExit(2)
     if transport is None:
         from verdict.probes import openai_probe_transport
@@ -1204,21 +1215,21 @@ def cmd_probe(
         print(json.dumps({"diagnostics": run.diagnostics.to_dict(), "results": results}, indent=2))
         return
 
-    table = Table(title=f"Verdict probe  ({_redact(base_url)})")
-    table.add_column("Model", style="cyan")
-    table.add_column("Status")
-    table.add_column("HTTP")
-    table.add_column("Latency (ms)")
-    for entry in results:
-        ok = entry.get("ok")
-        status = "[green]LIVE[/green]" if ok else f"[red]DOWN[/red] {entry.get('error', '')}"
-        table.add_row(
-            str(entry["model"]),
-            status,
-            str(entry.get("http_status", "-")),
-            str(entry.get("latency_ms", "-")),
-        )
-    console.print(table)
+    from verdict import present
+
+    present.header(f"Probe  /  {_redact(base_url)}")
+    present.table(
+        ["Model", "Status", "HTTP", "Latency (ms)"],
+        [
+            (
+                str(entry["model"]),
+                "LIVE" if entry.get("ok") else f"DOWN {entry.get('error', '')}",
+                str(entry.get("http_status", "-")),
+                str(entry.get("latency_ms", "-")),
+            )
+            for entry in results
+        ],
+    )
     if not all(e.get("ok") for e in results):
         sys.exit(1)
 
@@ -1311,7 +1322,10 @@ def cmd_autodev(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev")
+            present.fail("consent", message)
         raise SystemExit(2)
 
     api_key = os.getenv("OMNIROUTE_API_KEY")
@@ -1329,13 +1343,19 @@ def cmd_autodev(
         if output_json:
             print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
         else:
-            console.print(f"[bold]{len(plan.units)} unit(s) planned[/bold] by {plan.model}")
-            for unit in plan.units:
-                console.print(
-                    f"  [cyan]{unit.unit_id}[/cyan]  {', '.join(unit.owned_files)}\n"
-                    f"      verify: {' '.join(unit.verification_command)}"
-                )
-            console.print(
+            from verdict import present
+
+            present.header("Autodev  /  dry run")
+            present.ok("plan", f"{len(plan.units)} unit(s) planned by {plan.model}")
+            present.table(
+                ["Unit", "Owned files", "Verify"],
+                [
+                    (unit.unit_id, ", ".join(unit.owned_files), " ".join(unit.verification_command))
+                    for unit in plan.units
+                ],
+                empty="no units planned",
+            )
+            present.note(
                 f"orchestrator tokens: {plan.usage.total_tokens}"
                 f"{'' if plan.usage.reported else ' (not reported by provider)'}"
             )
@@ -1362,7 +1382,39 @@ def cmd_autodev(
     if output_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
-        console.print(report.summary())
+        from verdict import present
+
+        present.header("Autodev")
+        units_line = (
+            f"{len(report.verified)} verified, {len(report.failed)} failed, "
+            f"of {report.units_planned} planned"
+        )
+        if report.failed:
+            present.fail("units", units_line)
+        else:
+            present.ok("units", units_line)
+        tokens = report.to_dict()["tokens"]
+        rows: dict[str, Any] = {
+            "objective": report.objective,
+            "mechanical (zero tokens)": len(report.mechanical),
+            f"model ({report.executor_model})": len(report.outcomes) - len(report.mechanical),
+            "orchestrator tokens": (
+                f"{tokens['orchestrator']['total_tokens']} ({report.orchestrator_model})"
+            ),
+            "executor tokens": tokens["executor"]["total_tokens"],
+        }
+        share = tokens["expensive_share"]
+        if share is not None:
+            rows["expensive share"] = f"{share:.1%} of {tokens['total']} measured tokens"
+        present.kv(rows)
+        if report.unreported_units:
+            present.warn(
+                "usage",
+                f"{len(report.unreported_units)} unit(s) had no provider usage block; "
+                "their tokens are unknown, not estimated",
+            )
+        for outcome in report.failed:
+            present.fail(outcome.unit_id, outcome.reason)
     if report.failed:
         sys.exit(1)
 
@@ -1406,12 +1458,18 @@ def cmd_autodev_packet_execute(
         schema_refusal_receipt,
     )
 
+    def _human_refusal(label: str, message: str) -> None:
+        from verdict import present
+
+        present.header("Autodev packet  /  execute")
+        present.fail(label, message)
+
     if not allow_live:
         message = "packet execute calls live routes and edits the working tree; pass --allow-live"
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("consent", message)
         raise SystemExit(2)
 
     path = Path(packet_path).expanduser().resolve()
@@ -1423,7 +1481,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps(receipt, sort_keys=True))
         else:
-            console.print(f"[bold red]refused before any gateway request: {exc}[/bold red]")
+            _human_refusal("schema", f"refused before any gateway request: {exc}")
         raise SystemExit(1) from exc
 
     from verdict.autodev_run import _require_launch_decision
@@ -1437,7 +1495,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("gateway", message)
         raise SystemExit(1)
     packet_provider = str(route.get("provider") or "")
     packet_gateway = str(route.get("gateway") or "")
@@ -1447,21 +1505,21 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("provider", message)
         raise SystemExit(1)
     if packet_gateway and packet_gateway != selected_route.gateway:
         message = "packet route gateway does not match the BOD-104 ExecutionPathDecision"
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("gateway", message)
         raise SystemExit(1)
     if packet_endpoint and packet_endpoint.rstrip("/") != selected_route.gateway.rstrip("/"):
         message = "packet route endpoint does not match the BOD-104 selected gateway"
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("endpoint", message)
         raise SystemExit(1)
     requested = str(route.get("requested_identity") or route.get("model") or "")
     route_identity = str(route.get("model") or route.get("actual_identity") or requested)
@@ -1471,7 +1529,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("model", message)
         raise SystemExit(1)
     route["provider"] = selected_route.provider
     route["gateway"] = selected_route.gateway
@@ -1498,7 +1556,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": str(exc)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            _human_refusal("route", str(exc))
         raise SystemExit(1) from exc
     if delegation is None:
         # FR-031: the production entry point refuses an unclassified unit by
@@ -1510,7 +1568,7 @@ def cmd_autodev_packet_execute(
         if output_json:
             print(json.dumps({"error": message, "missing": "delegation"}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("delegation", message)
         raise SystemExit(1)
     if prefer_non_primary and route.get("primary") is True:
         message = (
@@ -1524,7 +1582,7 @@ def cmd_autodev_packet_execute(
                 )
             )
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            _human_refusal("route", message)
         raise SystemExit(1)
     fallback_route = None
     if primary_fallback:
@@ -1568,7 +1626,7 @@ def cmd_autodev_packet_execute(
             if output_json:
                 print(json.dumps({"error": message}, sort_keys=True))
             else:
-                console.print(f"[bold red]{message}[/bold red]")
+                _human_refusal("canary", message)
             raise SystemExit(1)
         canary_state = loaded
     report = run_packet_autodev(
@@ -1593,9 +1651,17 @@ def cmd_autodev_packet_execute(
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        console.print(
-            f"[bold]{report.terminal_state}[/bold] ({payload['proof_level']}) "
-            f"fallbacks={report.fallback_count} checkpoints={len(report.checkpoints)}"
+        from verdict import present
+
+        present.header("Autodev packet  /  execute")
+        state = str(report.terminal_state)
+        present.status("terminal state", "ok" if state == "completed" else "failed", state)
+        present.kv(
+            {
+                "proof level": payload["proof_level"],
+                "fallbacks": report.fallback_count,
+                "checkpoints": len(report.checkpoints),
+            }
         )
     if report.terminal_state != "completed":
         raise SystemExit(1)
@@ -1615,7 +1681,10 @@ def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) 
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev packet  /  shadow")
+            present.fail("episodes", message)
         raise SystemExit(1)
     report = shadow_learning_report(episodes)
     print(json.dumps(report, indent=2, sort_keys=True))
@@ -1632,7 +1701,10 @@ def cmd_autodev_packet_canary(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev packet  /  canary")
+            present.fail("inputs", message)
         raise SystemExit(1)
     payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
     if isinstance(payload, dict) and "episodes" in payload:
@@ -1645,7 +1717,10 @@ def cmd_autodev_packet_canary(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev packet  /  canary")
+            present.fail("inputs", message)
         raise SystemExit(1)
     report = shadow_learning_report(episodes)
     print(
@@ -1665,7 +1740,10 @@ def cmd_autodev_packet_canary_rollback(state_path: str, *, output_json: bool = F
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Autodev packet  /  canary rollback")
+            present.fail("state", message)
         raise SystemExit(1)
     print(json.dumps(rollback_shadow_canary(state), indent=2, sort_keys=True))
 
@@ -1726,9 +1804,15 @@ def cmd_autodev_packet(
             if output_json:
                 print(json.dumps(data, indent=2, sort_keys=True))
             else:
-                console.print(
-                    f"[bold]{data['pair_id']}[/bold] parity={data['parity_claimed']} "
-                    f"unknown={len(data['unknown_facets'])}"
+                from verdict import present
+
+                present.header("Autodev packet  /  compare")
+                present.kv(
+                    {
+                        "pair": data["pair_id"],
+                        "parity claimed": data["parity_claimed"],
+                        "unknown facets": len(data["unknown_facets"]),
+                    }
                 )
             return
         else:
@@ -1738,17 +1822,24 @@ def cmd_autodev_packet(
         if output_json:
             print(json.dumps(receipt, sort_keys=True))
         else:
-            console.print(
-                f"[bold red]refused {receipt['encountered_schema_version']!r} — "
+            from verdict import present
+
+            present.header(f"Autodev packet  /  {action}")
+            present.fail(
+                "schema",
+                f"refused {receipt['encountered_schema_version']!r} — "
                 f"supported: {', '.join(receipt['supported_schema_versions'])} "
-                f"(no gateway request issued)[/bold red]"
+                f"(no gateway request issued)",
             )
         raise SystemExit(1) from exc
     except (ExecutionPacketError, OSError, ValueError) as exc:
         if output_json:
             print(json.dumps({"error": str(exc)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            from verdict import present
+
+            present.header(f"Autodev packet  /  {action}")
+            present.fail("packet", str(exc))
         raise SystemExit(1) from exc
 
     data = packet.to_dict()
@@ -1757,9 +1848,16 @@ def cmd_autodev_packet(
     if output_json:
         print(json.dumps(data, indent=2, sort_keys=True))
     else:
-        console.print(
-            f"[bold]{packet.packet_id}[/bold] v{packet.packet_version} "
-            f"{packet.proof_level.value}\nnext: {packet.next_safe_action}"
+        from verdict import present
+
+        present.header(f"Autodev packet  /  {action}")
+        present.kv(
+            {
+                "packet": packet.packet_id,
+                "version": f"v{packet.packet_version}",
+                "proof level": packet.proof_level.value,
+                "next safe action": packet.next_safe_action,
+            }
         )
 
 
@@ -1786,8 +1884,16 @@ def cmd_autodev_golden_path(
     if output_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
-        console.print(report.summary())
-        console.print(f"report digest: {report.report_digest}")
+        from verdict import present
+
+        present.header("Autodev golden path")
+        accepted = report.decision == "accepted"
+        present.status("decision", "ok" if accepted else "failed", report.decision)
+        for receipt in report.stages:
+            status_value = receipt.status.value
+            stage_state = "ok" if status_value == "passed" else "failed"
+            present.status(receipt.stage.value, stage_state, status_value)
+        present.note(f"report digest: {report.report_digest}")
     if report.decision != "accepted":
         raise SystemExit(1)
 
@@ -1796,7 +1902,9 @@ def _report_autodev_failure(reason: str, *, output_json: bool) -> None:
     if output_json:
         print(json.dumps({"error": "decomposition failed", "reason": reason}, sort_keys=True))
     else:
-        console.print(f"[bold red]decomposition failed:[/bold red] {reason}")
+        from verdict import present
+
+        present.fail("decomposition failed", reason)
 
 
 def _probe_result_payload(observation: Any) -> dict[str, Any]:
@@ -1852,7 +1960,10 @@ def cmd_catalog(
         if output_json:
             print(json.dumps({"error": message, "probes": None}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Catalog qualification")
+            present.fail("catalog", message)
         raise SystemExit(2)
 
     paths = [
@@ -1928,51 +2039,58 @@ def cmd_catalog(
     if output_json:
         print(json.dumps(report_payload, sort_keys=True))
     else:
-        console.print_json(json.dumps(report_payload))
+        from verdict import present
+
+        present.header("Catalog qualification")
+        present.status("catalog", "ok" if report.passed else "failed")
+        snapshot = report.snapshot
+        if snapshot:
+            present.kv(
+                {
+                    "source": snapshot.source_url,
+                    "rows": snapshot.row_count,
+                    "fresh until": snapshot.fresh_until,
+                }
+            )
+        if report.errors:
+            present.table(["Issue"], [(error,) for error in report.errors])
+        if reconciliation:
+            present.status("projection reconciliation", "ok" if reconciliation.passed else "failed")
+        if probe_summary:
+            present.note(f"probes: {json.dumps(probe_summary.to_dict(), sort_keys=True)}")
     if not report.passed or (reconciliation is not None and not reconciliation.passed):
         sys.exit(1)
 
 
 def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
     """Run the SuggestionService to propose evidence-backed improvements."""
-    from rich.console import Console
-    from rich.panel import Panel
-
+    from verdict import present
     from verdict.suggestions import SuggestionService
 
-    console = Console()
     svc = SuggestionService(log_path=log_path)
+    suggestions = svc.generate_suggestions()
 
-    with console.status("[bold green]Mining telemetry for suggestions...", spinner="dots"):
-        suggestions = svc.generate_suggestions()
-
+    present.header("Verdict Intelligence Suggestions")
     if not suggestions:
-        console.print(
-            "[yellow]No actionable suggestions found. Your routing is optimized![/yellow]"
-        )
+        present.note("No actionable suggestions found. Your routing is optimized!")
         return
 
-    console.print(
-        Panel.fit("[bold blue]Verdict Intelligence Suggestions[/bold blue]", border_style="blue")
-    )
-
     for s in suggestions:
-        category_color = {"performance": "cyan", "reliability": "red", "capacity": "yellow"}.get(
-            s.category, "white"
+        present.section(f"{s.title} ({s.id})")
+        present.kv(
+            {
+                "Category": s.category.title(),
+                "Novelty": s.novelty,
+                "Expires In": s.expiry,
+                "Description": s.description,
+                "Proposed Experiment": s.proposed_next_experiment,
+                "Confidence": f"{s.confidence * 100:.1f}%",
+                "Impact": s.expected_impact,
+                "Evidence (top 3)": (
+                    ", ".join(s.evidence_references) if s.evidence_references else "None"
+                ),
+            }
         )
-        output = f"""[bold {category_color}]{s.title} ({s.id})[/]
-[dim]Category:[/] {s.category.title()}  |  [dim]Novelty:[/] {s.novelty}  |  [dim]Expires In:[/] {s.expiry}
-
-{s.description}
-
-[bold dim]Proposed Next Experiment:[/bold dim]
-[italic]{s.proposed_next_experiment}[/italic]
-
-[dim]Confidence:[/] {s.confidence * 100:.1f}%  |  [dim]Impact:[/] {s.expected_impact}
-[dim]Evidence Events (Top 3):[/] {", ".join(s.evidence_references) if s.evidence_references else "None"}
-"""
-        console.print(output)
-        console.print("---")
 
 
 def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
@@ -2008,9 +2126,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         1 for item in capabilities if isinstance(item, dict) and item.get("status") == "covered"
     )
     total = len(capabilities)
-    ui.console.print(
-        f"  • Capability coverage: [cyan]{covered}/{total}[/] covered (bootstrap view)"
-    )
+    ui.status("Capability coverage", "ok", f"{covered}/{total} covered (bootstrap view)")
 
     issues_found = []
     fixed_issues = []
@@ -2018,14 +2134,14 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     from verdict.documentation_preflight import run_documentation_preflight
 
     documentation_report = run_documentation_preflight(fix=fix)
-    ui.console.print(
-        "  • Documentation preflight: "
-        f"[{'green' if documentation_report.passed else 'red'}]"
-        f"{documentation_report.status}[/] "
-        f"({documentation_report.inventory} documents, "
+    doc_state = "ok" if documentation_report.passed else "failed"
+    ui.status(
+        "Documentation preflight",
+        doc_state,
+        f"{documentation_report.status} ({documentation_report.inventory} documents, "
         f"{documentation_report.ingested} ingested, "
         f"{documentation_report.stale} stale, "
-        f"{documentation_report.missing} missing)"
+        f"{documentation_report.missing} missing)",
     )
     if not documentation_report.passed:
         issues_found.extend(
@@ -2067,9 +2183,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
             from verdict.classifier import classify
 
             tier = classify(primary_model)
-            ui.console.print(
-                f"  • Configured Primary Model: [cyan]{primary_model}[/] (Tier-{tier})"
-            )
+            ui.status("Configured Primary Model", "ok", f"{primary_model} (Tier-{tier})")
 
         providers = config.get("providers", {})
         if not isinstance(providers, dict):
@@ -2174,6 +2288,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         issues_found.append("OPENAI_API_KEY appears invalid (expected prefix 'sk-').")
 
     # 1f. Env var reference note (T024)
+    ui.section("Environment reference")
     ui.console.print(
         "  [dim]See .env.example in the repository root for the full environment "
         "variable reference.[/dim]"
@@ -2182,6 +2297,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     # 2. OmniRoute nodes check
     existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
     if existing_nodes is None:
+        ui.section("OmniRoute nodes")
         ui.console.print(
             "[dim]OmniRoute server is not currently running/reachable to check nodes.[/dim]"
         )
@@ -2192,9 +2308,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         elif isinstance(existing_nodes, dict) and "items" in existing_nodes:
             items = existing_nodes["items"]
 
-        ui.console.print(
-            f"  • Connected to OmniRoute: [green]OK[/] (Found {len(items)} configured node endpoints)"
-        )
+        ui.status("Connected to OmniRoute", "ok", f"Found {len(items)} configured node endpoints")
 
         # Check duplicate nodes in OmniRoute
         node_urls: dict[str, str] = {}
@@ -2214,12 +2328,12 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     node_urls[clean_url] = node_id
 
         if duplicates:
-            ui.console.print(
-                "\n[yellow]⚠️  Duplicate provider nodes detected in local OmniRoute database:[/yellow]"
-            )
-            for node_id, name, url, original_id in duplicates:
-                ui.console.print(
-                    f"  • Node [red]{name}[/] ({node_id}) is a duplicate of node ({original_id}) on URL: {url}"
+            ui.section("Duplicate nodes detected")
+            for node_id, name, _url, original_id in duplicates:
+                ui.status(
+                    f"Duplicate node {name}",
+                    "warn",
+                    f"({node_id}) is a duplicate of ({original_id})",
                 )
                 issues_found.append(f"Duplicate node '{name}' in OmniRoute configuration.")
 
@@ -2235,10 +2349,10 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     for node_id, name, _url, _ in duplicates:
                         res = _omniroute_api_request("DELETE", f"/api/provider-nodes/{node_id}")
                         if res is not None:
-                            ui.console.print(f"  [green]✓[/] Removed duplicate node: {name}")
+                            ui.status("Removed", "ok", f"Removed duplicate node: {name}")
                             fixed_issues.append(f"Removed duplicate node {node_id}")
                         else:
-                            ui.console.print(f"  [red]✗[/] Failed to remove node {node_id}")
+                            ui.status("Removal failed", "failed", f"Node {node_id}")
             except (KeyboardInterrupt, EOFError):
                 pass
 
@@ -2333,9 +2447,12 @@ def cmd_choose(
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            print(payload["selected_because"])
+            from verdict import present
+
+            present.header("Choose route")
+            present.fail(task_class, exc.reason)
             if exc.exclusions:
-                print(
+                present.note(
                     "excluded: "
                     + ", ".join(
                         f"{item.get('model', '?')} ({item.get('reason', 'excluded')})"
@@ -2346,7 +2463,10 @@ def cmd_choose(
     if output_json:
         print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
         return
-    print(human_summary(receipt))
+    from verdict import present
+
+    present.header("Choose route")
+    present.note(human_summary(receipt))
 
 
 def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False) -> None:
@@ -2372,23 +2492,25 @@ def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False
             )
         )
         return
-    table = Table(title="Verdict model catalog")
-    table.add_column("ID", style="cyan")
-    table.add_column("Provider")
-    table.add_column("Tier")
-    table.add_column("Context")
-    table.add_column("Cost/1k", justify="right")
-    table.add_column("State")
-    for m in catalog:
-        table.add_row(
-            m.id,
-            m.provider,
-            f"T{m.capability_tier}",
-            str(m.context_window) if m.context_window > 0 else "-",
-            f"${m.cost_per_1k:.4f}" if m.cost_per_1k else "-",
-            m.availability_state,
-        )
-    console.print(table)
+    from verdict import present
+
+    present.header("Model catalog")
+    present.table(
+        ["ID", "Provider", "Tier", "Context", "Cost/1k", "State"],
+        [
+            (
+                m.id,
+                m.provider,
+                f"T{m.capability_tier}",
+                str(m.context_window) if m.context_window > 0 else "-",
+                f"${m.cost_per_1k:.4f}" if m.cost_per_1k else "-",
+                m.availability_state,
+            )
+            for m in catalog
+        ],
+        empty="catalog is empty",
+    )
+    present.note(f"{len(catalog)} model(s). Live eligibility: verdict eligibility --probe")
 
 
 def cmd_inspect(
@@ -2403,7 +2525,10 @@ def cmd_inspect(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Model inspect")
+            present.fail(model_id, "not found in catalog")
         raise SystemExit(1)
     model = matches[0]
     payload: dict[str, Any] = {
@@ -2418,8 +2543,19 @@ def cmd_inspect(
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
-    console.print(Panel(f"[bold cyan]{model.id}[/bold cyan]", title="Model inspect"))
-    console.print(json.dumps(payload, indent=2, sort_keys=True))
+    from verdict import present
+
+    present.header(f"Model inspect  /  {model.id}")
+    present.kv(
+        {
+            "provider": model.provider,
+            "tier": f"T{model.capability_tier}",
+            "context window": model.context_window or "-",
+            "cost per 1k": f"${model.cost_per_1k:.4f}" if model.cost_per_1k else "-",
+            "capabilities": ", ".join(sorted(model.capabilities)) or "-",
+            "availability": model.availability_state,
+        }
+    )
 
 
 def cmd_receipt(
@@ -2478,14 +2614,24 @@ def cmd_receipt(
         if output_json:
             print(json.dumps({"receipts": items}, indent=2, sort_keys=True))
             return
+        from verdict import present
+
+        present.header("Routing receipts")
         if not items:
-            print("no routing receipts found")
+            present.note("no routing receipts found")
             return
-        for item in items:
-            print(
-                f"{item['receipt_id']} scope={item['scope']} "
-                f"attempt={item.get('attempt_id')} state={item.get('state')}"
-            )
+        present.table(
+            ["Receipt ID", "Scope", "Attempt", "State"],
+            [
+                (
+                    item["receipt_id"],
+                    item["scope"],
+                    item.get("attempt_id") or "-",
+                    item.get("state") or "-",
+                )
+                for item in items
+            ],
+        )
         return
 
     if action == "show":
@@ -2510,7 +2656,10 @@ def cmd_receipt(
         if output_json:
             print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
             return
-        print(human_summary(receipt))
+        from verdict import present
+
+        present.header("Routing receipt")
+        present.note(human_summary(receipt))
         print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
         return
 
@@ -2539,7 +2688,10 @@ def cmd_replay(session_id: str, output_json: bool = False) -> None:
         if output_json:
             print(json.dumps({"status": "unavailable", "message": message}, sort_keys=True))
         else:
-            console.print(f"[yellow]{message}[/yellow]")
+            from verdict import present
+
+            present.header("Replay session")
+            present.warn("replay", message)
         raise SystemExit(3) from exc
     db_path = os.environ.get("VERDICT_MEMORY_DB", str(Path.home() / ".verdict" / "memory.db"))
     try:
@@ -2549,18 +2701,28 @@ def cmd_replay(session_id: str, output_json: bool = False) -> None:
         if output_json:
             print(json.dumps({"status": "missing", "message": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Replay session")
+            present.fail(session_id, "not found")
         raise SystemExit(1) from exc
     record = session.to_dict()
     if output_json:
         print(json.dumps(record, indent=2, sort_keys=True))
         return
-    console.print(f"[bold cyan]Execution session {session_id}[/bold cyan]")
-    console.print(
-        f"  State: {record['state']}  |  Model: {record['model_id']}  |  "
-        f"Steps: {len(record['steps'])} completed: {len(record['completed_steps'])}"
+    from verdict import present
+
+    present.header("Replay session")
+    present.kv(
+        {
+            "Session ID": session_id,
+            "State": record["state"],
+            "Model": record["model_id"],
+            "Steps": str(len(record["steps"])),
+            "Completed": str(len(record["completed_steps"])),
+            "Task": str(record["task_spec"]),
+        }
     )
-    console.print(f"  Task: {record['task_spec']}")
 
 
 def cmd_simulate(
@@ -2584,18 +2746,22 @@ def cmd_simulate(
     if output_json:
         print(json.dumps(forecast.to_dict(), indent=2, sort_keys=True))
         return
-    table = Table(title="Verdict pre-execution simulation")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="magenta")
-    table.add_row("Model", f"{forecast.model} ({forecast.provider}, T{forecast.tier})")
-    table.add_row("Prompt tokens", str(forecast.prompt_tokens))
-    table.add_row("Completion tokens", str(forecast.completion_tokens))
-    table.add_row("Total tokens", str(forecast.total_tokens))
-    table.add_row("Est. cost", f"${forecast.cost_usd:.6f}")
-    table.add_row("Risk score", f"{forecast.risk_score} / 100")
-    table.add_row("Capacity confidence", f"{forecast.capacity_confidence:.2f}")
-    console.print(table)
-    console.print(f"[dim]{forecast.rationale}[/dim]")
+    from verdict import present
+
+    present.header("Verdict pre-execution simulation")
+    present.table(
+        ["Metric", "Value"],
+        [
+            ("Model", f"{forecast.model} ({forecast.provider}, T{forecast.tier})"),
+            ("Prompt tokens", str(forecast.prompt_tokens)),
+            ("Completion tokens", str(forecast.completion_tokens)),
+            ("Total tokens", str(forecast.total_tokens)),
+            ("Est. cost", f"${forecast.cost_usd:.6f}"),
+            ("Risk score", f"{forecast.risk_score} / 100"),
+            ("Capacity confidence", f"{forecast.capacity_confidence:.2f}"),
+        ],
+    )
+    present.note(forecast.rationale)
 
 
 def default_model_catalog() -> list[ModelInfo]:
@@ -2648,6 +2814,10 @@ def cmd_memory(args: Any) -> None:
 
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     sub = getattr(args, "memory_command", None)
+    if not (sub in {"docs", "masterdocs"} and getattr(args, "json", False)):
+        from verdict import present
+
+        present.header(f"Memory / {sub or 'help'}")
 
     if sub == "docs":
         from verdict.documentation_preflight import run_documentation_preflight
@@ -2660,7 +2830,9 @@ def cmd_memory(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
         else:
-            console.print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
+            present.kv(docs_report.to_dict(), title="Documentation preflight")
+            if not docs_report.passed:
+                present.fail("documentation preflight", "failed")
         if not docs_report.passed:
             raise SystemExit(1)
         return
@@ -2676,16 +2848,16 @@ def cmd_memory(args: Any) -> None:
             source=getattr(args, "source", "cli"),
         )
         plane.put(rec)
-        console.print(
-            f"[bold green]✓ Memory record put: {rec.key} (ns: {rec.namespace})[/bold green]"
-        )
+        present.ok("Memory record put", f"{rec.key} (ns: {rec.namespace})")
     elif sub == "search":
         results = plane.search(
             args.query, namespace=getattr(args, "namespace", None), limit=getattr(args, "limit", 10)
         )
-        console.print(f"[bold cyan]Found {len(results)} memory record(s):[/bold cyan]")
-        for r in results:
-            console.print(f"- [{r.namespace}:{r.key}] ({r.source}): {r.content[:100]}")
+        present.section(f"Found {len(results)} memory record(s):")
+        present.table(
+            ["Namespace", "Key", "Source", "Content"],
+            [(r.namespace, r.key, r.source, r.content[:100]) for r in results],
+        )
     elif sub == "export":
         from verdict.memory_adapters import ImportPolicy, export_manifest
 
@@ -2701,7 +2873,7 @@ def cmd_memory(args: Any) -> None:
         )
         if export_report.status != "ok":
             raise SystemExit("memory manifest export failed: " + "; ".join(export_report.errors))
-        console.print(f"[bold green]✓ Exported memory manifest to {destination}[/bold green]")
+        present.ok("Exported memory manifest", f"to {destination}")
     elif sub == "import":
         from verdict.memory_adapters import ImportPolicy, import_manifest
 
@@ -2710,9 +2882,10 @@ def cmd_memory(args: Any) -> None:
         policy = ImportPolicy((source.parent,))
         manifest_records, import_report = import_manifest(source, policy=policy)
         count = plane.import_records(manifest_records)
-        console.print(
-            f"[bold green]✓ Imported {count[0]} record(s) ({import_report.duplicates} duplicates; "
-            f"manifest {import_report.manifest_hash})[/bold green]"
+        present.ok(
+            "Imported memory records",
+            f"{count[0]} record(s) ({import_report.duplicates} duplicates; "
+            f"manifest {import_report.manifest_hash})",
         )
     elif sub == "masterdocs":
         db = getattr(args, "db", "MasterDocsRAG.db")
@@ -2728,7 +2901,8 @@ def cmd_memory(args: Any) -> None:
             if getattr(args, "json", False):
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
-                console.print(json.dumps(payload["report"], indent=2, sort_keys=True))
+                present.fail("MasterDocs import", str(result.report.status))
+                present.kv(payload["report"])
             raise SystemExit(1)
         if getattr(args, "dry_run", False):
             payload = result.to_dict()
@@ -2743,7 +2917,8 @@ def cmd_memory(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            console.print(json.dumps(payload["report"], indent=2, sort_keys=True))
+            present.ok("MasterDocs import", str(payload["report"].get("status", "ok")))
+            present.kv(payload["report"])
         return
     elif sub == "graph":
         db = getattr(args, "db", "code_graph.db")
@@ -2751,9 +2926,7 @@ def cmd_memory(args: Any) -> None:
         graph_rep = graph_adapter.ingest_sqlite(
             db, plane, allow_legacy_sqlite=args.allow_legacy_sqlite
         )
-        console.print(
-            f"[bold green]✓ Code graph ingested {graph_rep.records_created} node(s)[/bold green]"
-        )
+        present.ok("Code graph ingested", f"{graph_rep.records_created} node(s)")
     elif sub == "setup":
         report = detect_available_tools()
         tools_to_config = getattr(args, "tools", None)
@@ -2762,17 +2935,19 @@ def cmd_memory(args: Any) -> None:
         else:
             tools_to_config = [t.strip() for t in tools_to_config.split(",") if t.strip()]
 
-        console.print(
-            f"[bold cyan]Detected available AI tools:[/bold cyan] {list(report.preselected_tools)}"
+        present.kv(
+            {
+                "Detected available AI tools": list(report.preselected_tools),
+                "Configuring memory bridge for": tools_to_config,
+            }
         )
-        console.print(f"[bold cyan]Configuring memory bridge for:[/bold cyan] {tools_to_config}")
 
         res = configure_memory_bridge(tools_to_config, plane)
-        console.print(f"[bold green]✓ Configured tools: {res['configured_tools']}[/bold green]")
-        console.print(f"[bold green]✓ Memory database ready: {res['memory_db_path']}[/bold green]")
+        present.ok("Configured tools", str(res["configured_tools"]))
+        present.ok("Memory database ready", str(res["memory_db_path"]))
 
     else:
-        console.print("[bold yellow]Use --help to view memory subcommands.[/bold yellow]")
+        present.warn("Memory", "Use --help to view memory subcommands.")
 
 
 def cmd_uninstall(purge_data: bool = False) -> None:
@@ -2780,9 +2955,15 @@ def cmd_uninstall(purge_data: bool = False) -> None:
     from verdict.memory_bridge import uninstall_memory_bridge
 
     res = uninstall_memory_bridge(home_dir=Path.home(), cwd=Path.cwd(), purge_data=purge_data)
-    console.print(f"[bold green]✓ Uninstalled targets: {res['uninstalled_targets']}[/bold green]")
+    from verdict import present
+
+    present.header("Uninstall memory bridge")
+    targets = res["uninstalled_targets"]
+    present.ok(
+        "Uninstalled targets", ", ".join(map(str, targets)) if targets else "none were installed"
+    )
     if purge_data:
-        console.print("[bold yellow]⚠ Purged .verdict memory data directory.[/bold yellow]")
+        present.warn("Purged .verdict memory data directory.")
 
 
 def cmd_runtime(
@@ -2820,13 +3001,26 @@ def cmd_runtime(
         if output_json:
             print(json.dumps(payload, sort_keys=True))
         else:
-            console.print(f"[bold red]Runtime operation blocked:[/] {exc}")
+            from verdict import present
+
+            present.header("Runtime")
+            present.fail("Runtime operation blocked", str(exc))
         raise SystemExit(2) from exc
 
     if output_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
-        console.print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        from verdict import present
+
+        data = report.to_dict()
+        present.header(f"Runtime  /  {operation}")
+        present.kv(
+            {key: value for key, value in data.items() if not isinstance(value, (dict, list))}
+        )
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                present.note(f"{key}: {json.dumps(value, sort_keys=True)}")
+        present.status("runtime", "ok" if report.passed else "failed")
     if operation == "explain":
         return
     if not report.passed:
@@ -2839,69 +3033,65 @@ def cmd_check() -> None:
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
     )
     config_path = os.path.join(config_dir, "verdict.yaml")
+    from verdict import present
+
+    present.header("Configuration check")
 
     if not os.path.exists(config_path):
-        console.print(
-            f"[bold red]❌ Configuration file (verdict.yaml) is missing at {config_path}.[/bold red]"
-        )
+        present.fail("Configuration file (verdict.yaml) is missing", f"at {config_path}.")
         sys.exit(1)
 
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
     except Exception as exc:
-        console.print(
-            f"[bold red]❌ Configuration file is corrupted/invalid YAML: {exc}[/bold red]"
-        )
+        present.fail("Configuration file is corrupted/invalid YAML", str(exc))
         sys.exit(1)
 
     has_issue = False
 
     primary_model = config.get("primary_model")
     if not primary_model:
-        console.print("[bold red]❌ No primary model configured in verdict.yaml.[/bold red]")
+        present.fail("No primary model configured in verdict.yaml.")
         has_issue = True
     else:
         from verdict.classifier import classify
 
         tier = classify(primary_model)
-        console.print(f"✓ Configured Primary Model: [cyan]{primary_model}[/] (Tier-{tier})")
+        present.ok("Configured Primary Model", f"{primary_model} (Tier-{tier})")
 
     providers = config.get("providers", {})
     if not isinstance(providers, dict):
-        console.print("[bold red]❌ 'providers' section in verdict.yaml is malformed.[/bold red]")
+        present.fail("'providers' section in verdict.yaml is malformed.")
         has_issue = True
     else:
         urls: dict[str, str] = {}
         for name, p_cfg in providers.items():
             if not isinstance(p_cfg, dict):
-                console.print(
-                    f"[bold red]❌ Provider '{name}' config is not a dictionary.[/bold red]"
-                )
+                present.fail(f"Provider '{name}' config is not a dictionary.")
                 has_issue = True
                 continue
             base_url = p_cfg.get("base_url", "")
             if "sk-" in base_url or "api_key" in base_url.lower():
-                console.print(
-                    f"[bold red]❌ Literal API key detected inside host URL for provider '{name}'.[/bold red]"
-                )
+                present.fail(f"Literal API key detected inside host URL for provider '{name}'.")
                 has_issue = True
 
             if base_url:
                 url = base_url.rstrip("/")
                 if url in urls:
-                    console.print(
-                        f"[bold red]❌ Duplicate host URL configured in verdict.yaml: provider '{name}' and '{urls[url]}' have identical hosts: {url}[/bold red]"
+                    present.fail(
+                        "Duplicate host URL configured in verdict.yaml",
+                        f"provider '{name}' and '{urls[url]}' have identical hosts: {url}",
                     )
                     has_issue = True
                 else:
                     urls[url] = name
 
     if has_issue:
-        console.print("[bold red]❌ Config validation failed with issues.[/bold red]")
+        present.fail("Config validation failed with issues.")
         sys.exit(1)
 
-    console.print("[bold green]✓ Configuration file is valid.[/bold green]")
+    present.ok("Configuration file is valid.")
 
 
 def cmd_compat(compat_command: str | None, declared: str | None, output_json: bool) -> None:
@@ -2917,12 +3107,11 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
         if output_json:
             print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
         else:
-            console.print(
-                f"[bold]Cross-repo compatibility manifest[/] (schema {manifest.schema_version})"
-            )
-            console.print(f"manifest_hash: [cyan]{manifest.manifest_hash}[/]")
-            for name, digest in sorted(manifest.contracts.items()):
-                console.print(f"  {name}: {digest}")
+            from verdict import present
+
+            present.header("Compatibility manifest")
+            present.kv({"schema": manifest.schema_version, "manifest hash": manifest.manifest_hash})
+            present.table(["Contract", "Digest"], sorted(manifest.contracts.items()))
         return
 
     if compat_command == "check":
@@ -2931,7 +3120,10 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
             if output_json:
                 print(json.dumps({"allowed": False, "reason": reason}, indent=2))
             else:
-                console.print(f"[bold red]❌ {reason}[/bold red] (failing closed)")
+                from verdict import present
+
+                present.header("Compatibility check")
+                present.fail("compatibility", f"{reason} (failing closed)")
             sys.exit(1)
 
         if not os.path.exists(declared or ""):
@@ -2954,9 +3146,10 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
             if output_json:
                 print(json.dumps({"allowed": True, "reason": None}, indent=2))
             else:
-                console.print(
-                    "[bold green]✓ Compatible with current verdict-core contracts.[/bold green]"
-                )
+                from verdict import present
+
+                present.header("Compatibility check")
+                present.ok("compatibility", "matches the current verdict-core contracts")
             return
 
         if output_json:
@@ -2971,12 +3164,16 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
                 )
             )
         else:
-            console.print(f"[bold red]❌ Compatibility check failed: {result.reason}[/bold red]")
-            for name in result.mismatched_contracts:
-                console.print(f"  - {name}")
+            from verdict import present
+
+            present.header("Compatibility check")
+            present.fail("compatibility", str(result.reason))
+            present.table(["Mismatched contract"], [(n,) for n in result.mismatched_contracts])
         sys.exit(1)
 
-    console.print("[bold red]❌ Unknown compat subcommand. Use 'manifest' or 'check'.[/bold red]")
+    from verdict import present
+
+    present.fail("compat", "unknown subcommand; use 'manifest' or 'check'")
     sys.exit(1)
 
 
@@ -2988,6 +3185,12 @@ def cmd_hook(args: Any) -> None:
     from verdict.memory_plane import MemoryPlane
 
     hook_cmd = getattr(args, "hook_command", None)
+    if hook_cmd != "claude-gate" and not (
+        hook_cmd in {"recall", "configure", "status"} and getattr(args, "json", False)
+    ):
+        from verdict import present
+
+        present.header(f"Hook / {hook_cmd or 'help'}")
     if hook_cmd == "claude-gate":
         base_url = getattr(args, "base_url", "http://127.0.0.1:20128")
         try:
@@ -3022,9 +3225,11 @@ def cmd_hook(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps([r.to_dict() for r in results], indent=2))
         else:
-            console.print(f"[bold cyan]Recall: {len(results)} record(s)[/bold cyan]")
-            for r in results:
-                console.print(f"- [{r.namespace}:{r.key}] ({r.source}): {r.content[:120]}")
+            present.section(f"Recall: {len(results)} record(s)")
+            present.table(
+                ["Namespace", "Key", "Source", "Content"],
+                [(r.namespace, r.key, r.source, r.content[:120]) for r in results],
+            )
 
     elif hook_cmd == "record":
         key = getattr(args, "key", "session")
@@ -3036,11 +3241,9 @@ def cmd_hook(args: Any) -> None:
         )
         write_res = gate.write(req)
         if write_res.allowed:
-            console.print(f"[bold green]✓ Recorded [{namespace}:{key}][/bold green]")
+            present.ok("Recorded", f"[{namespace}:{key}]")
         else:
-            console.print(
-                f"[bold red]✗ Rejected [{namespace}:{key}]: {write_res.reason}[/bold red]"
-            )
+            present.fail(f"Rejected [{namespace}:{key}]", str(write_res.reason))
 
     elif hook_cmd == "configure":
         tools_str = getattr(args, "tools", None)
@@ -3049,9 +3252,8 @@ def cmd_hook(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(res, indent=2))
         else:
-            console.print("[bold green]✓ Memory bridge configured.[/bold green]")
-            console.print(f"  DB: {res['memory_db_path']}")
-            console.print(f"  Targets: {', '.join(res['configured_tools'])}")
+            present.ok("Memory bridge configured.")
+            present.kv({"DB": res["memory_db_path"], "Targets": ", ".join(res["configured_tools"])})
 
     elif hook_cmd == "status":
         codex_agents = Path.home() / ".codex" / "AGENTS.md"
@@ -3077,8 +3279,7 @@ def cmd_hook(args: Any) -> None:
             print(json.dumps(status, indent=2))
         else:
             for k, v in status.items():
-                icon = "✅" if v else "⚠️"
-                console.print(f"{icon} {k}: {v}")
+                present.status(k.replace("_", " "), "ok" if v else "missing")
 
 
 def cmd_mcp(args: Any) -> None:
@@ -3095,10 +3296,11 @@ def cmd_mcp(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(res, indent=2))
         else:
-            console.print(
-                "[bold green]✅ Verdict MCP server initialized across tool environments.[/bold green]"
-            )
-            console.print(f"Memory DB: {res['memory_db_path']}")
+            from verdict import present
+
+            present.header("MCP / init")
+            present.ok("Verdict MCP server initialized across tool environments.")
+            present.kv({"Memory DB": res["memory_db_path"]})
     elif mcp_cmd == "status":
         mcp_file = Path.cwd() / ".mcp.json"
         registered = False
@@ -3113,1374 +3315,44 @@ def cmd_mcp(args: Any) -> None:
         if getattr(args, "json", False):
             print(json.dumps(status_info, indent=2))
         else:
+            from verdict import present
+
+            present.header("MCP / status")
             if registered:
-                console.print(
-                    "[bold green]✅ Verdict MCP server is registered in .mcp.json[/bold green]"
-                )
+                present.ok("Verdict MCP server", "is registered in .mcp.json")
             else:
-                console.print(
-                    "[yellow]⚠️ Verdict MCP server is not registered in .mcp.json[/yellow]"
-                )
+                present.warn("Verdict MCP server", "is not registered in .mcp.json")
+
+
+def _stdout_is_tty() -> bool:
+    return sys.stdout.isatty()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verdict: policy-gated LLM Router")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
-
-    setup_cli_p = subparsers.add_parser("setup", help="Plan or apply the interactive setup wizard")
-    setup_cli_p.add_argument(
-        "setup_action",
-        nargs="?",
-        choices=["plan", "intelligence", "gateways", "harnesses"],
-        help="Read-only setup operation or capability scope",
-    )
-    setup_cli_p.add_argument(
-        "--dry-run", action="store_true", help="Build a mutation-free setup plan"
-    )
-    setup_cli_p.add_argument(
-        "--plan", action="store_true", help="Mutation-free capability bootstrap plan"
-    )
-    setup_cli_p.add_argument(
-        "--recommended",
-        action="store_true",
-        help="Show recommended enrichment set (still mutation-free without --apply)",
-    )
-    setup_cli_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    setup_cli_p.add_argument(
-        "--non-interactive",
-        action="store_true",
-        help="Headless/CI mode: no prompts; APPLY only via --allow ( --yes is not enough)",
-    )
-    setup_cli_p.add_argument(
-        "--apply",
-        action="store_true",
-        help=(
-            "Apply authorized bootstrap actions "
-            "(interactive: --yes; non-interactive: --allow provider ids)"
-        ),
-    )
-    setup_cli_p.add_argument(
-        "--yes",
-        action="store_true",
-        help=(
-            "Interactive final consent for the shown APPLY plan; "
-            "ignored as blanket auth under --non-interactive (use --allow)"
-        ),
-    )
-    setup_cli_p.add_argument(
-        "--allow",
-        dest="allowlist",
-        action="append",
-        default=[],
-        help=(
-            "Explicit allowlist provider id (repeatable), e.g. gateway.omniroute; "
-            "required for non-interactive APPLY"
-        ),
-    )
-    setup_cli_p.add_argument(
-        "--rollback",
-        action="store_true",
-        help="Roll back Verdict-owned bootstrap APPLY records (ownership/backups; no TUI)",
-    )
-    setup_cli_p.add_argument(
-        "--rollback-action",
-        dest="rollback_actions",
-        action="append",
-        default=[],
-        help="Limit rollback to a managed action_id (repeatable)",
-    )
-    setup_cli_p.add_argument(
-        "--state-dir",
-        default=None,
-        help="Bootstrap ownership state directory (default: ~/.verdict/bootstrap)",
+    from verdict.commands import (
+        parsers_autodev,
+        parsers_harness,
+        parsers_models,
+        parsers_routing,
+        parsers_runtime,
+        parsers_setup,
     )
 
-    route_p = subparsers.add_parser("route", help="Route a single prompt/task")
-    route_p.add_argument("task", help="Task description or prompt text")
-    route_p.add_argument("--terse", action="store_true", help="Output ONLY the target model string")
-    route_p.add_argument(
-        "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
-    )
-    route_p.add_argument(
-        "--allow-offline",
-        action="store_true",
-        help=(
-            "Decide from the static catalog only — no network discovery or probes. "
-            "Does not enable the BOD-127 legacy selector escape (use --allow-legacy-selector)."
-        ),
-    )
-    route_p.add_argument(
-        "--allow-legacy-selector",
-        action="store_true",
-        help=(
-            "BOD-127 migration escape: allow pre-BOD-104 selectors. "
-            "Required explicitly; --allow-offline alone never enables this. "
-            "Production serve must omit this and supply execution_path_decision."
-        ),
-    )
+    for registrar in (
+        parsers_setup,
+        parsers_routing,
+        parsers_autodev,
+        parsers_harness,
+        parsers_runtime,
+        parsers_models,
+    ):
+        registrar.register(subparsers)
 
-    compare_p = subparsers.add_parser(
-        "compare", help="Compare a DIRECT frontier call vs the Verdict route for one task"
-    )
-    compare_p.add_argument("task", help="Task description or prompt text")
-    compare_p.add_argument(
-        "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
-    )
-    compare_p.add_argument(
-        "--allow-offline",
-        action="store_true",
-        help="Decide from the static catalog only — no network discovery or probes",
-    )
+    from verdict.commands.dispatch import dispatch
 
-    autodev_p = subparsers.add_parser(
-        "autodev", help="Decompose an objective, execute each unit on a cheap route, and verify"
-    )
-    autodev_p.add_argument("--objective", help="What the run must accomplish")
-    autodev_p.add_argument("--repo", default=".", help="Repository to work in (default: .)")
-    autodev_p.add_argument(
-        "--orchestrator-model",
-        default=None,
-        help="Optional model assertion; route is supplied by the BOD-104 ExecutionPathDecision",
-    )
-    autodev_p.add_argument(
-        "--executor-model",
-        default=None,
-        help="Optional exact model assertion; the BOD-104 decision supplies the worker route",
-    )
-    autodev_p.add_argument(
-        "--base-url",
-        default=None,
-        help="Optional gateway assertion; BOD-104 decision supplies the route",
-    )
-    autodev_p.add_argument("--json", action="store_true", help="Emit the machine-readable report")
-    autodev_p.add_argument(
-        "--allow-live",
-        action="store_true",
-        help="Consent to live model calls and working-tree edits",
-    )
-    autodev_p.add_argument(
-        "--no-mechanical",
-        action="store_true",
-        help="Disable the zero-token deterministic tier and send every unit to a model",
-    )
-    autodev_p.add_argument(
-        "--dry-run", action="store_true", help="Show the plan and its cost without executing"
-    )
-    autodev_p.add_argument(
-        "--execution-path-request",
-        default=None,
-        help=(
-            "public execution-path request JSON; the in-process optimizer "
-            "decision is the launch authority (BOD-104)"
-        ),
-    )
-    packet_p = autodev_p.add_subparsers(dest="autodev_action")
-    packet_root = packet_p.add_parser("packet", help="Portable packet operations")
-    packet_actions = packet_root.add_subparsers(dest="packet_action", required=True)
-    for action in ("create", "inspect", "validate", "resume", "execute"):
-        action_p = packet_actions.add_parser(action)
-        action_p.add_argument("--packet", required=True)
-        action_p.add_argument("--json", action="store_true")
-        if action == "create":
-            action_p.add_argument("--from", dest="source_path", required=True)
-        if action == "resume":
-            action_p.add_argument("--model", required=True)
-        if action == "execute":
-            action_p.add_argument(
-                "--execution-path-request",
-                default=None,
-                help=(
-                    "public execution-path request JSON; the in-process optimizer "
-                    "decision is the launch authority (BOD-104)"
-                ),
-            )
-            action_p.add_argument("--repo", required=True)
-            action_p.add_argument(
-                "--allow-live",
-                action="store_true",
-                help="consent: executes through the gateway and edits the working tree",
-            )
-            action_p.add_argument(
-                "--prefer-non-primary",
-                action="store_true",
-                help="first attempt must use a concrete non-primary admitted route",
-            )
-            action_p.add_argument(
-                "--primary-fallback",
-                default=None,
-                help="concrete route that currently occupies the primary-subscription role",
-            )
-            action_p.add_argument(
-                "--base-url",
-                dest="packet_base_url",
-                default=None,
-                help="override gateway family base URL for this packet run",
-            )
-            action_p.add_argument(
-                "--canary",
-                dest="canary_path",
-                default=None,
-                help="JSON canary state; chosen applies only among admitted_ids",
-            )
-            action_p.add_argument(
-                "--delegation",
-                choices=["legwork", "decision"],
-                default=None,
-                help=(
-                    "required classification for this unit; a decision must also "
-                    "carry --undelegable-reason"
-                ),
-            )
-            action_p.add_argument(
-                "--undelegable-reason",
-                dest="undelegable_reason",
-                default=None,
-                help="capability that makes a --delegation decision unable to run non-primary",
-            )
-    shadow_p = packet_actions.add_parser(
-        "shadow", help="Dump advisory shadow-learning JSON without calling eligibility"
-    )
-    shadow_p.add_argument("--episodes", required=True, help="JSON list of trusted episodes")
-    shadow_p.add_argument("--json", action="store_true")
-    canary_p = packet_actions.add_parser(
-        "canary", help="Dump explicit bounded canary choice or rollback without eligibility"
-    )
-    canary_p.add_argument("--episodes", help="JSON list of trusted episodes")
-    canary_p.add_argument("--admitted", help="JSON list of already-admitted identities")
-    canary_p.add_argument("--rollback", help="JSON canary state to restore baseline")
-    canary_p.add_argument("--json", action="store_true")
-    compare_p = packet_actions.add_parser("compare", help="Compare two family-run JSON objects")
-    compare_p.add_argument("--packet", required=True)
-    compare_p.add_argument("--json", action="store_true")
-    compare_p.add_argument("--a", dest="family_a_path", required=True)
-    compare_p.add_argument("--b", dest="family_b_path", required=True)
-
-    golden_p = subparsers.add_parser(
-        "autodev-golden-path",
-        help="Run offline discovery, durable memory, and bounded verification",
-    )
-    golden_p.add_argument("--objective", required=True, help="Bounded mission objective")
-    golden_p.add_argument("--repo", required=True, help="Real Git repository to inspect")
-    golden_p.add_argument("--memory-path", default=".verdict-golden-memory.db")
-    golden_p.add_argument("--verify", nargs="+", default=["git", "status", "--short"])
-    golden_p.add_argument("--owned-path", action="append", default=[])
-    golden_p.add_argument("--timeout", type=float, default=10.0)
-    golden_p.add_argument("--json", action="store_true")
-
-    stats_p = subparsers.add_parser("stats", help="View routing analytics")
-    stats_p.add_argument("--log_path", default="verdict-decisions.jsonl")
-
-    benchmark_p = subparsers.add_parser(
-        "benchmark", help="Run the reproducible local benchmark harness"
-    )
-    benchmark_p.add_argument("--fixture", default="benchmarks/fixtures/reproducible.json")
-    benchmark_p.add_argument("--output-json", default=None)
-    benchmark_p.add_argument("--allow-live-provider", action="store_true")
-    benchmark_p.add_argument("--live-provider", default=None)
-    benchmark_p.add_argument(
-        "--savings",
-        action="store_true",
-        help=(
-            "Run the paired legit-task savings bench (we measure). Without --live-paired "
-            "this is a labeled simulation that cannot claim savings."
-        ),
-    )
-    benchmark_p.add_argument(
-        "--live-paired",
-        action="store_true",
-        help=(
-            "Execute both arms of every --savings task against OMNIROUTE_BASE_URL "
-            "(OMNIROUTE_API_KEY) and bind cost/identity/quality to the execution receipts"
-        ),
-    )
-
-    quickstart_p = subparsers.add_parser(
-        "quickstart", help="Run the credential-free deterministic flagship quickstart"
-    )
-    quickstart_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    quickstart_p.add_argument(
-        "--non-interactive", action="store_true", help="Do not prompt for input"
-    )
-    quickstart_p.add_argument(
-        "--dry-run", action="store_true", help="Run the read-only quickstart fixture"
-    )
-
-    subparsers.add_parser("ui", help="Launch the Streamlit analytics dashboard")
-
-    serve_p = subparsers.add_parser("serve", help="Launch the FastAPI microservice")
-    serve_p.add_argument("--port", type=int, default=8000)
-    serve_p.add_argument(
-        "--host", default=None, help="Bind address (anonymous mode must be loopback)"
-    )
-    serve_p.add_argument("--dev", action="store_true", help="Enable hot-reload development mode")
-
-    # New: detect command
-    detect_p = subparsers.add_parser("detect", help="Detect available LLM providers")
-    detect_p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    detect_p.add_argument("--json", action="store_true", help="Output JSON")
-    detect_p.add_argument(
-        "--offline",
-        action="store_true",
-        help="Deterministic offline mode: no network, no credentials",
-    )
-    detect_p.add_argument("--config", action="store_true", help="Generate suggested Verdict config")
-
-    certify_p = subparsers.add_parser(
-        "certify", help="Emit runtime certification passport JSON (BOD-92 evidence only)"
-    )
-    certify_p.add_argument(
-        "--from",
-        dest="certify_from",
-        default=None,
-        help="Path to DetectedSnapshot JSON fixtures (offline; no live probes)",
-    )
-    certify_p.add_argument(
-        "--json",
-        action="store_true",
-        default=True,
-        help="Output JSON (default; certification is machine-readable)",
-    )
-
-    # New: probe command (1-token liveness test before assigning work)
-    probe_p = subparsers.add_parser("probe", help="Run a 1-token liveness probe against models")
-    probe_p.add_argument(
-        "models", nargs="+", help="Model IDs to probe (e.g. openrouter/tencent/hy3:free)"
-    )
-    probe_p.add_argument(
-        "--base-url",
-        default="http://localhost:20128/v1",
-        help="OpenAI-compatible base URL (default: local OmniRoute)",
-    )
-    probe_p.add_argument("--timeout", type=float, default=20.0, help="Per-probe timeout seconds")
-    probe_p.add_argument(
-        "--allow-live-probe",
-        action="store_true",
-        help="Explicitly consent to network liveness probes",
-    )
-    probe_p.add_argument("--json", action="store_true", help="Output JSON")
-
-    catalog_p = subparsers.add_parser(
-        "catalog", help="Qualify and optionally store a sanitized OmniRoute catalog snapshot"
-    )
-    catalog_p.add_argument(
-        "--base-url", default="http://127.0.0.1:20128", help="OmniRoute base URL"
-    )
-    catalog_p.add_argument(
-        "--management",
-        action="store_true",
-        help="Use only the documented management endpoint (default fetches both projections)",
-    )
-    catalog_p.add_argument(
-        "--expected-rows",
-        type=int,
-        default=0,
-        help="Exact row count required to qualify (0 = any well-formed non-empty catalog)",
-    )
-    catalog_p.add_argument("--freshness-seconds", type=int, default=3600)
-    catalog_p.add_argument("--db-path", default=None, help="Store qualification in a memory DB")
-    catalog_p.add_argument(
-        "--probe",
-        action="store_true",
-        help="Run a bounded liveness sample after catalog qualification",
-    )
-    catalog_p.add_argument("--probe-limit", type=int, default=16)
-    catalog_p.add_argument("--probe-timeout", type=float, default=20.0)
-    catalog_p.add_argument(
-        "--allow-live-probe",
-        action="store_true",
-        help="Explicitly consent to network liveness probes",
-    )
-    catalog_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    metadata_p = subparsers.add_parser(
-        "metadata", help="Refresh and inspect Core's independent model metadata store (BOD-108)"
-    )
-    metadata_sub = metadata_p.add_subparsers(dest="metadata_command", required=True)
-    metadata_refresh_p = metadata_sub.add_parser(
-        "refresh", help="Fetch models.dev + LiteLLM into the on-disk Core store"
-    )
-    metadata_refresh_p.add_argument(
-        "--store",
-        dest="store_path",
-        default=None,
-        help="Store path (default ~/.verdict/model-metadata.json)",
-    )
-    metadata_refresh_p.add_argument("--mapping", dest="mapping_path", default=None)
-    metadata_refresh_p.add_argument(
-        "--models-dev-api-file", default=None, help="Offline models.dev api.json fixture"
-    )
-    metadata_refresh_p.add_argument(
-        "--models-dev-models-file", default=None, help="Offline models.dev models.json fixture"
-    )
-    metadata_refresh_p.add_argument(
-        "--litellm-file", default=None, help="Offline LiteLLM JSON fixture"
-    )
-    metadata_refresh_p.add_argument(
-        "--include-p1",
-        action="store_true",
-        help="Record P1 skip reasons (AA/Arena/OpenLLM/BFCL); scores stored only from fixtures",
-    )
-    metadata_refresh_p.add_argument(
-        "--json", action="store_true", help="Output machine-readable JSON"
-    )
-    metadata_show_p = metadata_sub.add_parser(
-        "show", help="Summarize the on-disk Core metadata store"
-    )
-    metadata_show_p.add_argument("--store", dest="store_path", default=None)
-    metadata_show_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    metadata_lookup_p = metadata_sub.add_parser(
-        "lookup", help="Look up one OmniRoute id in the Core store (named drop if unmapped)"
-    )
-    metadata_lookup_p.add_argument("omniroute_id")
-    metadata_lookup_p.add_argument("--store", dest="store_path", default=None)
-    metadata_lookup_p.add_argument("--mapping", dest="mapping_path", default=None)
-    metadata_lookup_p.add_argument(
-        "--requires", default="", help="Comma-separated required caps (unknown → named drop)"
-    )
-    metadata_lookup_p.add_argument(
-        "--json", action="store_true", help="Output machine-readable JSON"
-    )
-
-    suggest_p = subparsers.add_parser(
-        "suggest", help="Review intelligence suggestions from past outcomes"
-    )
-    suggest_p.add_argument("--log_path", default="verdict-decisions.jsonl")
-
-    doctor_p = subparsers.add_parser(
-        "doctor", help="Scan and repair system configuration and connectivity issues"
-    )
-    doctor_p.add_argument(
-        "--fix", action="store_true", help="Automatically repair detected configuration issues"
-    )
-    doctor_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    harness_p = subparsers.add_parser(
-        "harness", help="Point a coding-agent harness at Verdict without hand-editing its config"
-    )
-    harness_sub = harness_p.add_subparsers(dest="harness_target", required=True)
-    harness_codex_p = harness_sub.add_parser(
-        "codex", help="Enable, disable, or inspect Codex as a Verdict OpenAI-compatible client"
-    )
-    harness_codex_sub = harness_codex_p.add_subparsers(dest="harness_codex_command", required=True)
-    harness_enable_p = harness_codex_sub.add_parser(
-        "enable", help="Backup ~/.codex/config.toml and set model_provider = verdict"
-    )
-    harness_enable_p.add_argument(
-        "--base-url",
-        default=CODEX_HARNESS_DEFAULT_BASE_URL,
-        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
-    )
-    harness_enable_p.add_argument(
-        "--token-env",
-        default=CODEX_HARNESS_DEFAULT_TOKEN_ENV,
-        help="Env var Codex should read for the bearer token (default: LLMGATE_AUTH_TOKEN; never printed)",
-    )
-    harness_enable_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Write Codex config even if the Verdict health check fails",
-    )
-    harness_codex_sub.add_parser(
-        "disable", help="Restore the pre-enable ~/.codex/config.toml backup"
-    )
-    harness_codex_sub.add_parser(
-        "status", help="Show active Codex provider, base URL, and whether the token env is set"
-    )
-    harness_hermes_p = harness_sub.add_parser(
-        "hermes", help="Enable, disable, or inspect Hermes as a Verdict OpenAI-compatible client"
-    )
-    harness_hermes_sub = harness_hermes_p.add_subparsers(
-        dest="harness_hermes_command", required=True
-    )
-    hermes_enable_p = harness_hermes_sub.add_parser(
-        "enable", help="Backup ~/.hermes/config.yaml and point model.provider at Verdict"
-    )
-    hermes_enable_p.add_argument(
-        "--base-url",
-        default=HERMES_HARNESS_DEFAULT_BASE_URL,
-        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
-    )
-    hermes_enable_p.add_argument(
-        "--token-env",
-        default=HERMES_HARNESS_DEFAULT_TOKEN_ENV,
-        help="Env var Hermes should read for the bearer token (default: LLMGATE_AUTH_TOKEN)",
-    )
-    hermes_enable_p.add_argument(
-        "--model",
-        default=HERMES_HARNESS_DEFAULT_MODEL,
-        help="Default model id to set under model.default",
-    )
-    hermes_enable_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Write Hermes config even if the Verdict health check fails",
-    )
-    harness_hermes_sub.add_parser(
-        "disable", help="Restore the pre-enable ~/.hermes/config.yaml backup"
-    )
-    harness_hermes_sub.add_parser(
-        "status", help="Show active Hermes provider, base URL, and whether the token env is set"
-    )
-    harness_claude_p = harness_sub.add_parser(
-        "claude", help="Enable, disable, discover, or certify Claude Code as a Verdict client"
-    )
-    harness_claude_sub = harness_claude_p.add_subparsers(
-        dest="harness_claude_command", required=True
-    )
-    harness_claude_sub.add_parser(
-        "discover", help="Observe Claude Code install/config without mutating it"
-    )
-    claude_enable_p = harness_claude_sub.add_parser(
-        "enable",
-        help="Backup ~/.claude/settings.json and point OpenAI-compatible traffic at Verdict",
-    )
-    claude_enable_p.add_argument(
-        "--base-url",
-        default=CLAUDE_HARNESS_DEFAULT_BASE_URL,
-        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
-    )
-    claude_enable_p.add_argument(
-        "--token-env",
-        default=CLAUDE_HARNESS_DEFAULT_TOKEN_ENV,
-        help="Env var Claude/OpenAI tooling should read for the bearer token (never printed)",
-    )
-    claude_enable_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Write Claude settings even if the Verdict health check fails",
-    )
-    harness_claude_sub.add_parser(
-        "disable", help="Restore the pre-enable ~/.claude/settings.json backup"
-    )
-    harness_claude_sub.add_parser(
-        "status",
-        help="Show Claude Code Verdict base URL, gate hook, and whether the token env is set",
-    )
-    claude_certify_p = harness_claude_sub.add_parser(
-        "certify",
-        help="Evidence-only Claude Code certification (partial until BOD-102 Messages proxy)",
-    )
-    claude_certify_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Treat Verdict health as ok when probing fails (local proof only)",
-    )
-    harness_cursor_p = harness_sub.add_parser(
-        "cursor",
-        help="Enable, disable, discover, or certify Cursor as a Verdict OpenAI-compatible client",
-    )
-    harness_cursor_sub = harness_cursor_p.add_subparsers(
-        dest="harness_cursor_command", required=True
-    )
-    harness_cursor_sub.add_parser(
-        "discover", help="Observe Cursor install/config without mutating it"
-    )
-    cursor_enable_p = harness_cursor_sub.add_parser(
-        "enable", help="Write Verdict-managed Cursor provider config aimed at Verdict :8000"
-    )
-    cursor_enable_p.add_argument(
-        "--base-url",
-        default=CURSOR_HARNESS_DEFAULT_BASE_URL,
-        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
-    )
-    cursor_enable_p.add_argument(
-        "--token-env",
-        default=CURSOR_HARNESS_DEFAULT_TOKEN_ENV,
-        help="Env var Cursor/OpenAI tooling should read for the bearer token (never printed)",
-    )
-    cursor_enable_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Write Cursor config even if the Verdict health check fails",
-    )
-    cursor_enable_p.add_argument(
-        "--wrapper",
-        action="store_true",
-        help="Also install ~/.cursor/bin/cursor-verdict wrapper (last-resort integration)",
-    )
-    harness_cursor_sub.add_parser(
-        "disable", help="Restore pre-enable Cursor provider/settings/wrapper backups"
-    )
-    harness_cursor_sub.add_parser(
-        "status", help="Show Cursor Verdict provider, base URL, and whether the token env is set"
-    )
-    cursor_certify_p = harness_cursor_sub.add_parser(
-        "certify", help="Evidence-only Cursor certification (partial; IDE UI toggle is NEEDS_OWNER)"
-    )
-    cursor_certify_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Treat Verdict health as ok when probing fails (local proof only)",
-    )
-    harness_prime_p = harness_sub.add_parser(
-        "prime", help="Enable, disable, discover, or certify Prime Agent as a Verdict client"
-    )
-    harness_prime_sub = harness_prime_p.add_subparsers(dest="harness_prime_command", required=True)
-    harness_prime_sub.add_parser(
-        "discover", help="Observe Prime Agent install/config without mutating it"
-    )
-    prime_enable_p = harness_prime_sub.add_parser(
-        "enable",
-        help="Backup ~/.prime/agent/models.json and upsert Verdict OpenAI-compatible provider",
-    )
-    prime_enable_p.add_argument(
-        "--base-url",
-        default=PRIME_HARNESS_DEFAULT_BASE_URL,
-        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
-    )
-    prime_enable_p.add_argument(
-        "--token-env",
-        default=PRIME_HARNESS_DEFAULT_TOKEN_ENV,
-        help="Env var name stored as apiKey (never prints the value)",
-    )
-    prime_enable_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Write Prime models.json even if the Verdict health check fails",
-    )
-    harness_prime_sub.add_parser(
-        "disable", help="Restore the pre-enable ~/.prime/agent/models.json backup"
-    )
-    harness_prime_sub.add_parser(
-        "status",
-        help="Show Prime Agent Verdict provider, base URL, and whether the token env is set",
-    )
-    prime_certify_p = harness_prime_sub.add_parser(
-        "certify",
-        help="Evidence-only Prime Agent certification (partial; not-installed when binary missing)",
-    )
-    prime_certify_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Treat Verdict health as ok when probing fails (local proof only)",
-    )
-    harness_opencode_p = harness_sub.add_parser(
-        "opencode",
-        help="Enable, disable, discover, or certify OpenCode as a Verdict OpenAI-compatible client",
-    )
-    harness_opencode_sub = harness_opencode_p.add_subparsers(
-        dest="harness_opencode_command", required=True
-    )
-    harness_opencode_sub.add_parser(
-        "discover", help="Observe OpenCode install/config without mutating it"
-    )
-    opencode_enable_p = harness_opencode_sub.add_parser(
-        "enable",
-        help="Backup ~/.config/opencode/opencode.json and upsert Verdict OpenAI-compatible provider",
-    )
-    opencode_enable_p.add_argument(
-        "--base-url",
-        default=OPENCODE_HARNESS_DEFAULT_BASE_URL,
-        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
-    )
-    opencode_enable_p.add_argument(
-        "--token-env",
-        default=OPENCODE_HARNESS_DEFAULT_TOKEN_ENV,
-        help="Env var name recorded for OpenCode auth (never prints the value)",
-    )
-    opencode_enable_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Write OpenCode config even if the Verdict health check fails",
-    )
-    harness_opencode_sub.add_parser(
-        "disable", help="Restore the pre-enable ~/.config/opencode/opencode.json backup"
-    )
-    harness_opencode_sub.add_parser(
-        "status", help="Show OpenCode Verdict provider, base URL, and whether the token env is set"
-    )
-    opencode_certify_p = harness_opencode_sub.add_parser(
-        "certify",
-        help="Evidence-only OpenCode certification (partial; not-installed when binary missing)",
-    )
-    opencode_certify_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Treat Verdict health as ok when probing fails (local proof only)",
-    )
-    harness_cline_p = harness_sub.add_parser(
-        "cline",
-        help="Discover, enable, disable, status, or certify Cline as a Verdict OpenAI-compatible client",
-    )
-    harness_cline_sub = harness_cline_p.add_subparsers(dest="harness_cline_command", required=True)
-    harness_cline_sub.add_parser(
-        "discover", help="Report whether Cline CLI/IDE config is present and where it points"
-    )
-    cline_enable_p = harness_cline_sub.add_parser(
-        "enable", help="Backup Cline config and point OpenAI-compatible base URL at Verdict :8000"
-    )
-    cline_enable_p.add_argument(
-        "--base-url",
-        default=CLINE_HARNESS_DEFAULT_BASE_URL,
-        help="Verdict OpenAI-compatible base URL (default: http://127.0.0.1:8000/v1)",
-    )
-    cline_enable_p.add_argument(
-        "--token-env",
-        default=CLINE_HARNESS_DEFAULT_TOKEN_ENV,
-        help="Env var Cline should read for the bearer token (default: LLMGATE_AUTH_TOKEN; never printed)",
-    )
-    cline_enable_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Write Cline config even if the Verdict health check fails",
-    )
-    harness_cline_sub.add_parser(
-        "disable", help="Restore pre-enable Cline provider/settings/providers.json backups"
-    )
-    harness_cline_sub.add_parser(
-        "status", help="Show Cline install state, base URL, and whether the token env is set"
-    )
-    cline_certify_p = harness_cline_sub.add_parser(
-        "certify", help="Emit Cline harness parity facets (partial while IDE secrets need owner)"
-    )
-    cline_certify_p.add_argument(
-        "--force", action="store_true", help="Treat Verdict health as ok for local certify proof"
-    )
-
-    runtime_p = subparsers.add_parser(
-        "runtime", help="Inspect and safely reconcile optional global runtime ownership records"
-    )
-    runtime_sub = runtime_p.add_subparsers(dest="runtime_command", required=True)
-    runtime_status_p = runtime_sub.add_parser("status", help="Report runtime ownership status")
-    runtime_status_p.add_argument("--json", action="store_true", help="Output JSON")
-    runtime_explain_p = runtime_sub.add_parser(
-        "explain", help="Report observed runtime capability and health evidence"
-    )
-    runtime_explain_p.add_argument("--json", action="store_true", help="Output JSON")
-    runtime_reconcile_p = runtime_sub.add_parser(
-        "reconcile", help="Plan or explicitly apply duplicate-service reconciliation"
-    )
-    runtime_reconcile_p.add_argument(
-        "--plan",
-        action="store_true",
-        help="Perform a read-only deterministic plan (the default when --apply is absent)",
-    )
-    runtime_reconcile_p.add_argument("--apply", action="store_true", help="Apply planned stops")
-    runtime_reconcile_p.add_argument(
-        "--yes", action="store_true", help="Explicit consent required with --apply"
-    )
-    runtime_reconcile_p.add_argument(
-        "--service",
-        dest="service_ids",
-        action="append",
-        help="Limit apply to this exact service id; repeat for multiple services",
-    )
-    runtime_reconcile_p.add_argument("--json", action="store_true", help="Output JSON")
-
-    prove_p = subparsers.add_parser(
-        "prove-at-rest", help="Prove free-tier ∩ active OmniRoute models at rest (daemon or once)"
-    )
-    prove_sub = prove_p.add_subparsers(dest="prove_command", required=True)
-    prove_once_p = prove_sub.add_parser("once", help="Run one prove-at-rest cycle and exit")
-    prove_daemon_p = prove_sub.add_parser(
-        "daemon", help="Continuously prove free∩active identities at rest"
-    )
-    prove_status_p = prove_sub.add_parser("status", help="Show the latest persisted proof state")
-    for _prove_p in (prove_once_p, prove_daemon_p, prove_status_p):
-        _prove_p.add_argument(
-            "--state-path",
-            default=None,
-            help="Proof state JSON path (default: ~/.verdict/prove-at-rest/state.json)",
-        )
-        _prove_p.add_argument("--json", action="store_true", help="Output JSON")
-    for _prove_live_p in (prove_once_p, prove_daemon_p):
-        _prove_live_p.add_argument(
-            "--base-url", default=None, help="OmniRoute origin (default: OMNIROUTE_BASE_URL)"
-        )
-        _prove_live_p.add_argument(
-            "--interval",
-            type=float,
-            default=300.0,
-            help="Daemon interval seconds between cycles (daemon only; default 300)",
-        )
-        _prove_live_p.add_argument(
-            "--timeout", type=float, default=15.0, help="Per-identity probe timeout seconds"
-        )
-        _prove_live_p.add_argument(
-            "--allow-live-probe",
-            action="store_true",
-            help="Explicit consent to network prove-at-rest probes",
-        )
-    uninst_p = subparsers.add_parser(
-        "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"
-    )
-    uninst_p.add_argument(
-        "--purge-data", action="store_true", help="Purge .verdict memory database directory"
-    )
-    subparsers.add_parser("check", help="Validate system configuration file syntax and sanity")
-
-    compat_p = subparsers.add_parser(
-        "compat", help="Cross-repo contract compatibility manifest and gate (ADR-024)"
-    )
-    compat_sub = compat_p.add_subparsers(dest="compat_command")
-    compat_manifest_p = compat_sub.add_parser(
-        "manifest", help="Print the current verdict-core contract compatibility manifest"
-    )
-    compat_manifest_p.add_argument("--json", action="store_true", help="Output JSON")
-    compat_check_p = compat_sub.add_parser(
-        "check",
-        help="Check a downstream repo's declared manifest against the current one, failing closed",
-    )
-    compat_check_p.add_argument(
-        "--declared", required=True, help="Path to the downstream repo's declared manifest JSON"
-    )
-    compat_check_p.add_argument("--json", action="store_true", help="Output JSON")
-
-    memory_p = subparsers.add_parser("memory", help="Local-first unified memory management")
-    memory_sub = memory_p.add_subparsers(dest="memory_command")
-
-    put_p = memory_sub.add_parser("put", help="Put a record into memory")
-    put_p.add_argument("key", help="Key for memory record")
-    put_p.add_argument("content", help="Content of memory record")
-    put_p.add_argument("--namespace", default="default", help="Namespace")
-    put_p.add_argument("--source", default="cli", help="Source provenance")
-
-    srch_p = memory_sub.add_parser("search", help="Search memory records")
-    srch_p.add_argument("query", help="Query text")
-    srch_p.add_argument("--namespace", default=None, help="Namespace filter")
-    srch_p.add_argument("--limit", type=int, default=10, help="Max results")
-
-    exp_p = memory_sub.add_parser("export", help="Export memory manifest")
-    exp_p.add_argument("--output", default="memory_manifest.json", help="Output file")
-
-    imp_p = memory_sub.add_parser("import", help="Import memory manifest")
-    imp_p.add_argument("manifest", help="Manifest JSON file")
-
-    md_p = memory_sub.add_parser("masterdocs", help="Canonicalize MasterDocs database")
-    md_p.add_argument("--db", default="MasterDocsRAG.db", help="Database path")
-    md_p.add_argument(
-        "--allow-legacy-sqlite",
-        action="store_true",
-        help="Explicitly allow an exported local SQLite artifact (prefer manifests)",
-    )
-    md_p.add_argument("--dry-run", action="store_true", help="Canonicalize without writing memory")
-    md_p.add_argument("--limit", type=int, default=1000, help="Maximum source rows to inspect")
-    md_p.add_argument(
-        "--ingest-timestamp",
-        type=float,
-        default=None,
-        help="Stable provenance timestamp (defaults to deterministic zero)",
-    )
-    md_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    cg_p = memory_sub.add_parser("graph", help="Ingest code review graph database")
-    cg_p.add_argument("--db", default="code_graph.db", help="Database path")
-    cg_p.add_argument(
-        "--allow-legacy-sqlite",
-        action="store_true",
-        help="Explicitly allow an exported local SQLite artifact (prefer manifests)",
-    )
-
-    docs_p = memory_sub.add_parser(
-        "docs",
-        help="Verify or ingest authoritative project and optional external runtime documentation",
-    )
-    docs_p.add_argument(
-        "--fix", action="store_true", help="Fetch and ingest missing/stale documents"
-    )
-    docs_p.add_argument("--repo-root", default=str(Path.cwd()), help="Repository root")
-    docs_p.add_argument("--db-path", default=None, help="Shared memory database path")
-    docs_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    setup_p = memory_sub.add_parser(
-        "setup", help="Autopilot wizard to connect tools (Codex, Claude, Pi) to Unified Memory"
-    )
-    setup_p.add_argument(
-        "--tools", default=None, help="Comma-separated tools to configure (default: auto-detected)"
-    )
-
-    mcp_p = subparsers.add_parser(
-        "mcp", help="Manage and run Model Context Protocol (MCP) stdio server"
-    )
-    mcp_sub = mcp_p.add_subparsers(dest="mcp_command", required=True)
-    mcp_sub.add_parser("serve", help="Launch the stdio MCP JSON-RPC server")
-    mcp_init_p = mcp_sub.add_parser(
-        "init", help="Configure Verdict MCP server across host tool environments"
-    )
-    mcp_init_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    mcp_status_p = mcp_sub.add_parser("status", help="Report active MCP registrations")
-    mcp_status_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    hook_p = subparsers.add_parser(
-        "hook", help="Manage Verdict lifecycle hooks for Codex and Claude"
-    )
-    hook_sub = hook_p.add_subparsers(dest="hook_command", required=True)
-    hook_recall_p = hook_sub.add_parser("recall", help="Search memory for prior context")
-    hook_recall_p.add_argument("query", help="Search query")
-    hook_recall_p.add_argument("--limit", type=int, default=5, help="Max results")
-    hook_recall_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    hook_record_p = hook_sub.add_parser("record", help="Record a session/event memory entry")
-    hook_record_p.add_argument("key", help="Memory key")
-    hook_record_p.add_argument("value", help="Memory value/content")
-    hook_record_p.add_argument("--namespace", default="sessions", help="Namespace")
-    hook_record_p.add_argument("--source", default="cli", help="Source provenance")
-    hook_configure_p = hook_sub.add_parser(
-        "configure", help="Configure memory bridge for Codex and Claude"
-    )
-    hook_configure_p.add_argument(
-        "--tools", default=None, help="Comma-separated tools (default: codex,claude)"
-    )
-    hook_configure_p.add_argument(
-        "--json", action="store_true", help="Output machine-readable JSON"
-    )
-    hook_status_p = hook_sub.add_parser("status", help="Show hook and MCP registration status")
-    hook_status_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    hook_status_p.add_argument("--db-path", default=None, help="Shared memory database path")
-    hook_gate_p = hook_sub.add_parser(
-        "claude-gate",
-        help="Fail-closed catalog check for Claude Code / Codex SessionStart hooks (exit 2 if blocked)",
-    )
-    hook_gate_p.add_argument(
-        "--base-url",
-        default="http://127.0.0.1:20128",
-        help="OmniRoute or OpenAI-compatible gateway base URL",
-    )
-
-    run_p = subparsers.add_parser("run", help="Route a single prompt/task (alias of route)")
-    run_p.add_argument("task", help="Task description or prompt text")
-    run_p.add_argument("--terse", action="store_true", help="Output ONLY the target model string")
-    run_p.add_argument(
-        "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
-    )
-
-    plan_p = subparsers.add_parser("plan", help="Print a mutation-free setup plan")
-    plan_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    choose_p = subparsers.add_parser(
-        "choose", help="Choose an eligible execution target for Prime dispatch"
-    )
-    choose_p.add_argument(
-        "--task-class",
-        required=True,
-        dest="task_class",
-        help="Task class (implementation, architecture, ...)",
-    )
-    choose_p.add_argument(
-        "--requires", default="", help="Comma-separated required capabilities (example: tools,code)"
-    )
-    choose_p.add_argument(
-        "--model",
-        default=None,
-        help="Explicit model identity; eligible selection wins, ineligible fails closed",
-    )
-    choose_p.add_argument(
-        "--candidates-json",
-        default=None,
-        help="JSON file of CandidateEvidence fixtures (required for P0)",
-    )
-    choose_p.add_argument(
-        "--json", action="store_true", help="Output machine-readable JSON receipt"
-    )
-
-    models_p = subparsers.add_parser(
-        "models", help="List the qualified model catalog used for routing and simulation"
-    )
-    models_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    inspect_p = subparsers.add_parser("inspect", help="Inspect one model's catalog record")
-    inspect_p.add_argument("model_id", help="Model ID to inspect")
-    inspect_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    receipt_p = subparsers.add_parser(
-        "receipt", help="Inspect durable RoutingReceiptV1 records (BOD-144)"
-    )
-    receipt_sub = receipt_p.add_subparsers(dest="receipt_action", required=True)
-    receipt_list_p = receipt_sub.add_parser("list", help="List routing receipts")
-    receipt_list_p.add_argument("--scope", default=None, help="Optional receipt scope filter")
-    receipt_list_p.add_argument(
-        "--db",
-        dest="db_path",
-        default=None,
-        help="ReceiptStore sqlite path (default: .verdict/receipts.db)",
-    )
-    receipt_list_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    receipt_show_p = receipt_sub.add_parser("show", help="Show one routing receipt")
-    receipt_show_p.add_argument("receipt_id", nargs="?", default=None, help="Receipt id")
-    receipt_show_p.add_argument("--attempt", dest="attempt_id", default=None, help="Attempt id")
-    receipt_show_p.add_argument("--scope", default=None, help="Receipt scope")
-    receipt_show_p.add_argument(
-        "--db", dest="db_path", default=None, help="ReceiptStore sqlite path"
-    )
-    receipt_show_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    receipt_export_p = receipt_sub.add_parser("export", help="Export one routing receipt as JSON")
-    receipt_export_p.add_argument("receipt_id", nargs="?", default=None, help="Receipt id")
-    receipt_export_p.add_argument("--attempt", dest="attempt_id", default=None, help="Attempt id")
-    receipt_export_p.add_argument("--scope", default=None, help="Receipt scope")
-    receipt_export_p.add_argument(
-        "--db", dest="db_path", default=None, help="ReceiptStore sqlite path"
-    )
-
-    replay_p = subparsers.add_parser("replay", help="Replay a recorded execution session")
-    replay_p.add_argument("session_id", help="Session ID to replay")
-    replay_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    failover_p = subparsers.add_parser(
-        "failover-proof", help="Run the offline forced-failover and replay proof"
-    )
-    failover_p.add_argument(
-        "--memory-path",
-        default=".verdict-failover-memory.db",
-        help="MemoryPlane database path for the replayable session",
-    )
-    failover_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    simulate_p = subparsers.add_parser(
-        "simulate", help="Forecast tokens, cost, risk, and model before any paid call"
-    )
-    simulate_p.add_argument("task", help="Task description or prompt text")
-    simulate_p.add_argument(
-        "--criticality", default="medium", choices=["critical", "high", "medium", "low"]
-    )
-    simulate_p.add_argument("--model", dest="model_override", default=None, help="Model override")
-    simulate_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    subparsers.add_parser("cost-report", help="Estimate token cost from routing decision history")
-
-    resume_p = subparsers.add_parser(
-        "resume", help="Reconstruct durable story resume state (worktree + handoff + prompt)"
-    )
-    resume_p.add_argument("story", help="Linear story id (e.g. BOD-65)")
-    resume_p.add_argument(
-        "--with",
-        dest="with_harness",
-        choices=["claude", "codex", "cursor", "prime"],
-        default=None,
-        help="Optional harness launcher stub (records intent; does not exec yet)",
-    )
-    resume_p.add_argument(
-        "--repo", default=".", help="Repository path used for worktree discovery (default: cwd)"
-    )
-    resume_p.add_argument(
-        "--create",
-        action="store_true",
-        help="Create a story worktree when none exists (reattach-before-create still applies)",
-    )
-    resume_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-
-    args = parser.parse_args()
-
-    if args.command == "setup":
-        scope = "all"
-        if args.setup_action in {"intelligence", "gateways", "harnesses"}:
-            scope = args.setup_action
-        if getattr(args, "rollback", False):
-            cmd_setup(
-                rollback=True,
-                rollback_actions=list(getattr(args, "rollback_actions", None) or []),
-                output_json=args.json,
-                state_dir=getattr(args, "state_dir", None),
-            )
-        elif args.setup_action == "plan" or args.plan:
-            cmd_setup_plan(output_json=args.json, scope=scope, recommended=args.recommended)
-        elif args.setup_action in {"intelligence", "gateways", "harnesses"} and not args.apply:
-            # Bare scoped subcommands plan bootstrap for that scope (not the legacy wizard).
-            cmd_setup_plan(output_json=args.json, scope=scope, recommended=True)
-        else:
-            cmd_setup(
-                dry_run=args.dry_run,
-                output_json=args.json,
-                non_interactive=args.non_interactive,
-                recommended=args.recommended,
-                plan_only=False,
-                scope=scope,
-                allowlist=list(args.allowlist or []),
-                consent=bool(args.yes),
-                apply=bool(args.apply),
-                state_dir=getattr(args, "state_dir", None),
-            )
-    elif args.command == "route":
-        cmd_route(
-            args.task,
-            args.criticality,
-            args.terse,
-            allow_offline=getattr(args, "allow_offline", False),
-            allow_legacy_selector=getattr(args, "allow_legacy_selector", None),
-        )
-    elif args.command == "autodev":
-        if args.autodev_action == "packet":
-            if args.packet_action == "shadow":
-                cmd_autodev_packet_shadow(args.episodes, output_json=args.json)
-            elif args.packet_action == "canary":
-                if args.rollback:
-                    cmd_autodev_packet_canary_rollback(args.rollback, output_json=args.json)
-                else:
-                    cmd_autodev_packet_canary(args.episodes, args.admitted, output_json=args.json)
-            elif args.packet_action == "execute":
-                decision = _cli_execution_path_decision(
-                    parser, getattr(args, "execution_path_request", None), packet_path=args.packet
-                )
-                cmd_autodev_packet_execute(
-                    args.packet,
-                    getattr(args, "repo", "."),
-                    output_json=args.json,
-                    allow_live=getattr(args, "allow_live", False),
-                    resume=True,
-                    primary_fallback=getattr(args, "primary_fallback", None),
-                    prefer_non_primary=getattr(args, "prefer_non_primary", False),
-                    base_url=getattr(args, "packet_base_url", None),
-                    canary_path=getattr(args, "canary_path", None),
-                    delegation=getattr(args, "delegation", None),
-                    undelegable_reason=getattr(args, "undelegable_reason", None),
-                    execution_path_decision=decision,
-                )
-            else:
-                cmd_autodev_packet(
-                    args.packet_action,
-                    args.packet,
-                    source_path=getattr(args, "source_path", None),
-                    model=getattr(args, "model", None),
-                    output_json=args.json,
-                    family_a_path=getattr(args, "family_a_path", None),
-                    family_b_path=getattr(args, "family_b_path", None),
-                )
-        else:
-            if not args.objective:
-                parser.error("verdict autodev requires --objective unless using packet operations")
-            cmd_autodev(
-                args.objective,
-                args.repo,
-                orchestrator_model=args.orchestrator_model,
-                executor_model=args.executor_model,
-                base_url=args.base_url,
-                output_json=args.json,
-                allow_live=args.allow_live,
-                no_mechanical=args.no_mechanical,
-                dry_run=args.dry_run,
-                execution_path_decision=_cli_execution_path_decision(
-                    parser, getattr(args, "execution_path_request", None), task=args.objective
-                ),
-            )
-    elif args.command == "autodev-golden-path":
-        cmd_autodev_golden_path(
-            args.objective,
-            args.repo,
-            args.memory_path,
-            args.verify,
-            args.timeout,
-            args.owned_path,
-            args.json,
-        )
-    elif args.command == "stats":
-        cmd_stats(args.log_path)
-    elif args.command == "benchmark":
-        cmd_benchmark(
-            args.fixture,
-            args.output_json,
-            allow_live_provider=args.allow_live_provider,
-            live_provider=args.live_provider,
-            savings=args.savings,
-            live_paired=args.live_paired,
-        )
-    elif args.command == "quickstart":
-        cmd_quickstart(
-            output_json=args.json, non_interactive=args.non_interactive, dry_run=args.dry_run
-        )
-    elif args.command == "ui":
-        try:
-            # Resolve the path dynamically without executing the file
-            import importlib.util
-            import subprocess
-            import sys
-
-            spec = importlib.util.find_spec("verdict.dashboard")
-            if not spec or not spec.origin:
-                console.print("[bold red]❌ Dashboard module missing.[/bold red]")
-                sys.exit(1)
-            subprocess.run([sys.executable, "-m", "streamlit", "run", spec.origin])
-
-        except ImportError:
-            console.print("[bold red]❌ UI dependencies not found.[/bold red]")
-            console.print("Please install the UI package suite:")
-            console.print('  [bold cyan]pipx install "verdict-core[all]" --force[/bold cyan]')
-            sys.exit(1)
-    elif args.command == "serve":
-        try:
-            from verdict.api import start_server
-
-            if args.dev:
-                os.environ["LLMGATE_AVAILABILITY_PROFILE"] = "development"
-                console.print(
-                    "[bold cyan]🔥 Dev mode: hot-reload enabled "
-                    "(LLMGATE_AVAILABILITY_PROFILE=development)[/bold cyan]"
-                )
-            start_server(args.port, args.host, reload=args.dev)
-        except ImportError:
-            console.print("[bold red]❌ Server dependencies not found.[/bold red]")
-            console.print("Please install the FastAPI server suite:")
-            console.print('  [bold cyan]pipx install "verdict-core[all]" --force[/bold cyan]')
-            sys.exit(1)
-    elif args.command == "probe":
-        cmd_probe(
-            args.models,
-            base_url=args.base_url,
-            timeout=args.timeout,
-            output_json=args.json,
-            allow_live_probe=args.allow_live_probe,
-        )
-    elif args.command == "catalog":
-        cmd_catalog(
-            base_url=args.base_url,
-            management=args.management,
-            expected_rows=args.expected_rows,
-            freshness_seconds=args.freshness_seconds,
-            db_path=args.db_path,
-            probe=args.probe,
-            probe_limit=args.probe_limit,
-            probe_timeout=args.probe_timeout,
-            output_json=args.json,
-            allow_live_probe=args.allow_live_probe,
-        )
-    elif args.command == "detect":
-        cmd_detect(
-            verbose=args.verbose,
-            output_json=args.json,
-            output_config=args.config,
-            offline=args.offline,
-        )
-    elif args.command == "certify":
-        cmd_certify(
-            snapshot_path=getattr(args, "certify_from", None),
-            output_json=getattr(args, "json", True),
-        )
-    elif args.command == "suggest":
-        cmd_suggest(args.log_path)
-    elif args.command == "doctor":
-        cmd_doctor(fix=getattr(args, "fix", False), output_json=getattr(args, "json", False))
-    elif args.command == "harness":
-        if args.harness_target == "codex":
-            cmd_harness_codex(
-                args.harness_codex_command,
-                base_url=getattr(args, "base_url", CODEX_HARNESS_DEFAULT_BASE_URL),
-                token_env=getattr(args, "token_env", CODEX_HARNESS_DEFAULT_TOKEN_ENV),
-                force=getattr(args, "force", False),
-            )
-        elif args.harness_target == "hermes":
-            cmd_harness_hermes(
-                args.harness_hermes_command,
-                base_url=getattr(args, "base_url", HERMES_HARNESS_DEFAULT_BASE_URL),
-                token_env=getattr(args, "token_env", HERMES_HARNESS_DEFAULT_TOKEN_ENV),
-                model=getattr(args, "model", HERMES_HARNESS_DEFAULT_MODEL),
-                force=getattr(args, "force", False),
-            )
-        elif args.harness_target == "claude":
-            cmd_harness_claude(
-                args.harness_claude_command,
-                base_url=getattr(args, "base_url", CLAUDE_HARNESS_DEFAULT_BASE_URL),
-                token_env=getattr(args, "token_env", CLAUDE_HARNESS_DEFAULT_TOKEN_ENV),
-                force=getattr(args, "force", False),
-            )
-        elif args.harness_target == "cursor":
-            cmd_harness_cursor(
-                args.harness_cursor_command,
-                base_url=getattr(args, "base_url", CURSOR_HARNESS_DEFAULT_BASE_URL),
-                token_env=getattr(args, "token_env", CURSOR_HARNESS_DEFAULT_TOKEN_ENV),
-                force=getattr(args, "force", False),
-                wrapper=getattr(args, "wrapper", False),
-            )
-        elif args.harness_target == "prime":
-            cmd_harness_prime(
-                args.harness_prime_command,
-                base_url=getattr(args, "base_url", PRIME_HARNESS_DEFAULT_BASE_URL),
-                token_env=getattr(args, "token_env", PRIME_HARNESS_DEFAULT_TOKEN_ENV),
-                force=getattr(args, "force", False),
-            )
-        elif args.harness_target == "opencode":
-            cmd_harness_opencode(
-                args.harness_opencode_command,
-                base_url=getattr(args, "base_url", OPENCODE_HARNESS_DEFAULT_BASE_URL),
-                token_env=getattr(args, "token_env", OPENCODE_HARNESS_DEFAULT_TOKEN_ENV),
-                force=getattr(args, "force", False),
-            )
-        elif args.harness_target == "cline":
-            cmd_harness_cline(
-                args.harness_cline_command,
-                base_url=getattr(args, "base_url", CLINE_HARNESS_DEFAULT_BASE_URL),
-                token_env=getattr(args, "token_env", CLINE_HARNESS_DEFAULT_TOKEN_ENV),
-                force=getattr(args, "force", False),
-            )
-        else:
-            raise SystemExit(f"unknown harness: {args.harness_target}")
-    elif args.command == "runtime":
-        cmd_runtime(
-            args.runtime_command,
-            apply=getattr(args, "apply", False),
-            consent=getattr(args, "yes", False),
-            service_ids=getattr(args, "service_ids", None),
-            output_json=getattr(args, "json", False),
-        )
-    elif args.command == "prove-at-rest":
-        cmd_prove_at_rest(
-            args.prove_command,
-            base_url=getattr(args, "base_url", None),
-            state_path=getattr(args, "state_path", None),
-            interval=getattr(args, "interval", 300.0),
-            timeout=getattr(args, "timeout", 15.0),
-            allow_live_probe=getattr(args, "allow_live_probe", False),
-            output_json=getattr(args, "json", False),
-        )
-    elif args.command == "uninstall":
-        cmd_uninstall(purge_data=getattr(args, "purge_data", False))
-    elif args.command == "check":
-        cmd_check()
-    elif args.command == "compat":
-        cmd_compat(
-            getattr(args, "compat_command", None),
-            getattr(args, "declared", None),
-            getattr(args, "json", False),
-        )
-    elif args.command == "memory":
-        cmd_memory(args)
-    elif args.command == "mcp":
-        cmd_mcp(args)
-    elif args.command == "hook":
-        cmd_hook(args)
-    elif args.command == "run":
-        cmd_run(args.task, args.criticality, args.terse)
-    elif args.command == "plan":
-        cmd_plan(output_json=args.json)
-    elif args.command == "choose":
-        cmd_choose(
-            task_class=args.task_class,
-            requires=args.requires,
-            model=args.model,
-            candidates_json=args.candidates_json,
-            output_json=args.json,
-        )
-    elif args.command == "models":
-        cmd_models(output_json=args.json)
-    elif args.command == "inspect":
-        cmd_inspect(args.model_id, output_json=args.json)
-    elif args.command == "receipt":
-        cmd_receipt(
-            args.receipt_action,
-            receipt_id=getattr(args, "receipt_id", None),
-            attempt_id=getattr(args, "attempt_id", None),
-            scope=getattr(args, "scope", None),
-            db_path=getattr(args, "db_path", None),
-            output_json=bool(getattr(args, "json", False)),
-        )
-    elif args.command == "replay":
-        cmd_replay(args.session_id, output_json=args.json)
-    elif args.command == "simulate":
-        cmd_simulate(
-            args.task, args.criticality, model_override=args.model_override, output_json=args.json
-        )
-    elif args.command == "failover-proof":
-        cmd_failover_proof(memory_path=args.memory_path, output_json=args.json)
-    elif args.command == "metadata":
-        cmd_metadata(args)
-    elif args.command == "cost-report":
-        cmd_cost_report()
-    elif args.command == "resume":
-        cmd_resume(
-            args.story,
-            with_harness=getattr(args, "with_harness", None),
-            output_json=args.json,
-            repo=Path(args.repo),
-            create_if_missing=bool(getattr(args, "create", False)),
-        )
-    else:
-        parser.print_help()
+    dispatch(parser, parser.parse_args())
 
 
 def cmd_resume(
@@ -4509,26 +3381,35 @@ def cmd_resume(
         if output_json:
             print(json.dumps({"error": str(exc), "story": story}, sort_keys=True))
         else:
-            console.print(f"[bold red]resume failed:[/bold red] {exc}")
+            from verdict import present
+
+            present.header("Resume")
+            present.fail("resume", str(exc))
         raise SystemExit(1) from exc
 
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return payload
 
-    console.print(f"[bold green]Resume[/bold green] {payload['story_id']}")
-    console.print(f"  worktree: {payload['worktree']}")
-    console.print(f"  branch:   {payload.get('branch')}")
-    console.print(f"  HEAD:     {payload.get('head_sha')}")
-    console.print(f"  dirty:    {payload.get('dirty')}")
-    console.print(f"  reattach: {payload.get('reattach')}")
-    console.print(f"  previous: {payload.get('previous_worker')}")
+    from verdict import present
+
+    present.header(f"Resume  /  {payload['story_id']}")
+    rows: dict[str, Any] = {
+        "worktree": payload["worktree"],
+        "branch": payload.get("branch"),
+        "HEAD": payload.get("head_sha"),
+        "dirty": payload.get("dirty"),
+        "reattach": payload.get("reattach"),
+        "previous": payload.get("previous_worker"),
+    }
     if payload.get("pr_url"):
-        console.print(f"  pr:       {payload['pr_url']} ({payload.get('pr_state')})")
+        rows["pr"] = f"{payload['pr_url']} ({payload.get('pr_state')})"
+    present.kv(rows)
     if with_harness:
-        console.print(f"  launcher: {with_harness} [yellow](stub — not executed)[/yellow]")
-    console.print("")
-    console.print(payload["resume_prompt"])
+        present.warn("launcher", f"{with_harness} (stub — not executed)")
+    present.section("Resume prompt")
+    # The prompt body is meant for copy/paste into a harness; keep it raw.
+    print(payload["resume_prompt"])
     return payload
 
 
@@ -4540,30 +3421,61 @@ def cmd_harness_codex(
     force: bool = False,
 ) -> None:
     """Enable, disable, or inspect Codex as a Verdict OpenAI-compatible client."""
-    from verdict.harness_codex import HarnessCodexError, disable, enable, format_status, status
+    from verdict.harness_codex import HarnessCodexError, disable, enable, status
 
     try:
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]Codex harness enabled[/bold green]")
-            console.print("  provider: verdict")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("Codex harness")
+            present.ok("Codex harness enabled")
+            present.kv(
+                {
+                    "provider": "verdict",
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Codex harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.codex/config.toml backup")
+            from verdict import present
+
+            present.header("Codex harness")
+            present.ok("Codex harness disabled")
+            present.note("restored pre-enable ~/.codex/config.toml backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            report = status()
+            state = (
+                "enabled"
+                if report.enabled
+                else "configured"
+                if report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Codex harness")
+            present.status("Codex harness", "ok" if report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": report.provider or "(none)",
+                    "base URL": report.base_url or "(none)",
+                    "token environment": f"{report.token_env} (set: {'yes' if report.token_env_set else 'no'})",
+                    "config": report.config_path,
+                }
+            )
             return
     except HarnessCodexError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Codex harness")
+        present.fail("Codex harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness codex command: {command}")
 
@@ -4577,31 +3489,63 @@ def cmd_harness_hermes(
     force: bool = False,
 ) -> None:
     """Enable, disable, or inspect Hermes as a Verdict OpenAI-compatible client."""
-    from verdict.harness_hermes import HarnessHermesError, disable, enable, format_status, status
+    from verdict.harness_hermes import HarnessHermesError, disable, enable, status
 
     try:
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, model=model, force=force)
-            console.print("[bold green]Hermes harness enabled[/bold green]")
-            console.print("  provider: Verdict")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  model: {result.model}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("Hermes harness")
+            present.ok("Hermes harness enabled")
+            present.kv(
+                {
+                    "provider": "Verdict",
+                    "base URL": result.base_url,
+                    "model": result.model,
+                    "token environment": result.token_env,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Hermes harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.hermes/config.yaml backup")
+            from verdict import present
+
+            present.header("Hermes harness")
+            present.ok("Hermes harness disabled")
+            present.note("restored pre-enable ~/.hermes/config.yaml backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            report = status()
+            state = (
+                "enabled"
+                if report.enabled
+                else "configured"
+                if report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Hermes harness")
+            present.status("Hermes harness", "ok" if report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": report.provider or "(none)",
+                    "base URL": report.base_url or "(none)",
+                    "model": report.model or "(none)",
+                    "token environment": f"{report.token_env} (set: {'yes' if report.token_env_set else 'no'})",
+                    "config": report.config_path,
+                }
+            )
             return
     except HarnessHermesError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Hermes harness")
+        present.fail("Hermes harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness hermes command: {command}")
 
@@ -4620,40 +3564,113 @@ def cmd_harness_claude(
         disable,
         discover,
         enable,
-        format_certify,
-        format_discover,
-        format_status,
         status,
     )
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.status(
+                "Claude Code installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                    "gate hook": "yes" if discovery.gate_hook_present else "no",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]Claude Code harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.ok("Claude Code harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Claude Code harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.claude/settings.json backup")
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.ok("Claude Code harness disabled")
+            present.note("restored pre-enable ~/.claude/settings.json backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.status(
+                "Claude Code harness", "ok" if status_report.enabled else "warning", state
+            )
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                    "gate hook": "yes" if status_report.gate_hook_present else "no",
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("Claude Code harness")
+            present.status(
+                "Claude Code certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessClaudeError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Claude Code harness")
+        present.fail("Claude Code harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness claude command: {command}")
 
@@ -4673,42 +3690,113 @@ def cmd_harness_cursor(
         disable,
         discover,
         enable,
-        format_certify,
-        format_discover,
-        format_status,
         status,
     )
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.status(
+                "Cursor installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                    "settings": discovery.settings_path or "(none)",
+                    "wrapper": discovery.wrapper_path or "(none)",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force, wrapper=wrapper)
-            console.print("[bold green]Cursor harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
-            if result.wrapper_path is not None:
-                console.print(f"  wrapper: {result.wrapper_path}")
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.ok("Cursor harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "wrapper": result.wrapper_path or "(none)",
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Cursor harness disabled[/bold green]")
-            console.print("  restored pre-enable Cursor provider/settings/wrapper backups")
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.ok("Cursor harness disabled")
+            present.note("restored pre-enable Cursor provider/settings/wrapper backups")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.status("Cursor harness", "ok" if status_report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                    "wrapper": "yes" if status_report.wrapper_present else "no",
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("Cursor harness")
+            present.status(
+                "Cursor certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessCursorError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Cursor harness")
+        present.fail("Cursor harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness cursor command: {command}")
 
@@ -4721,46 +3809,110 @@ def cmd_harness_prime(
     force: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Prime Agent → Verdict."""
-    from verdict.harness_prime import (
-        HarnessPrimeError,
-        certify,
-        disable,
-        discover,
-        enable,
-        format_certify,
-        format_discover,
-        format_status,
-        status,
-    )
+    from verdict.harness_prime import HarnessPrimeError, certify, disable, discover, enable, status
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.status(
+                "Prime Agent installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]Prime Agent harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.ok("Prime Agent harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Prime Agent harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.prime/agent/models.json backup")
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.ok("Prime Agent harness disabled")
+            present.note("restored pre-enable ~/.prime/agent/models.json backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.status(
+                "Prime Agent harness", "ok" if status_report.enabled else "warning", state
+            )
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("Prime Agent harness")
+            present.status(
+                "Prime Agent certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessPrimeError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Prime Agent harness")
+        present.fail("Prime Agent harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness prime command: {command}")
 
@@ -4779,41 +3931,111 @@ def cmd_harness_opencode(
         disable,
         discover,
         enable,
-        format_certify,
-        format_discover,
-        format_status,
         status,
     )
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.status(
+                "OpenCode installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]OpenCode harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  model: {result.model}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.ok("OpenCode harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "model": result.model,
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
             return
         if command == "disable":
             disable()
-            console.print("[bold green]OpenCode harness disabled[/bold green]")
-            console.print("  restored pre-enable ~/.config/opencode/opencode.json backup")
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.ok("OpenCode harness disabled")
+            present.note("restored pre-enable ~/.config/opencode/opencode.json backup")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.status("OpenCode harness", "ok" if status_report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                    "model": status_report.model or "(none)",
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("OpenCode harness")
+            present.status(
+                "OpenCode certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessOpenCodeError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("OpenCode harness")
+        present.fail("OpenCode harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness opencode command: {command}")
 
@@ -4826,52 +4048,119 @@ def cmd_harness_cline(
     force: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Cline → Verdict."""
-    from verdict.harness_cline import (
-        HarnessClineError,
-        certify,
-        disable,
-        discover,
-        enable,
-        format_certify,
-        format_discover,
-        format_status,
-        status,
-    )
+    from verdict.harness_cline import HarnessClineError, certify, disable, discover, enable, status
 
     try:
         if command == "discover":
-            console.print(format_discover(discover()), end="")
+            discovery = discover()
+            from verdict import present
+
+            present.header("Cline harness")
+            present.status(
+                "Cline installation",
+                "found" if discovery.installed else "missing",
+                discovery.binary_path or "(none)",
+            )
+            present.kv(
+                {
+                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
+                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
+                    "base URL": discovery.base_url or "(none)",
+                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
+                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
+                    "CLI home": "yes" if discovery.cli_home_present else "no",
+                    "settings": discovery.settings_path or "(none)",
+                    "providers JSON": discovery.providers_json_path or "(none)",
+                }
+            )
             return
         if command == "enable":
             result = enable(base_url=base_url, token_env=token_env, force=force)
-            console.print("[bold green]Cline harness enabled[/bold green]")
-            console.print(f"  integration: {result.integration}")
-            console.print(f"  base_url: {result.base_url}")
-            console.print(f"  token_env: {result.token_env}")
-            if result.created_backup:
-                console.print(f"  backup: {result.backup_path}")
-            else:
-                console.print(f"  config: {result.config_path}")
-            if result.providers_json_path is not None:
-                console.print(f"  providers_json: {result.providers_json_path}")
-            if result.settings_path is not None:
-                console.print(f"  settings: {result.settings_path}")
-            for step in result.ui_steps:
-                console.print(f"  ui: {step}")
+            from verdict import present
+
+            present.header("Cline harness")
+            present.ok("Cline harness enabled")
+            present.kv(
+                {
+                    "integration": result.integration,
+                    "base URL": result.base_url,
+                    "token environment": result.token_env,
+                    "providers JSON": result.providers_json_path or "(none)",
+                    "settings": result.settings_path or "(none)",
+                    "backup" if result.created_backup else "config": (
+                        result.backup_path if result.created_backup else result.config_path
+                    ),
+                }
+            )
+            if result.ui_steps:
+                present.section("Manual UI steps")
+                for step in result.ui_steps:
+                    present.note(step)
             return
         if command == "disable":
             disable()
-            console.print("[bold green]Cline harness disabled[/bold green]")
-            console.print("  restored pre-enable Cline provider/settings/providers.json backups")
+            from verdict import present
+
+            present.header("Cline harness")
+            present.ok("Cline harness disabled")
+            present.note("restored pre-enable Cline provider/settings/providers.json backups")
             return
         if command == "status":
-            console.print(format_status(status()), end="")
+            status_report = status()
+            state = (
+                "enabled"
+                if status_report.enabled
+                else "configured"
+                if status_report.config_exists
+                else "not configured"
+            )
+            from verdict import present
+
+            present.header("Cline harness")
+            present.status("Cline harness", "ok" if status_report.enabled else "warning", state)
+            present.kv(
+                {
+                    "provider": status_report.provider or "(none)",
+                    "base URL": status_report.base_url or "(none)",
+                    "integration": status_report.integration or "(none)",
+                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
+                    "config": status_report.config_path,
+                    "installed": "yes" if status_report.installed else "no",
+                    "binary": status_report.binary_path or "(none)",
+                }
+            )
             return
         if command == "certify":
-            console.print(format_certify(certify(force=force)), end="")
+            certification = certify(force=force)
+            from verdict import present
+
+            present.header("Cline harness")
+            present.status(
+                "Cline certification",
+                certification.overall,
+                "healthy" if certification.healthy else "not healthy",
+            )
+            present.kv(
+                {
+                    "base URL": certification.base_url or "(none)",
+                    "token environment set": "yes" if certification.token_env_set else "no",
+                }
+            )
+            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
+            if certification.notes:
+                present.section("Notes")
+                for item in certification.notes:
+                    present.note(item)
+            if certification.needs_owner:
+                present.section("Needs owner")
+                for item in certification.needs_owner:
+                    present.note(item)
             return
     except HarnessClineError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        from verdict import present
+
+        present.header("Cline harness")
+        present.fail("Cline harness", str(exc))
         raise SystemExit(1) from exc
     raise SystemExit(f"unknown harness cline command: {command}")
 
@@ -4895,7 +4184,6 @@ def cmd_prove_at_rest(
     )
 
     resolved_state = Path(state_path).expanduser() if state_path else default_state_path()
-
     if prove_command == "status":
         cycle = ProveAtRestStore(path=resolved_state).read()
         if cycle is None:
@@ -4903,29 +4191,25 @@ def cmd_prove_at_rest(
             if output_json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
-                console.print(f"[yellow]No prove-at-rest state at {resolved_state}[/yellow]")
+                from verdict import present
+
+                present.header("Prove at rest")
+                present.warn("prove-at-rest", f"No prove-at-rest state at {resolved_state}")
             return
         payload = cycle.to_dict()
         payload["state_path"] = str(resolved_state)
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return
+        from verdict import present
+
         summary = cycle.summary
-        console.print(
-            f"[bold cyan]prove-at-rest[/bold cyan] cycle={cycle.cycle_id} "
-            f"healthy={summary.get('healthy', 0)} failed={summary.get('failed', 0)} "
-            f"skipped={summary.get('skipped', 0)}"
+        present.header("Prove at rest  /  status")
+        present.kv({"cycle": cycle.cycle_id, "state": resolved_state, **summary})
+        present.table(
+            ["Status", "Identity", "Reason"],
+            [(item.status, item.identity_id, item.reason or "-") for item in cycle.results],
         )
-        console.print(f"  state: {resolved_state}")
-        for item in cycle.results:
-            if item.status == "healthy":
-                style = "green"
-            elif item.status == "failed":
-                style = "red"
-            else:
-                style = "yellow"
-            detail = f" ({item.reason})" if item.reason else ""
-            console.print(f"  [{style}]{item.status}[/{style}] {item.identity_id}{detail}")
         return
 
     if prove_command in {"once", "daemon"} and not allow_live_probe:
@@ -4933,7 +4217,10 @@ def cmd_prove_at_rest(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Prove at rest")
+            present.fail("prove-at-rest", message)
         raise SystemExit(2)
 
     try:
@@ -4949,7 +4236,10 @@ def cmd_prove_at_rest(
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
-            console.print(f"[bold red]{message}[/bold red]")
+            from verdict import present
+
+            present.header("Prove at rest")
+            present.fail("prove-at-rest", message)
         raise SystemExit(2) from exc
 
     if prove_command == "once":
@@ -4959,28 +4249,30 @@ def cmd_prove_at_rest(
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
+            from verdict import present
+
             summary = cycle.summary
-            console.print(
-                f"[bold green]prove-at-rest once[/bold green] "
-                f"healthy={summary.get('healthy', 0)} failed={summary.get('failed', 0)} "
-                f"skipped={summary.get('skipped', 0)}"
-            )
-            console.print(f"  wrote {resolved_state}")
+            present.header("Prove at rest  /  once")
+            present.kv({"state": resolved_state, **summary})
+            present.status("prove-at-rest", "failed" if summary.get("failed", 0) else "ok")
         if cycle.summary.get("failed", 0):
             raise SystemExit(1)
         return
 
     if prove_command == "daemon":
-        console.print(
-            f"[bold cyan]prove-at-rest daemon[/bold cyan] interval={interval}s "
-            f"state={resolved_state}"
-        )
+        from verdict import present
+
+        if not output_json:
+            present.header("Prove at rest  /  daemon")
+            present.kv({"interval": f"{interval}s", "state": resolved_state})
 
         def report_cycle_error(exc: Exception) -> None:
             code = getattr(exc, "code", exc.__class__.__name__)
-            console.print(
-                f"[bold red]prove-at-rest cycle failed[/bold red] code={code}: {exc}; "
-                f"retaining last complete state and retrying in {interval}s"
+            if output_json:
+                return
+            present.fail(
+                "prove-at-rest cycle failed",
+                f"code={code}: {exc}; retaining last complete state and retrying in {interval}s",
             )
 
         daemon.on_cycle_error = report_cycle_error
@@ -5002,7 +4294,7 @@ def cmd_prove_at_rest(
                     )
                 )
             else:
-                console.print("[yellow]prove-at-rest daemon stopped[/yellow]")
+                present.warn("prove-at-rest daemon", "prove-at-rest daemon stopped")
         return
 
     raise SystemExit(f"unknown prove-at-rest command: {prove_command}")
@@ -5027,15 +4319,19 @@ def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        from rich.console import Console
+        from verdict import present
 
-        console = Console()
-        console.print("[bold green]Failover proof completed[/bold green]")
-        console.print(f"  Session ID: {proof.mission_id}")
-        console.print("  Initial model: provider-a/model-a")
-        console.print(f"  Replacement model: {proof.replacement_model}")
-        console.print(f"  Completed steps: {list(proof.completed_stages)}")
-        console.print(f"  Digest: {proof.digest}")
+        present.header("Failover proof")
+        present.ok("proof", "completed")
+        present.kv(
+            {
+                "Session ID": proof.mission_id,
+                "Initial model": "provider-a/model-a",
+                "Replacement model": proof.replacement_model,
+                "Completed steps": str(list(proof.completed_stages)),
+                "Digest": proof.digest,
+            }
+        )
 
 
 def _metadata_json_file(path: str | Path | None) -> Any | None:
@@ -5096,15 +4392,16 @@ def cmd_metadata_refresh(
     )
     clock = now or datetime.now(timezone.utc)
     try:
-        if offline:
-            transport = file_transport(
+        transport = (
+            file_transport(
                 models_dev_api=_metadata_json_file(models_dev_api_file),
                 models_dev_models=_metadata_json_file(models_dev_models_file),
                 litellm=_metadata_json_file(litellm_file),
                 fetched_at=clock.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             )
-        else:
-            transport = None
+            if offline
+            else None
+        )
         snapshot = refresh_metadata(
             transport=transport,
             mapping_path=mapping_path,
@@ -5117,7 +4414,10 @@ def cmd_metadata_refresh(
         if output_json:
             print(json.dumps({"error": str(exc)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            from verdict import present
+
+            present.header("Metadata  /  refresh")
+            present.fail("metadata refresh", str(exc))
         raise SystemExit(1) from exc
     report = {
         "schema_version": snapshot.schema_version,
@@ -5136,14 +4436,21 @@ def cmd_metadata_refresh(
     if output_json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return
-    console.print("[bold green]Core metadata store refreshed[/bold green]")
-    console.print(f"  records: {report['record_count']}")
-    console.print(f"  mapping drops: {report['drop_count']}")
-    console.print(f"  store: {report['store']}")
-    for name, status in snapshot.sources.items():
-        console.print(
-            f"  {name}: {status.status}" + (f" ({status.reason})" if status.reason else "")
-        )
+    from verdict import present
+
+    present.header("Metadata  /  refresh")
+    present.ok("Core metadata store refreshed")
+    present.kv(
+        {
+            "records": report["record_count"],
+            "mapping drops": report["drop_count"],
+            "store": report["store"],
+        }
+    )
+    present.table(
+        ["Source", "Status", "Reason"],
+        [(name, status.status, status.reason or "-") for name, status in snapshot.sources.items()],
+    )
 
 
 def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool = False) -> None:
@@ -5156,7 +4463,10 @@ def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool
         if output_json:
             print(json.dumps({"error": str(exc), "store": str(resolved)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            from verdict import present
+
+            present.header("Metadata  /  show")
+            present.fail("metadata", str(exc))
         raise SystemExit(1) from exc
     payload = {
         "store": str(resolved),
@@ -5169,8 +4479,12 @@ def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
-    console.print(f"[bold cyan]Core metadata[/bold cyan] {snapshot.refreshed_at}")
-    console.print(f"  records: {len(snapshot.records)}  store: {resolved}")
+    from verdict import present
+
+    present.header("Metadata  /  show")
+    present.kv(
+        {"refreshed": snapshot.refreshed_at, "records": len(snapshot.records), "store": resolved}
+    )
 
 
 def cmd_metadata_lookup(
@@ -5198,23 +4512,37 @@ def cmd_metadata_lookup(
         if output_json:
             print(json.dumps({"error": str(exc)}, sort_keys=True))
         else:
-            console.print(f"[bold red]{exc}[/bold red]")
+            from verdict import present
+
+            present.header("Metadata  /  lookup")
+            present.fail("metadata lookup", str(exc))
         raise SystemExit(1) from exc
     payload = found.to_dict()
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
+    from verdict import present
+
+    present.header("Metadata  /  lookup")
     if found.drop is not None:
-        console.print(f"[yellow]named drop[/yellow] {found.drop.reason}: {omniroute_id}")
+        present.warn("named drop", f"{found.drop.reason}: {omniroute_id}")
         if found.drop.detail:
-            console.print(f"  {found.drop.detail}")
+            present.note(found.drop.detail)
         return
     assert found.record is not None
-    console.print(f"[green]mapped[/green] {omniroute_id} → {found.record.id}")
-    for name, cited in found.provenance_for_receipt().items():
-        console.print(
-            f"  {name}: {cited.get('source')} {cited.get('version') or cited.get('fetched_at')}"
-        )
+    present.ok("mapped", f"{omniroute_id} → {found.record.id}")
+    present.table(
+        ["Source", "Version"],
+        [
+            (
+                name,
+                cited.get("source", "")
+                + " "
+                + str(cited.get("version") or cited.get("fetched_at") or ""),
+            )
+            for name, cited in found.provenance_for_receipt().items()
+        ],
+    )
 
 
 if __name__ == "__main__":

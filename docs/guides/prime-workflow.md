@@ -7,11 +7,11 @@ Spec Kit and documentation-and-adrs capabilities remain dependencies, not new sk
 
 ## Start
 
-From a checkout containing this change:
+From a contributor checkout of this repository:
 
 ```bash
-cd /home/nick/dev/verdict-core/.worktrees/prime-workflow-skills
-export PATH=/home/nick/.nvm/versions/node/v22.23.1/bin:/home/nick/.local/bin:$PATH
+cd /path/to/verdict-core
+# Ensure `prime-agent` and your preferred Node/Python tooling are on PATH
 prime-agent model list
 prime-agent --cwd "$PWD" '/verdict-resume'
 ```
@@ -78,7 +78,7 @@ Sequential Thinking may help architecture, dependency analysis and stall diagnos
 cannot approve policy, prove tests or alter issue truth. Prefer codebase-memory / code-review-graph
 for code context; source search is the documented fallback when graph coverage is insufficient.
 Basic Memory is a retrieval layer under ADR-030, not the work queue. Use installed
-`documentation-and-adrs` (host: `/home/nick/.agents/skills/documentation-and-adrs/SKILL.md`)
+`documentation-and-adrs` (host skill: `documentation-and-adrs/SKILL.md` from your agent skill path)
 whenever architecture/API/decision documentation changes. Discover it through existing skill
 paths or read that installed file explicitly; do not copy it into these five workflows.
 
@@ -182,6 +182,39 @@ Validate with `validate_receipt` in `scripts/prime_workflow.py`, then compare so
 COMPLETE means ready for parent local validation. Spawn handles and an empty roster do not
 qualify. Prime `rlm.run` accepts prompt/name/model/thinking, **not cwd**, and returns admission.
 
+### Dynamic worker model selection
+
+Both `cx/gpt-5.6-sol` and `cx/gpt-6-astra` are controller-only identities, including
+`omniroute/`-prefixed selectors. Do not switch the parent onto a worker route.
+Project settings explicitly disable Prime's inherited `providerBackupModel`: a fixed
+backup bypasses Verdict selection and can send controller failures to Antigravity.
+
+Use the owned bridge in `verdict-dispatch`, not a bare spawn or a callback returning
+an admission handle. `verdict.worker_runtime.WorkerController` owns the entire task:
+complete registry + inventory discovery -> ranked unique eligible candidates -> cached
+health/probe -> explicit `rlm.spawn(model=...)` -> admission -> nonblocking collect ->
+full terminal journal validation -> cooldown/exclusion -> owned cleanup -> replacement.
+The same prompt survives every attempt. Completion requires `done`, settled, an explicit
+parent reply, and nonempty final assistant text with `stopReason=stop`; roster previews
+and early messages are not completion evidence. HTTP errors, timeouts, exceptions,
+malformed/empty output, and no-reply exits all fail the attempt. A provider 429 cools
+the provider; route-specific auth/payment/unsupported errors cool the route.
+
+The native kernel bridge only performs RLM RPCs. Discovery, probes and policy run in
+Verdict's `.venv` in a background process. End the parent turn after starting it; its
+bash completion follow-up resumes result inspection. The attempt limit defaults to
+the entire unique eligible pool, not the first twelve candidates or three replacements.
+A 900-second total budget includes probes, with 180 seconds per attempt and 30 seconds
+reserved for owned cleanup. Configure budgets explicitly for longer implementation work.
+Unconfirmed cleanup fails closed rather than launching a competing writer.
+
+Every operation persists `events.jsonl`, discovery, admission evidence, and `outcome.json`
+under `<git-common-dir>/verdict-prime/worker-runs/<id>`. The only final states are `SUCCESS` with full validated
+output/model/spawn provenance or actionable `FAIL_CLOSED`. Inspect the actual terminal
+outcome after the process exits; exit code zero or a child reply alone is insufficient.
+The terminal extension makes empty assistant messages explicit failures, without
+changing provider errors into successful responses.
+
 ## Proof and transitions
 
 ```text
@@ -282,17 +315,14 @@ Persist unavailable or exhausted issues as blocked and select independent READY 
 possible. Completion budget is five issues per invocation, counting `completed_issues` across
 restarts. A deliberate authority/approval blocker exits without automatic repeated attempts.
 
-Auto-compaction remains enabled in project settings. The project extension registers
-`session_before_compact` to inject the deterministic continuity instruction set (issue, exact
-worktree/base/head, attempt and target, acceptance criteria, decisions/ADRs, completed checks and
-failures, blockers, lease generation, durable checkpoint path, one next action; discard shell
-chatter and abandoned approaches), preserving any operator-supplied `/compact` instructions. It
-also schedules compaction at a turn boundary at 120,000 tokens or 60% context use (minimum 20,000
-tokens), with a five-turn cooldown and no duplicate pending request. Checkpoint after each phase and
-before a large tool output. `await compact.status()` reports tokens/context_window/percent/
-scheduled; `await compact.run(...)` is an explicit fallback. After compaction reload checkpoint
-and packet; recheck source and external facts. If compaction fails, preserve its error and use
-a bounded fresh-session recovery rather than claiming it succeeded.
+Auto-compaction remains enabled through Prime's native safe-boundary scheduler.
+The project extension only persists continuity guidance at context pressure. It never
+calls `ctx.compact()` from a lifecycle callback: Prime 0.9.5 implements that call as
+`AgentSession.compact()` -> `abort()`, and even `agent_end` can still own `activeRun`.
+Prime builds a real summary; static continuity instructions are not a summary.
+Before a long operation, persist its artifact path and checkpoint. After compaction,
+reload them and revalidate source and live state. An operation does not succeed merely
+because compaction or its parent turn ended.
 
 The inspected Grok model advertises 500,000 tokens; native default compaction would not trigger
 until 483,616. That explains the observed uncompressed ~318k session. The earlier extension
@@ -313,13 +343,14 @@ live issue. User MCP settings are execution authority; Prime ignores project MCP
 
 ### Spec Kit in fresh worktrees
 
-Current main tracks `.specify/feature.json` but not the standard Spec Kit shell scripts.
-Do not blindly run a missing `.specify/scripts/bash/setup-plan.sh`, and do not reuse
-the stale feature pointer for another Linear issue. The host already provides
-`/home/nick/.agents/skills/spec-driven-development/SKILL.md` with the approved lean
-specify/plan/tasks/implement method, plus Spec Kit templates under
-`/home/nick/dev/verdict-continuity/.specify/templates` and `speckit-*` skills in the
-configured global skill path.
+The repository no longer tracks a stale `.specify/feature.json` pointer.
+Do not blindly run a missing `.specify/scripts/bash/setup-plan.sh`, and do not
+reuse a leftover feature pointer for another Linear issue.
+
+Prefer project Spec Kit scripts and templates when they exist in the checkout.
+Otherwise use the host-installed Spec Kit / `spec-driven-development` skill and
+global Spec Kit templates from your agent skill path — do not hard-code
+machine-local absolute paths into shared docs.
 
 Read those existing capabilities. If project scripts are present, use them and their hooks.
 If absent, use the existing lean spec-driven-development skill and Spec Kit templates directly

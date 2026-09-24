@@ -16,16 +16,46 @@ dependency readiness, source/worktree ownership and live target immediately befo
    worktree, branch, `stale_after_seconds`, supervisor identity). A live unstale lease blocks:
    stop/supersede that writer first, never race it. PID existence alone is not ownership, and
    `generation` is the fence token that invalidates every superseded writer.
-2. Discover actual models with `prime-agent model list` or `await rlm.find_models(query)`.
-   Use existing Verdict route/explain/chooser to validate capability, privacy, freshness and
-   budget, then persist the exact provider/model, routing evidence and reason. An automatic
-   alias (`auto/*`, `best`, default) is not an exact execution target. Observe any upstream
-   remapping/failover; reject unapproved target substitution rather than relabeling the receipt.
-3. Launch a **synchronous owned** worker with explicit `--cwd`, `--provider`, `--model`,
-   `-p --mode json` and the packet path. Use the guide's process supervisor for unattended work.
-   Give it lean Spec Kit implement, file boundaries, evidence paths, and the receipt schema.
-   Under the supervised loop, pass the unique supervisor session directory to child clients; do not detach RLM write workers: the
-   supervisor must own the client process group and confirm daemon session cleanup. Read-only RLM research must finish before return.
+2. Use the owned runtime for every worker task. Both `cx/gpt-5.6-sol` and
+   `cx/gpt-6-astra` are controller-only, including their `omniroute/` selectors.
+   Do not change the controller model to test a worker. Never use default/auto targets.
+   The runtime intersects the complete `prime-agent model list` with live OmniRoute
+   inventory, probes health, and ranks the entire unique eligible pool. Discovery and
+   admission are not success. No first-N probe cutoff applies.
+3. Start the controller through the native Prime bridge, then **end the turn**:
+
+   ```python
+   import runpy
+
+   dispatch = runpy.run_path(
+       "/home/nick/dev/verdict-core/.prime/agent/skills/verdict-dispatch/scripts/runtime_bridge.py"
+   )
+   operation = dispatch["start"](
+       rlm,
+       bash,
+       "/home/nick/dev/verdict-core",
+       worker_prompt,
+       task={"required_capabilities": ["tools"], "coding": True},
+       budget={"total_seconds": 900, "attempt_seconds": 180},
+   )
+   print(operation.directory, operation.handle.pid)
+   ```
+
+   Use the current checkout path, not another worktree. The external controller runs
+   in that checkout's `.venv`; the stdlib bridge only services native
+   `rlm.spawn(prompt, name=..., model=selected_selector)`, nonblocking `rlm.collect`,
+   and owned deletion. Keep `operation` alive. Do not await its bridge or poll in the
+   foreground. A bash completion follow-up wakes the parent even after a child fails.
+   On completion inspect `operation.result()` and the saved `events.jsonl`.
+   Return exactly one explicit final operation state: `SUCCESS` with validated full
+   worker output/model/spawn provenance, or `FAIL_CLOSED` with its diagnostic.
+   Empty terminal output, malformed results, child without reply, provider errors and
+   timeouts all cause cooldown, exclusion and replacement on the **same prompt**.
+   Children must both send an explicit reply and finish with a nonempty assistant
+   final response. A preview, early reply, or admission handle never completes a task.
+   Failed writers are deleted before replacement; unconfirmed cleanup fails closed.
+   The attempt bound is the unique eligible pool, optionally reduced by an explicit
+   operation budget. Probes and attempts share the total deadline.
 4. Persist attempt ID, process ownership, start/deadline, target and packet digest. Advance to
    IMPLEMENTING only on observed admission, and checkpoint it with `write_checkpoint` so a cold
    restart resumes the same attempt. Heartbeat the lease with `heartbeat_lease(..., progress=False)`

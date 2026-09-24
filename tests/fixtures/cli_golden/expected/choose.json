@@ -1,0 +1,12 @@
+{
+  "error": "no eligible route; exclusions: ",
+  "exclusions": [],
+  "explicit_model": null,
+  "policy_version": "chooser-policy/v1",
+  "protected": false,
+  "ranker_version": "chooser-ranker/v1",
+  "reason": "no_eligible_target",
+  "selected": null,
+  "selected_because": "failed because no_eligible_target",
+  "task_class": "implementation"
+}

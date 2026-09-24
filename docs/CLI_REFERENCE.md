@@ -4,6 +4,117 @@
 verdict [global flags] <command> [args]
 ```
 
+
+## Command map
+
+The registered subcommands below are grouped by their primary use. Run
+`verdict --help` for the authoritative list.
+
+| Family | Commands |
+|---|---|
+| Setup and configuration | `setup`, `plan`, `check`, `doctor`, `compat`, `uninstall` |
+| Routing and selection | `route`, `run`, `compare`, `choose`, `simulate`, `models`, `inspect`, `failover-proof`, `replay` |
+| Orchestration | `orchestrate`, `supervise`, `watch`, `run-receipt`, `eligibility`, `resume` |
+| Execution and service | `serve`, `detect`, `probe`, `catalog`, `prove-at-rest`, `certify` |
+| Metadata, memory, and integrations | `metadata`, `memory`, `mcp`, `hook`, `harness`, `runtime` |
+| Development workflows | `autodev`, `autodev-golden-path`, `quickstart` |
+| Reporting and review | `stats`, `benchmark`, `cost-report`, `receipt`, `suggest` |
+| Interface | `ui` |
+
+## Bare `verdict` — Home screen
+
+Running `verdict` with no subcommand opens the home screen. It exits successfully
+without selecting or executing a model.
+
+```bash
+verdict
+```
+
+## Orchestration commands
+
+### `verdict orchestrate` — Run a goal through a DAG to a receipt
+
+```bash
+verdict orchestrate "Implement the feature" --repo . --json
+```
+
+| Flag | Description |
+|---|---|
+| `goal` | High-level goal; omit when using `--resume` |
+| `--repo REPO` | Git repository to change (default: `.`) |
+| `--graph GRAPH` | Use a pre-built WorkGraph JSON instead of frontier planning |
+| `--resume RUN_ID` | Resume a run from durable state |
+| `--runs-dir RUNS_DIR` | Run directory root |
+| `--gateway GATEWAY` | Gateway endpoint or identifier |
+| `--max-parallel MAX_PARALLEL` | Maximum parallel workers |
+| `--attempt-timeout ATTEMPT_TIMEOUT` | Per-attempt timeout |
+| `--run-deadline RUN_DEADLINE` | Overall run deadline |
+| `--prefer PREFER` | Comma-separated provider preference among subscription capacity (ranking policy, not a fallback chain) |
+| `--scope SCOPE` | Comma-separated allowed route prefixes; empty means all |
+| `--no-review` | Skip OCR review; run ends BLOCKED |
+| `--inject ROUTE=FAULT[,FAULT]` | Inject a named chaos fault for a route |
+| `--state-file STATE_FILE` | Health/cooldown state file (default `~/.verdict/orchestration-health.json`) |
+| `--plain` | ASCII narrative instead of live view |
+| `--json` | Print final receipt JSON |
+
+### `verdict supervise` — Supervise and resume a run
+
+```bash
+verdict supervise --run-id RUN_ID --runs-dir .verdict/runs
+```
+
+| Flag | Description |
+|---|---|
+| `--run-id RUN_ID` | Run ID to supervise and resume (required) |
+| `--runs-dir RUNS_DIR` | Directory holding run directories (required) |
+| `--stall-seconds STALL_SECONDS` | No-progress limit |
+| `--poll-seconds POLL_SECONDS` | Liveness poll interval |
+| `--max-restarts MAX_RESTARTS` | Controller restart budget |
+| `--total-deadline-seconds TOTAL_DEADLINE_SECONDS` | Hard deadline |
+| `orchestrate_args` | Arguments after `--` passed to orchestration |
+
+### `verdict watch` — View orchestration state
+
+```bash
+verdict watch RUN_ID --runs-dir .verdict/runs --once
+```
+
+| Flag | Description |
+|---|---|
+| `run` | Run ID or run directory |
+| `--runs-dir RUNS_DIR` | Run directory root |
+| `--once` | Render current state and exit |
+
+### `verdict run-receipt` — Show and verify an orchestration receipt
+
+```bash
+verdict run-receipt RUN_ID --runs-dir .verdict/runs --json
+```
+
+| Flag | Description |
+|---|---|
+| `run` | Run ID or run directory |
+| `--runs-dir RUNS_DIR` | Run directory root |
+| `--json` | Print JSON |
+
+### `verdict eligibility` — Show the eligibility ladder
+
+```bash
+verdict eligibility --frontier --json
+```
+
+| Flag | Description |
+|---|---|
+| `--gateway GATEWAY` | Gateway endpoint or identifier |
+| `--scope SCOPE` | Comma-separated route prefixes to allow |
+| `--prefer PREFER` | Provider preference |
+| `--probe` | Probe lazily to reach `SELECTED` |
+| `--reasoning` | Request reasoning-capable routes |
+| `--frontier` | Request frontier-capable routes |
+| `--json` | Print JSON |
+
+---
+
 ## Global Flags
 
 | Flag | Description |
@@ -273,6 +384,8 @@ verdict benchmark [flags]
 | `0` | Success |
 | `1` | General error |
 | `2` | Invalid arguments |
-| `3` | Config error |
-| `4` | Upstream unavailable |
-| `5` | No eligible models |
+| `3` | Config / usage error |
+
+The CLI raises `SystemExit(1|2|3)` only. There is no shipped exit code `4` or `5`.
+Empty eligibility is reported in the receipt / command output and typically exits
+non-zero via the general error path rather than a dedicated code.

@@ -1,0 +1,168 @@
+{
+  "admitted_for_caps": true,
+  "drop": null,
+  "omniroute_id": "groq/llama-3.3-70b-versatile",
+  "provenance": {
+    "attachment": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "models.dev",
+      "version": "fixture"
+    },
+    "context": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "models.dev",
+      "version": "fixture"
+    },
+    "input_cost_per_million": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "models.dev",
+      "version": "fixture"
+    },
+    "max_input": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "litellm",
+      "version": "fixture"
+    },
+    "max_output": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "models.dev",
+      "version": "fixture"
+    },
+    "output_cost_per_million": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "models.dev",
+      "version": "fixture"
+    },
+    "reasoning": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "models.dev",
+      "version": "fixture"
+    },
+    "structured": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "litellm",
+      "version": "fixture"
+    },
+    "tools": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "models.dev",
+      "version": "fixture"
+    },
+    "vision": {
+      "fetched_at": "2099-01-01T00:00:00Z",
+      "raw_id": "groq/llama-3.3-70b-versatile",
+      "source": "models.dev",
+      "version": "fixture"
+    }
+  },
+  "record": {
+    "caps": {
+      "attachment": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "models.dev",
+          "version": "fixture"
+        },
+        "value": false
+      },
+      "context": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "models.dev",
+          "version": "fixture"
+        },
+        "value": 131072
+      },
+      "input_cost_per_million": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "models.dev",
+          "version": "fixture"
+        },
+        "value": 0.59
+      },
+      "max_input": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "litellm",
+          "version": "fixture"
+        },
+        "value": 131072
+      },
+      "max_output": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "models.dev",
+          "version": "fixture"
+        },
+        "value": 32768
+      },
+      "output_cost_per_million": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "models.dev",
+          "version": "fixture"
+        },
+        "value": 0.79
+      },
+      "reasoning": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "models.dev",
+          "version": "fixture"
+        },
+        "value": false
+      },
+      "structured": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "litellm",
+          "version": "fixture"
+        },
+        "value": true
+      },
+      "tools": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "models.dev",
+          "version": "fixture"
+        },
+        "value": true
+      },
+      "vision": {
+        "provenance": {
+          "fetched_at": "2099-01-01T00:00:00Z",
+          "raw_id": "groq/llama-3.3-70b-versatile",
+          "source": "models.dev",
+          "version": "fixture"
+        },
+        "value": false
+      }
+    },
+    "display_name": "Llama 3.3 70B",
+    "id": "groq/llama-3.3-70b-versatile",
+    "omniroute_ids": [
+      "groq/llama-3.3-70b-versatile"
+    ],
+    "provider": "groq",
+    "scores": {}
+  }
+}
