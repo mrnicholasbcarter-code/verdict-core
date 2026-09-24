@@ -12,7 +12,6 @@ from typing import Any, NoReturn
 
 import yaml
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Prompt
 
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
@@ -42,12 +41,11 @@ console = Console()
 
 def _print_detection_banner() -> None:
     """Print the detection banner."""
-    console.print(
-        Panel.fit(
-            "[bold blue]Verdict Provider Detection[/bold blue]\n"
-            "Scanning for local servers, CLIs, API keys, and routers...",
-            border_style="blue",
-        )
+    ui = TerminalUI(console)
+    ui.panel(
+        "Verdict Provider Detection",
+        "Scanning for local servers, CLIs, API keys, and routers...",
+        tone="INFO",
     )
 
 
@@ -258,15 +256,17 @@ def cmd_setup(
                 )
                 return
         except yaml.YAMLError as e:
-            ui.console.print(
-                f"[yellow]⚠️  Existing config at {existing_config_path} is not valid YAML: {e}[/yellow]"
+            ui.panel(
+                "Invalid YAML",
+                f"Existing config at {existing_config_path} is not valid YAML: {e}",
+                tone="WARNING",
             )
             try:
                 overwrite = Prompt.ask("Overwrite it?", default="Y")
             except (KeyboardInterrupt, EOFError):
                 overwrite = "n"
             if not overwrite.lower().startswith("y"):
-                ui.console.print("[yellow]Setup cancelled.[/yellow]")
+                ui.status("Setup", "skipped", "Cancelled.")
                 sys.exit(1)
 
     # First, run auto-detection to show user what's available
@@ -290,7 +290,7 @@ def cmd_setup(
             )
             ui.status(provider.name, state, provider.base_url or "")
     except Exception as e:
-        ui.console.print(f"[yellow]Detection skipped: {e}[/yellow]")
+        ui.status("Detection", "warn", str(e))
 
     ui.section("Configure routing")
 
@@ -312,17 +312,18 @@ def cmd_setup(
             # Persist discovery in Verdict config only. Setup must not mutate
             # the hosting process environment; doing so leaks routing authority
             # into later in-process callers and test/application lifecycles.
-            ui.console.print(
-                f"\n[bold green]✓ Detected {selected_gateway.display_name} at "
-                f"{selected_gateway.url} — gateway URL saved to config.[/bold green]"
+            ui.status(
+                "Gateway detected",
+                "ok",
+                f"{selected_gateway.display_name} at {selected_gateway.url}",
             )
             if len(healthy_gateways) > 1:
+                ui.section("Multiple gateways found")
                 ui.console.print(
-                    "[dim]Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the "
-                    "above to select a different one.[/dim]"
+                    "[dim]Set OMNIROUTE_BASE_URL to one of the above to select a different one.[/dim]"
                 )
     except Exception as e:
-        ui.console.print(f"[yellow]Gateway detection skipped: {e}[/yellow]")
+        ui.status("Gateway detection", "warn", str(e))
 
     running_providers = []
     if detected_result:
@@ -336,7 +337,7 @@ def cmd_setup(
 
     # Pre-select based on detection if running in automated test/input context where "done" or empty is passed
     if running_providers:
-        ui.console.print("\n[bold cyan]Auto-detection found active providers![/bold cyan]")
+        ui.section("Auto-detection found active providers")
         try:
             should_auto = Prompt.ask(
                 "Would you like to auto-configure Verdict using a detected provider?", default="y"
@@ -371,9 +372,7 @@ def cmd_setup(
                     # Retrieve models
                     models = selected_provider.models
                     if models:
-                        ui.console.print(
-                            f"\n[cyan]Detected models for {selected_provider.name}:[/cyan]"
-                        )
+                        ui.section(f"Detected models for {selected_provider.name}")
                         # Add an option for custom
                         model_options = [*list(models), "Enter a custom model ID"]
                         selected_model = select_from_list(
@@ -421,11 +420,9 @@ def cmd_setup(
                             to_sync.append((p.name, prov_name, url_to_check, node_name))
 
             if to_sync:
-                ui.console.print(
-                    "\n[bold cyan]Syncing detected system providers to OmniRoute/9Router:[/bold cyan]"
-                )
+                ui.section("Syncing detected system providers to OmniRoute/9Router")
                 for name, _p_name, url, _ in to_sync:
-                    ui.console.print(f"  • Found active [green]{name}[/]: [dim]{url}[/]")
+                    ui.status("Found active", "ok", f"{name}: {url}")
 
                 if (
                     Prompt.ask(
@@ -444,17 +441,15 @@ def cmd_setup(
                         }
                         res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                         if res:
-                            ui.console.print(
-                                f"  [green]✓[/] Successfully registered node: {node_name}"
-                            )
+                            ui.status("Node registered", "ok", node_name)
                         else:
-                            ui.console.print(f"  [red]✗[/] Failed to register node: {node_name}")
+                            ui.status("Node registration failed", "failed", node_name)
         except (KeyboardInterrupt, EOFError):
             pass
 
     # Prompt user about adding free providers like gemini/antigravity for local fallback routing
     try:
-        ui.console.print("\n[bold cyan]Fallback Models Configuration:[/bold cyan]")
+        ui.section("Fallback Models Configuration")
         if (
             Prompt.ask(
                 "Setup free fallback endpoints (Gemini Free, OpenRouter Free) for local offloads?",
@@ -465,29 +460,29 @@ def cmd_setup(
         ):
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not gemini_key:
-                ui.console.print(
-                    "\n[yellow]⚠️  GEMINI_API_KEY is not configured in your environment.[/yellow]"
+                ui.panel(
+                    "GEMINI_API_KEY missing",
+                    'Get a free Gemini API key at: https://aistudio.google.com/\nThen set it: export GEMINI_API_KEY="your_key"',
+                    tone="WARNING",
                 )
-                ui.console.print("  Get a free Gemini API key at: https://aistudio.google.com/")
-                ui.console.print('  Then select it: export GEMINI_API_KEY="your_key"')
 
             or_key = os.getenv("OPENROUTER_API_KEY")
             if not or_key:
-                ui.console.print(
-                    "\n[yellow]⚠️  OPENROUTER_API_KEY is not configured in your environment.[/yellow]"
+                ui.panel(
+                    "OPENROUTER_API_KEY missing",
+                    'Get an OpenRouter key at: https://openrouter.ai/keys\nThen set it: export OPENROUTER_API_KEY="your_key"',
+                    tone="WARNING",
                 )
-                ui.console.print("  Get an OpenRouter key at: https://openrouter.ai/keys")
-                ui.console.print('  Then select it: export OPENROUTER_API_KEY="your_key"')
 
             fallback_options = [
                 "Google Gemini Free Tier (https://generativelanguage.googleapis.com)",
                 "OpenRouter Free Models (https://openrouter.ai/api/v1)",
             ]
 
-            ui.console.print("\nAvailable free fallback endpoints:")
+            ui.section("Available free fallback endpoints")
             selected_fallbacks = []
             for i, opt in enumerate(fallback_options, 1):
-                ui.console.print(f"  [green]{i}[/]: {opt}")
+                ui.status(f"{i}", "info", opt)
 
             choices = Prompt.ask(
                 "Enter endpoints to add (e.g. '1, 2' or 'all', or 'done')", default="all"
@@ -509,11 +504,9 @@ def cmd_setup(
                     }
                     res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                     if res:
-                        ui.console.print("  [green]✓[/] Registered Gemini Free fallback node")
+                        ui.status("Gemini Free fallback", "ok", "Registered")
                     else:
-                        ui.console.print(
-                            "  [red]✗[/] Failed to register Gemini Free fallback node (OmniRoute not running)"
-                        )
+                        ui.status("Gemini Free fallback", "failed", "OmniRoute not running")
                 elif idx == 2:
                     payload = {
                         "provider": "openrouter",
@@ -524,32 +517,31 @@ def cmd_setup(
                     }
                     res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
                     if res:
-                        ui.console.print("  [green]✓[/] Registered OpenRouter Free fallback node")
+                        ui.status("OpenRouter Free fallback", "ok", "Registered")
                     else:
-                        ui.console.print("  [red]✗[/] Failed to register OpenRouter Free node")
+                        ui.status("OpenRouter Free fallback", "failed", "Registration failed")
     except (KeyboardInterrupt, EOFError):
         pass
 
     if not use_auto:
         if not running_providers:
-            ui.console.print(
-                "\n[bold yellow]⚠️  No active providers or routers running on this machine.[/bold yellow]"
+            ui.panel(
+                "No active providers or routers",
+                "To run OmniRoute (centralized router recommended for Verdict):\n  npm install -g omniroute\n  omniroute serve",
+                tone="WARNING",
             )
-            ui.console.print("To run OmniRoute (centralized router recommended for Verdict):")
-            ui.console.print("  [bold]npm install -g omniroute[/bold]")
-            ui.console.print("  [bold]omniroute serve[/bold]\n")
 
             try:
                 should_manual = Prompt.ask(
                     "Would you like to manually configure Verdict right now anyway?", default="y"
                 )
                 if not should_manual.lower().startswith("y"):
-                    ui.console.print(
-                        "\n[yellow]Setup cancelled. Please start your provider/router and try again.[/yellow]"
+                    ui.status(
+                        "Setup", "cancelled", "Please start your provider/router and try again."
                     )
                     return
             except (KeyboardInterrupt, EOFError):
-                ui.console.print("\n[yellow]Setup input interrupted.[/yellow]")
+                ui.status("Setup input", "interrupted", "")
                 return
 
         ui.section("Manual configuration")
@@ -573,7 +565,7 @@ def cmd_setup(
                     "api_key_env": api_key_env or None,
                 }
         except (KeyboardInterrupt, EOFError):
-            ui.console.print("\n[yellow]Manual configuration input interrupted.[/yellow]")
+            ui.status("Manual configuration", "interrupted", "")
             return
 
     # Review the exact file write before mutating an interactive installation.
@@ -602,9 +594,9 @@ def cmd_setup(
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False)
 
-    ui.console.print(f"\n[bold green]✓ Saved configuration to {config_path}![/bold green]")
-    ui.console.print("[dim]Configuration contents:[/dim]")
-    ui.console.print(yaml.dump(config, default_flow_style=False))
+    ui.status("Configuration", "saved", f"Written to {config_path}")
+    ui.section("Configuration contents")
+    print(yaml.dump(config, default_flow_style=False))
 
 
 def cmd_setup_plan(
@@ -2134,9 +2126,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         1 for item in capabilities if isinstance(item, dict) and item.get("status") == "covered"
     )
     total = len(capabilities)
-    ui.console.print(
-        f"  • Capability coverage: [cyan]{covered}/{total}[/] covered (bootstrap view)"
-    )
+    ui.status("Capability coverage", "ok", f"{covered}/{total} covered (bootstrap view)")
 
     issues_found = []
     fixed_issues = []
@@ -2144,14 +2134,14 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     from verdict.documentation_preflight import run_documentation_preflight
 
     documentation_report = run_documentation_preflight(fix=fix)
-    ui.console.print(
-        "  • Documentation preflight: "
-        f"[{'green' if documentation_report.passed else 'red'}]"
-        f"{documentation_report.status}[/] "
-        f"({documentation_report.inventory} documents, "
+    doc_state = "ok" if documentation_report.passed else "failed"
+    ui.status(
+        "Documentation preflight",
+        doc_state,
+        f"{documentation_report.status} ({documentation_report.inventory} documents, "
         f"{documentation_report.ingested} ingested, "
         f"{documentation_report.stale} stale, "
-        f"{documentation_report.missing} missing)"
+        f"{documentation_report.missing} missing)",
     )
     if not documentation_report.passed:
         issues_found.extend(
@@ -2193,9 +2183,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
             from verdict.classifier import classify
 
             tier = classify(primary_model)
-            ui.console.print(
-                f"  • Configured Primary Model: [cyan]{primary_model}[/] (Tier-{tier})"
-            )
+            ui.status("Configured Primary Model", "ok", f"{primary_model} (Tier-{tier})")
 
         providers = config.get("providers", {})
         if not isinstance(providers, dict):
@@ -2300,6 +2288,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         issues_found.append("OPENAI_API_KEY appears invalid (expected prefix 'sk-').")
 
     # 1f. Env var reference note (T024)
+    ui.section("Environment reference")
     ui.console.print(
         "  [dim]See .env.example in the repository root for the full environment "
         "variable reference.[/dim]"
@@ -2308,6 +2297,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     # 2. OmniRoute nodes check
     existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
     if existing_nodes is None:
+        ui.section("OmniRoute nodes")
         ui.console.print(
             "[dim]OmniRoute server is not currently running/reachable to check nodes.[/dim]"
         )
@@ -2318,9 +2308,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         elif isinstance(existing_nodes, dict) and "items" in existing_nodes:
             items = existing_nodes["items"]
 
-        ui.console.print(
-            f"  • Connected to OmniRoute: [green]OK[/] (Found {len(items)} configured node endpoints)"
-        )
+        ui.status("Connected to OmniRoute", "ok", f"Found {len(items)} configured node endpoints")
 
         # Check duplicate nodes in OmniRoute
         node_urls: dict[str, str] = {}
@@ -2340,12 +2328,12 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     node_urls[clean_url] = node_id
 
         if duplicates:
-            ui.console.print(
-                "\n[yellow]⚠️  Duplicate provider nodes detected in local OmniRoute database:[/yellow]"
-            )
-            for node_id, name, url, original_id in duplicates:
-                ui.console.print(
-                    f"  • Node [red]{name}[/] ({node_id}) is a duplicate of node ({original_id}) on URL: {url}"
+            ui.section("Duplicate nodes detected")
+            for node_id, name, _url, original_id in duplicates:
+                ui.status(
+                    f"Duplicate node {name}",
+                    "warn",
+                    f"({node_id}) is a duplicate of ({original_id})",
                 )
                 issues_found.append(f"Duplicate node '{name}' in OmniRoute configuration.")
 
@@ -2361,10 +2349,10 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     for node_id, name, _url, _ in duplicates:
                         res = _omniroute_api_request("DELETE", f"/api/provider-nodes/{node_id}")
                         if res is not None:
-                            ui.console.print(f"  [green]✓[/] Removed duplicate node: {name}")
+                            ui.status("Removed", "ok", f"Removed duplicate node: {name}")
                             fixed_issues.append(f"Removed duplicate node {node_id}")
                         else:
-                            ui.console.print(f"  [red]✗[/] Failed to remove node {node_id}")
+                            ui.status("Removal failed", "failed", f"Node {node_id}")
             except (KeyboardInterrupt, EOFError):
                 pass
 
