@@ -48,3 +48,29 @@ Removed:
 
 101 remote-tracking refs. Most are merged or superseded feature branches (see the audit tables).
 Deleting remote branches is an owner decision and has not been done.
+
+
+## Remote cleanup (2026-09-24, operator-authorized)
+
+- A verified bundle of every remote branch was written first:
+  `~/.verdict/archive/20260924T105006Z-bod190/all-remote-branches.bundle`.
+- **79 remote branches deleted.** Each was re-verified: its PR was `MERGED` on GitHub and the
+  head is an ancestor of `origin/main`, or it had no PR and is an ancestor of `origin/main`.
+  List: `remote-deleted.json`.
+- **Kept:** `main`, `feat/interview-golden-path`, and open Dependabot branches. Also kept are
+  branches of closed-unmerged PRs and unmerged checkpoints. They hold unique history, and
+  deleting them is a separate owner decision: `238-security-privacy-launch-gate`,
+  `338-readme-pitch-accuracy`, `checkpoint/337-*`, `chore/runtime-daemon-consolidation-129`,
+  `cursor/interview-hardening-bod-178-2d40` (PR #589, closed and folded into #590),
+  `design-bod124-terminal-ui-spec`, `feat/106-*`, `feat/bod-124-bootstrap-rollback`,
+  `feat/v1-002-route-selection`, `feat/ver-011-*`, `feature/004-*`, `portfolio/core-credibility`,
+  `wip/guidance-control-plane-20260727`, `dependabot/pip/pytest-cov-gte-7.1.0` (its PR closed).
+
+## PR outcomes
+
+| PR | Outcome |
+|---|---|
+| #574, #575, #576, #579 | merged (all checks green, owner-authorized) |
+| #577, #578 | conflicted after the other merges; `@dependabot rebase` requested |
+| #589 | closed. Content merged into #590 at `0134485`; `scripts/terminal_preview.py` kept |
+| #590 | open. Golden path plus hardening |
