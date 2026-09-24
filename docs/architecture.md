@@ -51,7 +51,7 @@ class Gate:
 `Gate` does **not** expose a `check()` API. Policy floors are applied through
 `EligibilityGate.evaluate` and related passport/capability gates on the serve path.
 
-### 2. Eligibility Gate (`verdict/eligibility.py`)
+### 2. [Eligibility Gate (`verdict/eligibility.py`)](../verdict/eligibility.py)
 
 Availability-aware hard filtering with explicit unknown handling:
 
@@ -69,7 +69,7 @@ class EligibilityGate:
 **Key invariant:** unknown / error availability is never treated as healthy for
 protected work when fail-closed mode is enabled.
 
-### 3. Intelligence Service (`verdict/intelligence.py`)
+### 3. [Intelligence Service (`verdict/intelligence.py`)](../verdict/intelligence.py)
 
 **Advisory ranking only** — cannot bypass hard gates. Orders already-eligible
 candidates using historical MemoryPlane signals and expected-value estimates.
@@ -96,12 +96,17 @@ authority when `require_execution_path_authority` is set (BOD-127 cutover).
 ### 6. Dispatcher (`verdict/dispatcher.py`)
 
 Binds an authorized `selected_route`, hydrates the execution plan, and emits
-assignment explanation. `SwarmDispatcher` retains a historical class name but is
-authorize-only dispatch after BOD-17 — not Ruflo swarm supervision.
+assignment explanation. `SwarmDispatcher` is a legacy class name for the
+authorize-only dispatcher after BOD-17. It is not Ruflo swarm supervision and
+does not supervise a swarm.
 
-### 7. OmniRoute transport (`verdict/omniroute.py`)
+### 7. [OmniRoute transport (`verdict/omniroute.py`)](../verdict/omniroute.py)
 
-Optional HTTP transport for catalog inventory, execute, and health evidence:
+Optional HTTP transport for catalog inventory, execute, and health evidence.
+The live catalog has thousands of models across dozens of providers (live count
+via `verdict eligibility`); this document does not freeze a provider or
+free-tier count.
+
 
 - HTTP catalog/runtime only
 - **Not** capability metadata SoT
@@ -118,6 +123,50 @@ never invented. See [`guides/model-metadata-store.md`](guides/model-metadata-sto
 and [ADR-032](adr/ADR-032-core-model-metadata-store.md).
 
 ---
+
+
+## Orchestration layer (ADR-036)
+
+[ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md) defines the shipped
+`verdict.orchestration` control plane. It owns a run from a goal through a
+validated DAG, bounded execution and independent review to a durable receipt.
+The [interview golden path](guides/interview-golden-path.md) documents the
+operator flow.
+
+```
+verdict/orchestration/
+  contracts -> planner -> eligibility -> runtime -> executors -> review -> receipt
+                     |          |          |            |
+                 recovery   supervisor    tui          cli
+```
+
+Implementation roles are split as follows:
+
+- `contracts` defines the run, work-graph, node, and receipt boundaries.
+- `planner` builds and validates the frontier work graph.
+- `eligibility` applies the `DISCOVERED -> ENTITLED -> HEALTHY -> AVAILABLE ->
+  TASK_ELIGIBLE -> SELECTED` ladder.
+- `runtime` advances the DAG; `executors` perform bounded worker attempts.
+- `recovery` handles same-node retry and cooldown-aware recovery.
+- `review` performs the independent review gate before completion.
+- `receipt` persists the run result; `supervisor` watches and resumes a
+  controller; `tui` renders live state; `cli` provides the command handlers.
+
+The Prime Agent is the execution harness, not the orchestration authority.
+OmniRoute supplies inventory and transport only. The legacy [ADR-023](adr/ADR-023-governed-swarm-supervision.md)
+is superseded in orchestration scope; ADR-036 is current.
+
+## Implementation references
+
+These are the live replacements for the retired architecture-page links:
+
+- Eligibility gate: [`verdict/eligibility.py`](../verdict/eligibility.py) and
+  [ADR-010](adr/ADR-010-fail-closed-capability-passports.md).
+- Intelligence service: [`verdict/intelligence.py`](../verdict/intelligence.py).
+- Proxy layer: [`verdict/proxy.py`](../verdict/proxy.py) and
+  [ADR-035](adr/ADR-035-authorized-selected-route-dispatch.md).
+- Telemetry and adapter boundary: [`verdict/gateway_adapter_runtime.py`](../verdict/gateway_adapter_runtime.py)
+  and [ADR-020](adr/ADR-020-gateway-adapter-contracts.md).
 
 ## Data flow
 
