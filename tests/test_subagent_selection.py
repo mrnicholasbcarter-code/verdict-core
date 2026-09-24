@@ -11,8 +11,11 @@ from verdict.subagent_selection import (
     HealthResult,
     NoHealthyWorkerModelError,
     WorkerTask,
+    WorkerTerminal,
     candidates_from_inventory,
     classify_probe_status,
+    classify_worker_failure,
+    execute_with_worker_failover,
     openai_health_probe,
     select_worker_model,
 )
@@ -234,3 +237,109 @@ def test_probe_requires_real_inference_output_not_only_http_200() -> None:
 
     assert invalid == HealthResult(False, "malformed_response", 200)
     assert valid == HealthResult(True, "healthy", 200)
+
+
+class _RuntimeHTTPError(RuntimeError):
+    def __init__(self, status_code: int, headers: dict[str, str]) -> None:
+        super().__init__(f"worker failed with HTTP {status_code}")
+        self.status_code = status_code
+        self.headers = headers
+
+
+@pytest.mark.asyncio
+async def test_antigravity_429_worker_escape_is_isolated_and_next_worker_runs(
+    tmp_path: Path,
+) -> None:
+    """The exact escaped runtime 429 must stay in the worker replacement loop."""
+    rows = [
+        _row("antigravity/claude-opus-4-6-thinking"),
+        _row("kc/qwen/qwen3.8-27b:free", cost=0.1),
+    ]
+    visible = [_selector(row["id"]) for row in rows]
+    launched: list[str] = []
+    cache = _cache(tmp_path)
+
+    async def execute(model: str):
+        launched.append(model)
+        if model == "omniroute/antigravity/claude-opus-4-6-thinking":
+            raise _RuntimeHTTPError(429, {"Retry-After": "120"})
+        return WorkerTerminal("done", "completed by healthy replacement", True, stop_reason="stop")
+
+    result = await execute_with_worker_failover(
+        WorkerTask(required_capabilities=frozenset({"tools"}), frontier_worthy=True),
+        inventory_rows=rows,
+        prime_selectors=visible,
+        probe=lambda candidate: classify_probe_status(200),
+        execute=execute,
+        cache=cache,
+        now=lambda: NOW,
+        max_replacements=2,
+    )
+
+    assert result.value == "completed by healthy replacement"
+    assert result.candidate.selector == "omniroute/kc/qwen/qwen3.8-27b:free"
+    assert launched == [
+        "omniroute/antigravity/claude-opus-4-6-thinking",
+        "omniroute/kc/qwen/qwen3.8-27b:free",
+    ]
+    assert result.attempts[0] == (
+        "omniroute/antigravity/claude-opus-4-6-thinking",
+        "rate_limited",
+    )
+    candidate_record = cache._records["omniroute/antigravity/claude-opus-4-6-thinking"]
+    provider_record = cache._records["provider:antigravity"]
+    assert candidate_record["expires_at"] == provider_record["expires_at"]
+    assert datetime.fromisoformat(candidate_record["expires_at"].replace("Z", "+00:00")) == (
+        NOW + timedelta(seconds=120)
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [
+        (_RuntimeHTTPError(400, {}), "unsupported"),
+        (_RuntimeHTTPError(401, {}), "authentication"),
+        (_RuntimeHTTPError(402, {}), "payment_required"),
+        (_RuntimeHTTPError(403, {}), "permission"),
+        (_RuntimeHTTPError(503, {}), "upstream_temporary"),
+        (TimeoutError(), "timeout"),
+        (ValueError("malformed response"), "malformed_response"),
+    ],
+)
+def test_runtime_failures_use_existing_health_policy(failure: BaseException, category: str) -> None:
+    assert classify_worker_failure(failure, now=NOW).category == category
+
+
+def test_runtime_429_parses_message_reset_epoch_milliseconds() -> None:
+    reset_ms = int((NOW + timedelta(seconds=45)).timestamp() * 1000)
+    failure = RuntimeError(
+        f'antigravity worker failed: 429; x-ratelimit-reset="{reset_ms}"'
+    )
+    result = classify_worker_failure(failure, now=NOW)
+    assert result.category == "rate_limited"
+    assert result.retry_after_seconds == pytest.approx(45)
+
+
+@pytest.mark.asyncio
+async def test_parent_fails_only_after_bounded_worker_replacements(tmp_path: Path) -> None:
+    rows = [_row("one/free:free"), _row("two/free:free"), _row("three/free:free")]
+    launched: list[str] = []
+
+    async def execute(model: str):
+        launched.append(model)
+        raise _RuntimeHTTPError(503, {})
+
+    with pytest.raises(NoHealthyWorkerModelError, match="replacement budget exhausted"):
+        await execute_with_worker_failover(
+            WorkerTask(required_capabilities=frozenset({"tools"})),
+            inventory_rows=rows,
+            prime_selectors=[_selector(row["id"]) for row in rows],
+            probe=lambda candidate: classify_probe_status(200),
+            execute=execute,
+            cache=_cache(tmp_path),
+            now=lambda: NOW,
+            max_replacements=1,
+        )
+
+    assert len(launched) == 2
+    assert CONTROLLER_MODEL not in launched

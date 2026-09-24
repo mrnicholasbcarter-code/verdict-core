@@ -7,16 +7,19 @@ also visible in Prime's registry and has a fresh, cached inference probe.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
 CONTROLLER_MODEL = "cx/gpt-5.6-sol"
+CONTROLLER_MODELS = frozenset({CONTROLLER_MODEL, "cx/gpt-6-astra"})
 DEFAULT_OMNIROUTE_URL = "http://127.0.0.1:20128/v1"
 
 
@@ -73,6 +76,15 @@ class SelectionResult:
         return self.candidate.selector
 
 
+@dataclass(frozen=True)
+class WorkerExecutionResult:
+    """A completed worker operation and the isolated attempts that preceded it."""
+
+    value: str
+    candidate: LaunchCandidate
+    attempts: tuple[tuple[str, str], ...]
+
+
 class NoHealthyWorkerModelError(RuntimeError):
     """No route satisfies inventory, registry, capability, and health gates."""
 
@@ -101,7 +113,14 @@ class HealthCache:
         temporary.replace(self.path)
 
     def usable(self, selector: str, *, now: datetime) -> HealthResult | None:
-        raw = self._records.get(selector)
+        for key in (_provider_cache_key(selector), selector):
+            result = self._usable_key(key, now=now)
+            if result is not None:
+                return result
+        return None
+
+    def _usable_key(self, key: str, *, now: datetime) -> HealthResult | None:
+        raw = self._records.get(key)
         if not isinstance(raw, dict):
             return None
         try:
@@ -118,15 +137,27 @@ class HealthCache:
         )
 
     def record(self, selector: str, result: HealthResult, *, now: datetime) -> None:
+        self._record_key(selector, result, now=now)
+        self._save()
+
+    def record_failure(
+        self, candidate: LaunchCandidate, result: HealthResult, *, now: datetime
+    ) -> None:
+        """Persist both candidate and provider cooldowns for a runtime failure."""
+        self._record_key(candidate.selector, result, now=now)
+        if result.category == "rate_limited":
+            self._record_key(_provider_cache_key(candidate.selector), result, now=now)
+        self._save()
+
+    def _record_key(self, key: str, result: HealthResult, *, now: datetime) -> None:
         ttl = self.healthy_ttl_seconds if result.healthy else _failure_cooldown(result)
-        self._records[selector] = {
+        self._records[key] = {
             "healthy": result.healthy,
             "category": result.category,
             "status_code": result.status_code,
             "observed_at": _iso(now),
             "expires_at": _iso(now + timedelta(seconds=ttl)),
         }
-        self._save()
 
 
 def classify_probe_status(
@@ -179,7 +210,7 @@ def candidates_from_inventory(
         if not isinstance(route_id, str) or not route_id.strip():
             continue
         selector = f"omniroute/{route_id}"
-        if selector == CONTROLLER_MODEL or selector not in visible or _opaque(route_id):
+        if route_id in CONTROLLER_MODELS or selector not in visible or _opaque(route_id):
             continue
         raw_capabilities = row.get("capabilities")
         capabilities = frozenset(
@@ -222,7 +253,25 @@ def candidates_from_inventory(
                 ),
             )
         )
-    return tuple(result)
+    return tuple({item.selector: item for item in result}.values())
+
+
+def eligible_worker_candidates(
+    task: WorkerTask,
+    inventory_rows: Iterable[Mapping[str, Any]],
+    prime_selectors: Iterable[str],
+) -> tuple[LaunchCandidate, ...]:
+    """Rank the entire unique eligible pool; never truncate a discovery prefix."""
+    required = set(task.required_capabilities)
+    if task.reasoning:
+        required.add("reasoning")
+    return tuple(sorted(
+        (item for item in candidates_from_inventory(inventory_rows, prime_selectors)
+         if required <= item.capabilities
+         and item.context_tokens >= task.min_context_tokens
+         and (task.allow_frontier or not item.is_frontier)),
+        key=lambda item: _rank_key(item, task),
+    ))
 
 
 def select_worker_model(
@@ -233,35 +282,25 @@ def select_worker_model(
     probe: Callable[[LaunchCandidate], HealthResult],
     cache: HealthCache,
     now: datetime | None = None,
-    max_probes: int = 12,
+    max_probes: int | None = None,
 ) -> SelectionResult:
     """Return the cheapest qualified, currently healthy explicit spawn target."""
     current = now or datetime.now(timezone.utc)
-    required = set(task.required_capabilities)
-    if task.reasoning:
-        required.add("reasoning")
-    candidates = [
-        item
-        for item in candidates_from_inventory(inventory_rows, prime_selectors)
-        if required <= item.capabilities
-        and item.context_tokens >= task.min_context_tokens
-        and (task.allow_frontier or not item.is_frontier)
-    ]
-    candidates.sort(key=lambda item: _rank_key(item, task))
+    candidates = eligible_worker_candidates(task, inventory_rows, prime_selectors)
     checked: list[tuple[str, str]] = []
     probes = 0
     for candidate in candidates:
         health = cache.usable(candidate.selector, now=current)
         if health is None:
-            if probes >= max_probes:
+            if max_probes is not None and probes >= max_probes:
                 break
             probes += 1
             try:
                 health = probe(candidate)
             except TimeoutError:
                 health = classify_probe_status(None, timed_out=True)
-            except (OSError, ValueError):
-                health = classify_probe_status(None)
+            except Exception as exc:
+                health = classify_worker_failure(exc, now=current)
             cache.record(candidate.selector, health, now=current)
         checked.append((candidate.selector, health.category))
         if health.healthy:
@@ -269,6 +308,114 @@ def select_worker_model(
     detail = ", ".join(f"{model}:{state}" for model, state in checked)
     raise NoHealthyWorkerModelError(f"no healthy eligible Prime-visible OmniRoute worker; {detail}")
 
+
+async def execute_with_worker_failover(
+    task: WorkerTask,
+    *,
+    inventory_rows: Iterable[Mapping[str, Any]],
+    prime_selectors: Iterable[str],
+    probe: Callable[[LaunchCandidate], HealthResult],
+    execute: Callable[[str], Awaitable[WorkerTerminal]],
+    cache: HealthCache,
+    now: Callable[[], datetime] | None = None,
+    max_replacements: int | None = None,
+    total_timeout_seconds: float = 900,
+    attempt_timeout_seconds: float = 180,
+) -> WorkerExecutionResult:
+    """Compatibility entry point; execute must return a completed terminal envelope.
+
+    Admission handles and arbitrary callback values are failures, never success.
+    Production RLM dispatch uses WorkerController with an owned Prime adapter.
+    """
+    from verdict.worker_runtime import CallbackAdapter, RuntimeBudget, WorkerController
+
+    if max_replacements is not None and max_replacements < 0:
+        raise ValueError("max_replacements must be non-negative")
+    controller = WorkerController(
+        task, inventory_rows=inventory_rows, prime_selectors=prime_selectors,
+        probe=probe, adapter=CallbackAdapter(execute), cache=cache, now=now,
+        budget=RuntimeBudget(
+            total_seconds=total_timeout_seconds, attempt_seconds=attempt_timeout_seconds,
+            max_attempts=None if max_replacements is None else max_replacements + 1,
+        ),
+    )
+    outcome = await controller.run("callback task")
+    if outcome.state != "SUCCESS" or outcome.candidate is None:
+        raise NoHealthyWorkerModelError(outcome.diagnostic)
+    return WorkerExecutionResult(outcome.output, outcome.candidate, tuple(controller.attempts))
+
+
+@dataclass(frozen=True)
+class WorkerTerminal:
+    """Full terminal assistant result, not a roster preview or admission handle."""
+
+    state: str
+    output: str | None = None
+    replied: bool = False
+    error: str | None = None
+    stop_reason: str | None = None
+
+
+def classify_worker_failure(exc: BaseException, *, now: datetime | None = None) -> HealthResult:
+    """Map runtime/client exceptions onto the same policy used by health probes."""
+    status = _exception_status(exc)
+    retry_after = _exception_retry_after(exc, now=now)
+    timed_out = isinstance(exc, (TimeoutError, socket.timeout))
+    if status is None and _malformed_exception(exc):
+        return HealthResult(False, "malformed_response", retry_after_seconds=retry_after)
+    if status is None and not timed_out and not isinstance(exc, OSError):
+        return HealthResult(False, "worker_exception")
+    result = classify_probe_status(status, timed_out=timed_out, retry_after_seconds=retry_after)
+    return result if not result.healthy else HealthResult(False, "worker_exception", status)
+
+
+def _exception_status(exc: BaseException) -> int | None:
+    for name in ("status_code", "status", "code"):
+        value = getattr(exc, name, None)
+        if type(value) is int and 100 <= value <= 599:
+            return value
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    if type(value) is int and 100 <= value <= 599:
+        return value
+    match = re.search(r"(?<!\d)(400|401|402|403|429|5\d\d)(?!\d)", str(exc))
+    return int(match.group(1)) if match else None
+
+
+def _exception_headers(exc: BaseException) -> Mapping[str, Any]:
+    for source in (exc, getattr(exc, "response", None)):
+        headers = getattr(source, "headers", None)
+        if isinstance(headers, Mapping):
+            return headers
+    return {}
+
+
+def _exception_retry_after(exc: BaseException, *, now: datetime | None) -> float | None:
+    headers = {str(key).lower(): value for key, value in _exception_headers(exc).items()}
+    current = now or datetime.now(timezone.utc)
+    for key in ("retry-after", "x-ratelimit-reset", "x-rate-limit-reset", "ratelimit-reset"):
+        value = headers.get(key)
+        parsed = _retry_delay(value, now=current, reset=key != "retry-after")
+        if parsed is not None:
+            return parsed
+    message = str(exc)
+    retry_match = re.search(
+        r"retry[-_ ]?after[\s:=\"']+(\d+(?:\.\d+)?)", message, re.IGNORECASE
+    )
+    if retry_match:
+        return float(retry_match.group(1))
+    reset_match = re.search(
+        r"(?:x[-_ ]?)?rate[-_ ]?limit[-_ ]?reset[\s:=\"']+(\d+(?:\.\d+)?)",
+        message,
+        re.IGNORECASE,
+    )
+    return _retry_delay(reset_match.group(1), now=current, reset=True) if reset_match else None
+
+
+def _malformed_exception(exc: BaseException) -> bool:
+    return isinstance(exc, (ValueError, TypeError, json.JSONDecodeError)) or any(
+        token in str(exc).lower() for token in ("malformed", "invalid response", "decode")
+    )
 
 def _rank_key(candidate: LaunchCandidate, task: WorkerTask) -> tuple[Any, ...]:
     # Free always wins. Within the same cost class prefer suitability, then cost.
@@ -320,7 +467,10 @@ def openai_health_probe(
                 return classify_probe_status(response.status)
         except urllib.error.HTTPError as exc:
             return classify_probe_status(
-                exc.code, retry_after_seconds=_retry_after(exc.headers.get("Retry-After"))
+                exc.code,
+                retry_after_seconds=_retry_after_headers(
+                    exc.headers, now=datetime.now(timezone.utc)
+                ),
             )
         except TimeoutError:
             return classify_probe_status(None, timed_out=True)
@@ -364,6 +514,13 @@ def fetch_omniroute_inventory(
     return tuple(item for item in data if isinstance(item, Mapping))
 
 
+
+def _provider_cache_key(selector: str) -> str:
+    route = selector.removeprefix("omniroute/")
+    provider = route.split("/", 1)[0].strip().lower()
+    return f"provider:{provider}" if provider else f"provider:{selector.lower()}"
+
+
 def _opaque(route_id: str) -> bool:
     lowered = route_id.strip().lower()
     return lowered in {"auto", "default", "best"} or lowered.startswith(
@@ -384,13 +541,41 @@ def _positive_int(*values: Any, default: int) -> int:
     return default
 
 
-def _retry_after(value: str | None) -> float | None:
+def _retry_after_headers(headers: Any, *, now: datetime) -> float | None:
+    lowered = {str(key).lower(): value for key, value in headers.items()}
+    for key in ("retry-after", "x-ratelimit-reset", "x-rate-limit-reset", "ratelimit-reset"):
+        result = _retry_delay(lowered.get(key), now=now, reset=key != "retry-after")
+        if result is not None:
+            return result
+    return None
+
+
+def _retry_delay(value: Any, *, now: datetime, reset: bool = False) -> float | None:
     if value is None:
         return None
+    text = str(value).strip()
     try:
-        return max(0.0, float(value))
+        number = float(text)
     except ValueError:
-        return None
+        if reset:
+            return None
+        try:
+            target = parsedate_to_datetime(text)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        return max(0.0, (target - now).total_seconds())
+    if reset and number >= 1_000_000_000_000:
+        number /= 1000.0
+    if reset and number >= 1_000_000_000:
+        return max(0.0, number - now.timestamp())
+    return max(0.0, number)
+
+
+def _retry_after(value: str | None) -> float | None:
+    """Compatibility helper for delta-seconds Retry-After values."""
+    return _retry_delay(value, now=datetime.now(timezone.utc))
 
 
 def _iso(value: datetime) -> str:
