@@ -1,11 +1,11 @@
 # Verdict interview cheat sheet
 
-**Describes `main` at commit 43fbff4, certified from a fresh clone on 2026-09-24.**
+**Describes `main` at commit 62e0f1b, certified from a fresh clone on 2026-09-24.**
 
 One page. Printable. Every number below has a named source. Sources:
 [README](../README.md), [runbook](guides/interview-golden-path.md),
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md),
-main certification (`~/.verdict/evidence/bod191/bod192/cert-43fbff4/CERT-ROOT-VERIFIED.md`, local operator evidence),
+main certification (`~/.verdict/evidence/bod191/bod192/cert-62e0f1b/CERT-ROOT-VERIFIED.md`, local operator evidence),
 [story bank](portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md),
 [branch reconciliation](BRANCH_RECONCILIATION.md).
 
@@ -96,7 +96,7 @@ verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs
 Run ids worth naming: `clean4` (13 tests on integration ref, OCR PASS on cc/claude-fable-5), `chaos4` (injected planner quota + no-final and a worker 429, recovered by 2 reassignments; the barrier caught a real ownership violation; then the independent review on cc/claude-opus-4-8 found a real bug (requires-python >=3.8 vs `list[str]`), so the run is BLOCKED fail-closed), `clean3` (12 tests on integration ref, OCR PASS), `chaos3` (injected faults plus a real
 ownership violation, fail-closed), `chaos2` (4-attempt reassignment chain, COMPLETE), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
 quota, then pool exhaustion), `live10` (hung controller, killed, resumed), `certlive` (fresh
-clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact.
+clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact. (clean4/chaos4 ran on 43fbff4; 62e0f1b changed only the anonymous-mode check in verdict/api.py (BOD-202), which the orchestration path does not use.)
 
 ## 3. Architecture in six bullets
 
@@ -205,10 +205,10 @@ whole machine.
 
 | Number | Meaning | Source |
 |---|---|---|
-| 2981 passed + 1 skipped on fresh clone (clean shell) | full suite | cert-43fbff4 |
-| 2982 passed on fresh clone (dirty shell) | full suite with LLMGATE_AUTH_TOKEN=bogus | cert-43fbff4 |
-| mypy --strict on 213 files | fresh-clone gate, pass | cert-43fbff4 |
-| 270 doc files verified | doc links checked on fresh clone | cert-43fbff4 |
+| 2984 passed + 1 skipped on fresh clone (clean shell) | full suite | cert-62e0f1b |
+| 2985 passed on fresh clone (dirty shell) | full suite with LLMGATE_AUTH_TOKEN=bogus | cert-62e0f1b |
+| mypy --strict on 213 files | fresh-clone gate, pass | cert-62e0f1b |
+| 270 doc files verified | doc links checked on fresh clone | cert-62e0f1b |
 | 13 tests on integration ref, OCR PASS on cc/claude-fable-5 | rehearsal-43fbff4 clean4 run | /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/clean4 |
 | clean4 COMPLETE; chaos4 BLOCKED (review FAIL on real bug) | rehearsal-43fbff4 outcomes | /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/chaos4 |
 | 4-attempt reassignment chain, COMPLETE | rehearsal-2 chaos2 run | /home/nick/.verdict/evidence/interview-main/rehearsal-2/runs/chaos2 |
@@ -229,7 +229,7 @@ whole machine.
 **Shipped on main:** Goal-to-receipt orchestration (ADR-036), eligibility ladder, parallel
 DAG runtime with reassignment/cooldowns, independent OCR review, digest-verified receipts,
 `verdict supervise` stall/resume, home screen and CLI, UNDERSTAND and HYDRATE stages, single
-current Tier-0 default primary model.
+current Tier-0 default primary model, anonymous mode restricted to loopback clients (BOD-202).
 
 **Not shipped:** BOD-157 adaptive concurrency, fix-and-review loop after blocking OCR
 finding, per-node critic pass, interactive Prime root-session survival, BOD-70 dogfood on
