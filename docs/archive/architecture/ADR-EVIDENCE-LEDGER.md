@@ -1,7 +1,7 @@
 # ADR-001: Versioned, Privacy-Safe Execution Evidence
 
 > **DUPLICATE (BOD-179).** Canonical record:
-> [`docs/adr/ADR-001-evidence-ledger.md`](../adr/ADR-001-evidence-ledger.md).
+> [`docs/adr/ADR-001-evidence-ledger.md`](../../adr/ADR-001-evidence-ledger.md).
 > This architecture copy is retained only for inbound-link stability.
 
 - **Status**: accepted
