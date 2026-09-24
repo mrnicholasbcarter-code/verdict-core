@@ -497,6 +497,15 @@ class DagRuntime:
                 )
                 self._set(run, NodeState.RUNNING)
                 prompt = self.prompt_for(node, worktree)
+                prompt_bytes = len(prompt.encode())
+                self.events.emit(
+                    "hydrate",
+                    node.node_id,
+                    context_files=list(node.required_context),
+                    prompt_bytes=prompt_bytes,
+                    truncated="[truncated" in prompt.lower(),
+                    budget_bytes=60_000,
+                )
                 terminal = await self._execute(prompt, run.route_id, worktree)
             finally:
                 self.inflight.pop(node.node_id, None)

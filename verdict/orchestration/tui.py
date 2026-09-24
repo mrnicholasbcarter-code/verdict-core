@@ -31,10 +31,12 @@ from verdict.terminal_ui import TOKENS, clean
 
 STAGES: tuple[str, ...] = (
     "GOAL",
+    "UNDERSTAND",
     "CONTROLLER",
     "PLAN",
     "DAG",
     "SELECT",
+    "HYDRATE",
     "WORKERS",
     "QUOTA/COOLDOWN",
     "FAILURE/REASSIGN",
@@ -125,6 +127,10 @@ class NodeView:
     history: list[tuple[str, str]] = field(default_factory=list)
     started_at: float | None = None
     elapsed_seconds: float | None = None
+    context_files: int = 0
+    prompt_bytes: int = 0
+    truncated: bool = False
+    budget_bytes: int = 0
 
     @property
     def provider(self) -> str:
@@ -190,6 +196,7 @@ class RunView:
 
     def __init__(self) -> None:
         self.goal = ""
+        self.understand: dict[str, Any] = {}
         self.topology = ""
         self.rationale: list[str] = []
         self.max_parallel: int | None = None
@@ -247,6 +254,14 @@ class RunView:
 
     def _on_run_started(self, node_id: str, data: dict[str, Any]) -> None:
         self.goal = _t(data.get("goal", ""), 200)
+
+    def _on_understand(self, node_id: str, data: dict[str, Any]) -> None:
+        self.understand = {
+            "goal_chars": _i(data.get("goal_chars")) or 0,
+            "risk": _t(data.get("risk", "unknown"), 24) or "unknown",
+            "proof_requirements": [_t(item, 60) for item in _seq(data.get("proof_requirements"))],
+            "scope": _t(data.get("scope", ""), 90),
+        }
 
     def _on_plan_started(self, node_id: str, data: dict[str, Any]) -> None:
         route = _t(data.get("route_id", "unassigned"), 64)
@@ -317,6 +332,13 @@ class RunView:
         node.route_id = _t(data.get("route_id", ""), 64) or node.route_id
         node.attempt = _i(data.get("attempt")) or max(node.attempt, 1)
         node.started_at, node.elapsed_seconds = self.now, None
+
+    def _on_hydrate(self, node_id: str, data: dict[str, Any]) -> None:
+        node = self.node(node_id)
+        node.context_files = _count(data.get("context_files"))
+        node.prompt_bytes = _i(data.get("prompt_bytes")) or 0
+        node.truncated = bool(data.get("truncated"))
+        node.budget_bytes = _i(data.get("budget_bytes")) or node.budget_bytes
 
     def _on_terminal(self, node_id: str, data: dict[str, Any]) -> None:
         node = self.node(node_id)
@@ -433,7 +455,15 @@ class RunView:
 # event type -> (stage tag, template rendered against the context below)
 _LINES: Mapping[str, tuple[str, str]] = {
     "run_started": ("GOAL", "{goal}"),
+    "understand": (
+        "UNDERSTAND",
+        "goal_chars={goal_chars} risk={risk} scope={scope} proof={proof_requirements}",
+    ),
     "plan_started": ("PLAN", "planning on {route}"),
+    "hydrate": (
+        "HYDRATE",
+        "{node} prompt {prompt_kb}KB context {context_files} file(s){truncated_note}",
+    ),
     "plan_ready": ("DAG", "{nodes} node(s) in {layers} layer(s) ({topology})"),
     "topology": ("PLAN", "topology {topology} max_parallel={max_parallel}"),
     "eligibility": ("SELECT", "{node} ladder {ladder}"),
@@ -463,6 +493,7 @@ def _context(node_id: str, data: Mapping[str, Any]) -> dict[str, str]:
     rank = _i(data.get("rank"))
     seconds = _f(data.get("duration_seconds"))
     exit_code = _i(data.get("exit_code"))
+    prompt_bytes = _i(data.get("prompt_bytes")) or 0
     detail = ", ".join(
         x
         for x in (_t(data.get("capacity_class", ""), 24), "" if rank is None else f"rank {rank}")
@@ -488,7 +519,7 @@ def _context(node_id: str, data: Mapping[str, Any]) -> dict[str, str]:
         "category": _t(data.get("category", "unknown"), 40),
         "action": _t(data.get("action", "BLOCK"), 40),
         "key": _t(data.get("key", ""), 64),
-        "scope": _t(data.get("scope", ""), 24),
+        "scope": _t(data.get("scope", ""), 90),
         "until": _t(data.get("until", "unknown"), 32),
         "reason": _t(data.get("reason", ""), 140),
         "command": _t(data.get("command", ""), 70),
@@ -502,6 +533,14 @@ def _context(node_id: str, data: Mapping[str, Any]) -> dict[str, str]:
         "commits": str(_count(data.get("commits"))),
         "round": str(_i(data.get("round")) or 1),
         "outcome": _t(data.get("outcome", "BLOCKED"), 24).upper(),
+        "goal_chars": str(_i(data.get("goal_chars")) or 0),
+        "risk": _t(data.get("risk", "unknown"), 24) or "unknown",
+        "proof_requirements": ", ".join(
+            _t(item, 60) for item in _seq(data.get("proof_requirements"))
+        ),
+        "context_files": str(_count(data.get("context_files"))),
+        "prompt_kb": f"{prompt_bytes / 1024:.1f}",
+        "truncated_note": " [truncated]" if data.get("truncated") else "",
     }
     return context
 
@@ -603,6 +642,28 @@ def _plan_lines(view: RunView) -> list[str]:
     ]
 
 
+def _understand_lines(view: RunView) -> list[str]:
+    profile = view.understand
+    if not profile:
+        return []
+    return [
+        f"goal_chars: {profile.get('goal_chars', 0)}",
+        f"risk: {profile.get('risk', 'unknown')}",
+        f"scope: {profile.get('scope', '')}",
+        "proof requirements: " + ", ".join(profile.get("proof_requirements", []) or ["-"]),
+    ]
+
+
+def _hydrate_lines(view: RunView) -> list[str]:
+    return [
+        f"{n.node_id}: {n.prompt_bytes / 1024:.1f}KB prompt, "
+        f"{n.context_files} context file(s)"
+        f"{' [truncated]' if n.truncated else ''}"
+        for n in view.nodes.values()
+        if n.prompt_bytes or n.context_files
+    ]
+
+
 def _select_lines(view: RunView) -> list[str]:
     return [
         f"ladder: {view.ladder()}",
@@ -674,9 +735,11 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
     plan = [*_plan_lines(view)[:2], "", *dag] if dag else _plan_lines(view)
     blocks: dict[str, RenderableType] = {
         "GOAL": Text(view.goal or "no goal recorded"),
+        "UNDERSTAND": _lines(_understand_lines(view), "no task profile recorded yet"),
         "CONTROLLER": _lines(_controller_lines(view)[-6:], "no controller events"),
         "PLAN / DAG": _lines(plan, "no plan recorded"),
         "SELECT": _lines(_select_lines(view), "nothing selected yet"),
+        "HYDRATE": _lines(_hydrate_lines(view), "no prompt hydration recorded yet"),
         "WORKERS": _workers(view, plain),
         "QUOTA/COOLDOWN": _lines(
             [
@@ -693,9 +756,9 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
     wide = not plain and width >= 110
     rows: list[tuple[str, ...]] = (
         [
-            ("GOAL",),
+            ("GOAL", "UNDERSTAND"),
             ("CONTROLLER", "PLAN / DAG"),
-            ("SELECT",),
+            ("SELECT", "HYDRATE"),
             ("WORKERS",),
             ("QUOTA/COOLDOWN", "FAILURE/REASSIGN"),
             ("VERIFY", "REVIEW"),

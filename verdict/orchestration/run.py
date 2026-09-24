@@ -55,6 +55,26 @@ _CONNECTION_FIELDS = ("provider", "authType", "isActive", "testStatus", "backoff
 _PLAN_FIELDS = ("plan", "subscriptionTier", "tier", "organizationType", "organizationRateLimitTier")
 
 
+_RISK_ORDER: Mapping[str, int] = {"low": 0, "medium": 1, "high": 2}
+
+
+def _task_profile(goal: str, repo: Path, graph: WorkGraph | None) -> dict[str, Any]:
+    """Deterministic UNDERSTAND profile: goal text + graph only, never a model call.
+
+    Called before planning, so ``risk`` is "unknown" until a ``WorkGraph`` exists
+    (either passed in directly or produced by ``plan_with_failover``).
+    """
+    risk = "unknown"
+    if graph is not None and graph.nodes:
+        risk = max((n.risk for n in graph.nodes), key=lambda r: _RISK_ORDER.get(r, 0))
+    return {
+        "goal_chars": len(goal),
+        "risk": risk,
+        "proof_requirements": ["node verification", "integration barrier", "independent review"],
+        "scope": f"repo: {repo.name}",
+    }
+
+
 def resolve_api_key(env_name: str = "VERDICT_OMNIROUTE_API_KEY") -> str | None:
     """Gateway key from the environment; never logged, never persisted by Verdict."""
     value = os.environ.get(env_name, "").strip()
@@ -339,6 +359,7 @@ async def run_golden_path(
         counts = {k: v for k, v in summary().items() if isinstance(v, int) and k != "node_id"}
         events.emit("eligibility", "", **counts)
     graph_path = run_dir / GRAPH_FILE
+    events.emit("understand", **_task_profile(goal, repo, graph))
     try:
         if graph is None and graph_path.exists():
             graph = WorkGraph.from_dict(
