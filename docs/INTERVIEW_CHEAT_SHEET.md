@@ -88,11 +88,13 @@ verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-2/runs
 verdict run-receipt ~/.verdict/evidence/golden-path/live9-run    # reassignment chain, COMPLETE
 verdict watch ~/.verdict/evidence/golden-path/live10-run --once  # supervisor kill + resume
 verdict run-receipt ~/.verdict/evidence/golden-path/live7-run    # pool exhaustion, BLOCKED
+verdict run-receipt ~/.verdict/evidence/golden-path/certlive-run # fresh-clone certification run
 ```
 
-Run ids worth naming: `clean3` (12 tests on integration ref, OCR PASS), `chaos3` (provider-scoped
-429, fail-closed), `chaos2` (4-attempt reassignment chain, COMPLETE), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
-quota, then pool exhaustion), `live10` (hung controller, killed, resumed). Say plainly: these are local operator evidence files, not a public CI artifact.
+Run ids worth naming: `clean3` (12 tests on integration ref, OCR PASS), `chaos3` (injected faults plus a real
+ownership violation, fail-closed), `chaos2` (4-attempt reassignment chain, COMPLETE), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
+quota, then pool exhaustion), `live10` (hung controller, killed, resumed), `certlive` (fresh
+clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact.
 
 ## 3. Architecture in six bullets
 
@@ -159,16 +161,13 @@ whole machine.
 ## 5. Four STAR stories
 
 **The barrier caught a real worker mistake.**
-- S/T: under chaos pressure, haiku edited `textkit/__init__.py`, which is outside its owned
-  files in the DAG; the ownership barrier rejected the write before it could merge.
-- A: the barrier runs as a verification step after attempted integration; every commit write to
-  an unowned file triggers a rejection. One node (impl_rev) recovered on another route
-  (cc/claude-sonnet-5). The other (impl_vowels) had no eligible route left after the provider
-  was cooled and went FAIL_CLOSED instead of merging unowned edits.
-- R: detection is by the ownership barrier, not by the model. Loss was confined to that node's
-  attempt; repo and worktrees were untouched. chaos3 run records show the organic
-  ownership_violation error and the BLOCKED outcome; the review did not run.
-- Note: A prompt is policy, not an OS boundary; there is no automated shell interception here.
+- S/T: in the `chaos3` rehearsal on main, after injected quota, no-final and 429 faults, a
+  `haiku` worker on both nodes also edited `textkit/__init__.py`, which neither node owned.
+- A: the per-node ownership barrier runs before a node can reach `VALIDATED`. It rejected both
+  attempts (`ownership_violation`), and each node was rehydrated for a newly selected route.
+- R: `impl_rev` passed on `cc/claude-sonnet-5`. `impl_vowels` had no eligible route left
+  (provider `cc` cooled by the 429), so it went `FAIL_CLOSED`: run `BLOCKED`, no unowned edit
+  merged, review not run. The barrier caught this, not a model. It checks paths, not code quality.
 
 **Reviewer independence across a controller restart.**
 - S/T: a resume restored validated commits but dropped their implementer route identities, so
