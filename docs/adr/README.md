@@ -60,6 +60,7 @@ superseded by a later record rather than edited away.
 | [030](ADR-030-proof-carrying-decision-plane.md) — Proof-carrying decision plane for Verdict | Verdict owns the context-to-decision-to-receipt-to-proof chain; LiteLLM and OmniRoute are optional boundaries, and the UI consumes the receipt contract. | Accepted |
 | [031](ADR-031-prime-workflow-skills.md) — Project-owned Prime workflow | Five workflow skills own resumption, hydration, dispatch, proof, and finishing with durable leases. | Accepted for implementation |
 | [032](ADR-032-core-model-metadata-store.md) — Core owns model metadata | OmniRoute is inventory/execute/health only; Core fetches models.dev + LiteLLM with per-field provenance. | Accepted |
+| [036](ADR-036-goal-to-receipt-orchestration.md) — Goal-to-receipt orchestration | Frontier DAG, capacity-aware eligibility ladder, same-node reassignment, independent OCR review, fail-closed receipt, supervised controller. | Accepted (feat/interview-golden-path) |
 
 ## Ecosystem decision trail
 
