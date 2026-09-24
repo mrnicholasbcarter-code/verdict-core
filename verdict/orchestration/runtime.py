@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from verdict.orchestration.contracts import (
+    EligibilityStage,
     FailureClassification,
     FailureClassifier,
     ModelSelector,
@@ -45,6 +46,9 @@ from verdict.orchestration.contracts import (
     route_family,
     route_provider,
 )
+
+# Indirection for testing
+_sleep = asyncio.sleep
 
 
 class EventSink(Protocol):
@@ -86,6 +90,7 @@ class RuntimePolicy:
     run_deadline_seconds: float = 3600.0
     require_review: bool = True
     max_review_rounds: int = 2
+    max_cooldown_wait_seconds: float = 120.0
 
 
 @dataclass
@@ -325,6 +330,7 @@ class DagRuntime:
             return
         failures: list[FailureClassification] = []
         tried: set[str] = set()
+        waited_once = False
         while True:
             if run.attempt >= self.policy.max_attempts_per_node:
                 run.reason = (
@@ -345,6 +351,40 @@ class DagRuntime:
             choice, considered = self.selector.select(requirements, now=self.now())
             counts = _ladder_counts(considered)
             if choice is None:
+                # Check if we can wait for a short cooldown to expire
+                earliest_cooldown: datetime | None = None
+                if not waited_once:
+                    for v in considered:
+                        # Only consider routes that failed at AVAILABLE stage with a cooldown
+                        if (
+                            v.failed_stage == EligibilityStage.AVAILABLE
+                            and v.cooldown_until
+                            and v.route_id not in tried
+                        ):
+                            try:
+                                cooldown_time = datetime.fromisoformat(v.cooldown_until)
+                                if earliest_cooldown is None or cooldown_time < earliest_cooldown:
+                                    earliest_cooldown = cooldown_time
+                            except (ValueError, TypeError):
+                                pass
+
+                # If we found a short cooldown, wait for it
+                if earliest_cooldown is not None:
+                    wait_seconds = (earliest_cooldown - self.now()).total_seconds()
+                    if 0 < wait_seconds <= self.policy.max_cooldown_wait_seconds:
+                        self.events.emit(
+                            "cooldown",
+                            node_id,
+                            key="pool",
+                            scope="wait",
+                            category="waiting_for_capacity",
+                            until=earliest_cooldown.isoformat(),
+                        )
+                        await _sleep(wait_seconds + 1)
+                        waited_once = True
+                        continue
+
+                # Otherwise, fail closed as before
                 run.reason = "no eligible model: " + _explain_exhaustion(considered)
                 self.events.emit("eligibility", node_id, **counts, selected=None)
                 self._set(run, NodeState.BLOCKED, reason=run.reason)
