@@ -1,57 +1,57 @@
-# Global runtime ownership runbook
+# Runtime ownership and orchestration run ownership
 
-Verdict may still discover optional external runtimes (historical names such as
-Ruflo/claude-flow and RuVector appear in ADR-008 ownership records). Those are
-**optional** operator services, not Core product architecture after BOD-17.
-Canonical identities and endpoints remain defined in
-[ADR-008](../adr/ADR-008-global-runtime-ownership.md).
+This guide is about the current execution path, not a general process manager.
+For the historical global-runtime ownership contract, see
+[ADR-008](../adr/ADR-008-global-runtime-ownership.md). It is separate from the
+ADR-036 orchestration runtime.
 
-Inspect without changing processes:
+## One goal, one run directory
 
-```bash
-verdict runtime status --json
-verdict runtime reconcile --plan --json
-verdict runtime explain --json
-```
+[ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) makes Verdict the
+owner of one orchestration run. `verdict orchestrate` writes a run directory
+under `.verdict/runs` by default, relative to `--repo`. The command records an
+append-only event stream and produces a receipt for the run.
 
-Both commands are read-only. `ambiguous-process-identity` and `port-collision`
-are operator review states, not permission to stop a process.
-
-`runtime explain` is also read-only. It emits versioned capability evidence for
-each configured component, separating configuration, reachability, identity
-verification, and observed health. A healthy HTTP endpoint does not claim MCP
-protocol compatibility, tool success, model quality, or ownership of the
-process. An absent or ambiguous service remains `unknown`; it is never treated
-as healthy because a package, port, or process name exists.
-
-To apply only already-proven duplicate stops, review the plan and provide both
-an exact service scope and explicit consent:
+Use the run commands rather than inspecting or changing worker processes by
+name:
 
 ```bash
-verdict runtime reconcile --apply --yes --service ruflo-mcp --json
+verdict orchestrate "<goal>" --repo /path/to/repository --max-parallel 3
+verdict watch <run-id-or-directory> --once
+verdict run-receipt <run-id-or-directory> --json
 ```
 
-The command re-reads `/proc/<pid>` and verifies UID, process start time, and
-command-line hash before sending `SIGTERM`. It never uses `pkill`, process-name
-only matching, workspace deletion, or an implicit restart. If a PID was reused,
-the command fails closed.
+`verdict watch` renders the current run state. `verdict run-receipt` shows and
+verifies the orchestration receipt. Both accept a run ID or a run directory;
+`--runs-dir` selects a different root.
 
-The runtime state directory is `~/.verdict/runtime` by default and may be
-overridden for an isolated test with `VERDICT_RUNTIME_STATE_DIR`. Launcher
-commands are opt-in through the service-specific `VERDICT_*_COMMAND`
-environment variables; Verdict does not invent or silently start a provider
-service. State files are mode `0700` for the directory and `0600` for ownership,
-PID, and lock files.
+## Controller supervision
 
-Recovery for the current host topology is deliberately staged:
+`verdict supervise` starts and watches an orchestration controller for a named
+run. It requires `--run-id` and `--runs-dir`; the arguments for the resumed
+orchestration command follow `--`. Its bounded controls are
+`--stall-seconds`, `--poll-seconds`, `--max-restarts`, and
+`--total-deadline-seconds`.
 
-1. capture `runtime status --json` and preserve it as redacted operator evidence;
-2. inspect service command lines, systemd user units, endpoint health, and the
-   ownership records;
-3. establish or repair one canonical ownership record through the documented
-   service supervisor;
-4. rerun the plan and apply only exact duplicate actions after human review;
-5. rerun status and the MCP initialize/tool handshake independently.
+```bash
+verdict supervise --run-id demo --runs-dir /path/to/repository/.verdict/runs \
+  --stall-seconds 90 -- "<goal>" --repo /path/to/repository
+```
 
-No database, credential, authorization header, prompt, or raw MCP payload is
-part of the runtime report.
+The supervisor uses the run's progress data to detect a stalled controller and
+restarts it with resume semantics within its configured limits. The receipt
+records the run outcome. A worker or controller failure is not silently treated
+as success.
+
+## Exact worker ownership
+
+The orchestration executor launches each selected route through the Prime
+headless CLI. The selection boundary is in `verdict.subagent_selection` and
+`verdict.worker_runtime`: inventory and Prime visibility are checked, a
+bounded health probe is used, the exact selector is launched, and the terminal
+result is validated. Replacement attempts stay within the configured runtime
+budget and use another eligible candidate.
+
+Do not put credentials, prompts, raw provider responses, or process command
+lines into receipts or run evidence. See [interview golden path](interview-golden-path.md)
+for the end-to-end path.

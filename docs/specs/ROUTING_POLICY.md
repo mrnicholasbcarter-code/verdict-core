@@ -1,126 +1,86 @@
 # Routing Policy
 
 **Status:** Active
-**Authority:** This policy governs the Verdict Core routing surface. The former
-LLM-gate name is retained only in historical migration material; changes require
-an ADR.
-**Related ADR:** `ADR-ORCHESTRATOR-ROUTING.md` — defines the orchestrator/gate boundary.
+**Authority:** This policy governs the Verdict Core routing surface. Changes to
+its safety invariants require an ADR.
+**Related:** [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) defines
+the current goal-to-receipt orchestration path.
 
----
+## 1. Routing invariant
 
-## 1. What Verdict IS (The Gate)
+Verdict filters candidates before ranking. `EligibilityGate` is the shared
+authority for the routing path and explain surface, so a downstream ranker
+cannot reintroduce a candidate it excluded.
 
-Verdict is a **thin, deterministic, fail-closed eligibility gate**. It does three things:
+The gate evaluates live availability evidence supplied through the availability
+source. Candidates in the eligible or ready state can enter the pre-ranking
+set. For protected work, absent, unknown, error, unavailable, timeout,
+malformed, or unauthorized live truth excludes a candidate. Non-protected work
+in development mode can admit an unverified candidate only when the gate is
+configured to allow it; the decision remains marked as unverified.
 
-| Job | Component | Description |
-|-----|-----------|-------------|
-| **Eligibility filtering** | `EligibilityGate` | Consults `AvailabilityCache` + `ProbeRunner`; admits only `eligible`/`ready`/`degraded` candidates. Protected work **fails closed** when live truth is absent. |
-| **Catalog mirror** | `GET /v1/models` | Serves the full live OmniRoute catalog (pricing, capabilities, ratings, context window) so the orchestrator can "review all models like openrouter.ai". |
-| **Explainability** | `GET /v1/route/explain` | Returns full candidate set, pre-ranking eligible set, per-candidate exclusion reasons, cache confidence, refresh errors. |
+A candidate denied by live eligibility, including quota, rate-limit, policy,
+or circuit conditions, is not admitted.
 
-**The gate is the enforcement layer. It has NO selection logic.**
+## 2. Routing and explain surfaces
 
----
+| Surface | Current behavior |
+|---|---|
+| `POST /v1/route` | Routes one task through the intelligence service and records route evidence. |
+| `GET /v1/route/explain` | Explains cached availability and eligibility. It can also retrieve an immutable execution-evidence record by its supported selector. |
+| `GET /v1/models` | Returns Verdict's locally filtered upstream model catalog. Catalog membership is discovery information, not availability proof. |
+| `EligibilityGate` | Produces the pre-ranking eligible set and per-candidate exclusion records. |
+| `AvailabilityCache` | Provides bounded freshness, stale-while-revalidate behavior, and explainable cache state. |
+| `ProbeRunner` | Supports bounded liveness probes where the caller has enabled live probing. |
 
-## 2. What Verdict IS NOT (The Selector)
+The route decision and execution are separate concerns. A routing result is not
+proof that an upstream call completed correctly.
 
-**Model selection is the orchestrator's job.** The orchestrator (the frontier model you pay for: `LLMGATE_PRIMARY`) performs the expensive cognitive pass **once per unit of work**:
+## 3. Dynamic catalog rule
 
-1. Research task → review live catalog → pick right-sized model per slice
-2. Spec → dispatch to workers (ruflo swarm / agent team / AgentSDK)
-3. Verify worker output → confirm green
-4. Feed outcome to learning loop (`record_outcome` → `ruflo hooks_model-outcome` → SONA/ReasoningBank)
+Do not hardcode worker provider allowlists or static model tiers into the
+routing path. Use the configured catalog and live availability evidence. A
+model name or a catalog row alone does not prove capability, entitlement,
+health, quota, or task eligibility.
 
-**The gate does not:**
-- Compute tiers via `classifier.py` regex (DEPRECATED for non-protected path)
-- Rank candidates (`intelligence.route()` no longer calls `select_best_model`)
-- Maintain hardcoded allowlists, tier rings, or worker pools
-- Couple to Ruflo/RuVector **internals** for selection
+The legacy classifier is not a substitute for live admission evidence. Keep
+selection and ranking downstream of the eligibility filter.
 
----
+## 4. Protected work
 
-## 3. The Dynamic-Catalog Rule (USER-EXPLICIT)
+Protected work fails closed when required live availability truth is absent.
+The protected decision path must not turn an unknown, stale, failed, or denied
+candidate into an eligible one. Development-mode unverified admission does not
+apply to protected work.
 
-> **Do NOT hardcode worker allowlists or static tier rings.**
-> Consume the dynamic model list returned by the gateway and assign the best-available model per task criticality.
-> — ADR-149: drop the 3-tier (Haiku/Sonnet/Opus) abstraction, operate on concrete ModelId strings, pick the cheapest model predicted to clear a qualityBar.
+## 5. Current orchestration pointers
 
-**Pitfall:** `classifier.py`'s regex table is a hand-maintained static list — a brand-new capable slug silently lands in tier 2. This is the real "stale heuristic" problem, NOT a hardcoded 3-model allowlist (that misconception has caused wrong fixes before).
+Goal-to-receipt execution uses the ADR-036 orchestration runtime:
 
-**Prefer:** OmniRoute `auto`/`auto/coding` server-side selection or ADR-149 per-ModelId cost-optimal selection over editing the regex.
+- `verdict eligibility` renders the orchestration eligibility ladder and can
+  lazily probe candidates with `--probe`.
+- `verdict orchestrate` plans and runs a goal, then writes a receipt.
+- `verdict supervise` provides bounded controller supervision and resume.
+- `verdict watch` renders a run; `verdict run-receipt` shows and verifies its
+  receipt.
 
----
+See [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) and the
+[interview golden path](../guides/interview-golden-path.md) for the exact
+runtime contract and command examples. [ADR-023](../adr/ADR-023-governed-swarm-supervision.md)
+is superseded historical material.
 
-## 4. Protected Work = Deterministic Frontier Floor
+## 6. Verification
 
-For **protected work** (money-level trading decisions, architecture, final synthesis):
-- The orchestrator **may only** dispatch to workers the gate marks `ready`
-- The gate enforces a **deterministic frontier floor** — no model below the safety floor is admitted
-- The floor is derived from the live catalog's capability signal, NOT a hardcoded tier
-
-For **non-protected work** (docs, refactors, analysis, bulk transforms):
-- The orchestrator picks any eligible model from the live catalog
-- Free/mid-tier models are preferred when appropriate
-- The gate admits `eligible`/`ready`/`degraded` (with dev-mode unverified admission flag)
-
----
-
-## 5. Reuse, Don't Reinvent
-
-Verdict already has the primitives — use them:
-
-| Primitive | Location | Use For |
-|-----------|----------|---------|
-| `ProbeRunner` + `openai_probe_transport` | `verdict/probes.py` | Live one-token probes (built, tested) |
-| `AvailabilityCache` (singleton) | `verdict/availability_cache.py` | Bounded TTL + stale-while-revalidate |
-| `OmniRouteAvailabilityAdapter` / `ProbeEnrichedAdapter` | `verdict/availability.py` | Catalog+runtime or catalog+runtime+probe truth |
-| `SwarmDispatcher` | `verdict/dispatcher.py` | Filters `eligible` by `live_eligible`; records exclusions |
-| ruflo intelligence hooks | CLI/MCP | `hooks_model-route`, `hooks_model-outcome` for learning loop |
-
-**Verdict MUST NOT couple to Ruflo/RuVector internals.** Use the documented CLI/MCP surface, not internal imports.
-
----
-
-## 6. The #57 / #72 / #73 Contract (Canonical Worked Example)
-
-**Invariant:** Filter candidates before any ranking, and no ranker / Ruflo plan / RuVector result can reintroduce an excluded candidate.
-
-1. Single `EligibilityGate` consults `AvailabilityCache.get(model_id)` — the ONLY authority used by router, dispatcher, Gate, and explain.
-2. Protected work fails closed: when live availability truth is `unknown`/`error`/missing, exclude (do not optimistically admit). Dev/non-protected may admit unverified with a flag.
-3. `/v1/route/explain` (#73) must surface the full candidate set, the pre-ranking eligible set, per-candidate exclusion reasons, and cache confidence/refresh_error — all from the same gate.
-4. Integration tests cover every public route entry point (`/v1/route`, `/v1/chat/completions`, `Gate.route`, `intelligence.route`).
-
----
-
-## 7. Verification (Run Before Claiming Done)
+Before claiming a routing change is complete, run the checks that cover the
+changed path. The standard repository baseline is:
 
 ```bash
-uv run --extra dev --extra dashboard --extra server ruff check . && uv run --extra dev --extra dashboard --extra server ruff format --check .
+uv run --extra dev --extra dashboard --extra server ruff check .
+uv run --extra dev --extra dashboard --extra server ruff format --check .
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 uv run pytest -q
-code-review-graph detect-changes  # blast-radius on routing path
-# Exact-SHA CI watch after push (CI/Lint/CodeQL must be green)
+git diff --check
 ```
 
----
-
-## 8. Anti-Patterns (Do Not Do)
-
-| Anti-Pattern | Why It's Wrong | Correct Approach |
-|--------------|----------------|------------------|
-| Add `classifier.py` import to `intelligence.route()` | Puts selection in request path | Orchestrator selects; gate filters |
-| Hardcode `model_allowlist = ["opus", "sonnet"]` | Violates dynamic-catalog rule | Derive from `GET /v1/models` |
-| Store worker outcomes in Verdict's request path | Breaks deterministic enforcement | Subprocess `ruflo hooks_model-outcome` |
-| Call `select_best_model(tier)` in hot path | Tier = stale heuristic | Orchestrator picks by live metadata |
-
----
-
-## 9. For Contributors / Models Pointed At This Repo
-
-- **Read `ADR-ORCHESTRATOR-ROUTING.md` before touching** `router.py`, `intelligence.py`, `gate.py`, `availability.py`, `availability_cache.py`, `probes.py`, or `api.py`.
-- If you are about to add a hardcoded model name, tier, or allowlist — **stop.** Derive it from the live catalog instead.
-- The gate (eligibility/probe/fail-closed) is sacred and deterministic. The *selector* lives in the orchestrator + learning loop, not in the request path.
-
----
-
-*Policy aligned with `ADR-ORCHESTRATOR-ROUTING.md` and `ORCHESTRATOR_DRIVEN_ROUTING.md`. This document replaces the previous "no Ruflo coupling" absolute with "no selection logic in the request path; orchestrator owns selection."*
+Also exercise affected API or CLI paths and record any unavailable external
+dependency as a limitation. Do not call a timed-out or unrun check green.
