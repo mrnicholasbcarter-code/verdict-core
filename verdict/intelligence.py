@@ -230,6 +230,7 @@ class IntelligenceService:
         candidate_top_k: int = DEFAULT_CANDIDATE_TOP_K,
         receipt_store: Any | None = None,
         persist_routing_receipts: bool = True,
+        decision_signal_provider: Any | None = None,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -271,6 +272,16 @@ class IntelligenceService:
         self.candidate_top_k = candidate_top_k
         self.receipt_store = receipt_store
         self.persist_routing_receipts = persist_routing_receipts
+        # Optional decision signal provider for ADVISORY mode (BOD-238).
+        # None = no advisory; set to a DecisionSignalProvider-compatible object
+        # to collect signals and apply advisory reordering in ADVISORY mode.
+        # Default: consult factory.provider_from_env() so production callers get
+        # a live provider without needing to pass it explicitly (item B.1).
+        if decision_signal_provider is None:
+            from verdict.decision_signals.factory import provider_from_env as _pfn
+
+            decision_signal_provider = _pfn()
+        self.decision_signal_provider = decision_signal_provider
         # Request-time OmniRoute evidence cache. A failed refresh never erases
         # the last complete snapshot; cold-start authority mode still fails closed.
         self._admit_snapshot_lkg: OmniRouteAdmitSnapshot | None = None
@@ -427,10 +438,14 @@ class IntelligenceService:
         # Planning estimates task capability needs. Criticality is retained as a
         # safety floor, not as a model selector: identical task semantics have
         # identical selection requirements unless a protected floor applies.
+        # Item A (BOD-238): initialise explicitly before the try-block so the advisory
+        # block can read it directly without locals() or type: ignore tricks.
+        _route_task_spec: Any = None
         try:
-            task_spec = self.planner.plan(
+            _route_task_spec = self.planner.plan(
                 task_str, context=context, criticality=criticality
             ).task_spec
+            task_spec = _route_task_spec
             task_tier = {"low": 3, "medium": 2, "high": 1}.get(task_spec.effort, 2)
         except Exception:
             task_tier = 2
@@ -491,11 +506,101 @@ class IntelligenceService:
             )
             candidates = eligibility.eligible
 
+        # BOD-238 ADVISORY mode: collect signals, reorder the valid/admitted set,
+        # then pick best_model from the advisory-ordered front.
+        # Must not execute when task is protected (final_tier == 0), no provider,
+        # ExecutionPathDecision present (already returned above), or mode != ADVISORY.
+        _advisory_influence_flags: list[str] = []
+        _advisory_signals: Any = None
+        _advisory_privacy: str | None = None
+        if final_tier != 0:
+            try:
+                import threading as _threading
+
+                from verdict.decision_signals.advisory import advise_order
+                from verdict.decision_signals.contracts import DecisionQuestionV1
+                from verdict.decision_signals.shadow import get_signals_mode as _get_mode
+
+                _adv_mode = _get_mode()  # single authoritative parser (BOD-238 item B.1)
+                _provider = self.decision_signal_provider
+                if _adv_mode == "ADVISORY" and _provider is not None:
+                    # Item 4 / A: read privacy directly from _route_task_spec which is
+                    # initialised to None before the planner try-block and assigned there.
+                    # No second planner call; None when planner raised.
+                    _advisory_privacy = getattr(_route_task_spec, "privacy", None)
+                    if _advisory_privacy in ("restricted", "trusted_upstream"):
+                        _advisory_influence_flags.append("advisory:skipped:privacy_restricted")
+                    else:
+                        try:
+                            from contextlib import suppress as _suppress
+                            from datetime import datetime as _dt
+                            from datetime import timezone as _tz
+
+                            _timeout_ms = int(
+                                os.environ.get("VERDICT_DECISION_SIGNALS_TIMEOUT_MS", "1500")
+                            )
+                            _question = DecisionQuestionV1(
+                                purpose="route", task_summary=task_str[:500], complexity_hints={}
+                            )
+                            _result_holder: list[Any] = []
+                            _bound_provider = _provider
+
+                            def _fetch() -> None:
+                                with _suppress(Exception):
+                                    _result_holder.append(
+                                        _bound_provider.signals(_question, now=_dt.now(_tz.utc))
+                                    )
+
+                            _t = _threading.Thread(target=_fetch, daemon=True)
+                            _t.start()
+                            _t.join(timeout=_timeout_ms / 1000.0)
+                            if _result_holder:
+                                _advisory_signals = _result_holder[0]
+                            else:
+                                _advisory_influence_flags.append("advisory:skipped:timeout")
+                        except Exception:
+                            _advisory_influence_flags.append("advisory:skipped:error")
+            except Exception:
+                _advisory_influence_flags.append("advisory:skipped:internal_error")
+
         best_model, _ = (
             select_best_eligible_model(eligibility, final_tier, self.providers)
             if eligibility is not None
             else select_best_model(candidates, final_tier, self.providers)
         )
+
+        # Apply advisory reorder AFTER the baseline best_model is chosen.
+        # Override best_model with the first advisory-ordered candidate from the
+        # valid set (the set that actually passed select_best_model's tier/state
+        # filter).  Membership is never changed; advisory only reorders.
+        if _advisory_signals is not None and best_model is not None and final_tier != 0:
+            try:
+                from verdict.decision_signals.advisory import advise_order
+
+                # Build the valid set in the same way select_best_model does.
+                _raw_candidates = eligibility.eligible if eligibility is not None else candidates
+                _valid = [
+                    m
+                    for m in _raw_candidates
+                    if getattr(m, "capability_tier", 0) <= final_tier
+                    and getattr(m, "is_available", True)
+                    and getattr(m, "availability_state", "eligible") in {"eligible", "ready"}
+                ]
+                if not _valid:
+                    _valid = _raw_candidates  # fallback: no filter match
+                _ordered_valid, _influence = advise_order(
+                    _valid, _advisory_signals, protected=False, privacy=_advisory_privacy
+                )
+                _prof = _influence.profile
+                _b1 = _influence.baseline_first or ""
+                if _prof not in ("inconclusive",) and not _prof.startswith("skipped"):
+                    # Real reorder happened: pick first in advisory order
+                    best_model = _ordered_valid[0] if _ordered_valid else best_model
+                _advisory_influence_flags.append(f"advisory:{_prof}")
+                if _b1:
+                    _advisory_influence_flags.append(f"advisory_baseline:{_b1}")
+            except Exception:
+                _advisory_influence_flags.append("advisory:skipped:apply_error")
 
         eligibility_record: dict[str, Any] = {}
         if eligibility is not None:
@@ -509,6 +614,7 @@ class IntelligenceService:
             flags = list(legacy_safety)
             if eligibility_record.get("protected_fail_closed"):
                 flags.append("eligibility_exclusions_applied")
+            flags.extend(_advisory_influence_flags)
             dec = RoutingDecision(
                 model=self.primary_model,
                 provider="primary",
@@ -532,6 +638,7 @@ class IntelligenceService:
             flags = list(legacy_safety)
             if eligibility_record.get("protected_fail_closed"):
                 flags.append("eligibility_exclusions_applied")
+            flags.extend(_advisory_influence_flags)
             dec = RoutingDecision(
                 model=best_model.id,
                 provider=best_model.provider,
@@ -1055,7 +1162,19 @@ class IntelligenceService:
                 receipt = replace(
                     receipt, chosen=None, empty_intersection=True, selected_because=None
                 )
-        return self._decision_from_admit(
+        # BOD-238: advisory reordering is NOT applied on the live-admit path because
+        # the admitted set here contains string IDs, not ModelInfo objects, and the
+        # ranker would have no pricing/tier data to sort on.  Record this explicitly
+        # so monitoring can see advisory was skipped, not missing.
+        _admit_path_advisory_flags: list[str] = []
+        try:
+            from verdict.decision_signals.advisory import _mode_from_env as _adv_mode_fn
+
+            if _adv_mode_fn() == "ADVISORY" and self.decision_signal_provider is not None:
+                _admit_path_advisory_flags.append("advisory:skipped:admit_path_not_supported")
+        except Exception:
+            pass
+        _admit_dec = self._decision_from_admit(
             task,
             final_tier,
             escalated,
@@ -1067,6 +1186,14 @@ class IntelligenceService:
             task_class=classification.task_class,
             context=context,
         )
+        if _admit_path_advisory_flags:
+            from dataclasses import replace as _dr
+
+            _admit_dec = _dr(
+                _admit_dec,
+                safety_flags=list(_admit_dec.safety_flags or []) + _admit_path_advisory_flags,
+            )
+        return _admit_dec
 
     def _load_admit_snapshot(
         self,
