@@ -602,7 +602,7 @@ def _load_toml(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
-        import tomllib  # type: ignore  # tomllib unavailable in 3.10
+        import tomllib  # type: ignore[import-not-found,unused-ignore]
     except ImportError:
         return _parse_context_toml_subset(path)
     try:

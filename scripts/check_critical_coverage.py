@@ -9,12 +9,16 @@ Usage:
     pytest --cov=verdict --cov-branch --cov-report=xml
     scripts/check_critical_coverage.py
 
+    # With custom paths:
+    scripts/check_critical_coverage.py --coverage-xml path/to/coverage.xml --config path/to/config.toml
+
 Exit codes:
     0: All modules meet or exceed their floors
     1: One or more modules below floor, or configured module not measured
-    2: Missing inputs or parse error
+    2: Missing inputs, parse error, or usage error
 """
 
+import argparse
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -111,10 +115,34 @@ def parse_coverage_xml(path: Path) -> dict[str, float]:
 
 def main() -> int:
     """Check critical module coverage floors."""
-    repo_root = Path(__file__).parent.parent
-    config_path = repo_root / ".coverage-critical.toml"
-    coverage_path = repo_root / "coverage.xml"
+    parser = argparse.ArgumentParser(description="Check critical module branch coverage floors")
+    parser.add_argument(
+        "--coverage-xml",
+        type=Path,
+        help="Path to coverage.xml (default: coverage.xml in repo root)",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config file (default: .coverage-critical.toml in repo root)",
+    )
+    args = parser.parse_args()
 
+    # Determine paths
+    if args.coverage_xml:
+        coverage_path = args.coverage_xml
+        repo_root = Path.cwd()
+    else:
+        repo_root = Path(__file__).parent.parent
+        coverage_path = repo_root / "coverage.xml"
+
+    if args.config:
+        config_path = args.config
+    else:
+        repo_root = Path(__file__).parent.parent
+        config_path = repo_root / ".coverage-critical.toml"
+
+    # Validate inputs exist
     if not config_path.exists():
         print(f"ERROR: {config_path} not found", file=sys.stderr)
         return 2
@@ -134,18 +162,19 @@ def main() -> int:
         traceback.print_exc()
         return 2
 
-    # Check that all configured modules exist as files
-    missing_files = []
-    for module in floors:
-        module_path = repo_root / module
-        if not module_path.exists():
-            missing_files.append(module)
+    # Check that all configured modules exist as files (only if using default config)
+    if not args.config:
+        missing_files = []
+        for module in floors:
+            module_path = repo_root / module
+            if not module_path.exists():
+                missing_files.append(module)
 
-    if missing_files:
-        print("ERROR: Configured modules do not exist as files:", file=sys.stderr)
-        for module in missing_files:
-            print(f"  {module}", file=sys.stderr)
-        return 2
+        if missing_files:
+            print("ERROR: Configured modules do not exist as files:", file=sys.stderr)
+            for module in missing_files:
+                print(f"  {module}", file=sys.stderr)
+            return 2
 
     failures = []
     missing_coverage = []

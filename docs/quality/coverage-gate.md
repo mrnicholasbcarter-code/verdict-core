@@ -25,9 +25,19 @@ pytest --cov=verdict --cov-branch --cov-report=xml
 
 # Check critical module floors
 scripts/check_critical_coverage.py
+
+# Or with custom paths
+scripts/check_critical_coverage.py --coverage-xml path/to/coverage.xml --config path/to/config.toml
 ```
 
-The script exits 0 if all modules meet their floors, 1 if any are below.
+### Exit Codes
+
+- **0**: All modules meet or exceed their floors
+- **1**: One or more modules below floor, OR configured module not measured in coverage.xml
+- **2**: Missing coverage.xml or config file, or parse error (usage error)
+
+A configured module that is absent from coverage.xml is treated as a test failure (exit 1)
+with output `✗ module/path.py NOT MEASURED (floor: X%)`, not a silent 0.0%.
 
 ## Configuration
 
