@@ -13,3 +13,6 @@ pnpm-lock.yaml
 __pycache__/
 *.egg-info/
 htmlcov/
+
+# Vendored OpenSpec schemas
+openspec/schemas/

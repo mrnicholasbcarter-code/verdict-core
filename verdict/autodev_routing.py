@@ -218,12 +218,62 @@ class RetryDecision:
 _TRANSIENT = frozenset(
     {
         NormalizedFailureClass.RATE_LIMIT,
-        NormalizedFailureClass.QUOTA,
         NormalizedFailureClass.TRANSPORT,
         NormalizedFailureClass.TIMEOUT,
         NormalizedFailureClass.UPSTREAM,
+        NormalizedFailureClass.OVERLOADED,  # BOD-198: 529 is transient
     }
 )
+# BOD-198: QUOTA removed from _TRANSIENT (deliberate behavior change).
+# Quota exhaustion is NOT retryable until quota state changes.
+
+# BOD-198: Retry-After parsing bounds
+RETRY_AFTER_MIN_S = 1
+RETRY_AFTER_MAX_S = 900
+RETRY_AFTER_DEFAULT_S = 60
+
+
+def parse_retry_after(value: str | None, *, now: datetime) -> float:
+    """Parse Retry-After header value to cooldown seconds (BOD-198).
+
+    Args:
+        value: Retry-After header value (integer seconds or HTTP-date)
+        now: Current datetime for relative calculation
+
+    Returns:
+        Cooldown seconds, clamped to [RETRY_AFTER_MIN_S, RETRY_AFTER_MAX_S].
+        None/garbage/negative/NaN -> RETRY_AFTER_DEFAULT_S (clamped).
+    """
+    if not value:
+        return float(RETRY_AFTER_DEFAULT_S)
+
+    value = value.strip()
+
+    # Try parsing as integer seconds first
+    try:
+        seconds = int(value)
+        if seconds < 0 or not isinstance(seconds, int):
+            return float(RETRY_AFTER_DEFAULT_S)
+        # Clamp to bounds
+        return float(max(RETRY_AFTER_MIN_S, min(seconds, RETRY_AFTER_MAX_S)))
+    except ValueError:
+        pass
+
+    # Try parsing as HTTP-date (RFC 7231)
+    from email.utils import parsedate_to_datetime
+
+    try:
+        target_dt = parsedate_to_datetime(value)
+        delta_seconds = (target_dt - now).total_seconds()
+
+        if delta_seconds < 0 or not isinstance(delta_seconds, (int, float)):
+            return float(RETRY_AFTER_DEFAULT_S)
+
+        # Clamp to bounds
+        return float(max(RETRY_AFTER_MIN_S, min(delta_seconds, RETRY_AFTER_MAX_S)))
+    except (ValueError, TypeError, OverflowError):
+        # Garbage/unparseable -> default
+        return float(RETRY_AFTER_DEFAULT_S)
 
 
 class OpenAICompatibleEvidenceAdapter:
@@ -343,8 +393,14 @@ class OpenAICompatibleEvidenceAdapter:
             source=source,
         )
 
-    def normalize_failure(self, signal: AdapterFailureSignal) -> NormalizedFailure:
+    def normalize_failure(
+        self, signal: AdapterFailureSignal, *, now: datetime | None = None
+    ) -> NormalizedFailure:
         status = signal.status_code
+        cooldown_seconds: float | None = None
+        if now is None:
+            now = datetime.now(timezone.utc)
+
         if signal.cancelled:
             failure_class = NormalizedFailureClass.CANCELLED
         elif signal.timed_out:
@@ -352,9 +408,22 @@ class OpenAICompatibleEvidenceAdapter:
         elif status in {401, 403}:
             failure_class = NormalizedFailureClass.AUTHENTICATION
         elif status == 402:
+            # BOD-198: 402 is explicit quota exhaustion, non-retryable
             failure_class = NormalizedFailureClass.QUOTA
         elif status == 429:
-            failure_class = NormalizedFailureClass.RATE_LIMIT
+            # BOD-198: Distinguish quota exhaustion vs rate limiting
+            code_lower = signal.code.lower() if signal.code else ""
+            if code_lower in {"insufficient_quota", "quota_exceeded", "quota_exhausted"}:
+                # Quota exhaustion: unavailable until quota changes, non-retryable
+                failure_class = NormalizedFailureClass.QUOTA
+            else:
+                # Rate limiting: retryable with bounded cooldown
+                failure_class = NormalizedFailureClass.RATE_LIMIT
+                cooldown_seconds = parse_retry_after(signal.retry_after, now=now)
+        elif status == 529:
+            # BOD-198: 529 is provider infrastructure pressure (not quality degradation)
+            failure_class = NormalizedFailureClass.OVERLOADED
+            cooldown_seconds = parse_retry_after(signal.retry_after, now=now)
         elif status in {400, 404, 405, 409, 415, 422}:
             failure_class = NormalizedFailureClass.CAPABILITY
         elif status is not None and status >= 500:
@@ -364,7 +433,10 @@ class OpenAICompatibleEvidenceAdapter:
         else:
             failure_class = NormalizedFailureClass.UNKNOWN
         return NormalizedFailure(
-            failure_class=failure_class, retryable=failure_class in _TRANSIENT, status_code=status
+            failure_class=failure_class,
+            retryable=failure_class in _TRANSIENT,
+            status_code=status,
+            cooldown_seconds=cooldown_seconds,
         )
 
 

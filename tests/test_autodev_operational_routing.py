@@ -480,7 +480,10 @@ def test_live_adapter_normalizes_failures_without_retrying_authentication() -> N
     auth = adapter.normalize_failure(AdapterFailureSignal("http", status_code=401))
 
     assert rate_limit == NormalizedFailure(
-        NormalizedFailureClass.RATE_LIMIT, retryable=True, status_code=429
+        NormalizedFailureClass.RATE_LIMIT,
+        retryable=True,
+        status_code=429,
+        cooldown_seconds=60.0,  # BOD-198: default cooldown when no Retry-After
     )
     assert timeout == NormalizedFailure(NormalizedFailureClass.TIMEOUT, retryable=True)
     assert auth == NormalizedFailure(
