@@ -122,48 +122,47 @@ PROVIDER_MAPPING = {
 }
 
 
-
-
 def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
     """Setup step for credentials and dependencies.
-    
+
     Prompts for missing required credentials (unless --non-interactive).
     Shows registered credentials and dependencies status.
     """
+    import getpass
+
     from verdict.credentials_registry import CREDENTIALS, DEPENDENCIES
     from verdict.credentials_store import CredentialsStore, get_credential_source
     from verdict.terminal_ui import TerminalUI
-    import getpass
-    
+
     ui = TerminalUI()
     store = CredentialsStore()
-    
+
     ui.header("Credentials and Dependencies")
-    
+
     # Check credentials
     missing_required = []
     for cred in CREDENTIALS:
-        source, masked = get_credential_source(cred.env_name, store)
+        source, _masked = get_credential_source(cred.env_name, store)
         if source == "missing" and not cred.optional:
             missing_required.append(cred)
-    
+
     if missing_required:
         ui.panel(
             "Missing required credentials",
             f"{len(missing_required)} required credential(s) are not set.",
             tone="WARNING",
         )
-        
+
         if non_interactive:
             for cred in missing_required:
                 ui.status(cred.env_name, "missing", cred.purpose)
             ui.panel(
                 "Action required",
-                f"Set missing credentials with: verdict credentials set <NAME>",
+                "Set missing credentials with: verdict credentials set <NAME>",
                 tone="INFO",
             )
             return
-        
+
         # Interactive prompting
         for cred in missing_required:
             ui.status(cred.env_name, "missing", cred.purpose)
@@ -180,7 +179,7 @@ def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
                 continue
     else:
         ui.panel("Credentials", "All required credentials are set.", tone="INFO")
-    
+
     # Show dependency status
     ui.header("Dependencies")
     missing_deps = []
@@ -192,7 +191,7 @@ def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
         else:
             ui.status(dep.name, "missing", dep.install_command)
             missing_deps.append(dep)
-    
+
     if missing_deps:
         ui.panel(
             "Optional dependencies",
@@ -2458,7 +2457,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     ui.header("Credentials")
     from verdict.credentials_registry import CREDENTIALS
     from verdict.credentials_store import CredentialsStore, get_credential_source
-    
+
     try:
         store = CredentialsStore()
         missing_required = []
@@ -2474,7 +2473,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                 ui.status(cred.env_name, "optional", "not set")
             else:
                 ui.status(cred.env_name, source, masked)
-        
+
         if not missing_required:
             ui.status("Required credentials", "ok", "all set")
     except Exception as e:
@@ -3431,60 +3430,57 @@ def _stdout_is_tty() -> bool:
     return sys.stdout.isatty()
 
 
-
-
 def cmd_credentials_list(*, output_json: bool = False) -> None:
     """List all registered credentials with their source and masked value."""
     import json
+
     from verdict.credentials_registry import CREDENTIALS
     from verdict.credentials_store import CredentialsStore, get_credential_source
-    
+
     store = CredentialsStore()
-    
+
     results = []
     for cred in CREDENTIALS:
         source, masked = get_credential_source(cred.env_name, store)
-        results.append({
-            "name": cred.env_name,
-            "source": source,
-            "value": masked,
-            "purpose": cred.purpose,
-            "optional": cred.optional,
-        })
-    
+        results.append(
+            {
+                "name": cred.env_name,
+                "source": source,
+                "value": masked,
+                "purpose": cred.purpose,
+                "optional": cred.optional,
+            }
+        )
+
     if output_json:
         print(json.dumps(results, indent=2))
         return
-    
+
     # Terminal output
     from verdict.terminal_ui import TerminalUI
+
     ui = TerminalUI()
-    
+
     ui.header("Credentials")
     for item in results:
-        ui.status(
-            item["name"],
-            item["source"],
-            item["value"],
-        )
+        ui.status(str(item["name"]), str(item["source"]), str(item["value"]))
 
 
 def cmd_credentials_set(
-    *,
-    name: str,
-    force_unregistered: bool = False,
-    from_stdin: bool = False,
+    *, name: str, force_unregistered: bool = False, from_stdin: bool = False
 ) -> None:
     """Set a credential in the store."""
     import getpass
     import sys
+
     from verdict.credentials_registry import get_credential
     from verdict.credentials_store import CredentialsStore
-    
+
     # Check if registered
     cred = get_credential(name)
     if cred is None and not force_unregistered:
         from verdict.terminal_ui import TerminalUI
+
         ui = TerminalUI()
         ui.panel(
             "Unknown credential",
@@ -3492,25 +3488,27 @@ def cmd_credentials_set(
             tone="WARNING",
         )
         raise SystemExit(1)
-    
+
     # Read value
     if from_stdin:
         value = sys.stdin.read().strip()
     else:
         prompt_text = f"Enter value for {name}: "
         value = getpass.getpass(prompt_text)
-    
+
     if not value:
         from verdict.terminal_ui import TerminalUI
+
         ui = TerminalUI()
         ui.panel("Empty value", "Credential value cannot be empty.", tone="WARNING")
         raise SystemExit(1)
-    
+
     # Store it
     store = CredentialsStore()
     store.set(name, value)
-    
+
     from verdict.terminal_ui import TerminalUI
+
     ui = TerminalUI()
     ui.status(name, "set", "in credential store")
 
@@ -3519,10 +3517,10 @@ def cmd_credentials_unset(*, name: str) -> None:
     """Remove a credential from the store."""
     from verdict.credentials_store import CredentialsStore
     from verdict.terminal_ui import TerminalUI
-    
+
     store = CredentialsStore()
     removed = store.unset(name)
-    
+
     ui = TerminalUI()
     if removed:
         ui.status(name, "removed", "from credential store")
@@ -3533,33 +3531,34 @@ def cmd_credentials_unset(*, name: str) -> None:
 def cmd_credentials_test(*, name: str) -> None:
     """Test a credential with its live check."""
     import os
+
     from verdict.credentials_registry import get_credential
     from verdict.credentials_store import CredentialsStore
     from verdict.terminal_ui import TerminalUI
-    
+
     ui = TerminalUI()
-    
+
     cred = get_credential(name)
     if cred is None:
         ui.panel("Unknown credential", f"{name} is not in the registry.", tone="WARNING")
         raise SystemExit(1)
-    
+
     if cred.live_check is None:
         ui.panel("No live check", f"{name} has no live check defined.", tone="INFO")
         return
-    
+
     # Get the value
     store = CredentialsStore()
     store.load_into_env()
-    
+
     value = os.environ.get(name)
     if not value:
         ui.panel("Missing", f"{name} is not set in env or store.", tone="WARNING")
         raise SystemExit(1)
-    
+
     # Run the check
     ui.status(name, "testing", "...")
-    
+
     try:
         success, message = cred.live_check(value)
         if success:
@@ -3569,16 +3568,18 @@ def cmd_credentials_test(*, name: str) -> None:
             raise SystemExit(1)
     except Exception as e:
         ui.panel("Check error", str(e), tone="ERROR")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 def main() -> None:
     # Load credentials from store early (exported env vars win)
     from verdict.credentials_store import CredentialsStore
+
     try:
         CredentialsStore().load_into_env()
     except PermissionError as e:
         import sys
+
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 

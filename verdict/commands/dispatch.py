@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
@@ -70,9 +71,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             legacy.cmd_credentials_list(output_json=args.json)
         elif args.credentials_command == "set":
             legacy.cmd_credentials_set(
-                name=args.name,
-                force_unregistered=args.force_unregistered,
-                from_stdin=args.stdin,
+                name=args.name, force_unregistered=args.force_unregistered, from_stdin=args.stdin
             )
         elif args.credentials_command == "unset":
             legacy.cmd_credentials_unset(name=args.name)
@@ -175,7 +174,6 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             # Resolve the path dynamically without executing the file
             import importlib.util
             import subprocess
-            import sys
 
             spec = importlib.util.find_spec("verdict.dashboard")
             if not spec or not spec.origin:
@@ -194,13 +192,15 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     elif args.command == "serve":
         # Load credentials from store (exported env vars win)
         from verdict.credentials_store import CredentialsStore
+
         try:
             CredentialsStore().load_into_env()
         except PermissionError as e:
             from verdict import present
+
             present.fail("credentials", str(e))
             sys.exit(1)
-        
+
         try:
             from verdict.api import start_server
 
