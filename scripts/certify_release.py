@@ -347,6 +347,7 @@ def step_mypy(repo_path: Path, venv_bin: Path) -> StepResult:
 
     # Count files checked from output (parse "Success: no issues found in N source files")
     import re
+
     match = re.search(r"Success: no issues found in (\d+) source files?", result.stdout)
     files_checked = int(match.group(1)) if match else 0
 
@@ -742,11 +743,13 @@ def run_certification(
     return manifest, detailed
 
 
-def generate_certification_md(manifest: CertificationManifest, env: EnvironmentSnapshot | dict[str, Any]) -> str:
+def generate_certification_md(
+    manifest: CertificationManifest, env: EnvironmentSnapshot | dict[str, Any]
+) -> str:
     """Generate CERTIFICATION.md from manifest and environment data."""
     # Normalize env to dict
     env_dict = env if isinstance(env, dict) else env.to_dict()
-    
+
     lines = [
         f"# Release Certification: {manifest.git_sha}",
         "",
@@ -763,7 +766,7 @@ def generate_certification_md(manifest: CertificationManifest, env: EnvironmentS
         f"- **uv**: {env_dict['uv_version']}",
     ]
 
-    if env_dict.get('node_version'):
+    if env_dict.get("node_version"):
         lines.append(f"- **Node**: {env_dict['node_version']}")
 
     lines.extend(
@@ -803,7 +806,9 @@ def generate_certification_md(manifest: CertificationManifest, env: EnvironmentS
 
 
 def write_bundle(
-    output_dir: Path, manifest: CertificationManifest, env_snapshot: EnvironmentSnapshot | dict[str, Any]
+    output_dir: Path,
+    manifest: CertificationManifest,
+    env_snapshot: EnvironmentSnapshot | dict[str, Any],
 ) -> None:
     """Write all bundle files to output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
