@@ -1,0 +1,22 @@
+{
+  "provider": "openjev",
+  "model": "system-one",
+  "version": "1.0.0",
+  "request_id": "test-uncertain-001",
+  "signals": {
+    "complexity": 0.55,
+    "decomposability": 0.48,
+    "ambiguity": 0.67,
+    "frontier_worthy": 0.48,
+    "security_sensitive": 0.22,
+    "verification_strength": 0.45,
+    "context_need": 0.58
+  },
+  "confidence": 0.35,
+  "latency_ms": 182,
+  "usage": {
+    "input_tokens": 300,
+    "output_tokens": 45
+  },
+  "observed_at": "2026-09-25T10:01:00Z"
+}
