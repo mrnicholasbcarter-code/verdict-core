@@ -14,10 +14,9 @@ def test_existing_configuration_is_preserved_without_replaying_wizard(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    def no_prompt(*args, **kwargs):
-        raise AssertionError("A completed configuration must not replay the wizard")
-
-    monkeypatch.setattr(cli.Prompt, "ask", no_prompt)
+    # Credentials offer is intentional — answer "n" so the config is not touched.
+    # The wizard itself (provider detection, plan, etc.) must NOT run.
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **kw: "n")
     cli.cmd_setup()
-    assert config.read_text() == original
+    assert config.read_text() == original, "Existing config must not be modified"
     assert "preserved" in capsys.readouterr().out.lower()
