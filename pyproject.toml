@@ -15,7 +15,7 @@ artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json", "schemas
 
 [project]
 name = "verdict-core"
-version = "0.2.0"
+version = "0.3.0"
 description = "Fail-closed LLM routing control plane: cheapest qualified model, named drop reasons, receipts."
 readme = "README.md"
 license = {text = "MIT"}

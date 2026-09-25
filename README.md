@@ -11,7 +11,7 @@ Verdict is a fail-closed control plane for LLM-powered workflows. Hard eligibili
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
 [![coverage gate 70%](https://img.shields.io/badge/coverage%20gate-70%25-blue.svg)](.github/workflows/ci.yml)
-[![version 0.2.0](https://img.shields.io/badge/version-0.2.0-blue.svg)](pyproject.toml)
+[![version 0.3.0](https://img.shields.io/badge/version-0.3.0-blue.svg)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -276,7 +276,7 @@ Component map, data flow and the orchestration layer: [docs/architecture.md](doc
 - **Independent review requires `ocr` on PATH.** `open-code-review` is a separate binary. `--no-review` skips it and ends the run `BLOCKED`.
 - **ADR-023 (governed swarm supervision) is superseded** by ADR-036. References to Ruflo, RuVector, SONA, hivemind, or swarm dispatch describe architecture that is no longer in Core.
 - **Receipt integrity is cryptographic over event logs, not over LLM outputs.** The review step catches output problems; the receipt proves the run was not altered after the fact.
-- **Version 0.2.0, active development.** Contracts, schemas, and receipt formats are versioned. Breaking changes require an ADR.
+- **Version 0.3.0, active development.** Contracts, schemas, and receipt formats are versioned. Breaking changes require an ADR.
 
 ## License
 

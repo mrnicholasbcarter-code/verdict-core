@@ -1,6 +1,6 @@
 {
   "name": "@bodanglin/verdict-client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript HTTP client for Verdict Core REST API",
   "license": "MIT",
   "type": "module",

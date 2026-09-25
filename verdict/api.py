@@ -615,7 +615,7 @@ async def lifespan(app: FastAPI) -> Any:
 app = FastAPI(
     title="verdict API",
     description="Microservice for Tier-based LLM Routing",
-    version="0.2.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
