@@ -236,6 +236,21 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         optional=True,
         live_check=None,
     ),
+    # Legacy names – being renamed to TYPESAFE_* by BOD-235 (parallel PR, not yet merged)
+    CredentialSpec(
+        env_name="OPENJEV_API_KEY",
+        purpose="OpenJev decision signals API key (legacy name; use TYPESAFE_API_KEY after BOD-235)",
+        features=("decision-signals",),
+        optional=True,
+        live_check=None,
+    ),
+    CredentialSpec(
+        env_name="OPENJEV_BASE_URL",
+        purpose="OpenJev decision signals base URL (legacy name; use TYPESAFE_BASE_URL after BOD-235)",
+        features=("decision-signals",),
+        optional=True,
+        live_check=None,
+    ),
 )
 
 

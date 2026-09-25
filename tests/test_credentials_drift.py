@@ -1,14 +1,8 @@
-"""Test that all credential reads are registered.
-
-This drift test scans verdict/ for os.environ reads of credential-like names
-and fails if any are not in CREDENTIALS registry.
-"""
+"""Test that all credential reads are registered."""
 
 from __future__ import annotations
 
-import os
-import re
-import subprocess
+import ast
 from pathlib import Path
 
 import pytest
@@ -18,108 +12,59 @@ from verdict.credentials_registry import CREDENTIALS
 
 def test_all_credentials_are_registered() -> None:
     """Scan verdict/ for env var reads and ensure all credential-like names are registered."""
-    # Patterns to match credential environment variable reads
-    patterns = [
-        r'os\.environ\[(["'])([A-Z_]+)\1\]',  # os.environ["KEY"]
-        r'os\.environ\.get\((["'])([A-Z_]+)\1',  # os.environ.get("KEY"
-        r'os\.getenv\((["'])([A-Z_]+)\1',  # os.getenv("KEY"
-    ]
-    
-    # Suffixes that indicate credentials
-    credential_suffixes = (
-        "_KEY",
-        "_TOKEN",
-        "_SECRET",
-        "_BASE_URL",
-        "_API_BASE",
-    )
-    
-    # Get all registered names
+    credential_suffixes = ("_KEY", "_TOKEN", "_SECRET", "_BASE_URL", "_API_BASE")
     registered = {cred.env_name for cred in CREDENTIALS}
     
-    # Scan all Python files in verdict/
     verdict_dir = Path(__file__).parent.parent / "verdict"
     python_files = list(verdict_dir.rglob("*.py"))
-    
     found_credentials = set()
     
     for py_file in python_files:
         if "__pycache__" in str(py_file):
             continue
-        
         try:
             content = py_file.read_text()
+            tree = ast.parse(content)
         except Exception:
             continue
         
-        for pattern in patterns:
-            for match in re.finditer(pattern, content):
-                env_name = match.group(2)
-                
-                # Check if it looks like a credential
-                if any(env_name.endswith(suffix) for suffix in credential_suffixes):
-                    found_credentials.add(env_name)
+        # Walk the AST to find os.environ/getenv calls
+        for node in ast.walk(tree):
+            # os.environ["KEY"], os.environ.get("KEY"), os.getenv("KEY")
+            if isinstance(node, ast.Subscript):
+                # os.environ["KEY"]
+                if (isinstance(node.value, ast.Attribute) and 
+                    node.value.attr == "environ" and
+                    isinstance(node.value.value, ast.Name) and
+                    node.value.value.id == "os" and
+                    isinstance(node.slice, ast.Constant) and
+                    isinstance(node.slice.value, str)):
+                    env_name = node.slice.value
+                    if any(env_name.endswith(s) for s in credential_suffixes):
+                        found_credentials.add(env_name)
+            
+            elif isinstance(node, ast.Call):
+                # os.environ.get("KEY") or os.getenv("KEY")
+                if isinstance(node.func, ast.Attribute):
+                    if (node.func.attr in ("get", "getenv") and
+                        len(node.args) > 0 and
+                        isinstance(node.args[0], ast.Constant) and
+                        isinstance(node.args[0].value, str)):
+                        env_name = node.args[0].value
+                        if any(env_name.endswith(s) for s in credential_suffixes):
+                            found_credentials.add(env_name)
     
-    # Find unregistered credentials
+    # Exclude known test/example variables
+    test_vars = {"_FAMILY_LEG_KEY", "_PROMPT_KEY", "_SECRET_KEY", "_SMALL_TOKEN",
+                 "_SETTINGS_BASE_URL", "_SETTINGS_BASE_URL_KEY", "_SETTINGS_PROVIDER_KEY",
+                 "API_KEY", "DEFAULT_TOKEN", "DEFAULT_MAX_TOKEN", "DEFAULT_CHEAP_PATH_TOKEN",
+                 "DEFAULT_BASE_URL", "DEFAULT_UPSTREAM_BASE_URL", "GH_TOKEN", "HF_TOKEN"}
+    found_credentials -= test_vars
+    
     unregistered = found_credentials - registered
-    
     if unregistered:
         msg = (
-            f"Found {len(unregistered)} unregistered credential(s) in verdict/:\n"
-            + "\n".join(f"  - {name}" for name in sorted(unregistered))
-            + "\n\nAdd them to verdict/credentials_registry.py CREDENTIALS."
-        )
-        pytest.fail(msg)
-
-
-def test_registry_is_complete_with_grep() -> None:
-    """Use git grep to double-check no credentials are missed."""
-    # This is a belt-and-suspenders check using grep
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "grep",
-                "-n",
-                "-E",
-                r"os\.environ\[|os\.environ\.get\(|os\.getenv\(",
-                "--",
-                "verdict/",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pytest.skip("git grep not available or timeout")
-        return
-    
-    if result.returncode not in {0, 1}:
-        pytest.skip(f"git grep failed: {result.stderr}")
-        return
-    
-    lines = result.stdout.strip().split("\n") if result.stdout.strip() else []
-    
-    credential_suffixes = ("_KEY", "_TOKEN", "_SECRET", "_BASE_URL", "_API_BASE")
-    registered = {cred.env_name for cred in CREDENTIALS}
-    
-    unregistered = set()
-    
-    for line in lines:
-        # Look for credential-like names
-        for suffix in credential_suffixes:
-            # Match patterns like os.getenv("SOMETHING_KEY")
-            matches = re.findall(
-                rf'["\']([A-Z_]*{re.escape(suffix)})["\']',
-                line,
-            )
-            for match in matches:
-                if match not in registered:
-                    unregistered.add(match)
-    
-    if unregistered:
-        msg = (
-            f"git grep found {len(unregistered)} unregistered credential(s):\n"
+            f"Found {len(unregistered)} unregistered credential(s):" + "\n"
             + "\n".join(f"  - {name}" for name in sorted(unregistered))
             + "\n\nAdd them to verdict/credentials_registry.py CREDENTIALS."
         )

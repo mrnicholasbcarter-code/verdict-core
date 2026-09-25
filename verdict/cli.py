@@ -156,7 +156,7 @@ def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
         
         if non_interactive:
             for cred in missing_required:
-                ui.status(cred.env_name, "missing", cred.purpose, color="red")
+                ui.status(cred.env_name, "missing", cred.purpose)
             ui.panel(
                 "Action required",
                 f"Set missing credentials with: verdict credentials set <NAME>",
@@ -166,7 +166,7 @@ def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
         
         # Interactive prompting
         for cred in missing_required:
-            ui.status(cred.env_name, "missing", cred.purpose, color="yellow")
+            ui.status(cred.env_name, "missing", cred.purpose)
             try:
                 prompt_text = f"Enter value for {cred.env_name} (or leave empty to skip): "
                 value = getpass.getpass(prompt_text)
@@ -188,9 +188,9 @@ def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
         present, version = dep.check()
         if present:
             ver_str = f"v{version}" if version else "present"
-            ui.status(dep.name, "installed", ver_str, color="green")
+            ui.status(dep.name, "installed", ver_str)
         else:
-            ui.status(dep.name, "missing", dep.install_command, color="yellow")
+            ui.status(dep.name, "missing", dep.install_command)
             missing_deps.append(dep)
     
     if missing_deps:
@@ -2471,9 +2471,9 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     f"Set with: verdict credentials set {cred.env_name}"
                 )
             elif source == "missing":
-                ui.status(cred.env_name, "optional", "not set", color="yellow")
+                ui.status(cred.env_name, "optional", "not set")
             else:
-                ui.status(cred.env_name, source, masked, color="green")
+                ui.status(cred.env_name, source, masked)
         
         if not missing_required:
             ui.status("Required credentials", "ok", "all set")
@@ -3462,12 +3462,10 @@ def cmd_credentials_list(*, output_json: bool = False) -> None:
     
     ui.header("Credentials")
     for item in results:
-        status_color = "green" if item["source"] != "missing" else "yellow"
         ui.status(
             item["name"],
             item["source"],
             item["value"],
-            color=status_color,
         )
 
 
@@ -3565,9 +3563,9 @@ def cmd_credentials_test(*, name: str) -> None:
     try:
         success, message = cred.live_check(value)
         if success:
-            ui.status(name, "ok", message, color="green")
+            ui.status(name, "ok", message)
         else:
-            ui.status(name, "failed", message, color="red")
+            ui.status(name, "failed", message)
             raise SystemExit(1)
     except Exception as e:
         ui.panel("Check error", str(e), tone="ERROR")
