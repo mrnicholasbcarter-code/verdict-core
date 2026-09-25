@@ -184,6 +184,7 @@ def step_test_clean_shell(repo_path: Path, venv_bin: Path) -> StepResult:
 
     # Run pytest with junit-xml output (in temp location)
     import tempfile
+
     junit_fd, junit_path_str = tempfile.mkstemp(suffix="-clean.xml", prefix="junit-")
     os.close(junit_fd)  # Close the file descriptor, pytest will write to the path
     junit_path = Path(junit_path_str)
@@ -244,6 +245,7 @@ def step_test_dirty_shell(repo_path: Path, venv_bin: Path) -> StepResult:
     dirty_env["LLMGATE_AUTH_TOKEN"] = "bogus-cert-dirty"
 
     import tempfile
+
     junit_fd, junit_path_str = tempfile.mkstemp(suffix="-dirty.xml", prefix="junit-")
     os.close(junit_fd)
     junit_path = Path(junit_path_str)
@@ -343,8 +345,10 @@ def step_mypy(repo_path: Path, venv_bin: Path) -> StepResult:
     result = run_command([str(venv_bin / "mypy"), "--strict", "verdict"], cwd=repo_path)
     duration = (datetime.now(timezone.utc) - start).total_seconds()
 
-    # Count files checked from output
-    files_checked = result.stdout.count("Success: no issues found in")
+    # Count files checked from output (parse "Success: no issues found in N source files")
+    import re
+    match = re.search(r"Success: no issues found in (\d+) source files?", result.stdout)
+    files_checked = int(match.group(1)) if match else 0
 
     if result.returncode == 0:
         return StepResult(
@@ -432,7 +436,9 @@ def step_package_smoke(repo_path: Path) -> StepResult:
 
         # Install wheel using uv (pip isn't in uv venvs by default)
         venv_bin = venv_path / "bin"
-        result = run_command(["uv", "pip", "install", "--python", str(venv_bin / "python"), str(wheel)])
+        result = run_command(
+            ["uv", "pip", "install", "--python", str(venv_bin / "python"), str(wheel)]
+        )
         if result.returncode != 0:
             return StepResult(
                 step_id="package_smoke",
@@ -477,7 +483,7 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
             status="SKIPPED",
             reason="bandit not available in dev dependencies",
         )
-    
+
     if bandit_check.returncode != 0:
         return StepResult(
             step_id="security",
@@ -736,8 +742,11 @@ def run_certification(
     return manifest, detailed
 
 
-def generate_certification_md(manifest: CertificationManifest, env: EnvironmentSnapshot) -> str:
+def generate_certification_md(manifest: CertificationManifest, env: EnvironmentSnapshot | dict[str, Any]) -> str:
     """Generate CERTIFICATION.md from manifest and environment data."""
+    # Normalize env to dict
+    env_dict = env if isinstance(env, dict) else env.to_dict()
+    
     lines = [
         f"# Release Certification: {manifest.git_sha}",
         "",
@@ -749,18 +758,18 @@ def generate_certification_md(manifest: CertificationManifest, env: EnvironmentS
         "",
         "## Environment",
         "",
-        f"- **Python**: {env.python_version}",
-        f"- **Platform**: {env.platform}",
-        f"- **uv**: {env.uv_version}",
+        f"- **Python**: {env_dict['python_version']}",
+        f"- **Platform**: {env_dict['platform']}",
+        f"- **uv**: {env_dict['uv_version']}",
     ]
 
-    if env.node_version:
-        lines.append(f"- **Node**: {env.node_version}")
+    if env_dict.get('node_version'):
+        lines.append(f"- **Node**: {env_dict['node_version']}")
 
     lines.extend(
         [
-            f"- **Lockfile SHA256**: {env.lockfile_sha256[:16]}...",
-            f"- **Environment variables**: {len(env.env_var_names)} (names only, normalized)",
+            f"- **Lockfile SHA256**: {env_dict['lockfile_sha256'][:16]}...",
+            f"- **Environment variables**: {len(env_dict['env_var_names'])} (names only, normalized)",
             "",
             "## Certification Steps",
             "",
@@ -794,7 +803,7 @@ def generate_certification_md(manifest: CertificationManifest, env: EnvironmentS
 
 
 def write_bundle(
-    output_dir: Path, manifest: CertificationManifest, env_snapshot: EnvironmentSnapshot
+    output_dir: Path, manifest: CertificationManifest, env_snapshot: EnvironmentSnapshot | dict[str, Any]
 ) -> None:
     """Write all bundle files to output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -806,9 +815,7 @@ def write_bundle(
 
     # environment.json
     env_dict = env_snapshot if isinstance(env_snapshot, dict) else env_snapshot.to_dict()
-    (output_dir / "environment.json").write_text(
-        json.dumps(env_dict, indent=2, sort_keys=True)
-    )
+    (output_dir / "environment.json").write_text(json.dumps(env_dict, indent=2, sort_keys=True))
 
     # CERTIFICATION.md
     cert_md = generate_certification_md(manifest, env_snapshot)
