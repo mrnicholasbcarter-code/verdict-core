@@ -122,6 +122,85 @@ PROVIDER_MAPPING = {
 }
 
 
+
+
+def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
+    """Setup step for credentials and dependencies.
+    
+    Prompts for missing required credentials (unless --non-interactive).
+    Shows registered credentials and dependencies status.
+    """
+    from verdict.credentials_registry import CREDENTIALS, DEPENDENCIES
+    from verdict.credentials_store import CredentialsStore, get_credential_source
+    from verdict.terminal_ui import TerminalUI
+    import getpass
+    
+    ui = TerminalUI()
+    store = CredentialsStore()
+    
+    ui.header("Credentials and Dependencies")
+    
+    # Check credentials
+    missing_required = []
+    for cred in CREDENTIALS:
+        source, masked = get_credential_source(cred.env_name, store)
+        if source == "missing" and not cred.optional:
+            missing_required.append(cred)
+    
+    if missing_required:
+        ui.panel(
+            "Missing required credentials",
+            f"{len(missing_required)} required credential(s) are not set.",
+            tone="WARNING",
+        )
+        
+        if non_interactive:
+            for cred in missing_required:
+                ui.status(cred.env_name, "missing", cred.purpose, color="red")
+            ui.panel(
+                "Action required",
+                f"Set missing credentials with: verdict credentials set <NAME>",
+                tone="INFO",
+            )
+            return
+        
+        # Interactive prompting
+        for cred in missing_required:
+            ui.status(cred.env_name, "missing", cred.purpose, color="yellow")
+            try:
+                prompt_text = f"Enter value for {cred.env_name} (or leave empty to skip): "
+                value = getpass.getpass(prompt_text)
+                if value:
+                    store.set(cred.env_name, value)
+                    ui.status(cred.env_name, "set", "stored securely")
+                else:
+                    ui.status(cred.env_name, "skipped", "")
+            except (KeyboardInterrupt, EOFError):
+                ui.status(cred.env_name, "skipped", "interrupted")
+                continue
+    else:
+        ui.panel("Credentials", "All required credentials are set.", tone="INFO")
+    
+    # Show dependency status
+    ui.header("Dependencies")
+    missing_deps = []
+    for dep in DEPENDENCIES:
+        present, version = dep.check()
+        if present:
+            ver_str = f"v{version}" if version else "present"
+            ui.status(dep.name, "installed", ver_str, color="green")
+        else:
+            ui.status(dep.name, "missing", dep.install_command, color="yellow")
+            missing_deps.append(dep)
+    
+    if missing_deps:
+        ui.panel(
+            "Optional dependencies",
+            f"{len(missing_deps)} optional dependencies are not installed.",
+            tone="INFO",
+        )
+
+
 def cmd_setup(
     *,
     dry_run: bool = False,
@@ -2375,6 +2454,32 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                         f"Configured provider node '{name}' ({url}) is unreachable/offline."
                     )
 
+    # Credentials check
+    ui.header("Credentials")
+    from verdict.credentials_registry import CREDENTIALS
+    from verdict.credentials_store import CredentialsStore, get_credential_source
+    
+    try:
+        store = CredentialsStore()
+        missing_required = []
+        for cred in CREDENTIALS:
+            source, masked = get_credential_source(cred.env_name, store)
+            if source == "missing" and not cred.optional:
+                missing_required.append(cred)
+                issues_found.append(
+                    f"Required credential {cred.env_name} is not set. "
+                    f"Set with: verdict credentials set {cred.env_name}"
+                )
+            elif source == "missing":
+                ui.status(cred.env_name, "optional", "not set", color="yellow")
+            else:
+                ui.status(cred.env_name, source, masked, color="green")
+        
+        if not missing_required:
+            ui.status("Required credentials", "ok", "all set")
+    except Exception as e:
+        issues_found.append(f"Credential check failed: {e}")
+
     # One shared presentation for the existing diagnostic results.
     ui.doctor_summary(issues_found, fixed_issues)
     if issues_found and not config:
@@ -3483,6 +3588,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     from verdict.commands import (
         parsers_autodev,
+        parsers_credentials,
         parsers_harness,
         parsers_models,
         parsers_openspec,
@@ -3493,6 +3599,7 @@ def main() -> None:
 
     for registrar in (
         parsers_setup,
+        parsers_credentials,
         parsers_routing,
         parsers_autodev,
         parsers_harness,

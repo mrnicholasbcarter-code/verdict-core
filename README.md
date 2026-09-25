@@ -19,6 +19,16 @@ Verdict is a fail-closed control plane for LLM-powered workflows. Hard eligibili
 
 </div>
 
+## Keys and Dependencies
+
+Verdict uses a secure credential store for API keys and tracks optional dependencies. See [docs/credentials.md](docs/credentials.md).
+
+```bash
+verdict credentials list      # Show credential status  
+verdict setup credentials     # Interactive setup
+verdict doctor                # Health check
+```
+
 ## 30-second demo
 
 `verdict` needs nothing. `orchestrate` needs a running OmniRoute gateway, `VERDICT_OMNIROUTE_API_KEY` and `ocr` on PATH (see [prerequisites](docs/guides/interview-golden-path.md#prerequisites)).

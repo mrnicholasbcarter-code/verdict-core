@@ -35,6 +35,9 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
 
     if args.command == "setup":
         scope = "all"
+        if args.setup_action == "credentials":
+            legacy.cmd_setup_credentials(non_interactive=args.non_interactive)
+            return
         if args.setup_action in {"intelligence", "gateways", "harnesses"}:
             scope = args.setup_action
         if getattr(args, "rollback", False):
@@ -62,6 +65,22 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 apply=bool(args.apply),
                 state_dir=getattr(args, "state_dir", None),
             )
+    elif args.command == "credentials":
+        if args.credentials_command == "list":
+            legacy.cmd_credentials_list(output_json=args.json)
+        elif args.credentials_command == "set":
+            legacy.cmd_credentials_set(
+                name=args.name,
+                force_unregistered=args.force_unregistered,
+                from_stdin=args.stdin,
+            )
+        elif args.credentials_command == "unset":
+            legacy.cmd_credentials_unset(name=args.name)
+        elif args.credentials_command == "test":
+            legacy.cmd_credentials_test(name=args.name)
+        else:
+            parser.print_help()
+            sys.exit(1)
     elif args.command == "route":
         legacy.cmd_route(
             args.task,
@@ -173,6 +192,15 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             present.note('Install them with: pipx install "verdict-core[all]" --force')
             sys.exit(1)
     elif args.command == "serve":
+        # Load credentials from store (exported env vars win)
+        from verdict.credentials_store import CredentialsStore
+        try:
+            CredentialsStore().load_into_env()
+        except PermissionError as e:
+            from verdict import present
+            present.fail("credentials", str(e))
+            sys.exit(1)
+        
         try:
             from verdict.api import start_server
 

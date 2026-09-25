@@ -10,7 +10,7 @@ def register(subparsers: Any) -> None:
     setup_cli_p.add_argument(
         "setup_action",
         nargs="?",
-        choices=["plan", "intelligence", "gateways", "harnesses"],
+        choices=["plan", "intelligence", "gateways", "harnesses", "credentials"],
         help="Read-only setup operation or capability scope",
     )
     setup_cli_p.add_argument(
