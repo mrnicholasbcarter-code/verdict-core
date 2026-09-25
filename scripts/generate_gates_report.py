@@ -329,10 +329,24 @@ def _resolve_artifacts(gate: Gate, evidence_dir: Path) -> Derived:
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 text = ""
-            if re.search(r"(?im)^\s*(?:FAILED|FAIL(?:ED)?[: ])", text):
-                lines.append(f"FAIL: {artifact} records a failed producer")
-                invalid = True
-                continue
+
+            # For text artifacts (.txt, .log), require explicit RESULT: PASS as the last RESULT line
+            if path.suffix in (".txt", ".log"):
+                # Find the last RESULT: line
+                result_lines = [
+                    line for line in text.splitlines() if line.strip().startswith("RESULT:")
+                ]
+                if not result_lines:
+                    lines.append(f"FAIL: {artifact} missing explicit RESULT: PASS")
+                    invalid = True
+                    continue
+                last_result = result_lines[-1].strip()
+                if not last_result.startswith("RESULT: PASS"):
+                    lines.append(f"FAIL: {artifact} last RESULT is not PASS: {last_result}")
+                    invalid = True
+                    continue
+
+            # JSON artifacts: validate structure only
             if path.suffix == ".json":
                 try:
                     json.loads(text)
@@ -340,6 +354,7 @@ def _resolve_artifacts(gate: Gate, evidence_dir: Path) -> Derived:
                     lines.append(f"FAIL: {artifact} is not valid JSON")
                     invalid = True
                     continue
+
             lines.append(f"present: {artifact} ({size} bytes)")
         else:
             lines.append(f"MISSING: {artifact}")
