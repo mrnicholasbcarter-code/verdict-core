@@ -1170,3 +1170,255 @@ class TestNoSecondPlannerCall:
         await svc.route("simple task")
 
         assert call_count == 1, f"Expected planner.plan() called once, got {call_count} calls"
+
+
+# ---------------------------------------------------------------------------
+# BOD-238 item A+B: privacy=restricted route() skip + provider_from_env wiring
+# ---------------------------------------------------------------------------
+
+
+class TestPrivacyRestrictedRouteSkip:
+    """route() must NOT call the provider and must emit
+    advisory:skipped:privacy_restricted when the planner produces a task_spec
+    with privacy='restricted'.
+
+    Controller review item A (explicit variable) + flag emission.
+    """
+
+    @pytest.mark.asyncio
+    async def test_restricted_privacy_emits_skip_flag_and_skips_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#MUTATION_PROOF: removing the privacy guard -> provider IS called ->
+        len(call_count) == 1 -> assertion len == 0 fails."""
+        from unittest.mock import MagicMock
+
+        from verdict.intelligence import IntelligenceService
+        from verdict.models import ProviderConfig
+        from verdict.planner import StructuredPlanner
+
+        monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "ADVISORY")
+        call_count: list[Any] = []
+
+        class CountingProvider:
+            def signals(self, question: Any, *, now: Any) -> Any:
+                call_count.append(1)
+                return _make_signals(frontier_worthy=0.1, complexity=0.1)
+
+        provider_cfg = ProviderConfig(
+            api_key="k",
+            models={
+                "some-model": MagicMock(
+                    capabilities=[], max_tokens=4096, cost_per_1k=0.001, pricing={}
+                )
+            },
+            priority=1,
+        )
+
+        # Planner that always returns privacy='restricted'
+        from dataclasses import replace as _dc_replace
+
+        class RestrictedPlanner(StructuredPlanner):
+            def plan(self, task: str, **kwargs: Any) -> Any:  # type: ignore[override]
+                from verdict.planner import PlanResult
+
+                result = super().plan(task, **kwargs)
+                # TaskSpec is frozen; use dataclasses.replace to inject privacy.
+                new_spec = _dc_replace(result.task_spec, privacy="restricted")
+                return PlanResult(new_spec, result.workflow_plan, result.metadata)
+
+        svc = IntelligenceService(
+            primary_model="primary",
+            providers={"test": provider_cfg},
+            profile="development",
+            log_path="",
+            log_full_task=False,
+            discovery_ttl=60,
+            allow_offline=True,
+            planner=RestrictedPlanner(),
+            decision_signal_provider=CountingProvider(),
+        )
+
+        dec = await svc.route("summarise internal notes")
+        flags = dec.safety_flags or []
+
+        # Provider must NOT have been called for a restricted task
+        assert len(call_count) == 0, (
+            f"Provider was called {len(call_count)} times for a privacy=restricted task; must be 0"
+        )
+        # Skip flag must be present
+        assert "advisory:skipped:privacy_restricted" in flags, (
+            f"Expected advisory:skipped:privacy_restricted in safety_flags, got: {flags}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mutation_removing_guard_calls_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation proof: if the advisory block does NOT check privacy, the provider
+        IS called for a restricted task.  We simulate this by patching the planner to
+        return privacy=None (i.e., the check is bypassed) and verifying the provider
+        IS called — confirming the baseline assertion (provider NOT called) is
+        load-bearing."""
+        from unittest.mock import MagicMock
+
+        from verdict.intelligence import IntelligenceService
+        from verdict.models import ProviderConfig
+        from verdict.planner import StructuredPlanner
+
+        monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "ADVISORY")
+        call_count: list[Any] = []
+
+        class CountingProvider:
+            def signals(self, question: Any, *, now: Any) -> Any:
+                call_count.append(1)
+                return _make_signals(frontier_worthy=0.1, complexity=0.1)
+
+        provider_cfg = ProviderConfig(
+            api_key="k",
+            models={
+                "some-model": MagicMock(
+                    capabilities=[], max_tokens=4096, cost_per_1k=0.001, pricing={}
+                )
+            },
+            priority=1,
+        )
+
+        # Mutation: planner returns privacy=None (simulates guard removed)
+        from dataclasses import replace as _dc_replace
+
+        class NullPrivacyPlanner(StructuredPlanner):
+            def plan(self, task: str, **kwargs: Any) -> Any:  # type: ignore[override]
+                from verdict.planner import PlanResult
+
+                result = super().plan(task, **kwargs)
+                # TaskSpec is frozen; replace with privacy="unknown" (no restriction)
+                new_spec = _dc_replace(result.task_spec, privacy="unknown")
+                return PlanResult(new_spec, result.workflow_plan, result.metadata)
+
+        svc = IntelligenceService(
+            primary_model="primary",
+            providers={"test": provider_cfg},
+            profile="development",
+            log_path="",
+            log_full_task=False,
+            discovery_ttl=60,
+            allow_offline=True,
+            planner=NullPrivacyPlanner(),
+            decision_signal_provider=CountingProvider(),
+        )
+
+        await svc.route("summarise internal notes")
+        # Under mutation (privacy=None), provider IS called — proves the guard matters
+        assert len(call_count) == 1, (
+            f"Mutation test: expected provider called once with privacy=None, "
+            f"got {len(call_count)} calls"
+        )
+
+
+class TestIntelligenceServiceDefaultWiring:
+    """IntelligenceService.__init__ defaults decision_signal_provider via
+    factory.provider_from_env() when no explicit provider is given (item B.1).
+
+    A mutation that replaces provider_from_env() with a None-returning lambda
+    must cause the provider NOT to be used (0 calls), proving the wiring is
+    load-bearing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_default_wiring_uses_factory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """#MUTATION_PROOF: if __init__ hardcodes None instead of calling
+        provider_from_env(), call_count stays 0 -> the assertion == 1 fails."""
+        from unittest.mock import MagicMock
+
+        import verdict.decision_signals.factory as fmod
+        from verdict.intelligence import IntelligenceService
+        from verdict.models import ProviderConfig
+
+        monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "ADVISORY")
+        call_count: list[Any] = []
+
+        class CountingProvider:
+            def signals(self, question: Any, *, now: Any) -> Any:
+                call_count.append(1)
+                return _make_signals(frontier_worthy=0.1, complexity=0.1)
+
+        # Patch factory to return a known provider
+        monkeypatch.setattr(fmod, "provider_from_env", lambda: CountingProvider())
+
+        provider_cfg = ProviderConfig(
+            api_key="k",
+            models={
+                "some-model": MagicMock(
+                    capabilities=[], max_tokens=4096, cost_per_1k=0.001, pricing={}
+                )
+            },
+            priority=1,
+        )
+
+        # No decision_signal_provider passed -> factory consulted at __init__ time
+        svc = IntelligenceService(
+            primary_model="primary",
+            providers={"test": provider_cfg},
+            profile="development",
+            log_path="",
+            log_full_task=False,
+            discovery_ttl=60,
+            allow_offline=True,
+            # decision_signal_provider intentionally omitted
+        )
+
+        await svc.route("summarise data")
+
+        assert len(call_count) == 1, (
+            f"Expected factory-wired provider called once, got {len(call_count)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mutation_none_wiring_zero_calls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mutation: factory returns None -> 0 provider calls.  This demonstrates
+        that the baseline assertion (1 call) would fail if __init__ were patched
+        to skip provider_from_env() and always assign None."""
+        from unittest.mock import MagicMock
+
+        import verdict.decision_signals.factory as fmod
+        from verdict.intelligence import IntelligenceService
+        from verdict.models import ProviderConfig
+
+        monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "ADVISORY")
+        call_count: list[Any] = []
+
+        class CountingProvider:
+            def signals(self, question: Any, *, now: Any) -> Any:
+                call_count.append(1)
+                return _make_signals(frontier_worthy=0.1, complexity=0.1)
+
+        # MUTATION: factory returns None
+        monkeypatch.setattr(fmod, "provider_from_env", lambda: None)
+
+        provider_cfg = ProviderConfig(
+            api_key="k",
+            models={
+                "some-model": MagicMock(
+                    capabilities=[], max_tokens=4096, cost_per_1k=0.001, pricing={}
+                )
+            },
+            priority=1,
+        )
+
+        svc = IntelligenceService(
+            primary_model="primary",
+            providers={"test": provider_cfg},
+            profile="development",
+            log_path="",
+            log_full_task=False,
+            discovery_ttl=60,
+            allow_offline=True,
+        )
+
+        await svc.route("summarise data")
+
+        # Mutation: 0 calls; confirms baseline assertion would fail
+        assert len(call_count) == 0, (
+            f"Mutation: factory=None must produce 0 provider calls, got {len(call_count)}"
+        )

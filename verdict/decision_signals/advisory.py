@@ -37,7 +37,6 @@ import hashlib
 import json
 import logging
 import os
-import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -56,17 +55,14 @@ _STRENGTH_THRESHOLD = 0.6  # either must be >= this for "strength"
 
 
 def _mode_from_env() -> str:
-    """Return OFF | SHADOW | ADVISORY; invalid -> OFF with warning."""
-    raw = os.environ.get("VERDICT_DECISION_SIGNALS_MODE", "OFF").strip().upper()
-    if raw not in ("OFF", "SHADOW", "ADVISORY"):
-        warnings.warn(
-            f"Invalid VERDICT_DECISION_SIGNALS_MODE={raw!r}, treating as OFF. "
-            "Allowed: OFF, SHADOW, ADVISORY",
-            UserWarning,
-            stacklevel=3,
-        )
-        return "OFF"
-    return raw
+    """Thin alias for shadow.get_signals_mode(); kept for test and caller back-compat.
+
+    shadow.get_signals_mode() is the single authoritative parser; using it here
+    ensures ONE mode parser for the whole decision-signals stack (BOD-238 item B.1).
+    """
+    from verdict.decision_signals.shadow import get_signals_mode as _gsm
+
+    return _gsm()
 
 
 @dataclass(frozen=True)

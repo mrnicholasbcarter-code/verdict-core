@@ -275,6 +275,12 @@ class IntelligenceService:
         # Optional decision signal provider for ADVISORY mode (BOD-238).
         # None = no advisory; set to a DecisionSignalProvider-compatible object
         # to collect signals and apply advisory reordering in ADVISORY mode.
+        # Default: consult factory.provider_from_env() so production callers get
+        # a live provider without needing to pass it explicitly (item B.1).
+        if decision_signal_provider is None:
+            from verdict.decision_signals.factory import provider_from_env as _pfn
+
+            decision_signal_provider = _pfn()
         self.decision_signal_provider = decision_signal_provider
         # Request-time OmniRoute evidence cache. A failed refresh never erases
         # the last complete snapshot; cold-start authority mode still fails closed.
@@ -432,10 +438,14 @@ class IntelligenceService:
         # Planning estimates task capability needs. Criticality is retained as a
         # safety floor, not as a model selector: identical task semantics have
         # identical selection requirements unless a protected floor applies.
+        # Item A (BOD-238): initialise explicitly before the try-block so the advisory
+        # block can read it directly without locals() or type: ignore tricks.
+        _route_task_spec: Any = None
         try:
-            task_spec = self.planner.plan(
+            _route_task_spec = self.planner.plan(
                 task_str, context=context, criticality=criticality
             ).task_spec
+            task_spec = _route_task_spec
             task_tier = {"low": 3, "medium": 2, "high": 1}.get(task_spec.effort, 2)
         except Exception:
             task_tier = 2
@@ -507,22 +517,20 @@ class IntelligenceService:
             try:
                 import threading as _threading
 
-                from verdict.decision_signals.advisory import _mode_from_env, advise_order
+                from verdict.decision_signals.advisory import advise_order
                 from verdict.decision_signals.contracts import DecisionQuestionV1
+                from verdict.decision_signals.shadow import get_signals_mode as _get_mode
 
-                _adv_mode = _mode_from_env()
+                _adv_mode = _get_mode()  # single authoritative parser (BOD-238 item B.1)
                 _provider = self.decision_signal_provider
                 if _adv_mode == "ADVISORY" and _provider is not None:
-                    # Item 4: reuse the task_spec already computed above (no second planner call).
-                    # task_spec is set in the try/except above; default None if planner failed.
-                    try:
-                        # task_spec is assigned in the try/except block above.
-                        # It may be unbound if planner raised. Use getattr safely.
-                        _ts_ref: Any = locals().get("task_spec")
-                        _advisory_privacy = getattr(_ts_ref, "privacy", None)
-                    except Exception:
-                        _advisory_privacy = None
-                    if _advisory_privacy not in ("restricted", "trusted_upstream"):
+                    # Item 4 / A: read privacy directly from _route_task_spec which is
+                    # initialised to None before the planner try-block and assigned there.
+                    # No second planner call; None when planner raised.
+                    _advisory_privacy = getattr(_route_task_spec, "privacy", None)
+                    if _advisory_privacy in ("restricted", "trusted_upstream"):
+                        _advisory_influence_flags.append("advisory:skipped:privacy_restricted")
+                    else:
                         try:
                             from contextlib import suppress as _suppress
                             from datetime import datetime as _dt
