@@ -424,9 +424,9 @@ def step_package_smoke(repo_path: Path) -> StepResult:
                 duration_seconds=0.0,
             )
 
-        # Install wheel
+        # Install wheel using uv (pip isn't in uv venvs by default)
         venv_bin = venv_path / "bin"
-        result = run_command([str(venv_bin / "pip"), "install", str(wheel)])
+        result = run_command(["uv", "pip", "install", "--python", str(venv_bin / "python"), str(wheel)])
         if result.returncode != 0:
             return StepResult(
                 step_id="package_smoke",
