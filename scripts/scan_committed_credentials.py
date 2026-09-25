@@ -26,7 +26,7 @@ def main() -> int:
     )
 
     # Allowlist: templates that are safe IF they contain no real values
-    allowlist = {".env.example"}
+    allowlist = {".env.example", ".env.memory.example"}
 
     blocked = []
     for path in paths:
