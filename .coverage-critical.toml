@@ -15,39 +15,39 @@ measured_at_baseline = 80.40
 branch_coverage_floor = 85
 measured_at_baseline = 88.24
 
-[critical_modules."verdict/orchestration/orchestration/contracts.py"]
+[critical_modules."verdict/orchestration/contracts.py"]
 branch_coverage_floor = 75
 measured_at_baseline = 77.14
 
-[critical_modules."verdict/orchestration/orchestration/eligibility.py"]
+[critical_modules."verdict/orchestration/eligibility.py"]
 branch_coverage_floor = 85
 measured_at_baseline = 89.34
 
-[critical_modules."verdict/orchestration/orchestration/executors.py"]
+[critical_modules."verdict/orchestration/executors.py"]
 branch_coverage_floor = 85
 measured_at_baseline = 85.00
 
-[critical_modules."verdict/orchestration/orchestration/planner.py"]
+[critical_modules."verdict/orchestration/planner.py"]
 branch_coverage_floor = 90
 measured_at_baseline = 90.00
 
-[critical_modules."verdict/orchestration/orchestration/receipt.py"]
+[critical_modules."verdict/orchestration/receipt.py"]
 branch_coverage_floor = 90
 measured_at_baseline = 90.98
 
-[critical_modules."verdict/orchestration/orchestration/recovery.py"]
+[critical_modules."verdict/orchestration/recovery.py"]
 branch_coverage_floor = 80
 measured_at_baseline = 80.39
 
-[critical_modules."verdict/orchestration/orchestration/review.py"]
+[critical_modules."verdict/orchestration/review.py"]
 branch_coverage_floor = 65
 measured_at_baseline = 69.23
 
-[critical_modules."verdict/orchestration/orchestration/runtime.py"]
+[critical_modules."verdict/orchestration/runtime.py"]
 branch_coverage_floor = 80
 measured_at_baseline = 81.45
 
-[critical_modules."verdict/orchestration/orchestration/supervisor.py"]
+[critical_modules."verdict/orchestration/supervisor.py"]
 branch_coverage_floor = 85
 measured_at_baseline = 89.06
 
