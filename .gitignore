@@ -11,6 +11,7 @@ run_test_grid.sh
 *$py.class
 *.so
 dist/
+artifacts/
 build/
 *.egg-info/
 *.egg
