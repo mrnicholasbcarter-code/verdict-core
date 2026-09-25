@@ -27,7 +27,7 @@ from verdict.contracts import TaskSpec
 from verdict.runtime_passports import RuntimeCapabilityPassport
 
 POLICY_SCHEMA_VERSION = "1"
-POLICY_VERSION = "policy-1"
+POLICY_VERSION = "policy-2"
 
 
 class PolicyValidationError(ValueError):
@@ -320,6 +320,8 @@ class Policy:
     retry_safe_required: bool = True
     require_idempotency_key: bool = True
     max_attempts: int = 3
+    restricted_data_routes: frozenset[str] = frozenset()
+    restricted_data: bool = False
     schema_version: str = POLICY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -334,8 +336,11 @@ class Policy:
             "allowed_providers",
             "denied_providers",
             "allowed_protocols",
+            "restricted_data_routes",
         ):
             object.__setattr__(self, name, _strings(getattr(self, name), name))
+        if type(self.restricted_data) is not bool:
+            raise PolicyValidationError("restricted_data must be boolean")
         if self.protected and self.allow_stale_evidence:
             raise PolicyValidationError("protected policy cannot allow stale evidence")
         if type(self.max_attempts) is not int or self.max_attempts < 1:
@@ -377,6 +382,8 @@ class Policy:
             "retry_safe_required",
             "require_idempotency_key",
             "max_attempts",
+            "restricted_data_routes",
+            "restricted_data",
         }
         unknown = set(value) - allowed
         if unknown:
@@ -387,6 +394,7 @@ class Policy:
             "allowed_providers",
             "denied_providers",
             "allowed_protocols",
+            "restricted_data_routes",
         )
         arrays = {name: _strings(value.get(name, ()), name) for name in array_fields}
         return cls(
@@ -408,6 +416,8 @@ class Policy:
             retry_safe_required=value.get("retry_safe_required", True),
             require_idempotency_key=value.get("require_idempotency_key", True),
             max_attempts=value.get("max_attempts", 3),
+            restricted_data_routes=arrays["restricted_data_routes"],
+            restricted_data=value.get("restricted_data", False),
         )
 
     @classmethod
@@ -422,6 +432,10 @@ class Policy:
             payload["protected"] = str(payload.pop("policy_floor")).lower() in {"protected", "high"}
         if "required" in payload and "required_capabilities" not in payload:
             payload["required_capabilities"] = payload.pop("required")
+        if "restricted_data_routes" not in payload:
+            payload["restricted_data_routes"] = []
+        if "restricted_data" not in payload:
+            payload["restricted_data"] = False
         return cls.from_dict(payload)
 
     def to_dict(self) -> dict[str, Any]:
@@ -444,6 +458,8 @@ class Policy:
             "retry_safe_required": self.retry_safe_required,
             "require_idempotency_key": self.require_idempotency_key,
             "max_attempts": self.max_attempts,
+            "restricted_data_routes": sorted(self.restricted_data_routes),
+            "restricted_data": self.restricted_data,
         }
 
     @property
@@ -480,6 +496,17 @@ class Policy:
             )
         if reasons and any("not allowed" in item or "is denied" in item for item in reasons):
             return self._decision(candidate, DecisionState.DENY, checked_at, reasons, remediation)
+
+        if self.restricted_data:
+            rk = candidate.route_key
+            if rk is None or rk not in self.restricted_data_routes:
+                reasons.append("route is not qualified for restricted data")
+                remediation.append(
+                    "add the route key to restricted_data_routes after reviewing its data handling"
+                )
+                return self._decision(
+                    candidate, DecisionState.DENY, checked_at, reasons, remediation
+                )
 
         availability = candidate.availability
         if availability in {
@@ -641,7 +668,11 @@ class Policy:
 
 
 def compile_policy(
-    task_spec: TaskSpec, *, policy_id: str = "task", version: str = POLICY_VERSION
+    task_spec: TaskSpec,
+    *,
+    policy_id: str = "task",
+    version: str = POLICY_VERSION,
+    restricted_data_routes: Iterable[str] = (),
 ) -> Policy:
     """Compile the public TaskSpec into hard route predicates."""
     protected = bool(
@@ -650,6 +681,7 @@ def compile_policy(
         or task_spec.risk in {"high", "critical"}
         or task_spec.privacy in {"restricted", "trusted_upstream"}
     )
+    restricted_data = task_spec.privacy in {"restricted", "trusted_upstream"}
     return Policy(
         policy_id=policy_id,
         version=version,
@@ -658,6 +690,8 @@ def compile_policy(
         allow_degraded=task_spec.degraded_mode_policy == "allow_with_penalty" and not protected,
         allow_stale_evidence=False,
         require_actual_identity=protected,
+        restricted_data=restricted_data,
+        restricted_data_routes=frozenset(restricted_data_routes),
     )
 
 
