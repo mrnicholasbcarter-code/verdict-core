@@ -468,7 +468,16 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
     start = datetime.now(timezone.utc)
 
     # Check if bandit is available
-    bandit_check = run_command([str(venv_bin / "bandit"), "--version"])
+    try:
+        bandit_check = run_command([str(venv_bin / "bandit"), "--version"])
+    except FileNotFoundError:
+        return StepResult(
+            step_id="security",
+            name="Security checks",
+            status="SKIPPED",
+            reason="bandit not available in dev dependencies",
+        )
+    
     if bandit_check.returncode != 0:
         return StepResult(
             step_id="security",
