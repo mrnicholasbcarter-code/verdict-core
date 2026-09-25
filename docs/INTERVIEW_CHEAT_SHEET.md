@@ -1,11 +1,11 @@
 # Verdict interview cheat sheet
 
-**Describes `main` at commit 62e0f1b, certified from a fresh clone on 2026-09-24.**
+**Describes `main` at commit 3a7a56d, certified (verdict CERTIFIED by scripts/certify_release.py) from a fresh clone on 2026-09-25.**
 
 One page. Printable. Every number below has a named source. Sources:
 [README](../README.md), [runbook](guides/interview-golden-path.md),
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md),
-main certification (`~/.verdict/evidence/bod191/bod192/cert-62e0f1b/CERT-ROOT-VERIFIED.md`, local operator evidence),
+main certification (`~/.verdict/evidence/bod191/cert-3a7a56d/CERT-ROOT-VERIFIED.md`, local operator evidence; bundle's manifest.json verdict),
 [story bank](portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md),
 [branch reconciliation](BRANCH_RECONCILIATION.md).
 
@@ -78,6 +78,16 @@ and narrate the same story from receipts:
 
 Fresh `main` rehearsal evidence (most recent):
 ```bash
+verdict run-receipt /home/nick/.verdict/evidence/bod191/rehearsal-a0744da/runs/clean5   # COMPLETE
+verdict run-receipt /home/nick/.verdict/evidence/bod191/rehearsal-a0744da/runs/chaos5   # COMPLETE: 3 injected faults on worker nodes recovered by 3 reassignments and 4 cooldowns; the first independent reviewer hung and was replaced after its 900 s timeout; review PASS on cc/claude-opus-4-8
+```
+
+These ran on a0744da; between a0744da and 3a7a56d no file under verdict/ changed (only CI/security tooling and the certifier).
+
+Receipts now include route_identity_summary (BOD-209): clean5 3 attempts: 2 match, 1 mechanical; chaos5 7 attempts: 3 match, 3 unattested (the 3 failed attempts), 1 mechanical, 0 mismatch.
+
+Dated older evidence (rehearsal-43fbff4, 2026-09-24; verdict/ has changed since, so treat these as historical):
+```bash
 verdict run-receipt /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/clean4   # COMPLETE
 verdict run-receipt /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/chaos4   # BLOCKED (review FAIL on a real bug)
 ```
@@ -96,7 +106,7 @@ verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs
 Run ids worth naming: `clean4` (13 tests on integration ref, OCR PASS on cc/claude-fable-5), `chaos4` (injected planner quota + no-final and a worker 429, recovered by 2 reassignments; the barrier caught a real ownership violation; then the independent review on cc/claude-opus-4-8 found a real bug (requires-python >=3.8 vs `list[str]`), so the run is BLOCKED fail-closed), `clean3` (12 tests on integration ref, OCR PASS), `chaos3` (injected faults plus a real
 ownership violation, fail-closed), `chaos2` (4-attempt reassignment chain, COMPLETE), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
 quota, then pool exhaustion), `live10` (hung controller, killed, resumed), `certlive` (fresh
-clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact. (clean4/chaos4 ran on 43fbff4; 62e0f1b changed only the anonymous-mode check in verdict/api.py (BOD-202), which the orchestration path does not use.)
+clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact. (clean4/chaos4 ran on 43fbff4 on 2026-09-24; the chaos4 story (the independent review caught a real bug) is dated evidence of that run.)
 
 ## 3. Architecture in six bullets
 
@@ -205,12 +215,15 @@ whole machine.
 
 | Number | Meaning | Source |
 |---|---|---|
-| 2984 passed + 1 skipped on fresh clone (clean shell) | full suite | cert-62e0f1b |
-| 2985 passed on fresh clone (dirty shell) | full suite with LLMGATE_AUTH_TOKEN=bogus | cert-62e0f1b |
-| mypy --strict on 213 files | fresh-clone gate, pass | cert-62e0f1b |
-| 270 doc files verified | doc links checked on fresh clone | cert-62e0f1b |
-| 13 tests on integration ref, OCR PASS on cc/claude-fable-5 | rehearsal-43fbff4 clean4 run | /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/clean4 |
-| clean4 COMPLETE; chaos4 BLOCKED (review FAIL on real bug) | rehearsal-43fbff4 outcomes | /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/chaos4 |
+| 3211 passed, 0 skipped (clean shell) | full suite | cert-3a7a56d |
+| 3211 passed, 0 skipped (dirty shell, LLMGATE_AUTH_TOKEN=bogus) | full suite | cert-3a7a56d |
+| mypy --strict on 226 files | fresh-clone gate, pass | cert-3a7a56d |
+| doc links: PASS | doc links checked on fresh clone | cert-3a7a56d |
+| bandit 0 medium+ findings | security checks | cert-3a7a56d |
+| pip-audit 135 dependencies, 0 vulnerabilities | security checks | cert-3a7a56d |
+| clean5 COMPLETE; chaos5 COMPLETE (3 injected faults recovered; hung reviewer replaced) | rehearsal-a0744da outcomes | /home/nick/.verdict/evidence/bod191/rehearsal-a0744da/runs/clean5 and chaos5 |
+| 13 tests on integration ref, OCR PASS on cc/claude-fable-5 | rehearsal-43fbff4 clean4 run (dated older) | /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/clean4 |
+| clean4 COMPLETE; chaos4 BLOCKED (review FAIL on real bug) | rehearsal-43fbff4 outcomes (dated older) | /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/chaos4 |
 | 4-attempt reassignment chain, COMPLETE | rehearsal-2 chaos2 run | /home/nick/.verdict/evidence/interview-main/rehearsal-2/runs/chaos2 |
 | A-J | live scenario matrix, faults injected and tagged | golden-path certification |
 | 4 CPU / 8 GB, OmniRoute v3.8.50 | certification host | golden-path certification |
