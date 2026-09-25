@@ -3333,6 +3333,7 @@ def main() -> None:
         parsers_autodev,
         parsers_harness,
         parsers_models,
+        parsers_openspec,
         parsers_routing,
         parsers_runtime,
         parsers_setup,
@@ -3345,6 +3346,7 @@ def main() -> None:
         parsers_harness,
         parsers_runtime,
         parsers_models,
+        parsers_openspec,
     ):
         registrar.register(subparsers)
 

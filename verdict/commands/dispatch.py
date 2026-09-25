@@ -362,6 +362,12 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             repo=Path(args.repo),
             create_if_missing=bool(getattr(args, "create", False)),
         )
+    elif args.command == "openspec":
+        # OpenSpec lifecycle commands use func-based dispatch
+        if hasattr(args, "func"):
+            args.func(args)
+        else:
+            parser.print_help()
     elif args.command is None and legacy._stdout_is_tty() and os.getenv("VERDICT_PLAIN") != "1":
         # Interactive terminals get the Verdict home screen; pipes, CI and tests
         # keep the historical argparse help contract.

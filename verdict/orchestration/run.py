@@ -49,6 +49,9 @@ from verdict.orchestration.receipt import (
 )
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
 
+# OpenSpec spec_changed marker (BOD-205)
+SPEC_CHANGED = "spec_changed"
+
 DEFAULT_GATEWAY = "http://127.0.0.1:20128"
 PROGRESS_FILE = "progress.json"
 _CONNECTION_FIELDS = ("provider", "authType", "isActive", "testStatus", "backoffLevel")
@@ -343,6 +346,7 @@ async def run_golden_path(
     constraints: str = "",
     summary: Callable[[], Mapping[str, Any]] | None = None,
     inflight: dict[str, str] | None = None,
+    openspec_change_dir: Path | None = None,
 ) -> GoldenRunResult:
     run_dir = load_or_create_run(runs_root, run_id)
     log = EventLog(run_dir / "events.jsonl")
@@ -362,10 +366,137 @@ async def run_golden_path(
     graph_path = run_dir / GRAPH_FILE
     events.emit("understand", **_task_profile(goal, repo, graph))
     try:
-        if graph is None and graph_path.exists():
-            graph = WorkGraph.from_dict(
-                {k: v for k, v in json.loads(graph_path.read_text()).items() if k != "run_id"}
+        # Initialize openspec block from input if provided (BOD-205)
+        openspec_block: dict[str, Any] | None = None
+        if openspec_change_dir is not None:
+            from verdict.openspec_lifecycle import (
+                OpenSpecChange,
+                change_id_to_linear_issue,
+                spec_revision_digest,
             )
+
+            # Extract change_id from the directory name
+            change_id = openspec_change_dir.name
+            change = OpenSpecChange(
+                change_id=change_id,
+                linear_issue=change_id_to_linear_issue(change_id),
+                schema="verdict-change-v1",
+                change_dir=openspec_change_dir,
+                artifacts={},
+            )
+            openspec_block = {
+                "linear_issue": change.linear_issue,
+                "openspec_change": change_id,
+                "openspec_schema": change.schema,
+                "change_dir": str(openspec_change_dir),
+                "spec_revision_digest": spec_revision_digest(change),
+                "current_task": None,
+                "completed_tasks": [],
+                "conformance_result": None,
+            }
+
+        # Check for spec digest changes on resume (BOD-205) whenever graph.json exists with a block
+        if graph_path.exists():
+            graph_raw = json.loads(graph_path.read_text())
+
+            if "openspec" in graph_raw:
+                from verdict.openspec_lifecycle import OpenSpecChange, spec_revision_digest
+
+                raw_openspec = graph_raw["openspec"]
+                # Fail closed: block must be a dict
+                if not isinstance(raw_openspec, dict):
+                    events.emit(
+                        "controller",
+                        message=f"OpenSpec block is not a dict: {SPEC_CHANGED}",
+                        block_type=type(raw_openspec).__name__,
+                    )
+                    events.emit(
+                        "run_finished",
+                        outcome=RunOutcome.BLOCKED.value,
+                        reason=f"OpenSpec block malformed: {SPEC_CHANGED}",
+                    )
+                    return GoldenRunResult(
+                        run_dir,
+                        RunOutcome.BLOCKED.value,
+                        f"OpenSpec block malformed: {SPEC_CHANGED}",
+                        run_dir / "receipt.json",
+                    )
+
+                openspec_block = raw_openspec
+                change_dir_str = openspec_block.get("change_dir", "")
+                persisted_digest = openspec_block.get("spec_revision_digest", "")
+
+                # Fail closed: missing or empty change_dir or digest
+                if not change_dir_str or not persisted_digest:
+                    events.emit(
+                        "controller",
+                        message=f"OpenSpec change_dir or digest missing: {SPEC_CHANGED}",
+                        has_dir=bool(change_dir_str),
+                        has_digest=bool(persisted_digest),
+                    )
+                    events.emit(
+                        "run_finished",
+                        outcome=RunOutcome.BLOCKED.value,
+                        reason=f"OpenSpec change_dir or digest missing: {SPEC_CHANGED}",
+                    )
+                    return GoldenRunResult(
+                        run_dir,
+                        RunOutcome.BLOCKED.value,
+                        f"OpenSpec incomplete: {SPEC_CHANGED}",
+                        run_dir / "receipt.json",
+                    )
+
+                change_dir = Path(change_dir_str)
+                if not change_dir.exists():
+                    events.emit(
+                        "controller",
+                        message=f"OpenSpec change directory missing: {SPEC_CHANGED}",
+                        change_dir=str(change_dir),
+                    )
+                    events.emit(
+                        "run_finished",
+                        outcome=RunOutcome.BLOCKED.value,
+                        reason=f"OpenSpec change directory missing: {SPEC_CHANGED}",
+                    )
+                    return GoldenRunResult(
+                        run_dir,
+                        RunOutcome.BLOCKED.value,
+                        f"OpenSpec change directory missing: {SPEC_CHANGED}",
+                        run_dir / "receipt.json",
+                    )
+
+                # Recompute digest from change_dir
+                change = OpenSpecChange(
+                    change_id=openspec_block.get("openspec_change", ""),
+                    linear_issue=openspec_block.get("linear_issue"),
+                    schema=openspec_block.get("openspec_schema", ""),
+                    change_dir=change_dir,
+                    artifacts={},
+                )
+                current_digest = spec_revision_digest(change)
+
+                if current_digest != persisted_digest:
+                    events.emit(
+                        "controller",
+                        message=f"OpenSpec {SPEC_CHANGED}: digest mismatch",
+                        persisted=persisted_digest[:12],
+                        current=current_digest[:12],
+                    )
+                    events.emit(
+                        "run_finished",
+                        outcome=RunOutcome.BLOCKED.value,
+                        reason=f"OpenSpec {SPEC_CHANGED}: digest mismatch (was {persisted_digest[:12]}, now {current_digest[:12]})",
+                    )
+                    return GoldenRunResult(
+                        run_dir,
+                        RunOutcome.BLOCKED.value,
+                        f"OpenSpec {SPEC_CHANGED}: digest mismatch",
+                        run_dir / "receipt.json",
+                    )
+
+            # Load graph from file only if not provided
+            if graph is None:
+                graph = WorkGraph.from_dict({k: v for k, v in graph_raw.items() if k != "run_id"})
         if graph is None:
             graph = await plan_with_failover(
                 goal,
@@ -379,11 +510,17 @@ async def run_golden_path(
             )
     except OrchestrationError as exc:
         events.emit("run_finished", outcome=RunOutcome.BLOCKED.value, reason=str(exc)[:500])
-        graph_path.write_text(json.dumps({"goal": goal, "nodes": [], "run_id": run_dir.name}))
+        error_graph: dict[str, Any] = {"goal": goal, "nodes": [], "run_id": run_dir.name}
+        if openspec_block:
+            error_graph["openspec"] = openspec_block
+        graph_path.write_text(json.dumps(error_graph))
         return GoldenRunResult(
             run_dir, RunOutcome.BLOCKED.value, str(exc), run_dir / "receipt.json"
         )
-    graph_path.write_text(json.dumps({**graph.to_dict(), "run_id": run_dir.name}, indent=2))
+    graph_data = {**graph.to_dict(), "run_id": run_dir.name}
+    if openspec_block:
+        graph_data["openspec"] = openspec_block
+    graph_path.write_text(json.dumps(graph_data, indent=2))
     events.emit(
         "plan_ready",
         nodes=[n.to_dict() for n in graph.nodes],
