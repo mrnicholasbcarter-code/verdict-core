@@ -333,7 +333,9 @@ def _resolve_artifacts(gate: Gate, evidence_dir: Path) -> Derived:
             # For text artifacts (.txt, .log), require explicit RESULT: PASS as the last RESULT line
             if path.suffix in (".txt", ".log"):
                 # Find the last RESULT: line
-                result_lines = [line for line in text.splitlines() if line.strip().startswith("RESULT:")]
+                result_lines = [
+                    line for line in text.splitlines() if line.strip().startswith("RESULT:")
+                ]
                 if not result_lines:
                     lines.append(f"FAIL: {artifact} missing explicit RESULT: PASS")
                     invalid = True
