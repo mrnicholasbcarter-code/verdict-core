@@ -1,0 +1,16 @@
+{
+  "detail": [
+    {
+      "type": "missing",
+      "loc": [
+        "body",
+        "state"
+      ],
+      "msg": "Field required",
+      "input": {
+        "model": "openjev-0.1",
+        "questions": {}
+      }
+    }
+  ]
+}

@@ -278,7 +278,11 @@ class AvailabilityCache:
     def _store(self, key: CacheKey, report: AvailabilityReport, now: datetime) -> None:
         if key in self._entries:
             self._entries[key] = replace(
-                self._entries[key], report=report, stored_at=now, refresh_error=None
+                self._entries[key],
+                report=report,
+                stored_at=now,
+                refresh_error=None,
+                refreshing=False,
             )
         else:
             if len(self._entries) >= self.max_entries:

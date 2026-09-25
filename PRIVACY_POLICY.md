@@ -209,3 +209,69 @@ conduct their own assessment.
 
 Report privacy concerns using the same channel as security vulnerabilities.
 See `SECURITY.md` for contact details and the vulnerability reporting procedure.
+
+---
+
+## OpenJev SHADOW and ADVISORY mode data flow
+
+**This feature is opt-in and off by default.**
+It is enabled only when `VERDICT_DECISION_SIGNALS_MODE=SHADOW` or `=ADVISORY`
+*and* `TYPESAFE_API_KEY` is set.
+
+### What is sent and when
+
+| Mode | Trigger | Destination |
+|------|---------|-------------|
+| SHADOW | Once per `verdict orchestrate` run, before planning | `TYPESAFE_BASE_URL/v1/systemone` (default: `https://api.codiv.ai`) |
+| ADVISORY | Once per route call for tasks that are not privacy-restricted or `trusted_upstream` | Same endpoint |
+
+The request body contains:
+
+* **`model`**: the pinned model id (`openjev-0.1` by default, overridable via `VERDICT_OPENJEV_MODEL`).
+* **`state`**: the task purpose label plus the task summary, truncated to 500 characters, then passed through `scrub_secrets` so patterns resembling API keys, tokens, passwords, and connection strings are replaced with `[REDACTED]`. File contents, repository paths, and credential values are never included.
+* **`questions`**: a fixed, documented set of seven typed questions (noul / score / choice); see `verdict/decision_signals/openjev.py`.
+
+No other data is sent.  The key is transmitted only in the `Authorization: Bearer` header over HTTPS.
+
+### What is NOT sent
+
+* Full file contents or repository trees.
+* Secrets, credentials, or tokens (scrubbed before transmission).
+* Anything when `VERDICT_DECISION_SIGNALS_MODE=OFF` (the default) or when `TYPESAFE_API_KEY` is absent.
+* Anything for tasks marked `trusted_upstream` or privacy-restricted (ADVISORY only — see scope note below).
+
+### SHADOW scope note
+
+**SHADOW sends the scrubbed goal for every `verdict orchestrate` run** when the mode is
+`SHADOW` and credentials are present.  The `orchestrate` entry-point has no per-task
+privacy classification at the time the signal call fires (before planning); there is no
+protected/restricted filter on the SHADOW path.
+
+If your organization's tasks include goals that must not leave the machine, either:
+
+1. Leave `VERDICT_DECISION_SIGNALS_MODE` unset (the default, no calls ever made), or
+2. Use ADVISORY mode instead — it skips tasks flagged `trusted_upstream` or `restricted`
+   at the route call site — or
+3. Use a private Codiv endpoint (`TYPESAFE_BASE_URL`) that keeps data on-premises.
+
+### Codiv's stated data policy
+
+Codiv's documentation states that request data is not stored or used for
+training.  Operators should review [https://codiv.ai/privacy](https://codiv.ai/privacy)
+before enabling either mode in production.
+
+### Effect on routing
+
+None.  In SHADOW mode the signals are recorded in EventLog and the receipt
+but have no effect on the WorkGraph or routing decisions.  In ADVISORY mode
+the intelligence layer may read the signals when selecting a route, but
+routing is never blocked on a signal failure and the final routing result is
+identical to what it would be without signals when signals are unavailable.
+
+### Opt-out
+
+```bash
+unset VERDICT_DECISION_SIGNALS_MODE  # or set to OFF
+```
+
+This immediately stops all calls to the Codiv API.

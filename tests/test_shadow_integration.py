@@ -392,7 +392,7 @@ async def test_off_mode_provider_never_called(tmp_path: Path, monkeypatch) -> No
 @pytest.mark.asyncio
 async def test_invalid_mode_treated_as_off(tmp_path: Path, monkeypatch) -> None:
     """Invalid VERDICT_DECISION_SIGNALS_MODE -> treated as OFF, warning emitted, 0 calls."""
-    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "ADVISORY")
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "TURBO")  # invalid -> OFF + warning
 
     repo = _init_git_repo(tmp_path)
 
@@ -659,3 +659,203 @@ async def test_receipt_contains_decision_signals(tmp_path: Path, monkeypatch) ->
     # Receipt has decision_signals field but it's None (no events)
     assert "decision_signals" in receipt_off
     assert receipt_off["decision_signals"] is None
+
+
+# ---------------------------------------------------------------------------
+# Product wiring: factory auto-wire in plan_with_failover and run_golden_path
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_provider(mode: str = "SHADOW") -> tuple[object, list]:
+    """Return (fake_provider, calls_list). calls_list grows on each .signals() call."""
+    calls: list[str] = []
+    now_dt = datetime(2026, 9, 25, 12, 0, 0)
+
+    class _FakeProvider:
+        def signals(self, question, *, now):
+            calls.append(question.purpose)
+            return DecisionSignalSetV1(
+                schema_version="decision-signals/v1",
+                provider="fake",
+                model="fake-1",
+                version="1.0",
+                request_id="fake-req",
+                purpose=question.purpose,
+                signals={"complexity": 0.5},
+                confidence=0.8,
+                latency_ms=1,
+                usage={"input_tokens": 10, "output_tokens": 0},
+                input_digest="a" * 64,
+                observed_at=now_dt.isoformat() + "Z",
+                failure_class=None,
+                mode=mode,
+            )
+
+    return _FakeProvider(), calls
+
+
+@pytest.mark.asyncio
+async def test_plan_with_failover_auto_wires_factory(tmp_path: Path, monkeypatch) -> None:
+    """plan_with_failover with decision_signal_provider=None (default) calls provider_from_env
+    and uses the returned provider exactly once. Calling with OFF mode -> 0 calls."""
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "SHADOW")
+
+    repo = _init_git_repo(tmp_path)
+    fake_provider, calls = _make_fake_provider()
+
+    import verdict.decision_signals.factory as fmod
+
+    monkeypatch.setattr(fmod, "provider_from_env", lambda: fake_provider)
+
+    events_path = tmp_path / "events.jsonl"
+    log = EventLog(events_path)
+    selector = _RecordingSelector("test/model")
+    executor = _ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)])
+
+    # No provider passed -> factory is consulted
+    graph = await plan_with_failover(
+        "wiring test",
+        repo=repo,
+        selector=selector,
+        executor=executor,
+        classifier=_Classifier(),
+        events=log,
+        # decision_signal_provider intentionally omitted (default None)
+    )
+
+    assert len(calls) == 1, f"expected 1 provider call, got {len(calls)}"
+    assert graph is not None
+
+    decision_events = [e for e in log.read() if e.type == "decision_signals"]
+    assert len(decision_events) == 1, "expected exactly 1 decision_signals event"
+
+
+@pytest.mark.asyncio
+async def test_plan_with_failover_off_mode_zero_calls(tmp_path: Path, monkeypatch) -> None:
+    """plan_with_failover with mode=OFF: factory returns None, 0 provider calls."""
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "OFF")
+
+    repo = _init_git_repo(tmp_path)
+    call_count = []
+
+    import verdict.decision_signals.factory as fmod
+
+    original_pfn = fmod.provider_from_env
+
+    def tracking_pfn():
+        result = original_pfn()
+        call_count.append(result)
+        return result
+
+    monkeypatch.setattr(fmod, "provider_from_env", tracking_pfn)
+
+    events_path = tmp_path / "events.jsonl"
+    log = EventLog(events_path)
+
+    graph = await plan_with_failover(
+        "wiring test off",
+        repo=repo,
+        selector=_RecordingSelector("test/model"),
+        executor=_ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)]),
+        classifier=_Classifier(),
+        events=log,
+    )
+
+    # factory called but returned None (mode=OFF)
+    assert all(p is None for p in call_count), "OFF mode must return None from factory"
+    decision_events = [e for e in log.read() if e.type == "decision_signals"]
+    assert len(decision_events) == 0, "OFF mode must emit 0 decision_signals events"
+    assert graph is not None
+
+
+@pytest.mark.asyncio
+async def test_mutation_proof_plan_with_failover_wiring(tmp_path: Path, monkeypatch) -> None:
+    """MUTATION: if factory.provider_from_env() is bypassed (simulates replacing
+    decision_signal_provider = provider_from_env() with = None), the baseline assertion
+    that 1 event is emitted FAILS — proves the auto-wire code is load-bearing."""
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "SHADOW")
+    repo = _init_git_repo(tmp_path)
+
+    import verdict.decision_signals.factory as fmod
+
+    # --- Baseline: factory returns a real fake provider -> 1 event ---
+    fake_provider, calls = _make_fake_provider()
+    monkeypatch.setattr(fmod, "provider_from_env", lambda: fake_provider)
+
+    log_base = EventLog(tmp_path / "events_base.jsonl")
+    await plan_with_failover(
+        "mutation test",
+        repo=repo,
+        selector=_RecordingSelector("test/model"),
+        executor=_ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)]),
+        classifier=_Classifier(),
+        events=log_base,
+    )
+    assert len(calls) == 1, "baseline: factory-provided provider must be called once"
+    base_events = [e for e in log_base.read() if e.type == "decision_signals"]
+    assert len(base_events) == 1, "baseline: 1 decision_signals event"
+
+    # --- Mutation: factory returns None (simulates `decision_signal_provider = None`) ---
+    # This is the SAME call as the baseline, but now provider_from_env() returns None.
+    # If the wiring code `decision_signal_provider = provider_from_env()` were replaced
+    # with `decision_signal_provider = None`, the result would be the same: 0 calls, 0 events.
+    # The baseline assertion above would fail -> proves the wiring is load-bearing.
+    monkeypatch.setattr(fmod, "provider_from_env", lambda: None)  # MUTATION
+
+    _, __ = _make_fake_provider()  # fake provider not called under mutation
+    log_mut = EventLog(tmp_path / "events_mut.jsonl")
+    await plan_with_failover(
+        "mutation test",
+        repo=repo,
+        selector=_RecordingSelector("test/model"),
+        executor=_ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)]),
+        classifier=_Classifier(),
+        events=log_mut,
+    )
+    mut_events = [e for e in log_mut.read() if e.type == "decision_signals"]
+    # With mutation (None returned): 0 events
+    assert len(mut_events) == 0, "mutated wiring must emit 0 decision_signals events"
+    # Demonstrate that applying the mutation to the baseline assertion makes it fail
+    # (i.e., the baseline `assert len(base_events) == 1` would NOT pass under mutation)
+    assert len(base_events) != len(mut_events), (
+        "baseline (1 event) differs from mutated (0 events) — proves wiring is load-bearing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_golden_path_auto_wires_factory(tmp_path: Path, monkeypatch) -> None:
+    """run_golden_path with decision_signal_provider=None calls factory and uses provider."""
+    from verdict.orchestration.run import run_golden_path
+    from verdict.orchestration.runtime import RuntimePolicy
+
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "SHADOW")
+
+    repo = _init_git_repo(tmp_path)
+    fake_provider, calls = _make_fake_provider()
+
+    import verdict.decision_signals.factory as fmod
+
+    monkeypatch.setattr(fmod, "provider_from_env", lambda: fake_provider)
+
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+
+    result = await run_golden_path(
+        "wiring test golden path",
+        repo=repo,
+        runs_root=runs_root,
+        selector=_RecordingSelector("test/model"),
+        executor=_ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)]),
+        classifier=_Classifier(),
+        reviewer=None,
+        policy=RuntimePolicy(max_parallel=3),
+        # decision_signal_provider intentionally omitted
+    )
+
+    # Provider was called once (in plan_with_failover)
+    assert len(calls) == 1, f"expected 1 provider call, got {len(calls)}"
+
+    # EventLog contains a decision_signals event
+    log = EventLog(result.run_dir / "events.jsonl")
+    decision_events = [e for e in log.read() if e.type == "decision_signals"]
+    assert len(decision_events) == 1, "run_golden_path must emit exactly 1 decision_signals event"
