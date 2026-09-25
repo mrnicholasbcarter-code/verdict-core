@@ -77,6 +77,39 @@ class RouteIdentityAttestation:
             "source": self.source,
         }
 
+    def identity_summary(self) -> dict[str, Any]:
+        """Return provider/model identity summary for receipt (BOD-198).
+
+        Returns:
+            Dictionary with intended_provider, intended_model, executed_provider,
+            executed_model, and provider_mismatch fields. If actual_route is None
+            (unattested), executed fields are None and provider_mismatch is "unattested".
+        """
+        intended_provider = self.resolved_route.provider
+        intended_model = self.resolved_route.model_id
+
+        if self.actual_route is None:
+            # Unattested: no execution confirmation
+            return {
+                "intended_provider": intended_provider,
+                "intended_model": intended_model,
+                "executed_provider": None,
+                "executed_model": None,
+                "provider_mismatch": "unattested",
+            }
+
+        executed_provider = self.actual_route.provider
+        executed_model = self.actual_route.model_id
+        mismatch = (intended_provider != executed_provider) or (intended_model != executed_model)
+
+        return {
+            "intended_provider": intended_provider,
+            "intended_model": intended_model,
+            "executed_provider": executed_provider,
+            "executed_model": executed_model,
+            "provider_mismatch": mismatch,
+        }
+
 
 @dataclass(frozen=True)
 class AdapterFailureSignal:
