@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Produce contract parity evidence for G4.2 and G4.3.
 
-G4.2: contract_parity_matrix.md - field-by-field comparison of Python vs TypeScript
-G4.3: parity_fixture_results.json - shared fixtures run through Python verifier
+G4.2: contract_parity_matrix.md — field-by-field comparison of Python vs TypeScript.
+      Exit 1 with RESULT: FAIL if any row is not OK.
+
+G4.3: parity_fixture_results.json — shared fixtures run through BOTH Python and TS.
+      Exit 1 with RESULT: FAIL if any fixture result mismatches or TS is not run.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
-from dataclasses import fields
+from dataclasses import MISSING, fields
 from pathlib import Path
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import Any, get_type_hints
 
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,125 +27,121 @@ from verdict.contracts import (
     RoutingDecisionContract,
     RuntimeCandidate,
     TaskSpec,
+    contract_from_dict,
+    ContractValidationError,
 )
 
+CONTRACTS = [
+    ("TaskSpec", TaskSpec),
+    ("RoutingDecision", RoutingDecisionContract),
+    ("AvailabilitySnapshot", AvailabilitySnapshot),
+    ("RuntimeCandidate", RuntimeCandidate),
+    ("ExecutionEnvelope", ExecutionEnvelope),
+]
 
-def python_type_name(hint: Any) -> str:
-    """Convert Python type hint to readable string."""
-    origin = get_origin(hint)
-    if origin is None:
-        if hasattr(hint, "__name__"):
-            return hint.__name__
-        return str(hint)
+# Map contract name -> TS contractSchemas key
+TS_CONTRACT_NAMES = {
+    "TaskSpec": "TaskSpec",
+    "RoutingDecision": "RoutingDecision",
+    "AvailabilitySnapshot": "AvailabilitySnapshot",
+    "RuntimeCandidate": "RuntimeCandidate",
+    "ExecutionEnvelope": "ExecutionEnvelope",
+}
 
-    args = get_args(hint)
-    if origin is list:
-        if args:
-            return f"list[{python_type_name(args[0])}]"
-        return "list"
-    if origin is dict:
-        if len(args) == 2:
-            return f"dict[{python_type_name(args[0])}, {python_type_name(args[1])}]"
-        return "dict"
-    if origin is tuple:
-        if args:
-            return f"tuple[{', '.join(python_type_name(a) for a in args)}]"
-        return "tuple"
-    # Handle Union (including Optional)
-    if origin is type(None) or (hasattr(origin, "__name__") and "Union" in str(origin)):
-        if args:
-            return " | ".join(python_type_name(a) for a in args)
-        return "None"
+# Map parity fixture file prefix -> Python contract name
+FIXTURE_CONTRACT_MAP = {
+    "routing_decision": "RoutingDecisionContract",
+    "envelope": "ExecutionEnvelope",
+}
 
-    return str(hint)
+# Expected accept/reject for each fixture based on filename
+FIXTURE_EXPECT = {
+    "routing_decision_valid.json": "accept",
+    "routing_decision_minimal.json": "accept",
+    "routing_decision_defaults.json": "accept",
+    "routing_decision_unknown_field.json": "reject",
+    "envelope_explicit.json": "accept",
+}
 
 
-def extract_python_schema(cls: type) -> dict[str, Any]:
-    """Extract field schema from Python dataclass."""
-    from dataclasses import MISSING
-
-    type_hints = get_type_hints(cls)
-    schema_fields = {}
+def extract_python_fields(cls: type) -> dict[str, dict[str, Any]]:
+    """Extract field names and input-required status from a Python dataclass."""
+    result: dict[str, dict[str, Any]] = {}
     for f in fields(cls):
-        # A field is required if it has no default value and no default_factory
-        required = f.default is MISSING and f.default_factory is MISSING
-        type_str = python_type_name(type_hints.get(f.name, f.type))
-        schema_fields[f.name] = {
-            "type": type_str,
-            "required": required,
-            "has_default": f.default is not MISSING or f.default_factory is not MISSING,
-        }
-    return schema_fields
+        # A field is input-required if it has no default value AND no default_factory
+        required = f.default is MISSING and f.default_factory is MISSING  # type: ignore[misc]
+        result[f.name] = {"required": required}
+    return result
 
 
-def extract_typescript_schema(contract_name: str, ts_file: Path) -> dict[str, Any] | None:
-    """Extract field schema from TypeScript Zod schema."""
-    if not ts_file.exists():
-        return None
+def get_ts_fields(contracts_dist: Path) -> dict[str, dict[str, dict[str, Any]]]:
+    """Run node against the built contracts package and extract field schemas.
 
-    content = ts_file.read_text()
-
-    # Find the schema definition
-    schema_var = {
-        "TaskSpec": "taskSpecSchema",
-        "RoutingDecision": "routingDecisionSchema",
-        "AvailabilitySnapshot": "availabilitySnapshotSchema",
-        "RuntimeCandidate": "runtimeCandidateSchema",
-        "ExecutionEnvelope": "executionEnvelopeSchema",
-    }.get(contract_name)
-
-    if not schema_var:
-        return None
-
-    # This is a simplified parser - in production we'd use proper TypeScript parsing
-    # For now, extract the basic structure
-    import re
-
-    pattern = rf"{schema_var}\s*=\s*z\.object\((.*?)\)\.strict\(\)"
-    match = re.search(pattern, content, re.DOTALL)
-    if not match:
-        return None
-
-    obj_content = match.group(1)
-
-    # Parse field definitions (simplified)
-    field_pattern = r"(\w+):\s*([^,]+?)(?:,|\})"
-    fields_dict = {}
-    for field_match in re.finditer(field_pattern, obj_content):
-        field_name = field_match.group(1)
-        field_def = field_match.group(2).strip()
-
-        # Determine if required or has default
-        has_default = ".default(" in field_def or ".optional()" in field_def
-        required = not has_default
-
-        # Extract type (simplified)
-        type_str = field_def
-        if ".default(" in type_str:
-            type_str = type_str.split(".default(")[0]
-        if ".optional()" in type_str:
-            type_str = type_str.split(".optional()")[0]
-
-        fields_dict[field_name] = {
-            "type": type_str,
-            "required": required,
-            "has_default": has_default,
-        }
-
-    return fields_dict
+    Uses contractSchemas[name]._def.shape() to get the real Zod field defs.
+    A field is input-optional if its top-level typeName is ZodDefault or ZodOptional.
+    """
+    node_script = f"""
+const {{ contractSchemas }} = require('{contracts_dist}/index.js');
+const NAMES = {json.dumps(list(TS_CONTRACT_NAMES.values()))};
+const result = {{}};
+for (const cname of NAMES) {{
+  const schema = contractSchemas[cname];
+  if (!schema || !schema._def || !schema._def.shape) continue;
+  const shape = schema._def.shape();
+  const schemaFields = {{}};
+  for (const [fname, fschema] of Object.entries(shape)) {{
+    const def = fschema._def;
+    // ZodDefault and ZodOptional both mean the field may be omitted on input
+    const inputOptional = def.typeName === 'ZodDefault' || def.typeName === 'ZodOptional';
+    schemaFields[fname] = {{ required: !inputOptional }};
+  }}
+  result[cname] = schemaFields;
+}}
+console.log(JSON.stringify(result));
+"""
+    tmp = Path("/tmp/_ts_field_inspect.js")
+    tmp.write_text(node_script)
+    r = subprocess.run(["node", str(tmp)], capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(f"node field inspection failed: {r.stderr[:500]}")
+    return json.loads(r.stdout)  # type: ignore[no-any-return]
 
 
-def generate_parity_matrix(evidence_dir: Path) -> None:
-    """Generate contract_parity_matrix.md comparing Python vs TypeScript."""
-    contracts = [
-        ("TaskSpec", TaskSpec),
-        ("RoutingDecision", RoutingDecisionContract),
-        ("AvailabilitySnapshot", AvailabilitySnapshot),
-        ("RuntimeCandidate", RuntimeCandidate),
-        ("ExecutionEnvelope", ExecutionEnvelope),
-    ]
+def run_fixture_through_ts(contracts_dist: Path, fixture_path: Path, ts_name: str) -> str:
+    """Run a single fixture JSON through the TS parseContract() and return 'accept' or 'reject'."""
+    node_script = f"""
+const {{ parseContract }} = require('{contracts_dist}/index.js');
+const data = JSON.parse(require('fs').readFileSync('{fixture_path}', 'utf8'));
+try {{
+  parseContract('{ts_name}', data);
+  console.log('accept');
+}} catch (e) {{
+  console.log('reject:' + e.message.slice(0, 120));
+}}
+"""
+    tmp = Path("/tmp/_ts_fixture_run.js")
+    tmp.write_text(node_script)
+    r = subprocess.run(["node", str(tmp)], capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        return f"error:{r.stderr[:120]}"
+    return r.stdout.strip()
 
-    ts_file = Path("contracts/src/index.ts")
+
+def run_fixture_through_python(fixture_path: Path, py_contract: str) -> str:
+    """Run a fixture through the Python contract_from_dict and return 'accept' or 'reject:...'."""
+    data = json.loads(fixture_path.read_text())
+    try:
+        contract_from_dict(py_contract, data)
+        return "accept"
+    except ContractValidationError as e:
+        return f"reject:{str(e)[:120]}"
+    except Exception as e:
+        return f"error:{str(e)[:120]}"
+
+
+def generate_parity_matrix(evidence_dir: Path, contracts_dist: Path) -> list[str]:
+    """Generate contract_parity_matrix.md. Returns list of mismatch descriptions."""
+    ts_schemas = get_ts_fields(contracts_dist)
 
     lines = [
         "# Contract Parity Matrix",
@@ -149,87 +149,119 @@ def generate_parity_matrix(evidence_dir: Path) -> None:
         "Python vs TypeScript contract field comparison for G4.2.",
         "",
         "Generated from:",
-        "- Python: `verdict/contracts.py`",
-        "- TypeScript: `contracts/src/index.ts`",
-        "- JSON Schema: `verdict/schemas/contracts.v1.json`",
+        "- Python: `verdict/contracts.py` (dataclass fields)",
+        "- TypeScript: `contracts/dist/index.js` (contractSchemas Zod shapes, built from `contracts/src/index.ts`)",
         "",
     ]
 
-    for name, py_cls in contracts:
+    mismatches: list[str] = []
+
+    for name, py_cls in CONTRACTS:
         lines.append(f"## {name}")
         lines.append("")
+        py_schema = extract_python_fields(py_cls)
+        ts_schema = ts_schemas.get(TS_CONTRACT_NAMES[name], {})
 
-        py_schema = extract_python_schema(py_cls)
-        ts_schema = extract_typescript_schema(name, ts_file) if ts_file.exists() else None
-        if ts_schema is None:
-            ts_schema = {}
-
-        # All fields from both schemas
         all_fields = sorted(set(py_schema.keys()) | set(ts_schema.keys()))
 
         lines.append(
-            "| Field | Python Type | Python Required | TypeScript Type | TypeScript Required | Status |"
+            "| Field | Python req | TypeScript req | Status |"
         )
-        lines.append(
-            "|-------|-------------|-----------------|-----------------|---------------------|--------|"
-        )
+        lines.append("|-------|-----------|----------------|--------|")
 
-        for field_name in all_fields:
-            py_info = py_schema.get(field_name, {})
-            ts_info = ts_schema.get(field_name, {})
+        for fname in all_fields:
+            py_info = py_schema.get(fname)
+            ts_info = ts_schema.get(fname)
 
-            py_type = py_info.get("type", "MISSING")
-            py_req = "✓" if py_info.get("required") else "✗"
-            ts_type = ts_info.get("type", "MISSING")
-            ts_req = "✓" if ts_info.get("required") else "✗"
+            py_req = ("yes" if py_info["required"] else "no") if py_info else "MISSING"
+            ts_req = ("yes" if ts_info["required"] else "no") if ts_info else "MISSING"
 
-            # Determine status
-            if not py_info:
+            if py_info is None:
                 status = "TS-only"
-            elif not ts_info:
+                mismatches.append(f"{name}.{fname}: TS-only")
+            elif ts_info is None:
                 status = "PY-only"
-            elif py_req != ts_req:
+                mismatches.append(f"{name}.{fname}: PY-only")
+            elif py_info["required"] != ts_info["required"]:
                 status = "MISMATCH"
+                mismatches.append(
+                    f"{name}.{fname}: py.required={py_info['required']} ts.required={ts_info['required']}"
+                )
             else:
                 status = "OK"
 
-            lines.append(
-                f"| `{field_name}` | {py_type} | {py_req} | {ts_type} | {ts_req} | {status} |"
-            )
+            lines.append(f"| `{fname}` | {py_req} | {ts_req} | {status} |")
 
         lines.append("")
 
     output_file = evidence_dir / "contract_parity_matrix.md"
     output_file.write_text("\n".join(lines))
     print(f"Wrote {output_file}")
+    return mismatches
 
 
-def run_python_fixtures(evidence_dir: Path, ts_results_file: Path | None) -> None:
-    """Run shared fixtures through Python verifier and record results."""
-    # Use the flagship demo as the primary fixture
-    from verdict.flagship_demo import run_accepted_and_denied_demo
+def run_fixture_contract_name(fixture_fname: str) -> tuple[str, str] | None:
+    """Return (py_contract, ts_contract) for a parity fixture file, or None to skip."""
+    for prefix, py_name in FIXTURE_CONTRACT_MAP.items():
+        if fixture_fname.startswith(prefix):
+            ts_name = {
+                "RoutingDecisionContract": "RoutingDecision",
+                "ExecutionEnvelope": "ExecutionEnvelope",
+            }[py_name]
+            return py_name, ts_name
+    return None
 
-    demo_results = run_accepted_and_denied_demo()
 
-    results = {
-        "python": {
-            "accepted": {"verdict": demo_results["accepted"]["verdict"], "decision_count": 1},
-            "denied": {"verdict": demo_results["denied"]["verdict"], "decision_count": 1},
-        },
-        "typescript": {
-            "status": "not_run",
-            "note": "TypeScript contract tests run separately in contracts/ package",
-        },
-    }
+def generate_fixture_results(evidence_dir: Path, contracts_dist: Path) -> list[str]:
+    """Run shared parity fixtures through Python and TS. Returns mismatch descriptions."""
+    fixture_dir = Path("test_fixtures/parity")
+    fixtures = sorted(fixture_dir.glob("*.json"))
 
-    # If TypeScript results were provided, include them
-    if ts_results_file and ts_results_file.exists():
-        ts_data = json.loads(ts_results_file.read_text())
-        results["typescript"] = ts_data
+    results = []
+    mismatches: list[str] = []
+
+    for fixture_path in fixtures:
+        fname = fixture_path.name
+        contract_pair = run_fixture_contract_name(fname)
+        if contract_pair is None:
+            print(f"  SKIP {fname}: no known contract mapping")
+            continue
+
+        py_contract, ts_contract = contract_pair
+        expected = FIXTURE_EXPECT.get(fname)
+
+        py_result = run_fixture_through_python(fixture_path, py_contract)
+        ts_result = run_fixture_through_ts(contracts_dist, fixture_path, ts_contract)
+
+        py_verdict = "accept" if py_result == "accept" else "reject"
+        ts_verdict = "accept" if ts_result.startswith("accept") else "reject"
+
+        match = py_verdict == ts_verdict
+        expected_ok = (expected is None) or (py_verdict == expected)
+
+        status = "OK" if match and expected_ok else "MISMATCH"
+        if status == "MISMATCH":
+            mismatches.append(
+                f"{fname}: py={py_verdict} ts={ts_verdict} expected={expected}"
+            )
+
+        results.append({
+            "fixture": fname,
+            "contract_py": py_contract,
+            "contract_ts": ts_contract,
+            "py_result": py_result,
+            "ts_result": ts_result,
+            "py_verdict": py_verdict,
+            "ts_verdict": ts_verdict,
+            "expected": expected,
+            "status": status,
+        })
+        print(f"  {status} {fname}: py={py_verdict} ts={ts_verdict}")
 
     output_file = evidence_dir / "parity_fixture_results.json"
     output_file.write_text(json.dumps(results, indent=2, sort_keys=True))
     print(f"Wrote {output_file}")
+    return mismatches
 
 
 def main() -> int:
@@ -238,21 +270,33 @@ def main() -> int:
     parser.add_argument(
         "--evidence-dir", type=Path, required=True, help="Directory to write evidence artifacts"
     )
-    parser.add_argument(
-        "--ts-results", type=Path, help="Optional TypeScript test results file to include"
-    )
     args = parser.parse_args()
 
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
 
+    contracts_dist = Path("contracts/dist").resolve()
+    if not contracts_dist.exists():
+        print("RESULT: FAIL (contracts/dist not found; run: cd contracts && npm ci && npm run build)", file=sys.stderr)
+        return 1
+
     try:
-        generate_parity_matrix(args.evidence_dir)
-        run_python_fixtures(args.evidence_dir, args.ts_results)
+        matrix_mismatches = generate_parity_matrix(args.evidence_dir, contracts_dist)
+        fixture_mismatches = generate_fixture_results(args.evidence_dir, contracts_dist)
+
+        all_mismatches = matrix_mismatches + fixture_mismatches
+
+        if all_mismatches:
+            print("", file=sys.stderr)
+            print("Parity mismatches found:", file=sys.stderr)
+            for m in all_mismatches:
+                print(f"  {m}", file=sys.stderr)
+            print("RESULT: FAIL")
+            return 1
+
         print("RESULT: PASS")
         return 0
     except Exception as e:
         import traceback
-
         traceback.print_exc()
         print(f"RESULT: FAIL ({e})", file=sys.stderr)
         return 1
