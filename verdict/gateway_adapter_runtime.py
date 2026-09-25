@@ -186,6 +186,7 @@ __all__ = [
     "TELEMETRY_FIELDS",
     "AdapterFailureSignal",
     "AdapterResponseMetadata",
+    "AdapterRouteIdentity",
     "GatewayAdapter",
     "NormalizedFailure",
     "RouteIdentityAttestation",
