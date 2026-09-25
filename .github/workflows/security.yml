@@ -29,8 +29,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra dashboard --extra server
 
-      - name: Install pip-audit and bandit
-        run: uv pip install pip-audit bandit
+      # bandit and pip-audit are now in dev dependencies
+      # (no separate install step needed)
 
       - name: Run memory boundary tests
         run: uv run pytest tests/security/ -q --junitxml=memory-boundary-results.xml
@@ -68,7 +68,7 @@ jobs:
           retention-days: 30
 
       - name: Run bandit
-        run: uv run bandit -r verdict -ll -s B108 -f json -o bandit-results.json
+        run: uv run bandit -c pyproject.toml -r verdict -ll -f json -o bandit-results.json
 
       - name: Upload bandit results
         if: always()

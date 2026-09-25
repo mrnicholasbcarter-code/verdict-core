@@ -70,6 +70,8 @@ dev = [
     "cyclonedx-bom>=7.4.0",
     # tests parse pyproject.toml; tomllib is stdlib only from 3.11
     "tomli>=2.0; python_version < '3.11'",
+    "bandit>=1.9.4,<2.0",
+    "pip-audit>=2.10.1,<3.0",
 ]
 
 [project.scripts]
@@ -136,6 +138,11 @@ markers = [
 [tool.coverage.run]
 source = ["verdict"]
 omit = ["tests/*", "*/__pycache__/*"]
+
+[tool.bandit]
+# B108: hardcoded_tmp_directory - allow /tmp usage in controlled contexts
+# (security.yml historically skips this; inheriting the existing policy)
+skips = ["B108"]
 
 [tool.hatch.envs.default]
 dependencies = ["verdict-core"]

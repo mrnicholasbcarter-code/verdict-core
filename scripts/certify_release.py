@@ -32,7 +32,7 @@ class StepResult:
 
     step_id: str
     name: str
-    status: Literal["PASS", "FAIL", "SKIPPED"]
+    status: Literal["PASS", "FAIL", "SKIPPED", "INCOMPLETE"]
     reason: str = ""  # Details for FAIL or SKIPPED
     duration_seconds: float = 0.0
 
@@ -477,58 +477,127 @@ def step_package_smoke(repo_path: Path) -> StepResult:
 
 
 def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
-    """Run security checks if available in dev deps."""
+    """Run bandit (SAST) and pip-audit (dependency CVE scan).
+
+    bandit is a declared dev dependency; missing binary -> FAIL.
+    Runs with -c pyproject.toml -r verdict -ll (medium+ severity).
+    pip-audit scans local packages; vulnerabilities -> FAIL, network/DB error -> INCOMPLETE.
+    """
     start = datetime.now(timezone.utc)
 
-    # Check if bandit is available
-    try:
-        bandit_check = run_command([str(venv_bin / "bandit"), "--version"])
-    except FileNotFoundError:
-        return StepResult(
-            step_id="security",
-            name="Security checks",
-            status="SKIPPED",
-            reason="bandit not available in dev dependencies",
-        )
-
-    if bandit_check.returncode != 0:
-        return StepResult(
-            step_id="security",
-            name="Security checks",
-            status="SKIPPED",
-            reason="bandit not available in dev dependencies",
-        )
-
-    # Run bandit
-    result = run_command([str(venv_bin / "bandit"), "-r", "verdict", "-f", "json"], cwd=repo_path)
-    duration = (datetime.now(timezone.utc) - start).total_seconds()
-
-    if result.returncode == 0:
-        try:
-            bandit_data = json.loads(result.stdout)
-            issues = len(bandit_data.get("results", []))
-            return StepResult(
-                step_id="security",
-                name="Security checks",
-                status="PASS" if issues == 0 else "FAIL",
-                reason=f"{issues} issue(s) found" if issues > 0 else "",
-                duration_seconds=duration,
-            )
-        except json.JSONDecodeError:
-            return StepResult(
-                step_id="security",
-                name="Security checks",
-                status="FAIL",
-                reason="Failed to parse bandit output",
-                duration_seconds=duration,
-            )
-    else:
+    # Bandit is a declared dev dependency; absent is FAIL, not SKIPPED
+    bandit_bin = venv_bin / "bandit"
+    if not bandit_bin.exists():
         return StepResult(
             step_id="security",
             name="Security checks",
             status="FAIL",
-            reason=f"Exit code {result.returncode}",
+            reason="bandit declared dev dependency missing; run uv sync --extra dev",
+        )
+
+    # Run bandit with unified config from pyproject.toml
+    bandit_result = run_command(
+        [str(bandit_bin), "-c", "pyproject.toml", "-r", "verdict", "-ll", "-f", "json"],
+        cwd=repo_path,
+    )
+
+    # Parse bandit results
+    bandit_status = "PASS"
+    bandit_reason = ""
+    try:
+        bandit_data = json.loads(bandit_result.stdout)
+        # -ll filters to medium+; count findings at that severity
+        medium_plus = [
+            r
+            for r in bandit_data.get("results", [])
+            if r.get("issue_severity", "").upper() in ("MEDIUM", "HIGH")
+        ]
+        if medium_plus:
+            bandit_status = "FAIL"
+            bandit_reason = f"bandit: {len(medium_plus)} medium+ finding(s)"
+    except json.JSONDecodeError:
+        bandit_status = "FAIL"
+        bandit_reason = "bandit: failed to parse JSON output"
+
+    # Run pip-audit
+    pip_audit_bin = venv_bin / "pip-audit"
+    if not pip_audit_bin.exists():
+        return StepResult(
+            step_id="security",
+            name="Security checks",
+            status="FAIL",
+            reason="pip-audit declared dev dependency missing; run uv sync --extra dev",
+        )
+
+    pip_audit_result = run_command(
+        [str(pip_audit_bin), "--local", "--skip-editable", "-f", "json"], cwd=repo_path
+    )
+
+    # Parse pip-audit results
+    pip_audit_status = "PASS"
+    pip_audit_reason = ""
+    try:
+        audit_data = json.loads(pip_audit_result.stdout)
+        vulnerabilities = audit_data.get("dependencies", [])
+        vuln_list = [dep for dep in vulnerabilities if dep.get("vulns", [])]
+        if vuln_list:
+            pip_audit_status = "FAIL"
+            vuln_count = sum(len(dep["vulns"]) for dep in vuln_list)
+            pkg_names = ", ".join(dep["name"] for dep in vuln_list[:3])
+            pip_audit_reason = f"pip-audit: {vuln_count} vulnerability/ies in {pkg_names}"
+            if len(vuln_list) > 3:
+                pip_audit_reason += f" +{len(vuln_list) - 3} more"
+    except json.JSONDecodeError:
+        # Network or DB error: pip-audit writes errors to stderr with non-zero exit
+        stderr_lower = pip_audit_result.stderr.lower()
+        # Check for connection/network/timeout/DNS/SSL markers
+        if pip_audit_result.returncode != 0 and (
+            "connection" in stderr_lower
+            or "timeout" in stderr_lower
+            or "network" in stderr_lower
+            or "dns" in stderr_lower
+            or "ssl" in stderr_lower
+            or "certificate" in stderr_lower
+        ):
+            pip_audit_status = "INCOMPLETE"
+            # Extract first non-empty stderr line
+            first_stderr_line = next(
+                (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
+                "network/DB error",
+            )
+            pip_audit_reason = f"pip-audit: {first_stderr_line}"
+        else:
+            # Other parse failure
+            pip_audit_status = "FAIL"
+            first_error_line = next(
+                (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
+                "failed to parse output",
+            )
+            pip_audit_reason = f"pip-audit: {first_error_line}"
+
+    duration = (datetime.now(timezone.utc) - start).total_seconds()
+
+    # Combine results: FAIL if either fails, INCOMPLETE if pip-audit incomplete, else PASS
+    if bandit_status == "FAIL" or pip_audit_status == "FAIL":
+        combined_reason = "; ".join(filter(None, [bandit_reason, pip_audit_reason]))
+        return StepResult(
+            step_id="security",
+            name="Security checks",
+            status="FAIL",
+            reason=combined_reason,
             duration_seconds=duration,
+        )
+    elif pip_audit_status == "INCOMPLETE":
+        return StepResult(
+            step_id="security",
+            name="Security checks",
+            status="INCOMPLETE",
+            reason=pip_audit_reason,
+            duration_seconds=duration,
+        )
+    else:
+        return StepResult(
+            step_id="security", name="Security checks", status="PASS", duration_seconds=duration
         )
 
 
@@ -654,6 +723,28 @@ def step_rehearsals(
 # === Main Certification Flow ===
 
 
+def compute_verdict(
+    steps: list[StepResult], *, git_dirty: bool
+) -> Literal["CERTIFIED", "INCOMPLETE", "FAILED"]:
+    """Compute certification verdict from steps and git state.
+
+    Rules:
+    - Any FAIL -> FAILED
+    - Any INCOMPLETE or git_dirty or skipped rehearsals -> INCOMPLETE
+    - Otherwise -> CERTIFIED
+    """
+    has_failures = any(s.status == "FAIL" for s in steps)
+    has_incomplete = any(s.status == "INCOMPLETE" for s in steps)
+    has_skipped_rehearsals = any(s.step_id == "rehearsals" and s.status == "SKIPPED" for s in steps)
+
+    if has_failures:
+        return "FAILED"
+    elif has_incomplete or git_dirty or has_skipped_rehearsals:
+        return "INCOMPLETE"
+    else:
+        return "CERTIFIED"
+
+
 def run_certification(
     repo_path: Path, *, allow_dirty: bool = False, rehearsal_dirs: dict[str, Path] | None = None
 ) -> tuple[CertificationManifest, dict[str, Any]]:
@@ -733,15 +824,7 @@ def run_certification(
     manifest.finished_at = utc_timestamp()
 
     # Determine verdict
-    has_failures = any(s.status == "FAIL" for s in steps)
-    has_skipped_rehearsals = any(s.step_id == "rehearsals" and s.status == "SKIPPED" for s in steps)
-
-    if has_failures:
-        manifest.verdict = "FAILED"
-    elif manifest.git_dirty or has_skipped_rehearsals:
-        manifest.verdict = "INCOMPLETE"
-    else:
-        manifest.verdict = "CERTIFIED"
+    manifest.verdict = compute_verdict(steps, git_dirty=manifest.git_dirty)
 
     # Collect detailed results
     detailed = {"manifest": manifest.to_dict(), "environment": env_snapshot.to_dict()}
