@@ -39,8 +39,9 @@ jobs:
         run: rm -rf evidence evidence_bundle && mkdir -p evidence
 
       # --- Evidence generation ------------------------------------------------
-      # Every producer is decisive: a failed command must stop the job rather than
-      # leaving a plausible-looking partial artifact for the verifier.
+      # Every producer is decisive: a failed command stops the job (bash -euo pipefail).
+      # Producers that write text artifacts (.log, .txt) record explicit RESULT: PASS/FAIL
+      # outcomes. The verifier is fail-closed: missing RESULT: PASS in a text artifact = FAIL.
 
       - name: Run the test suite (G1.x-G3.x evidence)
         run: pytest tests/ -q --junitxml=evidence/pytest_results.xml
@@ -55,20 +56,7 @@ jobs:
         run: python scripts/quickstart.py 2>&1 | tee evidence/quickstart_test.log
 
       - name: Record the committed-credential scan (G5.4 evidence)
-        run: |
-          git ls-files -z | python3 -c '
-          import re, sys
-          allowed = {".env.memory.example"}
-          pattern = re.compile(
-              r"(^|/)(\.env(rc|([._-].*)?)?|[^/]*\.env|.*\.(pem|key|crt|cer|p12|pfx)"
-              r"|id_(rsa|dsa|ecdsa|ed25519))$",
-              re.I,
-          )
-          paths = (p.decode("utf-8", "surrogateescape") for p in sys.stdin.buffer.read().split(b"\0"))
-          blocked = [p for p in paths if p and p not in allowed and pattern.search(p)]
-          print("blocked:", blocked if blocked else "(none)")
-          raise SystemExit(bool(blocked))
-          ' | tee evidence/secrets_scan_results.txt
+        run: python scripts/scan_committed_credentials.py 2>&1 | tee evidence/secrets_scan_results.txt
 
       - name: Build the evidence bundle (G6.3 evidence)
         run: python scripts/evidence_bundle.py --evidence-dir evidence --output-dir evidence_bundle
