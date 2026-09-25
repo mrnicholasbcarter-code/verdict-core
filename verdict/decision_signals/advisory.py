@@ -5,6 +5,9 @@ advise_order() accepts an admitted candidate list and a DecisionSignalSetV1
 (or None) and returns the same candidates in advisory order plus an
 InfluenceRecord.  It never adds, removes, or restores candidates.
 
+AdvisoryRanker wraps advise_order() in an AdaptiveRanker-compatible interface
+so it can be passed as AdvisoryInput.ranker to decision_kernel.decide().
+
 Mode is read from VERDICT_DECISION_SIGNALS_MODE:
   OFF (default) | SHADOW | ADVISORY
 Invalid values are treated as OFF (warning emitted).
@@ -30,6 +33,8 @@ Hard skip conditions (returns baseline unchanged)
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import warnings
@@ -38,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from verdict.decision_signals.contracts import DecisionSignalSetV1
+    from verdict.eligibility import EligibilityResult
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +51,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MIN_CONFIDENCE = 0.6
 _FRONTIER_WORTHY_KEY = "frontier_worthy"
 _COMPLEXITY_KEY = "complexity"
-_ECONOMY_THRESHOLD = 0.4   # both must be < this for "economy"
+_ECONOMY_THRESHOLD = 0.4  # both must be < this for "economy"
 _STRENGTH_THRESHOLD = 0.6  # either must be >= this for "strength"
 
 
@@ -81,7 +87,7 @@ class InfluenceRecord:
     """input_digest from the signal set, or None when no signals used."""
 
 
-def _signals_digest(signals: "DecisionSignalSetV1 | None") -> str | None:
+def _signals_digest(signals: DecisionSignalSetV1 | None) -> str | None:
     if signals is None:
         return None
     return getattr(signals, "input_digest", None)
@@ -89,7 +95,7 @@ def _signals_digest(signals: "DecisionSignalSetV1 | None") -> str | None:
 
 def advise_order(
     candidates: list[Any],
-    signals: "DecisionSignalSetV1 | None",
+    signals: DecisionSignalSetV1 | None,
     *,
     protected: bool = False,
     privacy: str | None = None,
@@ -119,8 +125,10 @@ def advise_order(
         reordered.  influence_record carries the applied/profile/reason.
     """
     baseline_first = getattr(candidates[0], "id", None) if candidates else None
-    cut_confidence = min_confidence if min_confidence is not None else float(
-        os.environ.get("VERDICT_ADVISORY_MIN_CONFIDENCE", str(_DEFAULT_MIN_CONFIDENCE))
+    cut_confidence = (
+        min_confidence
+        if min_confidence is not None
+        else float(os.environ.get("VERDICT_ADVISORY_MIN_CONFIDENCE", str(_DEFAULT_MIN_CONFIDENCE)))
     )
 
     def _skip(reason: str, profile: str = "skipped") -> tuple[list[Any], InfluenceRecord]:
@@ -181,13 +189,12 @@ def advise_order(
 
     # --- reorder ---------------------------------------------------------
     if profile == "economy":
-        # prefer cheapest: lowest capability_tier, then provider priority
-        # (alphabetical as a proxy — provider priority values are caller-owned),
-        # then stable id.
+        # prefer cheapest: HIGHEST capability_tier first (tier-3 is cheaper/weaker
+        # than tier-1), then provider alphabetically, then stable id.
         ordered = sorted(
             candidates,
             key=lambda m: (
-                getattr(m, "capability_tier", 99),
+                -(getattr(m, "capability_tier", 0)),
                 getattr(m, "provider", ""),
                 getattr(m, "id", ""),
             ),
@@ -217,8 +224,65 @@ def advise_order(
     )
 
 
-__all__ = [
-    "InfluenceRecord",
-    "advise_order",
-    "_mode_from_env",
-]
+class AdvisoryRanker:
+    """AdaptiveRanker-compatible wrapper around advise_order().
+
+    Used as AdvisoryInput.ranker in decision_kernel.decide().
+    decide() enforces membership invariance (drops non-admitted ids, re-appends
+    omitted admitted ones), so we only need to return the right order.
+
+    Signals are supplied at construction time (typically already collected by
+    the caller before the kernel call).
+    """
+
+    def __init__(
+        self,
+        signals: DecisionSignalSetV1 | None,
+        *,
+        protected: bool = False,
+        privacy: str | None = None,
+        min_confidence: float | None = None,
+    ) -> None:
+        self._signals = signals
+        self._protected = protected
+        self._privacy = privacy
+        self._min_confidence = min_confidence
+        # Expose a minimal config attribute that decision_kernel reads.
+        from verdict.adaptive_ranker import AdaptiveRankerConfig, CanaryPolicy, RankerMode
+
+        self.config = AdaptiveRankerConfig(
+            mode=RankerMode.SHADOW_ADAPTIVE, canary_policy=CanaryPolicy.DISABLED
+        )
+
+    def rank(self, eligibility_result: EligibilityResult, task_spec: Any) -> Any:
+        """Return a RankerOutput with advisory-reordered admitted candidates."""
+        from verdict.adaptive_ranker import CanaryPolicy, RankerMode, RankerOutput
+
+        admitted = list(eligibility_result.admitted)
+        ordered, influence = advise_order(
+            admitted,
+            self._signals,
+            protected=self._protected,
+            privacy=self._privacy,
+            min_confidence=self._min_confidence,
+        )
+        scores = {getattr(m, "id", ""): 1.0 - i * 0.01 for i, m in enumerate(ordered)}
+        reasoning = {getattr(m, "id", ""): f"advisory_{influence.profile}" for m in ordered}
+        # Compute a stable candidate-set hash for the receipt.
+        ids = sorted(getattr(m, "id", "") for m in admitted)
+        csh = hashlib.sha256(json.dumps(ids).encode()).hexdigest()[:16]
+
+        return RankerOutput(
+            ranked=ordered,
+            scores=scores,
+            reasoning=reasoning,
+            candidate_set_hash=csh,
+            eligibility_hash=csh,
+            mode=RankerMode.SHADOW_ADAPTIVE,
+            shadow=True,
+            version="advisory-ranker/v1",
+            canary_policy=CanaryPolicy.DISABLED,
+        )
+
+
+__all__ = ["AdvisoryRanker", "InfluenceRecord", "_mode_from_env", "advise_order"]
