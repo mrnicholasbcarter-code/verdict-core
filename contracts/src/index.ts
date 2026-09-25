@@ -605,7 +605,7 @@ const executionEnvelopeSchema = z
     schema_version: schemaVersion.default('1'),
     task_spec: taskSpecSchema,
     eligibility_decision: jsonObject,
-    policy_digest: nonEmptyString,
+    policy_digest: z.string().regex(/^[a-f0-9]{64}$/),
     allowed_capabilities: z.array(nonEmptyString),
     execution_constraints: executionEnvelopeConstraintsSchema,
     verification_requirements: verificationPlanSchema,

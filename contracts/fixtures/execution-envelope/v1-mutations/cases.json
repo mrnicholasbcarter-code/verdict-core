@@ -1,0 +1,364 @@
+[
+  {
+    "id": "cons_str",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": "not-a-dict"
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "cons_null",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": null
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "cons_list",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": []
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "noncanon_key",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 5000,
+        "max_request_usd": 1.0,
+        "max_ms": 1000
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "no_expires_at",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "max_latency_ms": 5000,
+        "max_request_usd": 1.0
+      }
+    },
+    "expected_verdict": "EXPIRED"
+  },
+  {
+    "id": "naive_expires",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00",
+        "max_latency_ms": 5000,
+        "max_request_usd": 1.0
+      }
+    },
+    "expected_verdict": "EXPIRED"
+  },
+  {
+    "id": "adm_denied",
+    "base": "accepted.json",
+    "override": {
+      "eligibility_decision": {
+        "admitted": false
+      }
+    },
+    "expected_verdict": "DENY"
+  },
+  {
+    "id": "adm_decision_deny",
+    "base": "accepted.json",
+    "override": {
+      "eligibility_decision": {
+        "admitted": true,
+        "decision": "deny"
+      }
+    },
+    "expected_verdict": "DENY"
+  },
+  {
+    "id": "adm_decision_ACCEPT_upper",
+    "base": "accepted.json",
+    "override": {
+      "eligibility_decision": {
+        "admitted": true,
+        "decision": "ACCEPT"
+      }
+    },
+    "expected_verdict": "DENY"
+  },
+  {
+    "id": "elig_null",
+    "base": "accepted.json",
+    "override": {
+      "eligibility_decision": null
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "elig_admitted_1",
+    "base": "accepted.json",
+    "override": {
+      "eligibility_decision": {
+        "admitted": 1
+      }
+    },
+    "expected_verdict": "DENY"
+  },
+  {
+    "id": "digest_null",
+    "base": "accepted.json",
+    "override": {
+      "policy_digest": null
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "digest_empty",
+    "base": "accepted.json",
+    "override": {
+      "policy_digest": ""
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "digest_other_valid_hex",
+    "base": "accepted.json",
+    "override": {
+      "policy_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "expected_verdict": "DIGEST_MISMATCH"
+  },
+  {
+    "id": "task_spec_list",
+    "base": "accepted.json",
+    "override": {
+      "task_spec": []
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "task_spec_unknown_key",
+    "base": "accepted.json",
+    "override": {
+      "task_spec": {
+        "approvals": [],
+        "budget": {},
+        "capabilities": [],
+        "context": null,
+        "context_requirements": {},
+        "criticality": "unknown",
+        "degraded_mode_policy": "deny",
+        "destructive_operation": false,
+        "effort": "unknown",
+        "latency": null,
+        "latency_limit_ms": null,
+        "metadata": {},
+        "objective": "test execution",
+        "parallelism": "serial",
+        "privacy": "unknown",
+        "production_impact": false,
+        "reasoning": "unknown",
+        "required_capabilities": [],
+        "risk": "unknown",
+        "schema_version": "1",
+        "task_type": "test",
+        "tool_requirements": {},
+        "tools": [],
+        "verification": null,
+        "workflow": null,
+        "unknown_field": "value"
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "task_spec_empty",
+    "base": "accepted.json",
+    "override": {
+      "task_spec": {}
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "verification_list",
+    "base": "accepted.json",
+    "override": {
+      "verification_requirements": []
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "verification_unknown_key",
+    "base": "accepted.json",
+    "override": {
+      "verification_requirements": {
+        "checks": [],
+        "on_failure": "deny",
+        "schema_version": "1",
+        "unknown": "field"
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "caps_str",
+    "base": "accepted.json",
+    "override": {
+      "allowed_capabilities": "read,write"
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "evidence_obj",
+    "base": "accepted.json",
+    "override": {
+      "evidence_ids": {
+        "id": "evidence-001"
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "schema_version_2",
+    "base": "accepted.json",
+    "override": {
+      "schema_version": "2"
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "routing_str",
+    "base": "accepted.json",
+    "override": {
+      "routing_decision": "routed"
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "created_int",
+    "base": "accepted.json",
+    "override": {
+      "created_at": 1234567890
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "extra_top_field",
+    "base": "accepted.json",
+    "override": {
+      "extra_field": "value"
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "budget_negative",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 5000,
+        "max_request_usd": 1.0,
+        "budget_usd": -1
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "risk_bad_enum",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 5000,
+        "max_request_usd": 1.0,
+        "risk_ceiling": "nope"
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "latency_float_fraction",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 5.5,
+        "max_request_usd": 1.0
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "allowed_models_empty_string",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 5000,
+        "max_request_usd": 1.0,
+        "allowed_models": [
+          ""
+        ]
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "digest_not_hex",
+    "base": "accepted.json",
+    "override": {
+      "policy_digest": "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "digest_short_hex",
+    "base": "accepted.json",
+    "override": {
+      "policy_digest": "abc"
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "budget_bool",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 5000,
+        "max_request_usd": 1.0,
+        "budget_usd": true
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "latency_bool",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": false,
+        "max_request_usd": 1.0
+      }
+    },
+    "expected_verdict": "REJECT_UNKNOWN"
+  },
+  {
+    "id": "latency_float_integral",
+    "base": "accepted.json",
+    "override": {
+      "execution_constraints": {
+        "expires_at": "2024-01-15T13:00:00Z",
+        "max_latency_ms": 1.0,
+        "max_request_usd": 1.0
+      }
+    },
+    "expected_verdict": "ACCEPT"
+  }
+]

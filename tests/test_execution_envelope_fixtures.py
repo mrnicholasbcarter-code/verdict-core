@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,6 +15,9 @@ from verdict.contracts import (
 )
 
 FIXTURES_DIR = Path(__file__).parent.parent / "contracts" / "fixtures" / "execution-envelope" / "v1"
+EXECUTION_ENVELOPE_DIR = (
+    Path(__file__).parent.parent / "contracts" / "fixtures" / "execution-envelope"
+)
 MANIFEST_PATH = FIXTURES_DIR / "manifest.json"
 
 
@@ -524,3 +528,68 @@ class TestCanonicalConstraintKeys:
         assert verdict == EnvelopeVerdict.REJECT_UNKNOWN, (
             f"Expected REJECT_UNKNOWN for non-canonical key, got {verdict}"
         )
+
+
+class TestMutationCorpus:
+    """Test the mutation corpus: every case must return its expected verdict."""
+
+    @pytest.fixture(scope="class")
+    def mutation_manifest(self) -> dict[str, Any]:
+        """Load the mutation corpus manifest."""
+        manifest_path = EXECUTION_ENVELOPE_DIR / "v1-mutations" / "manifest.json"
+        with open(manifest_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    @pytest.fixture(scope="class")
+    def mutation_cases(self) -> list[dict[str, Any]]:
+        """Load the mutation corpus cases."""
+        cases_path = EXECUTION_ENVELOPE_DIR / "v1-mutations" / "cases.json"
+        with open(cases_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    @pytest.fixture(scope="class")
+    def base_fixture(self) -> dict[str, Any]:
+        """Load the accepted.json base fixture."""
+        base_path = EXECUTION_ENVELOPE_DIR / "v1" / "accepted.json"
+        with open(base_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_mutation_corpus_integrity(
+        self, mutation_manifest: dict[str, Any], mutation_cases: list[dict[str, Any]]
+    ) -> None:
+        """Verify the manifest digest matches the cases file."""
+        cases_path = EXECUTION_ENVELOPE_DIR / "v1-mutations" / "cases.json"
+        cases_bytes = cases_path.read_bytes()
+        actual_digest = f"sha256:{hashlib.sha256(cases_bytes).hexdigest()}"
+        assert actual_digest == mutation_manifest["cases_digest"], (
+            f"Manifest digest mismatch: expected {mutation_manifest['cases_digest']}, "
+            f"got {actual_digest}"
+        )
+
+    def test_mutation_cases_verdict(
+        self,
+        mutation_manifest: dict[str, Any],
+        mutation_cases: list[dict[str, Any]],
+        base_fixture: dict[str, Any],
+    ) -> None:
+        """Every mutation case must return its expected_verdict."""
+        now = mutation_manifest["evaluation_time"]
+        expected_policy_digest = mutation_manifest["expected_policy_digest"]
+
+        for case in mutation_cases:
+            case_id = case["id"]
+            override = case["override"]
+            expected_verdict_str = case["expected_verdict"]
+            expected_verdict = EnvelopeVerdict[expected_verdict_str]
+
+            # Apply the override to the base fixture
+            mutated_envelope = {**base_fixture, **override}
+
+            # Verify the verdict
+            actual_verdict = verify_execution_envelope(
+                mutated_envelope, now=now, expected_policy_digest=expected_policy_digest
+            )
+
+            assert actual_verdict == expected_verdict, (
+                f"Case {case_id}: expected {expected_verdict}, got {actual_verdict}"
+            )
