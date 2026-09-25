@@ -1,0 +1,47 @@
+{
+  "selected_route": {
+    "runtime_id": "fixture/runtime-a",
+    "provider": "fixture",
+    "model": "runtime-a",
+    "decision": "selected"
+  },
+  "task_spec": {
+    "objective": "prove envelope rejection parity",
+    "task_type": "codegen"
+  },
+  "policy_version": "1",
+  "schema_version": "1",
+  "execution_envelope": {
+    "task_spec": {
+      "objective": "prove envelope rejection parity",
+      "task_type": "codegen"
+    },
+    "eligibility_decision": {
+      "admitted": [
+        "runtime-a"
+      ],
+      "reason": "test"
+    },
+    "policy_digest": "NOT_A_VALID_DIGEST",
+    "allowed_capabilities": [
+      "chat"
+    ],
+    "execution_constraints": {
+      "allowed_models": [
+        "runtime-a"
+      ],
+      "allowed_tools": [],
+      "allowed_agents": [],
+      "required_verification": []
+    },
+    "verification_requirements": {
+      "checks": [],
+      "on_failure": "deny",
+      "schema_version": "1"
+    },
+    "evidence_ids": [
+      "evidence-parity-bad"
+    ],
+    "schema_version": "1"
+  }
+}

@@ -1,0 +1,225 @@
+{
+  "AvailabilitySnapshot": {
+    "candidates": {
+      "required": false
+    },
+    "expires_at": {
+      "required": false
+    },
+    "observed_at": {
+      "required": true
+    },
+    "schema_version": {
+      "required": false
+    },
+    "signals": {
+      "required": false
+    },
+    "source": {
+      "required": false
+    },
+    "state": {
+      "required": false
+    },
+    "ttl_seconds": {
+      "required": false
+    }
+  },
+  "ExecutionEnvelope": {
+    "allowed_capabilities": {
+      "required": true
+    },
+    "created_at": {
+      "required": false
+    },
+    "eligibility_decision": {
+      "required": true
+    },
+    "evidence_ids": {
+      "required": true
+    },
+    "execution_constraints": {
+      "required": true
+    },
+    "policy_digest": {
+      "required": true
+    },
+    "routing_decision": {
+      "required": false
+    },
+    "schema_version": {
+      "required": false
+    },
+    "task_spec": {
+      "required": true
+    },
+    "verification_requirements": {
+      "required": true
+    }
+  },
+  "RoutingDecision": {
+    "adaptive_influence": {
+      "required": false
+    },
+    "candidate_snapshot": {
+      "required": false
+    },
+    "correlation_id": {
+      "required": false
+    },
+    "decision_id": {
+      "required": false
+    },
+    "exclusions": {
+      "required": false
+    },
+    "execution_envelope": {
+      "required": false
+    },
+    "explanation": {
+      "required": false
+    },
+    "fallback_plan": {
+      "required": false
+    },
+    "planner_mode": {
+      "required": false
+    },
+    "policy_floor": {
+      "required": false
+    },
+    "policy_version": {
+      "required": false
+    },
+    "receipt": {
+      "required": false
+    },
+    "request_id": {
+      "required": false
+    },
+    "schema_version": {
+      "required": false
+    },
+    "selected_route": {
+      "required": true
+    },
+    "task_spec": {
+      "required": false
+    }
+  },
+  "RuntimeCandidate": {
+    "availability": {
+      "required": true
+    },
+    "capabilities": {
+      "required": false
+    },
+    "catalog_present": {
+      "required": true
+    },
+    "context_window": {
+      "required": false
+    },
+    "live_eligible": {
+      "required": true
+    },
+    "max_output_tokens": {
+      "required": false
+    },
+    "model": {
+      "required": false
+    },
+    "model_version": {
+      "required": false
+    },
+    "provider": {
+      "required": false
+    },
+    "runtime_id": {
+      "required": true
+    },
+    "schema_version": {
+      "required": false
+    },
+    "signals": {
+      "required": true
+    }
+  },
+  "TaskSpec": {
+    "approvals": {
+      "required": false
+    },
+    "budget": {
+      "required": false
+    },
+    "capabilities": {
+      "required": false
+    },
+    "context": {
+      "required": false
+    },
+    "context_requirements": {
+      "required": false
+    },
+    "criticality": {
+      "required": false
+    },
+    "degraded_mode_policy": {
+      "required": false
+    },
+    "destructive_operation": {
+      "required": false
+    },
+    "effort": {
+      "required": false
+    },
+    "latency": {
+      "required": false
+    },
+    "latency_limit_ms": {
+      "required": false
+    },
+    "metadata": {
+      "required": false
+    },
+    "objective": {
+      "required": true
+    },
+    "parallelism": {
+      "required": false
+    },
+    "privacy": {
+      "required": false
+    },
+    "production_impact": {
+      "required": false
+    },
+    "reasoning": {
+      "required": false
+    },
+    "required_capabilities": {
+      "required": false
+    },
+    "risk": {
+      "required": false
+    },
+    "schema_version": {
+      "required": false
+    },
+    "task_type": {
+      "required": true
+    },
+    "tool_requirements": {
+      "required": false
+    },
+    "tools": {
+      "required": false
+    },
+    "verification": {
+      "required": false
+    },
+    "workflow": {
+      "required": false
+    }
+  }
+}

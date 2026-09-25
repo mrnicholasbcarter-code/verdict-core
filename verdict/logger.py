@@ -49,6 +49,10 @@ def log_decision(
             "transport_outcome": decision.transport_outcome,
             "quality_outcome": decision.quality_outcome,
             "quality_score": decision.quality_score,
+            "estimated_cost_usd": decision.estimated_cost_usd,
+            "actual_cost_usd": decision.actual_cost_usd,
+            "fallback_result": decision.fallback_result,
+            "verification_result": decision.verification_result,
         }
         if decision.admit_receipt:
             record["admit_receipt"] = decision.admit_receipt

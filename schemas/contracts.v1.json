@@ -687,6 +687,10 @@
             "object",
             "null"
           ]
+        },
+        "execution_envelope": {
+          "$ref": "#/$defs/execution_envelope",
+          "description": "ADR-025: execution envelope forwarded to verdict-node; absent when not yet populated"
         }
       }
     },
