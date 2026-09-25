@@ -66,7 +66,7 @@ jobs:
           cp PRIVACY_POLICY.md evidence/PRIVACY_POLICY.md
 
       - name: Set up Node.js (needed for G4.2, G4.3, G4.4)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -77,10 +77,12 @@ jobs:
         run: python scripts/produce_parity_evidence.py --evidence-dir evidence
 
       - name: Check out verdict-node forwarder suite (G4.4 evidence)
+        # Pinned to the exact commit of verdict-node PR #82 (ci/forwarder-junit).
+        # Move this to the released tag once BOD-233 ships.
         uses: actions/checkout@v7
         with:
           repository: mrnicholasbcarter-code/verdict-node
-          ref: ci/forwarder-junit
+          ref: bf073d34c2cb20280cd20be12891fad0c2fbd3fd
           path: verdict-node
 
       - name: Install verdict-node dependencies and local contracts (G4.4 evidence)
