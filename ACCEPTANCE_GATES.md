@@ -98,15 +98,20 @@ The pipeline is producers, then report, then verify:
 | `scripts/generate_gates_report.py --evidence-dir evidence` | `gates_status.json`, `notes/`, `derived/` | all |
 | `scripts/verify_gates.py --evidence-dir evidence --json` | the pass/fail decision | all |
 
-Every producer step is `continue-on-error: true` on purpose. A missing artifact
-is exactly what the verifier exists to report; letting a crashed producer abort
-the job would turn "no evidence" into "no answer". The report and verify steps
-are not advisory, so a non-passing gate fails the run.
+Every producer step runs with `bash -euo pipefail` and NO `continue-on-error`.
+A failed producer (exit != 0) stops the job immediately, preventing the verifier
+from running. This is strict but honest: a crashed producer means something is
+broken, not just "no evidence". The "Upload the evidence" step has `if: always()`
+so partial evidence is preserved even when a producer fails.
+
+The report and verify steps are not advisory. The verifier fails the run when
+any gate is not PASS.
 
 `scripts/generate_gates_report.py` decides each gate from evidence alone. A
 test-backed gate passes only when the named test is present in the JUnit report
 and every matching case passed; an artifact-backed gate passes only when its
-named file is a real regular file in the evidence directory; a derived gate
+named file is a real regular file in the evidence directory and (for text
+artifacts like .log, .txt) contains an explicit `RESULT: PASS` line; a derived gate
 (G4.1, G5.3, G6.4, G7.4) passes only when the repository content it inspects
 satisfies the documented condition. Everything else is `BLOCKED` (no evidence)
 or `FAIL` (evidence present and negative). It never upgrades a missing

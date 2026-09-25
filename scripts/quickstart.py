@@ -43,9 +43,10 @@ def main():
             pip = venv_path / "bin" / "pip"
             python = venv_path / "bin" / "python"
 
-        # Step 1: Install in development mode with server extras
-        print("\n📦 Installing verdict-core in development mode with server extras...")
-        run(f"{pip} install -e {repo_root}[server] --quiet")
+        # Step 1: Install in development mode with server extras and test dependencies
+        print("\n📦 Installing verdict-core with server extras and test dependencies...")
+        # Install [server,dev] to get pytest, pytest-asyncio, jsonschema needed by tests
+        run(f"{pip} install -e {repo_root}[server,dev] --quiet")
 
         # Step 2: Run flagship demo (credential-free)
         print("\n🎯 Running flagship demo (no credentials required)...")
@@ -134,7 +135,13 @@ print(json.dumps(resp.json(), indent=2))
     print("  - Try: python -m verdict route --help")
     print("  - Start API: python -m verdict serve")
     print("  - Explore: python scripts/flagship_demo.py")
+    print("\nRESULT: PASS")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as e:
+        if e.code != 0:
+            print(f"\nRESULT: FAIL (exit {e.code})")
+        raise
