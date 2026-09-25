@@ -461,14 +461,13 @@ def test_environment_capture_with_missing_tools():
 def test_step_security_bandit_missing():
     """Test that missing bandit (declared dev dep) results in FAIL, not SKIPPED."""
     from pathlib import Path
-    from unittest.mock import MagicMock
-    
+
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
-    
+
     # Simulate bandit binary not existing
     result = certify_release.step_security(repo_path, venv_bin)
-    
+
     assert result.status == "FAIL"
     assert "bandit declared dev dependency missing" in result.reason
     assert "uv sync --extra dev" in result.reason
@@ -476,26 +475,23 @@ def test_step_security_bandit_missing():
 
 def test_step_security_bandit_only_low_findings_passes():
     """Test that bandit with only LOW findings (filtered by -ll) passes."""
+    import json
     from pathlib import Path
     from unittest.mock import MagicMock, patch
-    import json
-    
+
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
-    
-    bandit_output = json.dumps({
-        "results": [
-            {"issue_severity": "LOW", "issue_text": "some low issue"}
-        ]
-    })
-    
-    pip_audit_output = json.dumps({
-        "dependencies": []
-    })
-    
+
+    bandit_output = json.dumps(
+        {"results": [{"issue_severity": "LOW", "issue_text": "some low issue"}]}
+    )
+
+    pip_audit_output = json.dumps({"dependencies": []})
+
     with patch("certify_release.Path.exists") as mock_exists:
         mock_exists.return_value = True
         with patch("certify_release.run_command") as mock_run:
+
             def run_side_effect(cmd, **kwargs):
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
@@ -505,35 +501,32 @@ def test_step_security_bandit_only_low_findings_passes():
                     mock_result.stdout = pip_audit_output
                     mock_result.returncode = 0
                 return mock_result
-            
+
             mock_run.side_effect = run_side_effect
             result = certify_release.step_security(repo_path, venv_bin)
-    
+
     assert result.status == "PASS"
 
 
 def test_step_security_bandit_medium_finding_fails():
     """Test that one MEDIUM bandit finding causes FAIL."""
+    import json
     from pathlib import Path
     from unittest.mock import MagicMock, patch
-    import json
-    
+
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
-    
-    bandit_output = json.dumps({
-        "results": [
-            {"issue_severity": "MEDIUM", "issue_text": "potential security issue"}
-        ]
-    })
-    
-    pip_audit_output = json.dumps({
-        "dependencies": []
-    })
-    
+
+    bandit_output = json.dumps(
+        {"results": [{"issue_severity": "MEDIUM", "issue_text": "potential security issue"}]}
+    )
+
+    pip_audit_output = json.dumps({"dependencies": []})
+
     with patch("certify_release.Path.exists") as mock_exists:
         mock_exists.return_value = True
         with patch("certify_release.run_command") as mock_run:
+
             def run_side_effect(cmd, **kwargs):
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
@@ -543,10 +536,10 @@ def test_step_security_bandit_medium_finding_fails():
                     mock_result.stdout = pip_audit_output
                     mock_result.returncode = 0
                 return mock_result
-            
+
             mock_run.side_effect = run_side_effect
             result = certify_release.step_security(repo_path, venv_bin)
-    
+
     assert result.status == "FAIL"
     assert "bandit:" in result.reason
     assert "medium+" in result.reason.lower()
@@ -554,32 +547,31 @@ def test_step_security_bandit_medium_finding_fails():
 
 def test_step_security_pip_audit_vulnerability_fails():
     """Test that pip-audit finding a vulnerability causes FAIL."""
+    import json
     from pathlib import Path
     from unittest.mock import MagicMock, patch
-    import json
-    
+
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
-    
-    bandit_output = json.dumps({
-        "results": []
-    })
-    
-    pip_audit_output = json.dumps({
-        "dependencies": [
-            {
-                "name": "vulnerable-package",
-                "version": "1.0.0",
-                "vulns": [
-                    {"id": "CVE-2023-12345", "description": "Bad vulnerability"}
-                ]
-            }
-        ]
-    })
-    
+
+    bandit_output = json.dumps({"results": []})
+
+    pip_audit_output = json.dumps(
+        {
+            "dependencies": [
+                {
+                    "name": "vulnerable-package",
+                    "version": "1.0.0",
+                    "vulns": [{"id": "CVE-2023-12345", "description": "Bad vulnerability"}],
+                }
+            ]
+        }
+    )
+
     with patch("certify_release.Path.exists") as mock_exists:
         mock_exists.return_value = True
         with patch("certify_release.run_command") as mock_run:
+
             def run_side_effect(cmd, **kwargs):
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
@@ -589,10 +581,10 @@ def test_step_security_pip_audit_vulnerability_fails():
                     mock_result.stdout = pip_audit_output
                     mock_result.returncode = 0
                 return mock_result
-            
+
             mock_run.side_effect = run_side_effect
             result = certify_release.step_security(repo_path, venv_bin)
-    
+
     assert result.status == "FAIL"
     assert "pip-audit:" in result.reason
     assert "vulnerability" in result.reason.lower()
@@ -600,23 +592,22 @@ def test_step_security_pip_audit_vulnerability_fails():
 
 def test_step_security_pip_audit_network_error_incomplete():
     """Test that pip-audit network/DB error results in INCOMPLETE."""
+    import json
     from pathlib import Path
     from unittest.mock import MagicMock, patch
-    import json
-    
+
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
-    
-    bandit_output = json.dumps({
-        "results": []
-    })
-    
+
+    bandit_output = json.dumps({"results": []})
+
     # Simulate network error (non-JSON output)
     pip_audit_error_output = "Error: Failed to connect to vulnerability database"
-    
+
     with patch("certify_release.Path.exists") as mock_exists:
         mock_exists.return_value = True
         with patch("certify_release.run_command") as mock_run:
+
             def run_side_effect(cmd, **kwargs):
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
@@ -626,10 +617,10 @@ def test_step_security_pip_audit_network_error_incomplete():
                     mock_result.stdout = pip_audit_error_output
                     mock_result.returncode = 1
                 return mock_result
-            
+
             mock_run.side_effect = run_side_effect
             result = certify_release.step_security(repo_path, venv_bin)
-    
+
     assert result.status == "INCOMPLETE"
     assert "pip-audit:" in result.reason
     assert "network" in result.reason.lower() or "DB" in result.reason
@@ -637,19 +628,20 @@ def test_step_security_pip_audit_network_error_incomplete():
 
 def test_step_security_uses_correct_bandit_arguments():
     """Test that step_security calls bandit with -c pyproject.toml and -ll."""
+    import json
     from pathlib import Path
     from unittest.mock import MagicMock, patch
-    import json
-    
+
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
-    
+
     bandit_output = json.dumps({"results": []})
     pip_audit_output = json.dumps({"dependencies": []})
-    
+
     with patch("certify_release.Path.exists") as mock_exists:
         mock_exists.return_value = True
         with patch("certify_release.run_command") as mock_run:
+
             def run_side_effect(cmd, **kwargs):
                 # Validate bandit command arguments
                 if "bandit" in str(cmd[0]):
@@ -662,7 +654,7 @@ def test_step_security_uses_correct_bandit_arguments():
                     assert "verdict" in cmd_str
                     assert "-f" in cmd_str
                     assert "json" in cmd_str
-                
+
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
                     mock_result.stdout = bandit_output
@@ -670,28 +662,28 @@ def test_step_security_uses_correct_bandit_arguments():
                     mock_result.stdout = pip_audit_output
                 mock_result.returncode = 0
                 return mock_result
-            
+
             mock_run.side_effect = run_side_effect
             result = certify_release.step_security(repo_path, venv_bin)
-    
+
     assert result.status == "PASS"
 
 
 def test_step_security_pip_audit_missing():
     """Test that missing pip-audit (declared dev dep) results in FAIL."""
+    import json
     from pathlib import Path
     from unittest.mock import MagicMock, patch
-    import json
-    
+
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
-    
+
     bandit_output = json.dumps({"results": []})
-    
+
     # We'll mock Path.exists to return False for pip-audit, True for bandit
     # The trick is to make it instance-aware
     original_exists = Path.exists
-    
+
     def custom_exists(self):
         if "pip-audit" in str(self):
             return False
@@ -699,11 +691,13 @@ def test_step_security_pip_audit_missing():
             return True
         # Fall back to original for safety
         return original_exists(self)
-    
-    with patch.object(Path, "exists", custom_exists):
-        with patch("certify_release.run_command") as mock_run:
-            mock_run.return_value = MagicMock(stdout=bandit_output, returncode=0)
-            result = certify_release.step_security(repo_path, venv_bin)
-    
+
+    with (
+        patch.object(Path, "exists", custom_exists),
+        patch("certify_release.run_command") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(stdout=bandit_output, returncode=0)
+        result = certify_release.step_security(repo_path, venv_bin)
+
     assert result.status == "FAIL"
     assert "pip-audit declared dev dependency missing" in result.reason

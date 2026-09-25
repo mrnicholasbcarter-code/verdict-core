@@ -478,7 +478,7 @@ def step_package_smoke(repo_path: Path) -> StepResult:
 
 def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
     """Run bandit (SAST) and pip-audit (dependency CVE scan).
-    
+
     bandit is a declared dev dependency; missing binary -> FAIL.
     Runs with -c pyproject.toml -r verdict -ll (medium+ severity).
     pip-audit scans local packages; vulnerabilities -> FAIL, network/DB error -> INCOMPLETE.
@@ -508,7 +508,8 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
         bandit_data = json.loads(bandit_result.stdout)
         # -ll filters to medium+; count findings at that severity
         medium_plus = [
-            r for r in bandit_data.get("results", [])
+            r
+            for r in bandit_data.get("results", [])
             if r.get("issue_severity", "").upper() in ("MEDIUM", "HIGH")
         ]
         if medium_plus:
@@ -529,8 +530,7 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
         )
 
     pip_audit_result = run_command(
-        [str(pip_audit_bin), "--local", "--skip-editable", "-f", "json"],
-        cwd=repo_path,
+        [str(pip_audit_bin), "--local", "--skip-editable", "-f", "json"], cwd=repo_path
     )
 
     # Parse pip-audit results
@@ -539,10 +539,7 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
     try:
         audit_data = json.loads(pip_audit_result.stdout)
         vulnerabilities = audit_data.get("dependencies", [])
-        vuln_list = [
-            dep for dep in vulnerabilities
-            if dep.get("vulns", [])
-        ]
+        vuln_list = [dep for dep in vulnerabilities if dep.get("vulns", [])]
         if vuln_list:
             pip_audit_status = "FAIL"
             vuln_count = sum(len(dep["vulns"]) for dep in vuln_list)
@@ -552,9 +549,14 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
                 pip_audit_reason += f" +{len(vuln_list) - 3} more"
     except json.JSONDecodeError:
         # Network or DB error typically causes non-JSON output
-        if "error" in pip_audit_result.stdout.lower() or "failed" in pip_audit_result.stdout.lower():
+        if (
+            "error" in pip_audit_result.stdout.lower()
+            or "failed" in pip_audit_result.stdout.lower()
+        ):
             pip_audit_status = "INCOMPLETE"
-            pip_audit_reason = "pip-audit: network/DB error (check offline mode or service availability)"
+            pip_audit_reason = (
+                "pip-audit: network/DB error (check offline mode or service availability)"
+            )
         else:
             pip_audit_status = "FAIL"
             pip_audit_reason = "pip-audit: failed to parse output"
@@ -581,10 +583,7 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
         )
     else:
         return StepResult(
-            step_id="security",
-            name="Security checks",
-            status="PASS",
-            duration_seconds=duration,
+            step_id="security", name="Security checks", status="PASS", duration_seconds=duration
         )
 
 

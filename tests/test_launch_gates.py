@@ -7,8 +7,14 @@ def test_security_workflow_has_non_advisory_audits_and_secret_hygiene_gate():
     workflow = Path(".github/workflows/security.yml").read_text()
     ci_workflow = Path(".github/workflows/ci.yml").read_text()
     assert "- name: Run pip-audit\n        run: uv run pip-audit --local" in workflow
-    assert "- name: Run bandit\n        run: uv run bandit -c pyproject.toml -r verdict -ll" in workflow
-    assert "- name: Run Bandit Security Check\n        run: uv run bandit -c pyproject.toml -r verdict -ll" in ci_workflow
+    assert (
+        "- name: Run bandit\n        run: uv run bandit -c pyproject.toml -r verdict -ll"
+        in workflow
+    )
+    assert (
+        "- name: Run Bandit Security Check\n        run: uv run bandit -c pyproject.toml -r verdict -ll"
+        in ci_workflow
+    )
     assert (
         "- name: Run dependency audit\n        run: uv run pip-audit --local --skip-editable"
         in ci_workflow
