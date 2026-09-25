@@ -182,8 +182,11 @@ def step_test_clean_shell(repo_path: Path, venv_bin: Path) -> StepResult:
         "PATH": str(venv_bin) + ":" + os.environ.get("PATH", ""),
     }
 
-    # Run pytest with junit-xml output
-    junit_path = repo_path / "test-results-clean.xml"
+    # Run pytest with junit-xml output (in temp location)
+    import tempfile
+    junit_fd, junit_path_str = tempfile.mkstemp(suffix="-clean.xml", prefix="junit-")
+    os.close(junit_fd)  # Close the file descriptor, pytest will write to the path
+    junit_path = Path(junit_path_str)
     result = run_command(
         [str(venv_bin / "pytest"), f"--junitxml={junit_path}"],
         cwd=repo_path,
@@ -240,7 +243,10 @@ def step_test_dirty_shell(repo_path: Path, venv_bin: Path) -> StepResult:
     dirty_env = os.environ.copy()
     dirty_env["LLMGATE_AUTH_TOKEN"] = "bogus-cert-dirty"
 
-    junit_path = repo_path / "test-results-dirty.xml"
+    import tempfile
+    junit_fd, junit_path_str = tempfile.mkstemp(suffix="-dirty.xml", prefix="junit-")
+    os.close(junit_fd)
+    junit_path = Path(junit_path_str)
     result = run_command(
         [str(venv_bin / "pytest"), f"--junitxml={junit_path}"],
         cwd=repo_path,
