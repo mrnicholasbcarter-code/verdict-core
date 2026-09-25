@@ -548,18 +548,32 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
             if len(vuln_list) > 3:
                 pip_audit_reason += f" +{len(vuln_list) - 3} more"
     except json.JSONDecodeError:
-        # Network or DB error typically causes non-JSON output
-        if (
-            "error" in pip_audit_result.stdout.lower()
-            or "failed" in pip_audit_result.stdout.lower()
+        # Network or DB error: pip-audit writes errors to stderr with non-zero exit
+        stderr_lower = pip_audit_result.stderr.lower()
+        # Check for connection/network/timeout/DNS/SSL markers
+        if pip_audit_result.returncode != 0 and (
+            "connection" in stderr_lower
+            or "timeout" in stderr_lower
+            or "network" in stderr_lower
+            or "dns" in stderr_lower
+            or "ssl" in stderr_lower
+            or "certificate" in stderr_lower
         ):
             pip_audit_status = "INCOMPLETE"
-            pip_audit_reason = (
-                "pip-audit: network/DB error (check offline mode or service availability)"
+            # Extract first non-empty stderr line
+            first_stderr_line = next(
+                (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
+                "network/DB error",
             )
+            pip_audit_reason = f"pip-audit: {first_stderr_line}"
         else:
+            # Other parse failure
             pip_audit_status = "FAIL"
-            pip_audit_reason = "pip-audit: failed to parse output"
+            first_error_line = next(
+                (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
+                "failed to parse output",
+            )
+            pip_audit_reason = f"pip-audit: {first_error_line}"
 
     duration = (datetime.now(timezone.utc) - start).total_seconds()
 
@@ -789,11 +803,12 @@ def run_certification(
 
     # Determine verdict
     has_failures = any(s.status == "FAIL" for s in steps)
+    has_incomplete = any(s.status == "INCOMPLETE" for s in steps)
     has_skipped_rehearsals = any(s.step_id == "rehearsals" and s.status == "SKIPPED" for s in steps)
 
     if has_failures:
         manifest.verdict = "FAILED"
-    elif manifest.git_dirty or has_skipped_rehearsals:
+    elif has_incomplete or manifest.git_dirty or has_skipped_rehearsals:
         manifest.verdict = "INCOMPLETE"
     else:
         manifest.verdict = "CERTIFIED"

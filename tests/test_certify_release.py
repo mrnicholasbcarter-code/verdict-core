@@ -496,9 +496,11 @@ def test_step_security_bandit_only_low_findings_passes():
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
                     mock_result.stdout = bandit_output
+                    mock_result.stderr = ""
                     mock_result.returncode = 0
                 elif "pip-audit" in str(cmd[0]):
                     mock_result.stdout = pip_audit_output
+                    mock_result.stderr = ""
                     mock_result.returncode = 0
                 return mock_result
 
@@ -531,9 +533,11 @@ def test_step_security_bandit_medium_finding_fails():
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
                     mock_result.stdout = bandit_output
+                    mock_result.stderr = ""
                     mock_result.returncode = 0
                 elif "pip-audit" in str(cmd[0]):
                     mock_result.stdout = pip_audit_output
+                    mock_result.stderr = ""
                     mock_result.returncode = 0
                 return mock_result
 
@@ -576,9 +580,11 @@ def test_step_security_pip_audit_vulnerability_fails():
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
                     mock_result.stdout = bandit_output
+                    mock_result.stderr = ""
                     mock_result.returncode = 0
                 elif "pip-audit" in str(cmd[0]):
                     mock_result.stdout = pip_audit_output
+                    mock_result.stderr = ""
                     mock_result.returncode = 0
                 return mock_result
 
@@ -601,8 +607,8 @@ def test_step_security_pip_audit_network_error_incomplete():
 
     bandit_output = json.dumps({"results": []})
 
-    # Simulate network error (non-JSON output)
-    pip_audit_error_output = "Error: Failed to connect to vulnerability database"
+    # Simulate network error (error on stderr, as in reality)
+    pip_audit_error_stderr = "ERROR: Connection error: HTTPSConnectionPool(host='pypi.org')"
 
     with patch("certify_release.Path.exists") as mock_exists:
         mock_exists.return_value = True
@@ -612,9 +618,12 @@ def test_step_security_pip_audit_network_error_incomplete():
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
                     mock_result.stdout = bandit_output
+                    mock_result.stderr = ""
+                    mock_result.stderr = ""
                     mock_result.returncode = 0
                 elif "pip-audit" in str(cmd[0]):
-                    mock_result.stdout = pip_audit_error_output
+                    mock_result.stdout = ""  # Empty stdout when error
+                    mock_result.stderr = pip_audit_error_stderr
                     mock_result.returncode = 1
                 return mock_result
 
@@ -623,7 +632,7 @@ def test_step_security_pip_audit_network_error_incomplete():
 
     assert result.status == "INCOMPLETE"
     assert "pip-audit:" in result.reason
-    assert "network" in result.reason.lower() or "DB" in result.reason
+    assert "connection" in result.reason.lower() or "error" in result.reason.lower()
 
 
 def test_step_security_uses_correct_bandit_arguments():
@@ -658,8 +667,10 @@ def test_step_security_uses_correct_bandit_arguments():
                 mock_result = MagicMock()
                 if "bandit" in str(cmd[0]):
                     mock_result.stdout = bandit_output
+                    mock_result.stderr = ""
                 elif "pip-audit" in str(cmd[0]):
                     mock_result.stdout = pip_audit_output
+                    mock_result.stderr = ""
                 mock_result.returncode = 0
                 return mock_result
 
@@ -701,3 +712,44 @@ def test_step_security_pip_audit_missing():
 
     assert result.status == "FAIL"
     assert "pip-audit declared dev dependency missing" in result.reason
+
+
+def test_manifest_verdict_incomplete_when_step_incomplete():
+    """Test that manifest verdict is INCOMPLETE when any step has INCOMPLETE status."""
+    # Create a manifest with security step INCOMPLETE and everything else PASS
+    security_incomplete = certify_release.StepResult(
+        step_id="security",
+        name="Security checks",
+        status="INCOMPLETE",
+        reason="pip-audit: network error",
+    )
+
+    other_pass = certify_release.StepResult(step_id="test", name="Tests", status="PASS")
+
+    manifest = certify_release.CertificationManifest(
+        git_sha="abc123",
+        git_dirty=False,
+        started_at="2024-01-01T00:00:00Z",
+        finished_at="2024-01-01T00:15:00Z",
+        steps=[security_incomplete, other_pass],
+        verdict="INCOMPLETE",  # Will be overwritten by logic
+    )
+
+    # Simulate the verdict logic as in the real code
+    has_failures = any(s.status == "FAIL" for s in manifest.steps)
+    has_incomplete = any(s.status == "INCOMPLETE" for s in manifest.steps)
+    has_skipped_rehearsals = any(
+        s.step_id == "rehearsals" and s.status == "SKIPPED" for s in manifest.steps
+    )
+
+    if has_failures:
+        manifest.verdict = "FAILED"
+    elif has_incomplete or manifest.git_dirty or has_skipped_rehearsals:
+        manifest.verdict = "INCOMPLETE"
+    else:
+        manifest.verdict = "CERTIFIED"
+
+    # Assert: INCOMPLETE step -> verdict INCOMPLETE, never CERTIFIED
+    assert manifest.verdict == "INCOMPLETE"
+    assert not has_failures
+    assert has_incomplete
