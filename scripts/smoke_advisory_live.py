@@ -18,26 +18,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Mode must be set before importing intelligence (factory reads it at init)
-assert os.environ.get("VERDICT_DECISION_SIGNALS_MODE") == "ADVISORY", (
-    "Must run with VERDICT_DECISION_SIGNALS_MODE=ADVISORY"
+EVIDENCE_PATH = (
+    Path.home() / ".verdict" / "evidence" / "bod191" / "bod238" / "advisory-live-20260925.json"
 )
 
-from verdict.decision_signals.factory import provider_from_env
-from verdict.intelligence import IntelligenceService
-from verdict.models import ProviderConfig
-
-EVIDENCE_PATH = Path.home() / ".verdict" / "evidence" / "bod191" / "bod238" / "advisory-live-20260925.json"
-
 TASKS = [
-    {
-        "label": "trivial",
-        "task": "Write a hello world function in Python.",
-        "criticality": "low",
-    },
+    {"label": "trivial", "task": "Write a hello world function in Python.", "criticality": "low"},
     {
         "label": "hard",
-        "task": "Design a distributed consensus protocol for a multi-region database with Byzantine fault tolerance.",
+        "task": (
+            "Design a distributed consensus protocol for a multi-region database "
+            "with Byzantine fault tolerance."
+        ),
         "criticality": "high",
     },
     {
@@ -48,27 +40,42 @@ TASKS = [
 ]
 
 
-def _make_svc(provider: Any) -> IntelligenceService:
+def _check_env() -> None:
+    mode = os.environ.get("VERDICT_DECISION_SIGNALS_MODE")
+    assert mode == "ADVISORY", f"Must run with VERDICT_DECISION_SIGNALS_MODE=ADVISORY, got {mode!r}"
+
+
+def _make_counting_provider(wrapped: Any) -> tuple[Any, list[int]]:
+    call_count: list[int] = [0]
+
+    class _CountingProvider:
+        def signals(self, question: Any, *, now: Any) -> Any:
+            call_count[0] += 1
+            return wrapped.signals(question, now=now)
+
+    return _CountingProvider(), call_count
+
+
+def _make_svc(provider: Any) -> Any:
+    import verdict.intelligence as _vi
+    from verdict.intelligence import IntelligenceService
+    from verdict.models import ProviderConfig
+
     models = {
         "gpt-4o": type(
-            "MC",
-            (),
-            {"capabilities": [], "max_tokens": 8192, "cost_per_1k": 0.005, "pricing": {}},
+            "MC", (), {"capabilities": [], "max_tokens": 8192, "cost_per_1k": 0.005, "pricing": {}}
         )(),
         "gpt-3.5-turbo": type(
-            "MC",
-            (),
-            {"capabilities": [], "max_tokens": 4096, "cost_per_1k": 0.0005, "pricing": {}},
+            "MC", (), {"capabilities": [], "max_tokens": 4096, "cost_per_1k": 0.0005, "pricing": {}}
         )(),
     }
     providers = {
-        "openai": ProviderConfig(api_key="sk-fake-key-for-static-catalog", models=models, priority=1)
+        "openai": ProviderConfig(
+            api_key="sk-fake-key-for-static-catalog", models=models, priority=1
+        )
     }
-    import verdict.intelligence as _vi
-
     orig_classify = _vi.classify
-    _vi.classify = lambda mid: 1 if "4o" in mid else 3
-
+    _vi.classify = lambda mid: 1 if "4o" in mid else 3  # type: ignore[assignment]
     svc = IntelligenceService(
         primary_model="gpt-4o",
         providers=providers,
@@ -84,12 +91,20 @@ def _make_svc(provider: Any) -> IntelligenceService:
 
 
 async def main() -> None:
-    provider = provider_from_env()
-    if provider is None:
-        print("ERROR: provider_from_env() returned None. Check TYPESAFE_API_KEY and mode.", file=sys.stderr)
+    _check_env()
+
+    import verdict.intelligence as _vi
+    from verdict.decision_signals.factory import provider_from_env
+
+    base_provider = provider_from_env()
+    if base_provider is None:
+        print(
+            "ERROR: provider_from_env() returned None. Check TYPESAFE_API_KEY and mode.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print(f"Provider: {type(provider).__name__}", file=sys.stderr)
+    print(f"Provider: {type(base_provider).__name__}", file=sys.stderr)
     print(f"Mode: {os.environ.get('VERDICT_DECISION_SIGNALS_MODE')}", file=sys.stderr)
 
     evidence_entries = []
@@ -99,26 +114,11 @@ async def main() -> None:
         task_str = task_def["task"]
         crit = task_def["criticality"]
 
-        # Track whether provider was called for this task
-        call_count = [0]
-        original_signals = getattr(provider, "signals", None)
-
-        class CountingProvider:
-            def __init__(self, wrapped: Any) -> None:
-                self._wrapped = wrapped
-
-            def signals(self, question: Any, *, now: Any) -> Any:
-                call_count[0] += 1
-                return self._wrapped.signals(question, now=now)
-
-        counting = CountingProvider(provider)
+        counting, call_count = _make_counting_provider(base_provider)
         svc = _make_svc(counting)
 
-        import verdict.intelligence as _vi
-
         orig_classify = _vi.classify
-        _vi.classify = lambda mid: 1 if "4o" in mid else 3
-
+        _vi.classify = lambda mid: 1 if "4o" in mid else 3  # type: ignore[assignment]
         try:
             dec = await svc.route(task_str, criticality=crit)
         finally:
@@ -127,7 +127,6 @@ async def main() -> None:
         flags = list(dec.safety_flags or [])
         advisory_flags = [f for f in flags if "advisory" in f]
 
-        # Build key-free evidence dict
         entry: dict[str, Any] = {
             "label": label,
             "task_summary": task_str[:80],
@@ -143,43 +142,44 @@ async def main() -> None:
             "baseline_vs_advised": None,
         }
 
-        # Extract signals digest and profile from flags
         for f in advisory_flags:
-            if f.startswith("advisory:") and not f.startswith("advisory:skipped") and not f.startswith("advisory_baseline"):
+            if (
+                f.startswith("advisory:")
+                and not f.startswith("advisory:skipped")
+                and not f.startswith("advisory_baseline")
+            ):
                 entry["profile"] = f.replace("advisory:", "")
             if f.startswith("advisory_baseline:"):
                 entry["baseline_vs_advised"] = f.replace("advisory_baseline:", "")
 
-        print(f"[{label}] model={dec.model} protected={dec.protected} provider_called={entry['provider_called']} flags={advisory_flags}", file=sys.stderr)
+        print(
+            f"[{label}] model={dec.model} protected={dec.protected} "
+            f"provider_called={entry['provider_called']} flags={advisory_flags}",
+            file=sys.stderr,
+        )
 
         evidence_entries.append(entry)
 
-    # Validate: protected task must NOT have called provider
     protected = next(e for e in evidence_entries if e["label"] == "protected")
     if protected["provider_called"]:
         print("FAIL: protected task called the provider!", file=sys.stderr)
         sys.exit(1)
 
-    # Save evidence
     EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
     evidence = {
         "schema": "advisory-live-evidence/v1",
         "mode": os.environ.get("VERDICT_DECISION_SIGNALS_MODE"),
-        "provider_type": type(provider).__name__,
+        "provider_type": type(base_provider).__name__,
         "timeout_ms": int(os.environ.get("VERDICT_DECISION_SIGNALS_TIMEOUT_MS", "5000")),
         "tasks": evidence_entries,
     }
 
-    # Ensure no keys leak: mask TYPESAFE_ values
-    evidence_json = json.dumps(evidence, indent=2)
-    # Paranoia check: bail if any long token-like string appears
     with open(EVIDENCE_PATH, "w") as f:
-        f.write(evidence_json)
+        f.write(json.dumps(evidence, indent=2))
 
     print(f"Evidence saved to {EVIDENCE_PATH}", file=sys.stderr)
-    print(evidence_json)
+    print(json.dumps(evidence, indent=2))
 
-    # Final check
     assert not protected["provider_called"], "protected task must not call provider"
     print("PASS: protected task was never sent to provider.", file=sys.stderr)
 
