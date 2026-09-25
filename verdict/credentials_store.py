@@ -27,7 +27,7 @@ class CredentialsStore:
                 config_dir = Path(xdg_config) / "verdict"
             else:
                 config_dir = Path.home() / ".config" / "verdict"
-        
+
         self.config_dir = config_dir
         self.store_path = config_dir / "credentials.env"
 
@@ -48,61 +48,61 @@ class CredentialsStore:
 
     def _check_file_permissions(self) -> tuple[bool, str]:
         """Check if store file has secure permissions.
-        
+
         Returns:
             (is_secure, error_message_or_empty)
         """
         if not self.store_path.exists():
             return True, ""
-        
+
         file_stat = self.store_path.stat()
         mode = file_stat.st_mode
-        
+
         # Check group and world permissions
         if mode & (stat.S_IRWXG | stat.S_IRWXO):
             return False, (
                 f"Credential store has insecure permissions: {oct(stat.S_IMODE(mode))}\n"
                 f"Fix with: chmod 0600 {self.store_path}"
             )
-        
+
         return True, ""
 
     def load(self) -> dict[str, str]:
         """Load credentials from store file.
-        
+
         Returns dict of env_name -> value.
         Refuses to load if permissions are insecure.
         """
         if not self.store_path.exists():
             return {}
-        
+
         is_secure, error_msg = self._check_file_permissions()
         if not is_secure:
             raise PermissionError(error_msg)
-        
+
         credentials = {}
-        with open(self.store_path, "r") as f:
-            for line_num, line in enumerate(f, start=1):
+        with open(self.store_path) as f:
+            for _line_num, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                
+
                 if "=" not in line:
                     # Skip malformed lines
                     continue
-                
+
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip()
-                
+
                 if key:
                     credentials[key] = value
-        
+
         return credentials
 
     def load_into_env(self) -> None:
         """Load credentials into os.environ, only for unset names.
-        
+
         Exported env vars always win over stored values.
         """
         stored = self.load()
@@ -112,11 +112,11 @@ class CredentialsStore:
 
     def set(self, env_name: str, value: str) -> None:
         """Set a credential in the store.
-        
+
         Uses atomic write via temp file + os.replace.
         """
         self._ensure_secure_dir()
-        
+
         # Load existing
         existing = {}
         if self.store_path.exists():
@@ -124,26 +124,23 @@ class CredentialsStore:
             if not is_secure:
                 raise PermissionError(error_msg)
             existing = self.load()
-        
+
         # Update
         existing[env_name] = value
-        
+
         # Write atomically
         old_umask = os.umask(0o077)
         try:
             with tempfile.NamedTemporaryFile(
-                mode="w",
-                dir=self.config_dir,
-                delete=False,
-                prefix=".credentials.env.",
+                mode="w", dir=self.config_dir, delete=False, prefix=".credentials.env."
             ) as tmp:
                 tmp_path = Path(tmp.name)
                 for key in sorted(existing.keys()):
                     tmp.write(f"{key}={existing[key]}\n")
-            
+
             # Ensure temp file has 0600
             tmp_path.chmod(0o600)
-            
+
             # Atomic replace
             tmp_path.replace(self.store_path)
         finally:
@@ -151,51 +148,48 @@ class CredentialsStore:
 
     def unset(self, env_name: str) -> bool:
         """Remove a credential from the store.
-        
+
         Returns True if it was present and removed.
         """
         if not self.store_path.exists():
             return False
-        
+
         is_secure, error_msg = self._check_file_permissions()
         if not is_secure:
             raise PermissionError(error_msg)
-        
+
         existing = self.load()
         if env_name not in existing:
             return False
-        
+
         del existing[env_name]
-        
+
         if not existing:
             # Remove empty file
             self.store_path.unlink()
             return True
-        
+
         # Write remaining credentials
         self._ensure_secure_dir()
         old_umask = os.umask(0o077)
         try:
             with tempfile.NamedTemporaryFile(
-                mode="w",
-                dir=self.config_dir,
-                delete=False,
-                prefix=".credentials.env.",
+                mode="w", dir=self.config_dir, delete=False, prefix=".credentials.env."
             ) as tmp:
                 tmp_path = Path(tmp.name)
                 for key in sorted(existing.keys()):
                     tmp.write(f"{key}={existing[key]}\n")
-            
+
             tmp_path.chmod(0o600)
             tmp_path.replace(self.store_path)
         finally:
             os.umask(old_umask)
-        
+
         return True
 
     def list_credentials(self) -> dict[str, str]:
         """List all credentials in the store.
-        
+
         Returns dict of env_name -> value.
         """
         if not self.store_path.exists():
@@ -205,7 +199,7 @@ class CredentialsStore:
 
 def get_credential_source(env_name: str, store: CredentialsStore | None = None) -> tuple[str, str]:
     """Determine where a credential comes from.
-    
+
     Returns:
         (source, masked_value) where source is "env", "store", or "missing"
     """
@@ -213,18 +207,18 @@ def get_credential_source(env_name: str, store: CredentialsStore | None = None) 
     env_value = os.environ.get(env_name)
     if env_value:
         return "env", _mask_value(env_value)
-    
+
     # Check store
     if store is None:
         store = CredentialsStore()
-    
+
     try:
         stored = store.load()
         if env_name in stored:
             return "store", _mask_value(stored[env_name])
     except PermissionError:
         pass
-    
+
     return "missing", ""
 
 

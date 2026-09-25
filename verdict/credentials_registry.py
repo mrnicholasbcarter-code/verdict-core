@@ -18,8 +18,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -236,7 +236,7 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         optional=True,
         live_check=None,
     ),
-    # Legacy names – being renamed to TYPESAFE_* by BOD-235 (parallel PR, not yet merged)
+    # Legacy names - being renamed to TYPESAFE_* by BOD-235 (parallel PR, not yet merged)
     CredentialSpec(
         env_name="OPENJEV_API_KEY",
         purpose="OpenJev decision signals API key (legacy name; use TYPESAFE_API_KEY after BOD-235)",
@@ -280,9 +280,7 @@ def _check_gh_cli() -> tuple[bool, str | None]:
     if not gh_path:
         return False, None
     try:
-        result = subprocess.run(
-            ["gh", "--version"], capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["gh", "--version"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             lines = result.stdout.strip().split("\n")
             if lines:
@@ -301,9 +299,7 @@ def _check_node() -> tuple[bool, str | None]:
     if not node_path:
         return False, None
     try:
-        result = subprocess.run(
-            ["node", "--version"], capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             version = result.stdout.strip().lstrip("v")
             return True, version
@@ -318,9 +314,7 @@ def _check_npm() -> tuple[bool, str | None]:
     if not npm_path:
         return False, None
     try:
-        result = subprocess.run(
-            ["npm", "--version"], capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["npm", "--version"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             return True, result.stdout.strip()
         return True, None
@@ -378,16 +372,8 @@ DEPENDENCIES: tuple[DependencySpec, ...] = (
         install_command="See https://cli.github.com/manual/installation",
         check=_check_gh_cli,
     ),
-    DependencySpec(
-        name="node",
-        install_command="See https://nodejs.org/",
-        check=_check_node,
-    ),
-    DependencySpec(
-        name="npm",
-        install_command="Bundled with Node.js",
-        check=_check_npm,
-    ),
+    DependencySpec(name="node", install_command="See https://nodejs.org/", check=_check_node),
+    DependencySpec(name="npm", install_command="Bundled with Node.js", check=_check_npm),
     DependencySpec(
         name="@bodanglin/verdict-client",
         install_command="npm install -g @bodanglin/verdict-client",
