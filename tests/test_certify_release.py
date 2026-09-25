@@ -44,6 +44,39 @@ def temp_git_repo():
         yield repo
 
 
+def fake_run_writing(
+    bandit_json: str, audit_json: str | None, audit_rc: int = 0, audit_stderr: str = ""
+):
+    """Helper to create a fake run_command that writes JSON to -o files."""
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    def side_effect(cmd, **kwargs):
+        # Write to -o file if specified
+        for i, arg in enumerate(cmd):
+            if arg == "-o" and i + 1 < len(cmd):
+                output_file = Path(cmd[i + 1])
+                if "bandit" in str(cmd[0]):
+                    output_file.write_text(bandit_json)
+                elif "pip-audit" in str(cmd[0]) and audit_json is not None:
+                    output_file.write_text(audit_json)
+                break
+
+        # Return appropriate result
+        result = MagicMock()
+        result.stdout = ""
+        result.returncode = 0
+        result.stderr = ""
+
+        if "pip-audit" in str(cmd[0]):
+            result.returncode = audit_rc
+            result.stderr = audit_stderr
+
+        return result
+
+    return side_effect
+
+
 def test_git_sha_extraction(temp_git_repo):
     """Test that git SHA is extracted correctly."""
     sha = certify_release.get_git_sha(temp_git_repo)
@@ -476,36 +509,30 @@ def test_step_security_bandit_missing():
 def test_step_security_bandit_only_low_findings_passes():
     """Test that bandit with only LOW findings (filtered by -ll) passes."""
     import json
+    import tempfile
     from pathlib import Path
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
 
-    bandit_output = json.dumps(
+    bandit_json = json.dumps(
         {"results": [{"issue_severity": "LOW", "issue_text": "some low issue"}]}
     )
+    audit_json = json.dumps({"dependencies": []})
 
-    pip_audit_output = json.dumps({"dependencies": []})
-
-    with patch("certify_release.Path.exists") as mock_exists:
-        mock_exists.return_value = True
-        with patch("certify_release.run_command") as mock_run:
-
-            def run_side_effect(cmd, **kwargs):
-                mock_result = MagicMock()
-                if "bandit" in str(cmd[0]):
-                    mock_result.stdout = bandit_output
-                    mock_result.stderr = ""
-                    mock_result.returncode = 0
-                elif "pip-audit" in str(cmd[0]):
-                    mock_result.stdout = pip_audit_output
-                    mock_result.stderr = ""
-                    mock_result.returncode = 0
-                return mock_result
-
-            mock_run.side_effect = run_side_effect
-            result = certify_release.step_security(repo_path, venv_bin)
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("certify_release.Path.exists", return_value=True),
+        patch(
+            "certify_release.tempfile.TemporaryDirectory",
+            return_value=type(
+                "MockTempDir", (), {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None}
+            )(),
+        ),
+        patch("certify_release.run_command", side_effect=fake_run_writing(bandit_json, audit_json)),
+    ):
+        result = certify_release.step_security(repo_path, venv_bin)
 
     assert result.status == "PASS"
 
@@ -513,36 +540,30 @@ def test_step_security_bandit_only_low_findings_passes():
 def test_step_security_bandit_medium_finding_fails():
     """Test that one MEDIUM bandit finding causes FAIL."""
     import json
+    import tempfile
     from pathlib import Path
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
 
-    bandit_output = json.dumps(
+    bandit_json = json.dumps(
         {"results": [{"issue_severity": "MEDIUM", "issue_text": "potential security issue"}]}
     )
+    audit_json = json.dumps({"dependencies": []})
 
-    pip_audit_output = json.dumps({"dependencies": []})
-
-    with patch("certify_release.Path.exists") as mock_exists:
-        mock_exists.return_value = True
-        with patch("certify_release.run_command") as mock_run:
-
-            def run_side_effect(cmd, **kwargs):
-                mock_result = MagicMock()
-                if "bandit" in str(cmd[0]):
-                    mock_result.stdout = bandit_output
-                    mock_result.stderr = ""
-                    mock_result.returncode = 0
-                elif "pip-audit" in str(cmd[0]):
-                    mock_result.stdout = pip_audit_output
-                    mock_result.stderr = ""
-                    mock_result.returncode = 0
-                return mock_result
-
-            mock_run.side_effect = run_side_effect
-            result = certify_release.step_security(repo_path, venv_bin)
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("certify_release.Path.exists", return_value=True),
+        patch(
+            "certify_release.tempfile.TemporaryDirectory",
+            return_value=type(
+                "MockTempDir", (), {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None}
+            )(),
+        ),
+        patch("certify_release.run_command", side_effect=fake_run_writing(bandit_json, audit_json)),
+    ):
+        result = certify_release.step_security(repo_path, venv_bin)
 
     assert result.status == "FAIL"
     assert "bandit:" in result.reason
@@ -552,15 +573,15 @@ def test_step_security_bandit_medium_finding_fails():
 def test_step_security_pip_audit_vulnerability_fails():
     """Test that pip-audit finding a vulnerability causes FAIL."""
     import json
+    import tempfile
     from pathlib import Path
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
 
-    bandit_output = json.dumps({"results": []})
-
-    pip_audit_output = json.dumps(
+    bandit_json = json.dumps({"results": []})
+    audit_json = json.dumps(
         {
             "dependencies": [
                 {
@@ -572,24 +593,18 @@ def test_step_security_pip_audit_vulnerability_fails():
         }
     )
 
-    with patch("certify_release.Path.exists") as mock_exists:
-        mock_exists.return_value = True
-        with patch("certify_release.run_command") as mock_run:
-
-            def run_side_effect(cmd, **kwargs):
-                mock_result = MagicMock()
-                if "bandit" in str(cmd[0]):
-                    mock_result.stdout = bandit_output
-                    mock_result.stderr = ""
-                    mock_result.returncode = 0
-                elif "pip-audit" in str(cmd[0]):
-                    mock_result.stdout = pip_audit_output
-                    mock_result.stderr = ""
-                    mock_result.returncode = 0
-                return mock_result
-
-            mock_run.side_effect = run_side_effect
-            result = certify_release.step_security(repo_path, venv_bin)
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("certify_release.Path.exists", return_value=True),
+        patch(
+            "certify_release.tempfile.TemporaryDirectory",
+            return_value=type(
+                "MockTempDir", (), {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None}
+            )(),
+        ),
+        patch("certify_release.run_command", side_effect=fake_run_writing(bandit_json, audit_json)),
+    ):
+        result = certify_release.step_security(repo_path, venv_bin)
 
     assert result.status == "FAIL"
     assert "pip-audit:" in result.reason
@@ -599,35 +614,43 @@ def test_step_security_pip_audit_vulnerability_fails():
 def test_step_security_pip_audit_network_error_incomplete():
     """Test that pip-audit network/DB error results in INCOMPLETE."""
     import json
+    import tempfile
     from pathlib import Path
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
 
-    bandit_output = json.dumps({"results": []})
+    bandit_json = json.dumps({"results": []})
+    # pip-audit: None means don't write file (network error)
+    audit_stderr = "ERROR: Connection error: HTTPSConnectionPool(host='pypi.org')"
 
-    # Simulate network error (error on stderr, as in reality)
-    pip_audit_error_stderr = "ERROR: Connection error: HTTPSConnectionPool(host='pypi.org')"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        original_exists = Path.exists
 
-    with patch("certify_release.Path.exists") as mock_exists:
-        mock_exists.return_value = True
-        with patch("certify_release.run_command") as mock_run:
+        def smart_exists(self):
+            # Check actual filesystem for files in tmpdir
+            if str(self).startswith(str(tmpdir_path)):
+                return original_exists.__get__(self, Path)()
+            # Binaries exist
+            return True
 
-            def run_side_effect(cmd, **kwargs):
-                mock_result = MagicMock()
-                if "bandit" in str(cmd[0]):
-                    mock_result.stdout = bandit_output
-                    mock_result.stderr = ""
-                    mock_result.stderr = ""
-                    mock_result.returncode = 0
-                elif "pip-audit" in str(cmd[0]):
-                    mock_result.stdout = ""  # Empty stdout when error
-                    mock_result.stderr = pip_audit_error_stderr
-                    mock_result.returncode = 1
-                return mock_result
-
-            mock_run.side_effect = run_side_effect
+        with (
+            patch.object(Path, "exists", smart_exists),
+            patch(
+                "certify_release.tempfile.TemporaryDirectory",
+                return_value=type(
+                    "MockTempDir",
+                    (),
+                    {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None},
+                )(),
+            ),
+            patch(
+                "certify_release.run_command",
+                side_effect=fake_run_writing(bandit_json, None, 1, audit_stderr),
+            ),
+        ):
             result = certify_release.step_security(repo_path, venv_bin)
 
     assert result.status == "INCOMPLETE"
@@ -636,46 +659,55 @@ def test_step_security_pip_audit_network_error_incomplete():
 
 
 def test_step_security_uses_correct_bandit_arguments():
-    """Test that step_security calls bandit with -c pyproject.toml and -ll."""
+    """Test that step_security calls bandit with -q -o and -c pyproject.toml -ll."""
     import json
+    import tempfile
     from pathlib import Path
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
 
-    bandit_output = json.dumps({"results": []})
-    pip_audit_output = json.dumps({"dependencies": []})
+    bandit_json = json.dumps({"results": []})
+    audit_json = json.dumps({"dependencies": []})
 
-    with patch("certify_release.Path.exists") as mock_exists:
-        mock_exists.return_value = True
-        with patch("certify_release.run_command") as mock_run:
+    captured_commands = []
 
-            def run_side_effect(cmd, **kwargs):
-                # Validate bandit command arguments
-                if "bandit" in str(cmd[0]):
-                    # Assert the exact argv includes -c pyproject.toml and -ll
-                    cmd_str = " ".join(str(c) for c in cmd)
-                    assert "-c" in cmd_str
-                    assert "pyproject.toml" in cmd_str
-                    assert "-ll" in cmd_str
-                    assert "-r" in cmd_str
-                    assert "verdict" in cmd_str
-                    assert "-f" in cmd_str
-                    assert "json" in cmd_str
+    def capture_and_write(bandit_json, audit_json):
+        def side_effect(cmd, **kwargs):
+            captured_commands.append(cmd)
+            return fake_run_writing(bandit_json, audit_json)(cmd, **kwargs)
 
-                mock_result = MagicMock()
-                if "bandit" in str(cmd[0]):
-                    mock_result.stdout = bandit_output
-                    mock_result.stderr = ""
-                elif "pip-audit" in str(cmd[0]):
-                    mock_result.stdout = pip_audit_output
-                    mock_result.stderr = ""
-                mock_result.returncode = 0
-                return mock_result
+        return side_effect
 
-            mock_run.side_effect = run_side_effect
-            result = certify_release.step_security(repo_path, venv_bin)
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("certify_release.Path.exists", return_value=True),
+        patch(
+            "certify_release.tempfile.TemporaryDirectory",
+            return_value=type(
+                "MockTempDir", (), {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None}
+            )(),
+        ),
+        patch(
+            "certify_release.run_command", side_effect=capture_and_write(bandit_json, audit_json)
+        ),
+    ):
+        result = certify_release.step_security(repo_path, venv_bin)
+
+    # Find the bandit command
+    bandit_cmd = next(cmd for cmd in captured_commands if "bandit" in str(cmd[0]))
+    cmd_str = " ".join(str(c) for c in bandit_cmd)
+
+    assert "-q" in cmd_str, "bandit should use -q to suppress progress bar"
+    assert "-o" in cmd_str, "bandit should use -o to write to file"
+    assert "-c" in cmd_str
+    assert "pyproject.toml" in cmd_str
+    assert "-ll" in cmd_str
+    assert "-r" in cmd_str
+    assert "verdict" in cmd_str
+    assert "-f" in cmd_str
+    assert "json" in cmd_str
 
     assert result.status == "PASS"
 
@@ -683,35 +715,84 @@ def test_step_security_uses_correct_bandit_arguments():
 def test_step_security_pip_audit_missing():
     """Test that missing pip-audit (declared dev dep) results in FAIL."""
     import json
+    import tempfile
     from pathlib import Path
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     repo_path = Path("/fake/repo")
     venv_bin = Path("/fake/venv/bin")
 
-    bandit_output = json.dumps({"results": []})
-
-    # We'll mock Path.exists to return False for pip-audit, True for bandit
-    # The trick is to make it instance-aware
-    original_exists = Path.exists
+    bandit_json = json.dumps({"results": []})
 
     def custom_exists(self):
-        if "pip-audit" in str(self):
-            return False
-        elif "bandit" in str(self):
-            return True
-        # Fall back to original for safety
-        return original_exists(self)
+        # pip-audit binary doesn't exist
+        return not ("pip-audit" in str(self) and str(self).endswith("pip-audit"))
 
     with (
+        tempfile.TemporaryDirectory() as tmpdir,
         patch.object(Path, "exists", custom_exists),
-        patch("certify_release.run_command") as mock_run,
+        patch(
+            "certify_release.tempfile.TemporaryDirectory",
+            return_value=type(
+                "MockTempDir", (), {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None}
+            )(),
+        ),
+        patch("certify_release.run_command", side_effect=fake_run_writing(bandit_json, None)),
     ):
-        mock_run.return_value = MagicMock(stdout=bandit_output, returncode=0)
         result = certify_release.step_security(repo_path, venv_bin)
 
     assert result.status == "FAIL"
     assert "pip-audit declared dev dependency missing" in result.reason
+
+
+def test_step_security_bandit_unmocked_integration():
+    """UNMOCKED integration test: run real bandit on temp packages with clean/bad code."""
+    import tempfile
+    from pathlib import Path
+
+    # Skip if bandit binary is missing
+    venv_bin = Path.cwd() / ".venv" / "bin"
+    bandit_bin = venv_bin / "bandit"
+    if not bandit_bin.exists():
+        pytest.skip("bandit binary not found in .venv/bin")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_repo = Path(tmpdir)
+
+        # Create minimal pyproject.toml
+        (temp_repo / "pyproject.toml").write_text("""
+[tool.bandit]
+exclude_dirs = []
+""")
+
+        # Create verdict dir with clean code
+        (temp_repo / "verdict").mkdir()
+        (temp_repo / "verdict" / "__init__.py").write_text("")
+        (temp_repo / "verdict" / "safe.py").write_text("""
+def hello():
+    return "Hello, world!"
+""")
+
+        result_clean = certify_release.step_security(temp_repo, venv_bin)
+        assert result_clean.status == "PASS", f"Clean code should pass: {result_clean.reason}"
+
+        # Add file with security issue
+        bad_file = temp_repo / "verdict" / "unsafe.py"
+        bad_file.write_text("""
+import subprocess
+
+def run_command(user_input):
+    subprocess.call(user_input, shell=True)  # Bandit flags this
+
+def evaluate_code(code):
+    return eval(code)  # Bandit flags this
+""")
+
+        result_bad = certify_release.step_security(temp_repo, venv_bin)
+        assert result_bad.status == "FAIL", "Code with security issues should fail"
+        assert "medium+" in result_bad.reason.lower() or "finding" in result_bad.reason.lower(), (
+            f"Expected finding message, got: {result_bad.reason}"
+        )
 
 
 def test_compute_verdict_incomplete_when_step_incomplete():
