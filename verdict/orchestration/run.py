@@ -25,7 +25,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+
+# BOD-199: SHADOW decision signals (import only for type checking)
+from typing import TYPE_CHECKING, Any
 
 from verdict.orchestration.contracts import (
     FailureClassifier,
@@ -41,6 +43,9 @@ from verdict.orchestration.contracts import (
     route_provider,
 )
 from verdict.orchestration.planner import FrontierPlanner, hydrate_node_prompt
+
+if TYPE_CHECKING:
+    from verdict.decision_signals.contracts import DecisionSignalProvider
 from verdict.orchestration.receipt import (
     GRAPH_FILE,
     EventLog,
@@ -182,6 +187,7 @@ async def plan_with_failover(
     constraints: str = "",
     max_parallel: int = 3,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    decision_signal_provider: DecisionSignalProvider | None = None,
 ) -> WorkGraph:
     """Frontier decomposition with the same controller-model failover as workers.
 
@@ -192,6 +198,32 @@ async def plan_with_failover(
     is selected dynamically. Nothing waits on the exhausted model.
     """
     from verdict.orchestration.planner import PlanningExecutorError
+
+    # BOD-199: SHADOW decision signal collection (before planning loop)
+    decision_signals_data: dict[str, Any] | None = None
+    decision_signals_emitted = False  # BOD-199: emit at most once
+    if decision_signal_provider is not None:
+        # Import at call time (not at module load)
+        from verdict.decision_signals.shadow import should_collect_signals
+
+        if should_collect_signals():
+            try:
+                # Import contracts at call time
+                from verdict.decision_signals.contracts import DecisionQuestionV1
+
+                question = DecisionQuestionV1(
+                    purpose="frontier_planning",
+                    task_summary=goal[:500],  # Truncate for digest stability
+                    complexity_hints={
+                        "max_parallel": max_parallel,
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+                signal_set = decision_signal_provider.signals(question, now=now())
+                decision_signals_data = signal_set.to_dict()
+            except Exception:
+                # Provider that raises must never break planning
+                pass
 
     tried: set[str] = set()
     last = ""
@@ -275,6 +307,29 @@ async def plan_with_failover(
                 graph.rationale,
                 min(max_parallel, graph.max_parallel),
             )
+        # BOD-199: emit decision_signals event if collected (SHADOW mode, at most once)
+        # Wrapped in try/except: no SHADOW bookkeeping failure can affect planning outcome
+        if decision_signals_data is not None and not decision_signals_emitted:
+            try:
+                events.emit(
+                    "decision_signals",
+                    mode="SHADOW",
+                    signals=decision_signals_data,
+                    actual_decision={
+                        "frontier_planner_invoked": True,
+                        "route_id": choice.route_id,
+                        "provider": choice.provider,
+                        "capacity_class": choice.capacity_class.value,
+                    },
+                )
+                decision_signals_emitted = True
+            except Exception as exc:
+                # SHADOW emit failure: log and continue (planning outcome unaffected)
+                import warnings
+
+                warnings.warn(
+                    f"BOD-199 SHADOW: decision_signals event emission failed: {exc}", stacklevel=2
+                )
         return graph
     raise OrchestrationError(
         f"planning failed on every eligible frontier model; last: {last or 'none eligible'}"
@@ -347,6 +402,7 @@ async def run_golden_path(
     summary: Callable[[], Mapping[str, Any]] | None = None,
     inflight: dict[str, str] | None = None,
     openspec_change_dir: Path | None = None,
+    decision_signal_provider: DecisionSignalProvider | None = None,
 ) -> GoldenRunResult:
     run_dir = load_or_create_run(runs_root, run_id)
     log = EventLog(run_dir / "events.jsonl")
@@ -507,6 +563,7 @@ async def run_golden_path(
                 events=events,
                 constraints=constraints,
                 max_parallel=policy.max_parallel,
+                decision_signal_provider=decision_signal_provider,
             )
     except OrchestrationError as exc:
         events.emit("run_finished", outcome=RunOutcome.BLOCKED.value, reason=str(exc)[:500])

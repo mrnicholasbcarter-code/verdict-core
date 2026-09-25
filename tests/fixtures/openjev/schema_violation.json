@@ -1,0 +1,9 @@
+{
+  "provider": "openjev",
+  "model": "system-one",
+  "request_id": "test-violation-001",
+  "signals": {
+    "frontier_worthy": 0.5
+  },
+  "confidence": 0.75
+}

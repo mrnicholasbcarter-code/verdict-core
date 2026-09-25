@@ -1,0 +1,22 @@
+{
+  "provider": "openjev",
+  "model": "system-one",
+  "version": "1.0.0",
+  "request_id": "test-confident-001",
+  "signals": {
+    "complexity": 0.72,
+    "decomposability": 0.85,
+    "ambiguity": 0.15,
+    "frontier_worthy": 0.95,
+    "security_sensitive": 0.12,
+    "verification_strength": 0.88,
+    "context_need": 0.65
+  },
+  "confidence": 0.98,
+  "latency_ms": 145,
+  "usage": {
+    "input_tokens": 250,
+    "output_tokens": 50
+  },
+  "observed_at": "2026-09-25T10:00:00Z"
+}
