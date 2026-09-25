@@ -122,7 +122,7 @@ class HttpxJsonTransport:
             raise ModelMetadataError(f"metadata host is not allowlisted: {host}")
         headers = {
             "Accept": "application/json",
-            "User-Agent": "verdict-core/0.2.0 (BOD-108 metadata)",
+            "User-Agent": "verdict-core/0.3.0 (BOD-108 metadata)",
         }
         with httpx.Client(
             transport=self._transport, timeout=self.timeout, follow_redirects=False

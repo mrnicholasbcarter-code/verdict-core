@@ -1,4 +1,4 @@
-name: Publish @verdict/contracts to npm
+name: Validate @bodanglin/verdict-contracts package
 
 on:
   workflow_dispatch:
@@ -12,13 +12,22 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          registry-url: https://registry.npmjs.org
       - name: Install dependencies
         run: npm ci --workspaces
       - name: Build TypeScript contracts
         run: cd contracts && npm run build
       - name: Run TypeScript contract tests
         run: cd contracts && npm test
+      - name: Run consumer smoke test
+        run: cd contracts && npm run consumer:smoke
+      - name: Check version not already published
+        run: |
+          VERSION=$(node -p "require('./contracts/package.json').version")
+          if npm view @bodanglin/verdict-contracts@$VERSION version 2>/dev/null; then
+            echo "Error: version $VERSION is already published on npm"
+            exit 1
+          fi
+          echo "Version $VERSION is not yet published ✓"
       - name: Verify package contents
         run: cd contracts && npm pack --dry-run
       - name: Upload package artifacts

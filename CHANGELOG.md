@@ -7,9 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-25
+
 ### Added
-- Core model metadata store (BOD-108): models.dev + LiteLLM fetchers, explicit OmniRoute map, `verdict metadata refresh|show|lookup`.
-- Architect-locked Codex harness CLI: `verdict harness codex enable|disable|status`.
+- ExecutionEnvelope v1 contract with Zod/TypeScript/Python parity (#602, #603, #604)
+- Canonical test fixtures with sha256-pinned manifests and mutation corpus for validation parity
+- Release version certifier and governance enforcement (#605, #612, #613)
+- Strict typing enforcement and coverage floor requirements (#606)
+- OpenSpec lifecycle management (#607)
+- Codiv candidate implementation (#608)
+- OpenJev SHADOW integration (#609, #610)
+- Route identity tracking in execution receipts (#611)
+- Core model metadata store (BOD-108): models.dev + LiteLLM fetchers, explicit OmniRoute map, `verdict metadata refresh|show|lookup`
+- Architect-locked Codex harness CLI: `verdict harness codex enable|disable|status`
+
+### Changed
+- Package versions synchronized to 0.3.0 across verdict-core, @bodanglin/verdict-contracts, and @bodanglin/verdict-client
 
 ## [0.2.0] - 2026-08-22
 

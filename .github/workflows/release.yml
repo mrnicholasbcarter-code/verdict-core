@@ -140,6 +140,8 @@ jobs:
           path: provenance-evidence.json
           retention-days: 30
 
+      - name: Run consumer smoke test
+        run: cd contracts && npm run consumer:smoke
       - name: Build npm release assets
         run: |
           npm pack --workspace @bodanglin/verdict-contracts --pack-destination release-assets
