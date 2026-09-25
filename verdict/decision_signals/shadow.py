@@ -1,4 +1,4 @@
-"""SHADOW mode integration helpers (BOD-199)."""
+"""SHADOW mode integration helpers (BOD-235)."""
 
 from __future__ import annotations
 
@@ -14,25 +14,36 @@ from verdict.decision_signals.openjev import OpenJevSystemOneProvider
 
 logger = logging.getLogger(__name__)
 
+# Modes that enable signal collection.
+_COLLECT_MODES = frozenset({"SHADOW", "ADVISORY"})
 
-def should_collect_signals() -> bool:
-    """Check if decision signal collection is enabled.
+
+def get_signals_mode() -> str:
+    """Return the normalised VERDICT_DECISION_SIGNALS_MODE value.
 
     Returns:
-        True if mode is SHADOW, False otherwise (including OFF and invalid values)
+        "OFF", "SHADOW", or "ADVISORY".  Invalid values -> "OFF" with a warning.
     """
-    mode = os.environ.get("VERDICT_DECISION_SIGNALS_MODE", "OFF").strip().upper()
-
-    if mode not in ("OFF", "SHADOW"):
+    raw = os.environ.get("VERDICT_DECISION_SIGNALS_MODE", "OFF").strip().upper()
+    if raw not in ("OFF", "SHADOW", "ADVISORY"):
         warnings.warn(
-            f"Invalid VERDICT_DECISION_SIGNALS_MODE={mode!r}, treating as OFF. "
-            f"Allowed: OFF, SHADOW",
+            f"Invalid VERDICT_DECISION_SIGNALS_MODE={raw!r}, treating as OFF. "
+            f"Allowed: OFF, SHADOW, ADVISORY",
             UserWarning,
             stacklevel=2,
         )
-        return False
+        return "OFF"
+    return raw
 
-    return mode == "SHADOW"
+
+def should_collect_signals() -> bool:
+    """Return True when the mode is SHADOW or ADVISORY (signals should be collected).
+
+    SHADOW: one call per orchestrate run, never changes routing.
+    ADVISORY: one call per route call (for non-protected, non-restricted tasks).
+    Both modes record signals in EventLog; neither reorders routing outcomes.
+    """
+    return get_signals_mode() in _COLLECT_MODES
 
 
 def collect_shadow_signals(
@@ -43,21 +54,20 @@ def collect_shadow_signals(
     transport: Callable[[str, dict[str, str], dict[str, Any]], tuple[int, dict[str, str], bytes]]
     | None = None,
 ) -> DecisionSignalSetV1:
-    """Collect decision signals in SHADOW mode.
+    """Collect decision signals in SHADOW or ADVISORY mode.
 
     Args:
         question: Decision question
-        base_url: Optional OpenJev base URL (default: from env)
-        api_key: Optional OpenJev API key (default: from env)
+        base_url: Optional Codiv base URL (default: from TYPESAFE_BASE_URL env)
+        api_key: Optional API key (default: from TYPESAFE_API_KEY env)
         transport: Optional injectable transport for testing
 
     Returns:
-        DecisionSignalSetV1 (never raises; failures as signal set with failure_class)
+        DecisionSignalSetV1 (never raises; failures returned as signal set with failure_class)
     """
     now = datetime.now(timezone.utc)
-
     provider = OpenJevSystemOneProvider(base_url=base_url, api_key=api_key, transport=transport)
     return provider.signals(question, now=now)
 
 
-__all__ = ["collect_shadow_signals", "should_collect_signals"]
+__all__ = ["collect_shadow_signals", "get_signals_mode", "should_collect_signals"]
