@@ -143,13 +143,19 @@ def capture_environment(repo_path: Path) -> EnvironmentSnapshot:
     # Platform
     plat = platform.platform()
 
-    # uv version
-    uv_result = run_command(["uv", "--version"])
-    uv_version = uv_result.stdout.strip() if uv_result.returncode == 0 else "unknown"
+    # uv version (robust to missing tool)
+    try:
+        uv_result = run_command(["uv", "--version"])
+        uv_version = uv_result.stdout.strip() if uv_result.returncode == 0 else "not available"
+    except (FileNotFoundError, OSError):
+        uv_version = "not available"
 
-    # Node version (optional)
-    node_result = run_command(["node", "--version"])
-    node_version = node_result.stdout.strip() if node_result.returncode == 0 else ""
+    # Node version (optional, robust to missing tool)
+    try:
+        node_result = run_command(["node", "--version"])
+        node_version = node_result.stdout.strip() if node_result.returncode == 0 else ""
+    except (FileNotFoundError, OSError):
+        node_version = ""
 
     # Lockfile SHA256
     lockfile_path = repo_path / "uv.lock"
@@ -192,7 +198,7 @@ def step_test_clean_shell(repo_path: Path, venv_bin: Path) -> StepResult:
         [str(venv_bin / "pytest"), f"--junitxml={junit_path}"],
         cwd=repo_path,
         env=clean_env,
-        timeout=600,  # 10 minutes max
+        timeout=1800,  # 30 minutes max (suite takes ~8-9 minutes)
     )
 
     duration = (datetime.now(timezone.utc) - start).total_seconds()
@@ -253,7 +259,7 @@ def step_test_dirty_shell(repo_path: Path, venv_bin: Path) -> StepResult:
         [str(venv_bin / "pytest"), f"--junitxml={junit_path}"],
         cwd=repo_path,
         env=dirty_env,
-        timeout=600,
+        timeout=1800,
     )
 
     duration = (datetime.now(timezone.utc) - start).total_seconds()

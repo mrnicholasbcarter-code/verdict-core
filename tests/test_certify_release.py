@@ -428,3 +428,31 @@ def test_bundle_writes_all_required_files():
         assert (output_dir / "environment.json").exists()
         assert (output_dir / "CERTIFICATION.md").exists()
         assert (output_dir / "git-clean.txt").exists()
+
+
+def test_environment_capture_with_missing_tools():
+    """Test that capture_environment handles missing tools gracefully (empty PATH)."""
+    from unittest.mock import patch
+
+    # Simulate all external tools missing (FileNotFoundError)
+    with patch("certify_release.run_command") as mock_run:
+        mock_run.side_effect = FileNotFoundError("command not found")
+
+        snapshot = certify_release.capture_environment(Path.cwd())
+
+        # Python version should still work (built-in)
+        assert snapshot.python_version
+        assert "." in snapshot.python_version
+
+        # Platform should still work (built-in)
+        assert snapshot.platform
+
+        # External tools should gracefully report "not available"
+        assert snapshot.uv_version == "not available"
+
+        # Optional tools should be empty string when missing
+        assert snapshot.node_version == ""
+
+        # No exception should be raised
+        data = snapshot.to_dict()
+        assert data["uv_version"] == "not available"
