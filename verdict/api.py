@@ -24,6 +24,7 @@ except ImportError as exc:
         '`pip install "verdict-core[server]"` (or `verdict-core[all]`)'
     ) from exc
 
+from verdict import __version__
 from verdict.availability import OmniRouteAvailabilityAdapter
 from verdict.availability_cache import AvailabilityCache
 from verdict.catalog import configured_catalog_filters, normalize_catalog
