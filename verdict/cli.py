@@ -3326,7 +3326,159 @@ def _stdout_is_tty() -> bool:
     return sys.stdout.isatty()
 
 
+
+
+def cmd_credentials_list(*, output_json: bool = False) -> None:
+    """List all registered credentials with their source and masked value."""
+    import json
+    from verdict.credentials_registry import CREDENTIALS
+    from verdict.credentials_store import CredentialsStore, get_credential_source
+    
+    store = CredentialsStore()
+    
+    results = []
+    for cred in CREDENTIALS:
+        source, masked = get_credential_source(cred.env_name, store)
+        results.append({
+            "name": cred.env_name,
+            "source": source,
+            "value": masked,
+            "purpose": cred.purpose,
+            "optional": cred.optional,
+        })
+    
+    if output_json:
+        print(json.dumps(results, indent=2))
+        return
+    
+    # Terminal output
+    from verdict.terminal_ui import TerminalUI
+    ui = TerminalUI()
+    
+    ui.header("Credentials")
+    for item in results:
+        status_color = "green" if item["source"] != "missing" else "yellow"
+        ui.status(
+            item["name"],
+            item["source"],
+            item["value"],
+            color=status_color,
+        )
+
+
+def cmd_credentials_set(
+    *,
+    name: str,
+    force_unregistered: bool = False,
+    from_stdin: bool = False,
+) -> None:
+    """Set a credential in the store."""
+    import getpass
+    import sys
+    from verdict.credentials_registry import get_credential
+    from verdict.credentials_store import CredentialsStore
+    
+    # Check if registered
+    cred = get_credential(name)
+    if cred is None and not force_unregistered:
+        from verdict.terminal_ui import TerminalUI
+        ui = TerminalUI()
+        ui.panel(
+            "Unknown credential",
+            f"{name} is not in the registry. Use --force-unregistered to set anyway.",
+            tone="WARNING",
+        )
+        raise SystemExit(1)
+    
+    # Read value
+    if from_stdin:
+        value = sys.stdin.read().strip()
+    else:
+        prompt_text = f"Enter value for {name}: "
+        value = getpass.getpass(prompt_text)
+    
+    if not value:
+        from verdict.terminal_ui import TerminalUI
+        ui = TerminalUI()
+        ui.panel("Empty value", "Credential value cannot be empty.", tone="WARNING")
+        raise SystemExit(1)
+    
+    # Store it
+    store = CredentialsStore()
+    store.set(name, value)
+    
+    from verdict.terminal_ui import TerminalUI
+    ui = TerminalUI()
+    ui.status(name, "set", "in credential store")
+
+
+def cmd_credentials_unset(*, name: str) -> None:
+    """Remove a credential from the store."""
+    from verdict.credentials_store import CredentialsStore
+    from verdict.terminal_ui import TerminalUI
+    
+    store = CredentialsStore()
+    removed = store.unset(name)
+    
+    ui = TerminalUI()
+    if removed:
+        ui.status(name, "removed", "from credential store")
+    else:
+        ui.panel("Not found", f"{name} was not in the credential store.", tone="WARNING")
+
+
+def cmd_credentials_test(*, name: str) -> None:
+    """Test a credential with its live check."""
+    import os
+    from verdict.credentials_registry import get_credential
+    from verdict.credentials_store import CredentialsStore
+    from verdict.terminal_ui import TerminalUI
+    
+    ui = TerminalUI()
+    
+    cred = get_credential(name)
+    if cred is None:
+        ui.panel("Unknown credential", f"{name} is not in the registry.", tone="WARNING")
+        raise SystemExit(1)
+    
+    if cred.live_check is None:
+        ui.panel("No live check", f"{name} has no live check defined.", tone="INFO")
+        return
+    
+    # Get the value
+    store = CredentialsStore()
+    store.load_into_env()
+    
+    value = os.environ.get(name)
+    if not value:
+        ui.panel("Missing", f"{name} is not set in env or store.", tone="WARNING")
+        raise SystemExit(1)
+    
+    # Run the check
+    ui.status(name, "testing", "...")
+    
+    try:
+        success, message = cred.live_check(value)
+        if success:
+            ui.status(name, "ok", message, color="green")
+        else:
+            ui.status(name, "failed", message, color="red")
+            raise SystemExit(1)
+    except Exception as e:
+        ui.panel("Check error", str(e), tone="ERROR")
+        raise SystemExit(1)
+
+
 def main() -> None:
+    # Load credentials from store early (exported env vars win)
+    from verdict.credentials_store import CredentialsStore
+    try:
+        CredentialsStore().load_into_env()
+    except PermissionError as e:
+        import sys
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description="Verdict: policy-gated LLM Router")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     from verdict.commands import (
