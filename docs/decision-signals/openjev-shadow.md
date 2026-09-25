@@ -158,6 +158,25 @@ No provider calls, no EventLog events, no receipt extension.
 
 ---
 
+## Timeout
+
+The provider uses `VERDICT_DECISION_SIGNALS_TIMEOUT_MS` (default **1500 ms**) for the
+Codiv API call.  This runs **before** planning, so a slow call adds directly to the
+orchestrate wall time.
+
+> **Cold-start note**: the 1.5 s default may be too tight when the Codiv API is
+> warming up (first call of the day, cold TLS handshake, etc.).  A live run recorded
+> 1515 ms latency against the 1500 ms cap, which correctly produced a `TIMEOUT`
+> failure and allowed planning to continue unaffected.
+>
+> If you see frequent `failure_class: timeout` in your EventLog while Codiv is
+> otherwise healthy, raise the limit:
+> ```bash
+> export VERDICT_DECISION_SIGNALS_TIMEOUT_MS=5000  # 5 s
+> ```
+> BOD-238 (advisory mode) uses the same env var.
+
+
 ## Running the smoke test
 
 ```bash
