@@ -48,6 +48,11 @@ class RoutingDecision:
     # Compatibility with the brief advisory-ranking contract.  The canonical
     # names remain ``model`` and ``tier``.
     confidence: float = 0.0
+    # G6.1 evidence fields (BOD-232): estimated/actual cost, fallback, verification outcome
+    estimated_cost_usd: float | None = None
+    actual_cost_usd: float | None = None
+    fallback_result: str | None = None
+    verification_result: str | None = None
 
     @property
     def selected_model(self) -> str:

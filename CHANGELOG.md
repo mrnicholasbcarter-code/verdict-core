@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - restricted and trusted_upstream tasks now require an explicit restricted_data_routes allowlist; fail closed
+- RoutingDecisionContract accepts an optional execution_envelope (validated with the ExecutionEnvelope rules; omitted when absent), matching the TypeScript contract.
 
 ## [0.3.0] - 2026-09-25
 

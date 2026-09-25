@@ -943,6 +943,10 @@ def test_cmd_doctor_all_healthy(
 
     monkeypatch.setattr(socket, "create_connection", mock_create_connection)
 
+    # Satisfy required credentials so doctor reports healthy
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:0")
+
     cli.cmd_doctor()
 
     out = capsys.readouterr().out

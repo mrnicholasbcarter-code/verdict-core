@@ -14,10 +14,22 @@ def test_existing_configuration_is_preserved_without_replaying_wizard(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    def no_prompt(*args, **kwargs):
-        raise AssertionError("A completed configuration must not replay the wizard")
+    cred_prompt = "Run credentials setup now?"
+    prompt_calls: list[str] = []
 
-    monkeypatch.setattr(cli.Prompt, "ask", no_prompt)
+    def controlled_prompt(question: str, **kw: object) -> str:
+        prompt_calls.append(question)
+        if question == cred_prompt:
+            return "n"
+        raise AssertionError(
+            f"Wizard prompt fired on an existing install — must not replay: {question!r}"
+        )
+
+    monkeypatch.setattr(cli.Prompt, "ask", controlled_prompt)
     cli.cmd_setup()
-    assert config.read_text() == original
+
+    assert config.read_text() == original, "Existing config must not be modified"
     assert "preserved" in capsys.readouterr().out.lower()
+    assert prompt_calls == [cred_prompt], (
+        f"Expected exactly one credentials-offer prompt, got: {prompt_calls!r}"
+    )
