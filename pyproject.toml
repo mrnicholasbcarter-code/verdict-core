@@ -83,6 +83,8 @@ Issues = "https://github.com/mrnicholasbcarter-code/verdict-core/issues"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Vendored byte-identical from verdict-ecosystem@fec5556; do not edit
+extend-exclude = ["verdict/openspec_vendor/validate_openspec_change.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
@@ -96,6 +98,8 @@ skip-magic-trailing-comma = true
 exclude = [
     "docs/**/*.md",
     "exports/*.md",
+    # Vendored byte-identical from verdict-ecosystem@fec5556; do not edit
+    "verdict/openspec_vendor/validate_openspec_change.py",
 ]
 
 [tool.mypy]
@@ -114,6 +118,8 @@ strict = true
 # is rewritten against a type-complete UI library.
 exclude = [
     "^verdict/dashboard\\.py$",  # Streamlit stubs incomplete
+    # Vendored byte-identical from verdict-ecosystem@fec5556; do not edit
+    "^verdict/openspec_vendor/validate_openspec_change\\.py$",
 ]
 
 [tool.pytest.ini_options]
@@ -123,6 +129,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')"
+]
 
 [tool.coverage.run]
 source = ["verdict"]

@@ -363,6 +363,9 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "started_at": (started.at if started else events[0].at) if events else None,
         "finished_at": finished[-1].at if finished else None,
     }
+    # Include optional openspec block (backward compatible)
+    if "openspec" in graph_raw:
+        receipt["openspec"] = graph_raw["openspec"]
     outcome, reason = completion_verdict(receipt)
     receipt["outcome"] = outcome
     receipt["reason"] = reason
