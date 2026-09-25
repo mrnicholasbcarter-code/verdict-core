@@ -22,6 +22,8 @@ from verdict.bounded_recovery import (
 from verdict.cost_ledger import CostLedger
 from verdict.eligibility import EligibilityGate
 from verdict.models import ModelInfo
+from verdict.orchestration.contracts import NodeKind, OrchestrationError, WorkGraph, WorkNode
+from verdict.orchestration.planner import choose_topology
 
 # ============================================================================
 # G2.1: Cache TTL + stale-while-revalidate
@@ -413,6 +415,41 @@ def test_budget_enforcement() -> None:
     assert decision.action == RecoveryAction.BLOCK
     assert "budget" in decision.reason.lower()
 
+    # Token budget over-limit: quota_budgets={"tokens": 50}, estimated_action_tokens=100 -> BLOCK
+    token_ledger = CostLedger(
+        trajectory_id="test-traj-tok", quota_budgets={"tokens": Decimal("50")}
+    )
+    token_controller = BoundedRecoveryController(
+        bounds=RecoveryBounds(
+            max_attempts=10,
+            estimated_action_tokens=Decimal("100"),  # 100 > 50 -> block
+        )
+    )
+    tok_decision = token_controller.decide(
+        evidence=evidence, route=route, ledger=token_ledger, attempt_index=0
+    )
+    assert tok_decision.action == RecoveryAction.BLOCK, (
+        f"expected BLOCK for token over-budget, got {tok_decision.action}"
+    )
+    assert "token" in tok_decision.reason.lower(), (
+        f"expected 'token' in reason, got {tok_decision.reason!r}"
+    )
+
+    # Token budget within-limit: estimated_action_tokens=10 <= quota_budget=50 -> NOT blocked for token budget
+    within_controller = BoundedRecoveryController(
+        bounds=RecoveryBounds(
+            max_attempts=10,
+            estimated_action_tokens=Decimal("10"),  # 10 <= 50 -> should not block for budget
+        )
+    )
+    within_decision = within_controller.decide(
+        evidence=evidence, route=route, ledger=token_ledger, attempt_index=0
+    )
+    assert (
+        within_decision.action != RecoveryAction.BLOCK
+        or "token" not in within_decision.reason.lower()
+    ), f"must not block for token budget when within limit, got {within_decision.reason!r}"
+
 
 # ============================================================================
 # G3.4: Concurrency caps and timeout enforcement
@@ -447,4 +484,32 @@ def test_concurrency_timeout() -> None:
         evidence=evidence, route=route, ledger=ledger, now=before_deadline
     )
 
-    assert decision2.action != RecoveryAction.BLOCK or "deadline" not in decision2.reason.lower()
+    assert decision2.action != RecoveryAction.BLOCK, (
+        f"must NOT block before deadline, got action={decision2.action} reason={decision2.reason!r}"
+    )
+
+    # Concurrency cap: choose_topology caps parallel units at min(max_parallel, widest_layer).
+    # 3 independent implement nodes -> widest_layer=3; max_parallel=2 -> chosen=min(2,3)=2.
+    def _impl_node(node_id: str) -> WorkNode:
+        return WorkNode(
+            node_id=node_id,
+            objective=f"Implement {node_id}",
+            kind=NodeKind.IMPLEMENT,
+            owned_files=(f"{node_id}.py",),
+            verification_command=("pytest", f"tests/test_{node_id}.py"),
+        )
+
+    parallel_nodes = [_impl_node(f"task_{i}") for i in range(3)]
+    _topo, chosen_parallel, _rationale = choose_topology(parallel_nodes, max_parallel=2)
+    assert chosen_parallel == 2, f"expected min(max_parallel=2, widest=3)=2, got {chosen_parallel}"
+    assert chosen_parallel <= 2  # cap enforced
+
+    # OrchestrationPolicy rejects max_parallel < 1 via choose_topology
+    import pytest as _pytest
+
+    with _pytest.raises(OrchestrationError, match="max_parallel must be >= 1"):
+        choose_topology(parallel_nodes, max_parallel=0)
+
+    # WorkGraph also rejects max_parallel < 1
+    with _pytest.raises(OrchestrationError, match="max_parallel must be >= 1"):
+        WorkGraph(goal="test", nodes=tuple(parallel_nodes), max_parallel=0)
