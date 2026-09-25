@@ -193,7 +193,7 @@ class IntelligenceAdapter:
         self.config = config or IntelligenceAdapterConfig()
         self.planner = planner or StructuredPlanner()
         self.eligibility_gate = eligibility_gate or EligibilityGate(
-            availability_source="intelligence-adapter"
+            availability_source=None  # No availability cache: explain-only mode
         )
         self._rufl_health_check = ruflo_health_check
         self._ruvector_health_check = ruvector_health_check
