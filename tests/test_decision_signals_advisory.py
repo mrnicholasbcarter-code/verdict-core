@@ -788,3 +788,385 @@ class TestTimeoutAndErrorFallback:
         flags = dec.safety_flags or []
         # Either skipped:timeout (thread catches exception) or skipped:error
         assert any("advisory:skipped" in f for f in flags), f"Expected skip flag, got: {flags}"
+
+
+# ---------------------------------------------------------------------------
+# Item 3: Economy uses pricing when present (same tier, different prices)
+# ---------------------------------------------------------------------------
+
+
+class TestEconomyPricing:
+    """economy profile must prefer cheaper candidate by price when pricing present."""
+
+    def test_same_tier_cheaper_wins(self) -> None:
+        """Two candidates, same tier, different pricing -> cheaper wins.
+        #MUTATION_PROOF: remove price from key -> z-budget sorts AFTER a-premium
+        alphabetically, so without pricing the wrong candidate wins.
+        """
+
+        @dataclass
+        class PricedModel:
+            id: str
+            capability_tier: int
+            provider: str
+            quality_confidence: float
+            pricing: dict[str, float]
+            cost_per_1k: float = 0.0
+
+        # id "a-premium" sorts before "z-budget" alphabetically, so without
+        # pricing the wrong candidate would be picked.
+        premium = PricedModel(
+            id="a-premium",
+            capability_tier=2,
+            provider="p",
+            quality_confidence=0.5,
+            pricing={"input": 5.0, "output": 15.0},  # expensive
+        )
+        budget = PricedModel(
+            id="z-budget",
+            capability_tier=2,
+            provider="p",
+            quality_confidence=0.5,
+            pricing={"input": 0.1, "output": 0.3},  # cheap
+        )
+        sigs = _make_signals(frontier_worthy=0.1, complexity=0.1)
+        # Start with premium first so we prove the sort is by price, not initial order.
+        out, inf = advise_order([premium, budget], sigs)
+        assert inf.profile == "economy"
+        assert out[0].id == "z-budget", f"Expected z-budget (cheap) first, got {out[0].id}"
+
+    def test_different_tier_no_pricing_still_tier_order(self) -> None:
+        """Without pricing dict, falls back to tier (higher tier = cheaper)."""
+        candidates = _models(("tier1", 1, "p", 0.9), ("tier3", 3, "p", 0.1))
+        sigs = _make_signals(frontier_worthy=0.1, complexity=0.1)
+        out, inf = advise_order(candidates, sigs)
+        assert inf.profile == "economy"
+        assert out[0].id == "tier3"  # tier 3 = cheaper
+
+    def test_pricing_tiebreak_by_tier(self) -> None:
+        """Same total price -> higher tier number (cheaper tier) wins as tiebreak."""
+
+        @dataclass
+        class PricedModel2:
+            id: str
+            capability_tier: int
+            provider: str
+            quality_confidence: float
+            pricing: dict[str, float]
+
+        # same input+output cost but different tiers
+        cheap_tier = PricedModel2(
+            id="cheap_tier",
+            capability_tier=3,
+            provider="p",
+            quality_confidence=0.1,
+            pricing={"input": 1.0, "output": 2.0},
+        )
+        expensive_tier = PricedModel2(
+            id="expensive_tier",
+            capability_tier=1,
+            provider="p",
+            quality_confidence=0.9,
+            pricing={"input": 1.0, "output": 2.0},
+        )
+        sigs = _make_signals(frontier_worthy=0.1, complexity=0.1)
+        out, inf = advise_order([expensive_tier, cheap_tier], sigs)
+        assert inf.profile == "economy"
+        # Same price: tier 3 > tier 1 -> cheap_tier wins
+        assert out[0].id == "cheap_tier"
+
+
+# ---------------------------------------------------------------------------
+# Item 2: Live admit path records advisory:skipped:admit_path_not_supported
+# ---------------------------------------------------------------------------
+
+
+class TestAdmitPathAdvisoryFlag:
+    """In ADVISORY mode with a provider, the live admit path records the skip flag."""
+
+    def test_admit_path_flag_in_offload_free_tier(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_offload_free_tier appends advisory:skipped:admit_path_not_supported
+        when ADVISORY mode is on and a provider is configured.
+        Calls the real _offload_free_tier with the inner pipeline stubbed out.
+        #MUTATION_PROOF: remove the flag append in intelligence.py -> flag absent.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from verdict.free_tier_admit import FreeTierAdmitReceipt, snapshot_from_payloads
+        from verdict.intelligence import IntelligenceService
+        from verdict.models import ProviderConfig, RoutingDecision
+
+        monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "ADVISORY")
+
+        class FakeProvider:
+            def signals(self, question: Any, *, now: Any) -> Any:
+                return _make_signals(frontier_worthy=0.1, complexity=0.1)
+
+        snapshot = snapshot_from_payloads(
+            catalog=[
+                {
+                    "id": "m1",
+                    "provider": "test",
+                    "model_id": "m1",
+                    "gateway_id": "gw1",
+                    "route_id": "r1",
+                    "tier": 2,
+                    "capabilities": {},
+                    "resource_class": "free",
+                }
+            ],
+            free_tier=["m1"],
+            providers=[],
+        )
+
+        svc = IntelligenceService(
+            primary_model="primary",
+            providers={"test": ProviderConfig(api_key="k", models={}, priority=1)},
+            profile="development",
+            log_path="",
+            log_full_task=False,
+            discovery_ttl=60,
+            allow_offline=False,
+            decision_signal_provider=FakeProvider(),
+            admit_snapshot=snapshot,
+        )
+
+        # Build a real FreeTierAdmitReceipt to return from mocked pipeline steps.
+        fake_receipt = FreeTierAdmitReceipt(
+            admitted=("m1",),
+            exclusions=(),
+            chosen="m1",
+            empty_intersection=False,
+            active_providers=("test",),
+            free_tier_providers=("test",),
+        )
+        base_dec = RoutingDecision(
+            model="m1",
+            provider="test",
+            tier=2,
+            reason="test",
+            safety_flags=["free_tier_active_admit"],
+        )
+
+        from typing import ClassVar
+
+        class _FakeElig:
+            admitted: ClassVar[list] = []
+            records: ClassVar[list] = []
+
+            def to_dict(self) -> dict:
+                return {}
+
+        # Patch every sub-step inside _offload_free_tier EXCEPT the advisory block.
+        with (
+            patch(
+                "verdict.intelligence.classify_worthiness",
+                return_value=MagicMock(
+                    task_class="implementation",
+                    protected_ranker_class="implementation",
+                    class_reasons=[],
+                ),
+            ),
+            patch("verdict.intelligence.derive_requirements", return_value=MagicMock()),
+            patch(
+                "verdict.intelligence.profile_task",
+                return_value=MagicMock(spend_policy="free", digest="d1"),
+            ),
+            patch("verdict.intelligence.admit_free_tier_active", return_value=fake_receipt),
+            patch("verdict.intelligence.expand_admit_for_worthiness", return_value=fake_receipt),
+            patch("verdict.intelligence.gate_capability", return_value=fake_receipt),
+            patch("verdict.intelligence.gate_admit_prove_confirm", return_value=fake_receipt),
+            patch.object(svc, "_estimate_candidate_context_plans", return_value=((), [])),
+            patch.object(svc, "_apply_candidate_pool", return_value=(fake_receipt, [])),
+            patch.object(svc, "_decision_from_admit", return_value=base_dec),
+            patch.object(type(fake_receipt), "as_eligibility_result", return_value=_FakeElig()),
+        ):
+            result = svc._offload_free_tier(
+                "test task", 2, False, "", context={"spend_policy": "free"}
+            )
+
+        flags = result.safety_flags if result is not None else []
+        assert flags is not None
+        assert "advisory:skipped:admit_path_not_supported" in flags, (
+            f"Expected admit_path flag in _offload_free_tier result, got: {flags}"
+        )
+        # OFF mode: no flag
+        monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "OFF")
+        with (
+            patch(
+                "verdict.intelligence.classify_worthiness",
+                return_value=MagicMock(
+                    task_class="implementation",
+                    protected_ranker_class="implementation",
+                    class_reasons=[],
+                ),
+            ),
+            patch("verdict.intelligence.derive_requirements", return_value=MagicMock()),
+            patch(
+                "verdict.intelligence.profile_task",
+                return_value=MagicMock(spend_policy="free", digest="d1"),
+            ),
+            patch("verdict.intelligence.admit_free_tier_active", return_value=fake_receipt),
+            patch("verdict.intelligence.expand_admit_for_worthiness", return_value=fake_receipt),
+            patch("verdict.intelligence.gate_capability", return_value=fake_receipt),
+            patch("verdict.intelligence.gate_admit_prove_confirm", return_value=fake_receipt),
+            patch.object(svc, "_estimate_candidate_context_plans", return_value=((), [])),
+            patch.object(svc, "_apply_candidate_pool", return_value=(fake_receipt, [])),
+            patch.object(svc, "_decision_from_admit", return_value=base_dec),
+            patch.object(type(fake_receipt), "as_eligibility_result", return_value=_FakeElig()),
+        ):
+            result_off = svc._offload_free_tier(
+                "test task", 2, False, "", context={"spend_policy": "free"}
+            )
+        flags_off = result_off.safety_flags if result_off is not None else []
+        assert "advisory:skipped:admit_path_not_supported" not in (flags_off or [])
+
+
+# ---------------------------------------------------------------------------
+# Item 5: decision_kernel membership unchanged AND order changed
+# ---------------------------------------------------------------------------
+
+
+class TestDecisionKernelOrderAndMembership:
+    """AdvisoryRanker changes order inside decide() while membership stays fixed."""
+
+    def test_order_changed_membership_unchanged(self) -> None:
+        """decide() with AdvisoryRanker(economy): admitted ids unchanged,
+        but the first admitted candidate differs from baseline.
+        #MUTATION_PROOF: removing advisory reorder -> order same as baseline.
+        """
+        from verdict.contracts import TaskSpec
+        from verdict.decision_kernel import AdvisoryInput, decide
+        from verdict.models import ModelInfo
+
+        strong = ModelInfo(
+            id="strong",
+            provider="p",
+            capability_tier=1,
+            quality_confidence=0.9,
+            capabilities=frozenset(),
+            is_available=True,
+            availability_state="eligible",
+        )
+        cheap = ModelInfo(
+            id="cheap",
+            provider="p",
+            capability_tier=3,
+            quality_confidence=0.1,
+            capabilities=frozenset(),
+            is_available=True,
+            availability_state="eligible",
+        )
+        candidates = [strong, cheap]
+
+        task_spec = TaskSpec(
+            objective="write hello world",
+            task_type="implementation",
+            effort="low",
+            required_capabilities=[],
+            tools=[],
+            privacy=None,
+            risk=None,
+            approvals=[],
+            metadata={},
+        )
+
+        # Baseline: no advisory
+        baseline = decide(
+            task_spec=task_spec,
+            policy_version="policy-2",
+            candidates=candidates,
+            availability_truth={},
+            protected=False,
+            dev_mode=True,
+        )
+        baseline_order = [m.id for m in baseline.admitted]
+
+        # Economy signals -> prefers cheap (tier 3) first
+        sigs = _make_signals(frontier_worthy=0.1, complexity=0.1)
+        ranker = AdvisoryRanker(sigs)
+        advisory_record = decide(
+            task_spec=task_spec,
+            policy_version="policy-2",
+            candidates=candidates,
+            availability_truth={},
+            protected=False,
+            dev_mode=True,
+            advisory=AdvisoryInput(ranker=ranker, label="economy-test"),
+        )
+        advisory_order = [m.id for m in advisory_record.admitted]
+
+        # Membership invariant: same set
+        assert set(advisory_order) == set(baseline_order), (
+            f"Membership changed: {set(advisory_order)} != {set(baseline_order)}"
+        )
+        # Order changed: economy puts cheap first
+        assert advisory_order[0] == "cheap", (
+            f"Expected cheap first in advisory order, got: {advisory_order}"
+        )
+        assert baseline_order[0] == "strong", (
+            f"Expected strong first in baseline, got: {baseline_order}"
+        )
+        # decision_id is membership-bound, not order-bound
+        assert advisory_record.decision_id == baseline.decision_id, (
+            "decision_id should be identical (membership-bound, not order-bound)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Item 4: No second planner call — task_spec privacy is read, not re-planned
+# ---------------------------------------------------------------------------
+
+
+class TestNoSecondPlannerCall:
+    """Advisory block reuses the task_spec already computed by route(), not re-plan."""
+
+    @pytest.mark.asyncio
+    async def test_planner_called_once_not_twice(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Planner.plan() is called exactly once per route() call in ADVISORY mode.
+        #MUTATION_PROOF: adding a second planner call -> count == 2 -> test fails.
+        """
+        from unittest.mock import MagicMock
+
+        from verdict.intelligence import IntelligenceService
+        from verdict.models import ProviderConfig
+
+        monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "ADVISORY")
+
+        class FakeProvider:
+            def signals(self, question: Any, *, now: Any) -> Any:
+                return _make_signals(frontier_worthy=0.5, complexity=0.5)
+
+        provider_cfg = ProviderConfig(
+            api_key="k",
+            models={
+                "some-model": MagicMock(
+                    capabilities=[], max_tokens=4096, cost_per_1k=0.001, pricing={}
+                )
+            },
+            priority=1,
+        )
+
+        svc = IntelligenceService(
+            primary_model="primary",
+            providers={"test": provider_cfg},
+            profile="development",
+            log_path="",
+            log_full_task=False,
+            discovery_ttl=60,
+            allow_offline=True,
+            decision_signal_provider=FakeProvider(),
+        )
+
+        call_count = 0
+        original_plan = svc.planner.plan
+
+        def counting_plan(*args: Any, **kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            return original_plan(*args, **kwargs)
+
+        svc.planner.plan = counting_plan  # type: ignore[method-assign]
+        await svc.route("simple task")
+
+        assert call_count == 1, f"Expected planner.plan() called once, got {call_count} calls"

@@ -189,16 +189,28 @@ def advise_order(
 
     # --- reorder ---------------------------------------------------------
     if profile == "economy":
-        # prefer cheapest: HIGHEST capability_tier first (tier-3 is cheaper/weaker
-        # than tier-1), then provider alphabetically, then stable id.
-        ordered = sorted(
-            candidates,
-            key=lambda m: (
-                -(getattr(m, "capability_tier", 0)),
-                getattr(m, "provider", ""),
-                getattr(m, "id", ""),
-            ),
-        )
+        # prefer cheapest: lowest inferred cost first, then highest tier number
+        # (tier-3 is cheaper/weaker than tier-1) as tiebreak, then stable id.
+        # Cost is derived from ModelInfo.pricing (keys "input" and "output", cost
+        # per 1k tokens) when present; falls back to cost_per_1k, then tier proxy.
+        # Both pricing and tier-proxy are documented as uncalibrated (BOD-203).
+        def _economy_cost(m: Any) -> tuple[float, int, str, str]:
+            p: dict[str, float] = getattr(m, "pricing", None) or {}
+            if p:
+                cost = float(p.get("input", 0.0)) + float(p.get("output", 0.0))
+            else:
+                cpk = getattr(m, "cost_per_1k", None)
+                if cpk is not None:
+                    cost = float(cpk)
+                else:
+                    # Tier proxy: tier 1=0.0, tier 2=0.5, tier 3=1.0 (inverted —
+                    # higher tier is cheaper, so we want smaller sort key = higher tier).
+                    cost = max(0.0, 1.0 - float(getattr(m, "capability_tier", 2)) / 4.0)
+            # Secondary tiebreak: highest tier number first (= cheaper model class).
+            tier_inv = -(getattr(m, "capability_tier", 0))
+            return (cost, tier_inv, getattr(m, "provider", ""), getattr(m, "id", ""))
+
+        ordered = sorted(candidates, key=_economy_cost)
     else:  # strength
         # prefer strongest: highest quality_confidence, then highest tier
         # (inverted), then stable id.

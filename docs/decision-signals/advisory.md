@@ -13,7 +13,10 @@ When enabled, every `verdict route` / `/v1/route` call:
    (with a configurable timeout, default 1500 ms).
 2. Classifies the task as one of three **profiles**:
    - **economy** – `frontier_worthy < 0.4` AND `complexity < 0.4`:
-     prefers the cheapest (highest tier number = weakest) admitted model.
+     prefers the cheapest admitted model. Cost is derived from `ModelInfo.pricing`
+     (`input + output` cost per 1k tokens) when present; falls back to `cost_per_1k`,
+     then `capability_tier` as a proxy (higher tier = cheaper/weaker). Tier is always
+     the secondary tiebreak. Both thresholds and price weights are uncalibrated (BOD-203).
    - **strength** – `frontier_worthy >= 0.6` OR `complexity >= 0.6`:
      prefers the strongest (highest quality_confidence, lowest tier number)
      admitted model.
@@ -70,6 +73,17 @@ In ADVISORY mode, a scrubbed task summary (first 500 chars of `task_str`)
 plus a `complexity_hints: {}` dict are sent to the OpenJev provider as a
 `DecisionQuestionV1`. No credentials, user PII, or model internals are
 included. See PRIVACY_POLICY.md for the full privacy notice (owned by BOD-235).
+
+## Live-admit path (OmniRoute)
+
+When a route call goes through the live-admit path (`_offload_free_tier`), the
+admitted set contains string IDs, not `ModelInfo` objects, so advisory reordering
+cannot apply pricing or tier data. In ADVISORY mode, the decision's
+`safety_flags` records `advisory:skipped:admit_path_not_supported` so monitoring
+can see that advisory was skipped on this path, not missing.
+
+This is NOT a silent gap — it is a documented limitation. Full advisory support
+on the live-admit path is a follow-up (BOD-TBD).
 
 ## How to turn it off
 

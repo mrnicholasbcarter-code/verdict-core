@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-BOD-238 live check evidence script.
-3 route calls in ADVISORY mode:
+BOD-238 offline demo (NOT live evidence).
+
+Demonstrates ADVISORY mode with a FakeProvider and a static catalog.
+This is NOT the live check required by the acceptance gate.
+
+Live check (item 1): will be run after BOD-235 (#621) merges and
+factory.provider_from_env() is available. At that point, run with the
+operator's real key via `zsh -ic` and the real Codiv API.
+
+3 route calls:
   1. trivial  (economy signals -> cheap pick)
   2. hard     (strength signals -> strong pick)
   3. protected (critical -> advisory skipped, protected=True)
-
-Uses a local FakeProvider so no real key is needed.
-The decision_signal_provider argument is injected directly.
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -21,17 +26,13 @@ os.environ["VERDICT_DECISION_SIGNALS_MODE"] = "ADVISORY"
 
 from verdict.decision_signals.advisory import _mode_from_env
 from verdict.decision_signals.contracts import DecisionSignalSetV1
-from verdict.gateway_adapters import NormalizedFailureClass
 from verdict.intelligence import IntelligenceService
 from verdict.models import ProviderConfig
 
 _DIGEST = "a" * 64
 
-def _make_signals(
-    fw: float = 0.5,
-    cx: float = 0.5,
-    confidence: float = 0.9,
-) -> DecisionSignalSetV1:
+
+def _make_signals(fw: float = 0.5, cx: float = 0.5, confidence: float = 0.9) -> DecisionSignalSetV1:
     return DecisionSignalSetV1(
         schema_version="decision-signals/v1",
         provider="fake-provider",
@@ -60,9 +61,9 @@ def _make_signals(
 
 CALLS = [
     # (label, task_str, criticality, fw, cx, expected_profile)
-    ("trivial",    "write hello world",              "low",      0.15, 0.15, "economy"),
-    ("hard",       "architect distributed consensus", "high",     0.85, 0.80, "strength"),
-    ("protected",  "critical security audit",         "critical", 0.15, 0.15, "NOT_CALLED"),
+    ("trivial", "write hello world", "low", 0.15, 0.15, "economy"),
+    ("hard", "architect distributed consensus", "high", 0.85, 0.80, "strength"),
+    ("protected", "critical security audit", "critical", 0.15, 0.15, "NOT_CALLED"),
 ]
 
 
@@ -79,15 +80,18 @@ class FakeProvider:
 
 def _make_svc(provider: FakeProvider) -> IntelligenceService:
     models = {
-        "gpt-4o":         type("MC", (), {"capabilities": [], "max_tokens": 8192,
-                                           "cost_per_1k": 0.005, "pricing": {}})(),
-        "gpt-3.5-turbo":  type("MC", (), {"capabilities": [], "max_tokens": 4096,
-                                           "cost_per_1k": 0.0005, "pricing": {}})(),
+        "gpt-4o": type(
+            "MC", (), {"capabilities": [], "max_tokens": 8192, "cost_per_1k": 0.005, "pricing": {}}
+        )(),
+        "gpt-3.5-turbo": type(
+            "MC", (), {"capabilities": [], "max_tokens": 4096, "cost_per_1k": 0.0005, "pricing": {}}
+        )(),
     }
     providers = {"openai": ProviderConfig(api_key="fake-key", models=models, priority=1)}
 
     # Patch classify so gpt-4o -> tier 1, gpt-3.5-turbo -> tier 3
     import verdict.intelligence as _vi
+
     orig = _vi.classify
     _vi.classify = lambda mid: 1 if "4o" in mid else 3
 
@@ -115,21 +119,40 @@ async def main() -> None:
         provider = FakeProvider(fw=fw, cx=cx)
 
         import verdict.intelligence as _vi
+
         orig = _vi.classify
         _vi.classify = lambda mid: 1 if "4o" in mid else 3
 
         svc = IntelligenceService(
             primary_model="gpt-4o",
-            providers={"openai": ProviderConfig(
-                api_key="fake-key",
-                models={
-                    "gpt-4o":        type("MC", (), {"capabilities": [], "max_tokens": 8192,
-                                                      "cost_per_1k": 0.005, "pricing": {}})(),
-                    "gpt-3.5-turbo": type("MC", (), {"capabilities": [], "max_tokens": 4096,
-                                                      "cost_per_1k": 0.0005, "pricing": {}})(),
-                },
-                priority=1,
-            )},
+            providers={
+                "openai": ProviderConfig(
+                    api_key="fake-key",
+                    models={
+                        "gpt-4o": type(
+                            "MC",
+                            (),
+                            {
+                                "capabilities": [],
+                                "max_tokens": 8192,
+                                "cost_per_1k": 0.005,
+                                "pricing": {},
+                            },
+                        )(),
+                        "gpt-3.5-turbo": type(
+                            "MC",
+                            (),
+                            {
+                                "capabilities": [],
+                                "max_tokens": 4096,
+                                "cost_per_1k": 0.0005,
+                                "pricing": {},
+                            },
+                        )(),
+                    },
+                    priority=1,
+                )
+            },
             profile="development",
             log_path="",
             log_full_task=False,
@@ -173,19 +196,25 @@ async def main() -> None:
     # 1. trivial -> economy -> cheap model
     r = results[0]
     ok1 = "advisory:economy" in r["advisory_flags"] and "3.5" in r["selected_model"]
-    print(f"[{'PASS' if ok1 else 'FAIL'}] trivial: economy profile, cheap model selected: {r['selected_model']}")
+    print(
+        f"[{'PASS' if ok1 else 'FAIL'}] trivial: economy profile, cheap model selected: {r['selected_model']}"
+    )
     all_ok = all_ok and ok1
 
     # 2. hard -> strength -> gpt-4o
     r = results[1]
     ok2 = "advisory:strength" in r["advisory_flags"] and "4o" in r["selected_model"]
-    print(f"[{'PASS' if ok2 else 'FAIL'}] hard: strength profile, strong model selected: {r['selected_model']}")
+    print(
+        f"[{'PASS' if ok2 else 'FAIL'}] hard: strength profile, strong model selected: {r['selected_model']}"
+    )
     all_ok = all_ok and ok2
 
     # 3. protected -> advisory not called
     r = results[2]
     ok3 = r["protected"] is True and not r["provider_called"]
-    print(f"[{'PASS' if ok3 else 'FAIL'}] protected: advisory not called (protected={r['protected']}, provider_called={r['provider_called']})")
+    print(
+        f"[{'PASS' if ok3 else 'FAIL'}] protected: advisory not called (protected={r['protected']}, provider_called={r['provider_called']})"
+    )
     all_ok = all_ok and ok3
 
     print()

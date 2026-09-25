@@ -513,14 +513,16 @@ class IntelligenceService:
                 _adv_mode = _mode_from_env()
                 _provider = self.decision_signal_provider
                 if _adv_mode == "ADVISORY" and _provider is not None:
-                    _task_privacy2: str | None = None
+                    # Item 4: reuse the task_spec already computed above (no second planner call).
+                    # task_spec is set in the try/except above; default None if planner failed.
                     try:
-                        _ts2 = self.planner.plan(task_str, context=context).task_spec
-                        _task_privacy2 = getattr(_ts2, "privacy", None)
+                        # task_spec is assigned in the try/except block above.
+                        # It may be unbound if planner raised. Use getattr safely.
+                        _ts_ref: Any = locals().get("task_spec")
+                        _advisory_privacy = getattr(_ts_ref, "privacy", None)
                     except Exception:
-                        pass
-                    _advisory_privacy = _task_privacy2
-                    if _task_privacy2 not in ("restricted", "trusted_upstream"):
+                        _advisory_privacy = None
+                    if _advisory_privacy not in ("restricted", "trusted_upstream"):
                         try:
                             from contextlib import suppress as _suppress
                             from datetime import datetime as _dt
@@ -1152,7 +1154,19 @@ class IntelligenceService:
                 receipt = replace(
                     receipt, chosen=None, empty_intersection=True, selected_because=None
                 )
-        return self._decision_from_admit(
+        # BOD-238: advisory reordering is NOT applied on the live-admit path because
+        # the admitted set here contains string IDs, not ModelInfo objects, and the
+        # ranker would have no pricing/tier data to sort on.  Record this explicitly
+        # so monitoring can see advisory was skipped, not missing.
+        _admit_path_advisory_flags: list[str] = []
+        try:
+            from verdict.decision_signals.advisory import _mode_from_env as _adv_mode_fn
+
+            if _adv_mode_fn() == "ADVISORY" and self.decision_signal_provider is not None:
+                _admit_path_advisory_flags.append("advisory:skipped:admit_path_not_supported")
+        except Exception:
+            pass
+        _admit_dec = self._decision_from_admit(
             task,
             final_tier,
             escalated,
@@ -1164,6 +1178,14 @@ class IntelligenceService:
             task_class=classification.task_class,
             context=context,
         )
+        if _admit_path_advisory_flags:
+            from dataclasses import replace as _dr
+
+            _admit_dec = _dr(
+                _admit_dec,
+                safety_flags=list(_admit_dec.safety_flags or []) + _admit_path_advisory_flags,
+            )
+        return _admit_dec
 
     def _load_admit_snapshot(
         self,
