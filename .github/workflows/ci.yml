@@ -20,6 +20,8 @@ jobs:
       - name: Build TypeScript contracts
         run: cd contracts && npm run build
       - name: Run TypeScript contract fixtures
+      - name: Run consumer smoke test
+        run: cd contracts && npm run consumer:smoke
         run: cd contracts && npm test
       - name: Build TypeScript client SDK
         run: cd verdict/client-sdk && npm run build

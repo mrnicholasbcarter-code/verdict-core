@@ -94,3 +94,5 @@ CLAUDE.md.backup-*
 # Benchmark fixture workspace runtime state
 benchmarks/fixtures/legit_workspace/.verdict/
 coverage.xml.*
+# Tarball artifacts from consumer smoke test
+contracts/*.tgz
