@@ -11,8 +11,12 @@ Two opt-in modes are supported in v0.3.0:
 
 | Mode | When signals are collected | Effect on routing |
 |------|---------------------------|-------------------|
-| **SHADOW** | Once per `verdict orchestrate` run, before planning | None — recorded in EventLog only |
+| **SHADOW** | Once per `verdict orchestrate` run, before planning, **for every goal** (no per-task privacy filter) | None — recorded in EventLog only |
 | **ADVISORY** | Once per route call for non-protected, non-restricted tasks | Read-only by the intelligence layer; routing is never blocked |
+
+> **SHADOW scope**: when SHADOW is active the scrubbed goal is sent for **all** orchestrate
+> runs.  There is no per-task protected/restricted filter at the SHADOW call site.  See
+> `PRIVACY_POLICY.md` §"SHADOW scope note" for mitigations.
 
 Both modes are **off by default**.  Routing outcomes are identical whether
 the provider is healthy, failing, or absent.

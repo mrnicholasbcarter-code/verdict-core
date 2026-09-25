@@ -55,7 +55,7 @@ def main() -> int:
     print(f"POST {url}")
     print(f"model: {model}")
     # Never print the key; show only first 8 chars
-    print(f"key: {api_key[:8]}...")
+    print(f"key: set (len={len(api_key)})")
 
     conn_class = (
         http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection

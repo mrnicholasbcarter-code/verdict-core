@@ -238,7 +238,21 @@ No other data is sent.  The key is transmitted only in the `Authorization: Beare
 * Full file contents or repository trees.
 * Secrets, credentials, or tokens (scrubbed before transmission).
 * Anything when `VERDICT_DECISION_SIGNALS_MODE=OFF` (the default) or when `TYPESAFE_API_KEY` is absent.
-* Anything for tasks marked `trusted_upstream` or privacy-restricted (ADVISORY only).
+* Anything for tasks marked `trusted_upstream` or privacy-restricted (ADVISORY only — see scope note below).
+
+### SHADOW scope note
+
+**SHADOW sends the scrubbed goal for every `verdict orchestrate` run** when the mode is
+`SHADOW` and credentials are present.  The `orchestrate` entry-point has no per-task
+privacy classification at the time the signal call fires (before planning); there is no
+protected/restricted filter on the SHADOW path.
+
+If your organization's tasks include goals that must not leave the machine, either:
+
+1. Leave `VERDICT_DECISION_SIGNALS_MODE` unset (the default, no calls ever made), or
+2. Use ADVISORY mode instead — it skips tasks flagged `trusted_upstream` or `restricted`
+   at the route call site — or
+3. Use a private Codiv endpoint (`TYPESAFE_BASE_URL`) that keeps data on-premises.
 
 ### Codiv's stated data policy
 

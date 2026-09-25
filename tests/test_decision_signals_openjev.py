@@ -412,6 +412,86 @@ def test_timeout_returns_timeout_failure():
     assert result.failure_class == NormalizedFailureClass.TIMEOUT
 
 
+def test_oserror_timed_out_returns_timeout_failure():
+    """OSError('timed out') from http.client -> TIMEOUT, never raises."""
+
+    def transport(url, headers, payload):
+        raise OSError("timed out")
+
+    provider = _provider(transport)
+    result = provider.signals(_question(), now=NOW)
+
+    assert result.failure_class == NormalizedFailureClass.TIMEOUT
+
+
+def test_oserror_connection_refused_returns_transport_failure():
+    """OSError('connection refused') -> TRANSPORT (not TIMEOUT), never raises."""
+
+    def transport(url, headers, payload):
+        raise OSError("connection refused")
+
+    provider = _provider(transport)
+    result = provider.signals(_question(), now=NOW)
+
+    assert result.failure_class == NormalizedFailureClass.TRANSPORT
+
+
+def test_timeout_ms_env_var(monkeypatch):
+    """VERDICT_DECISION_SIGNALS_TIMEOUT_MS is read and used as connection timeout."""
+    from verdict.decision_signals.openjev import DEFAULT_TIMEOUT_MS
+
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_TIMEOUT_MS", "500")
+    provider = OpenJevSystemOneProvider(base_url="https://api.codiv.ai", api_key="sk-test")
+    assert provider.timeout_s == 0.5
+
+    monkeypatch.delenv("VERDICT_DECISION_SIGNALS_TIMEOUT_MS")
+    provider2 = OpenJevSystemOneProvider(base_url="https://api.codiv.ai", api_key="sk-test")
+    assert provider2.timeout_s == DEFAULT_TIMEOUT_MS / 1000.0
+
+
+def test_timeout_ms_constructor_arg():
+    """timeout_ms kwarg overrides env."""
+    provider = OpenJevSystemOneProvider(
+        base_url="https://api.codiv.ai", api_key="sk-test", timeout_ms=250
+    )
+    assert provider.timeout_s == 0.25
+
+
+def test_slow_transport_returns_timeout(monkeypatch):
+    """Transport that sleeps beyond timeout -> TIMEOUT failure_class."""
+    import time
+
+    calls: list[float] = []
+
+    def slow_transport(url, headers, payload):
+        start = time.monotonic()
+        # Simulate the provider's timeout firing (OSError from http.client)
+        raise OSError("timed out")
+        calls.append(time.monotonic() - start)  # noqa: unreachable
+
+    provider = OpenJevSystemOneProvider(
+        base_url="https://api.codiv.ai", api_key="sk-test", timeout_ms=100, transport=slow_transport
+    )
+    result = provider.signals(_question(), now=NOW)
+    assert result.failure_class == NormalizedFailureClass.TIMEOUT
+
+
+def test_mutation_proof_timeout_ms_default():
+    """MUTATION: if DEFAULT_TIMEOUT_MS is changed, provider.timeout_s changes too."""
+    from verdict.decision_signals import openjev as mod
+
+    original = mod.DEFAULT_TIMEOUT_MS
+    mod.DEFAULT_TIMEOUT_MS = 9000
+    try:
+        p = OpenJevSystemOneProvider(base_url="https://api.codiv.ai", api_key="sk-test")
+        assert p.timeout_s == 9.0, "mutated DEFAULT_TIMEOUT_MS should change timeout_s"
+    finally:
+        mod.DEFAULT_TIMEOUT_MS = original
+    # Verify original
+    p2 = OpenJevSystemOneProvider(base_url="https://api.codiv.ai", api_key="sk-test")
+    assert p2.timeout_s == original / 1000.0
+
+
 # ---------------------------------------------------------------------------
 # parse_retry_after
 # ---------------------------------------------------------------------------

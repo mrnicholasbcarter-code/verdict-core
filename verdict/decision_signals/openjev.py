@@ -29,6 +29,11 @@ RETRY_AFTER_MIN_S = 1
 RETRY_AFTER_MAX_S = 300
 RETRY_AFTER_DEFAULT_S = 60
 
+# Default network timeout for the Codiv API call.
+# Overridable via VERDICT_DECISION_SIGNALS_TIMEOUT_MS (BOD-235/BOD-238).
+# Must be low: this call runs BEFORE planning, so a slow Codiv adds to every run.
+DEFAULT_TIMEOUT_MS = 1500
+
 # Fixed question set sent in every SHADOW / ADVISORY call.
 # Maps our signal names to Codiv question definitions.
 _QUESTIONS: dict[str, dict[str, Any]] = {
@@ -257,6 +262,7 @@ class OpenJevSystemOneProvider:
         *,
         base_url: str | None = None,
         api_key: str | None = None,
+        timeout_ms: int | None = None,
         transport: Callable[
             [str, dict[str, str], dict[str, Any]], tuple[int, dict[str, str], bytes]
         ]
@@ -268,6 +274,16 @@ class OpenJevSystemOneProvider:
         self.api_key = api_key or os.environ.get("TYPESAFE_API_KEY", "").strip()
         self.model = os.environ.get("VERDICT_OPENJEV_MODEL", "").strip() or PINNED_MODEL
         self.transport = transport
+        # Timeout from arg > env > default. Stored as seconds for http.client.
+        if timeout_ms is not None:
+            self.timeout_s = max(0.1, timeout_ms / 1000.0)
+        else:
+            env_ms_raw = os.environ.get("VERDICT_DECISION_SIGNALS_TIMEOUT_MS", "").strip()
+            try:
+                env_ms = int(env_ms_raw)
+                self.timeout_s = max(0.1, env_ms / 1000.0)
+            except (ValueError, TypeError):
+                self.timeout_s = DEFAULT_TIMEOUT_MS / 1000.0
 
     def _build_state(self, question: DecisionQuestionV1) -> str:
         """Build scrubbed, minimal state from a DecisionQuestionV1."""
@@ -349,7 +365,7 @@ class OpenJevSystemOneProvider:
                     if parsed.scheme == "https"
                     else http.client.HTTPConnection
                 )
-                conn = conn_class(parsed.netloc, timeout=30)
+                conn = conn_class(parsed.netloc, timeout=self.timeout_s)
                 try:
                     conn.request(
                         "POST", parsed.path or "/", json.dumps(payload).encode("utf-8"), headers
@@ -445,9 +461,13 @@ class OpenJevSystemOneProvider:
                 now=now,
             )
 
-        except TimeoutError:
+        except (TimeoutError, OSError) as exc:
+            # http.client raises OSError("timed out") on socket timeout.
+            is_timeout = isinstance(exc, TimeoutError) or "timed out" in str(exc).lower()
             return self._fail(
-                failure_class=NormalizedFailureClass.TIMEOUT,
+                failure_class=NormalizedFailureClass.TIMEOUT
+                if is_timeout
+                else NormalizedFailureClass.TRANSPORT,
                 request_id=request_id,
                 purpose=question.purpose,
                 input_digest=input_digest,
@@ -466,6 +486,7 @@ class OpenJevSystemOneProvider:
 
 
 __all__ = [
+    "DEFAULT_TIMEOUT_MS",
     "PINNED_MODEL",
     "_QUESTIONS",
     "_SCORE_LEVELS",
