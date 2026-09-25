@@ -1,0 +1,61 @@
+# Critical module branch coverage floors
+# These thresholds prevent regression in safety-critical modules.
+# Each floor is the measured branch coverage at BOD-196 baseline, rounded down to nearest 5%.
+# Run: scripts/check_critical_coverage.py after pytest --cov=verdict --cov-branch --cov-report=xml
+
+[critical_modules."verdict/availability_cache.py"]
+branch_coverage_floor = 65
+measured_at_baseline = 66.67
+
+[critical_modules."verdict/contracts.py"]
+branch_coverage_floor = 80
+measured_at_baseline = 80.40
+
+[critical_modules."verdict/eligibility.py"]
+branch_coverage_floor = 85
+measured_at_baseline = 88.24
+
+[critical_modules."verdict/orchestration/orchestration/contracts.py"]
+branch_coverage_floor = 75
+measured_at_baseline = 77.14
+
+[critical_modules."verdict/orchestration/orchestration/eligibility.py"]
+branch_coverage_floor = 85
+measured_at_baseline = 89.34
+
+[critical_modules."verdict/orchestration/orchestration/executors.py"]
+branch_coverage_floor = 85
+measured_at_baseline = 85.00
+
+[critical_modules."verdict/orchestration/orchestration/planner.py"]
+branch_coverage_floor = 90
+measured_at_baseline = 90.00
+
+[critical_modules."verdict/orchestration/orchestration/receipt.py"]
+branch_coverage_floor = 90
+measured_at_baseline = 90.98
+
+[critical_modules."verdict/orchestration/orchestration/recovery.py"]
+branch_coverage_floor = 80
+measured_at_baseline = 80.39
+
+[critical_modules."verdict/orchestration/orchestration/review.py"]
+branch_coverage_floor = 65
+measured_at_baseline = 69.23
+
+[critical_modules."verdict/orchestration/orchestration/runtime.py"]
+branch_coverage_floor = 80
+measured_at_baseline = 81.45
+
+[critical_modules."verdict/orchestration/orchestration/supervisor.py"]
+branch_coverage_floor = 85
+measured_at_baseline = 89.06
+
+[critical_modules."verdict/security.py"]
+branch_coverage_floor = 75
+measured_at_baseline = 76.32
+
+[critical_modules."verdict/subagent_resolver.py"]
+branch_coverage_floor = 50
+measured_at_baseline = 54.00
+
