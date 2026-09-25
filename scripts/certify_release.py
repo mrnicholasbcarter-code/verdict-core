@@ -805,8 +805,9 @@ def write_bundle(
     )
 
     # environment.json
+    env_dict = env_snapshot if isinstance(env_snapshot, dict) else env_snapshot.to_dict()
     (output_dir / "environment.json").write_text(
-        json.dumps(env_snapshot.to_dict(), indent=2, sort_keys=True)
+        json.dumps(env_dict, indent=2, sort_keys=True)
     )
 
     # CERTIFICATION.md
