@@ -495,85 +495,127 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
             reason="bandit declared dev dependency missing; run uv sync --extra dev",
         )
 
-    # Run bandit with unified config from pyproject.toml
-    bandit_result = run_command(
-        [str(bandit_bin), "-c", "pyproject.toml", "-r", "verdict", "-ll", "-f", "json"],
-        cwd=repo_path,
-    )
-
-    # Parse bandit results
-    bandit_status = "PASS"
-    bandit_reason = ""
-    try:
-        bandit_data = json.loads(bandit_result.stdout)
-        # -ll filters to medium+; count findings at that severity
-        medium_plus = [
-            r
-            for r in bandit_data.get("results", [])
-            if r.get("issue_severity", "").upper() in ("MEDIUM", "HIGH")
-        ]
-        if medium_plus:
-            bandit_status = "FAIL"
-            bandit_reason = f"bandit: {len(medium_plus)} medium+ finding(s)"
-    except json.JSONDecodeError:
-        bandit_status = "FAIL"
-        bandit_reason = "bandit: failed to parse JSON output"
-
-    # Run pip-audit
-    pip_audit_bin = venv_bin / "pip-audit"
-    if not pip_audit_bin.exists():
-        return StepResult(
-            step_id="security",
-            name="Security checks",
-            status="FAIL",
-            reason="pip-audit declared dev dependency missing; run uv sync --extra dev",
+    # Run bandit with -q and -o <tmpfile> to avoid progress bar in stdout
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bandit_output_file = Path(tmpdir) / "bandit-output.json"
+        bandit_result = run_command(
+            [
+                str(bandit_bin),
+                "-q",
+                "-c",
+                "pyproject.toml",
+                "-r",
+                "verdict",
+                "-ll",
+                "-f",
+                "json",
+                "-o",
+                str(bandit_output_file),
+            ],
+            cwd=repo_path,
         )
 
-    pip_audit_result = run_command(
-        [str(pip_audit_bin), "--local", "--skip-editable", "-f", "json"], cwd=repo_path
-    )
-
-    # Parse pip-audit results
-    pip_audit_status = "PASS"
-    pip_audit_reason = ""
-    try:
-        audit_data = json.loads(pip_audit_result.stdout)
-        vulnerabilities = audit_data.get("dependencies", [])
-        vuln_list = [dep for dep in vulnerabilities if dep.get("vulns", [])]
-        if vuln_list:
-            pip_audit_status = "FAIL"
-            vuln_count = sum(len(dep["vulns"]) for dep in vuln_list)
-            pkg_names = ", ".join(dep["name"] for dep in vuln_list[:3])
-            pip_audit_reason = f"pip-audit: {vuln_count} vulnerability/ies in {pkg_names}"
-            if len(vuln_list) > 3:
-                pip_audit_reason += f" +{len(vuln_list) - 3} more"
-    except json.JSONDecodeError:
-        # Network or DB error: pip-audit writes errors to stderr with non-zero exit
-        stderr_lower = pip_audit_result.stderr.lower()
-        # Check for connection/network/timeout/DNS/SSL markers
-        if pip_audit_result.returncode != 0 and (
-            "connection" in stderr_lower
-            or "timeout" in stderr_lower
-            or "network" in stderr_lower
-            or "dns" in stderr_lower
-            or "ssl" in stderr_lower
-            or "certificate" in stderr_lower
-        ):
-            pip_audit_status = "INCOMPLETE"
-            # Extract first non-empty stderr line
-            first_stderr_line = next(
-                (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
-                "network/DB error",
-            )
-            pip_audit_reason = f"pip-audit: {first_stderr_line}"
+        # Parse bandit results from file
+        bandit_status = "PASS"
+        bandit_reason = ""
+        if bandit_output_file.exists():
+            try:
+                bandit_data = json.loads(bandit_output_file.read_text())
+                # -ll filters to medium+; count findings at that severity
+                medium_plus = [
+                    r
+                    for r in bandit_data.get("results", [])
+                    if r.get("issue_severity", "").upper() in ("MEDIUM", "HIGH")
+                ]
+                if medium_plus:
+                    bandit_status = "FAIL"
+                    bandit_reason = f"bandit: {len(medium_plus)} medium+ finding(s)"
+            except json.JSONDecodeError:
+                bandit_status = "FAIL"
+                bandit_reason = "bandit: failed to parse JSON output"
         else:
-            # Other parse failure
-            pip_audit_status = "FAIL"
-            first_error_line = next(
-                (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
-                "failed to parse output",
+            bandit_status = "FAIL"
+            # Extract first stderr line if available
+            first_stderr_line = next(
+                (line.strip() for line in bandit_result.stderr.split("\n") if line.strip()),
+                "output file not created",
             )
-            pip_audit_reason = f"pip-audit: {first_error_line}"
+            bandit_reason = f"bandit: {first_stderr_line}"
+
+        # Run pip-audit (optionally write to file for symmetry)
+        pip_audit_bin = venv_bin / "pip-audit"
+        if not pip_audit_bin.exists():
+            return StepResult(
+                step_id="security",
+                name="Security checks",
+                status="FAIL",
+                reason="pip-audit declared dev dependency missing; run uv sync --extra dev",
+            )
+
+        pip_audit_output_file = Path(tmpdir) / "pip-audit-output.json"
+        pip_audit_result = run_command(
+            [
+                str(pip_audit_bin),
+                "--local",
+                "--skip-editable",
+                "-f",
+                "json",
+                "-o",
+                str(pip_audit_output_file),
+            ],
+            cwd=repo_path,
+        )
+
+        # Parse pip-audit results from file
+        pip_audit_status = "PASS"
+        pip_audit_reason = ""
+        if pip_audit_output_file.exists():
+            try:
+                audit_data = json.loads(pip_audit_output_file.read_text())
+                vulnerabilities = audit_data.get("dependencies", [])
+                vuln_list = [dep for dep in vulnerabilities if dep.get("vulns", [])]
+                if vuln_list:
+                    pip_audit_status = "FAIL"
+                    vuln_count = sum(len(dep["vulns"]) for dep in vuln_list)
+                    pkg_names = ", ".join(dep["name"] for dep in vuln_list[:3])
+                    pip_audit_reason = f"pip-audit: {vuln_count} vulnerability/ies in {pkg_names}"
+                    if len(vuln_list) > 3:
+                        pip_audit_reason += f" +{len(vuln_list) - 3} more"
+            except json.JSONDecodeError:
+                # Other parse failure
+                pip_audit_status = "FAIL"
+                first_error_line = next(
+                    (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
+                    "failed to parse output",
+                )
+                pip_audit_reason = f"pip-audit: {first_error_line}"
+        else:
+            # Network or DB error: pip-audit writes errors to stderr with non-zero exit
+            stderr_lower = pip_audit_result.stderr.lower()
+            # Check for connection/network/timeout/DNS/SSL markers
+            if pip_audit_result.returncode != 0 and (
+                "connection" in stderr_lower
+                or "timeout" in stderr_lower
+                or "network" in stderr_lower
+                or "dns" in stderr_lower
+                or "ssl" in stderr_lower
+                or "certificate" in stderr_lower
+            ):
+                pip_audit_status = "INCOMPLETE"
+                # Extract first non-empty stderr line
+                first_stderr_line = next(
+                    (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
+                    "network/DB error",
+                )
+                pip_audit_reason = f"pip-audit: {first_stderr_line}"
+            else:
+                # Other failure
+                pip_audit_status = "FAIL"
+                first_error_line = next(
+                    (line.strip() for line in pip_audit_result.stderr.split("\n") if line.strip()),
+                    "output file not created",
+                )
+                pip_audit_reason = f"pip-audit: {first_error_line}"
 
     duration = (datetime.now(timezone.utc) - start).total_seconds()
 
