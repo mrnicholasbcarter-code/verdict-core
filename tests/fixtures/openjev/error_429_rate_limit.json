@@ -1,0 +1,6 @@
+{
+  "detail": {
+    "error_type": "rate_limit_error",
+    "message": "Too many requests per minute."
+  }
+}

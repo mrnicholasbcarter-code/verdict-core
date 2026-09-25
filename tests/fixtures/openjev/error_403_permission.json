@@ -1,0 +1,6 @@
+{
+  "detail": {
+    "error_type": "permission_error",
+    "message": "Account disabled or email not verified."
+  }
+}

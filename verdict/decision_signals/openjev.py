@@ -1,13 +1,15 @@
-"""OpenJev System-One decision signal provider (BOD-199)."""
+"""OpenJev / Codiv System-One decision signal provider (BOD-235)."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+import verdict
 from verdict.decision_signals.contracts import (
     DecisionQuestionV1,
     DecisionSignalSetV1,
@@ -16,10 +18,77 @@ from verdict.decision_signals.contracts import (
 from verdict.gateway_adapter_runtime import AdapterFailureSignal, NormalizedFailure
 from verdict.gateway_adapters import NormalizedFailureClass
 
-# Constants from autodev_routing
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+CODIV_SYSTEMONE_PATH = "/v1/systemone"
+PINNED_MODEL = "openjev-0.1"
+
 RETRY_AFTER_MIN_S = 1
 RETRY_AFTER_MAX_S = 300
 RETRY_AFTER_DEFAULT_S = 60
+
+# Default network timeout for the Codiv API call.
+# Overridable via VERDICT_DECISION_SIGNALS_TIMEOUT_MS (BOD-235/BOD-238).
+# Must be low: this call runs BEFORE planning, so a slow Codiv adds to every run.
+DEFAULT_TIMEOUT_MS = 1500
+
+# Fixed question set sent in every SHADOW / ADVISORY call.
+# Maps our signal names to Codiv question definitions.
+_QUESTIONS: dict[str, dict[str, Any]] = {
+    "complexity": {
+        "type": "score",
+        "instructions": "How complex is this software task overall",
+        "criteria": ["trivial", "moderate", "hard", "very hard"],
+    },
+    "decomposability": {
+        "type": "score",
+        "instructions": "How easily can this task be broken into independent subtasks",
+        "criteria": ["monolithic", "partially decomposable", "cleanly decomposable"],
+    },
+    "ambiguity": {
+        "type": "score",
+        "instructions": "How ambiguous or under-specified are the task requirements",
+        "criteria": ["clear", "somewhat ambiguous", "highly ambiguous"],
+    },
+    "frontier_worthy": {
+        "type": "noul",
+        "instructions": "The task genuinely requires a frontier-level model (reasoning, breadth, novelty)",
+    },
+    "security_sensitive": {
+        "type": "noul",
+        "instructions": "The task touches security, authentication, secrets, privacy or compliance",
+    },
+    "verification_strength": {
+        "type": "score",
+        "instructions": "How rigorously should the output be verified",
+        "criteria": ["light review", "standard review", "deep audit"],
+    },
+    "context_need": {
+        "type": "score",
+        "instructions": "How much additional context or hydration does the task require",
+        "criteria": ["self-contained", "needs some context", "heavy context required"],
+    },
+}
+
+# Levels per score question (len of criteria).
+_SCORE_LEVELS: dict[str, int] = {
+    "complexity": 4,
+    "decomposability": 3,
+    "ambiguity": 3,
+    "verification_strength": 3,
+    "context_need": 3,
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _user_agent() -> str:
+    return f"verdict-core/{verdict.__version__}"
 
 
 def parse_retry_after(value: str | None, *, now: datetime) -> float:
@@ -38,17 +107,14 @@ def parse_retry_after(value: str | None, *, now: datetime) -> float:
 
     value = value.strip()
 
-    # Try parsing as integer seconds first
     try:
         seconds = int(value)
         if seconds < 0:
             return float(RETRY_AFTER_DEFAULT_S)
-        # Clamp to bounds
         return float(max(RETRY_AFTER_MIN_S, min(seconds, RETRY_AFTER_MAX_S)))
     except ValueError:
         pass
 
-    # Try parsing as HTTP-date
     try:
         from email.utils import parsedate_to_datetime
 
@@ -61,8 +127,67 @@ def parse_retry_after(value: str | None, *, now: datetime) -> float:
         return float(RETRY_AFTER_DEFAULT_S)
 
 
+def _entropy_confidence(noul_p: float) -> float:
+    """Confidence for a noul answer using 1 - H(p)/ln 2."""
+    import math
+
+    p = max(1e-15, min(1.0 - 1e-15, noul_p))
+    q = 1.0 - p
+    h = -(p * math.log(p) + q * math.log(q))
+    return max(0.0, min(1.0, 1.0 - h / math.log(2)))
+
+
+def _score_confidence(probs: dict[str, float], k: int) -> float:
+    """Confidence for a score/choice answer using 1 - H(p)/ln k."""
+    import math
+
+    if k <= 1:
+        return 1.0
+    h = 0.0
+    for v in probs.values():
+        if v > 1e-15:
+            h -= v * math.log(v)
+    return max(0.0, min(1.0, 1.0 - h / math.log(k)))
+
+
+def _answers_to_signals(answers: dict[str, Any]) -> tuple[dict[str, float], float]:
+    """Convert Codiv answers dict to (signals, confidence).
+
+    noul  -> value = probability of yes  (already in [0,1])
+    score -> value = score / (levels-1)  so it is in [0,1]
+    """
+    signals: dict[str, float] = {}
+    confidences: list[float] = []
+
+    for name, ans in answers.items():
+        atype = ans.get("type")
+        if atype == "noul":
+            v = float(ans["noul"])
+            signals[name] = max(0.0, min(1.0, v))
+            confidences.append(_entropy_confidence(v))
+        elif atype == "score":
+            raw = float(ans["score"])
+            levels = _SCORE_LEVELS.get(name, 2)
+            signals[name] = max(0.0, min(1.0, raw / max(1, levels - 1)))
+            probs = ans.get("probabilities", {})
+            if probs:
+                confidences.append(_score_confidence(probs, levels))
+        elif atype == "choice":
+            probs = ans.get("probabilities", {})
+            if probs:
+                k = len(probs)
+                confidences.append(_score_confidence(probs, k))
+
+    mean_conf = sum(confidences) / len(confidences) if confidences else 0.0
+    return signals, max(0.0, min(1.0, mean_conf))
+
+
 def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> NormalizedFailure:
-    """Normalize HTTP/runtime failure to NormalizedFailure (BOD-198 compatible)."""
+    """Normalize HTTP/runtime failure to NormalizedFailure (BOD-198 / BOD-235 compatible).
+
+    Error shape: {"detail": {"error_type": "...", "message": "..."}}
+    The code field on AdapterFailureSignal carries the error_type value.
+    """
     status = signal.status_code
     cooldown_seconds: float | None = None
 
@@ -70,20 +195,26 @@ def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> Normali
         failure_class = NormalizedFailureClass.CANCELLED
     elif signal.timed_out:
         failure_class = NormalizedFailureClass.TIMEOUT
-    elif status in {401, 403}:
+    elif status == 401:
         failure_class = NormalizedFailureClass.AUTHENTICATION
-    elif status == 402:
-        failure_class = NormalizedFailureClass.QUOTA
-    elif status == 429:
-        # BOD-198: Distinguish quota exhaustion vs rate limiting
-        code_lower = signal.code.lower() if signal.code else ""
-        if code_lower in {"insufficient_quota", "quota_exceeded", "quota_exhausted"}:
-            failure_class = NormalizedFailureClass.QUOTA
+    elif status == 403:
+        code = signal.code or ""
+        if code == "permission_error":
+            failure_class = NormalizedFailureClass.AUTHORIZATION
         else:
+            # authentication_error (no key sent) or unknown
+            failure_class = NormalizedFailureClass.AUTHENTICATION
+    elif status == 429:
+        code = signal.code or ""
+        if code == "quota_exceeded_error":
+            failure_class = NormalizedFailureClass.QUOTA  # not retryable
+        else:
+            # rate_limit_error -> RATE_LIMIT + retry-after
             failure_class = NormalizedFailureClass.RATE_LIMIT
             cooldown_seconds = parse_retry_after(signal.retry_after, now=now)
     elif status == 529:
         failure_class = NormalizedFailureClass.OVERLOADED
+        cooldown_seconds = parse_retry_after(signal.retry_after, now=now)
     elif status and 400 <= status < 500:
         failure_class = NormalizedFailureClass.INVALID_REQUEST
     elif status and 500 <= status < 600:
@@ -107,74 +238,124 @@ def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> Normali
     )
 
 
+# ---------------------------------------------------------------------------
+# Provider
+# ---------------------------------------------------------------------------
+
+
 class OpenJevSystemOneProvider:
-    """OpenJev System-One decision signal provider (SHADOW-only, BOD-199)."""
+    """OpenJev / Codiv System-One decision signal provider (BOD-235).
+
+    Sends the fixed question set to POST /v1/systemone and maps the answers
+    back to DecisionSignalSetV1 signals in [0,1].
+
+    Environment variables (official TypeSafe SDK names):
+        TYPESAFE_API_KEY   - API key (required for live calls)
+        TYPESAFE_BASE_URL  - Base URL (default: https://api.codiv.ai)
+
+    Override the pinned model with:
+        VERDICT_OPENJEV_MODEL (default: openjev-0.1)
+    """
 
     def __init__(
         self,
         *,
         base_url: str | None = None,
         api_key: str | None = None,
+        timeout_ms: int | None = None,
         transport: Callable[
             [str, dict[str, str], dict[str, Any]], tuple[int, dict[str, str], bytes]
         ]
         | None = None,
     ) -> None:
-        """Initialize OpenJev provider.
-
-        Args:
-            base_url: OpenJev endpoint base URL (default: from OPENJEV_BASE_URL env)
-            api_key: OpenJev API key (default: from OPENJEV_API_KEY env)
-            transport: Optional injectable transport for testing (url, headers, payload) -> (status, headers, body)
-        """
-        self.base_url = base_url or os.environ.get("OPENJEV_BASE_URL", "").strip()
-        self.api_key = api_key or os.environ.get("OPENJEV_API_KEY", "").strip()
+        self.base_url = (
+            base_url or os.environ.get("TYPESAFE_BASE_URL", "").strip() or "https://api.codiv.ai"
+        )
+        self.api_key = api_key or os.environ.get("TYPESAFE_API_KEY", "").strip()
+        self.model = os.environ.get("VERDICT_OPENJEV_MODEL", "").strip() or PINNED_MODEL
         self.transport = transport
+        # Timeout from arg > env > default. Stored as seconds for http.client.
+        if timeout_ms is not None:
+            self.timeout_s = max(0.1, timeout_ms / 1000.0)
+        else:
+            env_ms_raw = os.environ.get("VERDICT_DECISION_SIGNALS_TIMEOUT_MS", "").strip()
+            try:
+                env_ms = int(env_ms_raw)
+                self.timeout_s = max(0.1, env_ms / 1000.0)
+            except (ValueError, TypeError):
+                self.timeout_s = DEFAULT_TIMEOUT_MS / 1000.0
+
+    def _build_state(self, question: DecisionQuestionV1) -> str:
+        """Build scrubbed, minimal state from a DecisionQuestionV1."""
+        from verdict.orchestration.receipt import scrub_secrets
+
+        raw = question.task_summary[:500] if question.task_summary else ""
+        scrubbed = scrub_secrets(raw)
+        hints_part = ""
+        if question.complexity_hints:
+            with contextlib.suppress(Exception):
+                hints_part = " " + json.dumps(question.complexity_hints)
+        return f"{question.purpose}: {scrubbed}{hints_part}".strip()
+
+    def _fail(
+        self,
+        *,
+        failure_class: NormalizedFailureClass,
+        request_id: str,
+        purpose: str,
+        input_digest: str,
+        latency_ms: int,
+        now: datetime,
+    ) -> DecisionSignalSetV1:
+        return DecisionSignalSetV1(
+            schema_version="decision-signals/v1",
+            provider="openjev",
+            model=self.model,
+            version="unknown",
+            request_id=request_id,
+            purpose=purpose,
+            signals=None,
+            confidence=0.0,
+            latency_ms=latency_ms,
+            usage={"input_tokens": 0, "output_tokens": 0},
+            input_digest=input_digest,
+            observed_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            failure_class=failure_class,
+            mode="SHADOW",
+        )
 
     def signals(self, question: DecisionQuestionV1, *, now: datetime) -> DecisionSignalSetV1:
-        """Return decision signals for question. NEVER raises; failures as signals with failure_class.
-
-        Args:
-            question: Typed decision question
-            now: Current datetime for failure classification
-
-        Returns:
-            DecisionSignalSetV1 with signals or failure_class set
-        """
-        request_id = f"openjev-{now.isoformat()}"
+        """Return decision signals. NEVER raises; failures returned as signal set with failure_class."""
         input_digest = compute_input_digest(question)
+        request_id = f"openjev-{now.isoformat()}"
+        start_ts = now.timestamp()
 
-        # Missing credentials -> UNKNOWN
-        if not self.base_url or not self.api_key:
-            return DecisionSignalSetV1(
-                schema_version="decision-signals/v1",
-                provider="openjev",
-                model="system-one",
-                version="unknown",
+        def elapsed_ms() -> int:
+            return max(0, int((datetime.now(timezone.utc).timestamp() - start_ts) * 1000))
+
+        if not self.api_key:
+            return self._fail(
+                failure_class=NormalizedFailureClass.UNKNOWN,
                 request_id=request_id,
                 purpose=question.purpose,
-                signals=None,
-                confidence=0.0,
-                latency_ms=0,
-                usage={"input_tokens": 0, "output_tokens": 0},
                 input_digest=input_digest,
-                observed_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-                failure_class=NormalizedFailureClass.UNKNOWN,
-                mode="SHADOW",
+                latency_ms=0,
+                now=now,
             )
 
-        # Build request
-        url = f"{self.base_url.rstrip('/')}/v1/systemone"
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        payload = question.to_dict()
+        url = f"{self.base_url.rstrip('/')}{CODIV_SYSTEMONE_PATH}"
+        state = self._build_state(question)
+        payload: dict[str, Any] = {"model": self.model, "state": state, "questions": _QUESTIONS}
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": _user_agent(),
+        }
 
-        # Execute request
-        start_ms = int(now.timestamp() * 1000)
         try:
             if self.transport:
                 status, response_headers, body = self.transport(url, headers, payload)
             else:
-                # Real HTTP call (not used in tests)
                 import http.client
                 import urllib.parse
 
@@ -184,151 +365,133 @@ class OpenJevSystemOneProvider:
                     if parsed.scheme == "https"
                     else http.client.HTTPConnection
                 )
-                conn = conn_class(parsed.netloc, timeout=30)
+                conn = conn_class(parsed.netloc, timeout=self.timeout_s)
                 try:
-                    conn.request("POST", parsed.path, json.dumps(payload).encode("utf-8"), headers)
-                    response = conn.getresponse()
-                    status = response.status
-                    response_headers = dict(response.headers)
-                    body = response.read()
+                    conn.request(
+                        "POST", parsed.path or "/", json.dumps(payload).encode("utf-8"), headers
+                    )
+                    resp = conn.getresponse()
+                    status = resp.status
+                    # Case-insensitive header dict
+                    response_headers = {k.lower(): v for k, v in resp.getheaders()}
+                    body = resp.read()
                 finally:
                     conn.close()
 
-            end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-            latency_ms = end_ms - start_ms
+            latency_ms = elapsed_ms()
 
-            # Success path
             if status == 200:
                 try:
                     data = json.loads(body.decode("utf-8"))
-                    # Validate required fields
-                    required = [
-                        "provider",
-                        "model",
-                        "version",
-                        "confidence",
-                        "latency_ms",
-                        "usage",
-                        "observed_at",
-                    ]
-                    missing = [f for f in required if f not in data]
-                    if missing:
-                        raise KeyError(f"Missing required fields: {missing}")
+                    # Real response shape: {model, answers, usage}
+                    answers = data.get("answers")
+                    if not isinstance(answers, dict) or not answers:
+                        raise ValueError("no answers")
+                    usage_raw = data.get("usage", {})
+                    usage = {
+                        "input_tokens": int(usage_raw.get("input_tokens", 0)),
+                        "output_tokens": int(usage_raw.get("output_tokens", 0)),
+                    }
+                    response_model = data.get("model", self.model)
+                    # x-typesafe-request-id from response headers (case-insensitive)
+                    rh_lower = (
+                        {k.lower(): v for k, v in response_headers.items()}
+                        if isinstance(response_headers, dict)
+                        else {}
+                    )
+                    resp_request_id = rh_lower.get("x-typesafe-request-id", request_id)
 
-                    return DecisionSignalSetV1(
-                        schema_version="decision-signals/v1",
-                        provider=data["provider"],
-                        model=data["model"],
-                        version=data["version"],
-                        request_id=data.get("request_id", request_id),
-                        purpose=question.purpose,
-                        signals=data.get("signals"),
-                        confidence=data["confidence"],
-                        latency_ms=data["latency_ms"],
-                        usage=data["usage"],
-                        input_digest=input_digest,
-                        observed_at=data["observed_at"],
-                        failure_class=None,
-                        mode="SHADOW",
-                    )
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    # Malformed response
-                    failure_signal = AdapterFailureSignal(
-                        code="malformed_response", status_code=status
-                    )
-                    normalized = normalize_failure(failure_signal, now=now)
+                    signals, confidence = _answers_to_signals(answers)
+
                     return DecisionSignalSetV1(
                         schema_version="decision-signals/v1",
                         provider="openjev",
-                        model="system-one",
-                        version="unknown",
-                        request_id=request_id,
+                        model=response_model,
+                        version=response_model,  # version = exact model from response
+                        request_id=resp_request_id,
                         purpose=question.purpose,
-                        signals=None,
-                        confidence=0.0,
+                        signals=signals if signals else None,
+                        confidence=confidence,
                         latency_ms=latency_ms,
-                        usage={"input_tokens": 0, "output_tokens": 0},
+                        usage=usage,
                         input_digest=input_digest,
                         observed_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-                        failure_class=NormalizedFailureClass.INVALID_REQUEST,
+                        failure_class=None,
                         mode="SHADOW",
                     )
+                except Exception:
+                    return self._fail(
+                        failure_class=NormalizedFailureClass.INVALID_REQUEST,
+                        request_id=request_id,
+                        purpose=question.purpose,
+                        input_digest=input_digest,
+                        latency_ms=latency_ms,
+                        now=now,
+                    )
 
-            # Failure path - normalize with existing logic
-            retry_after = response_headers.get("Retry-After") if status == 429 else None
-            code = f"http_{status}"
-
-            # Parse error response for 429 to detect quota vs rate-limit
-            if status == 429:
-                try:
-                    error_data = json.loads(body.decode("utf-8"))
-                    if "error" in error_data:
-                        error_code = error_data["error"].get("code", "")
-                        if error_code:
-                            code = error_code
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    pass
-
-            failure_signal = AdapterFailureSignal(
-                code=code, status_code=status, retry_after=retry_after
+            # Error path: parse {"detail": {"error_type": ..., "message": ...}}
+            error_type = ""
+            rh_lower = (
+                {k.lower(): v for k, v in response_headers.items()}
+                if isinstance(response_headers, dict)
+                else {}
             )
-            normalized = normalize_failure(failure_signal, now=now)
+            retry_after_val = rh_lower.get("retry-after")
 
-            return DecisionSignalSetV1(
-                schema_version="decision-signals/v1",
-                provider="openjev",
-                model="system-one",
-                version="unknown",
-                request_id=request_id,
-                purpose=question.purpose,
-                signals=None,
-                confidence=0.0,
-                latency_ms=latency_ms,
-                usage={"input_tokens": 0, "output_tokens": 0},
-                input_digest=input_digest,
-                observed_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            try:
+                err_data = json.loads(body.decode("utf-8"))
+                detail = err_data.get("detail")
+                if isinstance(detail, dict):
+                    error_type = detail.get("error_type", "")
+            except Exception:
+                pass
+
+            code = error_type or f"http_{status}"
+            fail_sig = AdapterFailureSignal(
+                code=code, status_code=status, retry_after=retry_after_val
+            )
+            normalized = normalize_failure(fail_sig, now=now)
+
+            return self._fail(
                 failure_class=normalized.failure_class,
-                mode="SHADOW",
-            )
-
-        except TimeoutError:
-            # Timeout
-            end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-            return DecisionSignalSetV1(
-                schema_version="decision-signals/v1",
-                provider="openjev",
-                model="system-one",
-                version="unknown",
                 request_id=request_id,
                 purpose=question.purpose,
-                signals=None,
-                confidence=0.0,
-                latency_ms=end_ms - start_ms,
-                usage={"input_tokens": 0, "output_tokens": 0},
                 input_digest=input_digest,
-                observed_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-                failure_class=NormalizedFailureClass.TIMEOUT,
-                mode="SHADOW",
+                latency_ms=latency_ms,
+                now=now,
+            )
+
+        except (TimeoutError, OSError) as exc:
+            # http.client raises OSError("timed out") on socket timeout.
+            is_timeout = isinstance(exc, TimeoutError) or "timed out" in str(exc).lower()
+            return self._fail(
+                failure_class=NormalizedFailureClass.TIMEOUT
+                if is_timeout
+                else NormalizedFailureClass.TRANSPORT,
+                request_id=request_id,
+                purpose=question.purpose,
+                input_digest=input_digest,
+                latency_ms=elapsed_ms(),
+                now=now,
             )
         except Exception:
-            # Network error or other exception
-            end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-            return DecisionSignalSetV1(
-                schema_version="decision-signals/v1",
-                provider="openjev",
-                model="system-one",
-                version="unknown",
+            return self._fail(
+                failure_class=NormalizedFailureClass.TRANSPORT,
                 request_id=request_id,
                 purpose=question.purpose,
-                signals=None,
-                confidence=0.0,
-                latency_ms=end_ms - start_ms,
-                usage={"input_tokens": 0, "output_tokens": 0},
                 input_digest=input_digest,
-                observed_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-                failure_class=NormalizedFailureClass.TRANSPORT,
-                mode="SHADOW",
+                latency_ms=elapsed_ms(),
+                now=now,
             )
 
 
-__all__ = ["OpenJevSystemOneProvider", "normalize_failure", "parse_retry_after"]
+__all__ = [
+    "DEFAULT_TIMEOUT_MS",
+    "PINNED_MODEL",
+    "_QUESTIONS",
+    "_SCORE_LEVELS",
+    "OpenJevSystemOneProvider",
+    "_answers_to_signals",
+    "normalize_failure",
+    "parse_retry_after",
+]
