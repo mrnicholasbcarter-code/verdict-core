@@ -7,8 +7,7 @@ recording the full context needed to audit routing behavior.
 from __future__ import annotations
 
 import json
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -29,23 +28,14 @@ ASSIGNMENT_LOG_SCHEMA = {
         "reason",
     ],
     "properties": {
-        "assignment_id": {
-            "type": "string",
-            "description": "Unique identifier for this assignment",
-        },
+        "assignment_id": {"type": "string", "description": "Unique identifier for this assignment"},
         "timestamp": {
             "type": "string",
             "format": "date-time",
             "description": "ISO 8601 timestamp of assignment",
         },
-        "model": {
-            "type": "string",
-            "description": "Selected model identifier",
-        },
-        "provider": {
-            "type": "string",
-            "description": "Provider name",
-        },
+        "model": {"type": "string", "description": "Selected model identifier"},
+        "provider": {"type": "string", "description": "Provider name"},
         "availability_snapshot": {
             "type": "object",
             "description": "Availability state at decision time",
@@ -70,10 +60,7 @@ ASSIGNMENT_LOG_SCHEMA = {
             "type": "string",
             "description": "Machine-readable reason code for this assignment",
         },
-        "reason_detail": {
-            "type": "string",
-            "description": "Human-readable explanation",
-        },
+        "reason_detail": {"type": "string", "description": "Human-readable explanation"},
         "fallback_from": {
             "type": ["string", "null"],
             "description": "Previous model if this is a fallback/escalation",
@@ -91,14 +78,8 @@ ASSIGNMENT_LOG_SCHEMA = {
                 "checks": {"type": "array"},
             },
         },
-        "task_id": {
-            "type": "string",
-            "description": "Associated task identifier",
-        },
-        "receipt_id": {
-            "type": "string",
-            "description": "Routing receipt identifier",
-        },
+        "task_id": {"type": "string", "description": "Associated task identifier"},
+        "receipt_id": {"type": "string", "description": "Routing receipt identifier"},
     },
 }
 
@@ -106,7 +87,7 @@ ASSIGNMENT_LOG_SCHEMA = {
 @dataclass
 class AssignmentLogRecord:
     """Structured assignment log record."""
-    
+
     assignment_id: str
     timestamp: str
     model: str
@@ -121,7 +102,7 @@ class AssignmentLogRecord:
     verification_result: dict[str, Any] | None = None
     task_id: str | None = None
     receipt_id: str | None = None
-    
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-compatible dict."""
         data = {
@@ -148,7 +129,7 @@ class AssignmentLogRecord:
         if self.receipt_id:
             data["receipt_id"] = self.receipt_id
         return data
-    
+
     def to_json(self) -> str:
         """Serialize to JSON string."""
         return json.dumps(self.to_dict(), sort_keys=True)
@@ -190,17 +171,17 @@ def create_assignment_log(
 
 def create_sample_log() -> dict[str, Any]:
     """Create a sample assignment log using the flagship demo fixture."""
-    from verdict.flagship_demo import build_demo_result
     from verdict.contracts import AvailabilitySnapshot
-    
+    from verdict.flagship_demo import build_demo_result
+
     demo = build_demo_result()
     decision = demo["decision"]
-    
+
     # Extract the selected route
     selected = decision.get("selected_route", {})
     model = selected.get("model", "demo/frontier-tools")
     provider = selected.get("provider", "demo")
-    
+
     # Build availability snapshot
     snapshot = AvailabilitySnapshot(
         observed_at=datetime.now(timezone.utc).isoformat(),
@@ -208,7 +189,7 @@ def create_sample_log() -> dict[str, Any]:
         candidates=[],
         source="flagship_demo_fixture",
     )
-    
+
     record = create_assignment_log(
         model=model,
         provider=provider,
@@ -216,13 +197,10 @@ def create_sample_log() -> dict[str, Any]:
         estimated_cost_usd=0.001,
         reason="selected",
         reason_detail="Least-cost eligible candidate with required capabilities",
-        verification_result={
-            "status": "passed",
-            "checks": ["unit_tests", "schema_validation"],
-        },
+        verification_result={"status": "passed", "checks": ["unit_tests", "schema_validation"]},
         task_id="fixture-issue-35",
     )
-    
+
     return record.to_dict()
 
 

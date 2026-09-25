@@ -33,10 +33,10 @@ def generate_schema(evidence_dir: Path) -> None:
 def generate_sample(evidence_dir: Path) -> None:
     """Generate assignment_log_sample.json by running routing code."""
     sample = create_sample_log()
-    
+
     # Validate sample against schema
     _validate_sample(sample)
-    
+
     output_file = evidence_dir / "assignment_log_sample.json"
     output_file.write_text(json.dumps(sample, indent=2, sort_keys=True))
     print(f"Wrote {output_file}")
@@ -53,11 +53,11 @@ def _validate_sample(sample: dict) -> None:
         "estimated_cost_usd",
         "reason",
     ]
-    
+
     missing = [f for f in required_fields if f not in sample]
     if missing:
         raise ValueError(f"Sample missing required fields: {missing}")
-    
+
     # Type checks
     if not isinstance(sample["model"], str):
         raise ValueError("model must be string")
@@ -75,15 +75,12 @@ def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Produce assignment log evidence")
     parser.add_argument(
-        "--evidence-dir",
-        type=Path,
-        required=True,
-        help="Directory to write evidence artifacts",
+        "--evidence-dir", type=Path, required=True, help="Directory to write evidence artifacts"
     )
     args = parser.parse_args()
-    
+
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
-    
+
     try:
         generate_schema(args.evidence_dir)
         generate_sample(args.evidence_dir)
@@ -92,6 +89,7 @@ def main() -> int:
     except Exception as e:
         print(f"RESULT: FAIL ({e})", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 1
 

@@ -22,6 +22,7 @@ from pathlib import Path
 @dataclass
 class CommandResult:
     """Result of running a README command."""
+
     command: str
     status: str  # PASS, FAIL, SKIPPED
     exit_code: int | None
@@ -34,32 +35,24 @@ def extract_commands(readme: Path) -> list[tuple[str, str]]:
     content = readme.read_text()
     commands = []
     current_section = ""
-    
+
     # Find sections
     for line in content.split("\n"):
         if line.startswith("##"):
             current_section = line.strip("#").strip()
-        
+
         # Look for code blocks with shell commands
         # Commands typically start with $ or are bare commands
-        if line.strip().startswith("verdict "):
+        if line.strip().startswith("verdict ") or line.strip().startswith("python "):
             commands.append((line.strip(), current_section))
-        elif line.strip().startswith("python "):
-            commands.append((line.strip(), current_section))
-    
+
     return commands
 
 
 def run_command(cmd: str, timeout: int = 10) -> tuple[int, str]:
     """Run command with timeout, return exit code and output."""
     try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return result.returncode, result.stdout + result.stderr
     except subprocess.TimeoutExpired:
         return -1, "TIMEOUT"
@@ -70,12 +63,7 @@ def run_command(cmd: str, timeout: int = 10) -> tuple[int, str]:
 def is_credential_free(cmd: str) -> bool:
     """Check if command can run without credentials."""
     # Commands that need credentials
-    needs_creds = [
-        "orchestrate",
-        "--api-key",
-        "OMNIROUTE",
-        "execute",
-    ]
+    needs_creds = ["orchestrate", "--api-key", "OMNIROUTE", "execute"]
     return not any(pattern in cmd for pattern in needs_creds)
 
 
@@ -90,7 +78,7 @@ def verify_command(cmd: str, section: str) -> CommandResult:
             reason="requires credentials",
             section=section,
         )
-    
+
     # Skip commands with injected chaos (demo-only)
     if "--inject" in cmd:
         return CommandResult(
@@ -100,19 +88,19 @@ def verify_command(cmd: str, section: str) -> CommandResult:
             reason="demo-only with chaos injection",
             section=section,
         )
-    
+
     # Replace demo paths with actual paths
     test_cmd = cmd.replace("--repo .", "--help")  # Convert to help for safety
-    
+
     # For verdict commands, just check they exist
     if cmd.startswith("verdict"):
         # Extract the subcommand
         parts = cmd.split()
         if len(parts) > 1:
             test_cmd = "verdict --help"
-        
+
         exit_code, output = run_command(test_cmd, timeout=5)
-        
+
         if exit_code == 0:
             return CommandResult(
                 command=cmd,
@@ -129,7 +117,7 @@ def verify_command(cmd: str, section: str) -> CommandResult:
                 reason=f"command failed: {output[:100]}",
                 section=section,
             )
-    
+
     # Other commands are skipped for safety
     return CommandResult(
         command=cmd,
@@ -144,16 +132,16 @@ def extract_claims(readme: Path) -> list[tuple[str, str]]:
     """Extract numeric/verifiable claims from README."""
     content = readme.read_text()
     claims = []
-    
+
     # Look for claims like "70% coverage", version numbers, etc.
     coverage_match = re.search(r"coverage.*?(\d+)%", content, re.IGNORECASE)
     if coverage_match:
         claims.append((f"Coverage gate >= {coverage_match.group(1)}%", "badges"))
-    
+
     version_match = re.search(r"version[\s-]+(\d+\.\d+\.\d+)", content, re.IGNORECASE)
     if version_match:
         claims.append((f"Version {version_match.group(1)} documented", "badges"))
-    
+
     return claims
 
 
@@ -174,48 +162,45 @@ def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Verify README commands and claims")
     parser.add_argument(
-        "--evidence-dir",
-        type=Path,
-        required=True,
-        help="Directory to write evidence artifacts",
+        "--evidence-dir", type=Path, required=True, help="Directory to write evidence artifacts"
     )
     args = parser.parse_args()
-    
+
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
-    
+
     readme = Path("README.md")
     if not readme.exists():
-        print(f"RESULT: FAIL (README.md not found)", file=sys.stderr)
+        print("RESULT: FAIL (README.md not found)", file=sys.stderr)
         return 1
-    
+
     results = []
-    
+
     # Verify commands
     commands = extract_commands(readme)
     print(f"Found {len(commands)} commands in README")
-    
+
     for cmd, section in commands:
         result = verify_command(cmd, section)
         results.append(result)
         print(f"{result.status}: {result.command[:60]}... ({result.reason})")
-    
+
     # Verify claims
     claims = extract_claims(readme)
     print(f"\nFound {len(claims)} claims in README")
-    
+
     for claim, section in claims:
         result = verify_claim(claim, section)
         results.append(result)
         print(f"{result.status}: {result.command} ({result.reason})")
-    
+
     # Write log
     output_file = args.evidence_dir / "readme_verification.log"
     lines = ["README Verification Results", "=" * 80, ""]
-    
+
     by_status = {"PASS": [], "FAIL": [], "SKIPPED": []}
     for r in results:
         by_status[r.status].append(r)
-    
+
     for status in ["PASS", "FAIL", "SKIPPED"]:
         items = by_status[status]
         lines.append(f"{status}: {len(items)}")
@@ -225,11 +210,19 @@ def main() -> int:
             if item.exit_code is not None:
                 lines.append(f"    Exit code: {item.exit_code}")
             lines.append("")
-    
+
+    # Add result line to the log file itself
+    lines.append("")
+    lines.append("=" * 80)
+    if by_status["FAIL"]:
+        lines.append(f"RESULT: FAIL ({len(by_status['FAIL'])} commands failed)")
+    else:
+        lines.append("RESULT: PASS")
+
     output_file.write_text("\n".join(lines))
     print(f"\nWrote {output_file}")
-    
-    # Determine overall result
+
+    # Determine overall result (exit code and stdout)
     if by_status["FAIL"]:
         print(f"RESULT: FAIL ({len(by_status['FAIL'])} commands failed)")
         return 1
