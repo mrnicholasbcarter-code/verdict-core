@@ -714,42 +714,61 @@ def test_step_security_pip_audit_missing():
     assert "pip-audit declared dev dependency missing" in result.reason
 
 
-def test_manifest_verdict_incomplete_when_step_incomplete():
-    """Test that manifest verdict is INCOMPLETE when any step has INCOMPLETE status."""
-    # Create a manifest with security step INCOMPLETE and everything else PASS
+def test_compute_verdict_incomplete_when_step_incomplete():
+    """Test compute_verdict: INCOMPLETE step with clean tree -> INCOMPLETE."""
     security_incomplete = certify_release.StepResult(
         step_id="security",
         name="Security checks",
         status="INCOMPLETE",
         reason="pip-audit: network error",
     )
-
     other_pass = certify_release.StepResult(step_id="test", name="Tests", status="PASS")
 
-    manifest = certify_release.CertificationManifest(
-        git_sha="abc123",
-        git_dirty=False,
-        started_at="2024-01-01T00:00:00Z",
-        finished_at="2024-01-01T00:15:00Z",
-        steps=[security_incomplete, other_pass],
-        verdict="INCOMPLETE",  # Will be overwritten by logic
+    verdict = certify_release.compute_verdict([security_incomplete, other_pass], git_dirty=False)
+    assert verdict == "INCOMPLETE"
+
+
+def test_compute_verdict_fail_beats_incomplete():
+    """Test compute_verdict: FAIL beats INCOMPLETE."""
+    fail_step = certify_release.StepResult(
+        step_id="test", name="Tests", status="FAIL", reason="1 failed"
+    )
+    incomplete_step = certify_release.StepResult(
+        step_id="security", name="Security", status="INCOMPLETE"
     )
 
-    # Simulate the verdict logic as in the real code
-    has_failures = any(s.status == "FAIL" for s in manifest.steps)
-    has_incomplete = any(s.status == "INCOMPLETE" for s in manifest.steps)
-    has_skipped_rehearsals = any(
-        s.step_id == "rehearsals" and s.status == "SKIPPED" for s in manifest.steps
+    verdict = certify_release.compute_verdict([fail_step, incomplete_step], git_dirty=False)
+    assert verdict == "FAILED"
+
+
+def test_compute_verdict_all_pass_clean_certified():
+    """Test compute_verdict: all PASS with clean tree -> CERTIFIED."""
+    test_pass = certify_release.StepResult(step_id="test", name="Tests", status="PASS")
+    security_pass = certify_release.StepResult(step_id="security", name="Security", status="PASS")
+    rehearsals_pass = certify_release.StepResult(
+        step_id="rehearsals", name="Rehearsals", status="PASS"
     )
 
-    if has_failures:
-        manifest.verdict = "FAILED"
-    elif has_incomplete or manifest.git_dirty or has_skipped_rehearsals:
-        manifest.verdict = "INCOMPLETE"
-    else:
-        manifest.verdict = "CERTIFIED"
+    verdict = certify_release.compute_verdict(
+        [test_pass, security_pass, rehearsals_pass], git_dirty=False
+    )
+    assert verdict == "CERTIFIED"
 
-    # Assert: INCOMPLETE step -> verdict INCOMPLETE, never CERTIFIED
-    assert manifest.verdict == "INCOMPLETE"
-    assert not has_failures
-    assert has_incomplete
+
+def test_compute_verdict_skipped_rehearsals_incomplete():
+    """Test compute_verdict: SKIPPED rehearsals -> INCOMPLETE."""
+    test_pass = certify_release.StepResult(step_id="test", name="Tests", status="PASS")
+    rehearsals_skipped = certify_release.StepResult(
+        step_id="rehearsals", name="Rehearsals", status="SKIPPED", reason="none provided"
+    )
+
+    verdict = certify_release.compute_verdict([test_pass, rehearsals_skipped], git_dirty=False)
+    assert verdict == "INCOMPLETE"
+
+
+def test_compute_verdict_dirty_tree_incomplete():
+    """Test compute_verdict: dirty git tree -> INCOMPLETE."""
+    test_pass = certify_release.StepResult(step_id="test", name="Tests", status="PASS")
+
+    verdict = certify_release.compute_verdict([test_pass], git_dirty=True)
+    assert verdict == "INCOMPLETE"

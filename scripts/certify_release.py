@@ -723,6 +723,28 @@ def step_rehearsals(
 # === Main Certification Flow ===
 
 
+def compute_verdict(
+    steps: list[StepResult], *, git_dirty: bool
+) -> Literal["CERTIFIED", "INCOMPLETE", "FAILED"]:
+    """Compute certification verdict from steps and git state.
+
+    Rules:
+    - Any FAIL -> FAILED
+    - Any INCOMPLETE or git_dirty or skipped rehearsals -> INCOMPLETE
+    - Otherwise -> CERTIFIED
+    """
+    has_failures = any(s.status == "FAIL" for s in steps)
+    has_incomplete = any(s.status == "INCOMPLETE" for s in steps)
+    has_skipped_rehearsals = any(s.step_id == "rehearsals" and s.status == "SKIPPED" for s in steps)
+
+    if has_failures:
+        return "FAILED"
+    elif has_incomplete or git_dirty or has_skipped_rehearsals:
+        return "INCOMPLETE"
+    else:
+        return "CERTIFIED"
+
+
 def run_certification(
     repo_path: Path, *, allow_dirty: bool = False, rehearsal_dirs: dict[str, Path] | None = None
 ) -> tuple[CertificationManifest, dict[str, Any]]:
@@ -802,16 +824,7 @@ def run_certification(
     manifest.finished_at = utc_timestamp()
 
     # Determine verdict
-    has_failures = any(s.status == "FAIL" for s in steps)
-    has_incomplete = any(s.status == "INCOMPLETE" for s in steps)
-    has_skipped_rehearsals = any(s.step_id == "rehearsals" and s.status == "SKIPPED" for s in steps)
-
-    if has_failures:
-        manifest.verdict = "FAILED"
-    elif has_incomplete or manifest.git_dirty or has_skipped_rehearsals:
-        manifest.verdict = "INCOMPLETE"
-    else:
-        manifest.verdict = "CERTIFIED"
+    manifest.verdict = compute_verdict(steps, git_dirty=manifest.git_dirty)
 
     # Collect detailed results
     detailed = {"manifest": manifest.to_dict(), "environment": env_snapshot.to_dict()}
