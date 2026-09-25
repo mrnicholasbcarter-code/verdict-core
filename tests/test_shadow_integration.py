@@ -392,7 +392,7 @@ async def test_off_mode_provider_never_called(tmp_path: Path, monkeypatch) -> No
 @pytest.mark.asyncio
 async def test_invalid_mode_treated_as_off(tmp_path: Path, monkeypatch) -> None:
     """Invalid VERDICT_DECISION_SIGNALS_MODE -> treated as OFF, warning emitted, 0 calls."""
-    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "ADVISORY")
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS_MODE", "TURBO")  # invalid -> OFF + warning
 
     repo = _init_git_repo(tmp_path)
 

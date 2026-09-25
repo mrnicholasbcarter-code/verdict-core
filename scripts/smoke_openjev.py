@@ -21,23 +21,9 @@ import sys
 import urllib.parse
 from datetime import datetime, timezone
 
-# Fixed question set (same as the provider)
-QUESTIONS = {
-    "complexity": {
-        "type": "score",
-        "instructions": "How complex is this software task overall",
-        "criteria": ["trivial", "moderate", "hard", "very hard"],
-    },
-    "frontier_worthy": {
-        "type": "noul",
-        "instructions": "The task genuinely requires a frontier-level model",
-    },
-    "kind": {
-        "type": "choice",
-        "instructions": "What kind of work is this",
-        "criteria": {"refactor": None, "bugfix": None, "feature": None, "docs": None},
-    },
-}
+# Fixed question set: import canonical set from the provider
+import verdict
+from verdict.decision_signals.openjev import _QUESTIONS as QUESTIONS
 
 
 def main() -> int:
@@ -50,8 +36,6 @@ def main() -> int:
 
     base_url = os.environ.get("TYPESAFE_BASE_URL", "https://api.codiv.ai").strip()
     model = os.environ.get("VERDICT_OPENJEV_MODEL", "openjev-0.1").strip()
-
-    import verdict
 
     user_agent = f"verdict-core/{verdict.__version__}"
 
