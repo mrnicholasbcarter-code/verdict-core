@@ -565,6 +565,7 @@ class DagRuntime:
                 duration_seconds=round(terminal.duration_seconds, 2),
                 session_ref=terminal.session_ref,
                 stop_reason=terminal.stop_reason,
+                error=terminal.error,
                 attempt=run.attempt,
                 fault_injected=terminal.session_ref.startswith("fault-injected"),
             )

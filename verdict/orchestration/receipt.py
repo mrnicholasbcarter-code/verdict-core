@@ -10,7 +10,7 @@ Event ``data`` conventions read by the receipt (extra keys are ignored):
 
 * ``run_started``: ``run_id``, ``goal``          * ``run_finished``: ``outcome``, ``reason``
 * ``dispatch``: ``attempt``, ``route_id``, ``provider``, ``capacity_class``, ``fault_injected``
-* ``terminal``: ``attempt``, ``ok``, ``route_id``, ``duration_seconds``, ``fault_injected``
+* ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``
 * ``failure``: ``attempt``, ``category``          * ``node_state``: ``state``
 * ``verify``: ``ok``, ``command``, ``exit_code``   * ``barrier``: ``name``, ``ok``
 * ``integrate``: ``commit``                        * ``review``: ``status``, ``reviewer``,
@@ -189,6 +189,41 @@ def _attempt_of(event: RunEvent, fallback: int) -> int:
     return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else fallback
 
 
+def _classify_route_identity(
+    route_id: str, reported_model: str | None, ok: bool, error: str, failure_category: str
+) -> str:
+    """Classify route identity match status (BOD-209).
+
+    Args:
+        route_id: Intended route identity from dispatch
+        reported_model: Actual model reported by terminal (may be None or empty)
+        ok: Terminal success flag
+        error: Terminal error field (from WorkerTerminal.error)
+        failure_category: Failure category from subsequent failure event (if any)
+
+    Returns:
+        One of: "match", "mismatch", "unattested", "mechanical"
+
+    Only successful terminals (ok=True) can be classified as match/mismatch.
+    Failed terminals are "unattested" UNLESS the error is "model_mismatch"
+    (or failure_category is "model_mismatch"), in which case they are "mismatch".
+    The comparison follows executors.py line 234: exact string equality.
+    """
+    if reported_model == "(mechanical merge)":
+        return "mechanical"
+    if not ok:
+        # Failed terminals: check if it's a model_mismatch error
+        if error == "model_mismatch" or failure_category == "model_mismatch":
+            return "mismatch"
+        return "unattested"
+    # Successful terminal: compare reported_model to route_id
+    if not reported_model:  # None or empty string
+        return "unattested"
+    if reported_model == route_id:
+        return "match"
+    return "mismatch"
+
+
 def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, Any]:
     attempts: dict[int, dict[str, Any]] = {}
     current = 0
@@ -221,10 +256,20 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 row["capacity_class"] = str(data["capacity_class"])
             row["fault_injected"] = bool(row["fault_injected"] or data.get("fault_injected"))
             if event.type == "terminal":
-                row["outcome"] = "success" if data.get("ok") is True else "failure"
+                ok = data.get("ok") is True
+                row["outcome"] = "success" if ok else "failure"
                 if isinstance(data.get("duration_seconds"), int | float):
                     row["duration_seconds"] = float(data["duration_seconds"])
-                if data.get("ok") is True:
+                # BOD-209: track route identity (intended vs executed)
+                reported = str(data.get("reported_model") or "")
+                error = str(data.get("error") or "")
+                row["intended_route"] = route
+                row["executed_model"] = reported if reported else None
+                # Store terminal data for route_identity classification
+                row["_terminal_ok"] = ok
+                row["_terminal_error"] = error
+                row["_terminal_reported"] = reported
+                if ok:
                     last_success_seq = event.seq
             elif event.type == "failure":
                 row["outcome"] = "failure"
@@ -236,6 +281,20 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 last_success_seq = event.seq
         elif event.type == "integrate" and data.get("commit"):
             commit = str(data["commit"])
+    # BOD-209: compute route_identity for each attempt (after all events processed)
+    for row in attempts.values():
+        if "_terminal_ok" in row:
+            ok = row.pop("_terminal_ok")
+            error = row.pop("_terminal_error")
+            reported = row.pop("_terminal_reported")
+            route = row["route_id"]
+            failure_cat = row.get("failure_category", "")
+            row["route_identity"] = _classify_route_identity(
+                route, reported if reported else None, ok, error, failure_cat
+            )
+        else:
+            # Dispatched but no terminal yet (shouldn't happen in a finished run)
+            row["route_identity"] = "unattested"
     validated_by = [
         {"command": e.data.get("command", ""), "exit_code": e.data.get("exit_code"), "seq": e.seq}
         for e in events
@@ -337,6 +396,27 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
             if e.type == kind
         ]
 
+    # BOD-209: compute route identity summary and warning
+    route_identity_counts = {"match": 0, "mismatch": 0, "unattested": 0, "mechanical": 0}
+    total_attempts = 0
+    has_successful_mismatch = False
+    for node in nodes:
+        for attempt in node.get("attempts", []):
+            total_attempts += 1
+            identity = attempt.get("route_identity", "unattested")
+            route_identity_counts[identity] = route_identity_counts.get(identity, 0) + 1
+            # Check if any successful attempt had a mismatch
+            if attempt.get("outcome") == "success" and identity == "mismatch":
+                has_successful_mismatch = True
+
+    route_identity_summary = {
+        "attempts": total_attempts,
+        "match": route_identity_counts["match"],
+        "mismatch": route_identity_counts["mismatch"],
+        "unattested": route_identity_counts["unattested"],
+        "mechanical": route_identity_counts["mechanical"],
+    }
+
     receipt: dict[str, Any] = {
         "schema": RECEIPT_SCHEMA,
         "run_id": str(
@@ -348,6 +428,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "graph_digest": graph.digest(),
         "topology": graph.topology.value,
         "nodes": nodes,
+        "route_identity_summary": route_identity_summary,
         "integration": {
             "ok": integration_ok,
             "barriers": [barriers[k] for k in sorted(barriers)],
@@ -364,6 +445,11 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "started_at": (started.at if started else events[0].at) if events else None,
         "finished_at": finished[-1].at if finished else None,
     }
+    # BOD-209: add route_identity_warning if any successful attempt had a mismatch
+    if has_successful_mismatch:
+        receipt["route_identity_warning"] = (
+            "One or more successful attempts reported a model different from the intended route"
+        )
     # Include optional openspec block (backward compatible)
     if "openspec" in graph_raw:
         receipt["openspec"] = graph_raw["openspec"]

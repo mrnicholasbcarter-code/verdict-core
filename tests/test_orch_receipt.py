@@ -194,6 +194,9 @@ def test_receipt_fields_with_reassignment_and_fault_injection(tmp_path: Path) ->
         "failure_category": "rate_limited",
         "duration_seconds": 1.5,
         "fault_injected": True,
+        "intended_route": "cc/claude-sonnet-5",
+        "executed_model": None,
+        "route_identity": "unattested",
     }
     assert second["route_id"] == "gh/gpt-5" and second["outcome"] == "success"
     assert second["fault_injected"] is False and second["capacity_class"] == "free"
