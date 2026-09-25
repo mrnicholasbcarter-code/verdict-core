@@ -4,6 +4,9 @@
  *
  * Fully isolated: creates a temp dir OUTSIDE the repo, packs the tarball there,
  * installs it with --no-save --no-package-lock to avoid polluting the repo.
+ * 
+ * VALIDATES: the packaged package.json has no self-dependencies, file:/link:/workspace:
+ * specifiers, or unexpected runtime dependencies.
  */
 
 import { readFile, rm, mkdir, writeFile } from 'node:fs/promises';
@@ -66,8 +69,50 @@ async function main() {
     const tarballPath = join(tempDir, tarballName);
     console.log(`✓ Created ${tarballName}\n`);
 
-    // Step 4: Create minimal package.json in temp dir
-    console.log('4. Setting up test environment...');
+    // Step 4: Validate packaged package.json
+    console.log('4. Validating packaged package.json...');
+    const packageJsonInTarball = execSync(`tar -xzOf ${tarballName} package/package.json`, {
+      cwd: tempDir,
+      encoding: 'utf8'
+    });
+    const packagedPkg = JSON.parse(packageJsonInTarball);
+    
+    // Check for self-dependency
+    if (packagedPkg.dependencies && packagedPkg.dependencies[packagedPkg.name]) {
+      console.error(`  ✗ Package depends on itself: ${packagedPkg.name}`);
+      process.exit(1);
+    }
+    
+    // Check for file:, link:, workspace: specifiers
+    const allDeps = {
+      ...packagedPkg.dependencies,
+      ...packagedPkg.devDependencies,
+      ...packagedPkg.peerDependencies,
+      ...packagedPkg.optionalDependencies
+    };
+    for (const [dep, spec] of Object.entries(allDeps)) {
+      if (typeof spec === 'string' && (spec.startsWith('file:') || spec.startsWith('link:') || spec.startsWith('workspace:'))) {
+        console.error(`  ✗ Forbidden dependency specifier: ${dep}: ${spec}`);
+        process.exit(1);
+      }
+    }
+    
+    // Check that runtime dependencies are allowed (none expected for this package)
+    const allowedRuntimeDeps = new Set([]); // No runtime deps expected
+    if (packagedPkg.dependencies) {
+      for (const dep of Object.keys(packagedPkg.dependencies)) {
+        if (!allowedRuntimeDeps.has(dep)) {
+          console.error(`  ✗ Unexpected runtime dependency: ${dep}`);
+          console.error(`    Allowed: ${Array.from(allowedRuntimeDeps).join(', ') || '(none)'}`);
+          process.exit(1);
+        }
+      }
+    }
+    
+    console.log('  ✓ Packaged package.json valid (no self-deps, file: specifiers, or unexpected deps)');
+
+    // Step 5: Create minimal package.json in temp dir
+    console.log('\n5. Setting up test environment...');
     const minimalPkg = {
       name: 'smoke',
       private: true,
@@ -86,10 +131,7 @@ async function main() {
     });
     console.log('✓ Package installed\n');
 
-    // Step 5: Create test script
-    // Note: The fixtures test SCHEMA parsing, not semantic verification.
-    // Only 'unknown-field.json' should reject at parse time (schema violation).
-    // Others (denied, expired, wrong-digest) have valid schemas but would fail verification.
+    // Step 6: Create test script
     const testScript = `import { parseContract } from '@bodanglin/verdict-contracts';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -115,7 +157,6 @@ for (const [filename, fixtureSpec] of Object.entries(v1Manifest.fixtures)) {
     process.exit(1);
   }
 
-  // Schema parsing test: only unknown-field.json should reject
   const shouldRejectSchema = filename === 'unknown-field.json';
   try {
     const parsed = parseContract('ExecutionEnvelope', fixtureJson);
@@ -151,11 +192,11 @@ console.log('=== Fixture Tests Passed ✓ ===');
 
     await writeFile(join(tempDir, 'test.mjs'), testScript);
 
-    console.log('5. Testing package imports and fixture parsing...');
+    console.log('6. Testing package imports and fixture parsing...');
     execSync('node test.mjs', { cwd: tempDir, stdio: 'inherit' });
 
-    // Step 6: Check tarball file list
-    console.log('\n6. Verifying tarball contents...');
+    // Step 7: Check tarball file list
+    console.log('\n7. Verifying tarball contents...');
     const tarballFiles = execSync(`tar -tzf ${tarballName}`, {
       cwd: tempDir,
       encoding: 'utf8',

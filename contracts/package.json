@@ -38,7 +38,7 @@
     "prettier": "^3.3.0",
     "typescript": "~5.6.0",
     "vitest": "^4.1.11",
-    "zod": "^3.25.76"
+    "zod": "^3.23.0"
   },
   "engines": {
     "node": ">=18"
@@ -64,13 +64,5 @@
     "contracts",
     "zod",
     "typescript"
-  ],
-  "directories": {
-    "doc": "docs",
-    "test": "tests"
-  },
-  "author": "",
-  "dependencies": {
-    "@bodanglin/verdict-contracts": "file:bodanglin-verdict-contracts-0.3.0.tgz"
-  }
+  ]
 }
