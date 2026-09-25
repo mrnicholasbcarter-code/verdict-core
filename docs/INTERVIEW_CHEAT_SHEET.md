@@ -82,7 +82,11 @@ verdict run-receipt /home/nick/.verdict/evidence/bod191/rehearsal-a0744da/runs/c
 verdict run-receipt /home/nick/.verdict/evidence/bod191/rehearsal-a0744da/runs/chaos5   # COMPLETE: 3 injected faults on worker nodes recovered by 3 reassignments and 4 cooldowns; the first independent reviewer hung and was replaced after its 900 s timeout; review PASS on cc/claude-opus-4-8
 ```
 
-Dated older evidence (rehearsal-43fbff4; between a0744da and 3a7a56d, no verdict/ files changed):
+These ran on a0744da; between a0744da and 3a7a56d no file under verdict/ changed (only CI/security tooling and the certifier).
+
+Receipts now include route_identity_summary (BOD-209): clean5 3 attempts: 2 match, 1 mechanical; chaos5 7 attempts: 3 match, 3 unattested (the 3 failed attempts), 1 mechanical, 0 mismatch.
+
+Dated older evidence (rehearsal-43fbff4, 2026-09-24; verdict/ has changed since, so treat these as historical):
 ```bash
 verdict run-receipt /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/clean4   # COMPLETE
 verdict run-receipt /home/nick/.verdict/evidence/bod191/bod192/rehearsal-43fbff4/runs/chaos4   # BLOCKED (review FAIL on a real bug)
@@ -102,7 +106,7 @@ verdict run-receipt /home/nick/.verdict/evidence/interview-main/rehearsal-3/runs
 Run ids worth naming: `clean4` (13 tests on integration ref, OCR PASS on cc/claude-fable-5), `chaos4` (injected planner quota + no-final and a worker 429, recovered by 2 reassignments; the barrier caught a real ownership violation; then the independent review on cc/claude-opus-4-8 found a real bug (requires-python >=3.8 vs `list[str]`), so the run is BLOCKED fail-closed), `clean3` (12 tests on integration ref, OCR PASS), `chaos3` (injected faults plus a real
 ownership violation, fail-closed), `chaos2` (4-attempt reassignment chain, COMPLETE), `live9` (route quota, then no-final, then 429; 28 tests), `live7` (planner
 quota, then pool exhaustion), `live10` (hung controller, killed, resumed), `certlive` (fresh
-clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact. (clean4/chaos4 ran on 43fbff4, which is dated older evidence; between a0744da and 3a7a56d only CI/security tooling and the certifier changed, no verdict/ files, so the chaos4 story holds.)
+clone, 30 tests). Say plainly: these are local operator evidence files, not a public CI artifact. (clean4/chaos4 ran on 43fbff4 on 2026-09-24; the chaos4 story (the independent review caught a real bug) is dated evidence of that run.)
 
 ## 3. Architecture in six bullets
 
