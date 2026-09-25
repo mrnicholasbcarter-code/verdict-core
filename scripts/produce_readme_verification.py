@@ -150,8 +150,22 @@ def verify_version_claim(readme: Path) -> CommandResult:
     )
 
 
+def _read_ci_fail_under() -> int | None:
+    """Read --cov-fail-under value from .github/workflows/ci.yml."""
+    ci_path = Path(".github/workflows/ci.yml")
+    if not ci_path.exists():
+        return None
+    text = ci_path.read_text()
+    m = re.search(r"--cov-fail-under[=\s]+(\d+)", text)
+    return int(m.group(1)) if m else None
+
+
 def verify_coverage_claim(readme: Path) -> CommandResult:
-    """Verify coverage claim against pyproject.toml fail_under (if configured)."""
+    """Verify coverage claim against .github/workflows/ci.yml --cov-fail-under.
+
+    Falls back to pyproject.toml [tool.coverage.report] fail_under when ci.yml
+    is absent or has no --cov-fail-under flag.
+    """
     content = readme.read_text()
     m = re.search(r"coverage gate\s+(\d+)%", content)
     if not m:
@@ -164,18 +178,27 @@ def verify_coverage_claim(readme: Path) -> CommandResult:
         )
     claimed = int(m.group(1))
 
-    import tomllib
+    # Prefer ci.yml (the enforced gate) over pyproject.toml
+    fail_under = _read_ci_fail_under()
+    source = "ci.yml --cov-fail-under"
 
-    with open("pyproject.toml", "rb") as f:
-        pyproject = tomllib.load(f)
-    fail_under = pyproject.get("tool", {}).get("coverage", {}).get("report", {}).get("fail_under")
+    if fail_under is None:
+        # Fallback: pyproject.toml
+        import tomllib
+
+        with open("pyproject.toml", "rb") as f:
+            pyproject = tomllib.load(f)
+        fail_under = (
+            pyproject.get("tool", {}).get("coverage", {}).get("report", {}).get("fail_under")
+        )
+        source = "pyproject.toml [tool.coverage.report] fail_under"
 
     if fail_under is None:
         return CommandResult(
             command=f"coverage claim {claimed}%",
             status="SKIPPED",
             exit_code=None,
-            reason="pyproject.toml [tool.coverage.report] has no fail_under — cannot verify",
+            reason="neither ci.yml --cov-fail-under nor pyproject.toml fail_under found",
             section="badges",
         )
     if int(fail_under) == claimed:
@@ -183,14 +206,14 @@ def verify_coverage_claim(readme: Path) -> CommandResult:
             command=f"coverage claim {claimed}%",
             status="PASS",
             exit_code=0,
-            reason=f"pyproject.toml fail_under={fail_under} matches README claim",
+            reason=f"{source}={fail_under} matches README claim",
             section="badges",
         )
     return CommandResult(
         command=f"coverage claim {claimed}%",
         status="FAIL",
         exit_code=1,
-        reason=f"README claims {claimed}% but pyproject.toml fail_under={fail_under}",
+        reason=f"README claims {claimed}% but {source}={fail_under}",
         section="badges",
     )
 

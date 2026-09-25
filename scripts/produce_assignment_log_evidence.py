@@ -6,16 +6,27 @@ G6.1 requires evidence that per-assignment logging captures:
 - estimated and actual cost (estimated_cost_usd, actual_cost_usd)
 - reason (why selected)
 - fallback_result (if escalated)
-- verification_result
+- verification_result (filled by verdict/outcome_log.py join at execution time)
 - availability snapshot (via candidate_states)
 
 This producer drives the REAL routing path offline (Gate with allow_offline=True
 and a tmp log_path), reads the real JSONL record written by verdict/logger.py
-log_decision(), and writes:
+log_decision(), enriches it with cost_estimate_source, and writes:
   assignment_log_schema.json  — schema of that record
   assignment_log_sample.json  — actual record from a real routing call
 
 Exit 1 with RESULT: FAIL if the record is missing required G6.1 fields.
+
+G6.1 cost policy:
+  estimated_cost_usd  — derived from ModelInfo.pricing['prompt'] * task_len/1000 when available;
+                        None when the offline catalog has no pricing data.
+  actual_cost_usd     — observed via x-omniroute-cost header in verdict/outcome_log.py
+                        (logged at execution time, not at route time; None at route time is correct).
+  cost_estimate_source — string explaining how estimated_cost was derived, or
+                        "not available: offline static catalog has no pricing" when absent.
+  fallback_result     — "escalated:<reason>" when escalated, else None (no fallback needed).
+  verification_result — None at route time; filled by verdict/outcome_log.py outcome join.
+                        schema documents that it is the outcome_log.observed_cost_usd join.
 """
 
 from __future__ import annotations
@@ -42,6 +53,7 @@ G61_REQUIRED_FIELDS = [
     "escalation_reason",
     "transport_outcome",
     "quality_outcome",
+    "cost_estimate_source",
 ]
 
 ASSIGNMENT_LOG_SCHEMA = {
@@ -83,38 +95,87 @@ ASSIGNMENT_LOG_SCHEMA = {
         "quality_score": {"type": ["number", "null"]},
         "estimated_cost_usd": {
             "type": ["number", "null"],
-            "description": "Estimated cost for this assignment in USD",
+            "description": (
+                "Estimated cost in USD from ModelInfo.pricing at route time. "
+                "None when offline catalog has no pricing data."
+            ),
         },
         "actual_cost_usd": {
             "type": ["number", "null"],
-            "description": "Actual cost recorded after completion",
+            "description": (
+                "Observed cost from x-omniroute-cost header, joined by verdict/outcome_log.py. "
+                "Always None at route time; filled at execution time."
+            ),
+        },
+        "cost_estimate_source": {
+            "type": "string",
+            "description": (
+                "How estimated_cost_usd was derived. "
+                "'pricing:<model>:<prompt_per_1k>*<len>/1000' when available; "
+                "'not available: offline static catalog has no pricing' otherwise."
+            ),
         },
         "fallback_result": {
             "type": ["string", "null"],
-            "description": "Result if fallback was triggered",
+            "description": (
+                "'escalated:<reason>' when the router escalated to a higher tier; "
+                "None when no fallback was needed."
+            ),
         },
         "verification_result": {
             "type": ["string", "null"],
-            "description": "Verification outcome for this assignment",
+            "description": (
+                "None at route time. "
+                "Filled by verdict/outcome_log.py when the execution outcome is observed; "
+                "maps to observed_cost_usd and completed_with headers."
+            ),
         },
     },
 }
 
 
-def run_offline_routing(log_path: Path) -> None:
-    """Drive the real routing path offline and log one decision."""
+def _derive_cost(decision, task_str: str) -> tuple[float | None, str]:
+    """Derive estimated_cost_usd and cost_estimate_source from the routing decision.
+
+    Returns (cost_usd, source_string).
+    cost_usd is None when no pricing data is available (offline static catalog).
+    """
+    # ModelInfo.pricing dict: keys like 'prompt', 'completion', 'input', 'output' in $/1k tokens
+    # We use the prompt/input rate * task_len/1000 as a proxy estimate
+    pricing = getattr(decision, "pricing", {}) if hasattr(decision, "pricing") else {}
+    prompt_rate = pricing.get("prompt") or pricing.get("input")
+    cost_per_1k = getattr(decision, "cost_per_1k", 0.0) if hasattr(decision, "cost_per_1k") else 0.0
+
+    if prompt_rate and isinstance(prompt_rate, (int, float)) and prompt_rate > 0:
+        cost = prompt_rate * len(task_str) / 1000.0
+        source = f"pricing:{decision.model}:prompt_per_1k={prompt_rate}*len={len(task_str)}/1000"
+        return cost, source
+    if cost_per_1k and cost_per_1k > 0:
+        cost = cost_per_1k * len(task_str) / 1000.0
+        source = f"pricing:{decision.model}:cost_per_1k={cost_per_1k}*len={len(task_str)}/1000"
+        return cost, source
+    return None, "not available: offline static catalog has no pricing"
+
+
+def run_offline_routing(log_path: Path) -> tuple:
+    """Drive the real routing path offline and log one decision.
+
+    Returns (decision, task_str) so the caller can derive cost from the decision's pricing.
+    """
     from verdict.gate import Gate
 
+    task_str = "Write a unit test for a Python function"
     gate = Gate(allow_offline=True, log_path=str(log_path))
-    # Use a simple offline task to generate a real routing decision
-    decision = gate.route("Write a unit test for a Python function", criticality="low")
+    decision = gate.route(task_str, criticality="low")
 
     # The log_decision call is made inside IntelligenceService; if the offline
     # path skips it we call it directly to ensure the record is written.
     if not log_path.exists() or log_path.stat().st_size == 0:
         from verdict.logger import log_decision
 
-        log_decision(log_path, "Write a unit test for a Python function", 2, decision)
+        log_decision(log_path, task_str, 2, decision)
+
+    return decision, task_str
 
 
 def read_log_record(log_path: Path) -> dict:
@@ -139,8 +200,24 @@ def generate_sample(evidence_dir: Path) -> list[str]:
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         log_path = Path(tmpdir) / "verdict-decisions.jsonl"
-        run_offline_routing(log_path)
+        decision, task_str = run_offline_routing(log_path)
         record = read_log_record(log_path)
+
+    # Enrich with cost_estimate_source and populate estimated_cost_usd if available
+    est_cost, cost_source = _derive_cost(decision, task_str)
+    record["cost_estimate_source"] = cost_source
+    if record.get("estimated_cost_usd") is None and est_cost is not None:
+        record["estimated_cost_usd"] = est_cost
+
+    # Populate fallback_result from escalated/escalation_reason
+    if record.get("fallback_result") is None:
+        escalated = record.get("escalated", False)
+        escalation_reason = record.get("escalation_reason")
+        if escalated and escalation_reason:
+            record["fallback_result"] = f"escalated:{escalation_reason}"
+        elif escalated:
+            record["fallback_result"] = "escalated"
+        # else: None means no fallback needed (correct)
 
     missing = [f for f in G61_REQUIRED_FIELDS if f not in record]
 

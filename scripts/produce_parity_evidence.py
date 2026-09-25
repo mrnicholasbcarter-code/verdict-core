@@ -6,6 +6,11 @@ G4.2: contract_parity_matrix.md — field-by-field comparison of Python vs TypeS
 
 G4.3: parity_fixture_results.json — shared fixtures run through BOTH Python and TS.
       Exit 1 with RESULT: FAIL if any fixture result mismatches or TS is not run.
+
+TS-side schema: uses contracts/dist/index.js when available (acceptance workflow);
+falls back to tests/fixtures/ts_schemas_snapshot.json for unit-test runs that have
+no Node build (CI pytest jobs).  The snapshot is the committed output of the
+`get_ts_fields()` node extraction and must be kept in sync with the contracts build.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from verdict.contracts import (
+    _REQUIRED_FIELDS,
     AvailabilitySnapshot,
     ContractValidationError,
     ExecutionEnvelope,
@@ -60,16 +66,28 @@ FIXTURE_EXPECT = {
     "routing_decision_minimal.json": "accept",
     "routing_decision_defaults.json": "accept",
     "routing_decision_unknown_field.json": "reject",
+    "routing_decision_with_valid_envelope.json": "accept",
+    "routing_decision_with_invalid_envelope.json": "reject",
     "envelope_explicit.json": "accept",
 }
 
+# Snapshot path for unit-test environments without a Node build
+TS_SNAPSHOT_PATH = Path(__file__).parent.parent / "tests" / "fixtures" / "ts_schemas_snapshot.json"
+
 
 def extract_python_fields(cls: type) -> dict[str, dict[str, Any]]:
-    """Extract field names and input-required status from a Python dataclass."""
+    """Extract field names and input-required status from a Python dataclass.
+
+    Required means the field MUST be present in input.  The source of truth is
+    _REQUIRED_FIELDS (explicit policy list) merged with fields that have no
+    default and no default_factory (structurally required).
+    """
+    cls_required = _REQUIRED_FIELDS.get(cls.__name__, frozenset())
     result: dict[str, dict[str, Any]] = {}
-    for f in fields(cls):
-        # A field is input-required if it has no default value AND no default_factory
-        required = f.default is MISSING and f.default_factory is MISSING  # type: ignore[misc]
+    for f in fields(cls):  # type: ignore[arg-type]
+        structurally_required = f.default is MISSING and f.default_factory is MISSING  # type: ignore[misc]
+        policy_required = f.name in cls_required
+        required = structurally_required or policy_required
         result[f.name] = {"required": required}
     return result
 
@@ -107,6 +125,27 @@ console.log(JSON.stringify(result));
     return json.loads(r.stdout)  # type: ignore[no-any-return]
 
 
+def load_ts_fields(contracts_dist: Path) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load TS field schema from node (preferred) or committed snapshot (fallback).
+
+    Raises RuntimeError if neither source is available.
+    """
+    if contracts_dist.exists():
+        return get_ts_fields(contracts_dist)
+    if TS_SNAPSHOT_PATH.exists():
+        print(
+            f"WARNING: contracts/dist not found; using snapshot {TS_SNAPSHOT_PATH}. "
+            "Run `cd contracts && npm ci && npm run build` for a live check.",
+            file=sys.stderr,
+        )
+        with TS_SNAPSHOT_PATH.open() as fh:
+            return json.load(fh)
+    raise RuntimeError(
+        "contracts/dist not found and no snapshot at tests/fixtures/ts_schemas_snapshot.json. "
+        "Run: cd contracts && npm ci && npm run build"
+    )
+
+
 def run_fixture_through_ts(contracts_dist: Path, fixture_path: Path, ts_name: str) -> str:
     """Run a single fixture JSON through the TS parseContract() and return 'accept' or 'reject'."""
     node_script = f"""
@@ -139,18 +178,19 @@ def run_fixture_through_python(fixture_path: Path, py_contract: str) -> str:
         return f"error:{str(e)[:120]}"
 
 
-def generate_parity_matrix(evidence_dir: Path, contracts_dist: Path) -> list[str]:
+def generate_parity_matrix(
+    evidence_dir: Path, ts_schemas: dict[str, dict[str, dict[str, Any]]]
+) -> list[str]:
     """Generate contract_parity_matrix.md. Returns list of mismatch descriptions."""
-    ts_schemas = get_ts_fields(contracts_dist)
-
     lines = [
         "# Contract Parity Matrix",
         "",
         "Python vs TypeScript contract field comparison for G4.2.",
         "",
         "Generated from:",
-        "- Python: `verdict/contracts.py` (dataclass fields)",
-        "- TypeScript: `contracts/dist/index.js` (contractSchemas Zod shapes, built from `contracts/src/index.ts`)",
+        "- Python: `verdict/contracts.py` (dataclass fields + _REQUIRED_FIELDS policy list)",
+        "- TypeScript: `contracts/dist/index.js` (contractSchemas Zod shapes) "
+        "or `tests/fixtures/ts_schemas_snapshot.json` (snapshot fallback)",
         "",
     ]
 
@@ -211,9 +251,14 @@ def run_fixture_contract_name(fixture_fname: str) -> tuple[str, str] | None:
 
 
 def generate_fixture_results(evidence_dir: Path, contracts_dist: Path) -> list[str]:
-    """Run shared parity fixtures through Python and TS. Returns mismatch descriptions."""
+    """Run shared parity fixtures through Python and TS. Returns mismatch descriptions.
+
+    When contracts/dist is absent the TS side is set to 'not_run' and counted as
+    a mismatch — so the producer is fail-closed when the build is missing.
+    """
     fixture_dir = Path("test_fixtures/parity")
     fixtures = sorted(fixture_dir.glob("*.json"))
+    ts_available = contracts_dist.exists()
 
     results = []
     mismatches: list[str] = []
@@ -229,17 +274,23 @@ def generate_fixture_results(evidence_dir: Path, contracts_dist: Path) -> list[s
         expected = FIXTURE_EXPECT.get(fname)
 
         py_result = run_fixture_through_python(fixture_path, py_contract)
-        ts_result = run_fixture_through_ts(contracts_dist, fixture_path, ts_contract)
+        if ts_available:
+            ts_result = run_fixture_through_ts(contracts_dist, fixture_path, ts_contract)
+        else:
+            ts_result = "not_run:contracts/dist absent"
 
         py_verdict = "accept" if py_result == "accept" else "reject"
         ts_verdict = "accept" if ts_result.startswith("accept") else "reject"
 
-        match = py_verdict == ts_verdict
-        expected_ok = (expected is None) or (py_verdict == expected)
-
-        status = "OK" if match and expected_ok else "MISMATCH"
-        if status == "MISMATCH":
-            mismatches.append(f"{fname}: py={py_verdict} ts={ts_verdict} expected={expected}")
+        if ts_result.startswith("not_run"):
+            status = "MISMATCH"
+            mismatches.append(f"{fname}: TS not run (contracts/dist absent)")
+        else:
+            match = py_verdict == ts_verdict
+            expected_ok = (expected is None) or (py_verdict == expected)
+            status = "OK" if match and expected_ok else "MISMATCH"
+            if status == "MISMATCH":
+                mismatches.append(f"{fname}: py={py_verdict} ts={ts_verdict} expected={expected}")
 
         results.append(
             {
@@ -273,15 +324,10 @@ def main() -> int:
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
 
     contracts_dist = Path("contracts/dist").resolve()
-    if not contracts_dist.exists():
-        print(
-            "RESULT: FAIL (contracts/dist not found; run: cd contracts && npm ci && npm run build)",
-            file=sys.stderr,
-        )
-        return 1
 
     try:
-        matrix_mismatches = generate_parity_matrix(args.evidence_dir, contracts_dist)
+        ts_schemas = load_ts_fields(contracts_dist)
+        matrix_mismatches = generate_parity_matrix(args.evidence_dir, ts_schemas)
         fixture_mismatches = generate_fixture_results(args.evidence_dir, contracts_dist)
 
         all_mismatches = matrix_mismatches + fixture_mismatches

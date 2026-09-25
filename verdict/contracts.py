@@ -658,6 +658,10 @@ class RoutingDecisionContract(Contract):
     # decision, and existing callers that ignore them see no behavioral change.
     decision_id: str | None = None
     receipt: dict[str, Any] | None = None
+    # ADR-025 / Core #220: verdict-node reads canonical.execution_envelope from Core and
+    # refuses to forward without it (requireExecutionEnvelope default: true, src/index.ts ~825).
+    # Absent when not yet populated; validated through ExecutionEnvelope strict rules when present.
+    execution_envelope: ExecutionEnvelope | None = None
 
     @classmethod
     def from_legacy(cls, payload: dict[str, Any], /, **overrides: Any) -> RoutingDecisionContract:
@@ -706,6 +710,19 @@ class RoutingDecisionContract(Contract):
         if legacy:
             mapped["adaptive_influence"] = {**dict(adaptive_influence), "legacy": legacy}
         return cls.from_dict({**mapped, **overrides})
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dict, omitting execution_envelope when absent (None) to preserve
+        existing decision digests and backwards-compat wire format.
+        """
+        base = {
+            item.name: _serialize_value(getattr(self, item.name))
+            for item in fields(cast(Any, self))
+            if item.name != "execution_envelope"
+        }
+        if self.execution_envelope is not None:
+            base["execution_envelope"] = _serialize_value(self.execution_envelope)
+        return base
 
 
 RoutingDecision = RoutingDecisionContract
@@ -1545,6 +1562,9 @@ def _value_matches(annotation: Any, value: Any) -> bool:
         return isinstance(value, list)
     if origin is dict:
         return isinstance(value, dict)
+    # Contract subclasses accept dict inputs (coerced via from_dict); validate strictly below
+    if _is_contract_type(annotation) and isinstance(value, dict):
+        return True
     return isinstance(annotation, type) and isinstance(value, annotation)
 
 
