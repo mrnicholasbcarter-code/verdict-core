@@ -159,11 +159,14 @@ def test_no_decision_signals_imports_in_core_modules():
                     assert not alias.name.startswith("verdict.decision_signals"), (
                         f"{module_path} imports {alias.name} (decision_signals forbidden)"
                     )
-            elif isinstance(node, ast.ImportFrom):
-                if node.module and node.module.startswith("verdict.decision_signals"):
-                    raise AssertionError(
-                        f"{module_path} imports from {node.module} (decision_signals forbidden)"
-                    )
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and node.module.startswith("verdict.decision_signals")
+            ):
+                raise AssertionError(
+                    f"{module_path} imports from {node.module} (decision_signals forbidden)"
+                )
 
 
 def test_decision_signals_only_in_shadow_block():
@@ -214,44 +217,40 @@ def test_decision_signals_only_in_shadow_block():
         parent = parent_map.get(node)
 
         # (a) Assignment target: decision_signals_data = ... or decision_signals_data: Type = ...
-        if isinstance(parent, (ast.Assign, ast.AnnAssign)):
-            # Check if this node is a target
-            if (isinstance(parent, ast.Assign) and node in parent.targets) or (
-                isinstance(parent, ast.AnnAssign) and parent.target == node
-            ):
-                allowed = True
+        # Check if this node is a target
+        if isinstance(parent, (ast.Assign, ast.AnnAssign)) and (
+            (isinstance(parent, ast.Assign) and node in parent.targets)
+            or (isinstance(parent, ast.AnnAssign) and parent.target == node)
+        ):
+            allowed = True
 
         # (b) Left side of `is None` or `is not None` comparison
-        if isinstance(parent, ast.Compare):
-            # Check if node is the left operand
-            if parent.left == node:
-                # Check if all operators are Is/IsNot and all comparators are None
-                if all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops):
-                    if all(
-                        isinstance(comp, ast.Constant) and comp.value is None
-                        for comp in parent.comparators
-                    ):
-                        allowed = True
+        # Check if node is the left operand and all operators are Is/IsNot and all comparators are None
+        if (
+            isinstance(parent, ast.Compare)
+            and parent.left == node
+            and all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops)
+            and all(
+                isinstance(comp, ast.Constant) and comp.value is None for comp in parent.comparators
+            )
+        ):
+            allowed = True
 
         # (c) The value of signals= keyword in events.emit("decision_signals", ...)
         if isinstance(parent, ast.keyword) and parent.arg == "signals":
-            # Check if the keyword is part of an events.emit call
+            # Check if the keyword is part of an events.emit("decision_signals", ...) call
             grandparent = parent_map.get(parent)
-            if isinstance(grandparent, ast.Call):
-                # Check if it's events.emit("decision_signals", ...)
-                if (
-                    isinstance(grandparent.func, ast.Attribute)
-                    and grandparent.func.attr == "emit"
-                    and isinstance(grandparent.func.value, ast.Name)
-                    and grandparent.func.value.id == "events"
-                ):
-                    # Check if the first argument is "decision_signals"
-                    if (
-                        grandparent.args
-                        and isinstance(grandparent.args[0], ast.Constant)
-                        and grandparent.args[0].value == "decision_signals"
-                    ):
-                        allowed = True
+            if (
+                isinstance(grandparent, ast.Call)
+                and isinstance(grandparent.func, ast.Attribute)
+                and grandparent.func.attr == "emit"
+                and isinstance(grandparent.func.value, ast.Name)
+                and grandparent.func.value.id == "events"
+                and grandparent.args
+                and isinstance(grandparent.args[0], ast.Constant)
+                and grandparent.args[0].value == "decision_signals"
+            ):
+                allowed = True
 
         if not allowed:
             raise AssertionError(
