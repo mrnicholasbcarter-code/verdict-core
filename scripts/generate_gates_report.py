@@ -330,14 +330,17 @@ def _resolve_artifacts(gate: Gate, evidence_dir: Path) -> Derived:
             except UnicodeDecodeError:
                 text = ""
 
-            # For text artifacts (.txt, .log), require explicit RESULT: PASS
+            # For text artifacts (.txt, .log), require explicit RESULT: PASS as the last RESULT line
             if path.suffix in (".txt", ".log"):
-                if "RESULT: PASS" not in text:
+                # Find the last RESULT: line
+                result_lines = [line for line in text.splitlines() if line.strip().startswith("RESULT:")]
+                if not result_lines:
                     lines.append(f"FAIL: {artifact} missing explicit RESULT: PASS")
                     invalid = True
                     continue
-                if "RESULT: FAIL" in text:
-                    lines.append(f"FAIL: {artifact} contains RESULT: FAIL")
+                last_result = result_lines[-1].strip()
+                if not last_result.startswith("RESULT: PASS"):
+                    lines.append(f"FAIL: {artifact} last RESULT is not PASS: {last_result}")
                     invalid = True
                     continue
 

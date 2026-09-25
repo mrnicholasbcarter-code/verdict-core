@@ -70,3 +70,21 @@ def test_missing_artifact():
 
         assert result.status == "BLOCKED", "Missing artifact should be blocked"
         assert "MISSING: missing.log" in result.body
+
+
+def test_artifact_pass_then_fail_resolves_fail():
+    """Log with RESULT: PASS followed by RESULT: FAIL should resolve FAIL (use last)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        evidence = Path(tmpdir)
+        log = evidence / "test.log"
+        log.write_text("""First attempt passed
+RESULT: PASS
+Retry failed
+RESULT: FAIL (exit 2)
+""")
+
+        gate = Gate("TEST", "Test gate", artifacts=("test.log",))
+        result = _resolve_artifacts(gate, evidence)
+
+        assert result.status == "FAIL", "RESULT: FAIL after RESULT: PASS should fail"
+        assert "RESULT: FAIL" in result.body
