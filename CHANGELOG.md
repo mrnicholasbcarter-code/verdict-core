@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- restricted and trusted_upstream tasks now require an explicit restricted_data_routes allowlist; fail closed
+
 ## [0.3.0] - 2026-09-25
 
 ### Added
