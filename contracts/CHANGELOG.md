@@ -2,7 +2,7 @@
 
 All notable changes to `@bodanglin/verdict-contracts` will be documented in this file.
 
-## [0.3.0] - 2025-01-XX
+## [0.3.0] - 2026-09-25
 
 ### Added
 - ExecutionEnvelope v1 schema with full Zod/TypeScript definitions
@@ -16,6 +16,10 @@ All notable changes to `@bodanglin/verdict-contracts` will be documented in this
 ### Changed
 - Package version bumped to 0.3.0
 
-## [0.2.0] - 2024-XX-XX
+## [0.2.0] - 2026-08-22
 
-Initial public release with basic ExecutionEnvelope schema.
+Receipt parity schemas.
+
+## [0.1.0] - 2026-07-26
+
+Initial public release.

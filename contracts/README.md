@@ -4,12 +4,17 @@ Canonical Zod schemas and TypeScript types for Verdict v1 contracts.
 
 ## ExecutionEnvelope v1 Contract
 
-The `ExecutionEnvelope` is Verdict's core contract for policy-gated LLM execution. Each envelope carries:
-- A request payload (model, messages, tools, constraints)
-- A policy SHA-256 digest commitment
-- An optional signature for audit trails
+The `ExecutionEnvelope` is Verdict's canonical execution contract from verdict-core to Node and Cockpit consumers. Each envelope contains all information needed for execution within Verdict-approved boundaries without requiring callbacks to Core for eligibility decisions. Fields include:
+- `task_spec`: Task description and metadata
+- `eligibility_decision`: Admission status
+- `routing_decision`: Optional routing metadata
+- `policy_digest`: SHA-256 hex digest (64 lowercase hex characters, no prefix)
+- `allowed_capabilities`: Permitted capability identifiers
+- `evidence_ids`: Referenced evidence identifiers
+- `execution_constraints`: Hard constraints including `expires_at` (bounded lifetime)
+- `created_at`: Optional envelope creation timestamp
 
-Verdict verifiers parse the envelope, enforce execution constraints (e.g., `expires_at` timestamps), verify the policy digest matches the installed policy, and strictly reject unknown fields to prevent contract drift. If all checks pass, the verifier returns `ACCEPT` and unpacks the request for execution; otherwise, it returns `DENY`, `EXPIRED`, `DIGEST_MISMATCH`, or `REJECT_UNKNOWN`.
+Verdict verifiers parse the envelope, validate the schema (rejecting unknown fields), check eligibility, verify the policy digest matches the expected policy, and enforce time-bounded execution via `expires_at`. If all checks pass, the verifier returns `ACCEPT`; otherwise, it returns `DENY`, `EXPIRED`, `DIGEST_MISMATCH`, or `REJECT_UNKNOWN`.
 
 Full semantics: [docs/contracts/EXECUTION_ENVELOPE_V1.md](https://github.com/mrnicholasbcarter-code/verdict-core/blob/main/docs/contracts/EXECUTION_ENVELOPE_V1.md)
 
@@ -23,8 +28,12 @@ This package ships **sha256-pinned test fixtures** for ExecutionEnvelope v1:
 **Loading a fixture:**
 
 ```typescript
-import manifest from '@bodanglin/verdict-contracts/fixtures/execution-envelope/v1/manifest.json' assert { type: 'json' };
-// or with createRequire for older Node
+import manifest from '@bodanglin/verdict-contracts/fixtures/execution-envelope/v1/manifest.json' with { type: 'json' };
+
+// Or with createRequire (for older Node or CommonJS):
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const manifest = require('@bodanglin/verdict-contracts/fixtures/execution-envelope/v1/manifest.json');
 ```
 
 The manifest lists each fixture file, its expected verdict, and its sha256 digest. Verify fixture integrity by hashing the file and comparing to the manifest.
