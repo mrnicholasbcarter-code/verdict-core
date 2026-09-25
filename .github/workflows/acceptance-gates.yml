@@ -58,6 +58,52 @@ jobs:
       - name: Record the committed-credential scan (G5.4 evidence)
         run: python scripts/scan_committed_credentials.py 2>&1 | tee evidence/secrets_scan_results.txt
 
+      # --- New evidence producers added for BOD-234 ---------------------------
+
+      - name: Copy threat model and privacy policy (G5.1 + G5.2 evidence)
+        run: |
+          cp THREAT_MODEL.md evidence/THREAT_MODEL.md
+          cp PRIVACY_POLICY.md evidence/PRIVACY_POLICY.md
+
+      - name: Set up Node.js (needed for G4.2, G4.3, G4.4)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Build the contracts package (required by G4.2, G4.3, G4.4)
+        run: cd contracts && npm ci && npm run build
+
+      - name: Produce parity evidence (G4.2 + G4.3 evidence)
+        run: python scripts/produce_parity_evidence.py --evidence-dir evidence
+
+      - name: Check out verdict-node forwarder suite (G4.4 evidence)
+        # Pinned to the exact commit of verdict-node PR #82 (ci/forwarder-junit).
+        # Move this to the released tag once BOD-233 ships.
+        uses: actions/checkout@v7
+        with:
+          repository: mrnicholasbcarter-code/verdict-node
+          ref: bf073d34c2cb20280cd20be12891fad0c2fbd3fd
+          path: verdict-node
+
+      - name: Install verdict-node dependencies and local contracts (G4.4 evidence)
+        run: |
+          cd verdict-node
+          npm ci
+          npm install --no-save ../contracts
+
+      - name: Run the forwarder test suite (G4.4 evidence)
+        run: |
+          cd verdict-node
+          JUNIT_OUTPUT_DIR=$GITHUB_WORKSPACE/evidence npm run test:forwarder:junit
+
+      - name: Produce assignment log evidence (G6.1 evidence)
+        run: python scripts/produce_assignment_log_evidence.py --evidence-dir evidence
+
+      - name: Produce README verification evidence (G7.3 evidence)
+        run: python scripts/produce_readme_verification.py --evidence-dir evidence
+
+      # --- End new producers --------------------------------------------------
+
       - name: Build the evidence bundle (G6.3 evidence)
         run: python scripts/evidence_bundle.py --evidence-dir evidence --output-dir evidence_bundle
 
