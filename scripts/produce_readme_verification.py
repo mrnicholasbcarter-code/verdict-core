@@ -25,23 +25,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Subcommands that need live credentials or network access
-CRED_SUBCOMMANDS = frozenset({
-    "orchestrate",
-    "probe",
-    "serve",
-    "ui",
-    "run",
-    "replay",
-    "run-receipt",
-    "supervise",
-    "watch",
-})
+CRED_SUBCOMMANDS = frozenset(
+    {"orchestrate", "probe", "serve", "ui", "run", "replay", "run-receipt", "supervise", "watch"}
+)
 CRED_FLAG_PATTERNS = ["--api-key", "OMNIROUTE", "--allow-live-probe"]
 
 
 @dataclass
 class CommandResult:
     """Result of verifying a README command."""
+
     command: str
     status: str  # PASS, FAIL, SKIPPED
     exit_code: int | None
@@ -131,10 +124,12 @@ def verify_version_claim(readme: Path) -> CommandResult:
     claimed = m.group(1)
 
     import verdict as v_pkg
+
     actual = getattr(v_pkg, "__version__", None)
     if actual is None:
         # fallback: pyproject.toml
         import tomllib
+
         with open("pyproject.toml", "rb") as f:
             actual = tomllib.load(f).get("project", {}).get("version")
 
@@ -170,14 +165,10 @@ def verify_coverage_claim(readme: Path) -> CommandResult:
     claimed = int(m.group(1))
 
     import tomllib
+
     with open("pyproject.toml", "rb") as f:
         pyproject = tomllib.load(f)
-    fail_under = (
-        pyproject.get("tool", {})
-        .get("coverage", {})
-        .get("report", {})
-        .get("fail_under")
-    )
+    fail_under = pyproject.get("tool", {}).get("coverage", {}).get("report", {}).get("fail_under")
 
     if fail_under is None:
         return CommandResult(
@@ -246,46 +237,54 @@ def main() -> int:
 
             # Skip placeholder commands like `verdict <command>` or `verdict credentials ...`
             if "<" in sub or ">" in sub:
-                results.append(CommandResult(
-                    command=cmd,
-                    status="SKIPPED",
-                    exit_code=None,
-                    reason="placeholder subcommand (angle brackets); real command not yet added",
-                    section=section,
-                ))
+                results.append(
+                    CommandResult(
+                        command=cmd,
+                        status="SKIPPED",
+                        exit_code=None,
+                        reason="placeholder subcommand (angle brackets); real command not yet added",
+                        section=section,
+                    )
+                )
                 print(f"  SKIPPED {sub}: placeholder")
                 continue
 
             needs_cred, cred_reason = needs_credentials(cmd)
             if needs_cred:
-                results.append(CommandResult(
-                    command=cmd,
-                    status="SKIPPED",
-                    exit_code=None,
-                    reason=cred_reason,
-                    section=section,
-                ))
+                results.append(
+                    CommandResult(
+                        command=cmd,
+                        status="SKIPPED",
+                        exit_code=None,
+                        reason=cred_reason,
+                        section=section,
+                    )
+                )
                 print(f"  SKIPPED {sub}: {cred_reason}")
                 continue
 
             exit_code, output = verify_verdict_subcommand(sub, tmpdir)
             if exit_code == 0:
-                results.append(CommandResult(
-                    command=f"verdict {sub} --help",
-                    status="PASS",
-                    exit_code=0,
-                    reason="exit 0",
-                    section=section,
-                ))
+                results.append(
+                    CommandResult(
+                        command=f"verdict {sub} --help",
+                        status="PASS",
+                        exit_code=0,
+                        reason="exit 0",
+                        section=section,
+                    )
+                )
                 print(f"  PASS verdict {sub} --help")
             else:
-                results.append(CommandResult(
-                    command=f"verdict {sub} --help",
-                    status="FAIL",
-                    exit_code=exit_code,
-                    reason=f"exit {exit_code}: {output[:120]}",
-                    section=section,
-                ))
+                results.append(
+                    CommandResult(
+                        command=f"verdict {sub} --help",
+                        status="FAIL",
+                        exit_code=exit_code,
+                        reason=f"exit {exit_code}: {output[:120]}",
+                        section=section,
+                    )
+                )
                 print(f"  FAIL verdict {sub} --help (exit {exit_code})")
 
     # Write log

@@ -31,8 +31,12 @@ def evidence_dir(tmp_path: Path) -> Path:
 
 def _run_parity(evidence_dir: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPTS / "produce_parity_evidence.py"),
-         "--evidence-dir", str(evidence_dir)],
+        [
+            sys.executable,
+            str(SCRIPTS / "produce_parity_evidence.py"),
+            "--evidence-dir",
+            str(evidence_dir),
+        ],
         capture_output=True,
         text=True,
         cwd=str(Path(__file__).parent.parent),
@@ -50,8 +54,13 @@ def test_parity_matrix_has_ts_fields(evidence_dir: Path) -> None:
     _run_parity(evidence_dir)
     content = (evidence_dir / "contract_parity_matrix.md").read_text()
     # Every contract section must be present
-    for name in ["TaskSpec", "RoutingDecision", "AvailabilitySnapshot",
-                 "RuntimeCandidate", "ExecutionEnvelope"]:
+    for name in [
+        "TaskSpec",
+        "RoutingDecision",
+        "AvailabilitySnapshot",
+        "RuntimeCandidate",
+        "ExecutionEnvelope",
+    ]:
         assert f"## {name}" in content, f"Missing section {name}"
     # Must have at least one OK or known-status row (not all MISSING)
     assert "| OK |" in content or "| TS-only |" in content or "| PY-only |" in content
@@ -167,8 +176,12 @@ def test_fixture_mismatch_causes_fail() -> None:
 
 def _run_g61(evidence_dir: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPTS / "produce_assignment_log_evidence.py"),
-         "--evidence-dir", str(evidence_dir)],
+        [
+            sys.executable,
+            str(SCRIPTS / "produce_assignment_log_evidence.py"),
+            "--evidence-dir",
+            str(evidence_dir),
+        ],
         capture_output=True,
         text=True,
         cwd=str(Path(__file__).parent.parent),
@@ -190,10 +203,18 @@ def test_g61_creates_sample(evidence_dir: Path) -> None:
     assert sample_path.exists()
     sample = json.loads(sample_path.read_text())
     # All G6.1 required fields must be present in real record
-    for field in ["model_chosen", "provider", "candidate_states",
-                  "estimated_cost_usd", "actual_cost_usd", "reason",
-                  "fallback_result", "verification_result",
-                  "escalated", "transport_outcome"]:
+    for field in [
+        "model_chosen",
+        "provider",
+        "candidate_states",
+        "estimated_cost_usd",
+        "actual_cost_usd",
+        "reason",
+        "fallback_result",
+        "verification_result",
+        "escalated",
+        "transport_outcome",
+    ]:
         assert field in sample, f"G6.1 required field missing from real log record: {field}"
 
 
@@ -212,10 +233,9 @@ def test_g61_fail_when_field_missing() -> None:
 
     # Remove estimated_cost_usd from required fields list
     patched = original.replace(
-        '    "estimated_cost_usd",',
-        '    # "estimated_cost_usd",  # MUTATION removed',
+        '    "estimated_cost_usd",', '    # "estimated_cost_usd",  # MUTATION removed'
     )
-    # Also strip it from the record to simulate it going missing — 
+    # Also strip it from the record to simulate it going missing —
     # instead we remove it from G61_REQUIRED_FIELDS so the check passes even if absent.
     # Real mutation: add "nonexistent_field_xyz" to required list to force a fail.
     patched = original.replace(
@@ -247,8 +267,12 @@ def test_g61_real_routing_not_mocked() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         ev = Path(tmpdir)
         r = subprocess.run(
-            [sys.executable, str(SCRIPTS / "produce_assignment_log_evidence.py"),
-             "--evidence-dir", str(ev)],
+            [
+                sys.executable,
+                str(SCRIPTS / "produce_assignment_log_evidence.py"),
+                "--evidence-dir",
+                str(ev),
+            ],
             capture_output=True,
             text=True,
             cwd=str(Path(__file__).parent.parent),
@@ -268,8 +292,12 @@ def test_g61_real_routing_not_mocked() -> None:
 
 def _run_g73(evidence_dir: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPTS / "produce_readme_verification.py"),
-         "--evidence-dir", str(evidence_dir)],
+        [
+            sys.executable,
+            str(SCRIPTS / "produce_readme_verification.py"),
+            "--evidence-dir",
+            str(evidence_dir),
+        ],
         capture_output=True,
         text=True,
         cwd=str(Path(__file__).parent.parent),
@@ -287,7 +315,7 @@ def test_g73_log_ends_with_result(evidence_dir: Path) -> None:
     """G7.3: log file last non-empty line is RESULT: PASS or RESULT: FAIL."""
     _run_g73(evidence_dir)
     content = (evidence_dir / "readme_verification.log").read_text()
-    lines = [l for l in content.splitlines() if l.strip()]
+    lines = [line for line in content.splitlines() if line.strip()]
     last = lines[-1] if lines else ""
     assert last.startswith("RESULT:"), f"Log must end with RESULT: line, got {last!r}"
 
@@ -296,10 +324,12 @@ def test_g73_uses_subcommand_help() -> None:
     """G7.3: producer tests `verdict <sub> --help`, not just `verdict --help`."""
     script_text = (SCRIPTS / "produce_readme_verification.py").read_text()
     # Must call `verdict {sub} --help`, not just `verdict --help`
-    assert 'sub, "--help"' in script_text or "sub, '--help'" in script_text, \
+    assert 'sub, "--help"' in script_text or "sub, '--help'" in script_text, (
         "Script must call verdict <sub> --help"
-    assert 'verdict", "--help"' not in script_text and '"verdict", "--help"' not in script_text, \
+    )
+    assert 'verdict", "--help"' not in script_text and '"verdict", "--help"' not in script_text, (
         "Script must not call bare verdict --help for subcommand check"
+    )
 
 
 def test_g73_version_claim_passes(evidence_dir: Path) -> None:
@@ -348,10 +378,17 @@ def test_g73_fail_when_subcommand_unknown() -> None:
 
 def test_routing_decision_has_g61_fields() -> None:
     """G6.1 structural: RoutingDecision dataclass has all required G6.1 fields."""
-    from verdict.models import RoutingDecision
     import dataclasses
+
+    from verdict.models import RoutingDecision
+
     fnames = {f.name for f in dataclasses.fields(RoutingDecision)}
-    for field in ["estimated_cost_usd", "actual_cost_usd", "fallback_result", "verification_result"]:
+    for field in [
+        "estimated_cost_usd",
+        "actual_cost_usd",
+        "fallback_result",
+        "verification_result",
+    ]:
         assert field in fnames, f"RoutingDecision missing G6.1 field: {field}"
 
 
@@ -388,11 +425,7 @@ def test_log_decision_g61_fields_mutation_proof(tmp_path: Path) -> None:
     # Confirm the field is in the output — if log_decision were changed to omit
     # estimated_cost_usd, this assertion would fail
     decision = RoutingDecision(
-        model="m",
-        provider="p",
-        tier=2,
-        reason="r",
-        estimated_cost_usd=1.234,
+        model="m", provider="p", tier=2, reason="r", estimated_cost_usd=1.234
     )
     log_path = tmp_path / "mut.jsonl"
     log_decision(log_path, "task", 2, decision)

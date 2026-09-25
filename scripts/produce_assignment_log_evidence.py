@@ -104,7 +104,6 @@ ASSIGNMENT_LOG_SCHEMA = {
 def run_offline_routing(log_path: Path) -> None:
     """Drive the real routing path offline and log one decision."""
     from verdict.gate import Gate
-    from verdict.models import RoutingDecision
 
     gate = Gate(allow_offline=True, log_path=str(log_path))
     # Use a simple offline task to generate a real routing decision
@@ -114,12 +113,13 @@ def run_offline_routing(log_path: Path) -> None:
     # path skips it we call it directly to ensure the record is written.
     if not log_path.exists() or log_path.stat().st_size == 0:
         from verdict.logger import log_decision
+
         log_decision(log_path, "Write a unit test for a Python function", 2, decision)
 
 
 def read_log_record(log_path: Path) -> dict:
     """Read the most recent JSONL record from the log file."""
-    lines = [l.strip() for l in log_path.read_text().splitlines() if l.strip()]
+    lines = [line.strip() for line in log_path.read_text().splitlines() if line.strip()]
     if not lines:
         raise ValueError("log file is empty after routing call")
     return json.loads(lines[-1])
@@ -165,13 +165,16 @@ def main() -> int:
         missing = generate_sample(args.evidence_dir)
 
         if missing:
-            print(f"RESULT: FAIL (missing G6.1 fields in real log record: {missing})", file=sys.stderr)
+            print(
+                f"RESULT: FAIL (missing G6.1 fields in real log record: {missing})", file=sys.stderr
+            )
             return 1
 
         print("RESULT: PASS")
         return 0
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         print(f"RESULT: FAIL ({e})", file=sys.stderr)
         return 1

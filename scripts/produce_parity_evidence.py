@@ -16,19 +16,19 @@ import subprocess
 import sys
 from dataclasses import MISSING, fields
 from pathlib import Path
-from typing import Any, get_type_hints
+from typing import Any
 
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from verdict.contracts import (
     AvailabilitySnapshot,
+    ContractValidationError,
     ExecutionEnvelope,
     RoutingDecisionContract,
     RuntimeCandidate,
     TaskSpec,
     contract_from_dict,
-    ContractValidationError,
 )
 
 CONTRACTS = [
@@ -164,9 +164,7 @@ def generate_parity_matrix(evidence_dir: Path, contracts_dist: Path) -> list[str
 
         all_fields = sorted(set(py_schema.keys()) | set(ts_schema.keys()))
 
-        lines.append(
-            "| Field | Python req | TypeScript req | Status |"
-        )
+        lines.append("| Field | Python req | TypeScript req | Status |")
         lines.append("|-------|-----------|----------------|--------|")
 
         for fname in all_fields:
@@ -241,21 +239,21 @@ def generate_fixture_results(evidence_dir: Path, contracts_dist: Path) -> list[s
 
         status = "OK" if match and expected_ok else "MISMATCH"
         if status == "MISMATCH":
-            mismatches.append(
-                f"{fname}: py={py_verdict} ts={ts_verdict} expected={expected}"
-            )
+            mismatches.append(f"{fname}: py={py_verdict} ts={ts_verdict} expected={expected}")
 
-        results.append({
-            "fixture": fname,
-            "contract_py": py_contract,
-            "contract_ts": ts_contract,
-            "py_result": py_result,
-            "ts_result": ts_result,
-            "py_verdict": py_verdict,
-            "ts_verdict": ts_verdict,
-            "expected": expected,
-            "status": status,
-        })
+        results.append(
+            {
+                "fixture": fname,
+                "contract_py": py_contract,
+                "contract_ts": ts_contract,
+                "py_result": py_result,
+                "ts_result": ts_result,
+                "py_verdict": py_verdict,
+                "ts_verdict": ts_verdict,
+                "expected": expected,
+                "status": status,
+            }
+        )
         print(f"  {status} {fname}: py={py_verdict} ts={ts_verdict}")
 
     output_file = evidence_dir / "parity_fixture_results.json"
@@ -276,7 +274,10 @@ def main() -> int:
 
     contracts_dist = Path("contracts/dist").resolve()
     if not contracts_dist.exists():
-        print("RESULT: FAIL (contracts/dist not found; run: cd contracts && npm ci && npm run build)", file=sys.stderr)
+        print(
+            "RESULT: FAIL (contracts/dist not found; run: cd contracts && npm ci && npm run build)",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -297,6 +298,7 @@ def main() -> int:
         return 0
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         print(f"RESULT: FAIL ({e})", file=sys.stderr)
         return 1
