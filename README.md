@@ -104,7 +104,7 @@ Orchestration is specified in [ADR-036](docs/adr/ADR-036-goal-to-receipt-orchest
 
 | Evidence | Location |
 |---|---|
-| 2907 tests, 0 failed (CI) | [`docs/proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md`](docs/proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md) |
+| Latest certification | [`artifacts/certification/bd70412f8050f89a8a8b6fd9c914e3cdadbf112f/CERTIFICATION.md`](artifacts/certification/bd70412f8050f89a8a8b6fd9c914e3cdadbf112f/CERTIFICATION.md) |
 | Scenario matrix A–J (live, faults injected) | [`docs/proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md`](docs/proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md) |
 | Evidence index | [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md) |
 | Claims audit | [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md) |

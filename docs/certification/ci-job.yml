@@ -1,0 +1,67 @@
+# Certification CI Job for verdict-core
+# Add this job to .github/workflows/proof.yml or create a separate workflow
+
+name: Release Certification
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  certify-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git operations
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev --extra server
+      
+      - name: Run certification (without rehearsals)
+        run: |
+          export PATH="$PWD/.venv/bin:$PATH"
+          python scripts/certify_release.py
+        continue-on-error: true  # Upload artifacts even if certification fails
+      
+      - name: Get git SHA
+        id: git-sha
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+      
+      - name: Upload certification bundle
+        uses: actions/upload-artifact@v4
+        if: always()  # Upload even on failure
+        with:
+          name: certification-${{ steps.git-sha.outputs.sha }}
+          path: artifacts/certification/${{ steps.git-sha.outputs.sha }}/
+          retention-days: 90
+      
+      - name: Check certification verdict
+        run: |
+          VERDICT=$(jq -r '.verdict' artifacts/certification/${{ steps.git-sha.outputs.sha }}/manifest.json)
+          echo "Certification verdict: $VERDICT"
+          if [ "$VERDICT" = "FAILED" ]; then
+            echo "❌ Certification FAILED"
+            exit 1
+          elif [ "$VERDICT" = "INCOMPLETE" ]; then
+            echo "⚠️ Certification INCOMPLETE (missing rehearsals or dirty tree)"
+            exit 0  # Don't fail CI for INCOMPLETE
+          else
+            echo "✅ Certification CERTIFIED"
+            exit 0
+          fi
