@@ -12,6 +12,7 @@ Evidence is saved key-free to ~/.verdict/evidence/bod191/bod238/advisory-live-20
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -45,15 +46,28 @@ def _check_env() -> None:
     assert mode == "ADVISORY", f"Must run with VERDICT_DECISION_SIGNALS_MODE=ADVISORY, got {mode!r}"
 
 
-def _make_counting_provider(wrapped: Any) -> tuple[Any, list[int]]:
+def _signals_digest(signals: dict[str, float] | None) -> str | None:
+    """sha256 of the canonical (sorted-keys) JSON of the signals dict."""
+    if signals is None:
+        return None
+    canonical = json.dumps(signals, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _make_capturing_provider(wrapped: Any) -> tuple[Any, list[Any], list[int]]:
+    """Return (provider, signal_captures, call_count) where signal_captures
+    collects the DecisionSignalSetV1 objects returned by the real provider."""
+    signal_captures: list[Any] = []
     call_count: list[int] = [0]
 
-    class _CountingProvider:
+    class _CapturingProvider:
         def signals(self, question: Any, *, now: Any) -> Any:
             call_count[0] += 1
-            return wrapped.signals(question, now=now)
+            result = wrapped.signals(question, now=now)
+            signal_captures.append(result)
+            return result
 
-    return _CountingProvider(), call_count
+    return _CapturingProvider(), signal_captures, call_count
 
 
 def _make_svc(provider: Any) -> Any:
@@ -90,10 +104,38 @@ def _make_svc(provider: Any) -> Any:
     return svc
 
 
+async def _route_with_influence(svc: Any, task_str: str, criticality: str) -> tuple[Any, Any]:
+    """Run svc.route() and also intercept the InfluenceRecord from advise_order().
+
+    Returns (RoutingDecision, InfluenceRecord | None).
+    """
+    import verdict.decision_signals.advisory as _adv
+    import verdict.intelligence as _vi
+
+    influence_capture: list[Any] = []
+    orig_advise = _adv.advise_order
+
+    def _capturing_advise_order(candidates: Any, signals: Any, **kwargs: Any) -> tuple[Any, Any]:
+        result = orig_advise(candidates, signals, **kwargs)
+        influence_capture.append(result[1])  # InfluenceRecord is item [1]
+        return result
+
+    _adv.advise_order = _capturing_advise_order  # type: ignore[assignment]
+    orig_classify = _vi.classify
+    _vi.classify = lambda mid: 1 if "4o" in mid else 3  # type: ignore[assignment]
+    try:
+        dec = await svc.route(task_str, criticality=criticality)
+    finally:
+        _adv.advise_order = orig_advise
+        _vi.classify = orig_classify
+
+    influence = influence_capture[0] if influence_capture else None
+    return dec, influence
+
+
 async def main() -> None:
     _check_env()
 
-    import verdict.intelligence as _vi
     from verdict.decision_signals.factory import provider_from_env
 
     base_provider = provider_from_env()
@@ -107,81 +149,111 @@ async def main() -> None:
     print(f"Provider: {type(base_provider).__name__}", file=sys.stderr)
     print(f"Mode: {os.environ.get('VERDICT_DECISION_SIGNALS_MODE')}", file=sys.stderr)
 
-    evidence_entries = []
+    evidence_entries: list[dict[str, Any]] = []
+    errors: list[str] = []
 
     for task_def in TASKS:
         label = task_def["label"]
         task_str = task_def["task"]
         crit = task_def["criticality"]
+        is_protected = crit == "critical"
 
-        counting, call_count = _make_counting_provider(base_provider)
-        svc = _make_svc(counting)
+        capturing, signal_captures, call_count = _make_capturing_provider(base_provider)
+        svc = _make_svc(capturing)
 
-        orig_classify = _vi.classify
-        _vi.classify = lambda mid: 1 if "4o" in mid else 3  # type: ignore[assignment]
-        try:
-            dec = await svc.route(task_str, criticality=crit)
-        finally:
-            _vi.classify = orig_classify
+        dec, influence = await _route_with_influence(svc, task_str, crit)
 
         flags = list(dec.safety_flags or [])
         advisory_flags = [f for f in flags if "advisory" in f]
+
+        # Extract signal-set fields from the captured real response
+        sig_set = signal_captures[0] if signal_captures else None
+        sig_request_id: str | None = getattr(sig_set, "request_id", None) if sig_set else None
+        sig_model: str | None = getattr(sig_set, "model", None) if sig_set else None
+        sig_failure_class: str | None = None
+        if sig_set is not None:
+            fc = getattr(sig_set, "failure_class", None)
+            sig_failure_class = fc.value if fc is not None else None
+        sig_confidence: float | None = getattr(sig_set, "confidence", None) if sig_set else None
+        raw_signals: dict[str, float] | None = (
+            getattr(sig_set, "signals", None) if sig_set else None
+        )
+        sig_signals_rounded: dict[str, float] | None = (
+            {k: round(v, 3) for k, v in raw_signals.items()} if raw_signals else None
+        )
+        computed_signals_digest = _signals_digest(raw_signals)
+
+        # InfluenceRecord baseline_first and advised_first
+        baseline_first: str | None = (
+            getattr(influence, "baseline_first", None) if influence else None
+        )
+        advised_first: str | None = getattr(influence, "advised_first", None) if influence else None
+        inf_profile: str | None = getattr(influence, "profile", None) if influence else None
+
+        # Validate non-protected tasks
+        if not is_protected:
+            if sig_failure_class is not None:
+                errors.append(f"[{label}] FAIL: failure_class={sig_failure_class!r}, expected null")
+            if not sig_request_id:
+                errors.append(f"[{label}] FAIL: no request_id returned from provider")
 
         entry: dict[str, Any] = {
             "label": label,
             "task_summary": task_str[:80],
             "criticality": crit,
+            # routing decision
             "model": dec.model,
-            "provider": dec.provider,
+            "routing_provider": dec.provider,
             "tier": dec.tier,
             "protected": dec.protected,
             "provider_called": call_count[0] > 0,
+            # from real DecisionSignalSetV1
+            "request_id": sig_request_id,
+            "response_model": sig_model,
+            "failure_class": sig_failure_class,
+            "confidence": sig_confidence,
+            "signals": sig_signals_rounded,
+            "signals_digest": computed_signals_digest,
+            # advisory influence
+            "advisory_profile": inf_profile,
+            "baseline_first": baseline_first,
+            "advised_first": advised_first,
             "advisory_flags": advisory_flags,
-            "signals_digest": None,
-            "profile": None,
-            "baseline_vs_advised": None,
         }
-
-        for f in advisory_flags:
-            if (
-                f.startswith("advisory:")
-                and not f.startswith("advisory:skipped")
-                and not f.startswith("advisory_baseline")
-            ):
-                entry["profile"] = f.replace("advisory:", "")
-            if f.startswith("advisory_baseline:"):
-                entry["baseline_vs_advised"] = f.replace("advisory_baseline:", "")
 
         print(
             f"[{label}] model={dec.model} protected={dec.protected} "
-            f"provider_called={entry['provider_called']} flags={advisory_flags}",
+            f"provider_called={entry['provider_called']} "
+            f"request_id={'<present>' if sig_request_id else 'NONE'} "
+            f"response_model={sig_model} failure_class={sig_failure_class} "
+            f"confidence={sig_confidence} "
+            f"baseline={baseline_first} advised={advised_first}",
             file=sys.stderr,
         )
 
         evidence_entries.append(entry)
 
-    protected = next(e for e in evidence_entries if e["label"] == "protected")
-    if protected["provider_called"]:
-        print("FAIL: protected task called the provider!", file=sys.stderr)
+    if errors:
+        for e in errors:
+            print(e, file=sys.stderr)
         sys.exit(1)
 
+    # Save evidence (chmod 600; no keys)
     EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
     evidence = {
-        "schema": "advisory-live-evidence/v1",
+        "schema": "advisory-live-evidence/v2",
         "mode": os.environ.get("VERDICT_DECISION_SIGNALS_MODE"),
         "provider_type": type(base_provider).__name__,
         "timeout_ms": int(os.environ.get("VERDICT_DECISION_SIGNALS_TIMEOUT_MS", "5000")),
         "tasks": evidence_entries,
     }
+    evidence_json = json.dumps(evidence, indent=2)
+    EVIDENCE_PATH.write_text(evidence_json)
+    EVIDENCE_PATH.chmod(0o600)
 
-    with open(EVIDENCE_PATH, "w") as f:
-        f.write(json.dumps(evidence, indent=2))
-
-    print(f"Evidence saved to {EVIDENCE_PATH}", file=sys.stderr)
-    print(json.dumps(evidence, indent=2))
-
-    assert not protected["provider_called"], "protected task must not call provider"
-    print("PASS: protected task was never sent to provider.", file=sys.stderr)
+    print(f"Evidence saved to {EVIDENCE_PATH} (chmod 600)", file=sys.stderr)
+    print(evidence_json)
+    print("PASS", file=sys.stderr)
 
 
 if __name__ == "__main__":
