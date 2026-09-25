@@ -1,8 +1,5 @@
 """Tests for decision signal contracts (BOD-199)."""
 
-import math
-from datetime import datetime, timezone
-
 import pytest
 
 from verdict.decision_signals.contracts import (
@@ -225,9 +222,7 @@ def test_decision_signal_set_v1_rejects_unknown_signal_keys():
 def test_compute_input_digest():
     """compute_input_digest produces consistent sha256 hex."""
     question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test task",
-        complexity_hints={"key": "value"},
+        purpose="test", task_summary="test task", complexity_hints={"key": "value"}
     )
     digest1 = compute_input_digest(question)
     digest2 = compute_input_digest(question)

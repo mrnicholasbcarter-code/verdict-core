@@ -8,15 +8,13 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from verdict.gateway_adapters import NormalizedFailureClass
-from verdict.gateway_adapter_runtime import AdapterFailureSignal, NormalizedFailure
 from verdict.decision_signals.contracts import (
     DecisionQuestionV1,
-    DecisionSignalProvider,
     DecisionSignalSetV1,
     compute_input_digest,
 )
-
+from verdict.gateway_adapter_runtime import AdapterFailureSignal, NormalizedFailure
+from verdict.gateway_adapters import NormalizedFailureClass
 
 # Constants from autodev_routing
 RETRY_AFTER_MIN_S = 1
@@ -117,7 +115,10 @@ class OpenJevSystemOneProvider:
         *,
         base_url: str | None = None,
         api_key: str | None = None,
-        transport: Callable[[str, dict[str, str], dict[str, Any]], tuple[int, dict[str, str], bytes]] | None = None,
+        transport: Callable[
+            [str, dict[str, str], dict[str, Any]], tuple[int, dict[str, str], bytes]
+        ]
+        | None = None,
     ) -> None:
         """Initialize OpenJev provider.
 
@@ -164,10 +165,7 @@ class OpenJevSystemOneProvider:
 
         # Build request
         url = f"{self.base_url.rstrip('/')}/v1/systemone"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         payload = question.to_dict()
 
         # Execute request
@@ -181,7 +179,11 @@ class OpenJevSystemOneProvider:
                 import urllib.parse
 
                 parsed = urllib.parse.urlparse(url)
-                conn_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+                conn_class = (
+                    http.client.HTTPSConnection
+                    if parsed.scheme == "https"
+                    else http.client.HTTPConnection
+                )
                 conn = conn_class(parsed.netloc, timeout=30)
                 try:
                     conn.request("POST", parsed.path, json.dumps(payload).encode("utf-8"), headers)
@@ -200,11 +202,19 @@ class OpenJevSystemOneProvider:
                 try:
                     data = json.loads(body.decode("utf-8"))
                     # Validate required fields
-                    required = ["provider", "model", "version", "confidence", "latency_ms", "usage", "observed_at"]
+                    required = [
+                        "provider",
+                        "model",
+                        "version",
+                        "confidence",
+                        "latency_ms",
+                        "usage",
+                        "observed_at",
+                    ]
                     missing = [f for f in required if f not in data]
                     if missing:
                         raise KeyError(f"Missing required fields: {missing}")
-                    
+
                     return DecisionSignalSetV1(
                         schema_version="decision-signals/v1",
                         provider=data["provider"],
@@ -221,11 +231,10 @@ class OpenJevSystemOneProvider:
                         failure_class=None,
                         mode="SHADOW",
                     )
-                except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                except (json.JSONDecodeError, KeyError, TypeError):
                     # Malformed response
                     failure_signal = AdapterFailureSignal(
-                        code="malformed_response",
-                        status_code=status,
+                        code="malformed_response", status_code=status
                     )
                     normalized = normalize_failure(failure_signal, now=now)
                     return DecisionSignalSetV1(
@@ -248,7 +257,7 @@ class OpenJevSystemOneProvider:
             # Failure path - normalize with existing logic
             retry_after = response_headers.get("Retry-After") if status == 429 else None
             code = f"http_{status}"
-            
+
             # Parse error response for 429 to detect quota vs rate-limit
             if status == 429:
                 try:
@@ -259,11 +268,9 @@ class OpenJevSystemOneProvider:
                             code = error_code
                 except (json.JSONDecodeError, KeyError, TypeError):
                     pass
-            
+
             failure_signal = AdapterFailureSignal(
-                code=code,
-                status_code=status,
-                retry_after=retry_after,
+                code=code, status_code=status, retry_after=retry_after
             )
             normalized = normalize_failure(failure_signal, now=now)
 
@@ -324,8 +331,4 @@ class OpenJevSystemOneProvider:
             )
 
 
-__all__ = [
-    "OpenJevSystemOneProvider",
-    "parse_retry_after",
-    "normalize_failure",
-]
+__all__ = ["OpenJevSystemOneProvider", "normalize_failure", "parse_retry_after"]

@@ -357,6 +357,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "cooldowns": _free("cooldown"),
         "review": _review_block(run_dir, events),
         "controller_events": _free("controller"),
+        "decision_signals": _free("decision_signals") or None,  # BOD-199: SHADOW signals (optional)
         "claimed_outcome": str(finished[-1].data.get("outcome", "")) if finished else "",
         "event_count": len(events),
         "events_digest": _sha256_file(events_path),

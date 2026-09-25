@@ -141,14 +141,15 @@ class DecisionSignalSetV1:
                     raise DecisionSignalError(f"signals.{key} must be in [0,1], got {val}")
 
         # Validate failure_class
-        if self.failure_class is not None:
-            if not isinstance(self.failure_class, NormalizedFailureClass):
-                try:
-                    object.__setattr__(
-                        self, "failure_class", NormalizedFailureClass(self.failure_class)
-                    )
-                except ValueError as exc:
-                    raise DecisionSignalError(f"Invalid failure_class: {self.failure_class}") from exc
+        if self.failure_class is not None and not isinstance(
+            self.failure_class, NormalizedFailureClass
+        ):
+            try:
+                object.__setattr__(
+                    self, "failure_class", NormalizedFailureClass(self.failure_class)
+                )
+            except ValueError as exc:
+                raise DecisionSignalError(f"Invalid failure_class: {self.failure_class}") from exc
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -193,7 +194,9 @@ class DecisionSignalSetV1:
 
         missing = expected - set(value.keys())
         if missing:
-            raise DecisionSignalError(f"Missing required fields in DecisionSignalSetV1: {sorted(missing)}")
+            raise DecisionSignalError(
+                f"Missing required fields in DecisionSignalSetV1: {sorted(missing)}"
+            )
 
         failure_class = value["failure_class"]
         if failure_class is not None and not isinstance(failure_class, NormalizedFailureClass):
@@ -233,8 +236,8 @@ def compute_input_digest(question: DecisionQuestionV1) -> str:
 
 __all__ = [
     "DecisionQuestionV1",
-    "DecisionSignalSetV1",
-    "DecisionSignalProvider",
     "DecisionSignalError",
+    "DecisionSignalProvider",
+    "DecisionSignalSetV1",
     "compute_input_digest",
 ]

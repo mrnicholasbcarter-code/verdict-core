@@ -5,8 +5,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 from verdict.decision_signals.contracts import DecisionQuestionV1
 from verdict.decision_signals.openjev import OpenJevSystemOneProvider
 from verdict.gateway_adapters import NormalizedFailureClass
@@ -34,16 +32,10 @@ def test_openjev_post_endpoint_is_v1_systemone():
         return 200, {}, json.dumps(response).encode("utf-8")
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
-    question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test",
-        complexity_hints={},
-    )
+    question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
     now = datetime.now(timezone.utc)
     provider.signals(question, now=now)
 
@@ -61,15 +53,11 @@ def test_openjev_confident_response():
         return 200, {}, json.dumps(fixture_data).encode("utf-8")
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
     question = DecisionQuestionV1(
-        purpose="frontier_planning",
-        task_summary="test",
-        complexity_hints={},
+        purpose="frontier_planning", task_summary="test", complexity_hints={}
     )
     now = datetime.now(timezone.utc)
     result = provider.signals(question, now=now)
@@ -93,16 +81,10 @@ def test_openjev_uncertain_response():
         return 200, {}, json.dumps(fixture_data).encode("utf-8")
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
-    question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test",
-        complexity_hints={},
-    )
+    question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
     now = datetime.now(timezone.utc)
     result = provider.signals(question, now=now)
 
@@ -118,16 +100,10 @@ def test_openjev_malformed_json():
         return 200, {}, b"{invalid json"
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
-    question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test",
-        complexity_hints={},
-    )
+    question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
     now = datetime.now(timezone.utc)
     result = provider.signals(question, now=now)
 
@@ -145,16 +121,10 @@ def test_openjev_schema_violation():
         return 200, {}, json.dumps(fixture_data).encode("utf-8")
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
-    question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test",
-        complexity_hints={},
-    )
+    question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
     now = datetime.now(timezone.utc)
     result = provider.signals(question, now=now)
 
@@ -169,16 +139,10 @@ def test_openjev_timeout():
         raise TimeoutError("Connection timeout")
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
-    question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test",
-        complexity_hints={},
-    )
+    question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
     now = datetime.now(timezone.utc)
     result = provider.signals(question, now=now)
 
@@ -194,16 +158,10 @@ def test_openjev_429_quota_exhausted():
         return 429, {}, b'{"error": {"code": "quota_exceeded"}}'
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
-    question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test",
-        complexity_hints={},
-    )
+    question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
     now = datetime.now(timezone.utc)
     result = provider.signals(question, now=now)
 
@@ -218,16 +176,10 @@ def test_openjev_429_rate_limit_with_retry_after():
         return 429, {"Retry-After": "120"}, b'{"error": {"message": "rate limited"}}'
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
-    question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test",
-        complexity_hints={},
-    )
+    question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
     now = datetime.now(timezone.utc)
     result = provider.signals(question, now=now)
 
@@ -242,16 +194,10 @@ def test_openjev_529_overload():
         return 529, {}, b"Service overloaded"
 
     provider = OpenJevSystemOneProvider(
-        base_url="https://test.example.com",
-        api_key="test-key",
-        transport=mock_transport,
+        base_url="https://test.example.com", api_key="test-key", transport=mock_transport
     )
 
-    question = DecisionQuestionV1(
-        purpose="test",
-        task_summary="test",
-        complexity_hints={},
-    )
+    question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
     now = datetime.now(timezone.utc)
     result = provider.signals(question, now=now)
 
@@ -271,11 +217,7 @@ def test_openjev_key_missing():
             # No base_url, no api_key, no env var
         )
 
-        question = DecisionQuestionV1(
-            purpose="test",
-            task_summary="test",
-            complexity_hints={},
-        )
+        question = DecisionQuestionV1(purpose="test", task_summary="test", complexity_hints={})
         now = datetime.now(timezone.utc)
         result = provider.signals(question, now=now)
 
