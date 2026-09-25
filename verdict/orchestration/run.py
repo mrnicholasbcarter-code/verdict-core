@@ -308,19 +308,28 @@ async def plan_with_failover(
                 min(max_parallel, graph.max_parallel),
             )
         # BOD-199: emit decision_signals event if collected (SHADOW mode, at most once)
+        # Wrapped in try/except: no SHADOW bookkeeping failure can affect planning outcome
         if decision_signals_data is not None and not decision_signals_emitted:
-            events.emit(
-                "decision_signals",
-                mode="SHADOW",
-                signals=decision_signals_data,
-                actual_decision={
-                    "frontier_planner_invoked": True,
-                    "route_id": choice.route_id,
-                    "provider": choice.provider,
-                    "capacity_class": choice.capacity_class.value,
-                },
-            )
-            decision_signals_emitted = True
+            try:
+                events.emit(
+                    "decision_signals",
+                    mode="SHADOW",
+                    signals=decision_signals_data,
+                    actual_decision={
+                        "frontier_planner_invoked": True,
+                        "route_id": choice.route_id,
+                        "provider": choice.provider,
+                        "capacity_class": choice.capacity_class.value,
+                    },
+                )
+                decision_signals_emitted = True
+            except Exception as exc:
+                # SHADOW emit failure: log and continue (planning outcome unaffected)
+                import warnings
+
+                warnings.warn(
+                    f"BOD-199 SHADOW: decision_signals event emission failed: {exc}", stacklevel=2
+                )
         return graph
     raise OrchestrationError(
         f"planning failed on every eligible frontier model; last: {last or 'none eligible'}"
