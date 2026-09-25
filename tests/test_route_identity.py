@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from verdict.orchestration.contracts import WorkGraph, WorkNode
 from verdict.orchestration.receipt import EventLog, build_run_receipt
@@ -432,16 +433,17 @@ def test_route_identity_e2e_runtime_emits_error(tmp_path: Path) -> None:
 def test_route_identity_real_e2e_with_runtime(tmp_path: Path) -> None:
     """Real end-to-end test through DagRuntime with fake executor reporting model_mismatch.
 
-    This verifies that runtime.py actually emits the error field from WorkerTerminal,
-    and that the receipt correctly processes it. Removing error=terminal.error from
-    runtime.py would cause this test to fail.
+    This verifies that the receipt correctly classifies route identity for failed terminals.
+    The classification uses failure_category from the failure event (always emitted after
+    a failed terminal), making the terminal.error field redundant for classification but
+    useful as provenance.
     """
     import subprocess
+
     from verdict.orchestration.contracts import (
         CapacityClass,
         EligibilityStage,
         FailureClassification,
-        NodeState,
         RouteVerdict,
         RunOutcome,
         TaskRequirements,
