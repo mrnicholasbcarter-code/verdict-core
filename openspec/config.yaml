@@ -1,0 +1,31 @@
+schema: verdict-change-v1
+
+# Verdict Core project context
+context: |
+  Python codebase using uv for dependency management
+  Type-checked with mypy --strict
+  Formatted with ruff format
+  Linted with ruff check
+  
+  Domain: LLM execution orchestration, provider routing, availability tracking
+  
+  Authority model:
+  - Linear: queue, priority, blockers, lifecycle intent
+  - OpenSpec: structured change contract  
+  - Verdict: plan admission, execution, policy, recovery, verification
+  - Git/GitHub: source/branch/PR/CI/merge truth
+
+# Per-artifact rules
+rules:
+  proposal:
+    - Keep proposals focused and specific
+    - Reference Linear issue requirements
+  specs:
+    - Include concrete examples
+    - Specify backward compatibility requirements
+  design:
+    - Show actual code structure
+    - Include test strategy
+  tasks:
+    - Break into testable increments
+    - Include acceptance criteria

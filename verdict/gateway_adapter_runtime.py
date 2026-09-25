@@ -84,6 +84,7 @@ class AdapterFailureSignal:
     status_code: int | None = None
     timed_out: bool = False
     cancelled: bool = False
+    retry_after: str | None = None
 
     def __post_init__(self) -> None:
         _non_empty(self.code, "failure.code")
@@ -97,6 +98,7 @@ class NormalizedFailure:
     failure_class: NormalizedFailureClass
     retryable: bool
     status_code: int | None = None
+    cooldown_seconds: float | None = None
 
     def __post_init__(self) -> None:
         try:
