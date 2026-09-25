@@ -199,7 +199,13 @@ async def plan_with_failover(
     """
     from verdict.orchestration.planner import PlanningExecutorError
 
-    # BOD-199: SHADOW decision signal collection (before planning loop)
+    # BOD-235: auto-wire factory default when no provider injected
+    if decision_signal_provider is None:
+        from verdict.decision_signals.factory import provider_from_env
+
+        decision_signal_provider = provider_from_env()
+
+    # BOD-199/235: SHADOW/ADVISORY decision signal collection (before planning loop)
     decision_signals_data: dict[str, Any] | None = None
     decision_signals_emitted = False  # BOD-199: emit at most once
     if decision_signal_provider is not None:
@@ -404,6 +410,12 @@ async def run_golden_path(
     openspec_change_dir: Path | None = None,
     decision_signal_provider: DecisionSignalProvider | None = None,
 ) -> GoldenRunResult:
+    # BOD-235: auto-wire factory default when no provider injected
+    if decision_signal_provider is None:
+        from verdict.decision_signals.factory import provider_from_env
+
+        decision_signal_provider = provider_from_env()
+
     run_dir = load_or_create_run(runs_root, run_id)
     log = EventLog(run_dir / "events.jsonl")
     events = _Progress(log, run_dir / PROGRESS_FILE, run_dir.name)

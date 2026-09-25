@@ -1,0 +1,6 @@
+{
+  "detail": {
+    "error_type": "quota_exceeded_error",
+    "message": "The free token quota is used up."
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "model": "openjev-0.1",
+  "answers": {
+    "complexity": {
+      "type": "score",
+      "score": 0.0640348722558313,
+      "legend": {
+        "0": "trivial",
+        "1": "moderate",
+        "2": "hard",
+        "3": "very hard"
+      },
+      "probabilities": {
+        "0": 0.9638137243669382,
+        "1": 0.010336487962024224,
+        "2": 0.023850978719305457,
+        "3": 0.001998808951732051
+      },
+      "confidence": 0.8670475000528071
+    },
+    "decomposability": {
+      "type": "score",
+      "score": 0.4,
+      "legend": {
+        "0": "monolithic",
+        "1": "partially decomposable",
+        "2": "cleanly decomposable"
+      },
+      "probabilities": {
+        "0": 0.6,
+        "1": 0.3,
+        "2": 0.1
+      },
+      "confidence": 0.55
+    },
+    "ambiguity": {
+      "type": "score",
+      "score": 0.25,
+      "legend": {
+        "0": "clear",
+        "1": "somewhat ambiguous",
+        "2": "highly ambiguous"
+      },
+      "probabilities": {
+        "0": 0.75,
+        "1": 0.2,
+        "2": 0.05
+      },
+      "confidence": 0.7
+    },
+    "frontier_worthy": {
+      "type": "noul",
+      "noul": 8.31277494689509e-05
+    },
+    "security_sensitive": {
+      "type": "noul",
+      "noul": 0.05
+    },
+    "verification_strength": {
+      "type": "score",
+      "score": 0.5,
+      "legend": {
+        "0": "light review",
+        "1": "standard review",
+        "2": "deep audit"
+      },
+      "probabilities": {
+        "0": 0.25,
+        "1": 0.5,
+        "2": 0.25
+      },
+      "confidence": 0.4
+    },
+    "context_need": {
+      "type": "score",
+      "score": 0.3,
+      "legend": {
+        "0": "self-contained",
+        "1": "needs some context",
+        "2": "heavy context required"
+      },
+      "probabilities": {
+        "0": 0.7,
+        "1": 0.2,
+        "2": 0.1
+      },
+      "confidence": 0.65
+    }
+  },
+  "usage": {
+    "input_tokens": 180,
+    "output_tokens": 0
+  }
+}
