@@ -152,7 +152,9 @@ def test_get_credential_source_from_env(
 
     source, masked = get_credential_source("TEST_KEY", store)
     assert source == "env"
-    assert "env_value"[:8] in masked or "..." in masked
+    # New masking policy: no characters shown, only "set (len=N)"
+    assert "env_value" not in masked
+    assert "set (len=" in masked
 
 
 def test_get_credential_source_from_store(
@@ -164,7 +166,9 @@ def test_get_credential_source_from_store(
 
     source, masked = get_credential_source("TEST_KEY", store)
     assert source == "store"
-    assert "..." in masked
+    # New masking policy: no characters shown, only "set (len=N)"
+    assert "stored_value" not in masked
+    assert "set (len=" in masked
 
 
 def test_get_credential_source_missing(
@@ -185,10 +189,11 @@ def test_masking_hides_secrets(store: CredentialsStore) -> None:
 
     _source, masked = get_credential_source("SECRET_KEY", store)
 
-    # Should not contain the full secret
+    # Should not contain the full secret or any prefix
     assert secret not in masked
-    # Should contain length info
-    assert "[len=" in masked
+    # New masking policy: "set (len=N)" format, no characters of the secret
+    assert "set (len=" in masked
+    assert secret[:4] not in masked
 
 
 def test_store_survives_empty_lines_and_comments(store: CredentialsStore) -> None:

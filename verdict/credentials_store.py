@@ -223,9 +223,11 @@ def get_credential_source(env_name: str, store: CredentialsStore | None = None) 
 
 
 def _mask_value(value: str) -> str:
-    """Mask a credential value, showing at most first 8 chars + length."""
+    """Mask a credential value. Never reveals any characters of the secret.
+
+    Returns "set (len=N)" so the operator can confirm a value is present
+    without any characters of the secret appearing in output or logs.
+    """
     if not value:
         return "(empty)"
-    if len(value) <= 8:
-        return value[:4] + "..." + f"[len={len(value)}]"
-    return value[:8] + "..." + f"[len={len(value)}]"
+    return f"set (len={len(value)})"

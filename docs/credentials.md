@@ -61,7 +61,7 @@ The registry also tracks optional dependencies. Check their status with `verdict
 
 ## Masking
 
-All credential values are masked in output: `first8chars...[len=N]`. Full secrets never appear in logs, doctor output, or `verdict.yaml`.
+All credential values are masked in output: `set (len=N)`. No characters of the secret are ever shown. Full secrets never appear in logs, doctor output, or `verdict.yaml`.
 
 ## API
 

@@ -331,8 +331,18 @@ def cmd_setup(
                 ui.status("Verdict configuration", "found", existing_config_path)
                 ui.panel(
                     "Preserved",
-                    "Existing configuration preserved. Run verdict setup --recommended to review capabilities, or verdict doctor to inspect health.",
+                    "Existing configuration preserved. Run verdict setup --recommended to review capabilities, or verdict doctor to inspect health.\n"
+                    "Run `verdict setup credentials` to add or update API keys.",
                 )
+                if not non_interactive:
+                    try:
+                        run_now = Prompt.ask(
+                            "Run credentials setup now?", choices=["y", "n"], default="n"
+                        )
+                    except (KeyboardInterrupt, EOFError):
+                        run_now = "n"
+                    if run_now == "y":
+                        cmd_setup_credentials(non_interactive=False)
                 return
         except yaml.YAMLError as e:
             ui.panel(

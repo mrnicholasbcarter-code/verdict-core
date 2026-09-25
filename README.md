@@ -24,9 +24,10 @@ Verdict is a fail-closed control plane for LLM-powered workflows. Hard eligibili
 Verdict uses a secure credential store for API keys and tracks optional dependencies. See [docs/credentials.md](docs/credentials.md).
 
 ```bash
-verdict credentials list      # Show credential status  
-verdict setup credentials     # Interactive setup
-verdict doctor                # Health check
+verdict credentials list              # Show credential status (name, source, set/missing)
+verdict credentials set NAME          # Set a key — reads from a hidden prompt or --stdin, never argv
+verdict setup credentials             # Interactive setup for API keys
+verdict doctor                        # Health check with repair commands
 ```
 
 ## 30-second demo

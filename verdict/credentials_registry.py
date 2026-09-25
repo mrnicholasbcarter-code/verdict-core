@@ -59,7 +59,7 @@ def _check_omniroute_api_key(value: str) -> tuple[bool, str]:
             return True, "ok"
         return False, f"HTTP {resp.status_code}"
     except Exception as e:
-        return False, str(e)
+        return False, type(e).__name__
 
 
 def _check_omniroute_management_token(value: str) -> tuple[bool, str]:
@@ -79,7 +79,7 @@ def _check_omniroute_management_token(value: str) -> tuple[bool, str]:
             return True, "ok"
         return False, f"HTTP {resp.status_code}"
     except Exception as e:
-        return False, str(e)
+        return False, type(e).__name__
 
 
 def _check_typesafe_api_key(value: str) -> tuple[bool, str]:
@@ -99,7 +99,7 @@ def _check_typesafe_api_key(value: str) -> tuple[bool, str]:
             return True, "ok"
         return False, f"HTTP {resp.status_code}"
     except Exception as e:
-        return False, str(e)
+        return False, type(e).__name__
 
 
 CREDENTIALS: tuple[CredentialSpec, ...] = (
