@@ -212,7 +212,8 @@ async def main() -> None:
             "response_model": sig_model,
             "failure_class": sig_failure_class,
             "confidence": sig_confidence,
-            "signals": sig_signals_rounded,
+            "signals": raw_signals,  # full-precision — digest is verifiable from this
+            "signals_rounded": sig_signals_rounded,  # 3 dp display copy
             "signals_digest": computed_signals_digest,
             # advisory influence
             "advisory_profile": inf_profile,
@@ -241,7 +242,7 @@ async def main() -> None:
     # Save evidence (chmod 600; no keys)
     EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
     evidence = {
-        "schema": "advisory-live-evidence/v2",
+        "schema": "advisory-live-evidence/v3",
         "mode": os.environ.get("VERDICT_DECISION_SIGNALS_MODE"),
         "provider_type": type(base_provider).__name__,
         "timeout_ms": int(os.environ.get("VERDICT_DECISION_SIGNALS_TIMEOUT_MS", "5000")),
@@ -250,6 +251,18 @@ async def main() -> None:
     evidence_json = json.dumps(evidence, indent=2)
     EVIDENCE_PATH.write_text(evidence_json)
     EVIDENCE_PATH.chmod(0o600)
+
+    # Self-verification: recompute each task's digest from the stored signals
+    # and assert it matches.  A reader can do the same to verify authenticity.
+    for task in evidence_entries:
+        stored_signals: dict[str, float] | None = task["signals"]
+        stored_digest: str | None = task["signals_digest"]
+        if stored_signals is not None and stored_digest is not None:
+            recomputed = _signals_digest(stored_signals)
+            assert recomputed == stored_digest, (
+                f"[{task['label']}] digest mismatch: stored {stored_digest!r} "
+                f"!= recomputed {recomputed!r} (signals in file are not the source of the digest)"
+            )
 
     print(f"Evidence saved to {EVIDENCE_PATH} (chmod 600)", file=sys.stderr)
     print(evidence_json)
