@@ -10,27 +10,39 @@ from verdict.credentials_store import CredentialsStore
 
 
 def test_secret_never_in_list_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Secrets must not appear in plain text in `verdict credentials list` output."""
-    store = CredentialsStore(config_dir=tmp_path)
-    secret_value = "sk-secret-1234567890abcdefghijklmnopqrstuvwxyz"
-    store.set("TEST_SECRET_KEY", secret_value)
+    """Secrets must not appear in plain text in `verdict credentials list` output.
 
-    # Simulate command output
+    Uses a registered credential name (GEMINI_API_KEY) stored in the same
+    XDG_CONFIG_HOME/verdict directory that cmd_credentials_list reads, with
+    all registered env vars cleared so the test is host-environment-independent.
+    """
     import io
     import sys
 
     from verdict.cli import cmd_credentials_list
+    from verdict.credentials_registry import CREDENTIALS
+
+    # Store layout: XDG_CONFIG_HOME=tmp_path → store at tmp_path/verdict/credentials.env
+    cred_dir = tmp_path / "verdict"
+    cred_dir.mkdir()
+    store = CredentialsStore(config_dir=cred_dir)
+    secret_value = "sk-secret-1234567890abcdefghijklmnopqrstuvwxyz"
+    registered_name = "GEMINI_API_KEY"
+    store.set(registered_name, secret_value)
+
+    # Point XDG_CONFIG_HOME at tmp_path so cmd_credentials_list finds the store
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    # Clear every registered credential from the host environment
+    for cred in CREDENTIALS:
+        monkeypatch.delenv(cred.env_name, raising=False)
+
+    import contextlib
 
     captured = io.StringIO()
     monkeypatch.setattr(sys, "stdout", captured)
-
-    try:
-        # Need to inject the store
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path.parent))
+    with contextlib.suppress(SystemExit):
         cmd_credentials_list(output_json=False)
-    except SystemExit:
-        pass
-
     output = captured.getvalue()
 
     # The full secret must not appear anywhere in output
@@ -40,8 +52,11 @@ def test_secret_never_in_list_output(tmp_path: Path, monkeypatch: pytest.MonkeyP
         assert secret_value[:prefix_len] not in output, (
             f"Secret prefix of length {prefix_len} leaked in list output"
         )
-    # Masked format must be present — no chars, just length
-    assert "set (len=" in output, "Expected masked format 'set (len=N)' not found"
+    # The registered credential row must show masked format with exact length
+    expected_mask = f"set (len={len(secret_value)})"
+    assert expected_mask in output, (
+        f"Expected masked format {expected_mask!r} in output for {registered_name}"
+    )
 
 
 def test_secret_never_in_yaml(tmp_path: Path) -> None:
