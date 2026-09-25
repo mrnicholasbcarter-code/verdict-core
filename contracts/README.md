@@ -12,7 +12,9 @@ The `ExecutionEnvelope` is Verdict's canonical execution contract from verdict-c
 - `allowed_capabilities`: Permitted capability identifiers
 - `evidence_ids`: Referenced evidence identifiers
 - `execution_constraints`: Hard constraints including `expires_at` (bounded lifetime)
+- `verification_requirements`: Required verification checks and plans
 - `created_at`: Optional envelope creation timestamp
+- `schema_version`: Contract version identifier (currently "1")
 
 Verdict verifiers parse the envelope, validate the schema (rejecting unknown fields), check eligibility, verify the policy digest matches the expected policy, and enforce time-bounded execution via `expires_at`. If all checks pass, the verifier returns `ACCEPT`; otherwise, it returns `DENY`, `EXPIRED`, `DIGEST_MISMATCH`, or `REJECT_UNKNOWN`.
 
