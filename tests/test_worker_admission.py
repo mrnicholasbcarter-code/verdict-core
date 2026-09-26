@@ -449,3 +449,82 @@ def test_execute_with_worker_failover_applies_launch_gate(tmp_path: Path) -> Non
             )
         )
     assert probe.calls == [DEAD] and executed == []
+
+
+def test_cli_run_end_to_end_rejects_dead_route_with_zero_spawns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Real worker_runtime.cli_run: patched fetchers, no sockets, spawn spy."""
+    from verdict.orchestration import run as orch_run
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    _patch_gateway(monkeypatch, tmp_path)  # cc connection active; ladder: cc/dead cooling
+    monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
+    monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
+    monkeypatch.setattr(
+        worker_runtime, "fetch_omniroute_inventory", lambda: (row(DEAD), row(OK_ROUTE))
+    )
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            # Only the dead route is Prime-visible: without admission it would launch.
+            return (f"PROVIDER MODEL\nomniroute {DEAD}".encode(), b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> Proc:
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    probes: list[str] = []
+
+    def probe_factory(*a: Any, **k: Any) -> Any:
+        def probe(candidate: LaunchCandidate) -> HealthResult:
+            probes.append(candidate.route_id)
+            return HealthResult(True, "healthy")
+
+        return probe
+
+    monkeypatch.setattr(worker_runtime, "openai_health_probe", probe_factory)
+    spawns: list[str] = []
+
+    async def spawn(self: Any, prompt: str, *, name: str, model: str) -> Any:
+        spawns.append(model)
+        return {"rlm_child_id": name, "model": model}
+
+    async def collect(self: Any, handle: Any) -> WorkerTerminal:
+        return WorkerTerminal("done", "OK", True, stop_reason="stop")
+
+    async def delete(self: Any, handle: Any) -> None:
+        return None
+
+    monkeypatch.setattr(worker_runtime.PrimeFileAdapter, "spawn", spawn)
+    monkeypatch.setattr(worker_runtime.PrimeFileAdapter, "collect", collect)
+    monkeypatch.setattr(worker_runtime.PrimeFileAdapter, "delete", delete)
+
+    import socket
+
+    def no_socket(*a: Any, **k: Any) -> Any:
+        raise AssertionError("no network in this test")
+
+    monkeypatch.setattr(socket, "create_connection", no_socket)
+    monkeypatch.setattr(socket.socket, "connect", no_socket)
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text(json.dumps({"prompt": "p", "task": {}}))
+    code = asyncio.run(worker_runtime.cli_run(run_dir))
+
+    assert code == 1
+    assert spawns == []
+    assert DEAD not in probes
+    receipt = json.loads((run_dir / "admission.json").read_text())
+    assert DEAD not in receipt["admitted"]
+    dead = next(c for c in receipt["candidates"] if c["route_id"] == DEAD)
+    assert dead["admitted"] is False
+    assert dead["first_failed_stage"] == "AVAILABLE"
+    assert dead["source"].startswith("ladder_state")
+    outcome = json.loads((run_dir / "outcome.json").read_text())
+    assert outcome["state"] == "FAIL_CLOSED"
