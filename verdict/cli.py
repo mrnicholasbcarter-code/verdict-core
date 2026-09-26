@@ -2941,7 +2941,7 @@ def cmd_receipt(
     db_path: str | None = None,
     output_json: bool = False,
 ) -> None:
-    """Inspect durable RoutingReceiptV1 records from ReceiptStore (routing receipt)."""
+    """Inspect durable RoutingReceiptV1 records from ReceiptStore."""
     from pathlib import Path
 
     from verdict.receipt_store import ReceiptStore

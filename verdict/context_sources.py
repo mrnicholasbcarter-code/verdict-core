@@ -1,4 +1,4 @@
-"""Native Context Intelligence source providers (Context Intelligence Wave-1).
+"""Native Context Intelligence source providers (Wave-1 baseline).
 
 External MCP/Serena adapters plug into the same CapabilityProvider protocol
 later. This module is the always-available Verdict native baseline.

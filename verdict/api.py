@@ -1462,7 +1462,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if not correlation_id and isinstance(payload.get("correlation_id"), str):
         correlation_id = cast(str, payload["correlation_id"])
     # Resolve the request id *before* routing so the pre-execution decision row
-    # and the post-execution outcome receipt share one key (outcome receipts).
+    # and the post-execution outcome receipt share one key.
     client_request_id = request.headers.get("x-verdict-request-id") or (
         payload.get("request_id") if isinstance(payload.get("request_id"), str) else None
     )

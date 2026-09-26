@@ -1,4 +1,4 @@
-"""Cost ledger — reservations, reconciliation, and trajectory economics (session economics (STAY/SWITCH)).
+"""Cost ledger — reservations, reconciliation, and trajectory economics.
 
 Economics only: this module accounts for complete-path spend (planning,
 hydration, tools, execution, verification, retry/escalation, cache, switching,

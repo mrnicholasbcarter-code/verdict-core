@@ -1,4 +1,4 @@
-"""On-disk Core metadata store and refresh job (Core metadata store)."""
+"""On-disk Core metadata store and refresh job."""
 
 from __future__ import annotations
 

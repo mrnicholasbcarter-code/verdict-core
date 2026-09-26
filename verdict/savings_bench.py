@@ -1,4 +1,4 @@
-"""Paired frontier-direct vs Verdict savings bench (paired savings bench execution).
+"""Paired frontier-direct vs Verdict savings bench.
 
 Talk track: "we measure". Cost and token usage come only from observed
 OmniRoute response headers or matching receipt fields, bound to an execution

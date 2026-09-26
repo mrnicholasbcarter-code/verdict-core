@@ -215,7 +215,7 @@ class VerificationStrategy:
 
 @dataclass(frozen=True)
 class AssistanceCost:
-    """Visible assistance cost for session economics (STAY/SWITCH) / execution-path authority expected-cost consumers."""
+    """Visible assistance cost for expected-cost and execution-path consumers."""
 
     context_tokens: int = 0
     tool_tokens: int = 0

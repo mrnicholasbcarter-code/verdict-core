@@ -1,4 +1,4 @@
-"""Bounded, secret-safe, versioned aggregator JSON capacity adapter (capacity evidence).
+"""Bounded, secret-safe, versioned aggregator JSON capacity adapter.
 
 External tools (quota-cli / CodexBar-compatible) emit JSON. Verdict validates
 schema, bounds size, rejects secrets, and never shells with interpolation.

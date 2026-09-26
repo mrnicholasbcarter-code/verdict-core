@@ -1,4 +1,4 @@
-"""Capacity evidence adapter protocol and registry (capacity evidence).
+"""Capacity evidence adapter protocol and registry.
 
 Adapters are evidence producers only. Adding a provider/gateway registers a
 plugin — it does not require a central brand switch or a second router.

@@ -1,4 +1,4 @@
-"""Routing receipt: one versioned routing receipt with the full decision/evidence chain.
+"""One versioned routing receipt with the full decision/evidence chain.
 
 ``RoutingReceiptV1`` is the durable explanation surface for a live Verdict
 route. It is evidence, not a new routing authority. Persistence uses the
@@ -709,7 +709,7 @@ def _candidate_rows_from_admit(admit: Any) -> list[CandidateRow]:
                 )
             rows = updated
 
-    # Attach candidate ContextPlan digests / estimates (candidate ContextPlan digests).
+    # Attach candidate ContextPlan digests / estimates.
     plans = getattr(admit, "context_plans", ()) or ()
     plan_by_candidate: dict[str, Any] = {}
     for plan in plans:
@@ -755,7 +755,7 @@ def _candidate_rows_from_admit(admit: Any) -> list[CandidateRow]:
             )
         rows = updated
 
-    # Passport / confirm arrays (passport confirm arrays) — attribute to chosen when present.
+    # Passport / confirm arrays — attribute to chosen when present.
     passport = getattr(admit, "passport", ()) or ()
     confirm = getattr(admit, "confirm", ()) or ()
     chosen = getattr(admit, "chosen", None)

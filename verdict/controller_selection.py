@@ -1261,7 +1261,7 @@ def _resolve_seed_certification(
 
 
 def _health_claim_for_passport(passport: Any) -> str:
-    """Map ModelPassport fields to runtime certification (passport) health_claim vocabulary.
+    """Map ModelPassport fields to the runtime-certification health_claim vocabulary.
 
     ``passport_from_probe`` only writes ``auth_state="authorized"`` with
     ``availability_state="eligible"`` after a live at-rest probe reported
@@ -1286,7 +1286,7 @@ def _health_claim_for_passport(passport: Any) -> str:
 def _certify_controller_passports(
     healthy_passports: Mapping[str, Any], *, now: datetime, certify_runtime_fn: RuntimeCertifyFn
 ) -> Mapping[str, tuple[CertificationState, str]]:
-    """Translate passport claims into runtime certification (passport) evidence without probes or promotion.
+    """Translate passport claims into runtime-certification evidence without probes or promotion.
 
     Component ids are the passport inventory keys, not model leaf names or
     filesystem paths. The seed resolver falls back from normalized route_id to

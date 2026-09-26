@@ -192,7 +192,7 @@ def _attempt_of(event: RunEvent, fallback: int) -> int:
 def _classify_route_identity(
     route_id: str, reported_model: str | None, ok: bool, error: str, failure_category: str
 ) -> str:
-    """Classify route identity match status (route identity tracking).
+    """Classify route identity match status.
 
     Args:
         route_id: Intended route identity from dispatch
@@ -260,7 +260,7 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 row["outcome"] = "success" if ok else "failure"
                 if isinstance(data.get("duration_seconds"), int | float):
                     row["duration_seconds"] = float(data["duration_seconds"])
-                # route identity tracking: track route identity (intended vs executed)
+                # track route identity (intended vs executed)
                 reported = str(data.get("reported_model") or "")
                 error = str(data.get("error") or "")
                 row["intended_route"] = route

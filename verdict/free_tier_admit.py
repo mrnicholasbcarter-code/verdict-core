@@ -70,7 +70,7 @@ REASON_PAID_FALLBACK = "paid_fallback"
 REASON_TASK_INSTRUCTIONS_OMITTED = "task_instructions_omitted"
 REASON_SPEND_POLICY_EXCLUDES_PAID = "spend_policy_excludes_paid"
 REASON_SPEND_POLICY_REQUIRES_FRONTIER = "spend_policy_requires_frontier"
-# Stable public eligibility diagnostics (staged public eligibility). Legacy reason strings remain
+# Stable public eligibility diagnostics. Legacy reason strings remain
 # accepted on old receipts, but new production decisions use these names.
 REASON_OPAQUE_ROUTE_DISALLOWED = "opaque_route_disallowed"
 REASON_PROVIDER_NOT_CONNECTED = "provider_not_connected"
@@ -1072,7 +1072,7 @@ def _looks_free_by_name(identity_id: str) -> bool:
 def _choose_sort(
     identity_id: str, active_healthy: frozenset[str], free_admitted: Collection[str] | None = None
 ) -> tuple[int, int, int, str]:
-    """Free-first ordering keyed on authoritative free-tier membership (free-tier ordering).
+    """Free-first ordering keyed on authoritative free-tier membership.
 
     ``free_admitted`` is the free∩active set observed from OmniRoute's free-tier
     summary. When it is provided, an identity is free iff it is a member — a free

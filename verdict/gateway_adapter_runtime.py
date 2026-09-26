@@ -78,7 +78,7 @@ class RouteIdentityAttestation:
         }
 
     def identity_summary(self) -> dict[str, Any]:
-        """Return provider/model identity summary for receipt (provider identification).
+        """Return provider/model identity summary for receipt.
 
         Returns:
             Dictionary with intended_provider, intended_model, executed_provider,

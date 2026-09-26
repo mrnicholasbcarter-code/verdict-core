@@ -1,4 +1,4 @@
-"""dispatcher: hydrate proof-bound worker context and bind authorized dispatch.
+"""Hydrate proof-bound worker context and bind authorized dispatch.
 
 Architecture boundary
 ---------------------

@@ -1,4 +1,4 @@
-"""Evidence-bound execution contract for the paired savings bench (paired savings bench execution).
+"""Evidence-bound execution contract for the paired savings bench.
 
 A savings claim is only possible when *both* arms of a task were actually
 executed and every piece of evidence is bound to those executions:
