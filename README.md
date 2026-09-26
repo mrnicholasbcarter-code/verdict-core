@@ -2,11 +2,9 @@
 
 # Verdict
 
-**A model that fails a safety check cannot be scored back in.**
+**An autonomous development control plane: a goal goes in, and a verified, independently reviewed, receipted change comes out.**
 
-Verdict is a fail-closed control plane for LLM routing. A hard eligibility gate runs before
-any advisory ranking, every dropped candidate carries a named reason, and every
-orchestration run ends in a receipt whose event log is hash-verified after the fact.
+A model that fails a safety check cannot be scored back in.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -15,9 +13,29 @@ orchestration run ends in a receipt whose event log is hash-verified after the f
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [How Verdict differs](#how-verdict-differs) · [Proof](#proof) · [Install](#install) · [Commands](#commands) · [Docs](#documentation) · [Limits](#limits)
+[Quick start](#quick-start) · [Demo](#demo-goal-to-receipt) · [What it does](#what-it-does) · [How it works](#how-it-works) · [How Verdict differs](#how-verdict-differs) · [Roadmap](#roadmap-in-progress) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
+
+<img src="docs/assets/demo.svg" alt="Terminal recording: a goal becomes a three-node DAG, workers fail on injected quota, rate-limit and no-final-answer faults, each node is reassigned to another admitted route, the review passes, run-receipt verifies the event-log digest, and a tampered copy fails verification" width="860">
+
+<sub>Fixture run, credential-free, no model calls. Recorded from <a href="scripts/demo_orchestrate.py"><code>scripts/demo_orchestrate.py</code></a>. Full cast: <a href="docs/assets/demo.cast"><code>docs/assets/demo.cast</code></a>.</sub>
 
 </div>
+
+Give Verdict a goal and a git repository. It runs this loop:
+
+1. **Plan.** A planner model splits the goal into a small DAG of work nodes. Each node has owned files and a verification command.
+2. **Admit.** Verdict builds one admitted set of models from live gateway evidence: inventory, provider accounts, health, cooldowns and quota. Every dropped model gets a named reason.
+3. **Assign.** Each node gets its own model from that set. Already-paid subscription capacity and free tiers rank before metered, pay-per-token routes.
+4. **Recover.** A quota, rate-limit, timeout or empty-answer failure cools down the route or the whole provider. The same node then goes to another admitted model. When no admitted model is left, or after 4 attempts, the node stops with a named `FAIL_CLOSED` and the run ends `BLOCKED`. It does not retry forever.
+5. **Verify and review.** Each node must pass its own check and an ownership check. The merged result must pass an integration check. Then a reviewer that did not write any of the code reviews it.
+6. **Receipt.** The run ends with a receipt that stores a SHA-256 digest of its event log. `verdict run-receipt` recomputes the digest and rebuilds the receipt, so any later edit to the log shows up.
+
+This repository is the control plane: planning, admission, assignment, recovery and proof. Three
+external tools do the execution, and Verdict only calls them:
+
+- **OmniRoute** is a local OpenAI-compatible gateway. It supplies the model inventory and runs model calls ([`verdict/omniroute.py`](verdict/omniroute.py)).
+- **Prime Agent** is a headless coding-agent CLI. It runs each worker process (`prime-agent -p --model <exact route>`) and does not select models.
+- **`ocr`** (open-code-review) is the reviewer CLI ([`verdict/orchestration/review.py`](verdict/orchestration/review.py)).
 
 ## Quick start
 
@@ -60,54 +78,148 @@ uv sync --extra dev
 uv run python -m verdict quickstart --non-interactive --dry-run
 ```
 
-## Five things this codebase actually does
+## Demo: goal to receipt
 
-Each links to the code that does it, at this commit.
+**Fixture run. Credential-free, deterministic, no model calls, no network.**
 
-1. **The cheaper-first invariant is a runtime assertion, not a lint rule.** `RouteSelection`
-   raises in its own constructor if a paid identity was chosen while a cheaper qualified one
-   was available, and the same invariant is checked a second, independent way at demo time.
-   [`verdict/live_routing.py:85-93`](verdict/live_routing.py#L85-L93) (`RouteSelection.__post_init__`,
-   raises `LiveRoutingError("cost", ...)`), [`verdict/routing_demo.py:132-141`](verdict/routing_demo.py#L132-L141)
-   (`assert_cheaper_first`, raises `RuntimeError("paid selected while cheaper qualified kept
-   exists")`), called at [`verdict/routing_demo.py:286`](verdict/routing_demo.py#L286).
+```bash
+python scripts/demo_orchestrate.py --out docs/proof/demo-run
+verdict run-receipt docs/proof/demo-run
+```
 
-2. **Tamper-evident receipts that actually detect tampering.** Every orchestration run
-   receipt stores a SHA-256 digest of its `events.jsonl`. Verification recomputes that hash
-   and rebuilds every other field from the same event log, reporting `events_digest mismatch:
-   events.jsonl changed after receipt was written` if anything moved.
-   [`verdict/orchestration/receipt.py:173`](verdict/orchestration/receipt.py#L173) (`_sha256_file`),
-   [`:444`](verdict/orchestration/receipt.py#L444) (`events_digest` written into the receipt),
-   [`:481-508`](verdict/orchestration/receipt.py#L481-L508) (`verify_run_receipt`, the diff loop).
+[`scripts/demo_orchestrate.py`](scripts/demo_orchestrate.py) runs the real orchestration code:
+`run_golden_path`, the planner parser, canonical `admit()`, the `EligibilityLadder`, `DagRuntime` with one
+git worktree per attempt, `FailureIntelligence`, the integration barrier, the reviewer-independence
+policy and the receipt writer. Only the edges are fixtures:
 
-3. **A six-stage admission ladder that records exactly where each candidate died.**
-   `DISCOVERED → ENTITLED → HEALTHY → AVAILABLE → TASK_ELIGIBLE → SELECTED`, with a
-   `failed_stage` and a `reason` string recorded per candidate, and opaque router ids (`auto/*`,
-   `combo/*`, `router/*`, `virtual/*`) skipped before stage one.
-   [`verdict/orchestration/contracts.py:287-295`](verdict/orchestration/contracts.py#L287-L295)
-   (`EligibilityStage`), [`verdict/orchestration/eligibility.py:23`](verdict/orchestration/eligibility.py#L23)
-   (`_OPAQUE_PREFIXES`), [`:358-362`](verdict/orchestration/eligibility.py#L358-L362) (opaque ids
-   never reach `DISCOVERED`), [`:271-330`](verdict/orchestration/eligibility.py#L271-L330) (every
-   named failure reason down the ladder).
+| Edge | In the demo | In `verdict orchestrate` |
+|---|---|---|
+| Model inventory and provider accounts | 10 fixture routes, 5 fixture accounts | OmniRoute `/v1/models` and `/api/providers` |
+| Health probe | fixture: every probed route is healthy | 1-token probe through the gateway |
+| Workers | scripted: write the owned file, answer `RESULT: DONE` | Prime Agent on the selected route |
+| Faults | `FaultInjectingExecutor`: quota and rate limit on `parser`, no final answer on `cli_flag` | real provider failures (or the same injector via `--inject`) |
+| Reviewer | fixture: selects an independent route through the ladder, returns `PASS` | `ocr` on the selected route |
 
-4. **Independent review with credentials the reviewer can't leak.** The reviewer model is
-   selected with every implementer's route and model family excluded, so the code is never
-   reviewed by the model that wrote it. A non-zero exit, a timeout, or unparseable output all
-   become `ERROR`, never a false `PASS`. The reviewer CLI runs with an isolated `$HOME` so the
-   user's global config is never mutated and the API key never reaches the repo, argv, or logs.
-   [`verdict/orchestration/review.py:1-19`](verdict/orchestration/review.py#L1-L19) (module
-   docstring states all three guarantees), [`tests/test_orch_review.py`](tests/test_orch_review.py).
+The committed run is in [`docs/proof/demo-run/`](docs/proof/demo-run). Verifying it prints:
 
-5. **Recovery that terminates in a refusal instead of retrying forever.** A node's own retry
-   loop resolves to exactly one outcome per failure: retry the same route on a gateway-local
-   transient (`RETRY_INFRA`), reassign to a different route (the default), or stop with
-   `non-recoverable: <category>` when the classifier says `BLOCK`. Exhausting
-   `max_attempts_per_node` (4) also ends in a `pool_exhausted` / `FAIL_CLOSED` failure event,
-   not a silent hang.
-   [`verdict/orchestration/runtime.py:87`](verdict/orchestration/runtime.py#L87)
-   (`max_attempts_per_node: int = 4`), [`:342-355`](verdict/orchestration/runtime.py#L342-L355)
-   (attempt-budget exhaustion → `FAIL_CLOSED`), [`:442-451`](verdict/orchestration/runtime.py#L442-L451)
-   (`RETRY_INFRA` / reassign / `BLOCK` branching).
+```text
+COMPLETE: all implement/integrate nodes validated, barrier ok, review PASS
+integrity: OK (events digest verified)
+  parser             VALIDATED        demo-sub/atlas-coder[failure:quota_exhausted*] -> demo-free/birch-coder[failure:rate_limited*] -> demo-free2/elm-coder[success]
+  cli_flag           VALIDATED        demo-sub/atlas-coder[failure:no_final_answer*] -> demo-free/cedar-coder[success]
+  integrate          VALIDATED        merge[success]
+  review: PASS by fixture-reviewer (no model call) on demo-metered/delta-coder
+```
+
+`*` marks an injected fault. Here is how to read the run:
+
+- `parser` started on the subscription route. An injected quota failure put the whole `demo-sub`
+  provider on cooldown. The node moved to a free route and got an injected rate limit, which cooled
+  down `demo-free`. It then moved to a free route at a third provider and passed.
+- `cli_flag` got `no_final_answer`, which cools down only that route, and moved to another free route.
+- No route that wrote code could review it, and neither could any of its model families. The two
+  cooled providers were out, and `fir-mini` has no tool calling. So the review went to the metered
+  route: it was the only admitted candidate left.
+- Change one byte of `events.jsonl` and `run-receipt` reports
+  `events_digest mismatch: events.jsonl changed after receipt was written`. The end of the recording shows this.
+
+![Admission funnel: 10 fixture routes; the opaque auto/best-coding is dropped at DISCOVERED, an account-less route at ENTITLED, a route with unhealthy runtime evidence at HEALTHY and a rate-limited provider at AVAILABLE, leaving 6 admitted](docs/assets/chart-admission-funnel.svg)
+
+<sub>Data: [`docs/proof/demo-run/admission.json`](docs/proof/demo-run/admission.json), the canonical admission receipt of the demo inventory. Fixture data.</sub>
+
+![Recovery per node: parser tried demo-sub/atlas-coder (quota_exhausted, injected), demo-free/birch-coder (rate_limited, injected), then validated on demo-free2/elm-coder; cli_flag tried demo-sub/atlas-coder (no_final_answer, injected), then validated on demo-free/cedar-coder](docs/assets/chart-recovery.svg)
+
+<sub>Data: [`docs/proof/demo-run/receipt.json`](docs/proof/demo-run/receipt.json), the demo run receipt. Fixture data with injected faults.</sub>
+
+To regenerate the run, the cast and the charts, see [Regenerating the demo assets](#regenerating-the-demo-assets).
+
+## What it does
+
+Each claim links to the code that does it and a test that checks it, at this commit.
+
+**One admitted set, narrowed but never widened.** `admit()` builds the admitted set from live inventory,
+provider connections and runtime evidence. A missing input fails closed, and there is no catalog-only
+fallback ([`verdict/admission.py:637`](verdict/admission.py#L637)). The set cannot be built any other way
+([`:345`](verdict/admission.py#L345)). Scope, provider family and the active controller can only narrow it
+([`verdict/orchestration/cli.py:219-227`](verdict/orchestration/cli.py#L219-L227)). The ladder raises
+`AdmissionBypassError` if it ever picks a route outside the set
+([`verdict/orchestration/eligibility.py:446-449`](verdict/orchestration/eligibility.py#L446-L449)).
+Tests: [`tests/test_admission.py`](tests/test_admission.py), [`tests/test_orchestration_admission.py`](tests/test_orchestration_admission.py).
+
+**Per-node assignment, paid-for and free capacity first.** Every node runs the eligibility ladder
+`DISCOVERED → ENTITLED → HEALTHY → AVAILABLE → TASK_ELIGIBLE → SELECTED` and records the failed stage and
+the reason for each candidate. The ladder ranks by capacity class first: subscription, then free, then
+metered, then unknown ([`verdict/orchestration/eligibility.py:30-35`](verdict/orchestration/eligibility.py#L30-L35)).
+Within a class it ranks by provider preference, then by current load, then by task fit
+([`:371-378`](verdict/orchestration/eligibility.py#L371-L378)). Capacity class comes from account evidence,
+never from a model name. Probes go round-robin across providers within a class, so one failing provider
+cannot use up the probe budget ([`:478-494`](verdict/orchestration/eligibility.py#L478-L494)).
+Test: [`tests/test_orch_eligibility.py`](tests/test_orch_eligibility.py).
+
+**Cheaper-first on the single-route path is a runtime assertion.** `RouteSelection` raises in its own
+constructor when a paid identity was chosen while a cheaper kept candidate existed
+([`verdict/live_routing.py:85-93`](verdict/live_routing.py#L85-L93)). For low-criticality `verdict route`
+calls, `_offload_free_tier` admits only concrete **free-tier ∩ active-provider** identities and fails closed
+on an empty intersection ([`verdict/intelligence.py:1001`](verdict/intelligence.py#L1001),
+[`verdict/free_tier_admit.py`](verdict/free_tier_admit.py)). Test: [`tests/test_free_tier_admit.py`](tests/test_free_tier_admit.py).
+
+**Recovery by reassignment, with a hard stop.** `FailureIntelligence` maps each failure to a category, an
+action, a cooldown and a scope: route or provider
+([`verdict/orchestration/recovery.py:133`](verdict/orchestration/recovery.py#L133)). Each failure resolves to
+exactly one outcome. `RETRY_INFRA` retries the same route after a gateway-local shed. `BLOCK` stops with
+`non-recoverable: <category>`. Every other failure reassigns the same node to the next admitted route and
+emits a `reassign` event ([`verdict/orchestration/runtime.py:430-451`](verdict/orchestration/runtime.py#L430-L451)).
+After `max_attempts_per_node` (4), or with no admitted route left, the node ends in `pool_exhausted` /
+`FAIL_CLOSED` ([`:342-356`](verdict/orchestration/runtime.py#L342-L356)). Tests:
+[`tests/test_orch_recovery.py`](tests/test_orch_recovery.py), [`tests/test_orch_runtime.py`](tests/test_orch_runtime.py).
+
+**Relay retries stay inside the admitted set.** The OpenAI-compatible relay tries an alternative only when
+the decision marked it admitted, and only when the live admitted set (if wired) also holds it. If the
+selected model is outside the live set, the relay makes no attempt
+([`verdict/relay.py:133-155`](verdict/relay.py#L133-L155)). Test: [`tests/test_relay_admission.py`](tests/test_relay_admission.py).
+
+**Independent review.** The reviewer must not be any route that wrote code in the run. It should also be
+from a different model family; if no other family has capacity, route-level independence is used and
+recorded ([`verdict/orchestration/runtime.py:806-821`](verdict/orchestration/runtime.py#L806-L821)). A
+non-zero exit, a timeout or output that does not parse all become `ERROR`, never `PASS`
+([`verdict/orchestration/review.py:1-19`](verdict/orchestration/review.py#L1-L19)).
+Tests: [`tests/test_orch_review.py`](tests/test_orch_review.py), [`tests/test_orch_resume.py`](tests/test_orch_resume.py).
+
+**Tamper-evident receipts.** The receipt stores the SHA-256 of `events.jsonl`
+([`verdict/orchestration/receipt.py:173`](verdict/orchestration/receipt.py#L173),
+[`:444`](verdict/orchestration/receipt.py#L444)). Verification recomputes it and rebuilds every other field
+from the same log ([`:481-508`](verdict/orchestration/receipt.py#L481-L508)).
+Tests: [`tests/test_orch_receipt.py`](tests/test_orch_receipt.py), [`tests/test_readme_assets.py`](tests/test_readme_assets.py)
+(verifies the committed demo run).
+
+## Decision signals (OpenJev)
+
+Verdict can ask an external decision-signal provider how complex, how frontier-worthy and how ambiguous a
+task looks. The shipped provider is OpenJev System-One, reached through the Codiv API
+([`verdict/decision_signals/openjev.py`](verdict/decision_signals/openjev.py)). Signals are inputs to
+Verdict. They never make the decision.
+
+`VERDICT_DECISION_SIGNALS_MODE` selects the mode ([`verdict/decision_signals/shadow.py:21-36`](verdict/decision_signals/shadow.py#L21-L36)).
+The provider is built only when the mode is not `OFF` and `TYPESAFE_API_KEY` is set
+([`verdict/decision_signals/factory.py`](verdict/decision_signals/factory.py)).
+
+| Mode | What it can change | What it cannot change |
+|---|---|---|
+| `OFF` (default) | Nothing. The provider is never called. | — |
+| `SHADOW` | Nothing. `verdict orchestrate` asks once per run, before planning, and records the answer next to the actual planner choice as a `decision_signals` event in the receipt ([`verdict/orchestration/run.py:208-230`](verdict/orchestration/run.py#L208-L230), [`:316-331`](verdict/orchestration/run.py#L316-L331)). | Planner selection, node requirements, the DAG. Test: [`tests/test_shadow_integration.py`](tests/test_shadow_integration.py). |
+| `ADVISORY` | On the single-route path (`IntelligenceService.route`), the order of already-admitted candidates, so it can change which admitted model is picked ([`verdict/intelligence.py:526-608`](verdict/intelligence.py#L526-L608)). Every outcome is recorded as an `advisory:*` safety flag. | Membership: it never adds, removes or restores a candidate. It is skipped for protected (tier 0) tasks, restricted-privacy tasks, confidence below 0.6 (default), a provider error, and no answer within the timeout (default 1,500 ms) ([`verdict/decision_signals/advisory.py:1-31`](verdict/decision_signals/advisory.py#L1-L31)). In `verdict orchestrate`, `ADVISORY` behaves like `SHADOW`. Test: [`tests/test_decision_signals_advisory.py`](tests/test_decision_signals_advisory.py). |
+
+The demo run records one `SHADOW` signal from a fixture provider in its receipt. The test above shows that opposite `SHADOW` signals produce the same requirements and the same DAG.
+
+## Roadmap (in progress)
+
+These are not done at this commit. They are listed so nothing above is read as covering them.
+
+- **Cross-provider fencing on the first worker failure.** Today a failure cools down only the failed route or its own provider. Other providers stay eligible until they fail themselves.
+- **Root-controller failover.** Worker nodes are reassigned. A failing root controller is not yet replaced automatically.
+- **A single retry authority.** Node recovery, the relay and the reviewer each keep their own bounded retry loop today.
+- **Subscription headroom.** Quota rows are evidence only: exhausted means drop. Admission does not yet plan around the headroom left in a subscription window.
+- **Automatic gateway lifecycle.** Verdict does not start, restart or upgrade OmniRoute. The gateway must already be running for live runs.
 
 ## How it works
 
@@ -134,7 +246,7 @@ Three-role split:
 | **Prime Agent harness** | runs worker processes (`prime-agent -p --model <exact route>`); does not select models |
 | **OmniRoute transport** | provides `/v1/models` inventory and `/v1/chat/completions` execution; is not a metadata source of truth |
 
-Four properties hold by construction:
+Four properties hold by construction, on both the orchestration and the single-route paths:
 
 - **Paid is never chosen while a cheaper qualified candidate remains.** `RouteSelection`
   raises on construction if this is violated.
@@ -487,11 +599,27 @@ comparison against LiteLLM, OpenRouter, and Portkey specifically.
 
 | Evidence | Location |
 |---|---|
+| Demo run (fixture, verified by `run-receipt`) | [`docs/proof/demo-run/`](docs/proof/demo-run) |
 | Latest certification | [`docs/certification/README.md`](docs/certification/README.md) (see CI artifacts for SHA-bound bundles) |
 | Scenario matrix A–J (live, faults injected) | [`docs/proof/GOLDEN_PATH_CERTIFICATION.md`](docs/proof/GOLDEN_PATH_CERTIFICATION.md) |
 | Evidence index | [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md) |
 | Claims audit | [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md) |
 | v0.3.0 boundary | [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md) |
+
+## Regenerating the demo assets
+
+All assets come from committed code and committed data. None of the tools below is a project dependency.
+
+| Asset | Size | Source data | Regenerate |
+|---|---|---|---|
+| [`docs/proof/demo-run/`](docs/proof/demo-run) | ~70 KB | fixture inventory in `scripts/demo_orchestrate.py` | `python scripts/demo_orchestrate.py --out docs/proof/demo-run` |
+| [`docs/assets/demo.cast`](docs/assets/demo.cast) | ~12 KB | the demo run above, recorded in a pty | `python scripts/record_demo.py` (stdlib only; also rewrites `docs/proof/demo-run/`) |
+| [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~500 KB | `demo.cast` | `npx -y svg-term-cli@2.1.1 --in docs/assets/demo.cast --out docs/assets/demo.svg --window --width 110 --height 34` |
+| `docs/assets/chart-*.svg` | ~10 KB each | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
+
+The recording's typing and line pacing are synthetic. Its text is the real output of each command.
+[`tests/test_readme_assets.py`](tests/test_readme_assets.py) checks that every linked asset and chart
+source exists, that the cast is valid asciinema v2, and that the committed demo run still verifies.
 
 ## Install
 
@@ -558,6 +686,12 @@ The current deterministic mock compares 100 requests using fixed Opus/Sonnet/Hai
 estimates against a class-aware route: approximately **$0.16 routed** versus **$0.52 baseline** in the recorded fixture. The implementation computes routed cost, baseline, and
 savings; see [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md) for the baseline definition and live/recorded limitations. These are estimates, not observed invoices.
 
+![Paired-savings fixture: stated per-task costs for the direct and Verdict arms of four tasks; one Verdict arm is a cache hit and one is a quality miss, so neither can count as savings](docs/assets/chart-paired-fixture.svg)
+
+<sub>Data: [`benchmarks/fixtures/legit_paired_savings.json`](benchmarks/fixtures/legit_paired_savings.json). Fixture values
+stated for the offline simulation, not observed. The bench refuses to claim savings from them
+(`claims_allowed=false`); see [`docs/benchmarks/paired-savings.md`](docs/benchmarks/paired-savings.md) for what a live claim requires.</sub>
+
 **Context packing — dated live observation, not offline proof.**
 
 A recorded paired run asked the same cheaper identity one exact check twice — unaided, then
@@ -600,7 +734,7 @@ Six verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embedd
 | Command | Purpose |
 |---|---|
 | `verdict` | Home screen: gateway status, recent runs, main commands |
-| `orchestrate` | Goal → frontier plan → DAG → eligibility → parallel workers → recovery → review → receipt |
+| `orchestrate` | Goal → frontier plan → DAG → eligibility → parallel workers → recovery → review → receipt (`--inject` adds chaos faults) |
 | `supervise` | Supervise an orchestration controller |
 | `watch` | Live TUI view of a running orchestration |
 | `run-receipt` | Show and verify an orchestration run receipt |
