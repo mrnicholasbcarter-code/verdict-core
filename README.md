@@ -24,7 +24,7 @@ A model that fails a safety check cannot be scored back in.
 Give Verdict a goal and a git repository. It runs this loop:
 
 1. **Plan.** A planner model splits the goal into a small DAG of work nodes. Each node has owned files and a verification command.
-2. **Admit.** Verdict builds one admitted set of models from live gateway evidence: inventory, provider accounts, health, cooldowns and quota. Every dropped model gets a named reason.
+2. **Admit.** Verdict builds one admitted set of models from live gateway evidence: inventory, provider accounts, health, cooldowns and quota. Every dropped model gets a named reason. A model with no runtime evidence is kept as `unknown`, never counted as healthy, and it must pass a live check of that exact route before it launches.
 3. **Assign.** Each node gets its own model from that set. Already-paid subscription capacity and free tiers rank before metered, pay-per-token routes.
 4. **Recover.** A quota, rate-limit, timeout or empty-answer failure cools down the route or the whole provider. The same node then goes to another admitted model. When no admitted model is left, or after 4 attempts, the node stops with a named `FAIL_CLOSED` and the run ends `BLOCKED`. It does not retry forever.
 5. **Verify and review.** Each node must pass its own check and an ownership check. The merged result must pass an integration check. Then a reviewer that did not write any of the code reviews it.

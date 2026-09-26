@@ -112,3 +112,6 @@ benchmarks/fixtures/legit_workspace/.verdict/
 coverage.xml.*
 # Tarball artifacts from consumer smoke test
 contracts/*.tgz
+
+# Committed proof run: its event log is part of the verifiable receipt.
+!docs/proof/demo-run/events.jsonl
