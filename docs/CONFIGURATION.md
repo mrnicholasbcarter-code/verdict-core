@@ -97,6 +97,36 @@ it is never recorded as healthy. Worker admission also hard-excludes the active
 controller, which the supervisor exports as `VERDICT_ACTIVE_CONTROLLER_ROUTE`.
 When that identity is not set, the receipt records `controller_identity=unknown`.
 
+Launch gate. A route may launch only when its admission record is proven
+healthy, or when a bounded live confirmation for that exact route succeeded
+just before launch. A runtime source that was not found (for example a missing
+`~/.verdict/orchestration-health.json` or `subagent-health.json`) is recorded
+as `<source>:absent` and does not count as consulted. On a fresh host every
+route is therefore `unknown` and needs a confirmation. A failed confirmation
+drops the route at `HEALTHY` with the probe category and never launches.
+Confirmation results (source and `observed_at`) are written to the admission
+receipt.
+
+Operator-visible fail-closed modes:
+
+- Config-built root controller (`scripts/prime_supervisor.py`): each attempt
+  makes two read-only GETs, `/v1/models` and `/api/providers`, against
+  `OMNIROUTE_BASE_URL` (default `http://127.0.0.1:20128`). If no admission
+  source is wired, the supervisor refuses with `live_admission_required`. If
+  either GET fails, it refuses with `live_admission_unavailable`. In both
+  cases `supervisor.json` is `BLOCKED`. The receipt is
+  `controller-admission-*.json` in the state directory.
+- Controller confirmation: the controller launches only routes that the
+  budgeted confirm in `prepare` reported as confirmed, or routes that are
+  proven healthy. Otherwise it refuses with `no_eligible_route`, and the
+  detail names each route's stage, reason and source.
+- Worker runtime (`python -m verdict.worker_runtime <dir>`): besides inventory
+  and Prime visibility, it now needs `GET /api/providers`. If that call fails,
+  the run exits 1 with `connection_evidence_unavailable`. A route with
+  `unknown` health gets one health probe before spawn, even when the local
+  health cache says it is healthy. The result is written to `admission.json`
+  in the run directory.
+
 The OpenAI-compatible relay (`/v1/chat/completions`, `/v1/responses`) has a
 narrower boundary:
 
