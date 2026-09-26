@@ -152,15 +152,23 @@ States:
 | `already_ready` | an existing gateway answered and is reused, never restarted | yes |
 | `started` | this call (or the lock owner it waited for) made the gateway ready | yes |
 | `starting` | transient; reported to `observer` while launching or waiting | — |
-| `failed_to_start` | no start command, a remote URL, a launch error, an exited process, or a readiness timeout | no |
-| `unhealthy` | something answers the URL but is not healthy | no |
+| `failed_to_start` | no start command, a remote URL, a launch error, an unusable lock, an exited process, or a readiness timeout | no |
+| `unhealthy` | something answers the URL but is not healthy, or it refused our credential | no |
 
 Guarantees:
 
-- **No duplicates.** A per-URL `flock` lock lives under the Verdict state
+- **No duplicates.** A per-gateway `flock` lock lives under the Verdict state
   directory (`$VERDICT_HOME`, else `~/.verdict`), in `gateway/`. Only the lock
   holder may launch; a concurrent caller waits for readiness on the same
   deadline. Two concurrent processes therefore produce exactly one launch.
+  The lock identity is the listening socket, not the spelling of the URL:
+  `localhost`, `127.0.0.1` and `[::1]` on the same port share one lock, as do a
+  trailing slash and a trailing `/v1`.
+- **Safe lock handling.** The lock is opened with `O_NOFOLLOW` and permissioned
+  through the descriptor, so a symlinked lock path is refused rather than created
+  through or re-permissioned. A symlinked state directory is refused too, and an
+  unwritable state directory is reported as a `gateway_start_failed`
+  `gateway_health` diagnostic rather than raising `PermissionError`.
 - **No guessing.** An absent `gateway_start_command` is a
   `gateway_start_command_missing` diagnostic naming the field and its
   environment override. Verdict never discovers a binary and never port-scans to
@@ -170,18 +178,45 @@ Guarantees:
   `gateway_remote_not_managed` and is never launched.
 - **No shell.** The command is always an argv list launched with `shell=False`.
   A YAML sequence is taken element-wise; the environment form is `shlex`-split.
-- **Bounded, no orphans.** Readiness uses a deadline plus capped backoff. On
-  timeout, only a process this call launched is terminated; a pre-existing
-  gateway is never signalled.
+- **Bounded.** Readiness uses a deadline plus capped backoff, and the contender
+  wait is bounded by the same deadline. `gateway_ready_timeout_s` must be finite,
+  positive and no greater than `600`; `inf` and a larger value are configuration
+  refusals, because a budget that cannot bound the wait defeats the field.
+- **No orphans.** A launched gateway is started in a new session, so it leads its
+  own process group, and that group id is recorded at launch. On timeout the group
+  is sent `SIGTERM`, waited for, then `SIGKILL`, then reaped, so neither a zombie
+  nor a descendant of the gateway survives. This matters for a wrapper such as
+  `npx`, `node` or `sh`, where the gateway is a grandchild. Only a group recorded
+  at launch is ever signalled, so a pre-existing gateway — and the operator's own
+  shell job — can never be reached. The diagnostic states what happened: reaped,
+  killed, or still running with its pid.
+- **No secrets in output.** A start command routinely carries a token, so the argv
+  is never serialized or echoed. `BootstrapResult.to_dict()` renders the program
+  name plus a redacted-argument count, and a launch failure has every argument
+  scrubbed out of its detail.
+- **Authenticated readiness.** The probe sends the gateway API key when one is
+  configured, read by the name the provider binding declares (`api_key_env`), from
+  the exported environment and then the credential store. A `401` or `403` is
+  reported as `gateway_auth_failed`, distinct from `gateway_unhealthy`, so an
+  auth-protected gateway is not called broken. The key is never printed.
+- **Inherited child environment.** A launched gateway inherits the operator's
+  environment as it stands (`os.environ`). Verdict adds nothing to it, and in
+  particular never copies credential-store values into it — store values are
+  passed to the resolver as an argument and are never exported. Any variable the
+  gateway needs must therefore be exported by the operator.
 
 Surfaces:
 
 - `verdict doctor` prints a report-only `Gateway lifecycle` section and includes
   a `gateway_lifecycle` block in `--json`. It never starts anything, and it does
   not change the exit code.
-- `verdict serve` records the state in its startup report and prints one line.
-  Startup stays non-fatal. `VERDICT_SERVE_ENSURE_GATEWAY=true` opts into the
-  active path.
+- `verdict serve` records the state in its startup report. With both opt-ins off
+  it performs no gateway I/O at all: the state is `not_probed` and no startup line
+  is printed, so booting the server never depends on whether a gateway happens to
+  be listening. Startup stays non-fatal.
+  `VERDICT_SERVE_ENSURE_GATEWAY=true` opts into the active path, and
+  `server_bootstrap_diagnostics(gateway_probe=...)` opts into a report-only probe
+  with a caller-supplied transport.
 - CLI execution through a configured gateway calls `require_gateway_ready` when
   `VERDICT_ENSURE_GATEWAY=true`; a failed ensure exits `1` with the
   `gateway_health` diagnostic rather than executing elsewhere.
@@ -212,7 +247,7 @@ failure kinds instead of collapsing them into one message.
 | Class | Meaning | Codes |
 |---|---|---|
 | `configuration` | an input is missing, malformed or only a default | `config_file_missing`, `config_file_unreadable`, `config_file_unparsable`, `config_file_not_mapping`, `config_providers_malformed`, `provider_entry_malformed`, `provider_base_url_missing`, `provider_base_url_invalid`, `no_provider_configuration`, `default_providers_forbidden`, `default_provider_fallback`, `default_primary_model`, `credential_env_missing`, `precedence_conflict`, `gateway_start_command_malformed`, `gateway_ready_timeout_invalid` |
-| `gateway_health` | configuration is complete, the gateway is not answering or could not be started | `gateway_required_but_absent`, `gateway_unreachable`, `gateway_start_command_missing`, `gateway_start_failed`, `gateway_process_exited`, `gateway_ready_timeout`, `gateway_unhealthy`, `gateway_remote_not_managed` |
+| `gateway_health` | configuration is complete, the gateway is not answering or could not be started | `gateway_required_but_absent`, `gateway_unreachable`, `gateway_start_command_missing`, `gateway_start_failed`, `gateway_process_exited`, `gateway_ready_timeout`, `gateway_unhealthy`, `gateway_auth_failed`, `gateway_remote_not_managed` |
 | `model_eligibility` | configuration and gateway are fine, no model qualifies | owned by the eligibility gate, not by bootstrap |
 
 `config_file_missing`, `default_provider_fallback`, `default_primary_model`,
@@ -279,8 +314,8 @@ echo secret material:
 | `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane token for provider-node admin endpoints |
 | `OMNIROUTE_ALLOW_PRIVATE_HOSTS` | Allow private/internal hosts (SSRF guard; default off) |
 | `OMNIROUTE_USAGE_API_KEY_ID` | Usage-reporting API key id |
-| `VERDICT_GATEWAY_START_COMMAND` | Explicit command that starts a local gateway (shlex-split into an argv list; never run through a shell) |
-| `VERDICT_GATEWAY_READY_TIMEOUT_S` | Readiness budget in seconds for the bounded gateway wait (default `30`; must be positive) |
+| `VERDICT_GATEWAY_START_COMMAND` | Explicit command that starts a local gateway (shlex-split into an argv list; never run through a shell; the launched gateway inherits the exported environment) |
+| `VERDICT_GATEWAY_READY_TIMEOUT_S` | Readiness budget in seconds for the bounded gateway wait (default `30`; must be finite, positive and at most `600`) |
 | `VERDICT_ENSURE_GATEWAY` | Opt in to ensuring the gateway is ready before CLI execution (default off) |
 | `VERDICT_SERVE_ENSURE_GATEWAY` | Opt in to ensuring the gateway is ready at `verdict serve` startup (default off) |
 

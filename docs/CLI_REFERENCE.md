@@ -384,7 +384,9 @@ serialises it (`status`, `issues`, `warnings`, `repaired`, `sections`,
 (`not_required`, `already_ready`, `started`, `failed_to_start`, `unhealthy`)
 with the remediation for an unready gateway. `doctor` is report-only here: it
 probes at most once and never starts, stops or reconfigures a gateway, and the
-section does not change the exit code. To make the gateway ready, set
+section does not change the exit code. The probe carries the gateway API key when
+one is configured, so an auth-protected gateway is reported as healthy rather
+than unhealthy; a rejected credential is `gateway_auth_failed`. To make the gateway ready, set
 `VERDICT_ENSURE_GATEWAY=true` for CLI execution or
 `VERDICT_SERVE_ENSURE_GATEWAY=true` for `verdict serve`, and configure
 `gateway_start_command` (see [CONFIGURATION.md](CONFIGURATION.md)). Verdict
