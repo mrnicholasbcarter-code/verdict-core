@@ -54,6 +54,10 @@ coverage.xml
 .claude-flow/
 .hermes/
 .swarm/
+.codex/
+.cursorrules
+.hermes.md
+.serena/
 CLAUDE.md
 skills-lock.json
 
@@ -89,7 +93,6 @@ CLAUDE.md.backup-*
 
 # MCP server runtime state (generated at runtime, not source)
 .playwright-mcp/
-# .serena/ is partly tracked (project.yml, .gitignore); its own .gitignore handles runtime state
 
 # Benchmark fixture workspace runtime state
 benchmarks/fixtures/legit_workspace/.verdict/
