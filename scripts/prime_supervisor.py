@@ -660,12 +660,24 @@ def _build_intelligence_service_from_config(*, repo: Path, state_dir: Path) -> A
     default, no silent substitution of an unintended provider, and no use of the
     controller model. A refusal names the exact missing field, its source and the
     operator remediation.
+
+    Credential names are read from the local credential store through the
+    contract's ``credential_store_env`` seam, so a key held only in the store is
+    reported as ``source="credential_store"`` instead of being refused as
+    missing. Store values are passed as an argument, never exported into
+    ``os.environ``.
     """
     from verdict.intelligence import IntelligenceService
-    from verdict.provider_bootstrap import BootstrapError, resolve_provider_bootstrap
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
 
     try:
-        bootstrap = resolve_provider_bootstrap(require_authoritative=True)
+        bootstrap = resolve_provider_bootstrap(
+            require_authoritative=True, credential_store_env=load_credential_store_env()
+        )
     except BootstrapError as exc:
         raise ControllerLaunchError(
             "production_factory_unavailable", _bootstrap_failure_detail(exc)

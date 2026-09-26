@@ -576,7 +576,11 @@ def server_bootstrap_diagnostics() -> dict[str, Any]:
     time (an empty provider map is the documented serve posture), so this
     records and reports rather than refusing to boot. No gateway is started.
     """
-    from verdict.provider_bootstrap import BootstrapError, resolve_provider_bootstrap
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
 
     upstream_source = _upstream_base_url_source()
     report: dict[str, Any] = {
@@ -600,7 +604,7 @@ def server_bootstrap_diagnostics() -> dict[str, Any]:
             }
         )
     try:
-        bootstrap = resolve_provider_bootstrap()
+        bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
     except BootstrapError as exc:
         report["status"] = "configuration_incomplete"
         report["gateway_required"] = False
@@ -702,10 +706,14 @@ def _build_intelligence() -> IntelligenceService:
     admits a concrete candidate per request rather than binding providers at
     startup.
     """
-    from verdict.provider_bootstrap import BootstrapError, resolve_provider_bootstrap
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
 
     try:
-        bootstrap = resolve_provider_bootstrap()
+        bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
     except BootstrapError:
         bootstrap = None
     resolved, conflicts = _serve_field_resolution(bootstrap)

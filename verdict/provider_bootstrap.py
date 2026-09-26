@@ -43,6 +43,7 @@ __all__ = [
     "ProviderBinding",
     "bootstrap_config_path",
     "describe_bootstrap_failure",
+    "load_credential_store_env",
     "redact_url",
     "resolve_provider_bootstrap",
     "verify_gateway_reachable",
@@ -233,6 +234,28 @@ def bootstrap_config_path(
 #: Matches the ``user:password@`` userinfo of any ``scheme://`` URL, including a
 #: URL embedded in a longer message such as an exception string.
 _USERINFO_RE = re.compile(r"(?<=://)[^/?#\s@]*@")
+
+
+def load_credential_store_env() -> dict[str, str]:
+    """Read the local credential store for the ``credential_store_env`` seam.
+
+    Returns the stored ``name -> value`` mapping, or ``{}`` when no store exists
+    or it refuses to load (insecure permissions, unreadable file). Values are
+    handed to ``resolve_provider_bootstrap`` as an argument and are never exported
+    into ``os.environ``: a stored credential must not leak into child processes
+    or into unrelated code that reads the environment.
+
+    A name supplied this way reports ``source="credential_store"`` and does not
+    raise ``credential_env_missing``.
+    """
+    try:
+        from verdict.credentials_store import CredentialsStore
+
+        return {str(k): str(v) for k, v in CredentialsStore().load().items()}
+    except Exception:
+        # A missing, unreadable or insecure store is not a bootstrap failure; the
+        # resolver still reports any name that stays unset as credential_env_missing.
+        return {}
 
 
 def redact_url(value: str) -> str:

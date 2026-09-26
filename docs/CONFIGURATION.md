@@ -163,6 +163,23 @@ Prime supervisor still raises `ControllerLaunchError("production_factory_unavail
 for wire compatibility, but the detail now carries the code, class, field, source
 and remediation rather than an opaque message.
 
+### Credential store
+
+Any environment name the contract reads (`OMNIROUTE_BASE_URL`,
+`OMNIROUTE_API_KEY`, `LLMGATE_PRIMARY`, ...) may come from the local credential
+store (`$XDG_CONFIG_HOME/verdict/credentials.env`, 0600) instead of the exported
+environment. The exported environment always wins; a name supplied only by the
+store reports `source="credential_store"` and does not raise
+`credential_env_missing`.
+
+`load_credential_store_env()` is the seam. The Prime supervisor and both API
+bootstrap paths (`verdict serve` startup and `server_bootstrap_diagnostics`) pass
+its result to `resolve_provider_bootstrap(credential_store_env=...)`. Store
+values are passed as an argument and are never exported into `os.environ`, so a
+stored credential does not leak into child processes. A missing, unreadable or
+insecurely permissioned store is not a bootstrap failure: it resolves to `{}` and
+any name that stays unset is still reported as `credential_env_missing`.
+
 ### Secrets in rendered output
 
 Diagnostics are written to stderr, receipts and structured logs, so they never

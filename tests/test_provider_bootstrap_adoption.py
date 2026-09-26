@@ -8,7 +8,9 @@ Offline only: no gateway, no provider call.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -53,6 +55,31 @@ def _config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str | No
     if body is not None:
         path.write_text(body, encoding="utf-8")
     return path
+
+
+def _write_credential_store(tmp_path: Path, values: dict[str, str]) -> Path:
+    """Write a 0600 credential store under the config home used by _config_home."""
+    store = tmp_path / "home" / ".config" / "verdict" / "credentials.env"
+    store.write_text("".join(f"{k}={v}\n" for k, v in sorted(values.items())), encoding="utf-8")
+    store.chmod(0o600)
+    return store
+
+
+def _spy_on_bootstrap(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Record the kwargs and the result of the next resolve_provider_bootstrap call."""
+    import verdict.provider_bootstrap as pb
+
+    seen: dict[str, Any] = {}
+    real = pb.resolve_provider_bootstrap
+
+    def spy(**kwargs: Any) -> Any:
+        seen["kwargs"] = kwargs
+        result = real(**kwargs)
+        seen["result"] = result
+        return result
+
+    monkeypatch.setattr(pb, "resolve_provider_bootstrap", spy)
+    return seen
 
 
 # --- supervisor -------------------------------------------------------------
@@ -132,6 +159,66 @@ def test_supervisor_factory_names_malformed_config_distinctly(
 
     assert "config_file_unparsable" in excinfo.value.detail
     assert "no_provider_configuration" not in excinfo.value.detail
+
+
+def test_supervisor_factory_reads_the_credential_store_as_its_own_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A key held only in the store is not credential_env_missing for the supervisor.
+
+    The store value reports source="credential_store" and is never exported into
+    os.environ.
+    """
+    m = _supervisor_module()
+    _config_home(tmp_path, monkeypatch, _VALID_CONFIG)
+    _write_credential_store(tmp_path, {"OMNIROUTE_API_KEY": "stored-token"})
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    seen = _spy_on_bootstrap(monkeypatch)
+
+    service = m._build_intelligence_service_from_config(repo=tmp_path, state_dir=tmp_path)
+
+    assert service.providers["omniroute"].api_key_env == "OMNIROUTE_API_KEY"
+    result = seen["result"]
+    codes = {note.code for note in result.notes()}
+    assert "credential_env_missing" not in codes
+    assert seen["kwargs"]["credential_store_env"]["OMNIROUTE_API_KEY"] == "stored-token"
+    # The secret stays out of the process environment.
+    assert "OMNIROUTE_API_KEY" not in os.environ
+
+
+def test_supervisor_factory_still_reports_a_key_absent_from_the_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty store keeps the credential_env_missing note; nothing is invented."""
+    m = _supervisor_module()
+    _config_home(tmp_path, monkeypatch, _VALID_CONFIG)
+    _write_credential_store(tmp_path, {"UNRELATED_TOKEN": "x"})
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    seen = _spy_on_bootstrap(monkeypatch)
+
+    m._build_intelligence_service_from_config(repo=tmp_path, state_dir=tmp_path)
+
+    codes = {note.code for note in seen["result"].notes()}
+    assert "credential_env_missing" in codes
+
+
+def test_supervisor_factory_bootstrap_resolves_a_store_supplied_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gateway URL held only in the store bootstraps with source=credential_store."""
+    m = _supervisor_module()
+    _config_home(tmp_path, monkeypatch, None)
+    _write_credential_store(
+        tmp_path,
+        {"OMNIROUTE_BASE_URL": "http://127.0.0.1:20128", "OMNIROUTE_API_KEY": "stored-token"},
+    )
+    seen = _spy_on_bootstrap(monkeypatch)
+
+    service = m._build_intelligence_service_from_config(repo=tmp_path, state_dir=tmp_path)
+
+    assert service.providers["omniroute"].base_url == "http://127.0.0.1:20128/v1"
+    assert seen["result"].source_of("providers") == "credential_store"
+    assert "OMNIROUTE_BASE_URL" not in os.environ
 
 
 # --- CLI --------------------------------------------------------------------
