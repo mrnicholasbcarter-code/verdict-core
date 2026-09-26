@@ -1,4 +1,4 @@
-"""Post-execution outcome receipts: the only producer of measured serving spend (BOD-117).
+"""Post-execution outcome receipts: the only producer of measured serving spend (outcome receipts).
 
 The decision log (:mod:`verdict.logger`) is written *before* the upstream call,
 so it cannot know what the execution cost. This module records, per attempt,

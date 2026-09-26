@@ -1,4 +1,4 @@
-"""Runtime certification — evidence-only discovery→normalize→certify (BOD-92).
+"""Runtime certification — evidence-only discovery→normalize→certify (passport).
 
 This module certifies harnesses, gateways, MCP/intelligence providers, and
 model pools from injected snapshots and optional plugin detectors.  It records
@@ -84,7 +84,7 @@ class CertificationState(str, Enum):
 
 
 class ParityLevel(str, Enum):
-    """Harness capability-parity levels consumed by BOD-124."""
+    """Harness capability-parity levels consumed by capability bootstrap DX."""
 
     SUPPORTED = "supported"
     PARTIAL = "partial"

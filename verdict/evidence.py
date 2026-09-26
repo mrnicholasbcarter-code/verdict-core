@@ -40,7 +40,7 @@ _CANDIDATE_FIELDS = frozenset(
 _MAX_EVIDENCE_TEXT = 256
 # Compact cheap-path admit receipt fields stamped onto the evidence contract
 # (#510 pack_digest/omissions; #514 chooser selected_because / ownership;
-# BOD-99 included source_uri digests; BOD-106 pack_state + included_sources).
+# included source_uri digests; pack_state classification (pack_state + included_sources).
 # Intentionally allowlisted so serve persistence cannot silently drop chooser
 # fields the in-memory admit receipt already carries.
 _COMPACT_ADMIT_RECEIPT_FIELDS: tuple[str, ...] = (
@@ -358,7 +358,7 @@ def build_routing_decision_contract(
         payload["selected_route"]["actual_route"] = _copy_json(actual_route)
     if attempted_routes is not None:
         payload["selected_route"]["attempted_routes"] = _copy_json(attempted_routes)
-    # Cheap-path admit receipt (#508/#510/#514/#BOD-99/#BOD-106): pack_digest,
+    # Cheap-path admit receipt (#508/#510/#514, pack_state classification): pack_digest,
     # pack_state, included_sources, omissions, and chooser selected_because must
     # survive into VERDICT_RECEIPTS_DB / explain evidence. CLI already carries
     # admit_receipt on RoutingDecision; the serve path only persists this contract.

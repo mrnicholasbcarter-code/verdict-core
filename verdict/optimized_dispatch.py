@@ -1,4 +1,4 @@
-"""BOD-67: hydrate proof-bound worker context and bind authorized dispatch.
+"""dispatcher: hydrate proof-bound worker context and bind authorized dispatch.
 
 Architecture boundary
 ---------------------
@@ -477,7 +477,7 @@ def execute_optimized_dispatch(
     dispatcher: SwarmDispatcher | None = None,
     now: datetime | None = None,
 ) -> tuple[DispatchResult, DispatchReceipt]:
-    """Hydrate-aware bind of an already-authorized BOD-104 route.
+    """Hydrate-aware bind of an already-authorized execution-path authority route.
 
     Planning contract: ``dry_run`` defaults to True and no live provider invoke
     is performed. Missing explicit child models are rejected.

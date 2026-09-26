@@ -68,7 +68,7 @@ def check_transition(current: NodeState, target: NodeState) -> None:
 
 
 class Topology(str, Enum):
-    """BOD-151 cognition topology; chosen by deterministic rules, never by a model."""
+    """frontier decomposition cognition topology; chosen by deterministic rules, never by a model."""
 
     SOLO = "SOLO"
     WORKER_CRITIC = "WORKER_CRITIC"
@@ -379,7 +379,7 @@ class WorkerTerminal:
 
 @dataclass(frozen=True)
 class FailureClassification:
-    """BOD-152 normalized failure and bounded corrective action."""
+    """failure intelligence normalized failure and bounded corrective action."""
 
     category: str  # e.g. rate_limited, quota_exhausted, authentication, payment_required,
     # permission, unsupported, timeout, upstream_temporary,
@@ -540,7 +540,7 @@ class FailureClassifier(Protocol):
 
 
 class Reviewer(Protocol):
-    """Independent semantic review of an integrated diff (BOD-185)."""
+    """Independent semantic review of an integrated diff (independent OpenCodeReview)."""
 
     async def review(
         self,

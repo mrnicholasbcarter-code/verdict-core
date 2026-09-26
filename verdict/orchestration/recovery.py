@@ -131,7 +131,7 @@ def _parse_reset_hint(error_text: str) -> float | None:
 
 
 class FailureIntelligence:
-    """Classifies worker terminal failures per BOD-152.
+    """Classifies worker terminal failures per failure intelligence.
 
     Implements the FailureClassifier protocol. Uses status code as primary
     signal, then falls back to text pattern matching. Always reports evidence

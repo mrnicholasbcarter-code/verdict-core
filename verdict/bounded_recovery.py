@@ -1,4 +1,4 @@
-"""Failure-directed bounded recovery (BOD-55).
+"""Failure-directed bounded recovery (bounded recovery).
 
 Classify observable failures and choose the cheapest safe corrective action
 within attempt, deadline, and cost-ledger budgets. This module is the recovery

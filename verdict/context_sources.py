@@ -1,4 +1,4 @@
-"""Native Context Intelligence source providers (BOD-123 Wave-1).
+"""Native Context Intelligence source providers (Context Intelligence Wave-1).
 
 External MCP/Serena adapters plug into the same CapabilityProvider protocol
 later. This module is the always-available Verdict native baseline.

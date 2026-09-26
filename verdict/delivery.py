@@ -1,4 +1,4 @@
-"""BOD-68: autonomous delivery controller (proof → PR → CI → merge → Done).
+"""Autonomous delivery controller (proof → PR → CI → merge → Done).
 
 Architecture boundary
 ---------------------
@@ -72,7 +72,7 @@ class DeliveryBlockedError(DeliveryError):
 
 
 class RepairAction(str, Enum):
-    """Normalized repair/continue actions owned by BOD-68."""
+    """Normalized repair/continue actions owned by autonomous delivery."""
 
     PROCEED_MERGE = "proceed_merge"
     WAIT_CI = "wait_ci"
@@ -85,7 +85,7 @@ class RepairAction(str, Enum):
 
 @dataclass(frozen=True)
 class LocalProofResult:
-    """Outcome of running the BOD-89 local proof contract for a packet."""
+    """Outcome of running the local proof DAG contract for a packet."""
 
     ok: bool
     mode: str
@@ -241,7 +241,7 @@ def decide_repair_action(
     max_infra_attempts: int = DEFAULT_MAX_INFRA_RETRIES,
     escalated: bool = False,
 ) -> RepairDecision:
-    """Map CI/merge classification to a bounded BOD-68 repair action.
+    """Map CI/merge classification to a bounded autonomous delivery repair action.
 
     Preference:
     1. Merge conflict / base drift → rebase + reproof (no force-push main).
@@ -441,7 +441,7 @@ def run_local_proof(
     runner_factory: ProofRunnerFactory | None = None,
     validate_packet_contract: bool = True,
 ) -> LocalProofResult:
-    """Run BOD-89 local proof for a hydrated packet; fail closed for PR-open.
+    """Run the local proof DAG for a hydrated packet; fail closed for PR-open.
 
     Intentional lint/test failures surface as ``ok=False`` / ``blocks_pr=True``.
     """

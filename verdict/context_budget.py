@@ -1,4 +1,4 @@
-"""Context Budget Governor — total usable context account/allocate/enforce (BOD-125).
+"""Context Budget Governor — total usable context account/allocate/enforce (context budget governor).
 
 Treats the **entire** model context window as a scarce execution resource, not
 merely pack include-budget.  Builds on :mod:`verdict.context_pack` token

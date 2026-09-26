@@ -290,7 +290,7 @@ def _gather_root(
         if len(units) >= max_units:
             # The cap has been reached. Anything left that this task *requires*
             # (task-matching ADR / architecture) must be named as an omission so
-            # the pack cannot read hydrated while silently lacking it (BOD-110).
+            # the pack cannot read hydrated while silently lacking it (pack completeness contract).
             omissions.extend(
                 _capped_required_omissions(
                     workspace,

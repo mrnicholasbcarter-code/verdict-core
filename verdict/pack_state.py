@@ -1,4 +1,4 @@
-"""Cheap-path pack_state classifier (BOD-106).
+"""Cheap-path pack_state classifier (pack_state classification).
 
 Receipt-facing states:
 

@@ -1,4 +1,4 @@
-"""Gateway capacity adapters (BOD-129).
+"""Gateway capacity adapters (capacity evidence).
 
 OmniRoute is optional. Generic gateway observations use the same
 CapacitySnapshot contract as direct providers. Unsupported quota stays unknown.

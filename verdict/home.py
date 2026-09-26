@@ -1,4 +1,4 @@
-"""``verdict`` with no subcommand: the Verdict home screen (BOD-186).
+"""``verdict`` with no subcommand: the Verdict home screen (home screen).
 
 Presentation only. Facts come from local state that is cheap to read (recent run
 directories and receipts) plus an optional, bounded gateway ping. No routing,

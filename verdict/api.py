@@ -925,7 +925,7 @@ async def _route_with_intelligence(
 ) -> Any:
     if intelligence_instance is None:
         raise HTTPException(status_code=503, detail="Intelligence service not initialized")
-    # BOD-127: default API serve path requires BOD-104 authority (no silent invent).
+    # legacy selector demotion: default API serve path requires execution-path authority (no silent invent).
     from verdict.serve_path import CONTEXT_REQUIRE_AUTHORITY
 
     merged = dict(context or {})
@@ -1089,7 +1089,7 @@ def _safe_decision_dict(decision: Any) -> dict[str, Any]:
 
     data = asdict(decision)
     # The compiled pack is workspace content bound for the upstream model, not
-    # a client-facing decision field (BOD-111). Its digest lives in the receipt.
+    # a client-facing decision field (cheap-path pack). Its digest lives in the receipt.
     data.pop("context_pack_prompt", None)
     return cast(dict[str, Any], redact_contract_secrets(data))
 
@@ -1169,7 +1169,7 @@ def _record_execution_outcome(
     surface: str,
     result: BufferedUpstreamResponse | StreamedUpstreamResponse,
 ) -> None:
-    """Persist the gateway's post-execution receipt beside the decision log (BOD-117).
+    """Persist the gateway's post-execution receipt beside the decision log (outcome receipts).
 
     Streamed responses expose headers only; their body is not buffered here, so
     token counts fall back to headers and cost remains header-only either way.
@@ -1462,7 +1462,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if not correlation_id and isinstance(payload.get("correlation_id"), str):
         correlation_id = cast(str, payload["correlation_id"])
     # Resolve the request id *before* routing so the pre-execution decision row
-    # and the post-execution outcome receipt share one key (BOD-117).
+    # and the post-execution outcome receipt share one key (outcome receipts).
     client_request_id = request.headers.get("x-verdict-request-id") or (
         payload.get("request_id") if isinstance(payload.get("request_id"), str) else None
     )
@@ -1597,7 +1597,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         ):
             forwarded.pop(local_field, None)
         forwarded["model"] = attempt.model
-        # BOD-111: the hydrated pack the receipt describes is what the upstream
+        # cheap-path pack: the hydrated pack the receipt describes is what the upstream
         # receives. Injection is recorded per attempt and never claimed when
         # the pack is empty/failed or the task did not survive compilation.
         forwarded, injection = _inject_decision_pack(forwarded, decision, surface=surface)
@@ -1610,7 +1610,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 result = replace(result, body=_ValidatedSSEStream(result.body, surface=surface))
                 result = await _prime_stream(result)
             last_status = result.status_code
-            # BOD-117: the only place execution cost is observable is *after* the
+            # outcome receipts: the only place execution cost is observable is *after* the
             # upstream answers. Persist it per attempt, keyed to the decision.
             _record_execution_outcome(
                 request_id=decision.request_id,

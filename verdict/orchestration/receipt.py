@@ -192,7 +192,7 @@ def _attempt_of(event: RunEvent, fallback: int) -> int:
 def _classify_route_identity(
     route_id: str, reported_model: str | None, ok: bool, error: str, failure_category: str
 ) -> str:
-    """Classify route identity match status (BOD-209).
+    """Classify route identity match status (route identity tracking).
 
     Args:
         route_id: Intended route identity from dispatch
@@ -260,7 +260,7 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 row["outcome"] = "success" if ok else "failure"
                 if isinstance(data.get("duration_seconds"), int | float):
                     row["duration_seconds"] = float(data["duration_seconds"])
-                # BOD-209: track route identity (intended vs executed)
+                # route identity tracking: track route identity (intended vs executed)
                 reported = str(data.get("reported_model") or "")
                 error = str(data.get("error") or "")
                 row["intended_route"] = route
@@ -281,7 +281,7 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 last_success_seq = event.seq
         elif event.type == "integrate" and data.get("commit"):
             commit = str(data["commit"])
-    # BOD-209: compute route_identity for each attempt (after all events processed)
+    # route identity tracking: compute route_identity for each attempt (after all events processed)
     for row in attempts.values():
         if "_terminal_ok" in row:
             ok = row.pop("_terminal_ok")
@@ -396,7 +396,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
             if e.type == kind
         ]
 
-    # BOD-209: compute route identity summary and warning
+    # route identity tracking: compute route identity summary and warning
     route_identity_counts = {"match": 0, "mismatch": 0, "unattested": 0, "mechanical": 0}
     total_attempts = 0
     has_successful_mismatch = False
@@ -445,7 +445,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "started_at": (started.at if started else events[0].at) if events else None,
         "finished_at": finished[-1].at if finished else None,
     }
-    # BOD-209: add route_identity_warning if any successful attempt had a mismatch
+    # route identity tracking: add route_identity_warning if any successful attempt had a mismatch
     if has_successful_mismatch:
         receipt["route_identity_warning"] = (
             "One or more successful attempts reported a model different from the intended route"

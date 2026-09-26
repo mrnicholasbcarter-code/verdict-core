@@ -1,4 +1,4 @@
-"""OmniRoute-backed ``execute_arm`` for the live paired savings bench (BOD-114).
+"""OmniRoute-backed ``execute_arm`` for the live paired savings bench (paired savings bench execution).
 
 This is the only code path that can produce a claimable savings report, and it
 never runs implicitly: ``verdict benchmark --savings --live-paired`` requires

@@ -1,4 +1,4 @@
-"""On-disk Core metadata store and refresh job (BOD-108)."""
+"""On-disk Core metadata store and refresh job (Core metadata store)."""
 
 from __future__ import annotations
 
@@ -357,7 +357,7 @@ def refresh_metadata(
     records: dict[str, ModelMetadataRecord] = {}
 
     # Fetch api.json first, then models.json so models.json wins on id overlap
-    # (BOD-121: models.json is the canonical capability join target).
+    # (models.json canonical join: models.json is the canonical capability join target).
     api_doc, api_status = _fetch(transport, models_dev_api_url)
     if api_doc is not None:
         parsed_api = parse_models_dev_api(

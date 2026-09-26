@@ -1,4 +1,4 @@
-"""Core-owned model metadata store from free public sources (BOD-108).
+"""Core-owned model metadata store from free public sources (Core metadata store).
 
 OmniRoute is never the metadata source of truth. Callers later (BOD-100) should
 use :func:`lookup_omniroute_id` and :meth:`MetadataLookup.provenance_for_receipt`.

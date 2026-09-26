@@ -1,4 +1,4 @@
-"""Capability hard gate against the Core metadata store (BOD-100).
+"""Capability hard gate against the Core metadata store (capability gate).
 
 Requirements come from the request/task envelope. Matches use Core's
 independently fetched store — never OmniRoute catalog rows as metadata SoT.

@@ -1,4 +1,4 @@
-"""Evidence-based model chooser for BOD-95.
+"""Evidence-based model chooser for model chooser.
 
 Reuses EligibilityGate via select_eligible_route. The ranker is advisory only
 and never reintroduces excluded candidates. Resource class is config/evidence

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-# BOD-199: SHADOW decision signals (import only for type checking)
+# SHADOW decision signals (import only for type checking)
 from typing import TYPE_CHECKING, Any
 
 from verdict.orchestration.contracts import (
@@ -54,7 +54,7 @@ from verdict.orchestration.receipt import (
 )
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
 
-# OpenSpec spec_changed marker (BOD-205)
+# OpenSpec spec_changed marker
 SPEC_CHANGED = "spec_changed"
 
 DEFAULT_GATEWAY = "http://127.0.0.1:20128"
@@ -199,13 +199,13 @@ async def plan_with_failover(
     """
     from verdict.orchestration.planner import PlanningExecutorError
 
-    # BOD-235: auto-wire factory default when no provider injected
+    # TYPESAFE credentials migration: auto-wire factory default when no provider injected
     if decision_signal_provider is None:
         from verdict.decision_signals.factory import provider_from_env
 
         decision_signal_provider = provider_from_env()
 
-    # BOD-199/235: SHADOW/ADVISORY decision signal collection (before planning loop)
+    # SHADOW decision signals: SHADOW/ADVISORY decision signal collection (before planning loop)
     decision_signals_data: dict[str, Any] | None = None
     decision_signals_emitted = False  # BOD-199: emit at most once
     if decision_signal_provider is not None:
@@ -313,7 +313,7 @@ async def plan_with_failover(
                 graph.rationale,
                 min(max_parallel, graph.max_parallel),
             )
-        # BOD-199: emit decision_signals event if collected (SHADOW mode, at most once)
+        # SHADOW decision signals: emit decision_signals event if collected (SHADOW mode, at most once)
         # Wrapped in try/except: no SHADOW bookkeeping failure can affect planning outcome
         if decision_signals_data is not None and not decision_signals_emitted:
             try:
@@ -410,7 +410,7 @@ async def run_golden_path(
     openspec_change_dir: Path | None = None,
     decision_signal_provider: DecisionSignalProvider | None = None,
 ) -> GoldenRunResult:
-    # BOD-235: auto-wire factory default when no provider injected
+    # TYPESAFE credentials migration: auto-wire factory default when no provider injected
     if decision_signal_provider is None:
         from verdict.decision_signals.factory import provider_from_env
 
@@ -434,7 +434,7 @@ async def run_golden_path(
     graph_path = run_dir / GRAPH_FILE
     events.emit("understand", **_task_profile(goal, repo, graph))
     try:
-        # Initialize openspec block from input if provided (BOD-205)
+        # Initialize openspec block from input if provided (OpenSpec spec_changed marker)
         openspec_block: dict[str, Any] | None = None
         if openspec_change_dir is not None:
             from verdict.openspec_lifecycle import (
@@ -463,7 +463,7 @@ async def run_golden_path(
                 "conformance_result": None,
             }
 
-        # Check for spec digest changes on resume (BOD-205) whenever graph.json exists with a block
+        # Check for spec digest changes on resume (OpenSpec spec_changed marker) whenever graph.json exists with a block
         if graph_path.exists():
             graph_raw = json.loads(graph_path.read_text())
 

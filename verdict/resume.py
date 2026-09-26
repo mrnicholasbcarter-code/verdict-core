@@ -1,4 +1,4 @@
-"""Normalized cross-harness resume context and prompt (BOD-65/66).
+"""Normalized cross-harness resume context and prompt (cross-harness resume context).
 
 Workers (Cursor / Claude / Codex / Prime) are interchangeable. Resume state is
 reconstructed from Git + worktree + branch + handoff (+ optional PR discovery),

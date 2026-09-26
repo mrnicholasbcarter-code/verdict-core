@@ -1,4 +1,4 @@
-"""Effective Capability Planner — model + context + tools + decomposition (BOD-120).
+"""Effective Capability Planner — model + context + tools + decomposition (effective capability planning).
 
 For a concrete task slice, effective capability is approximately:
 
@@ -215,7 +215,7 @@ class VerificationStrategy:
 
 @dataclass(frozen=True)
 class AssistanceCost:
-    """Visible assistance cost for BOD-54 / BOD-104 expected-cost consumers."""
+    """Visible assistance cost for session economics (STAY/SWITCH) / execution-path authority expected-cost consumers."""
 
     context_tokens: int = 0
     tool_tokens: int = 0

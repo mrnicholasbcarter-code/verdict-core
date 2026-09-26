@@ -1,4 +1,4 @@
-"""Durable `.verdict/handoff.md` schema for cross-harness resume (BOD-65/66).
+"""Durable `.verdict/handoff.md` schema for cross-harness resume (cross-harness resume context).
 
 Canonical resumable state lives in Git + worktree + branch + Linear + proof +
 this handoff file — never proprietary chat history.
@@ -243,7 +243,7 @@ def render_handoff(doc: HandoffDocument) -> str:
 
 
 def _match_section_header(stripped: str) -> str | None:
-    # "Acceptance criteria (BOD-65/66 Wave-1 foundations):"
+    # "Acceptance criteria (cross-harness resume context Wave-1 foundations):"
     if not stripped.endswith(":"):
         return None
     header = stripped[:-1].strip()

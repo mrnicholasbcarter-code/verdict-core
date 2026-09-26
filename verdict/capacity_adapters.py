@@ -1,4 +1,4 @@
-"""Capacity evidence adapter protocol and registry (BOD-129).
+"""Capacity evidence adapter protocol and registry (capacity evidence).
 
 Adapters are evidence producers only. Adding a provider/gateway registers a
 plugin — it does not require a central brand switch or a second router.
@@ -131,7 +131,7 @@ def default_registry(
 
 
 def discover_local_adapters(**kwargs: Any) -> tuple[CapacityAdapter, ...]:
-    """Discover live local capacity evidence adapters (BOD-129 follow-up)."""
+    """Discover live local capacity evidence adapters (capacity evidence follow-up)."""
 
     from verdict.capacity_live import discover_local_adapters as _discover
 

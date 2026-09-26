@@ -1,4 +1,4 @@
-"""Fetch and normalize free public model metadata sources (BOD-108).
+"""Fetch and normalize free public model metadata sources (Core metadata store).
 
 P0: models.dev (primary) and LiteLLM (secondary cross-check).
 P1: stubbed unless a fixture payload is supplied — never invent scores.

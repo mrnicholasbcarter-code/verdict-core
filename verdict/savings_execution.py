@@ -1,4 +1,4 @@
-"""Evidence-bound execution contract for the paired savings bench (BOD-114).
+"""Evidence-bound execution contract for the paired savings bench (paired savings bench execution).
 
 A savings claim is only possible when *both* arms of a task were actually
 executed and every piece of evidence is bound to those executions:
@@ -87,7 +87,7 @@ class ArmRequest:
     acceptance_criteria: tuple[str, ...]
     input_hash: str
     model: str
-    # Verdict arm only: the compiled, hydrated context pack (BOD-111 envelope).
+    # Verdict arm only: the compiled, hydrated context pack (cheap-path pack envelope).
     context_envelope: str | None = None
     # Verdict arm only: routing evidence the execution must be bound to.
     routed_model: str | None = None

@@ -1,4 +1,4 @@
-"""Decision signal types and validation (BOD-199)."""
+"""Decision signal types and validation (SHADOW decision signals)."""
 
 from __future__ import annotations
 
