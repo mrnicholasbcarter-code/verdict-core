@@ -21,6 +21,7 @@ Boundaries:
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,7 @@ __all__ = [
     "ProviderBinding",
     "bootstrap_config_path",
     "describe_bootstrap_failure",
+    "redact_url",
     "resolve_provider_bootstrap",
     "verify_gateway_reachable",
 ]
@@ -158,10 +160,10 @@ class ProviderBinding:
         return ProviderConfig(base_url=self.base_url, api_key_env=self.api_key_env)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize without secret material (env names only)."""
+        """Serialize without secret material (env names only, URL userinfo redacted)."""
         return {
             "name": self.name,
-            "base_url": self.base_url,
+            "base_url": redact_url(self.base_url),
             "api_key_env": self.api_key_env,
             "source": self.source,
         }
@@ -208,7 +210,7 @@ class BootstrapResult:
             "primary_model": self.primary_model,
             "providers": {name: b.to_dict() for name, b in sorted(self.providers.items())},
             "gateway_required": self.gateway_required,
-            "gateway_url": self.gateway_url,
+            "gateway_url": None if self.gateway_url is None else redact_url(self.gateway_url),
             "profile": self.profile,
             "log_path": self.log_path,
             "config_path": str(self.config_path),
@@ -226,6 +228,22 @@ def bootstrap_config_path(
     xdg = (source.get("XDG_CONFIG_HOME") or "").strip()
     base = Path(xdg) if xdg else (home or Path.home()) / ".config"
     return base / "verdict" / "verdict.yaml"
+
+
+#: Matches the ``user:password@`` userinfo of any ``scheme://`` URL, including a
+#: URL embedded in a longer message such as an exception string.
+_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s@]*@")
+
+
+def redact_url(value: str) -> str:
+    """Replace any ``user:password@`` userinfo with ``***:***@``.
+
+    Operators sometimes embed credentials in a base URL. Every place that echoes
+    a URL - diagnostics, serialized bindings, stderr notes - passes through here,
+    so a password never reaches a log, a receipt or a terminal. The pattern also
+    redacts a URL embedded in a longer string, so wrapped error text is safe too.
+    """
+    return _USERINFO_RE.sub("***:***@", str(value))
 
 
 def _text(source: Mapping[str, str], name: str) -> str:
@@ -253,10 +271,25 @@ def _validate_url(
             diagnostic_class="configuration",
             field=field_name,
             source=source,
-            detail=f"{value!r} is not an absolute http(s) URL",
+            detail=f"{redact_url(value)!r} is not an absolute http(s) URL",
             remediation=f"set {field_name} to an absolute URL such as http://127.0.0.1:20128",
         )
     return None
+
+
+def _yaml_error_position(exc: Exception) -> str:
+    """Locate a YAML syntax fault without echoing the offending source line.
+
+    A malformed routing config can hold a credential on the very line the parser
+    rejected, and PyYAML puts that line into ``str(exc)``. Only the parser's
+    problem text plus the 1-based line and column are reported.
+    """
+    mark = getattr(exc, "problem_mark", None)
+    problem = str(getattr(exc, "problem", "") or "").strip()
+    if mark is None:
+        return f"({type(exc).__name__})" if not problem else f"({problem})"
+    where = f"at line {int(mark.line) + 1} column {int(mark.column) + 1}"
+    return f"({problem} {where})" if problem else f"({where})"
 
 
 def _load_config_file(config_path: Path) -> tuple[dict[str, Any], bool, BootstrapDiagnostic | None]:
@@ -305,7 +338,7 @@ def _load_config_file(config_path: Path) -> tuple[dict[str, Any], bool, Bootstra
                     diagnostic_class="configuration",
                     field="config_file",
                     source="config_file",
-                    detail=f"{config_path} is not valid YAML: {exc}",
+                    detail=f"{config_path} is not valid YAML {_yaml_error_position(exc)}",
                     remediation=f"fix the YAML syntax in {config_path}, or rerun 'verdict setup'",
                 ),
             ),
@@ -513,8 +546,9 @@ def resolve_provider_bootstrap(
                     field=f"providers.{_GATEWAY_PROVIDER_NAME}.base_url",
                     source="config_file",
                     detail=(
-                        f"config file sets {existing.base_url!r} while {_GATEWAY_ENV} sets "
-                        f"{binding.base_url!r}; the config file wins for the provider map"
+                        f"config file sets {redact_url(existing.base_url)!r} while "
+                        f"{_GATEWAY_ENV} sets {redact_url(binding.base_url)!r}; "
+                        f"the config file wins for the provider map"
                     ),
                     remediation=(
                         f"align {_GATEWAY_ENV} with {path}, or remove the "
@@ -659,6 +693,7 @@ def verify_gateway_reachable(result: BootstrapResult, *, probe: Any) -> Bootstra
             detail="a gateway provider is configured but no gateway URL resolved",
             remediation=f"set {_GATEWAY_ENV}, or add 'gateway_url' to the routing config",
         )
+    shown = redact_url(result.gateway_url)
     try:
         outcome = probe(result.gateway_url)
     except Exception as exc:
@@ -667,8 +702,8 @@ def verify_gateway_reachable(result: BootstrapResult, *, probe: Any) -> Bootstra
             diagnostic_class="gateway_health",
             field="gateway_url",
             source=result.source_of("gateway_url"),
-            detail=f"gateway health probe for {result.gateway_url} failed: {exc}",
-            remediation=f"start the gateway at {result.gateway_url}, or run 'verdict detect'",
+            detail=f"gateway health probe for {shown} failed: {redact_url(str(exc))}",
+            remediation=f"start the gateway at {shown}, or run 'verdict detect'",
         )
     if getattr(outcome, "reachable", False):
         return None
@@ -678,8 +713,8 @@ def verify_gateway_reachable(result: BootstrapResult, *, probe: Any) -> Bootstra
         diagnostic_class="gateway_health",
         field="gateway_url",
         source=result.source_of("gateway_url"),
-        detail=f"gateway at {result.gateway_url} is not healthy: {detail}",
-        remediation=f"start the gateway at {result.gateway_url}, or run 'verdict detect'",
+        detail=f"gateway at {shown} is not healthy: {redact_url(detail)}",
+        remediation=f"start the gateway at {shown}, or run 'verdict detect'",
     )
 
 

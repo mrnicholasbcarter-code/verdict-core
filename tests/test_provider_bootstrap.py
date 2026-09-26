@@ -16,6 +16,7 @@ from verdict.provider_bootstrap import (
     GatewayProbeResult,
     bootstrap_config_path,
     describe_bootstrap_failure,
+    redact_url,
     resolve_provider_bootstrap,
     verify_gateway_reachable,
 )
@@ -493,6 +494,104 @@ def test_result_serialization_is_stable_and_secret_free(tmp_path: Path) -> None:
     assert payload["providers"]["omniroute"]["api_key_env"] == "OMNIROUTE_API_KEY"
     assert "super-secret" not in repr(payload)
     assert result.to_dict() == payload
+
+
+# --- secret redaction -------------------------------------------------------
+
+_SECRET_URL_CONFIG = """
+providers:
+  omniroute:
+    base_url: http://u:SECRETPW@127.0.0.1:20128/v1
+    api_key_env: OMNIROUTE_API_KEY
+"""
+
+
+def test_url_userinfo_is_redacted_in_serialization(tmp_path: Path) -> None:
+    """A password embedded in a base URL never reaches to_dict output."""
+    result = resolve_provider_bootstrap(
+        env={"OMNIROUTE_API_KEY": "k"}, config_path=_write(tmp_path, _SECRET_URL_CONFIG)
+    )
+    payload = result.to_dict()
+
+    assert "SECRETPW" not in repr(payload)
+    assert payload["providers"]["omniroute"]["base_url"] == "http://***:***@127.0.0.1:20128/v1"
+    assert payload["gateway_url"] == "http://***:***@127.0.0.1:20128/v1"
+    # The runtime binding still carries the real credential for execution.
+    assert result.providers["omniroute"].base_url == "http://u:SECRETPW@127.0.0.1:20128/v1"
+
+
+def test_url_userinfo_is_redacted_in_the_precedence_conflict_note(tmp_path: Path) -> None:
+    """Neither the config URL nor the env URL leaks its password into the note."""
+    result = resolve_provider_bootstrap(
+        env={
+            "OMNIROUTE_BASE_URL": "http://envuser:ENVSECRET@127.0.0.1:20129",
+            "OMNIROUTE_API_KEY": "k",
+        },
+        config_path=_write(tmp_path, _SECRET_URL_CONFIG),
+    )
+
+    note = next(n for n in result.notes() if n.code == "precedence_conflict")
+    assert "SECRETPW" not in note.describe()
+    assert "ENVSECRET" not in note.describe()
+    assert "***:***@" in note.detail
+    assert "SECRETPW" not in repr(result.to_dict())
+
+
+def test_url_userinfo_is_redacted_in_an_invalid_url_refusal(tmp_path: Path) -> None:
+    """A malformed URL carrying a password is named without echoing the password."""
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_provider_bootstrap(
+            env={"OMNIROUTE_BASE_URL": "ftp://u:SECRETPW@host/v1"},
+            config_path=tmp_path / "absent.yaml",
+        )
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "provider_base_url_invalid"
+    assert "SECRETPW" not in diagnostic.describe()
+    assert "SECRETPW" not in str(excinfo.value)
+    assert "SECRETPW" not in describe_bootstrap_failure(excinfo.value)
+    assert "SECRETPW" not in repr(excinfo.value.to_dict())
+
+
+def test_url_userinfo_is_redacted_in_gateway_health_diagnostics(tmp_path: Path) -> None:
+    """A gateway-health report quotes the URL and the probe error, both redacted."""
+    result = resolve_provider_bootstrap(
+        env={"OMNIROUTE_API_KEY": "k"}, config_path=_write(tmp_path, _SECRET_URL_CONFIG)
+    )
+
+    def _raises(url: str) -> GatewayProbeResult:
+        raise ConnectionError(f"cannot connect to {url}")
+
+    failed = verify_gateway_reachable(result, probe=_raises)
+    assert failed is not None
+    assert "SECRETPW" not in failed.describe()
+
+    unhealthy = verify_gateway_reachable(
+        result, probe=lambda url: GatewayProbeResult(reachable=False, detail=f"503 from {url}")
+    )
+    assert unhealthy is not None
+    assert "SECRETPW" not in unhealthy.describe()
+
+
+def test_unparsable_config_reports_position_without_echoing_the_source_line(tmp_path: Path) -> None:
+    """A syntax fault gives line and column, never the offending YAML text."""
+    body = "providers:\n  omniroute:\n    base_url: http://u:SECRETPW@h/v1\n  [oops\n"
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_provider_bootstrap(env={}, config_path=_write(tmp_path, body))
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "config_file_unparsable"
+    assert "line 5" in diagnostic.detail
+    assert "column 1" in diagnostic.detail
+    assert "SECRETPW" not in describe_bootstrap_failure(excinfo.value)
+    assert "base_url" not in diagnostic.detail
+
+
+def test_redact_url_leaves_credential_free_urls_untouched() -> None:
+    """Redaction is limited to userinfo; ordinary URLs render verbatim."""
+    assert redact_url("http://127.0.0.1:20128/v1") == "http://127.0.0.1:20128/v1"
+    assert redact_url("not-a-url") == "not-a-url"
+    assert redact_url("") == ""
 
 
 def test_bootstrap_error_requires_at_least_one_diagnostic() -> None:

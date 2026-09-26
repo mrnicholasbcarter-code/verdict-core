@@ -133,6 +133,23 @@ Prime supervisor still raises `ControllerLaunchError("production_factory_unavail
 for wire compatibility, but the detail now carries the code, class, field, source
 and remediation rather than an opaque message.
 
+### Secrets in rendered output
+
+Diagnostics are written to stderr, receipts and structured logs, so they never
+echo secret material:
+
+- API keys are referenced by environment-variable name (`api_key_env`), never by
+  value. This holds for exported environment values and credential-store values
+  alike.
+- A URL that carries `user:password@` userinfo is rendered as `***:***@host`
+  everywhere: diagnostic details, `ProviderBinding.to_dict`,
+  `BootstrapResult.to_dict`, `describe_bootstrap_failure` and the CLI/library
+  stderr notes. The runtime binding keeps the operator's real URL, so execution
+  is unaffected.
+- `config_file_unparsable` reports the parser's problem plus the 1-based line and
+  column. It never embeds the offending source line, which could itself hold a
+  credential.
+
 ---
 
 ## Environment variable overrides

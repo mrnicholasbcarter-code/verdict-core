@@ -215,6 +215,53 @@ def test_cli_route_gate_reports_precedence_conflict(
     assert "precedence_conflict" in capsys.readouterr().err
 
 
+def test_cli_route_gate_never_echoes_url_userinfo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A password embedded in a base URL never reaches CLI stderr."""
+    from verdict.cli import _build_route_gate
+
+    _config_home(
+        tmp_path,
+        monkeypatch,
+        "providers:\n  omniroute:\n"
+        "    base_url: http://u:SECRETPW@127.0.0.1:20128/v1\n"
+        "    api_key_env: OMNIROUTE_API_KEY\n",
+    )
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://envuser:ENVSECRET@127.0.0.1:20129")
+
+    gate = _build_route_gate(allow_offline=True)
+
+    err = capsys.readouterr().err
+    assert "precedence_conflict" in err
+    assert "SECRETPW" not in err
+    assert "ENVSECRET" not in err
+    assert "***:***@" in err
+    # Execution still uses the operator's real URL.
+    assert gate.providers["omniroute"].base_url == "http://u:SECRETPW@127.0.0.1:20128/v1"
+
+
+def test_cli_route_gate_reports_unparsable_config_without_the_source_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The syntax-fault refusal gives a position, not the offending YAML line."""
+    from verdict.cli import _build_route_gate
+
+    _config_home(
+        tmp_path,
+        monkeypatch,
+        "providers:\n  omniroute:\n    base_url: http://u:SECRETPW@h/v1\n  [oops\n",
+    )
+
+    with pytest.raises(SystemExit):
+        _build_route_gate(allow_offline=True)
+
+    err = capsys.readouterr().err
+    assert "config_file_unparsable" in err
+    assert "line 5" in err
+    assert "SECRETPW" not in err
+
+
 # --- library resolver -------------------------------------------------------
 
 
