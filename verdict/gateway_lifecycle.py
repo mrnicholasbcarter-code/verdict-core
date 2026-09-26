@@ -25,6 +25,7 @@ import contextlib
 import fcntl
 import hashlib
 import os
+import signal
 import subprocess  # nosec B404: launches an operator-supplied argv with shell=False.
 import time
 from collections.abc import Callable, Iterator
@@ -46,6 +47,7 @@ __all__ = [
     "GatewayLifecycleOutcome",
     "GatewayProcess",
     "GatewayState",
+    "LaunchedGateway",
     "SubprocessGatewayLauncher",
     "ensure_gateway_ready",
     "gateway_lock_path",
@@ -67,6 +69,9 @@ READY_STATES: frozenset[str] = frozenset({"not_required", "already_ready", "star
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "ip6-localhost"})
 _INITIAL_BACKOFF_S = 0.1
 _MAX_BACKOFF_S = 1.0
+#: Seconds to wait for a signalled child at each escalation step. Bounded so a
+#: wedged gateway cannot make the caller hang while being stopped.
+_STOP_GRACE_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -143,13 +148,35 @@ class GatewayProcess(Protocol):
     def kill(self) -> None:  # pragma: no cover - protocol declaration
         ...
 
+    def wait(self, timeout: float | None = None) -> int:  # pragma: no cover - protocol
+        ...
+
+
+@dataclass(frozen=True)
+class LaunchedGateway:
+    """A process this call started, plus the process group it owns.
+
+    ``pgid`` is recorded at launch and is the only group the lifecycle will ever
+    signal. It is ``None`` when the launcher did not create a new session, in
+    which case only the leader is signalled: signalling a group we did not create
+    could reach the operator's own shell job.
+    """
+
+    process: GatewayProcess
+    pgid: int | None = None
+
 
 class GatewayLauncher(Protocol):
-    """Starts a gateway from an explicit argv. Tests supply a counting fake."""
+    """Starts a gateway from an explicit argv. Tests supply a counting fake.
+
+    A launcher may return a bare process handle or a :class:`LaunchedGateway`
+    carrying the process group it created. A bare handle means "no group is
+    ours", so only the leader is signalled.
+    """
 
     def launch(
         self, argv: tuple[str, ...], *, cwd: Path
-    ) -> GatewayProcess:  # pragma: no cover - protocol declaration
+    ) -> GatewayProcess | LaunchedGateway:  # pragma: no cover - protocol declaration
         ...
 
 
@@ -159,11 +186,21 @@ class SubprocessGatewayLauncher:
     The argv comes from the bootstrap contract and is passed as a list, so no
     part of it is interpreted by a shell. Standard streams are detached from this
     process; the gateway keeps its own logging.
+
+    ``start_new_session=True`` puts the child in a new session, so it is the
+    leader of a brand-new process group that contains it and every descendant it
+    spawns. That group id is recorded here, at launch, and is the only group the
+    lifecycle will ever signal.
+
+    The child inherits this process's environment as it stands. Verdict adds
+    nothing to it, and in particular never copies credential-store values into
+    it: whatever the operator exported is what the gateway sees. This is
+    documented in ``docs/CONFIGURATION.md``.
     """
 
-    def launch(self, argv: tuple[str, ...], *, cwd: Path) -> GatewayProcess:
-        """Start ``argv`` in ``cwd`` and return the process handle."""
-        return subprocess.Popen(  # nosec B603: explicit argv, shell=False.
+    def launch(self, argv: tuple[str, ...], *, cwd: Path) -> LaunchedGateway:
+        """Start ``argv`` in ``cwd`` and return the handle plus its process group."""
+        process = subprocess.Popen(  # nosec B603: explicit argv, shell=False.
             list(argv),
             cwd=str(cwd),
             stdin=subprocess.DEVNULL,
@@ -171,7 +208,23 @@ class SubprocessGatewayLauncher:
             stderr=subprocess.DEVNULL,
             shell=False,
             start_new_session=True,
+            env=dict(os.environ),
         )
+        return LaunchedGateway(process=process, pgid=_own_process_group(process))
+
+
+def _own_process_group(process: GatewayProcess) -> int | None:
+    """Process group id of a child we just made a group leader, else ``None``.
+
+    The group is claimed only when the kernel agrees the child leads it
+    (``getpgid(pid) == pid``). Anything else means we are not the group's owner,
+    and an unowned group is never signalled.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+    except (OSError, AttributeError):
+        return None
+    return pgid if pgid == process.pid else None
 
 
 def gateway_state_dir(*, home: Path | None = None, env: dict[str, str] | None = None) -> Path:
@@ -522,7 +575,9 @@ def _ensure(
             )
         emit("starting", attempts=attempts, detail=f"starting the gateway for {shown}")
         try:
-            process = (launcher or SubprocessGatewayLauncher()).launch(tuple(argv), cwd=lock.parent)
+            launched = _launched(
+                (launcher or SubprocessGatewayLauncher()).launch(tuple(argv), cwd=lock.parent)
+            )
         except Exception as exc:
             return emit(
                 "failed_to_start",
@@ -549,7 +604,7 @@ def _ensure(
             deadline=deadline,
             attempts=attempts,
             emit=emit,
-            process=process,
+            child=launched,
             source=source,
             timeout_s=result.gateway_ready_timeout_s,
         )
@@ -617,28 +672,37 @@ def _wait_for_launch(
     deadline: float,
     attempts: int,
     emit: Callable[..., GatewayLifecycleOutcome],
-    process: GatewayProcess,
+    child: LaunchedGateway,
     source: Any,
     timeout_s: float,
 ) -> GatewayLifecycleOutcome:
-    """Wait for the gateway we launched, bounded, leaving no orphan."""
+    """Wait for the gateway we launched, bounded, leaving no orphan.
+
+    Every exit from this function either observes the child already gone and reaps
+    it, or stops its whole process group and reaps it. No path returns while a
+    process we started is unreaped.
+    """
     shown = redact_url(url)
+    process = child.process
     backoff = _INITIAL_BACKOFF_S
     answered = False
     last = ""
     while clock() < deadline:
         exit_code = process.poll()
         if exit_code is not None:
+            # The leader is gone, but its group may not be: a wrapper that dies
+            # after spawning the gateway leaves descendants behind.
+            stopped = _stop_launched(child)
             return emit(
                 "failed_to_start",
                 attempts=attempts,
                 launched=True,
-                detail=f"the gateway process exited with code {exit_code}",
+                detail=f"the gateway process exited with code {exit_code}; {stopped}",
                 diagnostic=_diagnostic(
                     "gateway_process_exited",
                     detail=(
                         f"the gateway process started for {shown} exited with code "
-                        f"{exit_code} before becoming ready"
+                        f"{exit_code} before becoming ready. {stopped}"
                     ),
                     remediation=(
                         "run the configured gateway_start_command in a terminal to see why it exits"
@@ -665,7 +729,7 @@ def _wait_for_launch(
         )
         sleep(backoff)
         backoff = min(backoff * 2, _MAX_BACKOFF_S)
-    stopped = _stop_launched(process)
+    stopped = _stop_launched(child)
     if answered:
         return emit(
             "unhealthy",
@@ -705,15 +769,84 @@ def _wait_for_launch(
     )
 
 
-def _stop_launched(process: GatewayProcess) -> str:
-    """Terminate the process this call launched. Never touches anything else."""
-    if process.poll() is not None:
-        return "the process had already exited"
+def _launched(outcome: Any) -> LaunchedGateway:
+    """Normalize a launcher return value into a :class:`LaunchedGateway`."""
+    if isinstance(outcome, LaunchedGateway):
+        return outcome
+    return LaunchedGateway(process=outcome, pgid=None)
+
+
+def _reap(process: GatewayProcess, timeout: float) -> int | None:
+    """Wait up to ``timeout`` for the child, returning its status or ``None``.
+
+    ``None`` means it is still running. A handle without ``wait`` (a test fake)
+    falls back to ``poll``.
+    """
+    waiter = getattr(process, "wait", None)
+    if waiter is None:
+        return process.poll()
     try:
+        return int(waiter(timeout=timeout))
+    except Exception:
+        return process.poll()
+
+
+def _signal_group(pgid: int | None, process: GatewayProcess, signal_number: int) -> None:
+    """Signal the group we created, else only the leader we started.
+
+    ``pgid`` is set only when :func:`_own_process_group` confirmed this process
+    created that group, so no group belonging to anyone else is ever signalled.
+    """
+    if pgid is not None:
+        os.killpg(pgid, signal_number)
+        return
+    if signal_number == signal.SIGKILL:
+        process.kill()
+    else:
         process.terminate()
+
+
+def _stop_launched(launched: LaunchedGateway, *, grace_s: float = _STOP_GRACE_S) -> str:
+    """Stop and reap the process this call launched, plus the group it leads.
+
+    Escalates SIGTERM to SIGKILL on the group, then waits, so no zombie is left
+    behind and no descendant of the gateway survives. The returned sentence states
+    what actually happened — reaped, killed, or still running with its pid — and
+    is embedded in the timeout diagnostic verbatim.
+
+    Only a group recorded at launch is signalled. A pre-existing gateway has no
+    such record, so it is never reachable from here.
+    """
+    process = launched.process
+    pgid = launched.pgid
+    if process.poll() is not None:
+        _reap(process, grace_s)
+        return "the process we started had already exited and was reaped"
+    try:
+        _signal_group(pgid, process, signal.SIGTERM)
     except Exception as exc:
-        return f"terminating the process we started failed: {type(exc).__name__}: {exc}"
-    if process.poll() is None:
-        with contextlib.suppress(Exception):
-            process.kill()
-    return "the process we started was stopped, so no orphan remains"
+        return (
+            f"terminating the process we started (pid {process.pid}) failed: "
+            f"{type(exc).__name__}: {exc}; it may still be running"
+        )
+    if _reap(process, grace_s) is not None:
+        return (
+            f"the process we started (pid {process.pid}) stopped on SIGTERM and was reaped, "
+            f"so no orphan remains"
+        )
+    try:
+        _signal_group(pgid, process, signal.SIGKILL)
+    except Exception as exc:
+        return (
+            f"the process we started (pid {process.pid}) ignored SIGTERM and could not be "
+            f"killed: {type(exc).__name__}: {exc}; it is still running"
+        )
+    if _reap(process, grace_s) is not None:
+        return (
+            f"the process we started (pid {process.pid}) was killed and reaped, so no orphan "
+            f"remains"
+        )
+    return (
+        f"the process we started (pid {process.pid}) did not exit after SIGKILL and is still "
+        f"running; stop it yourself"
+    )

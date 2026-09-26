@@ -8,7 +8,12 @@ gateway on 127.0.0.1:20128.
 
 from __future__ import annotations
 
+import shlex
+import signal
+import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -334,6 +339,239 @@ def test_probe_exception_is_treated_as_unreachable_not_as_a_crash(tmp_path: Path
     assert outcome.state == "failed_to_start"
     assert outcome.diagnostic is not None
     assert outcome.diagnostic.code == "gateway_start_command_missing"
+
+
+# --- real-process reaping ---------------------------------------------------
+
+
+def _proc_state(pid: int) -> str | None:
+    """Kernel state letter for ``pid``, or ``None`` when the pid is gone.
+
+    Reads ``/proc`` rather than signalling, so an already-reaped pid that the
+    kernel has recycled cannot be mistaken for our child.
+    """
+    try:
+        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return stat_line.rpartition(")")[2].split()[0]
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs procfs")
+def test_timeout_reaps_the_real_child_and_kills_its_descendants(tmp_path: Path) -> None:
+    """A real launched process, and everything it spawned, is gone afterwards.
+
+    This is the one test that uses a real process. It is a throwaway
+    ``sh -c`` wrapper around ``sys.executable -c 'time.sleep(...)'``, which spawns
+    a grandchild, so it reproduces the shape of a gateway started through a
+    wrapper (``npx``, ``node``, ``sh``). No port is bound, no socket is opened and
+    no gateway is contacted: the probe is a fake that always reports closed, so the
+    readiness budget always expires.
+
+    Two failures are asserted separately, because the old implementation had both:
+    a leader left as an un-reaped zombie (no ``wait()``), and a live grandchild (only
+    the leader was signalled, never the group).
+    """
+    marker = tmp_path / "grandchild.pid"
+    script = (
+        f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(120)' & "
+        f"echo $! > {shlex.quote(str(marker))}; wait"
+    )
+    probe = FakeProbe(CLOSED)
+    launcher = gl.SubprocessGatewayLauncher()
+    launches: list[Any] = []
+
+    class RecordingRealLauncher:
+        def launch(self, argv: tuple[str, ...], *, cwd: Path) -> Any:
+            handle = launcher.launch(argv, cwd=cwd)
+            launches.append(handle)
+            return handle
+
+    outcome = gl.ensure_gateway_ready(
+        _result(start_command=("sh", "-c", script), timeout=2.0),
+        probe=probe,
+        launcher=RecordingRealLauncher(),
+        state_dir=tmp_path / "state",
+    )
+
+    assert outcome.state == "failed_to_start"
+    assert outcome.launched is True
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_ready_timeout"
+    assert len(launches) == 1
+    child = launches[0]
+    assert isinstance(child, gl.LaunchedGateway)
+    assert child.pgid == child.process.pid, "the launcher must own a new process group"
+
+    leader = child.process.pid
+    assert _proc_state(leader) != "Z", (
+        f"pid {leader} is an un-reaped zombie: the timeout path must wait() for the child "
+        f"it started"
+    )
+    assert child.process.returncode is not None, "the child must be reaped, not merely signalled"
+
+    deadline = time.monotonic() + 10.0
+    grandchild: int | None = None
+    while time.monotonic() < deadline:
+        text = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+        if text:
+            grandchild = int(text)
+            break
+        time.sleep(0.05)
+    assert grandchild is not None, "the wrapper never recorded its grandchild"
+    while time.monotonic() < deadline and _proc_state(grandchild) not in (None, "Z"):
+        time.sleep(0.05)
+    assert _proc_state(grandchild) in (None, "Z"), (
+        f"grandchild {grandchild} is still running: the whole process group we created must be "
+        f"signalled, not only the leader"
+    )
+    assert "no orphan remains" in (outcome.diagnostic.detail or "")
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs procfs")
+def test_a_child_that_ignores_sigterm_is_killed_and_reaped(tmp_path: Path) -> None:
+    """SIGTERM is not enough on its own, so the stop path must escalate to SIGKILL.
+
+    Uses a real throwaway ``sh -c 'trap "" TERM; ...'`` child, which ignores
+    SIGTERM by contract. No port, no socket, no gateway. The grace period is
+    shortened so the escalation is observed in well under a second.
+    """
+    marker = tmp_path / "grandchild.pid"
+    script = (
+        f"trap \"\" TERM; {shlex.quote(sys.executable)} -c 'import time; time.sleep(120)' & "
+        f"echo $! > {shlex.quote(str(marker))}; wait"
+    )
+    child = gl.SubprocessGatewayLauncher().launch(("sh", "-c", script), cwd=tmp_path)
+    assert isinstance(child, gl.LaunchedGateway)
+    assert child.pgid == child.process.pid
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and not (marker.exists() and marker.read_text().strip()):
+        time.sleep(0.05)
+    grandchild = int(marker.read_text(encoding="utf-8").strip())
+
+    stopped = gl._stop_launched(child, grace_s=0.3)
+
+    assert "killed and reaped" in stopped, stopped
+    assert "no orphan remains" in stopped
+    assert child.process.returncode is not None
+    assert _proc_state(child.process.pid) != "Z"
+    while time.monotonic() < deadline and _proc_state(grandchild) not in (None, "Z"):
+        time.sleep(0.05)
+    assert _proc_state(grandchild) in (None, "Z"), (
+        f"grandchild {grandchild} survived: SIGTERM alone does not stop a child that ignores it, "
+        f"so the stop path must escalate to SIGKILL on the group"
+    )
+
+
+def test_the_stop_diagnostic_states_what_actually_happened() -> None:
+    """The sentence in the diagnostic reports the real result, never a fixed claim."""
+
+    class Wedged:
+        """Ignores every signal: nothing we do makes it exit."""
+
+        pid = 99991
+        returncode = None
+
+        def poll(self) -> int | None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            raise subprocess.TimeoutExpired("wedged", timeout or 0.0)
+
+        def terminate(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            return None
+
+    wedged = gl._stop_launched(gl.LaunchedGateway(process=Wedged()), grace_s=0.01)
+    assert "still running" in wedged
+    assert "99991" in wedged
+    assert "no orphan remains" not in wedged
+
+    class StopsOnTerm:
+        pid = 99992
+
+        def __init__(self) -> None:
+            self._code: int | None = None
+
+        def poll(self) -> int | None:
+            return self._code
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self._code if self._code is not None else 0
+
+        def terminate(self) -> None:
+            self._code = -15
+
+        def kill(self) -> None:  # pragma: no cover - SIGTERM already worked
+            self._code = -9
+
+    polite = gl._stop_launched(gl.LaunchedGateway(process=StopsOnTerm()), grace_s=0.01)
+    assert "stopped on SIGTERM and was reaped" in polite
+    assert "no orphan remains" in polite
+
+
+def test_only_a_process_group_we_created_is_ever_signalled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A child that is not its own group leader is signalled individually.
+
+    Without this, the lifecycle could ``killpg`` a group it did not create — the
+    operator's own shell job, in the worst case.
+    """
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(gl.os, "killpg", lambda pgid, number: signalled.append((pgid, number)))
+
+    class NotALeader:
+        pid = 4242
+
+        def poll(self) -> int | None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return -15
+
+        def terminate(self) -> None:
+            signalled.append((-1, signal.SIGTERM))
+
+        def kill(self) -> None:  # pragma: no cover - SIGTERM works here
+            signalled.append((-1, signal.SIGKILL))
+
+    monkeypatch.setattr(gl.os, "getpgid", lambda pid: pid + 1)
+    assert gl._own_process_group(NotALeader()) is None
+
+    gl._stop_launched(gl.LaunchedGateway(process=NotALeader(), pgid=None), grace_s=0.01)
+    assert signalled == [(-1, signal.SIGTERM)], "no killpg may be issued for an unowned group"
+
+
+def test_a_process_that_exits_early_still_has_its_group_reaped(tmp_path: Path) -> None:
+    """A wrapper that exits before readiness must not leave its descendants behind."""
+    stopped: list[str] = []
+
+    class ExitedLeader:
+        pid = 7777
+        returncode = 0
+
+        def poll(self) -> int | None:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            stopped.append("waited")
+            return 0
+
+        def terminate(self) -> None:  # pragma: no cover - already exited
+            raise AssertionError("an exited leader must not be signalled again")
+
+        def kill(self) -> None:  # pragma: no cover - already exited
+            raise AssertionError("an exited leader must not be signalled again")
+
+    launcher = CountingLauncher(gl.LaunchedGateway(process=ExitedLeader(), pgid=None))
+    outcome = _ensure(_result(), FakeProbe(CLOSED), tmp_path, launcher=launcher)
+
+    assert outcome.state == "failed_to_start"
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_process_exited"
+    assert stopped == ["waited"], "an exited child must still be reaped"
+    assert "reaped" in outcome.diagnostic.detail
 
 
 # --- duplicate prevention under concurrency ---------------------------------
