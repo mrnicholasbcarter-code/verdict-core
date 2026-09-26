@@ -1,4 +1,4 @@
-"""BOD-123 Wave-1: native Context Intelligence Fabric baseline (no MCP)."""
+"""Wave-1: native Context Intelligence Fabric baseline (no MCP)."""
 
 from __future__ import annotations
 

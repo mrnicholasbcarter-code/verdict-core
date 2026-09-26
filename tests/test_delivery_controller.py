@@ -1,4 +1,4 @@
-"""BOD-68 delivery controller — Linear proof-contract unit tests (no live GitHub)."""
+"""delivery controller — Linear proof-contract unit tests (no live GitHub)."""
 
 from __future__ import annotations
 

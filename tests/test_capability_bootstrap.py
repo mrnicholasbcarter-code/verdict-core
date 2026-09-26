@@ -1,4 +1,4 @@
-"""Tests for capability bootstrap staged installer DX (BOD-124)."""
+"""Tests for capability bootstrap staged installer DX."""
 
 from __future__ import annotations
 
@@ -256,7 +256,7 @@ def test_unhealthy_gateway_is_installed_not_healthy_and_not_certified() -> None:
 
 
 def test_default_certifier_uses_bod92_runtime_certification() -> None:
-    """Default CERTIFY seam must call BOD-92 certify_runtime (not a stub)."""
+    """Default CERTIFY seam must call runtime certification certify_runtime (not a stub)."""
 
     report = run_bootstrap(
         providers=_unhealthy_gateway_machine(), mode=BootstrapMode.PLAN, non_interactive=True

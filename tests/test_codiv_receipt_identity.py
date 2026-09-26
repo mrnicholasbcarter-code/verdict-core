@@ -1,4 +1,4 @@
-"""Tests for BOD-198 receipt provider identity tracking."""
+"""Tests for the codiv failure classification and provider identity design receipt provider identity tracking."""
 
 import unittest
 

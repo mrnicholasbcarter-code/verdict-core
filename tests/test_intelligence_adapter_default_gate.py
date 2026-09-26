@@ -1,4 +1,4 @@
-"""Test for BOD-196: intelligence_adapter default gate bug"""
+"""Test for the eligibility-gate default construction fix: intelligence_adapter default gate bug"""
 
 from verdict.intelligence_adapter import IntelligenceAdapter
 from verdict.models import ModelInfo

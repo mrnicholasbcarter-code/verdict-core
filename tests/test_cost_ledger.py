@@ -1,4 +1,4 @@
-"""Proof tests for cost ledger reservations and reconciliation (BOD-54)."""
+"""Proof tests for cost ledger reservations and reconciliation."""
 
 from __future__ import annotations
 

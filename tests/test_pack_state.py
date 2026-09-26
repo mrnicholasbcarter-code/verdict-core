@@ -1,4 +1,4 @@
-"""BOD-106 pack_state classifier: empty / partial / hydrated / failed."""
+"""pack_state classifier: empty / partial / hydrated / failed."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def test_failed_takes_precedence() -> None:
 
 
 def test_task_omitted_is_failed_regardless_of_includes() -> None:
-    """BOD-110: no task instructions → failed, never hydrated/partial."""
+    """no task instructions → failed, never hydrated/partial."""
     included = (
         IncludedProvenance("docs/adr/ADR-001.md", "sha256:" + "a" * 64),
         IncludedProvenance("docs/architecture/decision.md", "sha256:" + "b" * 64),
@@ -86,7 +86,7 @@ def test_task_omitted_is_failed_regardless_of_includes() -> None:
 
 
 def test_missing_required_source_is_partial() -> None:
-    """BOD-110: a task-required ADR left out is partial even with class coverage."""
+    """a task-required ADR left out is partial even with class coverage."""
     included = (
         IncludedProvenance("docs/adr/ADR-001.md", "sha256:" + "a" * 64),
         IncludedProvenance("docs/architecture/decision.md", "sha256:" + "b" * 64),
@@ -108,7 +108,7 @@ def test_missing_required_source_is_partial() -> None:
 
 
 def test_partial_when_architecture_exists_but_gather_cap_dropped_it() -> None:
-    """A file the per-root cap never gathered is present on disk, not absent (BOD-110)."""
+    """A file the per-root cap never gathered is present on disk, not absent."""
     included = (IncludedProvenance("docs/adr/ADR-001.md", "sha256:" + "a" * 64),)
     omissions = (NamedOmission(name="docs/architecture/decision.md", reason="unit_cap_exceeded"),)
     state = classify_pack_state(included=included, gathered=included, omissions=omissions)

@@ -1,4 +1,4 @@
-"""BOD-17: obsolete Ruflo/swarm/hivemind architecture is deleted from Core."""
+"""obsolete Ruflo/swarm/hivemind architecture is deleted from Core."""
 
 from __future__ import annotations
 

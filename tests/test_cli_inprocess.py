@@ -46,7 +46,7 @@ def test_cmd_route_terse_uses_configured_primary(
 def test_cmd_route_and_run_send_configured_provider_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """BOD-136: default route/run must actually send, not preview with not_sent."""
+    """default route/run must actually send, not preview with not_sent."""
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text(
@@ -190,7 +190,7 @@ def test_cmd_route_offline_is_named_fail_closed(
 def test_cmd_route_allow_offline_does_not_enable_legacy_selector(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """BOD-127: offline catalog mode must not silently set CONTEXT_ALLOW_LEGACY."""
+    """offline catalog mode must not silently set CONTEXT_ALLOW_LEGACY."""
     from verdict.serve_path import CONTEXT_ALLOW_LEGACY
 
     cfg_dir = tmp_path / ".config" / "verdict"

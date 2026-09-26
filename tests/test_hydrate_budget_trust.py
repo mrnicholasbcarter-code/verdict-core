@@ -1,4 +1,4 @@
-"""BOD-128: wire BudgetReceipt + Context Trust into cheap-path hydrate/compile."""
+"""wire BudgetReceipt + Context Trust into cheap-path hydrate/compile."""
 
 from __future__ import annotations
 
@@ -281,7 +281,7 @@ def test_dual_budget_bypass_closed_governor_omissions_not_compiled(tmp_path: Pat
 
 
 def test_cheap_path_trust_and_budget_feed_optimizer_offers(tmp_path: Path) -> None:
-    """Integration: hydrate pack fields are consumed by BOD-104 offer qualification."""
+    """Integration: hydrate pack fields are consumed by the execution-path authority optimizer (ADR-035) offer qualification."""
     _plant_workspace(tmp_path)
     mcp = tmp_path / "mcp"
     _plant_mcp(mcp, content="mcp evidence note for optimizer feed")

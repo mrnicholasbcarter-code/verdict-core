@@ -1,4 +1,4 @@
-"""BOD-142 live task-fit shortlist integration and authority proofs."""
+"""live task-fit shortlist integration and authority proofs."""
 
 from __future__ import annotations
 

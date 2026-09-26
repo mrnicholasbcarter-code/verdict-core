@@ -1,4 +1,4 @@
-"""BOD-122 Candidate Pool Intelligence — evidence-fused Top-K shortlist."""
+"""Candidate Pool Intelligence — evidence-fused Top-K shortlist."""
 
 from __future__ import annotations
 

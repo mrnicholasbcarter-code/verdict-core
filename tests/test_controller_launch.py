@@ -1,4 +1,4 @@
-"""BOD-156 controller launch contract, decision, and identity tests."""
+"""controller launch contract, decision, and identity tests."""
 
 from __future__ import annotations
 
@@ -473,7 +473,7 @@ def test_persisted_rejects_auto_route() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Live selector: select_controller_launch (BOD-156)
+# Live selector: select_controller_launch
 # ---------------------------------------------------------------------------
 
 PRICE: PriceEvidenceInput = {"input_usd_per_mtok": "1.00", "evidence_id": "price-ctrl"}
@@ -787,7 +787,7 @@ def test_receipt_persisted_with_ep_and_context_digests() -> None:
 def test_session_stay_keeps_healthy_route() -> None:
     current = _ctrl_route("omniroute/current/model", provider="omniroute", model="current/model")
     fresh = _ctrl_route("omniroute/fresh/model", provider="omniroute", model="fresh/model")
-    # Make fresh cheaper so BOD-104 would prefer it absent STAY.
+    # Make fresh cheaper so the execution-path authority optimizer (ADR-035) would prefer it absent STAY.
     current_offer = _ctrl_offer(current, ctx_digest="ctx-current", execution_tokens=20_000)
     fresh_offer = _ctrl_offer(fresh, ctx_digest="ctx-fresh", execution_tokens=1_000)
     session = SessionState(
@@ -1033,7 +1033,7 @@ def test_production_factory_injected_path_compiles_real_prompt_digest() -> None:
     def prepare(task, criticality, context, request):
         prepare_calls.append(request)
         assert request.offers, "live seed offers must reach prepare"
-        # Bind a real ContextPlan onto the surviving offer (simulates BOD-143).
+        # Bind a real ContextPlan onto the surviving offer (simulates the candidate-specific pre-hydration ContextPlan).
         plan = ContextPlan(
             plan_id="prehydrate:omniroute/gc/grok-4.5",
             candidate_id=route.route_id,
@@ -1325,7 +1325,7 @@ def test_session_stay_mismatched_ep_route_fails_closed() -> None:
     )
 
     def force_ep_switch(request: ExecutionPathRequest):
-        # Pretend BOD-104 ignored authoritative STAY and picked fresh.
+        # Pretend the execution-path authority optimizer (ADR-035) ignored authoritative STAY and picked fresh.
         from verdict.execution_path import ExecutionPathDecision
 
         return ExecutionPathDecision(
@@ -1454,7 +1454,7 @@ def test_seed_offers_fail_closed_without_effective_capability_evidence() -> None
 
 
 def test_evidence_backed_seed_reaches_bod104_only_with_certified_effective_capability() -> None:
-    """MF1/MF2: prepared certified seed can reach BOD-104; UNKNOWN cert cannot win."""
+    """MF1/MF2: prepared certified seed can reach the execution-path authority optimizer (ADR-035); UNKNOWN cert cannot win."""
     from verdict.controller_selection import build_evidence_backed_seed_offers
     from verdict.runtime_certification import CertificationState
 
@@ -1473,7 +1473,7 @@ def test_evidence_backed_seed_reaches_bod104_only_with_certified_effective_capab
     assert seed.certification_state is CertificationState.READY
     assert seed.route.eligible is False
 
-    # Prepare promotes eligibility; real optimize_execution_path is BOD-104.
+    # Prepare promotes eligibility; real optimize_execution_path is the execution-path authority optimizer (ADR-035).
     def prepare_promote(task, criticality, context, request):
         assert request.offers
         assert all(o.assistance_plan.plan_id.startswith("ecp:") for o in request.offers)
@@ -1499,14 +1499,14 @@ def test_evidence_backed_seed_reaches_bod104_only_with_certified_effective_capab
         return replace(request, offers=tuple(promoted))
 
     hooks, _, persist_calls = _hooks(seed=list(seeds), prepare=prepare_promote)
-    # Use real BOD-104 optimizer (already default in _hooks via optimize_execution_path).
+    # Use the real execution-path authority optimizer (ADR-035) (already default in _hooks via optimize_execution_path).
     decision = select_controller_launch(_mission(), hooks=hooks, now=NOW)
     assert decision.mode == "automatic"
     assert decision.prime_target.prime_model == "gc/grok-4.5"
     assert persist_calls, "receipt must persist before launch"
     assert decision.execution_path_decision_digest
 
-    # Same seed with UNKNOWN certification evidence must not win BOD-104.
+    # Same seed with UNKNOWN certification evidence must not win the execution-path authority optimizer (ADR-035).
     unknown_seeds = build_evidence_backed_seed_offers(
         _mission(),
         NOW,
@@ -1524,7 +1524,7 @@ def test_evidence_backed_seed_reaches_bod104_only_with_certified_effective_capab
 
 @pytest.mark.parametrize("identity", ["omniroute/gc/grok-4.5", "inventory-key"])
 def test_production_passports_certified_before_automatic_selection(identity) -> None:
-    """Healthy authorized+eligible passports certify READY and reach BOD-104."""
+    """Healthy authorized+eligible passports certify READY and reach the execution-path authority optimizer (ADR-035)."""
     from verdict.controller_selection import build_production_controller_selection_hooks
     from verdict.runtime_certification import ComponentKind, certify_runtime
 

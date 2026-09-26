@@ -1,4 +1,4 @@
-"""BOD-143 candidate-specific pre-hydration ContextPlan proofs."""
+"""candidate-specific pre-hydration ContextPlan proofs."""
 
 from __future__ import annotations
 
@@ -6,14 +6,7 @@ from dataclasses import replace
 from decimal import Decimal
 
 import pytest
-from test_bod142_live_candidate_shortlist import (
-    FAST,
-    STRONG,
-    _context,
-    _metadata,
-    _request,
-    _service,
-)
+from test_live_candidate_shortlist import FAST, STRONG, _context, _metadata, _request, _service
 
 from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.cost_ledger import CostTerm

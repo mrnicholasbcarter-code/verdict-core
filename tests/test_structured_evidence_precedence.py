@@ -1,4 +1,4 @@
-"""Test that structured HTTP/runtime evidence outranks OpenJev signals (BOD-211)."""
+"""Test that structured HTTP/runtime evidence outranks OpenJev signals."""
 
 import ast
 import inspect
@@ -15,7 +15,7 @@ from verdict.gateway_adapters import NormalizedFailureClass
 def test_normalize_failure_ignores_decision_signals():
     """Test that normalize_failure classification is independent of DecisionSignalSetV1 in scope.
 
-    BOD-211 item 1: structured HTTP/runtime evidence (status codes, timeouts, error codes)
+    structured HTTP/runtime evidence outranking OpenJev signals item 1: structured HTTP/runtime evidence (status codes, timeouts, error codes)
     outranks OpenJev signals. There is no API through which a DecisionSignalSetV1 can
     influence normalize_failure classification.
     """
@@ -116,7 +116,7 @@ def test_normalize_failure_ignores_decision_signals():
 def test_normalize_failure_has_no_decision_signal_parameter():
     """Test that normalize_failure does not accept a decision-signal parameter.
 
-    BOD-211 item 1: there is no API through which a DecisionSignalSetV1 can influence
+    structured HTTP/runtime evidence outranking OpenJev signals item 1: there is no API through which a DecisionSignalSetV1 can influence
     normalize_failure classification.
     """
     sig = inspect.signature(OpenAICompatibleEvidenceAdapter.normalize_failure)
@@ -132,7 +132,7 @@ def test_normalize_failure_has_no_decision_signal_parameter():
 def test_no_decision_signals_imports_in_core_modules():
     """Test that core routing/eligibility modules do not import from verdict.decision_signals.
 
-    BOD-211 item 2: import-graph guard. Core modules must not import decision_signals.
+    structured HTTP/runtime evidence outranking OpenJev signals item 2: import-graph guard. Core modules must not import decision_signals.
     """
     core_modules = [
         "verdict/autodev_routing.py",
@@ -172,7 +172,7 @@ def test_no_decision_signals_imports_in_core_modules():
 def test_decision_signals_only_in_shadow_block():
     """Test that decision_signals_data in run.py is only used inside the SHADOW block.
 
-    BOD-211 item 3: decision_signals_data must not leak into TaskRequirements or selector.select.
+    structured HTTP/runtime evidence outranking OpenJev signals item 3: decision_signals_data must not leak into TaskRequirements or selector.select.
     Uses an allow-list: every reference must be (a) an assignment target, (b) an is None comparison,
     or (c) the signals= argument to events.emit("decision_signals", ...). Aliases are forbidden.
     """

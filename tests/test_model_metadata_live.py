@@ -1,4 +1,4 @@
-"""Optional live smoke for BOD-108 / BOD-121. Skips when the network is unavailable."""
+"""Optional live smoke for the core model metadata store (ADR-032) / the models.json id-join fix. Skips when the network is unavailable."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def test_live_models_dev_api_or_skip() -> None:
 
 
 def test_live_agy_gemini_flash_lite_tools_not_unmapped() -> None:
-    """BOD-121 live proof: gateway id + tools-required must not drop as unmapped."""
+    """live proof: gateway id + tools-required must not drop as unmapped."""
     try:
         snapshot = refresh_metadata(persist=False, store_path=None)
     except Exception as exc:

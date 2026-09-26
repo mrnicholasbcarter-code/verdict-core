@@ -1,4 +1,4 @@
-"""BOD-95 proof cases for the evidence-based model chooser."""
+"""proof cases for the evidence-based model chooser."""
 
 from __future__ import annotations
 

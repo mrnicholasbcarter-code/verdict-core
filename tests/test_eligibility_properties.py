@@ -1,5 +1,5 @@
 """
-Property tests for BOD-196: eligibility invariants
+Property tests for the eligibility-gate default construction fix: eligibility invariants
 
 These tests verify key safety invariants in the eligibility and selection logic:
 - Protected work with no availability source must fail closed

@@ -1,4 +1,4 @@
-"""Acceptance tests for durable MemoryPlane outbox mirroring (BOD-146)."""
+"""Acceptance tests for durable MemoryPlane outbox mirroring."""
 
 from __future__ import annotations
 

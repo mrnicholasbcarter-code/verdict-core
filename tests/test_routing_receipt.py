@@ -1,4 +1,4 @@
-"""BOD-144: RoutingReceiptV1 schema, digest, persistence, and redaction."""
+"""RoutingReceiptV1 schema, digest, persistence, and redaction."""
 
 from __future__ import annotations
 

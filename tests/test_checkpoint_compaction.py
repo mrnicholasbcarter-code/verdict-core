@@ -1,4 +1,4 @@
-"""BOD-69 proof: deterministic semantic checkpoint/compaction lifecycle."""
+"""proof: deterministic semantic checkpoint/compaction lifecycle."""
 
 from __future__ import annotations
 

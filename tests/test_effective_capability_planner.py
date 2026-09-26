@@ -1,4 +1,4 @@
-"""BOD-120 Effective Capability Planner — proof fixtures.
+"""Effective Capability Planner — proof fixtures.
 
 Deterministic planning over explicit task requirements, candidate capability
 evidence, candidate-specific ContextPack coverage, tools/MCP surfaces, and
@@ -322,7 +322,7 @@ def test_tool_availability_change_invalidates_plan_by_evidence_digest() -> None:
     )
 
 
-# ── Proof 6: assistance cost fields for BOD-54/104 ───────────────────────────
+# ── Proof 6: assistance cost fields for the cost-ledger reservation design/104 ───────────────────────────
 
 
 def test_assistance_plan_exposes_cost_fields_for_downstream_optimizers() -> None:

@@ -1,4 +1,4 @@
-"""Tests for smoke_codiv.py script (BOD-198)."""
+"""Tests for smoke_codiv.py script."""
 
 import subprocess
 import sys

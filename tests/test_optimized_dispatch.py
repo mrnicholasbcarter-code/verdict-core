@@ -1,4 +1,4 @@
-"""BOD-67: hydrate-before-dispatch + bind already-authorized execution path."""
+"""hydrate-before-dispatch + bind already-authorized execution path."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Fail-open shared memory recall into Context Intelligence (BOD-146)."""
+"""Fail-open shared memory recall into Context Intelligence."""
 
 from __future__ import annotations
 

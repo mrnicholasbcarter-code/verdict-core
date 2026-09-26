@@ -63,7 +63,7 @@ def test_lifespan_rejects_anonymous_non_loopback_configuration(monkeypatch) -> N
 
 
 def test_anonymous_non_loopback_client_is_rejected(monkeypatch) -> None:
-    """BOD-202: anonymous mode must block requests from non-loopback peers."""
+    """anonymous mode must block requests from non-loopback peers."""
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
     monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
     monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
@@ -76,7 +76,7 @@ def test_anonymous_non_loopback_client_is_rejected(monkeypatch) -> None:
 
 
 def test_anonymous_loopback_client_is_allowed(monkeypatch) -> None:
-    """BOD-202: anonymous mode must allow loopback peers."""
+    """anonymous mode must allow loopback peers."""
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
     monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
     monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
@@ -89,7 +89,7 @@ def test_anonymous_loopback_client_is_allowed(monkeypatch) -> None:
 
 
 def test_health_is_open_for_non_loopback_client(monkeypatch) -> None:
-    """BOD-202: /health must remain accessible regardless of peer address."""
+    """/health must remain accessible regardless of peer address."""
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
     monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
     monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)

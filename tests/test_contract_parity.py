@@ -1,4 +1,4 @@
-"""Shared Python/TypeScript contract parity fixtures for BOD-12."""
+"""Shared Python/TypeScript contract parity fixtures for the contract-parity effort."""
 
 from __future__ import annotations
 
