@@ -17,7 +17,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from verdict.admission import AdmittedSet
 
 CONTROLLER_MODEL = "cx/gpt-5.6-sol"
 CONTROLLER_MODELS = frozenset({CONTROLLER_MODEL, "cx/gpt-6-astra"})
@@ -212,15 +215,37 @@ def _failure_cooldown(result: HealthResult) -> float:
     }.get(result.category, 60.0)
 
 
+def _require_admitted(admitted: AdmittedSet | None, require_admission: bool) -> AdmittedSet | None:
+    if admitted is None and require_admission:
+        from verdict.admission import AdmissionUnavailableError
+
+        raise AdmissionUnavailableError(
+            "worker_admission_required",
+            "worker selection requires the canonical admitted set before ranking",
+        )
+    return admitted
+
+
 def candidates_from_inventory(
-    rows: Iterable[Mapping[str, Any]], prime_selectors: Iterable[str]
+    rows: Iterable[Mapping[str, Any]],
+    prime_selectors: Iterable[str],
+    *,
+    admitted: AdmittedSet | None = None,
+    require_admission: bool = False,
 ) -> tuple[LaunchCandidate, ...]:
-    """Intersect OmniRoute live inventory with separately observed Prime visibility."""
+    """Intersect OmniRoute live inventory with separately observed Prime visibility.
+
+    With ``admitted`` the canonical admitted set is applied first: a route it
+    excludes can never become a candidate, whatever inventory or Prime say.
+    """
+    admitted = _require_admitted(admitted, require_admission)
     visible = {item.strip() for item in prime_selectors if isinstance(item, str) and item.strip()}
     result: list[LaunchCandidate] = []
     for row in rows:
         route_id = row.get("id")
         if not isinstance(route_id, str) or not route_id.strip():
+            continue
+        if admitted is not None and route_id not in admitted:
             continue
         selector = f"omniroute/{route_id}"
         if route_id in CONTROLLER_MODELS or selector not in visible or _opaque(route_id):
@@ -282,7 +307,12 @@ def candidates_from_inventory(
 
 
 def eligible_worker_candidates(
-    task: WorkerTask, inventory_rows: Iterable[Mapping[str, Any]], prime_selectors: Iterable[str]
+    task: WorkerTask,
+    inventory_rows: Iterable[Mapping[str, Any]],
+    prime_selectors: Iterable[str],
+    *,
+    admitted: AdmittedSet | None = None,
+    require_admission: bool = False,
 ) -> tuple[LaunchCandidate, ...]:
     """Rank the entire unique eligible pool; never truncate a discovery prefix."""
     required = set(task.required_capabilities)
@@ -292,7 +322,12 @@ def eligible_worker_candidates(
         sorted(
             (
                 item
-                for item in candidates_from_inventory(inventory_rows, prime_selectors)
+                for item in candidates_from_inventory(
+                    inventory_rows,
+                    prime_selectors,
+                    admitted=admitted,
+                    require_admission=require_admission,
+                )
                 if required <= item.capabilities
                 and item.context_tokens >= task.min_context_tokens
                 and (task.allow_frontier or not item.is_frontier)
@@ -311,10 +346,18 @@ def select_worker_model(
     cache: HealthCache,
     now: datetime | None = None,
     max_probes: int | None = None,
+    admitted: AdmittedSet | None = None,
+    require_admission: bool = False,
 ) -> SelectionResult:
     """Return the cheapest qualified, currently healthy explicit spawn target."""
     current = now or datetime.now(timezone.utc)
-    candidates = eligible_worker_candidates(task, inventory_rows, prime_selectors)
+    candidates = eligible_worker_candidates(
+        task,
+        inventory_rows,
+        prime_selectors,
+        admitted=admitted,
+        require_admission=require_admission,
+    )
     checked: list[tuple[str, str]] = []
     probes = 0
     for candidate in candidates:
@@ -349,6 +392,8 @@ async def execute_with_worker_failover(
     max_replacements: int | None = None,
     total_timeout_seconds: float = 900,
     attempt_timeout_seconds: float = 180,
+    admitted: AdmittedSet | None = None,
+    require_admission: bool = False,
 ) -> WorkerExecutionResult:
     """Compatibility entry point; execute must return a completed terminal envelope.
 
@@ -367,6 +412,8 @@ async def execute_with_worker_failover(
         adapter=CallbackAdapter(execute),
         cache=cache,
         now=now,
+        admitted=admitted,
+        require_admission=require_admission,
         budget=RuntimeBudget(
             total_seconds=total_timeout_seconds,
             attempt_seconds=attempt_timeout_seconds,

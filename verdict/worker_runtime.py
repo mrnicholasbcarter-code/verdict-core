@@ -17,7 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from verdict.admission import (
+    AdmissionBypassError,
+    AdmittedSet,
+    active_controller_route,
+    load_live_admission,
+)
 from verdict.subagent_selection import (
+    DEFAULT_OMNIROUTE_URL,
     HealthCache,
     HealthResult,
     LaunchCandidate,
@@ -111,8 +118,19 @@ class WorkerController:
         now: Callable[[], datetime] | None = None,
         emit: Callable[[dict[str, Any]], None] | None = None,
         validator: Callable[[str], bool] | None = None,
+        admitted: AdmittedSet | None = None,
+        require_admission: bool = False,
     ) -> None:
-        self.candidates = eligible_worker_candidates(task, inventory_rows, prime_selectors)
+        # The canonical admitted set is applied before Prime visibility, ranking
+        # and probing; replacements iterate this same narrowed list only.
+        self.admitted = admitted
+        self.candidates = eligible_worker_candidates(
+            task,
+            inventory_rows,
+            prime_selectors,
+            admitted=admitted,
+            require_admission=require_admission,
+        )
         self.probe, self.adapter, self.cache, self.budget = probe, adapter, cache, budget
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.emit = emit or (lambda event: None)
@@ -212,6 +230,8 @@ class WorkerController:
                 )
                 previous = candidate.selector
                 continue
+            if self.admitted is not None and candidate.route_id not in self.admitted:
+                raise AdmissionBypassError("worker_runtime.spawn", [candidate.route_id])
             number = len(self.attempts) + 1
             self.event(
                 "selection",
@@ -426,6 +446,26 @@ class PrimeFileAdapter:
         await self.rpc("delete", child_id=handle["rlm_child_id"])
 
 
+def _worker_admission(config: Mapping[str, Any], rows: Iterable[Mapping[str, Any]]) -> AdmittedSet:
+    """Canonical live admission, then worker-only scope and controller exclusion."""
+    from verdict.orchestration.run import resolve_api_key
+
+    gateway = str(config.get("gateway") or DEFAULT_OMNIROUTE_URL)
+    admitted = load_live_admission(
+        gateway,
+        now=datetime.now(timezone.utc),
+        api_key=resolve_api_key(),
+        inventory_rows=list(rows),
+    )
+    prefixes = config.get("route_prefixes") or ()
+    if isinstance(prefixes, str):
+        prefixes = [p for p in prefixes.split(",") if p.strip()]
+    admitted = admitted.restrict_prefixes(list(prefixes))
+    return admitted.exclude_controller(
+        str(config.get("controller_route") or "") or active_controller_route()
+    )
+
+
 async def cli_run(directory: Path) -> int:
     config = json.loads((directory / "config.json").read_text())
     events = directory / "events.jsonl"
@@ -460,6 +500,8 @@ async def cli_run(directory: Path) -> int:
         ]
         rows = await asyncio.to_thread(fetch_omniroute_inventory)
         atomic_json(directory / "discovery.json", {"rows": rows, "prime_selectors": selectors})
+        admitted = await asyncio.to_thread(_worker_admission, config, rows)
+        admitted.write_receipt(directory / "admission.json")
         task_config = config.get("task", {})
         task_config["required_capabilities"] = frozenset(
             task_config.get("required_capabilities", [])
@@ -473,6 +515,8 @@ async def cli_run(directory: Path) -> int:
             cache=HealthCache(),
             budget=RuntimeBudget(**config.get("budget", {})),
             emit=emit,
+            admitted=admitted,
+            require_admission=True,
         )
         outcome = await controller.run(config["prompt"])
     except Exception as exc:
