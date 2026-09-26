@@ -22,6 +22,7 @@ Boundaries:
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shlex
@@ -37,6 +38,7 @@ from verdict.models import ProviderConfig
 __all__ = [
     "DEFAULT_GATEWAY_READY_TIMEOUT_S",
     "DEFAULT_LOCAL_PROVIDERS",
+    "MAX_GATEWAY_READY_TIMEOUT_S",
     "PRODUCTION_PROFILE",
     "BootstrapDiagnostic",
     "BootstrapError",
@@ -90,6 +92,11 @@ _GATEWAY_READY_TIMEOUT_ENV = "VERDICT_GATEWAY_READY_TIMEOUT_S"
 #: Readiness budget applied when the operator configures none. Bounded on
 #: purpose: an unbounded wait is indistinguishable from a hang.
 DEFAULT_GATEWAY_READY_TIMEOUT_S = 30.0
+
+#: Hard ceiling on the readiness budget. A gateway that has not answered in ten
+#: minutes is not starting, and an operator waiting on a wedged command cannot
+#: tell that from a hang. ``inf`` and ``1e308`` are refused for the same reason.
+MAX_GATEWAY_READY_TIMEOUT_S = 600.0
 
 _REMEDIATION_PROVIDERS = (
     "set OMNIROUTE_BASE_URL to the gateway base URL, or add a 'providers' "
@@ -554,7 +561,13 @@ def _parse_start_command(
 def _parse_ready_timeout(
     value: Any, *, source: BootstrapSource
 ) -> tuple[float | None, BootstrapDiagnostic | None]:
-    """Parse the readiness budget. Non-positive or non-numeric input is fatal."""
+    """Parse the readiness budget. Anything unbounded or non-positive is fatal.
+
+    ``nan``, ``0``, a negative number, ``inf`` and a value above
+    :data:`MAX_GATEWAY_READY_TIMEOUT_S` are all refused. The point of the field is
+    to bound the wait, so a budget that cannot bound it is a configuration error
+    rather than a silently clamped value.
+    """
     text = str(value).strip()
     if not text:
         return None, None
@@ -562,19 +575,28 @@ def _parse_ready_timeout(
         parsed = float(text)
     except ValueError:
         parsed = float("nan")
-    if not parsed > 0 or parsed != parsed:
+
+    def refuse(reason: str) -> tuple[None, BootstrapDiagnostic]:
         return None, BootstrapDiagnostic(
             code="gateway_ready_timeout_invalid",
             diagnostic_class="configuration",
             field="gateway_ready_timeout_s",
             source=source,
-            detail=f"{text!r} is not a positive number of seconds",
+            detail=f"{text!r} {reason}",
             remediation=(
-                f"set gateway_ready_timeout_s to a positive number of seconds, or unset "
+                f"set gateway_ready_timeout_s to a positive number of seconds no greater "
+                f"than {MAX_GATEWAY_READY_TIMEOUT_S}, or unset "
                 f"{_GATEWAY_READY_TIMEOUT_ENV} to use the default "
                 f"{DEFAULT_GATEWAY_READY_TIMEOUT_S}"
             ),
         )
+
+    if not math.isfinite(parsed):
+        return refuse("is not a finite number of seconds, so the wait would be unbounded")
+    if parsed <= 0:
+        return refuse("is not a positive number of seconds")
+    if parsed > MAX_GATEWAY_READY_TIMEOUT_S:
+        return refuse(f"is longer than the {MAX_GATEWAY_READY_TIMEOUT_S}s maximum readiness budget")
     return parsed, None
 
 

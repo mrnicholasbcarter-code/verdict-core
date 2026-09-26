@@ -15,6 +15,7 @@ from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.provider_bootstrap import (
     DEFAULT_GATEWAY_READY_TIMEOUT_S,
     DEFAULT_LOCAL_PROVIDERS,
+    MAX_GATEWAY_READY_TIMEOUT_S,
     BootstrapError,
     GatewayProbeResult,
     bootstrap_config_path,
@@ -792,9 +793,16 @@ def test_unbalanced_quoting_in_the_env_start_command_is_refused_without_echoing_
     assert "SECRETPW" not in describe_bootstrap_failure(excinfo.value)
 
 
-@pytest.mark.parametrize("value", ["0", "-3", "abc", "nan"])
-def test_non_positive_or_non_numeric_readiness_timeout_is_refused(value: str) -> None:
-    """An unbounded or nonsense budget is indistinguishable from a hang."""
+@pytest.mark.parametrize(
+    "value", ["0", "-3", "abc", "nan", "inf", "-inf", "Infinity", "1e308", "601"]
+)
+def test_non_positive_or_unbounded_readiness_timeout_is_refused(value: str) -> None:
+    """An unbounded or nonsense budget is indistinguishable from a hang.
+
+    Extended from the original four cases: 'inf', '-inf', 'Infinity', '1e308' and a
+    value above the maximum were all accepted before, which defeats the only
+    purpose of the field. The original cases are all still asserted.
+    """
     with pytest.raises(BootstrapError) as excinfo:
         resolve_provider_bootstrap(
             env={
@@ -806,6 +814,21 @@ def test_non_positive_or_non_numeric_readiness_timeout_is_refused(value: str) ->
     diagnostic = excinfo.value.diagnostics[0]
     assert diagnostic.code == "gateway_ready_timeout_invalid"
     assert diagnostic.diagnostic_class == "configuration"
+    assert str(MAX_GATEWAY_READY_TIMEOUT_S) in diagnostic.remediation
+
+
+@pytest.mark.parametrize("value", ["0.5", "30", "600"])
+def test_a_finite_bounded_readiness_timeout_is_accepted(value: str) -> None:
+    """The boundary itself is usable; only past it is a refusal."""
+    result = resolve_provider_bootstrap(
+        env={
+            "OMNIROUTE_BASE_URL": "http://127.0.0.1:20128",
+            "VERDICT_GATEWAY_READY_TIMEOUT_S": value,
+        }
+    )
+
+    assert result.gateway_ready_timeout_s == float(value)
+    assert result.gateway_ready_timeout_s <= MAX_GATEWAY_READY_TIMEOUT_S
 
 
 def test_lifecycle_fields_are_serialized_for_receipts(tmp_path: Path) -> None:
