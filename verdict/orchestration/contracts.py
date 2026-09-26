@@ -580,3 +580,14 @@ class ReviewResult:
     @property
     def passed(self) -> bool:
         return self.status == "PASS" and not any(f.blocking() for f in self.findings)
+
+
+def require_launchable(selector: Any, route_id: str, *, surface: str) -> None:
+    """Assert the launch gate on selectors that carry an admitted set.
+
+    Selectors without ``require_launchable`` (no canonical admission attached)
+    are left to their own membership rules.
+    """
+    gate = getattr(selector, "require_launchable", None)
+    if callable(gate):
+        gate(route_id, surface=surface)
