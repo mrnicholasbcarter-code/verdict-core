@@ -28,6 +28,17 @@ CLOSED = gateway_lifecycle.GatewayHealth(reachable=False, responded=False, detai
 
 
 @pytest.fixture(autouse=True)
+def _no_live_gateway(no_gateway_network: None) -> None:
+    """Every test in this module is offline, enforced rather than asserted.
+
+    The conftest guard turns any real httpx call or socket connect into a
+    ``BaseException``, so a future change that reaches the operator's gateway on
+    127.0.0.1:20128 fails loudly instead of passing differently depending on
+    whether that gateway happens to be up.
+    """
+
+
+@pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Never read the operator's config, credentials or state directory."""
     home = tmp_path / "home"
@@ -60,6 +71,15 @@ def _fake_probe(answer: gateway_lifecycle.GatewayHealth) -> Any:
         return answer
 
     probe.calls = calls  # type: ignore[attr-defined]
+    return probe
+
+
+def _forbidden_probe() -> Any:
+    """A probe that fails the test if it is called at all."""
+
+    def probe(url: str, **kwargs: Any) -> gateway_lifecycle.GatewayHealth:
+        raise AssertionError(f"no gateway probe may be issued here, saw {url}")
+
     return probe
 
 
@@ -143,33 +163,73 @@ def test_doctor_gateway_lifecycle_never_raises_on_bad_configuration(
 
 
 def test_serve_startup_report_names_the_gateway_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    _write_config()
-    monkeypatch.setattr(gateway_lifecycle, "http_gateway_probe", _fake_probe(HEALTHY))
+    """An injected probe names the state; the default path performs no gateway I/O.
 
-    report = api.server_bootstrap_diagnostics()
+    Rewritten: the original version monkeypatched ``gateway_lifecycle.http_gateway_probe``
+    and asserted the state on the default path. That hid the fact that the default
+    path did a real ``GET`` at all, so the same test passed against the operator's
+    live gateway when the patch seam was missed. Readiness is now injected at the
+    ``server_bootstrap_diagnostics`` seam, and the default path is asserted to be
+    silent. This keeps every original assertion (gateway_required, state, ready,
+    ensure_requested) and adds the stricter one: with the opt-in off, the probe is
+    never called.
+    """
+    _write_config()
+    probe = _fake_probe(HEALTHY)
+
+    report = api.server_bootstrap_diagnostics(gateway_probe=probe)
 
     assert report["gateway_required"] is True
     lifecycle = report["gateway_lifecycle"]
     assert lifecycle["state"] == "already_ready"
     assert lifecycle["ready"] is True
     assert lifecycle["ensure_requested"] is False
+    assert lifecycle["probed"] is True
+    assert probe.calls == ["http://127.0.0.1:29999/v1"]
+
+    default = api.server_bootstrap_diagnostics()
+
+    assert default["gateway_required"] is True
+    assert default["gateway_lifecycle"]["state"] == api.GATEWAY_NOT_PROBED
+    assert default["gateway_lifecycle"]["probed"] is False
+    assert default["gateway_lifecycle"]["ready"] is False
+    assert probe.calls == ["http://127.0.0.1:29999/v1"], (
+        "startup must not probe the gateway when nothing asked it to"
+    )
 
 
 def test_serve_startup_does_not_start_a_gateway_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Startup neither starts nor contacts a gateway unless asked.
+
+    Rewritten alongside the test above, for the same reason and with the same
+    assertions kept: state, ``launched`` and ``ensure_requested`` are still
+    asserted on the report-only path, now through the injected probe. The new
+    assertion is that the default path calls no probe at all, which is what makes
+    this test offline regardless of whether a gateway is listening.
+    """
     _write_config(_GATEWAY_CONFIG + "gateway_start_command: [fake-gateway, serve]\n")
-    monkeypatch.setattr(gateway_lifecycle, "http_gateway_probe", _fake_probe(CLOSED))
 
     class ForbiddenLauncher:
         def launch(self, argv: tuple[str, ...], *, cwd: Path) -> Any:
             raise AssertionError("serve startup must not start a gateway unless asked")
 
     monkeypatch.setattr(gateway_lifecycle, "SubprocessGatewayLauncher", ForbiddenLauncher)
+    forbidden = _forbidden_probe()
+    monkeypatch.setattr(gateway_lifecycle, "http_gateway_probe", forbidden)
 
-    lifecycle = api.server_bootstrap_diagnostics()["gateway_lifecycle"]
+    default = api.server_bootstrap_diagnostics()["gateway_lifecycle"]
+
+    assert default["state"] == api.GATEWAY_NOT_PROBED
+    assert default["probed"] is False
+    assert default["ensure_requested"] is False
+
+    probe = _fake_probe(CLOSED)
+    lifecycle = api.server_bootstrap_diagnostics(gateway_probe=probe)["gateway_lifecycle"]
 
     assert lifecycle["state"] == "unhealthy"
     assert lifecycle["launched"] is False
     assert lifecycle["ensure_requested"] is False
+    assert probe.calls == ["http://127.0.0.1:29999/v1"]
 
 
 def test_serve_startup_can_opt_into_ensuring_the_gateway(monkeypatch: pytest.MonkeyPatch) -> None:

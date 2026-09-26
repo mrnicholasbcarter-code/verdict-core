@@ -34,3 +34,51 @@ def _loopback_testclient_init(self: TestClient, *args: object, **kwargs: object)
 def _loopback_testclient_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make TestClient default to a real loopback peer address."""
     monkeypatch.setattr(TestClient, "__init__", _loopback_testclient_init)
+
+
+class LiveNetworkAttempted(BaseException):
+    """Raised when a guarded test tries to open a real connection.
+
+    Deliberately a ``BaseException``: the gateway probe path catches ``Exception``
+    and reports it as "did not answer", which would turn an accidental live call
+    into a silently passing test. A ``BaseException`` escapes that handler, so the
+    test fails loudly and names the address it tried to reach.
+    """
+
+
+@pytest.fixture
+def no_gateway_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any real outbound connection an immediate, loud failure.
+
+    Blocks the two ways a gateway probe could reach the network: ``httpx``'s
+    request entry points, and the socket layer underneath them. ASGI in-process
+    clients (``TestClient``) do not open sockets, so they are unaffected.
+    """
+    import socket
+
+    import httpx
+
+    def refuse(target: object) -> None:
+        raise LiveNetworkAttempted(
+            f"this test must not open a connection, but it tried to reach {target!r}"
+        )
+
+    def refuse_request(*args: object, **kwargs: object) -> None:
+        url = kwargs.get("url")
+        if url is None and len(args) > 1:
+            url = args[1]
+        refuse(url)
+
+    for name in ("get", "post", "head", "request", "stream"):
+        monkeypatch.setattr(httpx, name, refuse_request, raising=False)
+    monkeypatch.setattr(httpx.Client, "send", refuse_request, raising=False)
+    monkeypatch.setattr(httpx.AsyncClient, "send", refuse_request, raising=False)
+    monkeypatch.setattr(
+        socket.socket, "connect", lambda self, address: refuse(address), raising=False
+    )
+    monkeypatch.setattr(
+        socket.socket, "connect_ex", lambda self, address: refuse(address), raising=False
+    )
+    monkeypatch.setattr(
+        socket, "create_connection", lambda address, *a, **k: refuse(address), raising=False
+    )

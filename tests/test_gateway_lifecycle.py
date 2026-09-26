@@ -30,6 +30,15 @@ from verdict.provider_bootstrap import (
 GATEWAY_URL = "http://127.0.0.1:29999/v1"
 
 
+@pytest.fixture(autouse=True)
+def _no_live_gateway(no_gateway_network: None) -> None:
+    """Enforce the module docstring: nothing here opens a socket.
+
+    The real-process tests below start throwaway children that bind no port, so
+    the guard stays on for the whole module.
+    """
+
+
 def _result(
     *,
     gateway_url: str | None = GATEWAY_URL,
