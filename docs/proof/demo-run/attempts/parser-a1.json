@@ -1,0 +1,13 @@
+{
+ "node_id": "parser",
+ "attempt": 1,
+ "route_id": "demo-sub/atlas-coder",
+ "ok": false,
+ "reported_model": "demo-sub/atlas-coder",
+ "stop_reason": "",
+ "status_code": 429,
+ "error": "You have exceeded your usage limit; resets in 2h",
+ "output_tail": "",
+ "duration_seconds": 0.0,
+ "session_ref": "fault-injected:quota"
+}
