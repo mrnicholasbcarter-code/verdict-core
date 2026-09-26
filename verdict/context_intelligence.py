@@ -3,7 +3,7 @@
 Core owns policy. Retrieval adapters supply units only. Compiling a pack never
 dumps a repository or a chat transcript.
 
-BOD-123 Wave-1 adds capability-oriented ContextQueryPlan / native resolver
+Context Intelligence Wave-1 adds capability-oriented ContextQueryPlan / native resolver
 contracts. External MCP/Serena providers are adapters later — native Verdict
 baseline is always available.
 """
@@ -231,7 +231,8 @@ class NativeCapabilityResolver:
     """Resolve semantic capabilities to the always-on native Verdict baseline.
 
     External adapters register later via ``verdict.capability_registry``
-    (BOD-87); absence of Serena/MCP must not remove native coverage for Wave-1
+    (semantic capability registry); absence of Serena/MCP must not remove native
+    coverage for Wave-1
     capabilities. Multi-provider authority ranking lives on
     ``SemanticCapabilityRegistry`` — this class remains the fabric execution
     bridge to in-process ``CapabilityProvider`` callables.

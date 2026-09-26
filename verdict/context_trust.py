@@ -1,4 +1,4 @@
-"""Untrusted context + agent tooling security boundary (security boundary).
+"""Untrusted context + agent tooling security boundary.
 
 Pipeline (native-first):
 
@@ -19,8 +19,8 @@ Rules:
 - lower-confidence findings remain visible evidence, not automatic destruction
 - no security result silently changes routing eligibility without receipt/policy
 
-Optional AgentShield / Gitleaks / Semgrep providers are BOD-87 stubs only —
-never hard Core dependencies. This module does not own BOD-89 CI/appsec.
+Optional AgentShield / Gitleaks / Semgrep providers are capability-registry stubs
+only — never hard Core dependencies. This module does not own CI/appsec.
 """
 
 from __future__ import annotations

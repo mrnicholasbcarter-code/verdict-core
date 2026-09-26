@@ -14,7 +14,7 @@ fails closed — the caller must not treat frontier-primary fallback as success.
 Serve cheap-path callers then intersect this receipt with fresh prove-at-rest
 passports and a budgeted confirm probe (see ``verdict.admit_prove_confirm``).
 
-BOD-127: this module is a candidate *feed* only. ``chosen`` is an
+This module is a candidate *feed* only. ``chosen`` is an
 advisory ranking of admitted free∩active identities — never production
 serve-path strategy authority. Serve path must consume
 ``optimize_execution_path`` / ``ExecutionPathDecision``.
@@ -70,7 +70,7 @@ REASON_PAID_FALLBACK = "paid_fallback"
 REASON_TASK_INSTRUCTIONS_OMITTED = "task_instructions_omitted"
 REASON_SPEND_POLICY_EXCLUDES_PAID = "spend_policy_excludes_paid"
 REASON_SPEND_POLICY_REQUIRES_FRONTIER = "spend_policy_requires_frontier"
-# Stable public eligibility diagnostics (staged public eligibility). Legacy reason strings remain
+# Stable public eligibility diagnostics. Legacy reason strings remain
 # accepted on old receipts, but new production decisions use these names.
 REASON_OPAQUE_ROUTE_DISALLOWED = "opaque_route_disallowed"
 REASON_PROVIDER_NOT_CONNECTED = "provider_not_connected"
@@ -295,13 +295,13 @@ def build_cheap_path_context_pack(
 
     Gather real workspace units (repo docs / architecture / ADRs / project docs,
     plus MCP only when a source is configured), admit every external unit through
-    Context Trust (BOD-126), allocate via BudgetReceipt (BOD-125), then compile
+    Context Trust, allocate via BudgetReceipt, then compile
     only the allocated set. High-value roots (ADR, architecture, README) remain
     preferred under budget. Missing sources become named omissions — never
     invented content. An empty gather still compiles the task and does not block
     execute.
 
-    ``pack_state`` classifies the result for receipts (BOD-106). Savings stay
+    ``pack_state`` classifies the result for receipts. Savings stay
     blocked until ``hydrated``; empty/partial with a digest is still a hydrate
     FAIL. Hydrate/compiler errors stamp ``failed`` and still do not block execute.
     """
@@ -1072,7 +1072,7 @@ def _looks_free_by_name(identity_id: str) -> bool:
 def _choose_sort(
     identity_id: str, active_healthy: frozenset[str], free_admitted: Collection[str] | None = None
 ) -> tuple[int, int, int, str]:
-    """Free-first ordering keyed on authoritative free-tier membership (free-tier ordering).
+    """Free-first ordering keyed on authoritative free-tier membership.
 
     ``free_admitted`` is the free∩active set observed from OmniRoute's free-tier
     summary. When it is provided, an identity is free iff it is a member — a free

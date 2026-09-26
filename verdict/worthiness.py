@@ -2,7 +2,7 @@
 
 Worthiness runs before cheapness. Rules are explicit keyword/escalation matches —
 never an invented score. ``worthy`` admits frontier/high-cap models only;
-``ordinary`` is free-first then lesser-paid (BOD-109).
+``ordinary`` is free-first then lesser-paid.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def classify_worthiness(
 ) -> WorthinessClassification:
     """Classify ``worthy`` vs ``ordinary`` with named reasons (no invented scores).
 
-    Classification is server-authoritative (BOD-112). A client-supplied
+    Classification is server-authoritative (free-tier ordering). A client-supplied
     ``task_class`` is an untrusted hint: it may raise ordinary work to worthy
     (the caller chooses to pay for protection) but it can never downgrade work
     the server classifies as worthy. Either way the receipt names what happened.

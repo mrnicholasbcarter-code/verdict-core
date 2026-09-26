@@ -1,4 +1,4 @@
-"""Durable `.verdict/handoff.md` schema for cross-harness resume (cross-harness resume context).
+"""Durable `.verdict/handoff.md` schema for cross-harness resume.
 
 Canonical resumable state lives in Git + worktree + branch + Linear + proof +
 this handoff file — never proprietary chat history.

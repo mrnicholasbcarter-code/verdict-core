@@ -1,8 +1,9 @@
-"""Capability bootstrap / installer DX (capability bootstrap DX).
+"""Capability bootstrap / installer DX.
 
 Staged flow: discover → normalize → recommend → preflight → consent → apply → certify.
 
-Setup/DX only — not Core routing, cost ledger, or BOD-104. Third-party software is
+Setup/DX only — not Core routing, cost ledger, or execution-path authority.
+Third-party software is
 never silently installed. APPLY authorization is unified in
 ``authorize_bootstrap_actions``:
 
@@ -22,7 +23,7 @@ copied, and RECOMMEND/APPLY prefer reuse/repair over duplicate installs.
 Recommendations are capability-first (providers second). OmniRoute may be
 recommended but is never a hard dependency or routing authority.
 
-Certification consumes BOD-92 passport/certification helpers when available via a narrow
+Certification consumes runtime-certification passport helpers when available via a narrow
 ``Certifier`` Protocol seam; this module does not own evidence-type definitions.
 """
 
@@ -200,7 +201,7 @@ class CapabilityRecommendation:
     selected_provider_id: str | None = None
     optional: bool = True
     hard_dependency: bool = False
-    parity: str | None = None  # supported | partial | unsupported (BOD-92 seam)
+    parity: str | None = None  # supported | partial | unsupported (runtime certification seam)
 
     def to_dict(self) -> dict[str, object]:
         # Capability fields first for machine + human consumers.

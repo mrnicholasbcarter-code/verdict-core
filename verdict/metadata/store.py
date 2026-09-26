@@ -1,4 +1,4 @@
-"""On-disk Core metadata store and refresh job (Core metadata store)."""
+"""On-disk Core metadata store and refresh job."""
 
 from __future__ import annotations
 
@@ -230,10 +230,11 @@ def lookup_omniroute_id(
 ) -> MetadataLookup:
     """Resolve an OmniRoute inventory id against Core's store.
 
-    Join order (BOD-121): exact map → exact store id → unique leaf in
+    Join order: exact map → exact store id → unique leaf in
     models.dev models.json → else named drop ``unmapped``. Ambiguous leaves
     are named drops (never an arbitrary pick). Unmapped and required-unknown
-    are named drops for later BOD-100. This function does not admit work and
+    are named drops for the later capability gate. This function does not admit
+    work and
     does not consult OmniRoute metadata.
     """
     if not isinstance(omniroute_id, str) or not omniroute_id.strip():

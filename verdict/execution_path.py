@@ -1,4 +1,4 @@
-"""Execution-path optimizer — cheapest SAFE COMPLETE path (execution-path authority).
+"""Execution-path optimizer — cheapest SAFE COMPLETE path.
 
 Integration layer only. Consumes existing contracts; does not reinvent
 CandidatePool, EffectiveCapability, CostLedger, SessionEconomics,
@@ -151,7 +151,8 @@ def _required_cost_kinds_for_offer(
 class ExecutionPathOffer:
     """One complete-strategy alternative with precomputed evidence.
 
-    Callers assemble offers from BOD-120/54/125/92 outputs. This module
+    Callers assemble offers from effective-capability, expected-cost, context-
+    budget, and runtime-certification outputs. This module
     qualifies and ranks; it does not re-plan capability or re-price tokens.
     """
 
@@ -902,7 +903,7 @@ def apply_bounded_recovery(
 ) -> Any:
     """Delegate failure recovery to :class:`BoundedRecoveryController`.
 
-    Escalation candidates are filtered to BOD-104-prequalified stronger routes
+    Escalation candidates are filtered to prequalified stronger routes
     that also pass READY certification (same gate as equivalent switch).
     Reserves against the recovery cash envelope before deciding.
     This does not invent success; cancellation/ambiguous outcomes stay non-success.

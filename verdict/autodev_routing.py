@@ -221,7 +221,7 @@ _TRANSIENT = frozenset(
         NormalizedFailureClass.TRANSPORT,
         NormalizedFailureClass.TIMEOUT,
         NormalizedFailureClass.UPSTREAM,
-        NormalizedFailureClass.OVERLOADED,  # BOD-198: 529 is transient
+        NormalizedFailureClass.OVERLOADED,  # 529 is transient
     }
 )
 # provider identification: QUOTA removed from _TRANSIENT (deliberate behavior change).

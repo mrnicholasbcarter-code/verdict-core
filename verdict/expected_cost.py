@@ -1,17 +1,17 @@
-"""Expected complete-strategy cost comparison (session economics (STAY/SWITCH)).
+"""Expected complete-strategy cost comparison.
 
 Compares **complete execution strategies**, not next-call price alone.
 Cash, subscription opportunity, and quota pressure remain distinct dimensions.
 
-Frozen consumer contract for BOD-119
-------------------------------------
+Frozen consumer contract for session economics
+----------------------------------------------
 * ``ExpectedStrategyCost`` — strategy receipt with ``terms``, ``cash_usd``,
   ``subscription_opportunity``, ``quota_pressure``, and per-term statuses.
 * ``CostPolicyMode`` — ``cheapest_qualified`` | ``expected_cost``.
 * ``free_first`` — preference flag only; never an optimality claim when
   expected retries/escalation make another qualified path cheaper.
 * ``compare_strategies`` / ``select_strategy`` — economics ranking helpers;
-  eligibility/worthiness remain outside this module (BOD-107/109/104).
+  eligibility/worthiness remain outside this module.
 """
 
 from __future__ import annotations

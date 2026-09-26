@@ -1,4 +1,4 @@
-"""Semantic capability registry + provider resolver contract (semantic capability registry).
+"""Semantic capability registry + provider resolver contract.
 
 Callers request brand-free semantic capabilities. The registry selects the
 highest-authority healthy provider among native Verdict and optional enrichment
@@ -35,7 +35,7 @@ CODEBASE_MEMORY_AUTHORITY_RANK: Final[int] = 70
 CONTEXT7_AUTHORITY_RANK: Final[int] = 60
 MEMORY_PLANE_AUTHORITY_RANK: Final[int] = 40
 TREE_SITTER_AST_AUTHORITY_RANK: Final[int] = 15
-# Optional security scanners (security boundary) — never hard Core dependencies.
+# Optional security scanners — never hard Core dependencies.
 NATIVE_SECURITY_AUTHORITY_RANK: Final[int] = 20
 AGENTSHIELD_AUTHORITY_RANK: Final[int] = 75
 GITLEAKS_AUTHORITY_RANK: Final[int] = 65

@@ -1,4 +1,4 @@
-"""Conflict resolution for capacity evidence (capacity evidence).
+"""Conflict resolution for capacity evidence.
 
 Gateway vs direct conflicts keep both observations. Prefer by authority rank,
 freshness, and account identity — NEVER average remaining percentages.

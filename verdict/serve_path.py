@@ -1,4 +1,4 @@
-"""BOD-127 serve-path cutover: BOD-104 is sole strategy authority on serve.
+"""Serve-path cutover: ``optimize_execution_path`` is sole strategy authority on serve.
 
 Legacy selectors (IntelligenceService.route free-tier/chooser path,
 ``choose_route``, ``live_routing.select_route``, AdaptiveRanker,
@@ -49,7 +49,7 @@ def serve_path_authority_required(
     context: Mapping[str, Any] | None = None,
     require_execution_path_authority: bool | None = None,
 ) -> bool:
-    """Whether the serve path must fail closed without a BOD-104 decision."""
+    """Whether the serve path must fail closed without an execution-path decision."""
 
     if isinstance(context, Mapping):
         if context.get(CONTEXT_ALLOW_LEGACY) is True:
@@ -102,7 +102,7 @@ def resolve_execution_path_decision(
 def require_serve_path_decision(
     decision: ExecutionPathDecision | None, *, surface: str = "production_serve"
 ) -> ExecutionPathDecision:
-    """Fail closed when production serve lacks BOD-104 strategy authority."""
+    """Fail closed when production serve lacks execution-path strategy authority."""
 
     if decision is None:
         raise ExecutionPathError(
@@ -179,7 +179,7 @@ def consume_selected_route(
             "strategy_authority": STRATEGY_AUTHORITY,
         }
     if isinstance(selected_route, Mapping):
-        # Bare invented mappings are rejected: only BOD-104-stamped identities
+        # Bare invented mappings are rejected: only authority-stamped identities
         # (or ExecutionPathDecision / ConcreteRoute above) may authorize dispatch.
         authority = selected_route.get("strategy_authority")
         if authority != STRATEGY_AUTHORITY:
@@ -231,7 +231,7 @@ def match_candidate_to_selected_route(
     *,
     identity_attrs: Sequence[str] = ("runtime_id", "id", "model_id", "model"),
 ) -> Any:
-    """Pick the candidate matching BOD-104 selected_route; never invent another."""
+    """Pick the candidate matching the decision's selected_route; never invent another."""
 
     identity = consume_selected_route(selected_route, surface="dispatch_match")
     wanted = {
@@ -258,7 +258,7 @@ def failover_must_defer_to_bounded_recovery(
     execution_path_decision: ExecutionPathDecision | Mapping[str, Any] | None = None,
     require_bounded_recovery: bool = False,
 ) -> None:
-    """Fail closed when FailoverEngine would independently override BOD-104/55."""
+    """Fail closed when FailoverEngine would override execution path or bounded recovery."""
 
     if require_bounded_recovery or execution_path_decision is not None:
         raise ExecutionPathError(

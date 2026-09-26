@@ -834,7 +834,7 @@ def cmd_route(
 ) -> None:
     """Route a single task.
 
-    BOD-127: authority is derived from profile / ``VERDICT_REQUIRE_EXECUTION_PATH``
+    Authority is derived from profile / ``VERDICT_REQUIRE_EXECUTION_PATH``
     (and production profile). Pass ``allow_legacy_selector=True`` only as an
     explicit migration escape — never silent. ``allow_offline`` only switches the
     catalog/network surface; it must not imply legacy selector escape. API serve
@@ -843,7 +843,7 @@ def cmd_route(
     from verdict.serve_path import CONTEXT_ALLOW_LEGACY
 
     gate = _build_route_gate(allow_offline=allow_offline)
-    # Never couple offline catalog mode to the BOD-127 legacy escape.
+    # Never couple offline catalog mode to the legacy-selector escape.
     if allow_legacy_selector is None:
         allow_legacy_selector = False
     context: dict[str, object] = {}
@@ -1007,7 +1007,7 @@ def cmd_benchmark(
             path = str(DEFAULT_SAVINGS_FIXTURE_PATH)
         execute_arm = None
         if live_paired:
-            # BOD-114: the only claim-capable mode. Both arms execute against the
+            # The only claim-capable mode. Both arms execute against the
             # configured OmniRoute gateway; without one we refuse rather than
             # silently degrade to the labeled simulation.
             from verdict.savings_live import LiveExecutorUnavailableError, executor_from_env
@@ -1221,10 +1221,10 @@ def cmd_detect(
 
 
 def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -> None:
-    """Emit a BOD-92 runtime certification report (evidence only, JSON).
+    """Emit a runtime certification report (evidence only, JSON).
 
     Reads DetectedSnapshot fixtures from ``--from`` when provided. Does not
-    perform live network probes or mutate setup/doctor state (BOD-124).
+    perform live network probes or mutate setup/doctor state (capability bootstrap).
     """
     from verdict.runtime_certification import ComponentKind, DetectedSnapshot, certify_runtime
 
@@ -1322,7 +1322,7 @@ def cmd_probe(
 
 
 def _execution_path_decision_from_request_file(path: str, *, task: str) -> Any:
-    """Build the mandatory BOD-104 decision in-process from the public contract."""
+    """Build the mandatory execution-path decision in-process from the public contract."""
 
     from verdict.execution_path import optimize_execution_path
     from verdict.subagent_resolver import public_execution_path_request
@@ -2941,7 +2941,7 @@ def cmd_receipt(
     db_path: str | None = None,
     output_json: bool = False,
 ) -> None:
-    """Inspect durable RoutingReceiptV1 records from ReceiptStore (BOD-144)."""
+    """Inspect durable RoutingReceiptV1 records from ReceiptStore."""
     from pathlib import Path
 
     from verdict.receipt_store import ReceiptStore
@@ -3893,7 +3893,7 @@ def cmd_resume(
     repo: Path | str | None = None,
     create_if_missing: bool = False,
 ) -> dict[str, Any]:
-    """Reconstruct durable resume state for a Linear story (BOD-65/66 foundations).
+    """Reconstruct durable resume state for a Linear story (cross-harness resume context).
 
     Canonical sources: Git worktree/branch/SHA, ``.verdict/handoff.md``, optional
     ``gh`` PR discovery. Does not read proprietary chat history. ``--with`` records

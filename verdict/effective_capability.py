@@ -1,12 +1,12 @@
-"""Effective Capability Planner — model + context + tools + decomposition (effective capability planning).
+"""Effective Capability Planner — model + context + tools + decomposition.
 
 For a concrete task slice, effective capability is approximately:
 
     model capability + supplied context + available tools
     + decomposition quality + verification/recovery support
 
-This planner sits after Candidate Pool Intelligence (BOD-122) and Context
-Intelligence (BOD-123), and before expected-cost / strategy selection (BOD-104).
+This planner sits after Candidate Pool Intelligence and Context
+Intelligence, and before expected-cost / strategy selection.
 
 It is deterministic planning over explicit requirements and evidence — never a
 learned agentic score. ``unknown`` never becomes ``sufficient`` by optimism.
@@ -215,7 +215,7 @@ class VerificationStrategy:
 
 @dataclass(frozen=True)
 class AssistanceCost:
-    """Visible assistance cost for session economics (STAY/SWITCH) / execution-path authority expected-cost consumers."""
+    """Visible assistance cost for expected-cost and execution-path consumers."""
 
     context_tokens: int = 0
     tool_tokens: int = 0

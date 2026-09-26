@@ -2,7 +2,7 @@
 
 Wheels ship ``benchmarks/fixtures`` under ``verdict/data/benchmarks/fixtures``
 (see ``[tool.hatch.build.targets.wheel.force-include]``), so the documented
-``verdict benchmark`` commands work without a source checkout (BOD-113).
+``verdict benchmark`` commands work without a source checkout.
 """
 
 from __future__ import annotations

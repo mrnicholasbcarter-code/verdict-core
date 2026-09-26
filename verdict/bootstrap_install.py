@@ -1,4 +1,4 @@
-"""Bounded default InstallRunner for capability bootstrap APPLY (capability bootstrap DX).
+"""Bounded default InstallRunner for capability bootstrap APPLY.
 
 Consent/allowlist gating lives in ``capability_bootstrap.apply_bootstrap_actions``.
 This module only executes the documented OmniRoute upstream install path and

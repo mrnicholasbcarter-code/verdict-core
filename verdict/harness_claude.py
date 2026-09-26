@@ -15,7 +15,7 @@ entry. ``disable`` restores the backup byte-for-byte.
 
 Claude Code's default wire format is Anthropic Messages (``/v1/messages``).
 Verdict's proxy today is OpenAI-compatible only, so full Anthropic routing via
-``ANTHROPIC_BASE_URL`` remains a known gap (BOD-102). This adapter therefore
+``ANTHROPIC_BASE_URL`` remains a known gap. This adapter therefore
 certifies as **partial**: gate + OpenAI side-path are managed; Messages proxy
 is unsupported until Core grows that surface.
 

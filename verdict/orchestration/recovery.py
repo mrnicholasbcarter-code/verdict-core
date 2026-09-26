@@ -1,6 +1,6 @@
 """Recovery and failure classification for orchestration workers.
 
-BOD-152: Normalized failure detection and bounded corrective actions based on
+Normalized failure detection and bounded corrective actions based on
 status code, error patterns, and parsed reset hints. Failure classification drives
 reassignment, repair, or fail-closed decisions via RecoveryBudget.
 """

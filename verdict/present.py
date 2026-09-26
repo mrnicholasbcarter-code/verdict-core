@@ -1,4 +1,4 @@
-"""Shared human-output helpers for `verdict` commands (human output helpers).
+"""Shared human-output helpers for `verdict` commands.
 
 Every command renders its human (non-``--json``) output through these helpers so
 the whole CLI shares one identity: the Verdict header, labelled sections, status

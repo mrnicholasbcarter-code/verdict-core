@@ -285,7 +285,7 @@ def select_route(
 ) -> RouteSelection:
     """Select a live-routing candidate.
 
-    BOD-127: when ``execution_path_decision`` is present this is dispatch-only
+    When ``execution_path_decision`` is present this is dispatch-only
     and consumes ``selected_route`` — it must not invent an independent pick.
     """
     if execution_path_decision is not None:

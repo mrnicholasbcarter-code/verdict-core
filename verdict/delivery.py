@@ -2,13 +2,13 @@
 
 Architecture boundary
 ---------------------
-* BOD-104 owns route/strategy decisions.
-* BOD-67 owns hydrate/dispatch contracts (consumed, not rewritten here).
-* BOD-89 owns the proof DAG (``scripts/proof/``).
+* ``optimize_execution_path`` owns route/strategy decisions.
+* Hydrate-before-dispatch owns dispatch contracts (consumed, not rewritten here).
+* The local proof DAG (``scripts/proof/``) owns proof execution.
 * ``scripts/prime_state`` owns CI/merge classification + bounded recovery helpers.
 * ``scripts/prime_workflow`` owns packet/proof/review validators and lifecycle
   transitions.
-* BOD-68 owns the PR / CI watch / repair / merge / post-merge / Linear Done
+* This module owns the PR / CI watch / repair / merge / post-merge / Linear Done
   lifecycle only.
 
 Fail-closed rules

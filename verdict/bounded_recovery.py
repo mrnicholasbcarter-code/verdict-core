@@ -1,9 +1,9 @@
-"""Failure-directed bounded recovery (bounded recovery).
+"""Failure-directed bounded recovery.
 
 Classify observable failures and choose the cheapest safe corrective action
 within attempt, deadline, and cost-ledger budgets. This module is the recovery
 policy layer — it does **not** overload ``verdict.escalation`` (keyword-tier
-scanner) and does **not** implement BOD-104 planning or BOD-119 session
+scanner) and does **not** implement execution-path planning or session
 economics.
 
 Preference order for corrective actions:

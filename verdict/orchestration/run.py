@@ -3,7 +3,7 @@
 This is the only module that touches live OmniRoute discovery. Everything it
 wires together is independently tested against fakes.
 
-Controller survival (BOD-159..166, minimal demo-safe slice):
+Controller survival (minimal demo-safe slice):
 - the frontier *planning* call goes through the same select -> classify ->
   cooldown -> reassign loop as workers, so controller-model quota exhaustion
   moves planning to another eligible frontier model instead of hanging;
@@ -207,7 +207,7 @@ async def plan_with_failover(
 
     # SHADOW decision signals: SHADOW/ADVISORY decision signal collection (before planning loop)
     decision_signals_data: dict[str, Any] | None = None
-    decision_signals_emitted = False  # BOD-199: emit at most once
+    decision_signals_emitted = False  # emit at most once
     if decision_signal_provider is not None:
         # Import at call time (not at module load)
         from verdict.decision_signals.shadow import should_collect_signals
