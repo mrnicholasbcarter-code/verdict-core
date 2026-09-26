@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from verdict.subagent_selection import (
     HealthCache,
+    HealthResult,
     NoHealthyWorkerModelError,
     WorkerTask,
+    WorkerTerminal,
     classify_probe_status,
     eligible_worker_candidates,
     select_worker_model,
 )
+from verdict.worker_runtime import WorkerController
 
 NOW = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
 
@@ -116,3 +120,55 @@ def test_active_controller_identity_is_never_a_worker_candidate() -> None:
     assert "cc/claude-fable-5-1" not in route_ids
     assert "cc/claude-opus-5-5" in route_ids
     assert "kr/claude-sonnet-5" in route_ids
+
+
+class _RuntimeAdapter:
+    def __init__(self) -> None:
+        self.spawned: list[str] = []
+        self.deleted: list[str] = []
+
+    async def spawn(self, prompt: str, *, name: str, model: str) -> dict[str, Any]:
+        self.spawned.append(model)
+        return {"rlm_child_id": name, "model": model}
+
+    async def collect(self, handle: dict[str, Any]) -> WorkerTerminal:
+        model = str(handle["model"])
+        if model.startswith("omniroute/cc/"):
+            return WorkerTerminal("error", error="HTTP 403 provider usage unavailable")
+        return WorkerTerminal("done", "WORKER_OK", True, stop_reason="stop")
+
+    async def delete(self, handle: dict[str, Any]) -> None:
+        self.deleted.append(str(handle["model"]))
+
+
+async def test_provider_terminal_failure_rolls_to_next_provider_on_first_failure(
+    tmp_path: Path,
+) -> None:
+    rows = [_row("cc/a"), _row("cc/b"), _row("kr/c")]
+    visible = [_selector(str(row["id"])) for row in rows]
+    adapter = _RuntimeAdapter()
+    runtime = WorkerController(
+        WorkerTask(
+            required_capabilities=frozenset({"tools"}),
+            allowed_route_prefixes=frozenset({"cc/", "kr/"}),
+        ),
+        inventory_rows=rows,
+        prime_selectors=visible,
+        probe=lambda candidate: HealthResult(True, "healthy"),
+        adapter=adapter,
+        cache=HealthCache(tmp_path / "health.json"),
+    )
+
+    outcome = await runtime.run("same task")
+
+    assert outcome.state == "SUCCESS"
+    assert outcome.candidate is not None
+    assert outcome.candidate.route_id == "kr/c"
+    assert adapter.spawned == ["omniroute/cc/a", "omniroute/kr/c"]
+    assert adapter.deleted == ["omniroute/cc/a"]
+    assert any(
+        event.get("event") == "exclusion"
+        and event.get("provider") == "cc"
+        and event.get("classification") == "permission"
+        for event in runtime.events
+    )
