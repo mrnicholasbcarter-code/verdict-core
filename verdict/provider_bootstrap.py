@@ -513,6 +513,27 @@ def resolve_provider_bootstrap(
         log_path = str(raw["log_path"]).strip()
         field_sources["log_path"] = "config_file"
 
+    if field_sources["primary_model"] == "default":
+        # A defaulted identity is not a refusal here (the caller may never route
+        # to it), but it must never be silent: IntelligenceService returns
+        # primary_model as its tier-0 / no-offload-match decision, so an
+        # unintended model can end up executing work.
+        diagnostics.append(
+            BootstrapDiagnostic(
+                code="default_primary_model",
+                diagnostic_class="configuration",
+                field="primary_model",
+                source="default",
+                detail=(
+                    f"no primary_model from any canonical source; using the built-in "
+                    f"default {primary_model!r}, which is returned as the tier-0 / "
+                    f"no-offload-match routing decision"
+                ),
+                remediation=(f"set 'primary_model' in {path}, or export {_PRIMARY_MODEL_ENV}"),
+                fatal=False,
+            )
+        )
+
     providers = _providers_from_config(raw, config_path=path)
     if providers:
         field_sources["providers"] = "config_file"

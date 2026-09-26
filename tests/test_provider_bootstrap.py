@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.provider_bootstrap import (
     DEFAULT_LOCAL_PROVIDERS,
     BootstrapError,
@@ -110,7 +111,9 @@ def test_credential_store_supplies_unset_names_and_is_named_as_the_source(tmp_pa
 
     assert result.providers["omniroute"].source == "credential_store"
     assert result.source_of("gateway_url") == "credential_store"
-    assert {n.code for n in result.notes()} == {"config_file_missing"}
+    # Exact note set: the store supplied both names, so no credential note; the
+    # identity is still defaulted, which must be announced.
+    assert {n.code for n in result.notes()} == {"config_file_missing", "default_primary_model"}
 
 
 def test_exported_environment_outranks_credential_store(tmp_path: Path) -> None:
@@ -311,6 +314,51 @@ def test_profile_and_log_path_follow_the_same_precedence(tmp_path: Path) -> None
     from_config = resolve_provider_bootstrap(env=env, config_path=_write(tmp_path, _VALID_CONFIG))
     assert from_config.log_path == "decisions.jsonl"
     assert from_config.source_of("log_path") == "config_file"
+
+
+# --- defaulted identity -----------------------------------------------------
+
+
+def test_default_primary_model_is_announced_as_a_non_fatal_note(tmp_path: Path) -> None:
+    """A built-in identity is never silent: it names the field, source and fix."""
+    result = resolve_provider_bootstrap(
+        env={"OMNIROUTE_BASE_URL": "http://127.0.0.1:20128"}, config_path=tmp_path / "absent.yaml"
+    )
+
+    assert result.source_of("primary_model") == "default"
+    note = next(n for n in result.notes() if n.code == "default_primary_model")
+    assert note.fatal is False
+    assert note.diagnostic_class == "configuration"
+    assert note.field == "primary_model"
+    assert note.source == "default"
+    assert DEFAULT_PRIMARY_MODEL in note.detail
+    assert "LLMGATE_PRIMARY" in note.remediation
+
+
+def test_default_primary_model_is_still_announced_under_require_authoritative(
+    tmp_path: Path,
+) -> None:
+    """Authoritative bootstrap reports the defaulted identity; it does not refuse."""
+    result = resolve_provider_bootstrap(
+        env={"OMNIROUTE_BASE_URL": "http://127.0.0.1:20128"},
+        config_path=tmp_path / "absent.yaml",
+        require_authoritative=True,
+    )
+
+    assert result.primary_model == DEFAULT_PRIMARY_MODEL
+    assert "default_primary_model" in {n.code for n in result.notes()}
+
+
+def test_a_configured_primary_model_emits_no_default_note(tmp_path: Path) -> None:
+    """The note fires only for the built-in default, from config or environment."""
+    from_config = resolve_provider_bootstrap(env={}, config_path=_write(tmp_path, _VALID_CONFIG))
+    assert "default_primary_model" not in {n.code for n in from_config.notes()}
+
+    from_env = resolve_provider_bootstrap(
+        env={"OMNIROUTE_BASE_URL": "http://127.0.0.1:20128", "LLMGATE_PRIMARY": "vendor/model"},
+        config_path=tmp_path / "absent.yaml",
+    )
+    assert "default_primary_model" not in {n.code for n in from_env.notes()}
 
 
 # --- default providers: visible in dev, forbidden in production -------------

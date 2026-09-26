@@ -120,13 +120,21 @@ failure kinds instead of collapsing them into one message.
 
 | Class | Meaning | Codes |
 |---|---|---|
-| `configuration` | an input is missing, malformed or only a default | `config_file_missing`, `config_file_unreadable`, `config_file_unparsable`, `config_file_not_mapping`, `config_providers_malformed`, `provider_entry_malformed`, `provider_base_url_missing`, `provider_base_url_invalid`, `no_provider_configuration`, `default_providers_forbidden`, `default_provider_fallback`, `credential_env_missing`, `precedence_conflict` |
+| `configuration` | an input is missing, malformed or only a default | `config_file_missing`, `config_file_unreadable`, `config_file_unparsable`, `config_file_not_mapping`, `config_providers_malformed`, `provider_entry_malformed`, `provider_base_url_missing`, `provider_base_url_invalid`, `no_provider_configuration`, `default_providers_forbidden`, `default_provider_fallback`, `default_primary_model`, `credential_env_missing`, `precedence_conflict` |
 | `gateway_health` | configuration is complete, the gateway is not answering | `gateway_required_but_absent`, `gateway_unreachable` |
 | `model_eligibility` | configuration and gateway are fine, no model qualifies | owned by the eligibility gate, not by bootstrap |
 
-`config_file_missing`, `default_provider_fallback`, `credential_env_missing` and
-`precedence_conflict` are non-fatal notes (`fatal=False`), available via
-`BootstrapResult.notes()`. Every other code is a refusal.
+`config_file_missing`, `default_provider_fallback`, `default_primary_model`,
+`credential_env_missing` and `precedence_conflict` are non-fatal notes
+(`fatal=False`), available via `BootstrapResult.notes()`. Every other code is a
+refusal.
+
+`default_primary_model` fires whenever `primary_model` falls through to
+`verdict.contracts.DEFAULT_PRIMARY_MODEL`, including under
+`require_authoritative=True`. `IntelligenceService` returns `primary_model` as
+its tier-0 / no-offload-match decision, so a defaulted identity can execute work;
+the note keeps that visible. It is a note, not a refusal: whether authoritative
+bootstrap should refuse a defaulted identity outright is an open decision.
 
 `describe_bootstrap_failure(exc)` renders a deterministic operator report. The
 Prime supervisor still raises `ControllerLaunchError("production_factory_unavailable", ...)`
