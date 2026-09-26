@@ -86,9 +86,10 @@ Request bodies are bounded by `LLMGATE_MAX_REQUEST_BYTES`, and upstream calls
 have a timeout. Upstream providers may retain request data under their own
 terms; configure provider-side retention separately.
 
-The historical threat-model, privacy, retention, and supply-chain snapshot is
-retained in [`docs/archive/SECURITY_ASSURANCE.md`](docs/archive/SECURITY_ASSURANCE.md).
-Do not treat that archived snapshot as a current production certification.
+A historical threat-model, privacy, retention, and supply-chain snapshot
+(issue #68, Slice 35.3) previously lived in this repository's documentation archive
+and has since been retired. Do not treat any such snapshot as a current production
+certification; treat this file as the current source of truth.
 
 Run the security checks with:
 
