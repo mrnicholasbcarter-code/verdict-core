@@ -22,6 +22,7 @@ Boundaries:
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import os
@@ -51,6 +52,7 @@ __all__ = [
     "LaunchedGateway",
     "SubprocessGatewayLauncher",
     "ensure_gateway_ready",
+    "gateway_lock_key",
     "gateway_lock_path",
     "gateway_state_dir",
     "http_gateway_probe",
@@ -242,9 +244,38 @@ def gateway_state_dir(*, home: Path | None = None, env: dict[str, str] | None = 
     return base.expanduser() / "gateway"
 
 
+def gateway_lock_key(gateway_url: str) -> str:
+    """Canonical identity of a gateway for locking purposes.
+
+    Two configurations that name the same listening socket must share one lock,
+    or both processes would believe they are the launcher. ``localhost``,
+    ``127.0.0.1`` and ``[::1]`` on the same port are the same gateway, so the
+    loopback aliases collapse to one name. The scheme, a trailing slash and a
+    trailing ``/v1`` are also not part of the identity: they address the same
+    process.
+
+    Anything the parser cannot make sense of falls back to the trimmed URL, so an
+    unparsable value still gets a stable lock of its own rather than sharing one.
+    """
+    trimmed = gateway_url.strip().rstrip("/")
+    parts = urlsplit(trimmed)
+    host = (parts.hostname or "").strip().lower()
+    if not host:
+        return trimmed
+    if host in _LOOPBACK_HOSTS:
+        host = "loopback"
+    port = parts.port
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    path = parts.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[: -len("/v1")]
+    return f"{host}:{port}{path}"
+
+
 def gateway_lock_path(gateway_url: str, *, state_dir: Path | None = None) -> Path:
-    """Per-URL lock file. One gateway URL, one lock, one launcher."""
-    digest = hashlib.sha256(gateway_url.strip().rstrip("/").encode("utf-8")).hexdigest()[:16]
+    """Per-gateway lock file. One listening socket, one lock, one launcher."""
+    digest = hashlib.sha256(gateway_lock_key(gateway_url).encode("utf-8")).hexdigest()[:16]
     return (state_dir or gateway_state_dir()) / f"gateway-{digest}.lock"
 
 
@@ -324,6 +355,93 @@ def _diagnostic(
     )
 
 
+class LockUnavailableError(Exception):
+    """The launch lock could not be opened safely. Carries operator remediation.
+
+    Raised instead of surfacing a raw ``OSError``, so the caller can turn it into
+    a ``gateway_health`` diagnostic rather than a traceback.
+    """
+
+    def __init__(self, detail: str, remediation: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.remediation = remediation
+
+
+def _open_lock_file(lock_path: Path) -> int:
+    """Open the lock file without ever following a symlink.
+
+    ``O_NOFOLLOW`` applies to the final component, so a symlinked lock path is
+    refused instead of being opened and chmodded through. Permissions are set with
+    ``fchmod`` on the descriptor we already hold, not by path, so there is no
+    window in which the name could be swapped for something else.
+    """
+    try:
+        descriptor = os.open(
+            lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
+        )
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.EMLINK}:
+            raise LockUnavailableError(
+                detail=(
+                    f"the gateway launch lock {lock_path} is a symbolic link, so Verdict "
+                    f"refuses to open it: following it could create or re-permission a file "
+                    f"somewhere else"
+                ),
+                remediation=(
+                    f"remove {lock_path} (it is only a lock, nothing is stored in it), or "
+                    f"point VERDICT_HOME at a directory you control"
+                ),
+            ) from exc
+        raise LockUnavailableError(
+            detail=f"the gateway launch lock {lock_path} could not be opened: {exc.strerror}",
+            remediation=(
+                f"make {lock_path.parent} writable by this user, or set VERDICT_HOME to a "
+                f"directory you control"
+            ),
+        ) from exc
+    # A filesystem that refuses fchmod (some network mounts) is not a reason to
+    # refuse to launch; the lock holds no data and O_CREAT already used 0600.
+    with contextlib.suppress(OSError):
+        os.fchmod(descriptor, 0o600)
+    return descriptor
+
+
+def _prepare_state_dir(state_dir: Path) -> None:
+    """Create the state directory 0700 without following a symlinked final component."""
+    try:
+        state_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise LockUnavailableError(
+            detail=f"the Verdict state directory {state_dir.parent} could not be created: {exc.strerror}",
+            remediation=(
+                f"make {state_dir.parent} writable by this user, or set VERDICT_HOME to a "
+                f"directory you control"
+            ),
+        ) from exc
+    if state_dir.is_symlink():
+        raise LockUnavailableError(
+            detail=(
+                f"the gateway state directory {state_dir} is a symbolic link, so Verdict "
+                f"refuses to create the launch lock inside it"
+            ),
+            remediation=(
+                f"replace {state_dir} with a real directory, or set VERDICT_HOME to a "
+                f"directory you control"
+            ),
+        )
+    try:
+        state_dir.mkdir(exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise LockUnavailableError(
+            detail=f"the gateway state directory {state_dir} could not be created: {exc.strerror}",
+            remediation=(
+                f"make {state_dir.parent} writable by this user, or set VERDICT_HOME to a "
+                f"directory you control"
+            ),
+        ) from exc
+
+
 @contextlib.contextmanager
 def _launch_lock(lock_path: Path) -> Iterator[bool]:
     """Hold the exclusive launch lock, or yield False without blocking.
@@ -331,20 +449,25 @@ def _launch_lock(lock_path: Path) -> Iterator[bool]:
     The holder is the only caller allowed to launch. A contender yields ``False``
     and waits for readiness instead, so two concurrent processes produce exactly
     one gateway.
+
+    Raises :class:`LockUnavailableError` when the lock cannot be opened safely (a
+    symlinked path, an unwritable state directory), so the caller reports a
+    diagnostic instead of raising ``PermissionError`` at the operator.
     """
-    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        with contextlib.suppress(OSError):
-            os.chmod(lock_path, 0o600)
+    _prepare_state_dir(lock_path.parent)
+    descriptor = _open_lock_file(lock_path)
+    try:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (BlockingIOError, OSError):
             yield False
             return
         try:
             yield True
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def inspect_gateway(
@@ -560,17 +683,64 @@ def _ensure(
 
     deadline = clock() + max(result.gateway_ready_timeout_s, 0.0)
     lock = gateway_lock_path(url, state_dir=state_dir)
-    with _launch_lock(lock) as owner:
-        if not owner:
-            # Another process holds the launch lock. Wait for its gateway instead
-            # of starting a duplicate.
-            emit(
-                "starting",
-                attempts=attempts,
-                waited_for_owner=True,
-                detail="another Verdict process is starting the gateway",
-            )
-            return _wait_for_owner(
+    try:
+        with _launch_lock(lock) as owner:
+            if not owner:
+                # Another process holds the launch lock. Wait for its gateway instead
+                # of starting a duplicate.
+                emit(
+                    "starting",
+                    attempts=attempts,
+                    waited_for_owner=True,
+                    detail="another Verdict process is starting the gateway",
+                )
+                return _wait_for_owner(
+                    url=url,
+                    probe=probe,
+                    clock=clock,
+                    sleep=sleep,
+                    deadline=deadline,
+                    attempts=attempts,
+                    emit=emit,
+                    source=source,
+                )
+            # Re-probe under the lock: the previous owner may have finished between
+            # our first probe and acquiring the lock.
+            health = _probe_once(probe, url)
+            attempts += 1
+            if health.reachable:
+                return emit(
+                    "already_ready",
+                    attempts=attempts,
+                    detail=health.detail or f"gateway at {shown} answered before launch",
+                )
+            emit("starting", attempts=attempts, detail=f"starting the gateway for {shown}")
+            try:
+                launched = _launched(
+                    (launcher or SubprocessGatewayLauncher()).launch(tuple(argv), cwd=lock.parent)
+                )
+            except Exception as exc:
+                # The exception text can quote the argv it was handed, and the argv can
+                # carry a token, so every argument is scrubbed out of the report.
+                return emit(
+                    "failed_to_start",
+                    attempts=attempts,
+                    detail=f"launching the gateway failed: {type(exc).__name__}",
+                    diagnostic=_diagnostic(
+                        "gateway_start_failed",
+                        detail=(
+                            f"the configured gateway_start_command "
+                            f"({redact_start_command(tuple(argv))}) could not be launched: "
+                            f"{type(exc).__name__}: {_scrub_argv(str(exc), tuple(argv))}"
+                        ),
+                        remediation=(
+                            f"check that the first argument of gateway_start_command is an "
+                            f"executable on PATH in {result.config_path}"
+                        ),
+                        source=result.source_of("gateway_start_command"),
+                    ),
+                )
+            return _wait_for_launch(
                 url=url,
                 probe=probe,
                 clock=clock,
@@ -578,55 +748,23 @@ def _ensure(
                 deadline=deadline,
                 attempts=attempts,
                 emit=emit,
+                child=launched,
                 source=source,
+                timeout_s=result.gateway_ready_timeout_s,
             )
-        # Re-probe under the lock: the previous owner may have finished between
-        # our first probe and acquiring the lock.
-        health = _probe_once(probe, url)
-        attempts += 1
-        if health.reachable:
-            return emit(
-                "already_ready",
-                attempts=attempts,
-                detail=health.detail or f"gateway at {shown} answered before launch",
-            )
-        emit("starting", attempts=attempts, detail=f"starting the gateway for {shown}")
-        try:
-            launched = _launched(
-                (launcher or SubprocessGatewayLauncher()).launch(tuple(argv), cwd=lock.parent)
-            )
-        except Exception as exc:
-            # The exception text can quote the argv it was handed, and the argv can
-            # carry a token, so every argument is scrubbed out of the report.
-            return emit(
-                "failed_to_start",
-                attempts=attempts,
-                detail=f"launching the gateway failed: {type(exc).__name__}",
-                diagnostic=_diagnostic(
-                    "gateway_start_failed",
-                    detail=(
-                        f"the configured gateway_start_command "
-                        f"({redact_start_command(tuple(argv))}) could not be launched: "
-                        f"{type(exc).__name__}: {_scrub_argv(str(exc), tuple(argv))}"
-                    ),
-                    remediation=(
-                        f"check that the first argument of gateway_start_command is an "
-                        f"executable on PATH in {result.config_path}"
-                    ),
-                    source=result.source_of("gateway_start_command"),
-                ),
-            )
-        return _wait_for_launch(
-            url=url,
-            probe=probe,
-            clock=clock,
-            sleep=sleep,
-            deadline=deadline,
+    except LockUnavailableError as exc:
+        # An unsafe or unusable lock path is an operator-fixable gateway fault, not
+        # a traceback: the CLI catches BootstrapError, never OSError.
+        return emit(
+            "failed_to_start",
             attempts=attempts,
-            emit=emit,
-            child=launched,
-            source=source,
-            timeout_s=result.gateway_ready_timeout_s,
+            detail=f"the gateway launch lock could not be used: {exc.detail}",
+            diagnostic=_diagnostic(
+                "gateway_start_failed",
+                detail=exc.detail,
+                remediation=exc.remediation,
+                source=source,
+            ),
         )
 
 

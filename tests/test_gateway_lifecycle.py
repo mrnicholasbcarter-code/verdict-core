@@ -8,6 +8,7 @@ gateway on 127.0.0.1:20128.
 
 from __future__ import annotations
 
+import os
 import shlex
 import signal
 import subprocess
@@ -741,6 +742,145 @@ def test_lock_path_is_per_url_and_under_the_state_dir(tmp_path: Path) -> None:
     assert first.parent == tmp_path
     # A trailing slash is the same gateway, so it must not get a second lock.
     assert gl.gateway_lock_path("http://127.0.0.1:20128/v1/", state_dir=tmp_path) == first
+
+
+def test_aliased_loopback_urls_share_one_lock(tmp_path: Path) -> None:
+    """localhost, 127.0.0.1 and [::1] on the same port are one gateway, so one lock.
+
+    Two processes configured with different spellings of the same listening socket
+    must not both believe they are the launcher.
+    """
+    same = [
+        "http://localhost:20128/v1",
+        "http://127.0.0.1:20128/v1",
+        "http://[::1]:20128/v1",
+        "http://127.0.0.1:20128",
+        "http://127.0.0.1:20128/",
+        "http://LOCALHOST:20128/v1",
+    ]
+    paths = {gl.gateway_lock_path(url, state_dir=tmp_path) for url in same}
+    assert len(paths) == 1, f"aliases of one gateway must share a lock, got {paths}"
+
+    # A different port, and a non-loopback host, are different gateways.
+    assert gl.gateway_lock_path("http://127.0.0.1:29999/v1", state_dir=tmp_path) not in paths
+    assert gl.gateway_lock_path("http://gateway.internal:20128/v1", state_dir=tmp_path) not in paths
+
+
+def test_lock_key_defaults_the_port_by_scheme_and_keeps_a_real_path() -> None:
+    """The canonical key names the socket, not the spelling of the URL."""
+    assert gl.gateway_lock_key("http://localhost/v1") == gl.gateway_lock_key("http://127.0.0.1:80")
+    assert gl.gateway_lock_key("https://example.com") == gl.gateway_lock_key(
+        "https://example.com:443/v1"
+    )
+    assert gl.gateway_lock_key("http://127.0.0.1:20128/gw/v1") != gl.gateway_lock_key(
+        "http://127.0.0.1:20128/v1"
+    )
+    # An unparsable value still gets a stable lock of its own rather than sharing one.
+    assert gl.gateway_lock_key("not a url") == "not a url"
+
+
+def test_a_symlinked_lock_path_is_refused_and_never_followed(tmp_path: Path) -> None:
+    """A symlinked lock must not be opened, created through, or chmodded through."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    target = tmp_path / "victim.txt"
+    target.write_text("do not touch", encoding="utf-8")
+    target.chmod(0o644)
+    lock = gl.gateway_lock_path(GATEWAY_URL, state_dir=state_dir)
+    lock.symlink_to(target)
+
+    launcher = CountingLauncher()
+    outcome = gl.ensure_gateway_ready(
+        _result(),
+        probe=FakeProbe(CLOSED),
+        launcher=launcher,
+        state_dir=state_dir,
+        sleep=lambda seconds: None,
+    )
+
+    assert outcome.state == "failed_to_start"
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_start_failed"
+    assert outcome.diagnostic.diagnostic_class == "gateway_health"
+    assert "symbolic link" in outcome.diagnostic.detail
+    assert launcher.launches == [], "a gateway must not be launched through an unsafe lock"
+    assert target.stat().st_mode & 0o777 == 0o644, "the symlink target must not be re-permissioned"
+    assert target.read_text(encoding="utf-8") == "do not touch"
+
+
+def test_a_symlinked_state_dir_is_refused(tmp_path: Path) -> None:
+    """The lock must not be created inside a directory someone else can redirect."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    state_dir = tmp_path / "state"
+    state_dir.symlink_to(elsewhere, target_is_directory=True)
+
+    outcome = gl.ensure_gateway_ready(
+        _result(),
+        probe=FakeProbe(CLOSED),
+        launcher=CountingLauncher(),
+        state_dir=state_dir,
+        sleep=lambda seconds: None,
+    )
+
+    assert outcome.state == "failed_to_start"
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_start_failed"
+    assert "symbolic link" in outcome.diagnostic.detail
+    assert list(elsewhere.iterdir()) == [], "nothing may be written through the symlink"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unwritable_state_dir_is_a_diagnostic_not_a_traceback(tmp_path: Path) -> None:
+    """A PermissionError must reach the operator as gateway_health, never as a crash.
+
+    The CLI catches BootstrapError only, so a raw OSError here would print a
+    traceback at the operator.
+    """
+    parent = tmp_path / "readonly"
+    parent.mkdir()
+    parent.chmod(0o500)
+    try:
+        outcome = gl.ensure_gateway_ready(
+            _result(),
+            probe=FakeProbe(CLOSED),
+            launcher=CountingLauncher(),
+            state_dir=parent / "state",
+            sleep=lambda seconds: None,
+        )
+    finally:
+        parent.chmod(0o700)
+
+    assert outcome.state == "failed_to_start"
+    assert outcome.ready is False
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_start_failed"
+    assert outcome.diagnostic.diagnostic_class == "gateway_health"
+    assert "VERDICT_HOME" in outcome.diagnostic.remediation
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_require_gateway_ready_raises_a_bootstrap_error_for_an_unusable_lock(
+    tmp_path: Path,
+) -> None:
+    """The fail-closed entry point converts it too, so no caller sees an OSError."""
+    parent = tmp_path / "readonly"
+    parent.mkdir()
+    parent.chmod(0o500)
+    try:
+        with pytest.raises(BootstrapError) as excinfo:
+            gl.require_gateway_ready(
+                _result(),
+                probe=FakeProbe(CLOSED),
+                launcher=CountingLauncher(),
+                state_dir=parent / "state",
+                sleep=lambda seconds: None,
+            )
+    finally:
+        parent.chmod(0o700)
+
+    assert excinfo.value.reason_code == "gateway_lifecycle_failed"
+    assert excinfo.value.diagnostics[0].code == "gateway_start_failed"
 
 
 def test_state_dir_follows_verdict_home_then_home(
