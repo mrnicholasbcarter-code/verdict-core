@@ -271,7 +271,9 @@ class OpenJevSystemOneProvider:
         self.base_url = (
             base_url or os.environ.get("TYPESAFE_BASE_URL", "").strip() or "https://api.codiv.ai"
         )
-        self.api_key = api_key or os.environ.get("TYPESAFE_API_KEY", "").strip()
+        self.api_key = (
+            api_key if api_key is not None else os.environ.get("TYPESAFE_API_KEY", "").strip()
+        )
         self.model = os.environ.get("VERDICT_OPENJEV_MODEL", "").strip() or PINNED_MODEL
         self.transport = transport
         # Timeout from arg > env > default. Stored as seconds for http.client.

@@ -2022,6 +2022,13 @@ def _from_attempt(
     )
 
 
+def _is_ruff_command(cmd: Sequence[str]) -> bool:
+    """Return True if cmd is a ruff command (either 'ruff' or [python, '-m', 'ruff'])."""
+    if not cmd:
+        return False
+    return cmd[0] == "ruff" or (len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "ruff")
+
+
 def _try_mechanical(unit: WorkUnit, repo: Path, *, runner: Any) -> bool:
     """Attempt a deterministic fix, returning whether the tier claims the unit.
 
@@ -2030,9 +2037,12 @@ def _try_mechanical(unit: WorkUnit, repo: Path, *, runner: Any) -> bool:
     the tier ran and the unit's command now passes; verification still confirms
     it independently.
     """
-    if unit.verification_command[0] != "ruff":
+    if not _is_ruff_command(unit.verification_command):
         return False
-    fix = _run(["ruff", "check", "--fix", "--", *unit.owned_files], repo, runner=runner)
+    # Build fixer argv using the same interpreter as the verification command
+    cmd = unit.verification_command
+    prefix = list(cmd[:3]) if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "ruff" else ["ruff"]
+    fix = _run([*prefix, "check", "--fix", "--", *unit.owned_files], repo, runner=runner)
     if fix.get("returncode") == 127:
         return False
     check = _run(list(unit.verification_command), repo, runner=runner)

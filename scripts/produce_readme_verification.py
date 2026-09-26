@@ -95,7 +95,7 @@ def verify_verdict_subcommand(sub: str, tmpdir: Path) -> tuple[int, str]:
     env.pop("LLMGATE_AUTH_TOKEN", None)
     try:
         r = subprocess.run(
-            ["verdict", sub, "--help"],
+            [sys.executable, "-m", "verdict.cli", sub, "--help"],
             capture_output=True,
             text=True,
             timeout=15,

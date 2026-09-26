@@ -260,8 +260,13 @@ def test_success_confidence_is_mean_of_answer_confidences():
     assert not math.isnan(result.confidence)
 
 
-def test_missing_api_key_returns_unknown():
-    """Missing API key -> failure_class=UNKNOWN, never raises."""
+def test_missing_api_key_returns_unknown(monkeypatch: pytest.MonkeyPatch):
+    """Missing API key -> failure_class=UNKNOWN, never raises.
+
+    The host environment must not leak a real key into this test.
+    """
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("TYPESAFE_BASE_URL", raising=False)
     provider = OpenJevSystemOneProvider(base_url="https://api.codiv.ai", api_key="")
     result = provider.signals(_question(), now=NOW)
     assert result.failure_class == NormalizedFailureClass.UNKNOWN

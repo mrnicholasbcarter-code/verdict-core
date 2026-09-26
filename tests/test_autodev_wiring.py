@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -20,14 +21,14 @@ PLAN = [
         "unit_id": "fix-a",
         "objective": "drop the unused import in a.py",
         "owned_files": ["a.py"],
-        "verification_command": ["ruff", "check", "--select", "F401", "a.py"],
+        "verification_command": [sys.executable, "-m", "ruff", "check", "--select", "F401", "a.py"],
         "context": "",
     },
     {
         "unit_id": "fix-b",
         "objective": "drop the unused import in b.py",
         "owned_files": ["b.py"],
-        "verification_command": ["ruff", "check", "--select", "F401", "b.py"],
+        "verification_command": [sys.executable, "-m", "ruff", "check", "--select", "F401", "b.py"],
         "context": "",
     },
 ]
@@ -275,7 +276,10 @@ def test_a_partial_mechanical_fix_is_still_attributed_when_the_unit_fails(repo: 
     said `changed_files=[]` would understate what the run did to the repo.
     """
     (repo / "a.py").write_text("import os\nundefined_name\n", encoding="utf-8")
-    unit = dict(PLAN[0], verification_command=["ruff", "check", "--select", "F", "a.py"])
+    unit = dict(
+        PLAN[0],
+        verification_command=[sys.executable, "-m", "ruff", "check", "--select", "F", "a.py"],
+    )
 
     report = run_autodev(
         "fix ruff errors",

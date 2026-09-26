@@ -336,13 +336,32 @@ def run_golden_path(
     except subprocess.TimeoutExpired:
         status, evidence, limitations = (
             StageStatus.FAILED,
-            {"command": list(command), "timed_out": True},
+            {
+                "command": list(command),
+                "exit_code": None,
+                "timed_out": True,
+                "duration_ms": 0.0,
+                "changed_paths": 0,
+                "outside_owned_paths": 0,
+                "stdout_digest": _digest(""),
+                "stderr_digest": _digest(""),
+            },
             ("verification timeout",),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         status, evidence, limitations = (
             StageStatus.FAILED,
-            {"command": list(command), "reason": type(exc).__name__},
+            {
+                "command": list(command),
+                "exit_code": None,
+                "timed_out": False,
+                "duration_ms": 0.0,
+                "changed_paths": 0,
+                "outside_owned_paths": 0,
+                "reason": type(exc).__name__,
+                "stdout_digest": _digest(""),
+                "stderr_digest": _digest(""),
+            },
             ("verification could not execute",),
         )
     receipts.append(
