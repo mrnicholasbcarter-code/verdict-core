@@ -32,7 +32,7 @@ verdict doctor                        # Health check with repair commands
 
 ## 30-second demo
 
-`verdict` needs nothing. `orchestrate` needs a running OmniRoute gateway, `VERDICT_OMNIROUTE_API_KEY` and `ocr` on PATH (see [prerequisites](docs/guides/interview-golden-path.md#prerequisites)).
+`verdict` needs nothing. `orchestrate` needs a running OmniRoute gateway, `VERDICT_OMNIROUTE_API_KEY` and `ocr` on PATH (see [prerequisites](docs/guides/orchestration-golden-path.md#prerequisites)).
 
 ```bash
 # Home screen: gateway status, recent runs, main commands
@@ -116,7 +116,7 @@ Orchestration is specified in [ADR-036](docs/adr/ADR-036-goal-to-receipt-orchest
 | Evidence | Location |
 |---|---|
 | Latest certification | [`docs/certification/README.md`](docs/certification/README.md) (see CI artifacts for SHA-bound bundles) |
-| Scenario matrix A–J (live, faults injected) | [`docs/proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md`](docs/proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md) |
+| Scenario matrix A–J (live, faults injected) | [`docs/proof/GOLDEN_PATH_CERTIFICATION.md`](docs/proof/GOLDEN_PATH_CERTIFICATION.md) |
 | Evidence index | [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md) |
 | Claims audit | [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md) |
 | v0.3.0 boundary | [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md) |
@@ -269,7 +269,7 @@ Component map, data flow and the orchestration layer: [docs/architecture.md](doc
 | Topic | Location |
 |---|---|
 | Getting started | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) |
-| Interview golden path | [`docs/guides/interview-golden-path.md`](docs/guides/interview-golden-path.md) |
+| Orchestration golden path | [`docs/guides/orchestration-golden-path.md`](docs/guides/orchestration-golden-path.md) |
 | Architecture | [`docs/architecture.md`](docs/architecture.md) |
 | Configuration (YAML + env) | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) |
 | ADR index (36 numbered records) | [`docs/adr/README.md`](docs/adr/README.md) |

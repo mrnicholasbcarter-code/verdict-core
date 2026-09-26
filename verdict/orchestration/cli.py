@@ -1,4 +1,4 @@
-"""``verdict orchestrate | watch | receipt | eligibility`` — the interview surface.
+"""``verdict orchestrate | watch | receipt | eligibility`` — the orchestration CLI surface.
 
 All four commands are thin: they wire live OmniRoute discovery into the
 orchestration components and render with ``verdict.orchestration.tui``.

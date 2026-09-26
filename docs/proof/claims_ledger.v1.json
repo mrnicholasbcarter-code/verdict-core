@@ -258,12 +258,10 @@
       "status": "self_reported",
       "allowed_wording": "A portfolio case study reports trading-system performance and risk-control results; this repository does not independently verify them.",
       "evidence": [
-        "docs/portfolio/KALSHI_TRADING_BOTS_CASE_STUDY.md",
-        "docs/portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md"
+        "docs/portfolio/KALSHI_TRADING_BOTS_CASE_STUDY.md"
       ],
       "evidence_locators": [
-        "throughput and latency claims",
-        "quantified interview stories"
+        "throughput and latency claims"
       ],
       "observed_date_range": "undated source narrative; reviewed 2026-07-31",
       "metric_definition": "The source documents do not provide a repository-local raw benchmark and controlled comparison for these figures.",

@@ -35,7 +35,7 @@ OmniRoute remains inventory/execute/health only ([ADR-032](ADR-032-core-model-me
 ## Consequences
 
 - ADR-023 is SUPERSEDED by this record (closes BOD-169 `MISSING_SUCCESSOR`).
-- Interviewers and the ecosystem re-audit should cite ADR-035 + BOD-104/67/127,
+- Reviewers and the ecosystem re-audit should cite ADR-035 + BOD-104/67/127,
   not ADR-023, for current dispatch architecture.
 - Demoted selector modules may remain as feeds/escapes until a later cleanup
   story removes them; they are not a second routing policy.

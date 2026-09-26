@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://verdict.dev/schemas/capability-passport.v1.json",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/verdict/schemas/capability-passport.v1.json",
   "title": "Verdict Capability Passport v1",
   "type": "object",
   "additionalProperties": false,

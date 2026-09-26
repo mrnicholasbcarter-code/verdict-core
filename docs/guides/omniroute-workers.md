@@ -61,7 +61,7 @@ verdict eligibility --probe --frontier
 verdict orchestrate "<goal>" --repo /path/to/repository --max-parallel 3
 ```
 
-See [interview golden path](interview-golden-path.md) for the complete
+See [orchestration golden path](orchestration-golden-path.md) for the complete
 controller, worker, review, and receipt flow.
 
 ## Codex configuration

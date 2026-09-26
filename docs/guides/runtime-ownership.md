@@ -53,5 +53,5 @@ result is validated. Replacement attempts stay within the configured runtime
 budget and use another eligible candidate.
 
 Do not put credentials, prompts, raw provider responses, or process command
-lines into receipts or run evidence. See [interview golden path](interview-golden-path.md)
+lines into receipts or run evidence. See [orchestration golden path](orchestration-golden-path.md)
 for the end-to-end path.

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://verdict.dev/schemas/runtime-health.v1.json",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/runtime-health.v1.json",
   "title": "Verdict Runtime Health Evidence v1",
   "type": "object",
   "required": ["schema_version", "generated_at", "status", "passed", "summary", "observations", "errors"],

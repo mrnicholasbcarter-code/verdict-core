@@ -65,7 +65,7 @@ Goal-to-receipt execution uses the ADR-036 orchestration runtime:
   receipt.
 
 See [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) and the
-[interview golden path](../guides/interview-golden-path.md) for the exact
+[orchestration golden path](../guides/orchestration-golden-path.md) for the exact
 runtime contract and command examples. [ADR-023](../adr/ADR-023-governed-swarm-supervision.md)
 is superseded historical material.
 

@@ -67,7 +67,7 @@ verdict eligibility
 verdict run-receipt <run-id>
 ```
 
-See [`docs/guides/interview-golden-path.md`](guides/interview-golden-path.md) for
+See [`docs/guides/orchestration-golden-path.md`](guides/orchestration-golden-path.md) for
 prerequisites, scenario matrix (A–J), and recorded evidence.
 
 ## Mission, failover, and replay
@@ -101,7 +101,7 @@ Each path emits bounded, privacy-safe evidence.
 | Contracts and eligibility gates | production functional | contract, security, and eligibility tests | provider behavior remains external |
 | Credential-free quickstart | production functional | `quickstart` CLI and fixture tests | demo candidates are not real providers |
 | Autonomous-dev golden path | production functional | `autodev-golden-path` tests | no claim of LLM generation |
-| Goal-to-receipt orchestration | production functional (live, faults injected) | INTERVIEW_GOLDEN_PATH_CERTIFICATION.md, scenarios A–J, 2907 tests | requires OmniRoute gateway; reviewer requires `ocr` on PATH |
+| Goal-to-receipt orchestration | production functional (live, faults injected) | GOLDEN_PATH_CERTIFICATION.md, scenarios A–J, 2907 tests | requires OmniRoute gateway; reviewer requires `ocr` on PATH |
 | Forced failover and replay | production functional | `failover-proof` CLI | simulated provider failure |
 | Live provider routing | production path, externally contingent | consent-gated probes, execution receipts, and fail-closed identity checks | authorization, quota, health, and live model output remain external |
 | Adaptive/quality/cost claims | simulated only | benchmark fixtures and reports | not a production quality guarantee |

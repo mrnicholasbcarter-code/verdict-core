@@ -10,14 +10,14 @@ superseded by a later record rather than edited away.
 | Layer | Owns | Location |
 |---|---|---|
 | **Cross-repo evidence authority** | Exact SHA snapshots, duplicate hashes, conservative lifecycle + evidence levels across Verdict V2 repos | [`verdict-ecosystem` `docs/ADR_LIFECYCLE.md`](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md) + `evidence/ADR_LIFECYCLE.json` ([BOD-169](https://linear.app/bodanglin/issue/BOD-169) — **Done**) |
-| **In-repo navigable index** | Interviewer-facing table for `verdict-core` alone: titles, successors, how to read shipped vs historical | **This file** ([BOD-179](https://linear.app/bodanglin/issue/BOD-179)) |
+| **In-repo navigable index** | Reviewer-facing table for `verdict-core` alone: titles, successors, how to read shipped vs historical | **This file** ([BOD-179](https://linear.app/bodanglin/issue/BOD-179)) |
 
 **Do not invent a competing CURRENT-heavy taxonomy.** BOD-169 deliberately marked
 **0 CURRENT** because source/test path presence alone is not end-to-end runtime proof.
 This index **consumes** those classifications for `verdict-core` rows and only adds:
 
 - successor / predecessor links (including ADR-035 closing ADR-023 `MISSING_SUCCESSOR`)
-- interview navigation (what to read first)
+- orchestration navigation (what to read first)
 - banners on local duplicate copies under `docs/architecture/`
 
 After material ADR edits land on `verdict-core` main, regenerate the ecosystem
@@ -41,13 +41,13 @@ Declared Status fields inside individual ADR files may still use older vocabular
 (`Accepted`, `Proposed`, …). **Lifecycle columns below follow BOD-169** unless a
 newer successor ADR is named in this index.
 
-## How to read (interview path)
+## How to read (orchestration path)
 
 1. [ADR-0001](0001-verdict-control-plane-invariants.md) — control-plane invariants
 2. [ADR-010](ADR-010-fail-closed-capability-passports.md) — fail-closed passports
 3. [ADR-032](ADR-032-core-model-metadata-store.md) — Core owns metadata; OmniRoute does not
 4. [ADR-035](ADR-035-authorized-selected-route-dispatch.md) — post-swarm dispatch (supersedes 023)
-5. [ADR-036](ADR-036-goal-to-receipt-orchestration.md) — goal-to-receipt orchestration (the interview golden path)
+5. [ADR-036](ADR-036-goal-to-receipt-orchestration.md) — goal-to-receipt orchestration (the orchestration golden path)
 5. [ADR-015](ADR-015-evidence-authority-and-portable-receipts.md) — receipts
 6. Ecosystem [ADR_LIFECYCLE.md](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md) — evidence bar and cross-repo duplicates
 
@@ -95,7 +95,7 @@ hardening pass (successor for ADR-023).
 | [026](ADR-026-responses-compatibility-boundary.md) — Responses boundary | Compatibility before HTTP Responses transport | Accepted | PARTIALLY_TRUE | VERIFIED | — |
 | [027](ADR-027-observed-free-status-and-context-omissions.md) — Observed free status | Free status observed, never inferred from missing price | Accepted | PARTIALLY_TRUE | VERIFIED | — |
 | [028](ADR-028-launch-gate-tooling.md) — Launch-gate tooling | Release dependency/privacy/HTTP evidence | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
-| [029](ADR-029-portfolio-repositioning-plan.md) — Portfolio repositioning | Hygiene / positioning / launch sequencing | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | Plan ADR |
+| [029](ADR-029-portfolio-repositioning-plan.md) — Portfolio repositioning | Hygiene / positioning / launch sequencing | Superseded | SUPERSEDED | NOT_VERIFIED | Superseded by this remediation; kept for ADR-030 cross-reference |
 | [030](ADR-030-proof-carrying-decision-plane.md) — Proof-carrying decision plane | Context→decision→receipt→proof owned by Verdict | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
 | [031](ADR-031-prime-workflow-skills.md) — Prime workflow skills | Resume/hydrate/dispatch/proof/finish leases | Accepted for implementation | PARTIALLY_TRUE | VERIFIED | — |
 | [032](ADR-032-core-model-metadata-store.md) — Core owns model metadata | OmniRoute inventory/execute/health only | Accepted | PARTIALLY_TRUE | VERIFIED | — |

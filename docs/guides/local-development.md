@@ -44,7 +44,7 @@ curl -s http://localhost:20128/v1/models | jq '.data | length'   # live model co
 ```
 
 For parallel agent workloads, apply the admission settings in
-[the interview golden path prerequisites](interview-golden-path.md#prerequisites).
+[the orchestration golden path prerequisites](orchestration-golden-path.md#prerequisites).
 
 ### 4. Run Verdict Core Server
 

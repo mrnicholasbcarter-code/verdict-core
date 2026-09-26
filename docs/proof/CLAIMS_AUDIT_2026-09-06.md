@@ -54,7 +54,7 @@ evidence.
   confidence, objections, falsification tests, and missing evidence.
 - `docs/proof/proof_matrix.v1.json`: requirement status, evidence locators, verification command,
   public wording, and gap.
-- `docs/proof/EVIDENCE_INDEX.md`: recruiter/reviewer entry point and explicit non-approved claims.
+- `docs/proof/EVIDENCE_INDEX.md`: engineering-reviewer entry point and explicit non-approved claims.
 - `docs/portfolio/PORTFOLIO_PROOF_MATRIX.md`: audience-specific proof assets and boundaries.
 - `docs/benchmarks/routing-demo.md`: mock/live/recorded modes and the no-provider-spend boundary.
 - `docs/benchmarks/context-lift.md` and its receipt: paired live proof, blocked behavior, omissions,

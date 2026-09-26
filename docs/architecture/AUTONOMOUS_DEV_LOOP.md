@@ -63,7 +63,7 @@ The execution step (6) may run as either:
   `verdict autodev`) — for sequential stage-gated work.
 - **Goal-to-receipt orchestration** ([ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md),
   `verdict orchestrate`) — for goal decomposition into routed, receipted
-  attempts. See [docs/guides/interview-golden-path.md](../guides/interview-golden-path.md)
+  attempts. See [docs/guides/orchestration-golden-path.md](../guides/orchestration-golden-path.md)
   for the end-to-end proof path (`verdict orchestrate | supervise | watch |
   run-receipt | eligibility`).
 

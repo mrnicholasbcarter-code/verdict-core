@@ -3,7 +3,7 @@
 This is the only module that touches live OmniRoute discovery. Everything it
 wires together is independently tested against fakes.
 
-Controller survival (BOD-159..166, minimal interview-safe slice):
+Controller survival (BOD-159..166, minimal demo-safe slice):
 - the frontier *planning* call goes through the same select -> classify ->
   cooldown -> reassign loop as workers, so controller-model quota exhaustion
   moves planning to another eligible frontier model instead of hanging;

@@ -24,11 +24,11 @@ verdict/
 ├── benchmarking.py          # Reproducible benchmarks
 ├── catalog.py               # Model catalog, filters
 ├── cli.py                   # verdict CLI — route, explain, models, policy, dashboard
-├── contracts.py             # Typed contracts (TaskSpec, RoutingDecision, etc.)
-├── dispatcher.py            # AssignmentExplanation, Dispatcher
+├── contracts.py             # Typed contracts (TaskSpec, RoutingDecision, etc.) — a file, not a package
+├── dispatcher.py            # AssignmentExplanation, SwarmDispatcher (planning-only swarm assignment; no provider I/O)
 ├── eligibility.py           # EligibilityGate — hard safety floors
-├── gate.py                  # Gate — composes eligibility + intelligence
-├── intelligence.py          # IntelligenceService — advisory ranking (cannot bypass gate)
+├── gate.py                  # Gate — sync wrapper composing IntelligenceService (used by the CLI)
+├── intelligence.py          # IntelligenceService — route() is the routing-decision authority; cannot bypass EligibilityGate
 ├── metadata/                # Core metadata store — models.dev + LiteLLM (BOD-108)
 ├── omniroute.py             # OmniRouteHTTPTransport — inventory/execute/health only
 ├── orchestration/           # Goal-to-receipt pipeline (ADR-036)
@@ -44,17 +44,23 @@ verdict/
 │   ├── runtime.py           #   Run state persistence and resume
 │   ├── supervisor.py        #   Controller health monitor
 │   └── tui.py               #   Live terminal view
-├── planner.py               # IntakePlanner, PlanningResult (single-route path)
+├── planner.py               # StructuredPlanner (aliased IntakePlanner), PlanResult (aliased PlanningResult)
 ├── probes.py                # ProbeRunner, 1-token liveness checks
-├── contracts/               # JSON schemas
-└── schemas/                 # OpenAPI, Pydantic models
+├── proxy.py                 # UpstreamProxy — actual HTTP forwarding to the resolved route
+├── relay.py                 # build_attempts(), retry/idempotency safety for /v1/chat/completions and /v1/responses
+├── router.py                # select_best_model(), select_best_eligible_model() — deterministic candidate ranking
+└── schemas/                 # JSON Schema definitions ($id fields; contracts, receipts, passports, policy, etc.)
 ```
 
 ## Key Flows
 
-**Route flow**: `api.py:route()` → `Gate.route()` → `EligibilityGate.filter()` → `IntelligenceService.rank()` → `Dispatcher.assign()` → `Proxy.forward()`
+**Route-decision flow** (`POST /v1/route`): `api.py:route_task()` → `IntelligenceService.route()` → `EligibilityGate.evaluate()` → `select_best_eligible_model()` (`verdict/router.py`) → `RoutingDecision` returned as JSON (no upstream call)
 
-**Explain flow**: `api.py:route_explain()` → `AvailabilityCache.explain()` → `EligibilityGate.explain()` → returns freshness + eligibility explain record
+**Proxy flow** (`POST /v1/chat/completions`, `POST /v1/responses`): `api.py:_relay_completion()` → `IntelligenceService.route()` → `EligibilityGate.evaluate()` → `select_best_eligible_model()` → `build_attempts()` (`verdict/relay.py`) → `UpstreamProxy._forward()` (`verdict/proxy.py`)
+
+**CLI route flow**: `cli.py` → `Gate.route()` (sync wrapper) → `IntelligenceService.route()` → `EligibilityGate.evaluate()` — same authority as the API path
+
+**Explain flow**: `api.py:route_explain()` → `AvailabilityCache.explain()` → `EligibilityGate.evaluate()` → returns freshness + eligibility explain record
 
 **Metadata refresh**: `cli.py:cmd_metadata_refresh()` → `metadata.refresh_metadata()` → models.dev + LiteLLM → `~/.verdict/model-metadata.json` (OmniRoute is never metadata SoT)
 
@@ -62,7 +68,7 @@ verdict/
 
 ## Testing
 ```bash
-pytest -v                    # 2907 tests
+pytest -v                    # 3420 tests
 ruff check .                 # lint
 mypy --strict verdict/       # typecheck
 ```
