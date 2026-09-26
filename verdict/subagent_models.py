@@ -227,7 +227,13 @@ class SubagentModelSelector:
             role: One of "scout", "worker", "reviewer", "oracle", "planner",
                   "researcher", "context-builder", "delegate"
             protected: If True, fail-closed when OmniRoute unavailable
-            dev_mode: If True, allow unverified candidates when not protected
+            dev_mode: Forwarded to ``EligibilityGate.evaluate`` for call-site
+                symmetry only. It can never widen admission here: candidates
+                are narrowed to the adapter's ``report.eligible`` set before
+                the gate runs, so unverified / unknown-state candidates are
+                excluded regardless of ``dev_mode`` or the gate's
+                ``allow_unverified_in_dev`` (AC-1.5; pinned by
+                tests/test_subagent_models.py).
             diversity_from: Model IDs to exclude for diversity (e.g., avoid same family as another role)
 
         Returns:
@@ -356,6 +362,8 @@ class SubagentModelSelector:
 
         Selects in order of budget/importance, excluding already-selected models
         from subsequent role selections to ensure model family diversity.
+        ``dev_mode`` has the same non-widening semantics as in
+        :meth:`select_for_role`.
         """
         # Sort by budget descending (most important roles first)
         role_order = sorted(
