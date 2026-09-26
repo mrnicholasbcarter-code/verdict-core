@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://verdict.dev/schemas/model-metadata.v1.json",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/verdict/schemas/model-metadata.v1.json",
   "title": "Verdict Core Model Metadata Store v1 (BOD-108)",
   "description": "Independently fetched model capability metadata. OmniRoute is never the metadata source of truth.",
   "type": "object",

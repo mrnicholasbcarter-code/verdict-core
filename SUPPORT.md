@@ -33,7 +33,7 @@
 
 ### Security Vulnerabilities
 **Do not** report security issues in public issues.
-Email: security@verdict.dev
+Report via [GitHub Security Advisories](https://github.com/mrnicholasbcarter-code/verdict-core/security/advisories/new).
 
 ### Bug Reports
 Use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml).
@@ -52,10 +52,10 @@ Use the [feature request template](.github/ISSUE_TEMPLATE/feature_request.yml).
 
 ## Getting Help
 
-- **Documentation**: https://verdict.dev/docs
+- **Documentation**: https://github.com/mrnicholasbcarter-code/verdict-core#readme
 - **Discussions**: GitHub Discussions
 - **Discord**: https://discord.gg/verdict
-- **Email**: support@verdict.dev
+- **Issues**: https://github.com/mrnicholasbcarter-code/verdict-core/issues
 
 ## Deprecation Policy
 

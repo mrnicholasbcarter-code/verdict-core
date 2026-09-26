@@ -239,7 +239,7 @@ export const middleware = createMiddleware({
 
 ## Links
 
-- **Documentation**: https://verdict.dev/docs
+- **Documentation**: https://github.com/mrnicholasbcarter-code/verdict-core#readme
 - **Python Package**: https://pypi.org/project/verdict-core/
 - **TypeScript Contracts**: https://www.npmjs.com/package/@bodanglin/verdict-contracts
 - **TypeScript Middleware**: https://www.npmjs.com/package/@bodanglin/verdict-node
