@@ -558,6 +558,29 @@ def _parse_start_command(
     return tuple(argv), None
 
 
+def _shadowed_note(invalid: BootstrapDiagnostic, env_name: str) -> BootstrapDiagnostic:
+    """Downgrade a malformed lower-precedence value to a non-fatal note.
+
+    The config file won precedence, so the malformed environment value is not the
+    one in force and refusing would be wrong. It is still reported, because a
+    silently ignored malformed value is how an operator ends up debugging the
+    wrong file. The offending value is never echoed: the original diagnostic
+    already withheld it, and this only re-frames it.
+    """
+    return BootstrapDiagnostic(
+        code="precedence_conflict",
+        diagnostic_class="configuration",
+        field=invalid.field,
+        source="environment",
+        detail=(
+            f"{env_name} is malformed and was ignored: {invalid.detail}. The config file "
+            f"value won precedence, so this does not stop Verdict."
+        ),
+        remediation=f"fix or unset {env_name}; the config file value is the one in force",
+        fatal=False,
+    )
+
+
 def _parse_ready_timeout(
     value: Any, *, source: BootstrapSource
 ) -> tuple[float | None, BootstrapDiagnostic | None]:
@@ -830,14 +853,18 @@ def resolve_provider_bootstrap(
     # credential store is deliberately not a source for either: a start command
     # is not a secret, and taking an argv from a secrets file would make that
     # file a command-injection surface.
+    # Both lifecycle fields are config-file-first. A malformed value only refuses
+    # when it is the value that would have been used: a lower-precedence
+    # environment value that the config file shadows is reported as a non-fatal
+    # note, matching how every other shadowed value is treated. It fails closed
+    # the other way round, because then the malformed value is the winner.
     lifecycle_fatal: list[BootstrapDiagnostic] = []
     gateway_start_command: tuple[str, ...] | None = None
     env_start = _text(exported, _GATEWAY_START_COMMAND_ENV)
+    env_start_invalid: BootstrapDiagnostic | None = None
     if env_start:
-        parsed_argv, invalid = _parse_start_command(env_start, source="environment")
-        if invalid is not None:
-            lifecycle_fatal.append(invalid)
-        elif parsed_argv is not None:
+        parsed_argv, env_start_invalid = _parse_start_command(env_start, source="environment")
+        if env_start_invalid is None and parsed_argv is not None:
             gateway_start_command = parsed_argv
             field_sources["gateway_start_command"] = "environment"
     if raw.get("gateway_start_command") is not None:
@@ -849,15 +876,21 @@ def resolve_provider_bootstrap(
         elif parsed_argv is not None:
             gateway_start_command = parsed_argv
             field_sources["gateway_start_command"] = "config_file"
+    if env_start_invalid is not None:
+        if field_sources.get("gateway_start_command") == "config_file":
+            diagnostics.append(_shadowed_note(env_start_invalid, _GATEWAY_START_COMMAND_ENV))
+        else:
+            lifecycle_fatal.append(env_start_invalid)
 
     gateway_ready_timeout_s = DEFAULT_GATEWAY_READY_TIMEOUT_S
     field_sources["gateway_ready_timeout_s"] = "default"
     env_timeout = _text(exported, _GATEWAY_READY_TIMEOUT_ENV)
+    env_timeout_invalid: BootstrapDiagnostic | None = None
     if env_timeout:
-        parsed_timeout, invalid = _parse_ready_timeout(env_timeout, source="environment")
-        if invalid is not None:
-            lifecycle_fatal.append(invalid)
-        elif parsed_timeout is not None:
+        parsed_timeout, env_timeout_invalid = _parse_ready_timeout(
+            env_timeout, source="environment"
+        )
+        if env_timeout_invalid is None and parsed_timeout is not None:
             gateway_ready_timeout_s = parsed_timeout
             field_sources["gateway_ready_timeout_s"] = "environment"
     if raw.get("gateway_ready_timeout_s") is not None:
@@ -869,6 +902,11 @@ def resolve_provider_bootstrap(
         elif parsed_timeout is not None:
             gateway_ready_timeout_s = parsed_timeout
             field_sources["gateway_ready_timeout_s"] = "config_file"
+    if env_timeout_invalid is not None:
+        if field_sources.get("gateway_ready_timeout_s") == "config_file":
+            diagnostics.append(_shadowed_note(env_timeout_invalid, _GATEWAY_READY_TIMEOUT_ENV))
+        else:
+            lifecycle_fatal.append(env_timeout_invalid)
     if lifecycle_fatal:
         raise BootstrapError("bootstrap_configuration_invalid", tuple(lifecycle_fatal))
 

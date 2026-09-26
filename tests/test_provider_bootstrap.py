@@ -831,6 +831,67 @@ def test_a_finite_bounded_readiness_timeout_is_accepted(value: str) -> None:
     assert result.gateway_ready_timeout_s <= MAX_GATEWAY_READY_TIMEOUT_S
 
 
+def test_a_shadowed_malformed_env_start_command_is_a_note_not_a_refusal(tmp_path: Path) -> None:
+    """The config file won, so the malformed env value is not the one in force.
+
+    Refusing would mean a stale export in a developer's shell breaks a correctly
+    configured machine, which is the opposite of the documented config-first
+    precedence.
+    """
+    result = resolve_provider_bootstrap(
+        env={"VERDICT_GATEWAY_START_COMMAND": "omniroute --token 'SECRETPW"},
+        config_path=_write(tmp_path, _LIFECYCLE_CONFIG),
+    )
+
+    assert result.gateway_start_command == ("omniroute", "serve", "--port", "20128")
+    assert result.source_of("gateway_start_command") == "config_file"
+    notes = {note.code for note in result.notes()}
+    assert "precedence_conflict" in notes
+    note = next(n for n in result.notes() if n.code == "precedence_conflict")
+    assert note.fatal is False
+    assert "VERDICT_GATEWAY_START_COMMAND" in note.detail
+    assert "SECRETPW" not in repr(result.to_dict()), "the rejected value is never echoed"
+
+
+def test_a_shadowed_malformed_env_timeout_is_a_note_not_a_refusal(tmp_path: Path) -> None:
+    """Same precedence rule for the readiness budget."""
+    result = resolve_provider_bootstrap(
+        env={"VERDICT_GATEWAY_READY_TIMEOUT_S": "inf"},
+        config_path=_write(tmp_path, _LIFECYCLE_CONFIG),
+    )
+
+    assert result.gateway_ready_timeout_s == 12.5
+    assert result.source_of("gateway_ready_timeout_s") == "config_file"
+    assert any(n.code == "precedence_conflict" and not n.fatal for n in result.notes())
+
+
+def test_an_unshadowed_malformed_env_value_is_still_fatal() -> None:
+    """With no config value to win, the malformed value is the one in force."""
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_provider_bootstrap(
+            env={
+                "OMNIROUTE_BASE_URL": "http://127.0.0.1:20128",
+                "VERDICT_GATEWAY_START_COMMAND": "omniroute --token 'SECRETPW",
+            }
+        )
+
+    assert excinfo.value.diagnostics[0].code == "gateway_start_command_malformed"
+    assert "SECRETPW" not in describe_bootstrap_failure(excinfo.value)
+
+
+def test_a_malformed_config_value_is_fatal_even_when_the_env_value_is_valid(tmp_path: Path) -> None:
+    """The config file wins precedence, so its malformed value cannot be ignored."""
+    body = _VALID_CONFIG + "gateway_start_command: 5\n"
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_provider_bootstrap(
+            env={"VERDICT_GATEWAY_START_COMMAND": "omniroute serve"},
+            config_path=_write(tmp_path, body),
+        )
+
+    assert excinfo.value.diagnostics[0].code == "gateway_start_command_malformed"
+    assert excinfo.value.diagnostics[0].source == "config_file"
+
+
 def test_lifecycle_fields_are_serialized_for_receipts(tmp_path: Path) -> None:
     """``to_dict`` records the lifecycle inputs without echoing the argv.
 
