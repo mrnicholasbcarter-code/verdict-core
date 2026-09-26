@@ -612,7 +612,7 @@ All assets come from committed code and committed data. None of the tools below 
 
 | Asset | Size | Source data | Regenerate |
 |---|---|---|---|
-| [`docs/proof/demo-run/`](docs/proof/demo-run) | ~70 KB | fixture inventory in `scripts/demo_orchestrate.py` | `python scripts/demo_orchestrate.py --out docs/proof/demo-run` |
+| [`docs/proof/demo-run/`](docs/proof/demo-run) | ~35 KB | fixture inventory in `scripts/demo_orchestrate.py` | `python scripts/demo_orchestrate.py --out docs/proof/demo-run` |
 | [`docs/assets/demo.cast`](docs/assets/demo.cast) | ~12 KB | the demo run above, recorded in a pty | `python scripts/record_demo.py` (stdlib only; also rewrites `docs/proof/demo-run/`) |
 | [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~500 KB | `demo.cast` | `npx -y svg-term-cli@2.1.1 --in docs/assets/demo.cast --out docs/assets/demo.svg --window --width 110 --height 34` |
 | `docs/assets/chart-*.svg` | ~10 KB each | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
