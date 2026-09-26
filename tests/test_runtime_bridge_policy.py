@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import runpy
 from pathlib import Path
 
@@ -7,16 +8,18 @@ from pathlib import Path
 BRIDGE = Path(".prime/agent/skills/verdict-dispatch/scripts/runtime_bridge.py")
 
 
-def test_runtime_bridge_injects_controller_exclusion_and_route_scope() -> None:
+def test_runtime_bridge_requires_controller_identity_and_scopes_workers_to_cc_kr() -> None:
     module = runpy.run_path(str(BRIDGE))
-    normalize = module.get("normalize_task_policy")
-    assert callable(normalize)
+    operation = module["PrimeWorkerOperation"]
+    signature = inspect.signature(operation.__init__)
 
-    task = normalize(
-        {"required_capabilities": ["tools"], "coding": True},
-        controller_model="omniroute/cc/claude-fable-5-1",
-        allowed_route_prefixes=["cc/", "kr/"],
+    assert signature.parameters["controller_model"].default is inspect.Parameter.empty
+    assert module["DEFAULT_ALLOWED_ROUTE_PREFIXES"] == ("cc/", "kr/")
+    assert module["_route_id"]("omniroute/cc/claude-fable-5-1") == "cc/claude-fable-5-1"
+
+
+def test_runtime_bridge_keeps_legacy_controllers_out_of_worker_pool() -> None:
+    module = runpy.run_path(str(BRIDGE))
+    assert module["LEGACY_CONTROLLER_MODELS"] == frozenset(
+        {"cx/gpt-5.6-sol", "cx/gpt-6-astra"}
     )
-
-    assert task["allowed_route_prefixes"] == ["cc/", "kr/"]
-    assert task["excluded_route_ids"] == ["cc/claude-fable-5-1"]
