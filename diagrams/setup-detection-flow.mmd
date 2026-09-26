@@ -1,0 +1,54 @@
+%% setup-detection-flow.mmd -- verdict / verdict setup / verdict doctor / verdict detect
+%% Source (verified against code at this commit):
+%%   verdict/terminal_ui.py, verdict/home.py, verdict/orchestration/tui.py (three separate copies of the same plain-mode predicate)
+%%   verdict/provider_detection.py (detect_all_providers, probe_gateways, _check_port)
+%%   verdict/harness_claude.py, verdict/harness_prime.py, verdict/harness_codex.py (per-harness discover/status, no shared base)
+%%   verdict/credentials_store.py (get_credential_source), verdict/mcp_config_discovery.py (mcp_config_candidate_paths)
+%%   verdict/cli.py (cmd_detect, cmd_doctor)
+flowchart TD
+    START["verdict (no subcommand) / verdict setup / verdict doctor / verdict detect"]
+    START --> PLAIN{"is this a plain terminal? not a TTY, NO_COLOR set, TERM=dumb, CI set, or VERDICT_PLAIN=1"}
+    PLAIN -- yes --> TEXT["text-only output, no animation"]
+    PLAIN -- no --> SPLASH["home screen: WORDMARK reveal loop (Live render, 0.012s per 3-column step)"]
+    TEXT --> DETECT
+    SPLASH --> DETECT["cmd_detect / cmd_doctor calls detect_all_providers() + probe_gateways() directly -- there is NO shared detect.run() engine"]
+
+    DETECT --> PROV["detect_all_providers() -- iterates API_KEY_ENV_VARS per provider, calls get_credential_source(env_name) for each"]
+    DETECT --> GATE["probe_gateways(ports) -- _check_port(port) TCP probe per candidate port, builds GatewayCandidate list"]
+    DETECT --> HARN["per-harness discover()/status() called separately, no shared base class or grouping: harness_claude.discover(), harness_prime.discover()+status(), harness_codex.status()"]
+    DETECT --> MCP["mcp_config_discovery.mcp_config_candidate_paths() -- MCP config file locations"]
+
+    PROV --> CRED["get_credential_source(env_name, store) -> (source, masked_value); _mask_value gives 'set (len=N)'"]
+    GATE --> GRES["DetectionResult / GatewayCandidate -- provider_detection.py's own dataclasses, not a shared Finding type"]
+    HARN --> HRES["StatusReport per harness (harness_prime.py, harness_codex.py) -- structurally different per harness, no common base"]
+    MCP --> MRES["candidate config paths, existence-checked"]
+
+    CRED --> OUT1["cmd_detect prints/serializes results directly -- verdict detect --json dumps p.__dict__ (no explicit allowlist serialization today)"]
+    GRES --> OUT1
+    HRES --> OUT1
+    MRES --> OUT1
+
+    OUT1 --> OUT2["verdict doctor: same detection calls, plus --fix remedies and an exit code"]
+    OUT1 --> OUT3["home screen: renders detection results into the first-run TUI view"]
+
+%% NOTE (aspirational, not present in code): an earlier draft of this diagram described a unified
+%% Finding(group, key, state, label, detail, evidence, remedy, blocking, elapsed_ms) record and a
+%% DetectionReport with a sha256 canonical-JSON digest, fed by six named groups through one
+%% detect.run() engine. No such module or shared type exists in verdict/ at this commit -- what
+%% exists is the scattered set of dataclasses shown above, called directly by cmd_detect/cmd_doctor.
+%% evidence: verdict/terminal_ui.py:71-77 TerminalUI.plain predicate (not TTY / NO_COLOR / TERM=dumb / CI / VERDICT_PLAIN=1)
+%% evidence: verdict/home.py:65-72 def _plain(console) -- a SEPARATE copy of the identical predicate
+%% evidence: verdict/orchestration/tui.py:840-848 def plain_mode(console) -- a THIRD separate copy, docstring says "Same fallback rules as verdict.terminal_ui.TerminalUI"
+%% evidence: verdict/home.py:30 WORDMARK = (...); home.py:255 for step in range(0, len(WORDMARK[0]) + 1, 3): -- the reveal loop (NOT lines 265-274 as an earlier draft claimed)
+%% evidence: verdict/cli.py:1119 def cmd_detect(...); cli.py:2602 def cmd_doctor(fix=False, output_json=False)
+%% evidence: verdict/provider_detection.py:602 def detect_all_providers() -> DetectionResult
+%% evidence: verdict/provider_detection.py:146 def probe_gateways(ports) -> list[GatewayCandidate]
+%% evidence: verdict/provider_detection.py:267 def _check_port(port, host) -> bool
+%% evidence: verdict/provider_detection.py:233 API_KEY_ENV_VARS = {...} (provider id -> list of env var names)
+%% evidence: verdict/harness_claude.py:121 def discover(...)
+%% evidence: verdict/harness_prime.py:120 def discover(...); harness_prime.py:225 def status(*, prime_home=None) -> StatusReport
+%% evidence: verdict/harness_codex.py:199 def status(*, codex_home=None) -> StatusReport (harness_codex.py has no separate discover(); status() covers it)
+%% evidence: verdict/credentials_store.py:200 def get_credential_source(env_name, store) -> tuple[str, str]
+%% evidence: verdict/mcp_config_discovery.py:136 def mcp_config_candidate_paths(...)
+%% evidence: verdict/cli.py -- verdict detect --json path dumps a dataclass via __dict__ (grep confirms no explicit field allowlist exists at this commit)
+%% NOTE (aspirational, not present in code): an earlier draft of this diagram described a unified `Finding(group, key, state, label, detail, evidence, remedy, blocking, elapsed_ms)` record and a `DetectionReport` with a sha256 canonical-JSON digest, fed by six named groups (environment/gateway/credentials/harnesses/integrations/config) through one `detect.run()` engine. Grepping `class Finding`, `DetectionReport`, and `detect.run(` across verdict/ found no such module or shared type. What exists today is the scattered set of dataclasses shown above (DetectionResult, GatewayCandidate, per-harness StatusReport), called directly and separately by cmd_detect/cmd_doctor. Treat the unified Finding/DetectionReport model as a design proposal, not current code.

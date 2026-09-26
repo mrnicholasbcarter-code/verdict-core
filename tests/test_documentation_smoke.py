@@ -22,11 +22,16 @@ JOURNEY_COMMANDS = (
     "verdict failover-proof",
     "verdict replay",
 )
+# P1-1 (README rewrite): the credential-free quickstart is now the first thing
+# after the hero, ahead of Install -- a reviewer sees the "it refuses" proof
+# before any setup instructions. This intentionally changes the prior
+# ordering (which put Install before Quick start); the new order matches the
+# repository's actual reading path and is asserted just as strictly.
 README_REQUIRED_ORDER = (
-    "The LLM router that says no",
-    "## Install",
+    "A model that fails a safety check cannot be scored back in.",
     "## Quick start",
     "Receipt: fixture:issue-35 (deterministic_fixture)",
+    "## Install",
     "## Cost comparison",
     "$0.16 routed",
     "$0.52 baseline",
@@ -121,10 +126,21 @@ def test_readme_reader_path_is_ordered_and_local_links_resolve() -> None:
     offsets = [readme.index(marker) for marker in README_REQUIRED_ORDER]
     assert offsets == sorted(offsets)
 
-    install_section = readme.split("## Install", 1)[1].split("## Quick start", 1)[0]
-    proof_section = readme.split("## Quick start", 1)[1].split("## Live gateway checks", 1)[0]
-    assert install_section.count("```bash") == 1
-    assert "pip install verdict-core" in install_section
+    # P1-1 reorder: Quick start now precedes Install (a reviewer sees the
+    # refusal proof before setup instructions), so each section is sliced to
+    # its own next "## " heading rather than assuming a fixed pair order.
+    def _section(heading: str) -> str:
+        after = readme.split(heading, 1)[1]
+        next_heading = re.search(r"\n## ", after)
+        return after[: next_heading.start()] if next_heading else after
+
+    install_section = _section("## Install")
+    proof_section = _section("## Quick start")
+    # Install now documents both `pip install` and the optional installer
+    # script (moved out of Quick start during the P1-1 reorder), so it holds
+    # two bash blocks rather than one; the pip command must be the first.
+    assert install_section.count("```bash") == 2
+    assert "pip install verdict-core" in install_section.split("```bash", 2)[1]
     assert "verdict quickstart --non-interactive --dry-run" in proof_section
 
     markdown_links = re.findall(r"(?<!!)\[[^]]+\]\(([^)]+)\)", readme)
@@ -134,7 +150,12 @@ def test_readme_reader_path_is_ordered_and_local_links_resolve() -> None:
         target_name, _, fragment = destination.partition("#")
         target = readme_path if not target_name else readme_path.parent / unquote(target_name)
         assert target.exists(), f"README link target does not exist: {destination}"
-        if fragment:
+        if fragment and target.suffix.lower() in (".md", ".mdx"):
+            # Match scripts/check_doc_links.py: markdown-heading-anchor
+            # validation only applies to Markdown targets. Non-Markdown
+            # targets (e.g. verdict/live_routing.py#L85-L93) use GitHub's
+            # source-line permalink convention, which is unrelated to
+            # Markdown heading slugs and is not checked here.
             assert target.is_file(), f"README fragment target is not a file: {destination}"
             target_text = target.read_text(encoding="utf-8")
             headings = {

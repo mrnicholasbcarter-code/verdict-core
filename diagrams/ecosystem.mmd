@@ -1,0 +1,50 @@
+%% ecosystem.mmd -- cross-repo map (supplementary; not embedded in README)
+%% Source (verified against code at this commit):
+%%   pyproject.toml, contracts/package.json (this repo)
+%%   /home/nick/dev/verdict-node/package.json, /home/nick/dev/verdict-cockpit/package.json
+%%   /home/nick/dev/verdict-risk/pyproject.toml, verdict-strategy/pyproject.toml, verdict-backtest/pyproject.toml, verdict-continuity/pyproject.toml
+%%   PyPI/npm publication status is UNVERIFIED (no live network call made); every edge states what a local file DECLARES
+flowchart TD
+    subgraph CP["Control plane"]
+        core["verdict-core: fail-closed LLM routing, gates before ranking (pyproject.toml name=verdict-core version=0.3.0)"]
+        contracts["contracts/: @bodanglin/verdict-contracts version=0.3.0 (Zod contracts, package.json in this repo)"]
+    end
+
+    subgraph CS["Clients and SDKs"]
+        node["verdict-node: package.json name=@bodanglin/verdict-node version=0.1.0"]
+    end
+
+    subgraph SF["Surfaces"]
+        cockpit["verdict-cockpit: package.json name=verdict-cockpit version=0.1.0"]
+    end
+
+    subgraph DA["Domain applications (quant)"]
+        risk["verdict-risk: pyproject.toml name=llm-gate-risk version=0.1.0"]
+        strategy["verdict-strategy: pyproject.toml name=verdict-edge version=0.1.0"]
+        backtest["verdict-backtest: pyproject.toml name=llm-gate-backtest version=0.1.0"]
+    end
+
+    subgraph PV["Private"]
+        continuity["verdict-continuity: pyproject.toml name=verdict-continuity version=0.1.0"]
+    end
+
+    contracts -.->|node declares verdict-contracts ^0.2.0 dependency| node
+    contracts -.->|cockpit declares verdict-contracts ^0.1.0 dependency| cockpit
+    strategy -.->|test_core_conformance.py round-trips a provider receipt shape, cites ADR-021| core
+    node -.->|README: Verdict Core decides, verdict-node enforces at the HTTP edge| core
+
+    classDef flag stroke-width:3px
+    class core flag
+%% evidence: pyproject.toml:18 name = "verdict-core", version = "0.3.0" (this repo)
+%% evidence: contracts/package.json "name": "@bodanglin/verdict-contracts", "version": "0.3.0" (this repo)
+%% evidence: /home/nick/dev/verdict-node/package.json "name": "@bodanglin/verdict-node", "version": "0.1.0", dependencies."@bodanglin/verdict-contracts" = "^0.2.0"
+%% evidence: /home/nick/dev/verdict-cockpit/package.json "name": "verdict-cockpit", "version": "0.1.0", dependencies."@bodanglin/verdict-contracts" = "^0.1.0"
+%% evidence: /home/nick/dev/verdict-risk/pyproject.toml name = "llm-gate-risk", version = "0.1.0" -- NOT named "verdict-risk" as a package
+%% evidence: /home/nick/dev/verdict-strategy/pyproject.toml name = "verdict-edge", version = "0.1.0" -- NOT named "verdict-strategy" as a package
+%% evidence: /home/nick/dev/verdict-backtest/pyproject.toml name = "llm-gate-backtest", version = "0.1.0" -- NOT named "verdict-backtest" as a package
+%% evidence: /home/nick/dev/verdict-continuity/pyproject.toml name = "verdict-continuity", version = "0.1.0"
+%% evidence: /home/nick/dev/verdict-strategy/tests/test_core_conformance.py -- pytest.importorskip("verdict.provider_receipts"); docstring cites ADR-021; builds/round-trips a provider receipt against verdict.provider_receipts
+%% evidence: /home/nick/dev/verdict-node/README.md -- literal quote "Verdict Core decides, verdict-node enforces at the HTTP edge"
+%% UNVERIFIED (would need a live network call, not made here): PyPI publication status of verdict-core, npm publication status of @bodanglin/verdict-contracts / @bodanglin/verdict-node / verdict-cockpit.
+%% UNVERIFIED / STALE: verdict-ecosystem/compatibility-manifest.json is itself out of date (lists verdict-core artifact_version 0.2.0, a null schema_hash for verdict-node) and was NOT used as a source for this diagram.
+%% verdict-risk and verdict-backtest reference verdict-core only in README prose -- no import, no manifest dependency in their pyproject.toml (grepped and confirmed absent). Not drawn as edges.
