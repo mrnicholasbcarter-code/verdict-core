@@ -134,3 +134,22 @@ def test_cli_help_lists_sync_models(
         cli.main()
     assert exc.value.code == 0
     assert "--dry-run" in capsys.readouterr().out
+
+
+def test_sync_writes_models_and_backup_owner_only(tmp_path: Path) -> None:
+    """models.json can hold provider credentials: every write is 0600, even from a wider mode."""
+    import os
+    import stat
+
+    home = _home(tmp_path)
+    models = home / "models.json"
+    os.chmod(models, 0o664)
+    old_umask = os.umask(0o002)
+    try:
+        result = sync_models(LIVE, dry_run=False, prime_home=home)
+    finally:
+        os.umask(old_umask)
+    assert result.written is True and result.backup_path is not None
+    assert stat.S_IMODE(models.stat().st_mode) == 0o600
+    assert stat.S_IMODE(Path(result.backup_path).stat().st_mode) == 0o600
+    assert not (home / "models.json.tmp").exists()

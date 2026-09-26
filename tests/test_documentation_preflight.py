@@ -635,6 +635,9 @@ def test_preflight_deadline_stops_slow_ingest_and_blocks(
     assert report.passed is False
     assert report.ingested == 2  # third entry is never started
     assert report.to_dict()["timed_out"] is True
+    # A timed-out scan is never serialized as "ready" (docs/CLI_REFERENCE.md doctor section).
+    assert report.state == "unknown"
+    assert report.to_dict()["state"] == "unknown"
 
 
 def test_preflight_zero_deadline_times_out_before_any_source(tmp_path: Path) -> None:
@@ -645,6 +648,7 @@ def test_preflight_zero_deadline_times_out_before_any_source(tmp_path: Path) -> 
     assert report.timed_out is True
     assert report.status == "blocked"
     assert report.ingested == 0
+    assert report.state == "unknown"
 
 
 def test_preflight_without_deadline_never_times_out(tmp_path: Path) -> None:

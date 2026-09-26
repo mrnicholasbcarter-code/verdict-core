@@ -91,7 +91,8 @@ class DocumentationPreflightReport:
     def state(self) -> str:
         """Return the stable diagnostic state for automation consumers."""
 
-        if self.unverifiable:
+        if self.unverifiable or self.timed_out:
+            # A timed-out scan did not verify every document: never "ready".
             return "unknown"
         if self.repaired and self.passed:
             return "repaired"
