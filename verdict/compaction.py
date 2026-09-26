@@ -1,8 +1,8 @@
-"""Harness-neutral semantic checkpoint/compaction lifecycle (compaction).
+"""Harness-neutral semantic checkpoint/compaction lifecycle.
 
-Canonical compaction/handoff contract shared with Continuity C03 / BOD-81.
+Canonical compaction/handoff contract shared with Continuity C03.
 Deterministic structured-state compaction — not an LLM summarizer and not a
-second budget stack (BOD-125 owns total-window accounting).
+second budget stack (the context budget governor owns total-window accounting).
 
 Semantic events (adapters map brand hooks onto these):
 

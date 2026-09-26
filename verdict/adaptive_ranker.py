@@ -96,8 +96,8 @@ class AdaptiveRanker:
     It can NEVER reintroduce excluded candidates.
     Shadow mode means it never affects live selection.
 
-    BOD-127: AdaptiveRanker remains advisory/feed-only. Production serve
-    strategy authority is ``optimize_execution_path`` (BOD-104).
+    AdaptiveRanker remains advisory/feed-only. Production serve strategy
+    authority is ``optimize_execution_path``.
     """
 
     def __init__(

@@ -1,7 +1,8 @@
-"""Live capacity evidence contracts (capacity evidence).
+"""Live capacity evidence contracts.
 
 Evidence producers only — never routing, economics, or recovery authority.
-Projects into BOD-92 / BOD-54 / BOD-104 consumer shapes via capacity_project.
+Projects into runtime-certification, expected-cost, and execution-path consumer
+shapes via capacity_project.
 """
 
 from __future__ import annotations

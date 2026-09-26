@@ -76,7 +76,7 @@ class NormalizedFailureClass(str, Enum):
     UPSTREAM = "upstream"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
-    OVERLOADED = "overloaded"  # BOD-198: 529 provider capacity/infrastructure pressure
+    OVERLOADED = "overloaded"  # 529 provider capacity/infrastructure pressure
 
 
 TELEMETRY_FIELDS = frozenset(
