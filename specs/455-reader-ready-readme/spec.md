@@ -1,6 +1,6 @@
-# Feature Specification: Recruiter-Ready README and Proof Demo
+# Feature Specification: Reader-Ready README and Proof Demo
 
-**Feature Branch**: `feat/455-recruiter-ready-readme`
+**Feature Branch**: `feat/455-reader-ready-readme`
 
 **Created**: 2026-09-06
 
@@ -12,13 +12,13 @@
 
 ### Session 2026-09-06
 
-- Q: May this existing PR keep its Spec Kit records in `specs/455-recruiter-ready-readme/`, where the repository tooling already resolves them? → A: Keep the existing location. The user approved this story-specific exception to the workspace `.specify/specs/` convention.
+- Q: May this existing PR keep its Spec Kit records in `specs/455-reader-ready-readme/`, where the repository tooling already resolves them? → A: Keep the existing location. The user approved this story-specific exception to the workspace `.specify/specs/` convention.
 
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Understand and run the flagship proof (Priority: P1)
 
-A recruiter, hiring manager, or engineer landing on Verdict can identify the product, install it, run one command without credentials or a gateway, and see a deterministic routing decision with the selected route, named exclusions, and an explicitly labeled fixture receipt.
+An engineering reviewer or engineer landing on Verdict can identify the product, install it, run one command without credentials or a gateway, and see a deterministic routing decision with the selected route, named exclusions, and an explicitly labeled fixture receipt.
 
 **Why this priority**: The portfolio's first job is to create a credible technical conversation quickly. A visitor must see the product's differentiator before reading architecture or implementation history.
 
@@ -112,7 +112,7 @@ A contributor or evaluator can follow the README, source checkout instructions, 
 
 - The existing deterministic flagship fixture is the source of truth for the no-key proof; this feature does not create a second routing engine.
 - Python 3.10+ and the repository's documented package installation are available to the evaluator.
-- Live gateway checks remain optional and are not required for the primary recruiter-ready proof.
+- Live gateway checks remain optional and are not required for the primary reader-ready proof.
 - The existing test suite and repository CI define the required implementation gates; this feature adds focused assertions for the receipt output.
 - A fixture receipt identifier is intentionally synthetic and is labeled as such.
 - The scope is limited to `verdict-core`; LiteLLM, OmniRoute adapters, quant consolidation, and cockpit work remain separate Project #6 stories.

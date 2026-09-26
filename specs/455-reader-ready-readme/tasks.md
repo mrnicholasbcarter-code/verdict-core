@@ -1,6 +1,6 @@
-# Tasks: Recruiter-Ready README and Proof Demo
+# Tasks: Reader-Ready README and Proof Demo
 
-**Input**: Design documents from `specs/455-recruiter-ready-readme/`
+**Input**: Design documents from `specs/455-reader-ready-readme/`
 
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/proof-output.md`, `quickstart.md`
 
@@ -10,7 +10,7 @@
 
 **Purpose**: Bind work and evidence to the exact implementation state without changing behavior.
 
-- [X] T001 Record the implementation starting SHA, PR head SHA, changed-file scope, and existing required check names in `specs/455-recruiter-ready-readme/tasks.md` implementation notes without marking prospective evidence complete
+- [X] T001 Record the implementation starting SHA, PR head SHA, changed-file scope, and existing required check names in `specs/455-reader-ready-readme/tasks.md` implementation notes without marking prospective evidence complete
 - [X] T002 Inspect the canonical report renderer, README proof block, installer verification path, and documentation tests in `verdict/flagship_demo.py`, `README.md`, `quickstart.sh`, `tests/test_flagship_demo.py`, and `tests/test_documentation_smoke.py`
 
 ---
@@ -84,7 +84,7 @@
 
 - T001–T002 establish the baseline.
 - T003–T004 must precede corrective implementation.
-- US1 T005–T010 is the MVP and must finish before the story can be represented as recruiter-ready.
+- US1 T005–T010 is the MVP and must finish before the story can be represented as reader-ready.
 - US2 T011–T012 and US3 T013–T016 may proceed after foundational tests, but edits to `README.md` require one integration owner and serialization.
 - T017–T020 run only after the intended implementation and evidence artifacts are final.
 - T009 precedes T010 because the terminal capture must show the same final fresh-install journey.
@@ -108,14 +108,14 @@
 ## Implementation Notes
 
 - Starting implementation commit and original PR head: `1a983b1a262aa6d5eb4213004eb39b852c5cb0a9`.
-- Original PR scope before recovery: `.specify/feature.json`, `README.md`, `quickstart.sh`, `specs/455-recruiter-ready-readme/`, `tests/test_flagship_demo.py`, and `verdict/flagship_demo.py`.
+- Original PR scope before recovery: `.specify/feature.json`, `README.md`, `quickstart.sh`, `specs/455-reader-ready-readme/`, `tests/test_flagship_demo.py`, and `verdict/flagship_demo.py`.
 - Required remote checks observed on the original head were benchmark, contract parity, CodeQL, OSV, Python/Node security, SBOM, lint, test, type-check, dynamic check, install smoke, example smoke, and build. They are not evidence for the final uncommitted implementation snapshot; T018 remains open.
 - The pre-existing untracked `handy.txt` is outside this feature and must remain untouched.
 
 ## Implementation Notes
 
 - Starting implementation commit and original PR head: `1a983b1a262aa6d5eb4213004eb39b852c5cb0a9`.
-- Original PR scope before recovery: `.specify/feature.json`, `README.md`, `quickstart.sh`, `specs/455-recruiter-ready-readme/`, `tests/test_flagship_demo.py`, and `verdict/flagship_demo.py`.
+- Original PR scope before recovery: `.specify/feature.json`, `README.md`, `quickstart.sh`, `specs/455-reader-ready-readme/`, `tests/test_flagship_demo.py`, and `verdict/flagship_demo.py`.
 - Required remote checks observed on the original head were benchmark, contract parity, CodeQL, OSV, Python/Node security, SBOM, lint, test, type-check, dynamic check, install smoke, example smoke, and build. They are not evidence for the final uncommitted implementation snapshot; T018 remains open.
 - The pre-existing untracked `handy.txt` is outside this feature and must remain untouched.
 

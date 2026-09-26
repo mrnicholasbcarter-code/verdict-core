@@ -1,4 +1,4 @@
-# Research: Recruiter-Ready README and Proof Demo
+# Research: Reader-Ready README and Proof Demo
 
 ## Decision 1: Treat the human-readable CLI renderer as the output authority
 

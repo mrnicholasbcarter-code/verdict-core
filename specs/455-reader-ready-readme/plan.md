@@ -1,8 +1,8 @@
-# Implementation Plan: Recruiter-Ready README and Proof Demo
+# Implementation Plan: Reader-Ready README and Proof Demo
 
-**Branch**: `feat/455-recruiter-ready-readme` | **Date**: 2026-09-07 | **Spec**: [spec.md](spec.md)
+**Branch**: `feat/455-reader-ready-readme` | **Date**: 2026-09-07 | **Spec**: [spec.md](spec.md)
 
-**Input**: Feature specification from `specs/455-recruiter-ready-readme/spec.md`
+**Input**: Feature specification from `specs/455-reader-ready-readme/spec.md`
 
 ## Summary
 
@@ -32,7 +32,7 @@ Make the public proof path mechanically match the credential-free CLI output, pr
 
 *GATE: Passed before research and re-checked after design.*
 
-- **Repository ownership**: PASS — all planned files belong to `verdict-core`; the user explicitly approved `specs/455-recruiter-ready-readme/` for this story.
+- **Repository ownership**: PASS — all planned files belong to `verdict-core`; the user explicitly approved `specs/455-reader-ready-readme/` for this story.
 - **Documentation before dependencies**: PASS — no dependency is added or changed.
 - **Verification is part of the change**: PASS — tasks bind requirements to focused tests, clean-environment execution, link/fragment checks, terminal capture, and exact-head CI evidence.
 - **Evidence honesty**: PASS — prospective commands must capture actual output and failure status; automated checks are not represented as human skim verification.
@@ -46,7 +46,7 @@ Post-design re-check: PASS. The data model and CLI contract are descriptive, int
 ### Documentation (this feature)
 
 ```text
-specs/455-recruiter-ready-readme/
+specs/455-reader-ready-readme/
 ├── spec.md
 ├── plan.md
 ├── research.md

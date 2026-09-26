@@ -1,4 +1,4 @@
-# Validation Guide: Recruiter-Ready README and Proof Demo
+# Validation Guide: Reader-Ready README and Proof Demo
 
 This guide is prospective. Commands below are validation steps, not claims that evidence already exists. Record actual return codes, output, source revision, and limitations during implementation.
 

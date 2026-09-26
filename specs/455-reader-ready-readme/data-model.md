@@ -1,4 +1,4 @@
-# Data Model: Recruiter-Ready README and Proof Demo
+# Data Model: Reader-Ready README and Proof Demo
 
 This feature adds no database or durable application model. These records describe the documentation and evidence contracts that implementation and validation must keep aligned.
 

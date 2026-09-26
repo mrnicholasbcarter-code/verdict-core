@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Recruiter-Ready README and Proof Demo
+# Specification Quality Checklist: Reader-Ready README and Proof Demo
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-09-06
