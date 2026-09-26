@@ -35,10 +35,7 @@ def _selector(model_id: str) -> str:
 
 
 def test_worker_provider_scope_is_a_hard_gate_before_probe(tmp_path: Path) -> None:
-    rows = [
-        _row("antigravity/claude-opus-4-6-thinking"),
-        _row("kr/qwen3-coder-next"),
-    ]
+    rows = [_row("antigravity/claude-opus-4-6-thinking"), _row("kr/qwen3-coder-next")]
     visible = [_selector(str(row["id"])) for row in rows]
     task = WorkerTask(
         required_capabilities=frozenset({"tools"}),
@@ -70,10 +67,7 @@ def test_worker_provider_scope_is_a_hard_gate_before_probe(tmp_path: Path) -> No
 
 
 def test_authorized_pool_exhaustion_fails_closed_without_provider_escape(tmp_path: Path) -> None:
-    rows = [
-        _row("kr/claude-sonnet-5"),
-        _row("antigravity/claude-opus-4-6-thinking"),
-    ]
+    rows = [_row("kr/claude-sonnet-5"), _row("antigravity/claude-opus-4-6-thinking")]
     visible = [_selector(str(row["id"])) for row in rows]
     task = WorkerTask(
         required_capabilities=frozenset({"tools"}),
@@ -122,6 +116,23 @@ def test_active_controller_identity_is_never_a_worker_candidate() -> None:
     assert "kr/claude-sonnet-5" in route_ids
 
 
+def test_provider_scoped_failure_persists_across_sibling_routes(tmp_path: Path) -> None:
+    rows = [_row("cc/a"), _row("cc/b")]
+    visible = [_selector(str(row["id"])) for row in rows]
+    candidates = eligible_worker_candidates(
+        WorkerTask(allowed_route_prefixes=frozenset({"cc/"})), rows, visible
+    )
+    first = next(candidate for candidate in candidates if candidate.route_id == "cc/a")
+    cache = HealthCache(tmp_path / "health.json")
+
+    cache.record_failure(first, classify_probe_status(403), now=NOW)
+
+    sibling = cache.usable("omniroute/cc/b", now=NOW)
+    assert sibling is not None
+    assert sibling.healthy is False
+    assert sibling.category == "permission"
+
+
 class _RuntimeAdapter:
     def __init__(self) -> None:
         self.spawned: list[str] = []
@@ -165,13 +176,20 @@ async def test_provider_terminal_failure_rolls_to_next_provider_on_first_failure
     assert outcome.state == "SUCCESS"
     assert outcome.candidate is not None
     assert outcome.candidate.route_id == "kr/c"
-    # cc/b is skipped from the same provider cooldown; no duplicate Prime retry.
     assert adapter.spawned == ["omniroute/cc/a", "omniroute/kr/c"]
     assert adapter.deleted == ["omniroute/cc/a"]
     assert any(
-        event.get("event") == "health"
+        event.get("event") == "failure"
         and event.get("provider") == "cc"
         and event.get("classification") == "permission"
-        and event.get("eligible") is False
+        and event.get("provider_wide") is True
+        for event in runtime.events
+    )
+    assert any(
+        event.get("event") == "exclusion"
+        and event.get("model") == "omniroute/cc/b"
+        and event.get("provider") == "cc"
+        and event.get("classification") == "permission"
+        and event.get("provider_wide") is True
         for event in runtime.events
     )
