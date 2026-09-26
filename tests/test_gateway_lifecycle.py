@@ -350,6 +350,61 @@ def test_probe_exception_is_treated_as_unreachable_not_as_a_crash(tmp_path: Path
     assert outcome.diagnostic.code == "gateway_start_command_missing"
 
 
+# --- the start command is never echoed --------------------------------------
+
+
+def test_no_diagnostic_or_serialization_carries_the_start_argv(tmp_path: Path) -> None:
+    """A token on the start command line must not reach a diagnostic or a receipt.
+
+    The launch failure path is the dangerous one: an exception raised by the
+    launcher can quote the argv it was handed.
+    """
+    argv = ("fake-gateway", "serve", "--api-key", "sk-SECRETTOKEN123")
+    launcher = CountingLauncher(
+        error=FileNotFoundError(f"[Errno 2] No such file or directory: {argv!r}")
+    )
+    outcome = _ensure(_result(start_command=argv), FakeProbe(CLOSED), tmp_path, launcher=launcher)
+
+    assert outcome.state == "failed_to_start"
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_start_failed"
+    for rendered in (
+        repr(outcome.to_dict()),
+        outcome.describe(),
+        repr(outcome.diagnostic.to_dict()),
+    ):
+        assert "sk-SECRETTOKEN123" not in rendered
+        assert "--api-key" not in rendered
+    # The binary is still named, so the operator can act on the report.
+    assert "fake-gateway" in outcome.diagnostic.detail
+    assert launcher.launches[0][0] == argv, "the runtime argv is unchanged"
+
+
+def test_the_start_command_is_absent_from_every_outcome_field(tmp_path: Path) -> None:
+    """Even on the success path, no outcome field carries the argv."""
+    argv = ("fake-gateway", "--token", "sk-ANOTHERSECRET")
+    outcome = _ensure(
+        _result(start_command=argv),
+        FakeProbe(CLOSED, CLOSED, HEALTHY),
+        tmp_path,
+        launcher=CountingLauncher(),
+    )
+
+    assert outcome.state == "started"
+    assert "sk-ANOTHERSECRET" not in repr(outcome.to_dict())
+    assert "sk-ANOTHERSECRET" not in outcome.describe()
+    assert "--token" not in repr(outcome.to_dict())
+
+
+def test_scrubbing_removes_a_short_argument_that_is_part_of_a_longer_one() -> None:
+    """Longest-first replacement, so no fragment of a token survives."""
+    argv = ("gw", "--key", "sk-AB", "--other", "sk-ABCDEF")
+    scrubbed = gl._scrub_argv("failed: sk-ABCDEF and sk-AB via --key", argv)
+    assert "sk-ABCDEF" not in scrubbed
+    assert "sk-AB" not in scrubbed
+    assert "--key" not in scrubbed
+
+
 # --- real-process reaping ---------------------------------------------------
 
 

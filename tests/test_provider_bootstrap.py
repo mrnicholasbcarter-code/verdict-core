@@ -6,6 +6,7 @@ is called. Gateway health is exercised through an injected probe.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from verdict.provider_bootstrap import (
     GatewayProbeResult,
     bootstrap_config_path,
     describe_bootstrap_failure,
+    redact_start_command,
     redact_url,
     resolve_provider_bootstrap,
     verify_gateway_reachable,
@@ -807,14 +809,60 @@ def test_non_positive_or_non_numeric_readiness_timeout_is_refused(value: str) ->
 
 
 def test_lifecycle_fields_are_serialized_for_receipts(tmp_path: Path) -> None:
-    """``to_dict`` carries the lifecycle inputs so a receipt records them."""
-    payload = resolve_provider_bootstrap(
-        env={}, config_path=_write(tmp_path, _LIFECYCLE_CONFIG)
-    ).to_dict()
+    """``to_dict`` records the lifecycle inputs without echoing the argv.
 
-    assert payload["gateway_start_command"] == ["omniroute", "serve", "--port", "20128"]
+    Rewritten: the original asserted that ``to_dict`` emits the start command
+    verbatim as a list. That is wrong, and this module's own
+    ``_parse_start_command`` docstring says why -- "a start command can carry a
+    token" -- while ``to_dict`` output reaches receipts, structured logs and
+    ``--json``. A receipt needs to record which gateway binary was configured and
+    where the value came from, not the arguments it was given.
+
+    This asserts everything the old test did (the command is recorded, the timeout
+    is recorded, the source is recorded) and adds the stricter requirement: no
+    argument survives serialization, and the argument count is disclosed instead.
+    The runtime tuple is untouched, which the launch assertions elsewhere cover.
+    """
+    result = resolve_provider_bootstrap(env={}, config_path=_write(tmp_path, _LIFECYCLE_CONFIG))
+    payload = result.to_dict()
+
+    assert result.gateway_start_command == ("omniroute", "serve", "--port", "20128")
+    assert payload["gateway_start_command"] == "omniroute <3 arguments redacted>"
     assert payload["gateway_ready_timeout_s"] == 12.5
     assert payload["field_sources"]["gateway_start_command"] == "config_file"
+    # '20128' is excluded: it is legitimately the port of the recorded gateway_url.
+    for argument in ("serve", "--port"):
+        assert argument not in repr(payload), f"{argument!r} must not be serialized"
+
+
+def test_to_dict_never_serializes_a_token_from_the_start_command(tmp_path: Path) -> None:
+    """A token on the start command line must not reach a receipt or a log."""
+    body = (
+        _VALID_CONFIG + "gateway_start_command: [omniroute, serve, --api-key, sk-SECRETTOKEN123]\n"
+    )
+    result = resolve_provider_bootstrap(env={}, config_path=_write(tmp_path, body))
+
+    assert result.gateway_start_command is not None
+    assert "sk-SECRETTOKEN123" in result.gateway_start_command, "the runtime argv is unchanged"
+
+    payload = result.to_dict()
+
+    assert "sk-SECRETTOKEN123" not in repr(payload)
+    assert "--api-key" not in repr(payload)
+    assert payload["gateway_start_command"] == "omniroute <3 arguments redacted>"
+    assert json.dumps(payload).find("SECRETTOKEN") == -1
+
+
+def test_start_command_redaction_basenames_the_program_and_counts_arguments() -> None:
+    """The rendered form names the binary, hides a path, and counts what it withheld."""
+    assert redact_start_command(None) is None
+    assert redact_start_command(()) == "<empty>"
+    assert redact_start_command(("omniroute",)) == "omniroute"
+    assert redact_start_command(("omniroute", "serve")) == "omniroute <1 argument redacted>"
+    # A full path can disclose a home directory or a deployment layout.
+    assert redact_start_command(("/home/alice/bin/omniroute", "--token", "x")) == (
+        "omniroute <2 arguments redacted>"
+    )
 
 
 def test_resolver_still_never_starts_or_probes_a_gateway() -> None:

@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -48,6 +48,7 @@ __all__ = [
     "bootstrap_config_path",
     "describe_bootstrap_failure",
     "load_credential_store_env",
+    "redact_start_command",
     "redact_url",
     "resolve_provider_bootstrap",
     "verify_gateway_reachable",
@@ -234,9 +235,10 @@ class BootstrapResult:
             "config_present": self.config_present,
             "field_sources": dict(sorted(self.field_sources.items())),
             "diagnostics": [d.to_dict() for d in self.diagnostics],
-            "gateway_start_command": (
-                None if self.gateway_start_command is None else list(self.gateway_start_command)
-            ),
+            # Rendered as program name plus a redacted-argument marker: the argv
+            # can carry a token, and this dict reaches receipts and logs. The
+            # runtime tuple is unchanged, so the launch is unaffected.
+            "gateway_start_command": redact_start_command(self.gateway_start_command),
             "gateway_ready_timeout_s": self.gateway_ready_timeout_s,
         }
 
@@ -276,6 +278,29 @@ def load_credential_store_env() -> dict[str, str]:
         # A missing, unreadable or insecure store is not a bootstrap failure; the
         # resolver still reports any name that stays unset as credential_env_missing.
         return {}
+
+
+def redact_start_command(argv: Sequence[str] | None) -> str | None:
+    """Render a start command without its arguments.
+
+    A start command routinely carries a token on its command line (``--api-key
+    sk-...``), and ``to_dict`` output reaches receipts, structured logs and
+    ``--json``. Only the program name is rendered, plus a count of the arguments
+    that were withheld, so an operator can still tell which binary is configured
+    and whether it was given arguments.
+
+    The program name itself is basenamed: a full path can disclose a home
+    directory or a deployment layout.
+    """
+    if argv is None:
+        return None
+    if not argv:
+        return "<empty>"
+    program = os.path.basename(str(argv[0]).strip()) or "<unnamed>"
+    withheld = len(argv) - 1
+    if withheld <= 0:
+        return program
+    return f"{program} <{withheld} argument{'s' if withheld != 1 else ''} redacted>"
 
 
 def redact_url(value: str) -> str:

@@ -28,7 +28,7 @@ import os
 import signal
 import subprocess  # nosec B404: launches an operator-supplied argv with shell=False.
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -38,6 +38,7 @@ from verdict.provider_bootstrap import (
     BootstrapDiagnostic,
     BootstrapError,
     BootstrapResult,
+    redact_start_command,
     redact_url,
 )
 
@@ -292,6 +293,22 @@ def is_loopback_gateway(gateway_url: str) -> bool:
     """True when the URL names this host, the only place we may start a process."""
     host = (urlsplit(gateway_url).hostname or "").strip().lower()
     return host in _LOOPBACK_HOSTS
+
+
+def _scrub_argv(text: str, argv: Sequence[str]) -> str:
+    """Remove every start-command argument from a message before it is reported.
+
+    An exception raised by the launcher can quote the argv it was given, and a
+    start command routinely carries a token. The program name is kept, because an
+    operator needs to know which binary failed; every argument after it is
+    replaced. Longest first, so a short argument that is a substring of a longer
+    one cannot leave a fragment behind.
+    """
+    scrubbed = str(text)
+    for argument in sorted((str(item) for item in argv[1:]), key=len, reverse=True):
+        if argument:
+            scrubbed = scrubbed.replace(argument, "<redacted>")
+    return scrubbed
 
 
 def _diagnostic(
@@ -579,6 +596,8 @@ def _ensure(
                 (launcher or SubprocessGatewayLauncher()).launch(tuple(argv), cwd=lock.parent)
             )
         except Exception as exc:
+            # The exception text can quote the argv it was handed, and the argv can
+            # carry a token, so every argument is scrubbed out of the report.
             return emit(
                 "failed_to_start",
                 attempts=attempts,
@@ -586,8 +605,9 @@ def _ensure(
                 diagnostic=_diagnostic(
                     "gateway_start_failed",
                     detail=(
-                        f"the configured gateway_start_command could not be launched: "
-                        f"{type(exc).__name__}: {exc}"
+                        f"the configured gateway_start_command "
+                        f"({redact_start_command(tuple(argv))}) could not be launched: "
+                        f"{type(exc).__name__}: {_scrub_argv(str(exc), tuple(argv))}"
                     ),
                     remediation=(
                         f"check that the first argument of gateway_start_command is an "
