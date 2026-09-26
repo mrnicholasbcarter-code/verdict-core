@@ -52,3 +52,28 @@ flowchart TD
     DISP --> DNOROUTE["selected_route is None and authorized_runtime_id is empty -> DispatchResult reason=missing_authorized_selected_route"]
     DISP --> DNOELIG["eligible candidates list is empty -> DispatchResult reason='no eligible candidates'"]
     DISP --> DMISMATCH["authorized_runtime_id has no matching eligible candidate -> raise ExecutionPathError"]
+%% evidence: verdict/api.py:944 async def route_task(request, req)
+%% evidence: verdict/api.py:909 def _authority_context(payload, *, task) -- rejects client execution_path_decision
+%% evidence: verdict/api.py:923 async def _route_with_intelligence(...)
+%% evidence: verdict/api.py:929,932 CONTEXT_REQUIRE_AUTHORITY imported from verdict.serve_path, merged.setdefault(..., True)
+%% evidence: verdict/api.py:936-940,949-952 ExecutionPathError caught -> HTTPException(400, str(exc))
+%% evidence: verdict/api.py:978 status_code = 200 if decision.decision != "denied" else 503
+%% evidence: verdict/api.py:1427 async def _relay_completion(request, *, surface)
+%% evidence: verdict/api.py:1515,1606,1608 decision.decision == "denied" branch; proxy_instance.responses / proxy_instance.chat
+%% evidence: verdict/gate.py:115,152-155 class Gate.route delegates to self.intelligence.route (sync/async bridge)
+%% evidence: verdict/intelligence.py:211,360 class IntelligenceService, async def route(...)
+%% evidence: verdict/intelligence.py:392-403 resolve_execution_path_decision / require_serve_path_decision imported and called
+%% evidence: verdict/intelligence.py:437 raise ExecutionPathError("missing ExecutionPathDecision; ...")
+%% evidence: verdict/intelligence.py:30 from verdict.escalation import scan; :447 self.planner.plan(task_str, ...).task_spec
+%% evidence: verdict/intelligence.py:476 final_tier = min(task_tier, safety_floor, eff_tier if eff_tier is not None else 3)
+%% evidence: verdict/intelligence.py:478 self._offload_free_tier(...) called when final_tier > 0 and not allow_offline
+%% evidence: verdict/intelligence.py:501,507 self.static_catalog() / fetch_models(name, cfg, self.discovery_ttl)
+%% evidence: verdict/intelligence.py:514 self.eligibility_gate.evaluate(candidates, protected=(final_tier == 0), dev_mode=...)
+%% evidence: verdict/intelligence.py:576-579 select_best_eligible_model(eligibility, final_tier, self.providers) if eligibility is not None else select_best_model(candidates, final_tier, self.providers)
+%% evidence: verdict/intelligence.py:623-644 final_tier == 0 or not best_model -> fallback RoutingDecision (decision="fallback" if best_model is None else "selected")
+%% evidence: verdict/eligibility.py:143,165,189 class EligibilityGate, def evaluate, def _judge
+%% evidence: verdict/router.py:7 select_best_model / router.py:44 select_best_eligible_model
+%% evidence: verdict/proxy.py:199 async def chat / proxy.py:205 async def responses / proxy.py:223 async def _forward
+%% evidence: verdict/dispatcher.py:135,147 class SwarmDispatcher, def dispatch
+%% evidence: verdict/dispatcher.py:181-195 missing_authorized_selected_route / "no eligible candidates"
+%% evidence: verdict/dispatcher.py:198-206 authorized_runtime_id mismatch -> raise ExecutionPathError

@@ -48,3 +48,24 @@ flowchart TD
 
     CONF["_confidence_for(report): errors -> 0.0; source in {unknown, cache} and no candidates -> 0.0; source in {unknown, cache} -> scaled by eligible/candidates; else eligible/candidates ratio"]
     FREC --> CONF
+%% evidence: verdict/api.py:1238 async def route_explain(...)
+%% evidence: verdict/api.py:1259-1261 selector-count guard -> _proxy_error(400, ...)
+%% evidence: verdict/api.py:1275 _proxy_error(409, 'evidence selector is ambiguous; use evidence_id')
+%% evidence: verdict/api.py:1276-1279 _proxy_error(503, 'execution evidence is unavailable') / _proxy_error(404, 'routing evidence not found')
+%% evidence: verdict/api.py:1282-1284 availability_cache_instance is None -> _proxy_error(503, 'availability cache not configured (set OMNIROUTE_BASE_URL to enable)')
+%% evidence: verdict/api.py:1286-1290 scope-view base dict: kind, policy_version, cached_models, cache_state
+%% evidence: verdict/api.py:1295-1308 eligibility_gate_instance.evaluate(...) -> eligible_set / exclusions
+%% evidence: verdict/api.py:1312 record = availability_cache_instance.explain(model_id)
+%% evidence: verdict/api.py:1315-1327 eligibility_gate_instance.evaluate(...) -> record["eligibility"], record["eligible"]
+%% evidence: verdict/api.py:398-399 DEFAULT_AVAILABILITY_TTL_SECONDS = 60 / DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
+%% evidence: verdict/api.py:510-517 AvailabilityCache(source=enriched.evaluate, ttl_seconds=..., stale_window_seconds=...) / EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=...)
+%% evidence: verdict/availability_cache.py:28,40 class CacheKey, def for_candidate
+%% evidence: verdict/availability_cache.py:48,62,66 class _Entry, def is_fresh, def is_within_stale_window
+%% evidence: verdict/availability_cache.py:129 def get (fresh / SWR / sync refresh path)
+%% evidence: verdict/availability_cache.py:162 def explain (fresh|stale|expired|error)
+%% evidence: verdict/availability_cache.py:235 def _maybe_refresh -- dedup via entry.refreshing
+%% evidence: verdict/availability_cache.py:253,294 def _refresh_locked / def _unknown_report
+%% evidence: verdict/availability_cache.py:312 def explain_freshness -- record field list
+%% evidence: verdict/availability_cache.py:75 def _confidence_for
+%% evidence: verdict/eligibility.py:59,70 class EligibilityRecord, def to_dict
+%% evidence: verdict/evidence.py:80 class AmbiguousEvidenceSelectorError(LookupError)
