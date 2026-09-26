@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from verdict import omniroute, worker_runtime
+from verdict import worker_runtime
 from verdict.availability import CandidateRequirements, OmniRouteAvailabilityAdapter, StaticOmniRouteTransport
 from verdict.subagent_selection import WorkerTask
 
@@ -107,7 +107,7 @@ def test_zero_quota_is_never_admitted_even_if_health_is_healthy() -> None:
 
 
 def test_runtime_source_selection_uses_every_documented_source_credentials_allow() -> None:
-    factory = getattr(omniroute, "configured_runtime_sources", None)
+    factory = getattr(worker_runtime, "configured_runtime_sources", None)
     assert callable(factory)
     assert factory(management_token=None, usage_api_key_id=None) == frozenset({"health"})
     assert factory(management_token="mgmt", usage_api_key_id=None) == frozenset(
