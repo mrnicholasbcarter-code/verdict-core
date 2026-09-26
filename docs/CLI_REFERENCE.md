@@ -111,7 +111,46 @@ verdict eligibility --frontier --json
 | `--probe` | Probe lazily to reach `SELECTED` |
 | `--reasoning` | Request reasoning-capable routes |
 | `--frontier` | Request frontier-capable routes |
+| `--provider-family FAMILY[,FAMILY]` | Only evaluate routes whose id prefix (before `/`) is listed, e.g. `cc,kr`; repeatable |
 | `--json` | Print JSON |
+| `--no-pager` | Never pipe human output through a pager |
+
+Output is never truncated. `--json` returns every evaluated verdict plus
+`filters` (active user filters), `evaluated_count` (= `len(verdicts)`), and a
+`summary` whose `selected` equals the top-level `selected.route_id` and whose
+`by_reached_stage` buckets sum to `evaluated_count`. Human output starts with a
+`filters:` line, then lists every route: selected, then ranked/eligible, then
+rejected grouped by failed stage. On a TTY it is piped through `$PAGER` (else
+`less -R`).
+
+The harness gate is the live gateway inventory (`GET /v1/models`, the same rows
+the ladder discovers). Prime's `~/.prime/agent/models.json` is only a fallback.
+With neither source available, every route is denied at `ENTITLED` with reason
+`harness_inventory_unavailable` (fail-closed).
+
+With `--probe`, the probe budget (8 per select) is spread round-robin across
+providers inside each capacity class. A `payment_required`, `permission`, or
+`authentication` probe failure sets a persisted `provider:<name>` cooldown. The
+other routes of that provider are then skipped (`cooldown:provider`) without a
+probe, in this select and in later ones. A 400 whose body says the id is "not
+available in the active live catalog" is `unservable`, with a 6 h route cooldown.
+
+### `verdict harness prime sync-models` — Sync Prime's OmniRoute model list
+
+```bash
+verdict harness prime sync-models --dry-run
+verdict harness prime sync-models --gateway http://127.0.0.1:20128
+```
+
+Fetches the live `/v1/models` and rewrites only `providers.omniroute.models` in
+`~/.prime/agent/models.json`. Existing per-model settings (for example
+`thinkingLevelMap`) are kept. Before it writes, it copies the file to
+`models.json.verdict-sync-<UTC stamp>.bak`. It prints the added and removed counts.
+
+| Flag | Description |
+|---|---|
+| `--gateway GATEWAY` | Gateway base URL (default `$OMNIROUTE_BASE_URL`, then `:20128`) |
+| `--dry-run` | Print the added/removed diff; write nothing |
 
 ---
 
