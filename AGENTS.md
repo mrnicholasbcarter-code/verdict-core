@@ -54,11 +54,11 @@ verdict/
 
 ## Key Flows
 
-**Route-decision flow** (`POST /v1/route`): `api.py:route_task()` → `IntelligenceService.route()` → `EligibilityGate.evaluate()` → `select_best_eligible_model()` (`verdict/router.py`) → `RoutingDecision` returned as JSON (no upstream call)
+**Route-decision flow** (`POST /v1/route`): `api.py:route_task()` forces `require_execution_path_authority=True` (`api.py` ~875), so the default path requires a BOD-104 `ExecutionPathDecision`; with no `execution_path_request` it returns 400. `IntelligenceService.route()` → `EligibilityGate.evaluate()` → `select_best_eligible_model()` (`verdict/router.py`) is the legacy-selector path only, reachable from `/v1/chat/completions` and `/v1/responses` with `allow_legacy_selector`, not from the default `/v1/route` call.
 
 **Proxy flow** (`POST /v1/chat/completions`, `POST /v1/responses`): `api.py:_relay_completion()` → `IntelligenceService.route()` → `EligibilityGate.evaluate()` → `select_best_eligible_model()` → `build_attempts()` (`verdict/relay.py`) → `UpstreamProxy._forward()` (`verdict/proxy.py`)
 
-**CLI route flow**: `cli.py` → `Gate.route()` (sync wrapper) → `IntelligenceService.route()` → `EligibilityGate.evaluate()` — same authority as the API path
+**CLI route flow**: `cli.py:_build_route_gate()` → `Gate.route()` (sync wrapper) → `IntelligenceService.route()`. The CLI `Gate` has no `EligibilityGate` attached (`intelligence.eligibility_gate is None`), so this path is catalog truth only, not the same authority as the API path.
 
 **Explain flow**: `api.py:route_explain()` → `AvailabilityCache.explain()` → `EligibilityGate.evaluate()` → returns freshness + eligibility explain record
 
@@ -68,7 +68,7 @@ verdict/
 
 ## Testing
 ```bash
-pytest -v                    # 3420 tests
+pytest -v                    # run the full suite (count via: python -m pytest --co -q | tail -1)
 ruff check .                 # lint
 mypy --strict verdict/       # typecheck
 ```

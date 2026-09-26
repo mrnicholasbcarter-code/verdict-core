@@ -5,6 +5,7 @@ import codecs
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -13,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -381,6 +383,8 @@ class ModelPassportStore:
         return fresh
 
 
+logger = logging.getLogger("verdict.api")
+
 # Singleton service instances
 intelligence_instance: IntelligenceService | None = None
 gate_instance: Gate | None = None
@@ -395,17 +399,52 @@ DEFAULT_AVAILABILITY_TTL_SECONDS = 60
 DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
 
 
+def _normalize_omniroute_loopback(base_url: str) -> str:
+    """Rewrite an ``http://localhost[:port]`` OmniRoute URL to a loopback IP literal.
+
+    ``localhost`` is semantically identical to ``127.0.0.1`` for a local
+    OmniRoute deployment, but :class:`OmniRouteHTTPTransport` requires an IP
+    literal for plain HTTP destinations (verdict/omniroute.py).  Only the
+    ``localhost`` hostname over plain HTTP is rewritten; every other rule the
+    transport enforces (allow-listed https hosts, IPv6 ``[::1]``, path shape)
+    is left untouched.
+    """
+    stripped = base_url.strip()
+    parsed = urlsplit(stripped)
+    if parsed.scheme.lower() != "http":
+        return stripped
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if hostname != "localhost" or parsed.username or parsed.password:
+        return stripped
+    netloc = "127.0.0.1" if parsed.port is None else f"127.0.0.1:{parsed.port}"
+    return urlunsplit(parsed._replace(netloc=netloc))
+
+
 def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | None:
     """Build the bounded availability cache backed by the native OmniRoute transport.
 
     Returns ``None`` when no OmniRoute endpoint is configured, so the server
     still boots without availability explainability.  The transport is
-    loopback-only and credential-safe; a configured but invalid base URL
-    raises ``RuntimeError`` so startup fails closed.
+    loopback-only and credential-safe.
+
+    A configured but invalid ``OMNIROUTE_BASE_URL`` raises ``RuntimeError`` so
+    startup fails closed.  The ``LLMGATE_UPSTREAM_BASE_URL`` fallback is
+    different: it is a direct-upstream proxy setting, not an OmniRoute
+    endpoint, so a value the transport rejects (e.g. a public https host with
+    no OmniRoute semantics) degrades to no availability cache with a logged
+    warning instead of failing startup.
     """
-    base_url = os.getenv("OMNIROUTE_BASE_URL") or os.getenv("LLMGATE_UPSTREAM_BASE_URL")
+    omniroute_url = os.getenv("OMNIROUTE_BASE_URL")
+    fallback_url = os.getenv("LLMGATE_UPSTREAM_BASE_URL")
+    base_url = omniroute_url or fallback_url
     if not base_url or base_url.strip().lower() in {"", "none"}:
         return None
+    is_omniroute_configured = bool(
+        omniroute_url and omniroute_url.strip().lower() not in {"", "none"}
+    )
+    normalized_url = (
+        _normalize_omniroute_loopback(base_url) if is_omniroute_configured else base_url
+    )
     api_key = os.getenv("OMNIROUTE_API_KEY")
     management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
     usage_api_key_id = os.getenv("OMNIROUTE_USAGE_API_KEY_ID")
@@ -416,16 +455,34 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
     }
     try:
         transport = OmniRouteHTTPTransport(
-            base_url,
+            normalized_url,
             api_key=api_key,
             management_token=management_token,
             usage_api_key_id=usage_api_key_id,
             allow_private_hosts=allow_private,
         )
     except Exception as exc:
+        if not is_omniroute_configured:
+            # LLMGATE_UPSTREAM_BASE_URL is a direct-upstream proxy setting, not
+            # an OmniRoute endpoint. A value OmniRoute's transport rejects is
+            # not a misconfigured OmniRoute; degrade to no availability cache
+            # rather than failing startup closed.
+            logger.warning(
+                "LLMGATE_UPSTREAM_BASE_URL is not usable as an OmniRoute "
+                "availability endpoint (%s: %s); continuing without the "
+                "availability cache and eligibility gate.",
+                type(exc).__name__,
+                exc,
+            )
+            return None
         # OMNIROUTE_BASE_URL is set but invalid: fail startup closed rather
         # than silently serving routing without the eligibility gate.
-        raise RuntimeError(f"invalid OmniRoute configuration: {type(exc).__name__}: {exc}") from exc
+        hint = ""
+        if isinstance(exc, ValueError) and "IP literal" in str(exc):
+            hint = " (use a loopback IP literal such as http://127.0.0.1:20128)"
+        raise RuntimeError(
+            f"invalid OmniRoute configuration: {type(exc).__name__}: {exc}{hint}"
+        ) from exc
     adapter: OmniRouteAvailabilityAdapter = OmniRouteAvailabilityAdapter(transport)
     # Issue #57 root cause: enrich the adapter with bounded live probes when the
     # production availability profile is enabled.  Reuses ProbeRunner + the

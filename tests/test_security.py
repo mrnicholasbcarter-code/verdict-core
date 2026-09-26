@@ -203,6 +203,49 @@ def test_invalid_omniroute_url_fails_startup_closed(monkeypatch) -> None:
     assert api.eligibility_gate_instance is None
 
 
+def test_invalid_omniroute_hostname_still_fails_startup_closed(monkeypatch) -> None:
+    """C5: a non-allowlisted https/plain-http hostname must still fail startup
+    closed. Only the documented ``localhost`` loopback hostname is normalised;
+    an arbitrary hostname is not."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://evil.example:1")
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    client = TestClient(api.app)
+    with pytest.raises(RuntimeError, match="invalid OmniRoute configuration"):
+        client.__enter__()
+    assert api.eligibility_gate_instance is None
+
+
+def test_documented_omniroute_localhost_url_boots_with_gate(monkeypatch) -> None:
+    """C5 fix: OMNIROUTE_BASE_URL=http://localhost:20128 is the value every
+    documented guide recommends (install.sh, AGENTS.md, README.md). It must
+    boot successfully WITH the eligibility gate attached, not raise."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:20128")
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    with TestClient(api.app):
+        assert api.eligibility_gate_instance is not None
+
+
+def test_llmgate_upstream_fallback_without_omniroute_boots_without_gate(monkeypatch) -> None:
+    """C5 fix: LLMGATE_UPSTREAM_BASE_URL pointing at a public https upstream
+    (no OMNIROUTE_BASE_URL set) is a legitimate direct-upstream proxy config,
+    not a misconfigured OmniRoute. It must boot without raising, with no
+    availability cache or eligibility gate."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.setenv("LLMGATE_UPSTREAM_BASE_URL", "https://api.openai.com/v1")
+
+    with TestClient(api.app):
+        assert api.eligibility_gate_instance is None
+        assert api.availability_cache_instance is None
+
+
 def test_testclient_hostname_is_not_loopback(monkeypatch) -> None:
     """C6: the synthetic "testclient" peer must not be treated as loopback."""
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
