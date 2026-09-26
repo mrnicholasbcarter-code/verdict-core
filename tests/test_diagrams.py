@@ -39,13 +39,7 @@ EXPECTED_DIAGRAMS = (
     "setup-detection-flow",
 )
 
-VALID_DIAGRAM_TYPES = (
-    "flowchart",
-    "graph",
-    "sequenceDiagram",
-    "stateDiagram-v2",
-    "stateDiagram",
-)
+VALID_DIAGRAM_TYPES = ("flowchart", "graph", "sequenceDiagram", "stateDiagram-v2", "stateDiagram")
 
 # file:line or file:line-line references inside a %% comment line, e.g.
 # "verdict/api.py:944" or "verdict/orchestration/eligibility.py:358-362".
@@ -67,9 +61,7 @@ def _diagram_paths() -> list[Path]:
 
 def _strip_comments(text: str) -> str:
     """Return only the non-%%-comment lines of a .mmd file."""
-    return "\n".join(
-        line for line in text.splitlines() if not line.strip().startswith("%%")
-    )
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("%%"))
 
 
 def _first_code_line(text: str) -> str:
@@ -221,7 +213,9 @@ def test_every_cited_line_is_within_file_bounds(name: str) -> None:
         last = end or start
         if last > line_count:
             problems.append(
-                f"{rel_path}:{start}" + (f"-{end}" if end else "") + f" (file has {line_count} lines)"
+                f"{rel_path}:{start}"
+                + (f"-{end}" if end else "")
+                + f" (file has {line_count} lines)"
             )
     assert not problems, f"{path} cites out-of-range line number(s): {problems}"
 
@@ -270,10 +264,7 @@ def test_mmdc_can_parse_diagram_when_available(name: str, tmp_path: Path) -> Non
     src = DIAGRAMS_DIR / f"{name}.mmd"
     out = tmp_path / f"{name}.svg"
     result = subprocess.run(
-        [mmdc, "-i", str(src), "-o", str(out)],
-        capture_output=True,
-        text=True,
-        timeout=60,
+        [mmdc, "-i", str(src), "-o", str(out)], capture_output=True, text=True, timeout=60
     )
     if result.returncode != 0 and (
         "chrome-headless-shell" in result.stderr or "Could not find" in result.stderr
