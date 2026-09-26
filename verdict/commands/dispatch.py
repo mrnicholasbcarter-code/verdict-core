@@ -243,9 +243,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     elif args.command == "compare":
         legacy.cmd_compare(
-            args.task,
-            args.criticality,
-            allow_offline=getattr(args, "allow_offline", False),
+            args.task, args.criticality, allow_offline=getattr(args, "allow_offline", False)
         )
     elif args.command == "detect":
         legacy.cmd_detect(

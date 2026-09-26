@@ -2362,12 +2362,17 @@ def test_cmd_packet_canary_refuses_missing_apply_paths(
     payload = json.loads(capsys.readouterr().out)
     assert "episodes" in payload["error"]
 
-def test_cli_compare_dispatches(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+
+def test_cli_compare_dispatches(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Test that 'verdict compare' dispatches correctly to cmd_compare."""
     # Track if cmd_compare was called
     called = []
 
-    def mock_cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
+    def mock_cmd_compare(
+        task: str, criticality: str = "medium", allow_offline: bool = False
+    ) -> None:
         called.append({"task": task, "criticality": criticality, "allow_offline": allow_offline})
 
     # Monkeypatch cmd_compare
@@ -2375,6 +2380,7 @@ def test_cli_compare_dispatches(monkeypatch: pytest.MonkeyPatch, capsys: pytest.
 
     # Set up sys.argv
     import sys
+
     original_argv = sys.argv
     try:
         sys.argv = ["verdict", "compare", "add tests"]
@@ -2390,4 +2396,6 @@ def test_cli_compare_dispatches(monkeypatch: pytest.MonkeyPatch, capsys: pytest.
 
     # Verify stdout does NOT contain usage help
     captured = capsys.readouterr()
-    assert "usage: verdict" not in captured.out, f"stdout should not contain usage: verdict, got: {captured.out[:200]}"
+    assert "usage: verdict" not in captured.out, (
+        f"stdout should not contain usage: verdict, got: {captured.out[:200]}"
+    )
