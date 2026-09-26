@@ -14,7 +14,8 @@ flowchart TD
     POST --> AUTHCTX["_authority_context(payload) rejects a client-supplied execution_path_decision"]
     AUTHCTX --> RWI["_route_with_intelligence sets CONTEXT_REQUIRE_AUTHORITY=True by default"]
     RWI --> ISVC["IntelligenceService.route -- async"]
-    RELAY --> AUTHCTX
+    RELAY --> AUTHCTXR["_authority_context(payload) -- same client-decision rejection"]
+    AUTHCTXR -- "calls IntelligenceService.route directly, no default CONTEXT_REQUIRE_AUTHORITY (required only via serve_path_authority_required: env or profile=production)" --> ISVC
 
     ISVC --> EP{"resolve_execution_path_decision(context) present?"}
     EP -- yes --> AUTHREQ["require_serve_path_decision then selected_route_dispatch_identity(ep)"]

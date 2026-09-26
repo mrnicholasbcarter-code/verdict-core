@@ -271,3 +271,17 @@ def test_mmdc_can_parse_diagram_when_available(name: str, tmp_path: Path) -> Non
     ):
         pytest.skip("mmdc present but headless Chrome is not installed in this environment")
     assert result.returncode == 0, f"mmdc failed to parse {src}:\n{result.stderr}"
+
+
+@pytest.mark.parametrize("name", EXPECTED_DIAGRAMS)
+def test_state_diagram_labels_have_no_statement_separator(name: str) -> None:
+    """In stateDiagram-v2 a ``;`` ends the statement, so a label containing one fails to parse.
+
+    This static check runs everywhere; the mmdc render check is skipped without mermaid-cli.
+    """
+    text = (DIAGRAMS_DIR / f"{name}.mmd").read_text(encoding="utf-8")
+    code = _strip_comments(text)
+    if not _first_code_line(text).startswith("stateDiagram"):
+        return
+    bad = [line for line in code.splitlines() if ";" in line]
+    assert not bad, f"{name}.mmd: ';' inside a stateDiagram statement: {bad}"

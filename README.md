@@ -5,7 +5,7 @@
 **A model that fails a safety check cannot be scored back in.**
 
 Verdict is a fail-closed control plane for LLM routing. A hard eligibility gate runs before
-any advisory ranking, every dropped candidate carries one of eight named reasons, and every
+any advisory ranking, every dropped candidate carries a named reason, and every
 orchestration run ends in a receipt whose event log is hash-verified after the fact.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
@@ -175,7 +175,8 @@ flowchart TD
     POST --> AUTHCTX["_authority_context(payload) rejects a client-supplied execution_path_decision"]
     AUTHCTX --> RWI["_route_with_intelligence sets CONTEXT_REQUIRE_AUTHORITY=True by default"]
     RWI --> ISVC["IntelligenceService.route -- async"]
-    RELAY --> AUTHCTX
+    RELAY --> AUTHCTXR["_authority_context(payload) -- same client-decision rejection"]
+    AUTHCTXR -- "calls IntelligenceService.route directly, no default CONTEXT_REQUIRE_AUTHORITY (required only via serve_path_authority_required: env or profile=production)" --> ISVC
 
     ISVC --> EP{"resolve_execution_path_decision(context) present?"}
     EP -- yes --> AUTHREQ["require_serve_path_decision then selected_route_dispatch_identity(ep)"]
@@ -280,13 +281,13 @@ stateDiagram-v2
     HEALTHY --> FailedAvailable3 : _rate_limited_until(conn) covers now -> reason=provider_rate_limited
 
     AVAILABLE --> TASK_ELIGIBLE : _task_gate returns empty string
-    AVAILABLE --> FailedTask : missing capability (required_capabilities vs row.capabilities; "tools" maps to tool_calling) -> reason=missing_capability:CAP_NAME
+    AVAILABLE --> FailedTask : missing capability (required_capabilities vs row.capabilities, "tools" maps to tool_calling) -> reason=missing_capability:CAP_NAME
     AVAILABLE --> FailedTask2 : max_input_tokens/context_length below min_context_tokens -> reason=insufficient_context
     AVAILABLE --> FailedTask3 : route_id in exclude_routes, or route_family(route_id) in exclude_families -> reason=excluded_route / excluded_family
     AVAILABLE --> FailedTask4 : route id matches a frontier marker and requirements.frontier_worthy is False -> reason=frontier_restricted
     AVAILABLE --> FailedTask5 : route id is an effort-suffixed duplicate (-low/-medium/-high/-xhigh/-max/-ultra) of a base row that also exists -> reason=effort_duplicate
 
-    TASK_ELIGIBLE --> SELECTED : select() probes candidates in rank order (round-robin across providers within a capacity tier); first one that is healthy or probes healthy is chosen -> reason=selected
+    TASK_ELIGIBLE --> SELECTED : select() probes candidates in rank order (round-robin across providers within a capacity tier), first one that is healthy or probes healthy is chosen -> reason=selected
     TASK_ELIGIBLE --> FailedSelected : load(route_id) >= max_per_route (2) before probing -> failed_stage=SELECTED, reason=at_capacity
     TASK_ELIGIBLE --> ProbeBudgetExhausted : select() has already used max_probes_per_select (8) probes this call -> reason=probe_budget_exhausted (route stays TASK_ELIGIBLE, just not probed this call)
 
@@ -446,9 +447,10 @@ flowchart TD
 
 ## How Verdict differs
 
-Verdict is admission control, not a gateway. It does not move traffic across providers, load
-balance, or retry a failed call against a different model automatically. It decides whether a
-model may be used at all, and proves that decision after the fact.
+Verdict is admission control, not a gateway. It decides whether a model may be used at all,
+and proves that decision after the fact. Retries stay inside the admitted set: the relay may try
+at most 3 gate-admitted alternatives, only when the request is safe to retry (ADR-016), and
+orchestration recovery reassigns a failed node within its own eligible pool.
 
 | Capability | Verdict | A typical LLM gateway (LiteLLM/Portkey/Bifrost-shaped) |
 |---|---|---|
@@ -457,16 +459,17 @@ model may be used at all, and proves that decision after the fact.
 | Cheaper-first as a runtime invariant | Yes — raises on construction, [`verdict/live_routing.py:91-93`](verdict/live_routing.py#L91-L93) | Cost is usually a dashboard metric, not an enforced invariant |
 | Tamper-evident run receipts (hash-verified) | Yes — [`verdict/orchestration/receipt.py`](verdict/orchestration/receipt.py) | Traces exist; cryptographic tamper detection over the event log is not the norm |
 | Independent review step, reviewer excluded from implementers | Yes — [`verdict/orchestration/review.py`](verdict/orchestration/review.py) | Not part of the gateway's job |
-| Fallback / retry chains across providers | **No, on purpose.** Recovery is same-node reroute only ([`verdict/orchestration/recovery.py`](verdict/orchestration/recovery.py)); Verdict does not maintain a fallback chain across arbitrary providers | Yes — this is a core gateway feature |
-| Load balancing across providers | No | Yes — also a core gateway feature |
+| Fallback / retry chains across providers | **Bounded, admitted-only.** The relay tries at most 3 gate-admitted alternatives on a retryable failure ([`verdict/relay.py`](verdict/relay.py) `build_attempts`, ADR-016); orchestration recovery reassigns within the node's eligible pool ([`verdict/orchestration/recovery.py`](verdict/orchestration/recovery.py)). There is no configured static fallback chain, and an excluded model is never tried | Yes — configurable fallback chains are a core gateway feature |
+| Load balancing across providers | No request-level load balancing. The orchestration selector spreads probes round-robin across providers within a capacity tier and caps concurrent nodes per route | Yes — also a core gateway feature |
 | OpenTelemetry tracing | **Not yet.** No OTel integration exists in this repo at this commit | Common |
 | Multi-provider inventory / transport | Delegated to OmniRoute (`verdict/omniroute.py`) — Verdict is transport-and-inventory-agnostic on purpose, not a from-scratch gateway | This is the gateway's primary job |
 
 **Three explicit non-goals, stated rather than left ambiguous:**
 
-- **No fallback chains, on purpose.** [`verdict/orchestration/recovery.py`](verdict/orchestration/recovery.py)
-  classifies a failure and reassigns within the same node's eligible pool. It does not chain
-  across an arbitrary sequence of providers hoping one answers.
+- **No static fallback chains, on purpose.** Retries only ever use gate-admitted candidates:
+  the relay tries at most 3 admitted alternatives when the request is safe to retry, and
+  [`verdict/orchestration/recovery.py`](verdict/orchestration/recovery.py) reassigns within the
+  same node's eligible pool. Verdict does not walk a configured list of providers hoping one answers.
 - **No OpenTelemetry yet.** There is no tracing integration in this repository at this
   commit. If you need distributed tracing across a request's lifetime, instrument the caller.
 - **OmniRoute is transport and inventory only — not a metadata source of truth.**
@@ -669,7 +672,7 @@ Six verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embedd
   RuVector, SONA, hivemind, or swarm dispatch describe architecture that is no longer in Core.
 - **Receipt integrity is cryptographic over event logs, not over LLM outputs.** The review
   step catches output problems; the receipt proves the run was not altered after the fact.
-- **No fallback chains across providers, on purpose; no OpenTelemetry yet.** See
+- **No static fallback chains (retries stay inside the admitted set); no OpenTelemetry yet.** See
   [How Verdict differs](#how-verdict-differs).
 - **Version 0.3.0, active development.** Contracts, schemas, and receipt formats are
   versioned. Breaking changes require an ADR.
