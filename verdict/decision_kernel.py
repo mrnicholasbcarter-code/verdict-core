@@ -398,9 +398,13 @@ def decide(
         return None  # fixture-supplied non-report surface -> treat as absent
 
     # Availability/fail-closed gate over the capability-passing subset only.
+    # ``dev_mode`` is an explicit caller opt-in that "forwards to the eligibility
+    # gate's dev-mode relaxation toggle" (see docstring); the gate's own default
+    # is fail-closed, so the relaxation must be threaded through here.
     gate = EligibilityGate(
         cast("Callable[[str], AvailabilityReport | None]", availability_source),  # type: ignore[arg-type]
         protected_fail_closed=protected,
+        allow_unverified_in_dev=dev_mode,
         clock=clock,
     )
     eligibility: EligibilityResult = gate.evaluate(
