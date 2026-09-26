@@ -1,4 +1,4 @@
-"""BOD-151 frontier decomposition: goal -> prompt -> WorkGraph, deterministic topology.
+"""Frontier decomposition: goal -> prompt -> WorkGraph, deterministic topology.
 
 Only this module decides *how many* concurrent workers a plan gets and *which*
 topology (SOLO / WORKER_CRITIC / PARALLEL_WORK_UNITS) runs it -- the rule is a

@@ -164,7 +164,7 @@ def _base_config_actions(config_exists: bool) -> tuple[SetupAction, ...]:
 def _bootstrap_setup_actions(
     bootstrap_providers: Sequence[DiscoveredProvider] | None, *, scope: str = "all"
 ) -> tuple[SetupAction, ...]:
-    """Translate BOD-124 bootstrap plan actions into SetupAction rows."""
+    """Translate capability bootstrap DX bootstrap plan actions into SetupAction rows."""
 
     if bootstrap_providers is None:
         return ()

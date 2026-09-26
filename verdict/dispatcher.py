@@ -196,7 +196,7 @@ class SwarmDispatcher:
 
         if selected_route is not None:
             # Raises ExecutionPathError when no eligible candidate matches —
-            # never invent an alternate (BOD-127).
+            # never invent an alternate (legacy selector demotion).
             authorized = match_candidate_to_selected_route(eligible, selected_route)
         else:
             authorized = next((c for c in eligible if c.runtime_id == authorized_runtime_id), None)

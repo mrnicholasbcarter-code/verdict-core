@@ -1,4 +1,4 @@
-"""Worthiness classifier: worthy vs ordinary with named reasons (BOD-107).
+"""Worthiness classifier: worthy vs ordinary with named reasons (task-class routing).
 
 Worthiness runs before cheapness. Rules are explicit keyword/escalation matches —
 never an invented score. ``worthy`` admits frontier/high-cap models only;

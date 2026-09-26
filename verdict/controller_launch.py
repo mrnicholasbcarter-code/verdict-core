@@ -623,7 +623,7 @@ def verify_observed_controller_identity(
 
 @dataclass(frozen=True)
 class PersistedAuthoritativeDecision:
-    """Already-authoritative BOD-104 decision + pre-launch receipt reference.
+    """Already-authoritative execution-path authority decision + pre-launch receipt reference.
 
     Automatic mode consumes this; it does not synthesize eligibility or offers.
     """

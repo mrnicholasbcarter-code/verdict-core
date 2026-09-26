@@ -68,7 +68,7 @@ BindTargetFn = Callable[[ConcreteRoute], PrimeLaunchTarget]
 
 
 class RuntimeCertifyFn(Protocol):
-    """Offline BOD-92 certification seam; never grants selection authority."""
+    """Offline runtime certification (passport) certification seam; never grants selection authority."""
 
     def __call__(
         self,
@@ -270,7 +270,7 @@ def _selected_context_artifacts(
 def _mark_prepared_offers_eligible(
     offers: Sequence[ExecutionPathOffer],
 ) -> tuple[ExecutionPathOffer, ...]:
-    """Promote prepare-confirmed seed offers to eligible for BOD-104 (M1)."""
+    """Promote prepare-confirmed seed offers to eligible for execution-path authority (M1)."""
     promoted: list[ExecutionPathOffer] = []
     for offer in offers:
         route = offer.route
@@ -344,7 +344,7 @@ def _mission_task_slice(mission: ControllerMission) -> Any:
     from verdict.effective_capability import TaskSlice
 
     # Stable controller proof/acceptance criteria. Offer builders and the
-    # selector share this contract so BOD-104 evidence binding stays exact.
+    # selector share this contract so execution-path authority evidence binding stays exact.
     proof = (mission.proof_burden or "controller-launch-proof",)
     acceptance = (mission.objective,)
     return TaskSlice(
@@ -434,7 +434,7 @@ def select_controller_launch(
 
     task_slice = _mission_task_slice(mission)
     trajectory_id = mission.trajectory_digest or f"controller:{mission.attempt_id}"
-    # Rebind offer evidence to this mission's TaskSlice/trajectory so BOD-104
+    # Rebind offer evidence to this mission's TaskSlice/trajectory so execution-path authority
     # qualification does not reject otherwise-live offers as unbound.
     rebound: list[ExecutionPathOffer] = []
     for offer in seed_offers:
@@ -528,7 +528,7 @@ def select_controller_launch(
     session_decision: SessionRouteDecision | None = None
     if session_state is not None:
         # Rank fresh qualified route first among prepared offers for SWITCH compare.
-        # We still run BOD-104 after attaching the session decision.
+        # We still run execution-path authority after attaching the session decision.
         provisional = hooks.optimize(
             ExecutionPathRequest(
                 task_slice=prepared.task_slice,
@@ -592,7 +592,7 @@ def select_controller_launch(
             ep_decision.why_selected or "BOD-104 returned blocked/no selected route",
         )
 
-    # BOD-104 final selected_route is authoritative for bind/receipt/launch.
+    # execution-path authority final selected_route is authoritative for bind/receipt/launch.
     # Never replace it with a post-optimize STAY route that can diverge from
     # ep_decision.selected_route (session continuity already constrained ranking).
     selected_route = ep_decision.selected_route
@@ -1261,7 +1261,7 @@ def _resolve_seed_certification(
 
 
 def _health_claim_for_passport(passport: Any) -> str:
-    """Map ModelPassport fields to BOD-92 health_claim vocabulary.
+    """Map ModelPassport fields to runtime certification (passport) health_claim vocabulary.
 
     ``passport_from_probe`` only writes ``auth_state="authorized"`` with
     ``availability_state="eligible"`` after a live at-rest probe reported
@@ -1286,7 +1286,7 @@ def _health_claim_for_passport(passport: Any) -> str:
 def _certify_controller_passports(
     healthy_passports: Mapping[str, Any], *, now: datetime, certify_runtime_fn: RuntimeCertifyFn
 ) -> Mapping[str, tuple[CertificationState, str]]:
-    """Translate passport claims into BOD-92 evidence without probes or promotion.
+    """Translate passport claims into runtime certification (passport) evidence without probes or promotion.
 
     Component ids are the passport inventory keys, not model leaf names or
     filesystem paths. The seed resolver falls back from normalized route_id to

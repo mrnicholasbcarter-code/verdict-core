@@ -1,4 +1,4 @@
-"""Codiv provider identification (BOD-198)."""
+"""Codiv provider identification (provider identification)."""
 
 from __future__ import annotations
 

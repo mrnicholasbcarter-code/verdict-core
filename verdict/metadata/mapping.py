@@ -1,4 +1,4 @@
-"""Explicit OmniRoute inventory id → models.dev id mapping (BOD-108 / BOD-121).
+"""Explicit OmniRoute inventory id → models.dev id mapping (Core metadata store / models.json canonical join).
 
 Unmapped ids are a named drop. Identity equality (same string) is accepted
 as an explicit join. After the explicit map and exact store id, lookup may

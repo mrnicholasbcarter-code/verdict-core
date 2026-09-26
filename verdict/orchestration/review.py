@@ -1,4 +1,4 @@
-"""BOD-185: independent, fail-closed semantic review via OpenCodeReview (``ocr``).
+"""Independent OpenCodeReview: independent, fail-closed semantic review via OpenCodeReview (``ocr``).
 
 ``OpenCodeReviewer`` runs Alibaba's ``open-code-review`` CLI (v1.12.x) as an
 independent semantic review gate that implements the :class:`Reviewer` protocol

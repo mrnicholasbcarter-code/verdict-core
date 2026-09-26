@@ -59,7 +59,7 @@ def classify(model_id: str, overrides: dict[str, int] | None = None) -> int:
     # Cheap-variant markers (mini / nano / flash / lite / haiku / …) take
     # precedence over frontier family names: "gpt-5.5-mini" or "o3-mini" is a
     # small model, not a tier-0 frontier, even though its family pattern matches
-    # (BOD-112 classifier precedence). Explicit tier-2 rows such as
+    # (free-tier ordering classifier precedence). Explicit tier-2 rows such as
     # "gpt-4o-mini" still win over the generic tier-3 markers.
     cheap_variant = _matches_any(raw, CAPABILITY_PATTERNS[3])
     for tier in (0, 1):

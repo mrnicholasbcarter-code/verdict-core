@@ -1,4 +1,4 @@
-"""Untrusted context + agent tooling security boundary (BOD-126).
+"""Untrusted context + agent tooling security boundary (security boundary).
 
 Pipeline (native-first):
 

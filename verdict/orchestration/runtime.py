@@ -1,4 +1,4 @@
-"""BOD-153 bounded DAG runtime: concurrent dispatch, same-node reassignment, barriers.
+"""Bounded DAG runtime: concurrent dispatch, same-node reassignment, barriers.
 
 The runtime owns orchestration only. It never chooses a model itself (the
 ``ModelSelector`` does), never classifies failures itself (the

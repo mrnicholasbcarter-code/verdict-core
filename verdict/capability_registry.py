@@ -1,4 +1,4 @@
-"""Semantic capability registry + provider resolver contract (BOD-87).
+"""Semantic capability registry + provider resolver contract (semantic capability registry).
 
 Callers request brand-free semantic capabilities. The registry selects the
 highest-authority healthy provider among native Verdict and optional enrichment
@@ -35,7 +35,7 @@ CODEBASE_MEMORY_AUTHORITY_RANK: Final[int] = 70
 CONTEXT7_AUTHORITY_RANK: Final[int] = 60
 MEMORY_PLANE_AUTHORITY_RANK: Final[int] = 40
 TREE_SITTER_AST_AUTHORITY_RANK: Final[int] = 15
-# Optional security scanners (BOD-126) — never hard Core dependencies.
+# Optional security scanners (security boundary) — never hard Core dependencies.
 NATIVE_SECURITY_AUTHORITY_RANK: Final[int] = 20
 AGENTSHIELD_AUTHORITY_RANK: Final[int] = 75
 GITLEAKS_AUTHORITY_RANK: Final[int] = 65
@@ -249,7 +249,7 @@ class SemanticCapabilityRegistry:
         )
 
     def health_report(self) -> Mapping[str, Any]:
-        """Controller-friendly snapshot (BOD-65 may consume later)."""
+        """Controller-friendly snapshot (cross-harness resume context may consume later)."""
         by_health: dict[str, list[str]] = {
             "healthy": [],
             "degraded": [],
@@ -582,7 +582,7 @@ def make_native_security_descriptor(
     observed_at: str | None = None,
     freshness_seconds: float | None = 0.0,
 ) -> ProviderDescriptor:
-    """Always-on native trust/injection/secret/config checks (BOD-126)."""
+    """Always-on native trust/injection/secret/config checks (security boundary)."""
     return ProviderDescriptor(
         provider_id="native.verdict.security",
         brand="verdict",
@@ -665,7 +665,7 @@ def make_semgrep_security_stub(
     observed_at: str | None = None,
     freshness_seconds: float | None = None,
 ) -> ProviderDescriptor:
-    """Optional Semgrep security enrichment stub — not BOD-89 CI ownership."""
+    """Optional Semgrep security enrichment stub — not local proof DAG CI ownership."""
     return ProviderDescriptor(
         provider_id="adapter.semgrep_security",
         brand="semgrep",
@@ -710,7 +710,7 @@ def build_default_registry(
 def resolve_capability(
     capability_id: str, *, registry: SemanticCapabilityRegistry | None = None
 ) -> ResolveDecision:
-    """Module-level convenience for callers / BOD-120 planner later."""
+    """Module-level convenience for callers / the effective capability planner later."""
     active = registry if registry is not None else build_default_registry()
     return active.resolve(capability_id)
 

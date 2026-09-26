@@ -1,4 +1,4 @@
-"""Expected complete-strategy cost comparison (BOD-54).
+"""Expected complete-strategy cost comparison (session economics (STAY/SWITCH)).
 
 Compares **complete execution strategies**, not next-call price alone.
 Cash, subscription opportunity, and quota pressure remain distinct dimensions.
@@ -391,7 +391,7 @@ def select_strategy(
     mode: CostPolicyMode = "expected_cost",
     free_first: bool = False,
 ) -> StrategySelection:
-    """Alias for :func:`compare_strategies` (stable BOD-119 name)."""
+    """Alias for :func:`compare_strategies` (stable session STAY/SWITCH decisions name)."""
 
     return compare_strategies(strategies, mode=mode, free_first=free_first)
 

@@ -224,17 +224,17 @@ _TRANSIENT = frozenset(
         NormalizedFailureClass.OVERLOADED,  # BOD-198: 529 is transient
     }
 )
-# BOD-198: QUOTA removed from _TRANSIENT (deliberate behavior change).
+# provider identification: QUOTA removed from _TRANSIENT (deliberate behavior change).
 # Quota exhaustion is NOT retryable until quota state changes.
 
-# BOD-198: Retry-After parsing bounds
+# provider identification: Retry-After parsing bounds
 RETRY_AFTER_MIN_S = 1
 RETRY_AFTER_MAX_S = 900
 RETRY_AFTER_DEFAULT_S = 60
 
 
 def parse_retry_after(value: str | None, *, now: datetime) -> float:
-    """Parse Retry-After header value to cooldown seconds (BOD-198).
+    """Parse Retry-After header value to cooldown seconds (provider identification).
 
     Args:
         value: Retry-After header value (integer seconds or HTTP-date)
@@ -408,10 +408,10 @@ class OpenAICompatibleEvidenceAdapter:
         elif status in {401, 403}:
             failure_class = NormalizedFailureClass.AUTHENTICATION
         elif status == 402:
-            # BOD-198: 402 is explicit quota exhaustion, non-retryable
+            # provider identification: 402 is explicit quota exhaustion, non-retryable
             failure_class = NormalizedFailureClass.QUOTA
         elif status == 429:
-            # BOD-198: Distinguish quota exhaustion vs rate limiting
+            # provider identification: Distinguish quota exhaustion vs rate limiting
             code_lower = signal.code.lower() if signal.code else ""
             if code_lower in {"insufficient_quota", "quota_exceeded", "quota_exhausted"}:
                 # Quota exhaustion: unavailable until quota changes, non-retryable
@@ -421,7 +421,7 @@ class OpenAICompatibleEvidenceAdapter:
                 failure_class = NormalizedFailureClass.RATE_LIMIT
                 cooldown_seconds = parse_retry_after(signal.retry_after, now=now)
         elif status == 529:
-            # BOD-198: 529 is provider infrastructure pressure (not quality degradation)
+            # provider identification: 529 is provider infrastructure pressure (not quality degradation)
             failure_class = NormalizedFailureClass.OVERLOADED
             cooldown_seconds = parse_retry_after(signal.retry_after, now=now)
         elif status in {400, 404, 405, 409, 415, 422}:

@@ -1,4 +1,4 @@
-"""Concrete GitHub/Linear ports for BOD-68 delivery (live ``gh`` / local evidence).
+"""Concrete GitHub/Linear ports for autonomous delivery (live ``gh`` / local evidence).
 
 These adapters are transport only. Policy stays in ``verdict.delivery``.
 Secrets are never logged; subprocess output is bounded.

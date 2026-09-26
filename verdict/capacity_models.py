@@ -1,4 +1,4 @@
-"""Live capacity evidence contracts (BOD-129).
+"""Live capacity evidence contracts (capacity evidence).
 
 Evidence producers only — never routing, economics, or recovery authority.
 Projects into BOD-92 / BOD-54 / BOD-104 consumer shapes via capacity_project.

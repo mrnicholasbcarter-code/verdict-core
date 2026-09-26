@@ -1,4 +1,4 @@
-"""Project CapacitySnapshot into BOD-92 / BOD-54 / BOD-104 consumer shapes.
+"""Project CapacitySnapshot into runtime certification (passport) / session economics (STAY/SWITCH) / execution-path authority consumer shapes.
 
 No provider-specific branching — consumers stay generic.
 """
@@ -22,7 +22,7 @@ def _cooldown_iso(pool: CapacityPool) -> str | None:
 def project_quota_evidence(
     snapshot: CapacitySnapshot, *, pool_id: str | None = None
 ) -> list[QuotaEvidenceInput]:
-    """Map pools onto BOD-54 ``QuotaEvidenceInput`` (unknown stays absent/None)."""
+    """Map pools onto session economics (STAY/SWITCH) ``QuotaEvidenceInput`` (unknown stays absent/None)."""
 
     results: list[QuotaEvidenceInput] = []
     for pool in snapshot.pools:
@@ -44,7 +44,7 @@ def project_quota_evidence(
 
 
 def project_runtime_certification_quota(snapshot: CapacitySnapshot) -> Mapping[str, Any] | None:
-    """BOD-92 CertifiedComponent.quota mapping — None when nothing observed."""
+    """runtime certification (passport) CertifiedComponent.quota mapping — None when nothing observed."""
 
     if not snapshot.pools and not snapshot.balances:
         if snapshot.errors:
@@ -93,7 +93,7 @@ def project_runtime_certification_quota(snapshot: CapacitySnapshot) -> Mapping[s
 
 
 def project_execution_path_evidence(snapshots: Sequence[CapacitySnapshot]) -> Mapping[str, Any]:
-    """Provider-neutral evidence bag for BOD-104 (no brand switches)."""
+    """Provider-neutral evidence bag for execution-path authority (no brand switches)."""
 
     quota_inputs: list[QuotaEvidenceInput] = []
     accounts: list[dict[str, Any]] = []
@@ -138,7 +138,7 @@ def project_execution_path_evidence(snapshots: Sequence[CapacitySnapshot]) -> Ma
 
 
 def scarcest_quota_evidence(snapshots: Sequence[CapacitySnapshot]) -> QuotaEvidenceInput | None:
-    """Single BOD-54 input: scarcest observed remaining_pct (unknown ignored)."""
+    """Single session economics (STAY/SWITCH) input: scarcest observed remaining_pct (unknown ignored)."""
 
     best: QuotaEvidenceInput | None = None
     for snap in snapshots:

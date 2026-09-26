@@ -1,4 +1,4 @@
-"""Harness-neutral semantic checkpoint/compaction lifecycle (BOD-69).
+"""Harness-neutral semantic checkpoint/compaction lifecycle (compaction).
 
 Canonical compaction/handoff contract shared with Continuity C03 / BOD-81.
 Deterministic structured-state compaction — not an LLM summarizer and not a

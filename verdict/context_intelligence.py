@@ -264,7 +264,7 @@ class NativeCapabilityResolver:
         return self._by_capability.get(capability_id, ())
 
     def ranked_provider_id(self, capability_id: str) -> str | None:
-        """Consult BOD-87 registry for highest-authority healthy provider id.
+        """Consult semantic capability registry for highest-authority healthy provider id.
 
         Fabric execution still uses ``resolve()`` → native callables; this
         surfaces which enrichment brand would win when adapters are healthy.

@@ -1,1 +1,1 @@
-"""Decision signal abstractions (BOD-199)."""
+"""Decision signal abstractions (SHADOW decision signals)."""

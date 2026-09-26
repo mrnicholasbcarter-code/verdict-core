@@ -1,4 +1,4 @@
-"""BOD-177: Verdict-native live terminal view of one orchestration run.
+"""terminal view: Verdict-native live terminal view of one orchestration run.
 
 :class:`RunView` is a pure projection over ``contracts.RunEvent``; :func:`render`
 turns it into a compact Rich dashboard built on the existing Verdict design

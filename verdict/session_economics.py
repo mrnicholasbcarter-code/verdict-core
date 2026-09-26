@@ -1,4 +1,4 @@
-"""Session economics — STAY / SWITCH / BLOCKED (BOD-119).
+"""Session economics — STAY / SWITCH / BLOCKED (session STAY/SWITCH decisions).
 
 Pure decision core over already-qualified concrete routes.  Expected remaining
 session cost (not next-call price alone) drives economics; hard eligibility,
@@ -160,7 +160,7 @@ class SessionState:
     cooldown_active: bool = False
     health_unusable: bool = False
     serving_failures: int = 0
-    # Optional BOD-92 evidence shapes (read-only consume).
+    # Optional runtime certification (passport) evidence shapes (read-only consume).
     quota_evidence: QuotaEvidenceInput | None = None
     cache_evidence: CacheEvidenceInput | None = None
 
@@ -584,7 +584,7 @@ def apply_runtime_evidence(
     cooldown_active: bool | None = None,
     health_unusable: bool | None = None,
 ) -> SessionState:
-    """Merge optional BOD-92 evidence into session state (immutable replace)."""
+    """Merge optional runtime certification (passport) evidence into session state (immutable replace)."""
 
     exhausted = session.quota_exhausted if quota_exhausted is None else quota_exhausted
     remaining_pct = None if quota is None else quota.get("remaining_pct")

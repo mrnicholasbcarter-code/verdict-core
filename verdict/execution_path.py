@@ -1,4 +1,4 @@
-"""Execution-path optimizer — cheapest SAFE COMPLETE path (BOD-104).
+"""Execution-path optimizer — cheapest SAFE COMPLETE path (execution-path authority).
 
 Integration layer only. Consumes existing contracts; does not reinvent
 CandidatePool, EffectiveCapability, CostLedger, SessionEconomics,
@@ -99,7 +99,7 @@ _UNHEALTHY_CERT = frozenset(
     {CertificationState.UNAVAILABLE, CertificationState.UNSUPPORTED, CertificationState.UNKNOWN}
 )
 
-# Sole strategy-selection authority for BOD-104 / BOD-127. Legacy
+# Sole strategy-selection authority for execution-path authority / legacy selector demotion. Legacy
 # IntelligenceService.route / choose_route / live_routing.select_route /
 # free-tier / AdaptiveRanker / FailoverEngine / Ruflo-swarm may feed evidence or
 # dispatch only — they must not invent strategy outside optimize_execution_path.
@@ -955,7 +955,7 @@ def legacy_selector_must_yield(
     execution_path_decision: ExecutionPathDecision | Mapping[str, Any],
     legacy_selected_model_id: str | None,
 ) -> None:
-    """Fail closed when a legacy selector disagrees with BOD-104 authority.
+    """Fail closed when a legacy selector disagrees with execution-path authority.
 
     Used by thin serve-path hooks so ``IntelligenceService.route`` / chooser
     cannot outrank an already-computed :class:`ExecutionPathDecision`.
@@ -1036,7 +1036,7 @@ def infer_strategy_name(
     prefer_rehydrate: bool = False,
     prefer_escalate: bool = False,
 ) -> StrategyName:
-    """Map assistance/session flags to the BOD-104 strategy vocabulary.
+    """Map assistance/session flags to the execution-path authority strategy vocabulary.
 
     Helper for callers assembling :class:`ExecutionPathOffer` rows. Does not
     qualify or price — only names the strategy axis.

@@ -84,7 +84,7 @@ def _to_failure_entry(
 
 
 class FailoverEngine:
-    """Applies BOD-55-authorized replacements after a transient failure.
+    """Applies bounded recovery-authorized replacements after a transient failure.
 
     Must not independently invent fallback models/providers (BOD-127). When an
     ``execution_path_decision`` is bound, recovery must go through
@@ -156,7 +156,7 @@ class FailoverEngine:
         execution_path_decision: Any | None = None,
         require_bounded_recovery: bool = False,
     ) -> ExecutionSession:
-        """Quarantine, rebind, and resume using a BOD-55-authorized replacement.
+        """Quarantine, rebind, and resume using a bounded recovery-authorized replacement.
 
         Returns the same session mutated in place and checkpointed, so callers
         can either keep the reference or use the returned value after a

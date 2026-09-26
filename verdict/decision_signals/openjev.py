@@ -1,4 +1,4 @@
-"""OpenJev / Codiv System-One decision signal provider (BOD-235)."""
+"""OpenJev / Codiv System-One decision signal provider (TYPESAFE credentials migration)."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ RETRY_AFTER_MAX_S = 300
 RETRY_AFTER_DEFAULT_S = 60
 
 # Default network timeout for the Codiv API call.
-# Overridable via VERDICT_DECISION_SIGNALS_TIMEOUT_MS (BOD-235/BOD-238).
+# Overridable via VERDICT_DECISION_SIGNALS_TIMEOUT_MS (TYPESAFE credentials migration).
 # Must be low: this call runs BEFORE planning, so a slow Codiv adds to every run.
 DEFAULT_TIMEOUT_MS = 1500
 
@@ -92,7 +92,7 @@ def _user_agent() -> str:
 
 
 def parse_retry_after(value: str | None, *, now: datetime) -> float:
-    """Parse Retry-After header value to cooldown seconds (BOD-198 compatible).
+    """Parse Retry-After header value to cooldown seconds (provider identification compatible).
 
     Args:
         value: Retry-After header value (integer seconds or HTTP-date)
@@ -183,7 +183,7 @@ def _answers_to_signals(answers: dict[str, Any]) -> tuple[dict[str, float], floa
 
 
 def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> NormalizedFailure:
-    """Normalize HTTP/runtime failure to NormalizedFailure (BOD-198 / BOD-235 compatible).
+    """Normalize HTTP/runtime failure to NormalizedFailure (provider identification / TYPESAFE credentials migration compatible).
 
     Error shape: {"detail": {"error_type": "...", "message": "..."}}
     The code field on AdapterFailureSignal carries the error_type value.
@@ -244,7 +244,7 @@ def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> Normali
 
 
 class OpenJevSystemOneProvider:
-    """OpenJev / Codiv System-One decision signal provider (BOD-235).
+    """OpenJev / Codiv System-One decision signal provider (TYPESAFE credentials migration).
 
     Sends the fixed question set to POST /v1/systemone and maps the answers
     back to DecisionSignalSetV1 signals in [0,1].

@@ -1,4 +1,4 @@
-"""Inject the compiled cheap-path context pack into the upstream request (BOD-111).
+"""Inject the compiled cheap-path context pack into the upstream request (cheap-path pack).
 
 The admit receipt names a ``pack_digest`` (identity of the compiled artifact)
 and a ``prompt_digest`` (sha256 of the compiled prompt text). This module makes

@@ -1,4 +1,4 @@
-"""Cost ledger — reservations, reconciliation, and trajectory economics (BOD-54).
+"""Cost ledger — reservations, reconciliation, and trajectory economics (session economics (STAY/SWITCH)).
 
 Economics only: this module accounts for complete-path spend (planning,
 hydration, tools, execution, verification, retry/escalation, cache, switching,
@@ -68,7 +68,7 @@ class CostLedgerError(ValueError):
 
 
 class QuotaEvidenceInput(TypedDict, total=False):
-    """Optional normalized quota/cooldown evidence (BOD-92 consumer shape)."""
+    """Optional normalized quota/cooldown evidence (runtime certification (passport) consumer shape)."""
 
     pool_id: str
     remaining_pct: float | None

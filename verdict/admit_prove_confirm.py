@@ -271,7 +271,7 @@ def gate_admit_prove_confirm(
     confirmed_ids: list[str] = []
 
     healthy = frozenset(receipt.active_providers)
-    # BOD-112: free candidates are confirmed before paid fallbacks, keyed on the
+    # free-tier ordering: free candidates are confirmed before paid fallbacks, keyed on the
     # authoritative free_admitted set rather than an ID-suffix heuristic.
     free_set = frozenset(receipt.free_admitted) if receipt.free_admitted else None
     # A stored passport is operational evidence with a short TTL. When a live

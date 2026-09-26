@@ -1,4 +1,4 @@
-"""Candidate Pool Intelligence — bounded evidence-fused Top-K shortlist (BOD-122).
+"""Candidate Pool Intelligence — bounded evidence-fused Top-K shortlist (Candidate Pool Intelligence).
 
 Converts a huge advertised model universe into a small, high-recall,
 evidence-backed pool of potentially capable concrete routes.

@@ -236,7 +236,7 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         optional=True,
         live_check=None,
     ),
-    # Legacy names - being renamed to TYPESAFE_* by BOD-235 (parallel PR, not yet merged)
+    # Legacy names - being renamed to TYPESAFE_* by TYPESAFE credentials migration (parallel PR, not yet merged)
     CredentialSpec(
         env_name="OPENJEV_API_KEY",
         purpose="OpenJev decision signals API key (legacy name; use TYPESAFE_API_KEY after BOD-235)",

@@ -41,14 +41,14 @@ class RoutingDecision:
     safety_flags: list[str] = field(default_factory=list)
     admit_receipt: dict[str, Any] | None = None
     execute_preview: str | None = None
-    # Compiled cheap-path pack (BOD-111). The serve relay injects it verbatim
+    # Compiled cheap-path pack (cheap-path pack). The serve relay injects it verbatim
     # into the upstream request; ``admit_receipt["prompt_digest"]`` is its
     # sha256. Never serialized into client-facing decision dicts.
     context_pack_prompt: str | None = None
     # Compatibility with the brief advisory-ranking contract.  The canonical
     # names remain ``model`` and ``tier``.
     confidence: float = 0.0
-    # G6.1 evidence fields (BOD-232): estimated/actual cost, fallback, verification outcome
+    # G6.1 evidence fields (G6.1 evidence fields): estimated/actual cost, fallback, verification outcome
     estimated_cost_usd: float | None = None
     actual_cost_usd: float | None = None
     fallback_result: str | None = None
