@@ -43,3 +43,17 @@ def test_anchor_not_matching_any_heading_is_broken(tmp_path: Path) -> None:
     doc = tmp_path / "doc.md"
     doc.write_text("[a](a.md#section)")
     assert mod.broken_links(doc, tmp_path) == [(1, "a.md#section")]
+
+
+def test_anchor_slug_keeps_one_hyphen_per_space_like_github(tmp_path: Path) -> None:
+    """Punctuation between spaces leaves a double hyphen (github-slugger behaviour)."""
+    (tmp_path / "a.md").write_text(
+        "# ADR-036 \u2014 Goal to receipt\n\n## G2: Availability & Freshness\n"
+    )
+    doc = tmp_path / "doc.md"
+    doc.write_text(
+        "[a](a.md#adr-036--goal-to-receipt)\n"
+        "[b](a.md#g2-availability--freshness)\n"
+        "[c](a.md#adr-036-goal-to-receipt)\n"
+    )
+    assert mod.broken_links(doc, tmp_path) == [(3, "a.md#adr-036-goal-to-receipt")]

@@ -337,5 +337,5 @@ The audit is advisory. Nothing was deleted. The controller re-checked the script
 | `scripts/ingest_dependency_docs.py` | **KEEP (entry point).** It is a thin CLI wrapper over `verdict.dependency_ingest.ingest_dependency_docs`, which is library code with tests. Candidate for a `verdict` subcommand later. |
 | `scripts/proof/secrets_scan.py` | **REMOVE-CANDIDATE, confirmed.** CI writes `secrets_scan_results.txt` with an inline command and never calls this script. It is left in place until the owner decides. |
 
-`.serena/` was dropped from the proposed `.gitignore` additions because `.serena/project.yml` and
-`.serena/.gitignore` are tracked.
+`.serena/` was initially left out of the proposed `.gitignore` additions because `.serena/project.yml`
+and `.serena/.gitignore` were tracked. Both have since been untracked and `.serena/` is now ignored.
