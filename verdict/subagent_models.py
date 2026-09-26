@@ -192,7 +192,13 @@ class SubagentModelSelector:
 
         cache = AvailabilityCache(source=adapter, ttl_seconds=60, stale_window_seconds=30)
 
-        gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
+        from verdict.eligibility import allow_unverified_dev_from_env
+
+        gate = EligibilityGate(
+            cache.get,
+            protected_fail_closed=True,
+            allow_unverified_in_dev=allow_unverified_dev_from_env(),
+        )
 
         intelligence = IntelligenceService(
             primary_model=os.getenv("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),

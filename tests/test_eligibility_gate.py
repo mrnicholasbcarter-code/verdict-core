@@ -473,3 +473,120 @@ def test_shadow_does_not_rank_episodes_without_a_single_packet_digest() -> None:
     assert mixed["episode_count"] == 0
     assert mixed["advisory_ranking"] == []
     assert mixed["source_binding"] is None
+
+
+# --- WS-D fail-closed admission regressions (C3/C4/C5) ---------------------
+
+
+def _unknown_report(model_id: str) -> AvailabilityReport:
+    return AvailabilityReport((_candidate(model_id, "unknown"),), (), "cache", 60)
+
+
+def test_unknown_state_excluded_by_default_even_in_dev_mode() -> None:
+    report = _report(("a/1", "eligible"), ("d/4", "unknown"))
+    cache = _cache(report)
+    gate = EligibilityGate(cache.get)  # default ctor: no unverified-dev opt-in
+    result = gate.evaluate([ModelInfo(id="d/4", provider="d", capability_tier=2)], dev_mode=True)
+    assert result.admitted == []
+    assert result.records[0].verdict == EligibilityVerdict.RUNTIME_TRUTH_ABSENT
+    assert result.records[0].state == "unknown"
+
+
+def test_dev_opt_in_env_admits_unverified(monkeypatch: Any) -> None:
+    import verdict.api as api
+    from verdict.eligibility import allow_unverified_dev_from_env
+
+    monkeypatch.setenv("VERDICT_ALLOW_UNVERIFIED_DEV", "1")
+    assert allow_unverified_dev_from_env() is True
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128/v1")
+    built = api._build_availability_cache()
+    assert built is not None
+    _, gate = built
+    assert gate.allow_unverified_in_dev is True
+    gate.availability_source = _unknown_report
+    result = gate.evaluate([ModelInfo(id="d/4", provider="d", capability_tier=2)], dev_mode=True)
+    assert [m.id for m in result.admitted] == ["d/4"]
+    assert result.records[0].verdict == EligibilityVerdict.NOT_LIVE_ELIGIBLE
+    assert "dev mode admits unverified candidate" in (result.records[0].reason or "")
+
+
+def test_dev_opt_in_env_rejects_other_values(monkeypatch: Any) -> None:
+    from verdict.eligibility import allow_unverified_dev_from_env
+
+    monkeypatch.delenv("VERDICT_ALLOW_UNVERIFIED_DEV", raising=False)
+    assert allow_unverified_dev_from_env() is False
+    for value in ("0", "false", "", "no"):
+        monkeypatch.setenv("VERDICT_ALLOW_UNVERIFIED_DEV", value)
+        assert allow_unverified_dev_from_env() is False, value
+
+
+def test_api_default_profile_does_not_admit_unverified(monkeypatch: Any) -> None:
+    import verdict.api as api
+
+    monkeypatch.delenv("LLMGATE_INTELLIGENCE_PROFILE", raising=False)
+    monkeypatch.delenv("VERDICT_ALLOW_UNVERIFIED_DEV", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128/v1")
+    # The default profile is still "development" (dev_mode=True on the router).
+    dev_mode = api._build_intelligence().profile == "development"
+    assert dev_mode is True
+    built = api._build_availability_cache()
+    assert built is not None
+    _, gate = built
+    assert gate.allow_unverified_in_dev is False
+    gate.availability_source = _unknown_report
+    result = gate.evaluate(
+        [ModelInfo(id="d/4", provider="d", capability_tier=2)], dev_mode=dev_mode
+    )
+    assert result.admitted == []
+    assert result.records[0].verdict == EligibilityVerdict.RUNTIME_TRUTH_ABSENT
+
+
+def _explain_eligible(monkeypatch: Any, model_id: str) -> bool:
+    from fastapi.testclient import TestClient
+
+    import verdict.api as api
+    from verdict.eligibility import allow_unverified_dev_from_env
+
+    report = _report(("a/1", "eligible"), ("d/4", "unknown"))
+    cache = _cache(report)
+    gate = EligibilityGate(
+        cache.get,
+        protected_fail_closed=True,
+        allow_unverified_in_dev=allow_unverified_dev_from_env(),
+    )
+    monkeypatch.setattr(api, "_build_availability_cache", lambda: (cache, gate))
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "test-token")
+    with TestClient(api.app) as client:
+        resp = client.get(
+            f"/v1/route/explain?model_id={model_id}", headers={"Authorization": "Bearer test-token"}
+        )
+    assert resp.status_code == 200
+    return bool(resp.json()["eligible"])
+
+
+def test_explain_matches_router_dev_mode(monkeypatch: Any) -> None:
+    monkeypatch.delenv("LLMGATE_INTELLIGENCE_PROFILE", raising=False)
+    monkeypatch.delenv("VERDICT_ALLOW_UNVERIFIED_DEV", raising=False)
+    assert _explain_eligible(monkeypatch, "d/4") is False
+
+
+def test_explain_uses_router_profile_not_literal_dev_mode(monkeypatch: Any) -> None:
+    """With the dev opt-in on but a non-development profile, the router's
+    dev_mode is False, so explain must not report the unknown model eligible."""
+    monkeypatch.setenv("LLMGATE_INTELLIGENCE_PROFILE", "production")
+    monkeypatch.setenv("VERDICT_ALLOW_UNVERIFIED_DEV", "1")
+    assert _explain_eligible(monkeypatch, "d/4") is False
+
+
+def test_explain_with_dev_opt_in_and_dev_profile_matches_router(monkeypatch: Any) -> None:
+    monkeypatch.setenv("LLMGATE_INTELLIGENCE_PROFILE", "development")
+    monkeypatch.setenv("VERDICT_ALLOW_UNVERIFIED_DEV", "1")
+    assert _explain_eligible(monkeypatch, "d/4") is True
+
+
+def test_unset_omniroute_url_still_builds_no_cache(monkeypatch: Any) -> None:
+    import verdict.api as api
+
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.delenv("LLMGATE_UPSTREAM_BASE_URL", raising=False)
+    assert api._build_availability_cache() is None

@@ -84,12 +84,13 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_FRONTIER_ALLOWLIST` | Comma-separated frontier allowlist |
 | `LLMGATE_AVAILABILITY_TTL_SECONDS` | Availability cache TTL |
 | `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | Availability stale-while-revalidate window |
+| `VERDICT_ALLOW_UNVERIFIED_DEV` | Opt-in (`1`/`true`) to admit unverified (unknown/error/timeout) candidates for non-protected work when the intelligence profile is `development`. Default off: unknown-state models are excluded as `runtime_truth_absent` |
 
 ### Receipts / evidence
 
 | Variable | Meaning |
 |----------|---------|
-| `VERDICT_RECEIPTS_DB` | Durable API evidence SQLite path (required for authenticated API mode) |
+| `VERDICT_RECEIPTS_DB` | Durable API evidence SQLite path (required for authenticated API mode; `:memory:` selects an explicit non-durable store, as the test suite does) |
 | `VERDICT_EVIDENCE_DB` | Legacy alias for the durable evidence path |
 | `VERDICT_MEMORY_DB` | MemoryPlane SQLite path (failover/replay demos) |
 
