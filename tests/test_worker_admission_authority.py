@@ -41,7 +41,7 @@ def _runtime(**rows: dict[str, object]) -> dict[str, dict[str, object]]:
     }
 
 
-def test_worker_admission_requires_measured_usage_evidence() -> None:
+def test_worker_admission_can_require_measured_usage_evidence() -> None:
     admit = getattr(worker_runtime, "admitted_worker_candidates", None)
     assert callable(admit)
 
@@ -54,7 +54,6 @@ def test_worker_admission_requires_measured_usage_evidence() -> None:
         )
     ).evaluate(CandidateRequirements(), now=NOW)
 
-    # Canonical availability is authoritative; worker policy may only narrow it.
     assert {candidate.model.id for candidate in report.eligible} == {"cc/no-usage", "kr/usable"}
     task = WorkerTask(
         required_capabilities=frozenset({"tools"}),
@@ -69,6 +68,31 @@ def test_worker_admission_requires_measured_usage_evidence() -> None:
         require_usage_evidence=True,
     )
     assert [candidate.route_id for candidate in candidates] == ["kr/usable"]
+
+
+def test_unknown_usage_can_enter_preprobe_pool() -> None:
+    admit = getattr(worker_runtime, "admitted_worker_candidates", None)
+    assert callable(admit)
+
+    rows = _catalog("cc/unknown", "kr/measured")["data"]
+    assert isinstance(rows, list)
+    report = OmniRouteAvailabilityAdapter(
+        StaticOmniRouteTransport(
+            {"data": rows},
+            _runtime(**{"cc/unknown": {}, "kr/measured": {"quota_remaining_pct": 75.0}}),
+        )
+    ).evaluate(CandidateRequirements(), now=NOW)
+    task = WorkerTask(allowed_route_prefixes=frozenset({"cc/", "kr/"}))
+
+    candidates = admit(
+        task,
+        rows,
+        ["omniroute/cc/unknown", "omniroute/kr/measured"],
+        report,
+        require_usage_evidence=False,
+    )
+
+    assert {candidate.route_id for candidate in candidates} == {"cc/unknown", "kr/measured"}
 
 
 def test_zero_quota_is_never_admitted_even_if_health_is_healthy() -> None:
@@ -102,7 +126,7 @@ def test_zero_quota_is_never_admitted_even_if_health_is_healthy() -> None:
         rows,
         ["omniroute/cc/exhausted", "omniroute/kr/usable"],
         report,
-        require_usage_evidence=True,
+        require_usage_evidence=False,
     )
     assert [candidate.route_id for candidate in candidates] == ["kr/usable"]
 
@@ -145,7 +169,7 @@ def test_worker_runtime_intersects_canonical_availability_before_ranking() -> No
         excluded_route_ids=frozenset({"cc/active-controller"}),
     )
     prime_selectors = [f"omniroute/{row['id']}" for row in rows]
-    candidates = admit(task, rows, prime_selectors, report, require_usage_evidence=True)
+    candidates = admit(task, rows, prime_selectors, report, require_usage_evidence=False)
 
     assert [candidate.route_id for candidate in candidates] == ["kr/usable"]
 
