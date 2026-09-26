@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from verdict.admission import AdmissionUnavailableError, AdmittedSet, canonical_route_id
 from verdict.controller_launch import (
     ControllerLaunchDecision,
     ControllerLaunchError,
@@ -112,6 +113,54 @@ class ControllerSelectionHooks:
     compile_context_digests: (
         Callable[[ExecutionPathDecision, ExecutionPathRequest], Mapping[str, Any]] | None
     ) = None
+    # Canonical live admission. When ``require_live_admission`` is set, a missing
+    # or failing admission source blocks launch: there is no catalog fallback.
+    admission: Callable[[datetime], AdmittedSet] | None = None
+    require_live_admission: bool = False
+
+
+def _controller_admission(hooks: ControllerSelectionHooks, when: datetime) -> AdmittedSet | None:
+    if hooks.admission is None:
+        if hooks.require_live_admission:
+            raise ControllerLaunchError(
+                "live_admission_required",
+                "authoritative controller selection requires canonical live admission; "
+                "refusing to rank from catalog/passport truth",
+            )
+        return None
+    try:
+        return hooks.admission(when)
+    except ControllerLaunchError:
+        raise
+    except AdmissionUnavailableError as exc:
+        raise ControllerLaunchError("live_admission_unavailable", str(exc)) from exc
+    except Exception as exc:
+        raise ControllerLaunchError(
+            "live_admission_unavailable", f"live admission failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _admission_failure_detail(admitted: AdmittedSet, route_ids: Sequence[str]) -> str:
+    parts = []
+    for route_id in route_ids[:5]:
+        record = admitted.first_failure(route_id)
+        stage = record.first_failed_stage.value if record.first_failed_stage else "ADMITTED"
+        parts.append(f"{record.route_id}:{stage}:{record.reason}@{record.source}")
+    return "; ".join(parts)
+
+
+def _require_offers_admitted(
+    offers: Sequence[ExecutionPathOffer], allowed: frozenset[str], *, surface: str
+) -> None:
+    outside = sorted(
+        {o.route.route_id for o in offers if canonical_route_id(o.route.route_id) not in allowed}
+    )
+    if outside:
+        raise ControllerLaunchError(
+            "admission_bypass",
+            f"{surface} returned routes outside the canonical admitted seed set: "
+            + ", ".join(outside),
+        )
 
 
 def _utc_now() -> datetime:
@@ -432,6 +481,27 @@ def select_controller_launch(
         _reject_auto_identity(offer.route.model, "offer.model")
         _reject_auto_identity(offer.route.route_id, "offer.route_id")
 
+    # Canonical live admission BEFORE prepare/ranking: seeds can only be narrowed.
+    admitted = _controller_admission(hooks, when)
+    admission_extension: dict[str, Any] | None = None
+    if admitted is not None:
+        dropped = [o.route.route_id for o in seed_offers if o.route.route_id not in admitted]
+        seed_offers = tuple(o for o in seed_offers if o.route.route_id in admitted)
+        receipt_body = admitted.receipt()
+        admission_extension = {
+            "digest": receipt_body["digest"],
+            "sources": receipt_body["sources"],
+            "generated_at": receipt_body["generated_at"],
+            "dropped_seeds": [admitted.first_failure(r).to_dict() for r in dropped],
+        }
+        if not seed_offers:
+            raise ControllerLaunchError(
+                "no_eligible_route",
+                "canonical live admission rejected every controller seed before ranking "
+                f"({_admission_failure_detail(admitted, dropped)})",
+            )
+    allowed_ids = frozenset(canonical_route_id(o.route.route_id) for o in seed_offers)
+
     task_slice = _mission_task_slice(mission)
     trajectory_id = mission.trajectory_digest or f"controller:{mission.attempt_id}"
     # Rebind offer evidence to this mission's TaskSlice/trajectory so execution-path authority
@@ -483,6 +553,8 @@ def select_controller_launch(
             "eligibility_preparation_failed", f"live eligibility preparation failed: {exc}"
         ) from exc
 
+    # prepare may only narrow the admitted seed set; it can never add a route.
+    _require_offers_admitted(prepared.offers, allowed_ids, surface="prepare_execution_request")
     # prepare_controller_execution_request is the eligibility authority (M1).
     # Promote surviving inventory seeds to eligible only after prepare confirms.
     eligible_offers = _mark_prepared_offers_eligible(prepared.offers)
@@ -592,6 +664,15 @@ def select_controller_launch(
             ep_decision.why_selected or "BOD-104 returned blocked/no selected route",
         )
 
+    if canonical_route_id(ep_decision.selected_route.route_id) not in allowed_ids or (
+        admitted is not None and ep_decision.selected_route.route_id not in admitted
+    ):
+        raise ControllerLaunchError(
+            "admission_bypass",
+            f"optimizer selected {ep_decision.selected_route.route_id!r} outside the "
+            "canonical admitted set",
+        )
+
     # execution-path authority final selected_route is authoritative for bind/receipt/launch.
     # Never replace it with a post-optimize STAY route that can diverge from
     # ep_decision.selected_route (session continuity already constrained ranking).
@@ -653,7 +734,7 @@ def select_controller_launch(
     if prepared.pool_receipt is not None:
         pool_ref = f"pool://{getattr(prepared.pool_receipt, 'shortlist_digest', 'live')}"
 
-    extension_session = {
+    extension_session: dict[str, Any] = {
         "mission_id": mission.mission_id,
         "attempt_id": mission.attempt_id,
         "session_decision": session_label,
@@ -667,6 +748,8 @@ def select_controller_launch(
     }
     if session_rewrite is not None:
         extension_session["session_decision_rewrite"] = session_rewrite
+    if admission_extension is not None:
+        extension_session["admission"] = admission_extension
 
     try:
         receipt = hooks.build_receipt(
@@ -790,6 +873,7 @@ class ProductionControllerSelectionArtifacts:
     compiled_by_prompt_digest: dict[str, CompiledControllerPrompt] = field(default_factory=dict)
     compiled_by_route_id: dict[str, CompiledControllerPrompt] = field(default_factory=dict)
     last_compiled: CompiledControllerPrompt | None = None
+    last_admission: AdmittedSet | None = None
 
     def record(self, artifact: CompiledControllerPrompt) -> None:
         self.compiled_by_prompt_digest[artifact.prompt_digest] = artifact
@@ -1615,6 +1699,8 @@ def build_production_controller_selection_hooks(
     task_state_factory: Callable[[ControllerMission], TaskState] | None = None,
     gateway: str = "omniroute",
     require_live_sources: bool = True,
+    admission: Callable[[datetime], AdmittedSet] | None = None,
+    require_live_admission: bool | None = None,
 ) -> ProductionControllerSelectionBundle:
     """Build production ``ControllerSelectionHooks`` from genuine evidence only.
 
@@ -1876,6 +1962,25 @@ def build_production_controller_selection_hooks(
             "None defaults that explode only when session continuity is requested are forbidden",
         )
 
+    # Authoritative execution-path mode must never fall back to catalog truth:
+    # it requires canonical live admission before ranking.
+    authority = getattr(intelligence_service, "require_execution_path_authority", None) is True
+    needs_admission = authority if require_live_admission is None else require_live_admission
+    if needs_admission and admission is None:
+        raise ControllerLaunchError(
+            "live_admission_required",
+            "authoritative execution-path mode requires a canonical live admission source; "
+            "refusing catalog/passport-only controller selection",
+        )
+    recorded_admission: Callable[[datetime], AdmittedSet] | None = None
+    if admission is not None:
+        admission_source = admission
+
+        def recorded_admission(when: datetime) -> AdmittedSet:
+            admitted = admission_source(when)
+            artifacts.last_admission = admitted
+            return admitted
+
     hooks = ControllerSelectionHooks(
         prepare_execution_request=resolved_prepare,
         seed_offers=seed_offers,
@@ -1891,6 +1996,8 @@ def build_production_controller_selection_hooks(
         cost_state_factory=cost_state_factory,
         task_state_factory=task_state_factory,
         compile_context_digests=resolved_compile,
+        admission=recorded_admission,
+        require_live_admission=bool(needs_admission),
     )
     return ProductionControllerSelectionBundle(hooks=hooks, artifacts=artifacts)
 

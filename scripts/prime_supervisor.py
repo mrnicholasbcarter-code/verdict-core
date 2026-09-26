@@ -16,7 +16,7 @@ import sys
 import time
 import types
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -206,11 +206,17 @@ def run_attempt(
     poll: float = 5,
     progress_made: Callable[[Any, Any], bool] | None = None,
     on_started: Callable[[subprocess.Popen[Any]], None] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     made_progress = progress_made or (lambda old, new: old != new)
     with log.open("w") as output:
         process = subprocess.Popen(
-            command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
+            command,
+            cwd=cwd,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=dict(env) if env is not None else None,
         )
         try:
             # Startup identity is an admission gate. Do not fingerprint/watchdog,
@@ -914,6 +920,23 @@ def _build_bod119_session_factories(
     return cost_state_factory, task_state_factory, None
 
 
+def _default_live_admission_loader(state_dir: Path) -> Callable[[datetime], Any]:
+    """Canonical live admission for controller seeds (read-only OmniRoute GETs)."""
+
+    def load(when: datetime) -> Any:
+        from verdict.admission import load_live_admission
+
+        gateway = (os.environ.get("OMNIROUTE_BASE_URL") or "http://127.0.0.1:20128").strip()
+        key = (
+            os.environ.get("VERDICT_OMNIROUTE_API_KEY") or os.environ.get("OMNIROUTE_API_KEY") or ""
+        ).strip() or None
+        admitted = load_live_admission(gateway, now=when, api_key=key)
+        admitted.write_receipt(state_dir / "controller-admission-latest.json")
+        return admitted
+
+    return load
+
+
 def build_production_controller_selection_bundle(
     *,
     repo: Path,
@@ -985,6 +1008,11 @@ def build_production_controller_selection_bundle(
                 kwargs["task_state_factory"] = task_factory
             if wrapped_seed is not None and kwargs.get("seed_offers") is not None:
                 kwargs["seed_offers"] = wrapped_seed
+
+        # Authoritative config-built service: canonical live admission is the
+        # sole seed authority before ranking (read-only GETs; fails closed).
+        if service is not None and kwargs.get("admission") is None:
+            kwargs["admission"] = _default_live_admission_loader(state_dir)
 
         selection = _cs()
         if hasattr(selection, "build_production_controller_selection_bundle"):
@@ -1615,6 +1643,16 @@ def main() -> int:
                 },
             )
             raise ValueError(f"{exc.reason_code}: {exc.detail}") from exc
+        # Workers launched under this controller hard-exclude its identity.
+        child_env = {
+            **os.environ,
+            "VERDICT_ACTIVE_CONTROLLER_ROUTE": decision.selected_upstream_route,
+        }
+        last_admission = getattr(
+            getattr(production_bundle, "artifacts", None), "last_admission", None
+        )
+        if last_admission is not None:
+            last_admission.write_receipt(state / f"controller-admission-{token}.json")
         identity: dict[str, Any] | None = None
 
         def admit_started(process: subprocess.Popen[Any]) -> None:
@@ -1643,6 +1681,7 @@ def main() -> int:
                 poll=args.poll_seconds,
                 progress_made=progress_made,
                 on_started=admit_started,
+                env=child_env,
             )
         finally:
             stop_owned_daemon(args.prime, session_dir)
