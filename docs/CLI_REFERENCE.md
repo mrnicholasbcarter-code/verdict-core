@@ -326,7 +326,11 @@ Exit code: `0` when the host is healthy, `1` when unresolved issues remain
 (after `--fix` has been applied, if used). Both text and `--json` modes agree
 on exit code for the same host state. In `--json` mode, `issues` lists real
 problems that cause a non-zero exit; `warnings` lists non-fatal, optional
-items (for example a missing `.mcp.json`) that do not affect the exit code.
+items (for example a missing `.mcp.json`, or a documentation preflight
+blocked purely by a third-party GitHub rate limit / network error) that do
+not affect the exit code. A documentation preflight failure caused by a
+genuinely stale or missing local document set (not a network error) is
+still reported as an issue and does cause a non-zero exit.
 
 ---
 

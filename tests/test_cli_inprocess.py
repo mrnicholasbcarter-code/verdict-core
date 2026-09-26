@@ -1248,6 +1248,98 @@ def test_cli_doctor_fix_creates_mcp_config_and_reports_repaired(
     assert (cwd_dir / ".mcp.json").exists()
 
 
+def test_cli_doctor_network_rate_limited_preflight_warns_but_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(a) A documentation preflight blocked purely by third-party GitHub
+    rate limiting/network errors must not fail doctor in either mode."""
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    blocked_report = documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=2,
+        inventory=10,
+        ingested=0,
+        skipped_fresh=0,
+        stale=0,
+        missing=0,
+        unverifiable=2,
+        errors=(
+            "ruflo:resolve:ValueError:authoritative fetch failed: "
+            "HTTP Error 403: rate limit exceeded",
+            "ruvector:resolve:ValueError:authoritative fetch failed: "
+            "HTTP Error 403: rate limit exceeded",
+        ),
+    )
+    monkeypatch.setattr(
+        documentation_preflight, "run_documentation_preflight", lambda **kwargs: blocked_report
+    )
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "ok"
+    assert report["issues"] == []
+    assert any("preflight" in w for w in report["warnings"])
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "System is healthy! All checks passed." in out
+
+
+def test_cli_doctor_non_network_preflight_failure_exits_one_both_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(b) A genuinely stale/missing local documentation set (no network
+    error) must still fail doctor in both modes."""
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    blocked_report = documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=1,
+        inventory=5,
+        ingested=0,
+        skipped_fresh=0,
+        stale=2,
+        missing=3,
+        unverifiable=0,
+        errors=(
+            "adr:implementation/adrs/ADR-001.md:ValueError:"
+            "source blob SHA does not match fetched content",
+        ),
+    )
+    monkeypatch.setattr(
+        documentation_preflight, "run_documentation_preflight", lambda **kwargs: blocked_report
+    )
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "issues_found"
+    assert any("did not pass" in issue for issue in report["issues"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "authoritative documentation preflight did not pass" in out
+
+
 def test_cmd_doctor_issues_and_duplicates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
