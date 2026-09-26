@@ -2361,3 +2361,33 @@ def test_cmd_packet_canary_refuses_missing_apply_paths(
     assert exited.value.code == 1
     payload = json.loads(capsys.readouterr().out)
     assert "episodes" in payload["error"]
+
+def test_cli_compare_dispatches(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test that 'verdict compare' dispatches correctly to cmd_compare."""
+    # Track if cmd_compare was called
+    called = []
+
+    def mock_cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
+        called.append({"task": task, "criticality": criticality, "allow_offline": allow_offline})
+
+    # Monkeypatch cmd_compare
+    monkeypatch.setattr(cli, "cmd_compare", mock_cmd_compare)
+
+    # Set up sys.argv
+    import sys
+    original_argv = sys.argv
+    try:
+        sys.argv = ["verdict", "compare", "add tests"]
+        cli.main()
+    finally:
+        sys.argv = original_argv
+
+    # Verify cmd_compare was called with correct arguments
+    assert len(called) == 1
+    assert called[0]["task"] == "add tests"
+    assert called[0]["criticality"] == "medium"  # default
+    assert called[0]["allow_offline"] is False  # default
+
+    # Verify stdout does NOT contain usage help
+    captured = capsys.readouterr()
+    assert "usage: verdict" not in captured.out, f"stdout should not contain usage: verdict, got: {captured.out[:200]}"

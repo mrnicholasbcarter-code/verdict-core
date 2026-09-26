@@ -241,6 +241,12 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             output_json=args.json,
             allow_live_probe=args.allow_live_probe,
         )
+    elif args.command == "compare":
+        legacy.cmd_compare(
+            args.task,
+            args.criticality,
+            allow_offline=getattr(args, "allow_offline", False),
+        )
     elif args.command == "detect":
         legacy.cmd_detect(
             verbose=args.verbose,
