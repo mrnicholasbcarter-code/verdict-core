@@ -13,6 +13,15 @@ exhaustion, cooldown, auth failure or unavailability is dropped before ranking,
 and a route with no runtime evidence stays explicitly ``unknown`` (admitted for
 a bounded probe, never recorded as proven healthy).
 
+A runtime source that was not found (``<source>:absent``) was not consulted.
+With no consulted runtime source, every admitted route stays ``unknown``.
+
+Launch gate: an admitted route may be launched only when its record is
+``proven_healthy`` or a bounded live confirmation for that exact route has
+succeeded (``record_confirmation``). A failed confirmation drops the route at
+``HEALTHY``. ``require_launchable`` is the asserted precondition at every launch
+site; it raises ``AdmissionBypassError``.
+
 Quota rows are evidence only (exhausted -> drop, unknown -> explicit).
 Headroom windows and bounded confirmation are handled elsewhere.
 """
@@ -145,6 +154,11 @@ class RuntimeEvidence:
 
     def for_key(self, key: str) -> tuple[RuntimeObservation, ...]:
         return tuple(o for o in self.observations if o.key == key)
+
+    @property
+    def consulted(self) -> tuple[str, ...]:
+        """Runtime sources that were actually read. ``:absent`` sources do not count."""
+        return tuple(s for s in self.sources if not s.endswith(":absent"))
 
     def merged(self, other: RuntimeEvidence) -> RuntimeEvidence:
         return RuntimeEvidence(
@@ -300,6 +314,9 @@ class AdmissionRecord:
     observed_at: str | None
     health: str  # healthy | unknown | <failure state>
     until: str | None = None
+    # Bounded live confirmation for this exact route, recorded before launch.
+    confirmation_source: str | None = None
+    confirmed_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -314,6 +331,8 @@ class AdmissionRecord:
             "observed_at": self.observed_at,
             "health": self.health,
             "until": self.until,
+            "confirmation_source": self.confirmation_source,
+            "confirmed_at": self.confirmed_at,
         }
 
 
@@ -337,6 +356,7 @@ class AdmittedSet:
     sources: tuple[str, ...]
     controller_identity: str = CONTROLLER_IDENTITY_UNKNOWN
     narrowing: tuple[str, ...] = ()
+    runtime_consulted: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # Direct construction and dataclasses.replace() both land here without
@@ -365,6 +385,75 @@ class AdmittedSet:
     def proven_healthy(self, route_id: str) -> bool:
         record = self.record_for(route_id)
         return bool(record and record.admitted and record.health == "healthy")
+
+    def launchable(self, route_id: str) -> bool:
+        """Launch gate: proven healthy, or confirmed live for this exact route."""
+        record = self.record_for(route_id)
+        if record is None or not record.admitted:
+            return False
+        return record.health == "healthy" or record.confirmation_source is not None
+
+    def require_launchable(self, route_id: str, *, surface: str) -> AdmissionRecord:
+        """Asserted launch precondition. Raises ``AdmissionBypassError`` when violated."""
+        if not self.launchable(route_id):
+            raise AdmissionBypassError(surface, [canonical_route_id(route_id)])
+        record = self.record_for(route_id)
+        assert record is not None
+        return record
+
+    def launch_authority(self, route_id: str) -> dict[str, Any]:
+        """Why ``route_id`` may (or may not) launch, with source and time."""
+        record = self.first_failure(route_id)
+        if record.admitted and record.health == "healthy":
+            basis = "proven_healthy"
+            source, observed_at = record.source, record.observed_at
+        elif record.admitted and record.confirmation_source is not None:
+            basis = "live_confirmation"
+            source, observed_at = record.confirmation_source, record.confirmed_at
+        else:
+            basis = "none"
+            source, observed_at = record.source, record.observed_at
+        stage = record.first_failed_stage.value if record.first_failed_stage else None
+        return {
+            "route_id": record.route_id,
+            "basis": basis,
+            "source": source,
+            "observed_at": observed_at,
+            "health": record.health,
+            "first_failed_stage": stage,
+            "reason": record.reason,
+        }
+
+    def record_confirmation(
+        self, route_id: str, *, healthy: bool, source: str, observed_at: str, category: str = ""
+    ) -> AdmittedSet:
+        """Record a bounded live confirmation for one exact route.
+
+        Success marks the admitted record as confirmed (``health`` is left as
+        observed). Failure drops the route at ``HEALTHY`` with the probe's
+        category. A route that is not admitted is never re-admitted.
+        """
+        key = canonical_route_id(route_id)
+        records: list[AdmissionRecord] = []
+        for r in self.records:
+            if r.route_id != key or not r.admitted:
+                records.append(r)
+            elif healthy:
+                records.append(replace(r, confirmation_source=source, confirmed_at=observed_at))
+            else:
+                records.append(
+                    replace(
+                        r,
+                        admitted=False,
+                        first_failed_stage=AdmissionStage.HEALTHY,
+                        reason=category or "confirmation_failed",
+                        source=source,
+                        observed_at=observed_at,
+                        health=_state_for_category(category or "unhealthy"),
+                    )
+                )
+        outcome = "confirmed" if healthy else f"failed:{category or 'unhealthy'}"
+        return self._derive(tuple(records), f"CONFIRMATION:{key}:{outcome}@{source}")
 
     def first_failure(self, route_id: str) -> AdmissionRecord:
         """The record that explains why ``route_id`` is not admitted."""
@@ -474,6 +563,7 @@ class AdmittedSet:
             sources=self.sources,
             controller_identity=controller_identity or self.controller_identity,
             narrowing=self.narrowing + ((step,) if step else ()),
+            runtime_consulted=self.runtime_consulted,
         )
 
     # --------------------------------------------------------------- receipt
@@ -482,6 +572,7 @@ class AdmittedSet:
             "schema": "verdict.admission/v1",
             "generated_at": self.generated_at,
             "sources": list(self.sources),
+            "runtime_consulted": list(self.runtime_consulted),
             "controller_identity": self.controller_identity,
             "narrowing": list(self.narrowing),
             "admitted": sorted(self.ids),
@@ -650,8 +741,13 @@ def admit(
     """Build the canonical admitted set from live evidence.
 
     Raises ``AdmissionUnavailableError`` when inventory or connections are
-    missing, or when ``require_runtime`` is set and no runtime source was
-    consulted. There is no catalog-only fallback.
+    missing, or when ``require_runtime`` is set and no runtime evidence object
+    was supplied. There is no catalog-only fallback.
+
+    Runtime sources marked ``:absent`` were not consulted. When none was
+    consulted, every admitted route is ``admitted_unverified`` / ``unknown``
+    and ``runtime_consulted`` is empty: nothing is launchable until a bounded
+    live confirmation for that exact route succeeds.
     """
     if inventory_rows is None:
         raise AdmissionUnavailableError("live_inventory_unavailable", inventory_source)
@@ -685,6 +781,7 @@ def admit(
         records=records,
         generated_at=_iso(now),
         sources=tuple(dict.fromkeys((inventory_source, connections_source, *evidence.sources))),
+        runtime_consulted=evidence.consulted,
     )
 
 

@@ -261,3 +261,50 @@ def test_quota_rows_pass_through_as_evidence_only() -> None:
 def test_canonical_route_id_strips_gateway() -> None:
     assert canonical_route_id("omniroute/kr/x") == "kr/x"
     assert canonical_route_id("kr/x") == "kr/x"
+
+
+def test_require_runtime_with_only_absent_sources_means_no_runtime_consulted(
+    tmp_path: Path,
+) -> None:
+    from verdict.admission import default_runtime_evidence
+
+    runtime = default_runtime_evidence(now=NOW, state_dir=tmp_path / "missing")
+    assert runtime.sources and all(s.endswith(":absent") for s in runtime.sources)
+    assert runtime.consulted == ()
+    admitted = admit([row("cc/dead")], [conn("cc")], runtime, now=NOW, require_runtime=True)
+    assert admitted.runtime_consulted == ()
+    assert admitted.receipt()["runtime_consulted"] == []
+    record = admitted.record_for("cc/dead")
+    assert record is not None
+    assert record.reason == "admitted_unverified" and record.health == "unknown"
+    # Same result as an empty (no source at all) runtime evidence object.
+    empty = admit([row("cc/dead")], [conn("cc")], RuntimeEvidence(), now=NOW)
+    assert admitted.record_for("cc/dead") == empty.record_for("cc/dead")
+    assert not admitted.proven_healthy("cc/dead")
+    assert not admitted.launchable("cc/dead")
+    with pytest.raises(AdmissionBypassError):
+        admitted.require_launchable("cc/dead", surface="t")
+
+
+def test_record_confirmation_success_and_failure() -> None:
+    admitted = admit([row("kr/a"), row("kr/b")], [conn("kr")], RuntimeEvidence(), now=NOW)
+    ok = admitted.record_confirmation("kr/a", healthy=True, source="probe:x", observed_at="t1")
+    assert ok.launchable("kr/a") and not ok.proven_healthy("kr/a")
+    assert ok.launch_authority("kr/a")["basis"] == "live_confirmation"
+    bad = ok.record_confirmation(
+        "omniroute/kr/b", healthy=False, source="probe:x", observed_at="t2", category="timeout"
+    )
+    record = bad.first_failure("kr/b")
+    assert "kr/b" not in bad and record.first_failed_stage is AdmissionStage.HEALTHY
+    assert (record.reason, record.source, record.observed_at) == ("timeout", "probe:x", "t2")
+    # A confirmation never re-admits a dropped route.
+    again = bad.record_confirmation("kr/b", healthy=True, source="probe:x", observed_at="t3")
+    assert "kr/b" not in again and not again.launchable("kr/b")
+
+
+def test_proven_healthy_route_is_launchable_without_confirmation() -> None:
+    runtime = RuntimeEvidence((obs("route:kr/a", "healthy", source="probe"),), ("probe",))
+    admitted = admit([row("kr/a")], [conn("kr")], runtime, now=NOW)
+    assert admitted.runtime_consulted == ("probe",)
+    assert admitted.require_launchable("kr/a", surface="t").health == "healthy"
+    assert admitted.launch_authority("kr/a")["basis"] == "proven_healthy"

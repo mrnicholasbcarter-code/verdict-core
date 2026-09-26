@@ -306,3 +306,146 @@ def test_worker_cli_fails_closed_when_live_admission_unavailable(
     code = asyncio.run(worker_runtime.cli_run(run_dir))
     assert code == 1 and spawned == []
     assert "connection_evidence_unavailable" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- launch gate
+class FailingProbe(SpyProbe):
+    def __call__(self, candidate: LaunchCandidate) -> HealthResult:
+        self.calls.append(candidate.route_id)
+        return HealthResult(False, "rate_limited", 429)
+
+
+def _fresh_host_set(tmp_path: Path) -> Any:
+    from verdict.admission import default_runtime_evidence
+
+    runtime = default_runtime_evidence(now=NOW, state_dir=tmp_path / "no-state")
+    return admit([row(DEAD)], CONNECTIONS, runtime, now=NOW)
+
+
+def test_unverified_dead_route_gets_one_probe_then_zero_spawns(tmp_path: Path) -> None:
+    admitted = _fresh_host_set(tmp_path)
+    assert DEAD in admitted and not admitted.launchable(DEAD)
+    probe, adapter = FailingProbe(), SpyAdapter()
+    ctrl = WorkerController(
+        WorkerTask(),
+        inventory_rows=[row(DEAD)],
+        prime_selectors=[f"omniroute/{DEAD}"],
+        probe=probe,
+        adapter=adapter,
+        cache=HealthCache(tmp_path / "h.json"),
+        now=lambda: NOW,
+        admitted=admitted,
+        require_admission=True,
+    )
+    outcome = asyncio.run(ctrl.run("task"))
+    assert outcome.state == "FAIL_CLOSED"
+    assert probe.calls == [DEAD] and adapter.spawns == []
+    record = ctrl.admitted.first_failure(DEAD)  # type: ignore[union-attr]
+    assert record.first_failed_stage is AdmissionStage.HEALTHY
+    assert record.reason == "rate_limited"
+    assert record.source == worker_runtime.CONFIRMATION_SOURCE
+    assert record.observed_at == NOW.isoformat()
+    confirms = [e for e in ctrl.events if e["event"] == "confirmation"]
+    assert confirms and confirms[0]["confirmed"] is False
+
+
+def test_cached_healthy_is_not_confirmation_for_unverified_route(tmp_path: Path) -> None:
+    admitted = _fresh_host_set(tmp_path)
+    cache = HealthCache(tmp_path / "h.json")
+    cache.record(f"omniroute/{DEAD}", HealthResult(True, "healthy"), now=NOW)
+    probe, adapter = FailingProbe(), SpyAdapter()
+    ctrl = WorkerController(
+        WorkerTask(),
+        inventory_rows=[row(DEAD)],
+        prime_selectors=[f"omniroute/{DEAD}"],
+        probe=probe,
+        adapter=adapter,
+        cache=cache,
+        now=lambda: NOW,
+        admitted=admitted,
+        require_admission=True,
+    )
+    asyncio.run(ctrl.run("task"))
+    assert probe.calls == [DEAD] and adapter.spawns == []
+
+
+def test_unverified_route_with_successful_probe_launches_confirmed(tmp_path: Path) -> None:
+    admitted = admit([row(OK_ROUTE)], CONNECTIONS, RuntimeEvidence((), ("x:absent",)), now=NOW)
+    probe, adapter = SpyProbe(), SpyAdapter()
+    ctrl = WorkerController(
+        WorkerTask(),
+        inventory_rows=[row(OK_ROUTE)],
+        prime_selectors=[f"omniroute/{OK_ROUTE}"],
+        probe=probe,
+        adapter=adapter,
+        cache=HealthCache(tmp_path / "h.json"),
+        now=lambda: NOW,
+        admitted=admitted,
+        require_admission=True,
+    )
+    outcome = asyncio.run(ctrl.run("task"))
+    assert outcome.state == "SUCCESS" and adapter.spawns == [f"omniroute/{OK_ROUTE}"]
+    authority = ctrl.admitted.launch_authority(OK_ROUTE)  # type: ignore[union-attr]
+    assert authority["basis"] == "live_confirmation"
+    assert authority["source"] == worker_runtime.CONFIRMATION_SOURCE
+
+
+def test_spawn_gate_rejects_admitted_but_unconfirmed_route(tmp_path: Path) -> None:
+    """Asserted precondition: skipping confirmation cannot reach spawn."""
+    admitted = _fresh_host_set(tmp_path)
+    adapter = SpyAdapter()
+    ctrl = WorkerController(
+        WorkerTask(),
+        inventory_rows=[row(DEAD)],
+        prime_selectors=[f"omniroute/{DEAD}"],
+        probe=SpyProbe(),
+        adapter=adapter,
+        cache=HealthCache(tmp_path / "h.json"),
+        now=lambda: NOW,
+        admitted=admitted,
+        require_admission=True,
+    )
+
+    class Reverting:
+        """Undo every confirmation, as a buggy caller could."""
+
+        def __get__(self, obj: Any, owner: Any) -> Any:
+            return admitted
+
+        def __set__(self, obj: Any, value: Any) -> None:
+            pass
+
+    type(ctrl).admitted = Reverting()  # type: ignore[assignment]
+    try:
+        outcome = asyncio.run(ctrl.run("task"))
+    finally:
+        del type(ctrl).admitted
+    assert outcome.state == "FAIL_CLOSED" and adapter.spawns == []
+    assert "worker_runtime.spawn" in outcome.diagnostic
+
+
+def test_execute_with_worker_failover_applies_launch_gate(tmp_path: Path) -> None:
+    from verdict.subagent_selection import execute_with_worker_failover
+
+    executed: list[str] = []
+
+    async def execute(model: str) -> WorkerTerminal:
+        executed.append(model)
+        return WorkerTerminal("done", "OK", True, stop_reason="stop")
+
+    probe = FailingProbe()
+    with pytest.raises(NoHealthyWorkerModelError):
+        asyncio.run(
+            execute_with_worker_failover(
+                WorkerTask(),
+                inventory_rows=[row(DEAD)],
+                prime_selectors=[f"omniroute/{DEAD}"],
+                probe=probe,
+                execute=execute,
+                cache=HealthCache(tmp_path / "h.json"),
+                now=lambda: NOW,
+                admitted=_fresh_host_set(tmp_path),
+                require_admission=True,
+            )
+        )
+    assert probe.calls == [DEAD] and executed == []

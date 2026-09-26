@@ -17,12 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from verdict.admission import (
-    AdmissionBypassError,
-    AdmittedSet,
-    active_controller_route,
-    load_live_admission,
-)
+from verdict.admission import AdmittedSet, active_controller_route, load_live_admission
 from verdict.subagent_selection import (
     DEFAULT_OMNIROUTE_URL,
     HealthCache,
@@ -36,6 +31,9 @@ from verdict.subagent_selection import (
     fetch_omniroute_inventory,
     openai_health_probe,
 )
+
+# Source label for the bounded live confirmation the worker path runs before launch.
+CONFIRMATION_SOURCE = "worker_probe:openai_health_probe"
 
 
 @dataclass(frozen=True)
@@ -199,6 +197,16 @@ class WorkerController:
                     "or restore provider capacity",
                 )
             health = self.cache.usable(candidate.selector, now=self.now())
+            # Launch gate: an admitted route that is not proven healthy needs a
+            # bounded live confirmation (this probe) for this exact route first.
+            # A cached healthy hit is not proof for an unverified route.
+            confirming = (
+                self.admitted is not None
+                and not self.admitted.launchable(candidate.route_id)
+                and (health is None or health.healthy)
+            )
+            if confirming:
+                health = None
             if health is None:
                 try:
                     health = await asyncio.wait_for(
@@ -213,6 +221,23 @@ class WorkerController:
                     self.cache.record(candidate.selector, health, now=self.now())
                 else:
                     self.cache.record_failure(candidate, health, now=self.now())
+                if confirming and self.admitted is not None:
+                    observed = self.now().isoformat()
+                    self.admitted = self.admitted.record_confirmation(
+                        candidate.route_id,
+                        healthy=health.healthy,
+                        source=CONFIRMATION_SOURCE,
+                        observed_at=observed,
+                        category=health.category,
+                    )
+                    self.event(
+                        "confirmation",
+                        model=candidate.selector,
+                        source=CONFIRMATION_SOURCE,
+                        observed_at=observed,
+                        confirmed=health.healthy,
+                        classification=health.category,
+                    )
             self.event(
                 "health",
                 model=candidate.selector,
@@ -230,8 +255,9 @@ class WorkerController:
                 )
                 previous = candidate.selector
                 continue
-            if self.admitted is not None and candidate.route_id not in self.admitted:
-                raise AdmissionBypassError("worker_runtime.spawn", [candidate.route_id])
+            if self.admitted is not None:
+                # Asserted precondition: admitted AND (proven healthy OR confirmed).
+                self.admitted.require_launchable(candidate.route_id, surface="worker_runtime.spawn")
             number = len(self.attempts) + 1
             self.event(
                 "selection",
@@ -518,7 +544,12 @@ async def cli_run(directory: Path) -> int:
             admitted=admitted,
             require_admission=True,
         )
-        outcome = await controller.run(config["prompt"])
+        try:
+            outcome = await controller.run(config["prompt"])
+        finally:
+            # Persist confirmation results (source + observed_at) with the set.
+            if controller.admitted is not None:
+                controller.admitted.write_receipt(directory / "admission.json")
     except Exception as exc:
         outcome = WorkerOutcome(
             "FAIL_CLOSED",

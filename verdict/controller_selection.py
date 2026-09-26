@@ -19,7 +19,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from verdict.admission import AdmissionUnavailableError, AdmittedSet, canonical_route_id
+from verdict.admission import (
+    AdmissionBypassError,
+    AdmissionUnavailableError,
+    AdmittedSet,
+    canonical_route_id,
+)
 from verdict.controller_launch import (
     ControllerLaunchDecision,
     ControllerLaunchError,
@@ -117,6 +122,45 @@ class ControllerSelectionHooks:
     # or failing admission source blocks launch: there is no catalog fallback.
     admission: Callable[[datetime], AdmittedSet] | None = None
     require_live_admission: bool = False
+    # Receives the admitted set after launch-gate confirmations are applied, so
+    # the persisted state carries confirmation source + observed_at.
+    record_admission: Callable[[AdmittedSet], None] | None = None
+
+
+CONFIRMATION_SOURCE = "controller_confirm:admit_prove_confirm"
+
+
+def _apply_confirmations(
+    admitted: AdmittedSet, pool_receipt: Any, when: datetime
+) -> tuple[AdmittedSet, list[dict[str, Any]]]:
+    """Fold the budgeted confirm results from ``prepare`` into the admitted set."""
+    confirmation = getattr(pool_receipt, "confirmation", None) or {}
+    rows = confirmation.get("confirm") if isinstance(confirmation, Mapping) else None
+    receipt_id = confirmation.get("receipt_id") if isinstance(confirmation, Mapping) else None
+    source = f"{CONFIRMATION_SOURCE}:{receipt_id}" if receipt_id else CONFIRMATION_SOURCE
+    observed = when.isoformat()
+    applied: list[dict[str, Any]] = []
+    for row in rows or ():
+        if not isinstance(row, Mapping):
+            continue
+        route_id = canonical_route_id(str(row.get("identity_id") or ""))
+        if not route_id or route_id not in admitted:
+            continue
+        healthy = row.get("confirmed") is True
+        category = "" if healthy else str(row.get("status") or "confirm_failed")
+        admitted = admitted.record_confirmation(
+            route_id, healthy=healthy, source=source, observed_at=observed, category=category
+        )
+        applied.append(
+            {
+                "route_id": route_id,
+                "confirmed": healthy,
+                "source": source,
+                "observed_at": observed,
+                "category": category or None,
+            }
+        )
+    return admitted, applied
 
 
 def _controller_admission(hooks: ControllerSelectionHooks, when: datetime) -> AdmittedSet | None:
@@ -555,9 +599,29 @@ def select_controller_launch(
 
     # prepare may only narrow the admitted seed set; it can never add a route.
     _require_offers_admitted(prepared.offers, allowed_ids, surface="prepare_execution_request")
+    prepared_offers = tuple(prepared.offers)
+    if admitted is not None:
+        # Launch gate: only proven-healthy or live-confirmed routes may be ranked
+        # for launch. A failed confirmation drops the route at HEALTHY.
+        admitted, confirmations = _apply_confirmations(admitted, prepared.pool_receipt, when)
+        if hooks.record_admission is not None:
+            hooks.record_admission(admitted)
+        unconfirmed = [
+            o.route.route_id for o in prepared_offers if not admitted.launchable(o.route.route_id)
+        ]
+        prepared_offers = tuple(o for o in prepared_offers if admitted.launchable(o.route.route_id))
+        assert admission_extension is not None
+        admission_extension["confirmations"] = confirmations
+        admission_extension["unconfirmed"] = [admitted.launch_authority(r) for r in unconfirmed]
+        if not prepared_offers:
+            raise ControllerLaunchError(
+                "no_eligible_route",
+                "launch gate: no admitted controller route is proven healthy or live-confirmed "
+                f"({_admission_failure_detail(admitted, unconfirmed)})",
+            )
     # prepare_controller_execution_request is the eligibility authority (M1).
     # Promote surviving inventory seeds to eligible only after prepare confirms.
-    eligible_offers = _mark_prepared_offers_eligible(prepared.offers)
+    eligible_offers = _mark_prepared_offers_eligible(prepared_offers)
     prepared = ExecutionPathRequest(
         task_slice=prepared.task_slice,
         trajectory_id=prepared.trajectory_id,
@@ -671,6 +735,18 @@ def select_controller_launch(
             "admission_bypass",
             f"optimizer selected {ep_decision.selected_route.route_id!r} outside the "
             "canonical admitted set",
+        )
+    if admitted is not None:
+        # Asserted launch precondition after select.
+        try:
+            admitted.require_launchable(
+                ep_decision.selected_route.route_id, surface="controller_selection.launch"
+            )
+        except AdmissionBypassError as exc:
+            raise ControllerLaunchError("admission_bypass", str(exc)) from exc
+        assert admission_extension is not None
+        admission_extension["launch_authority"] = admitted.launch_authority(
+            ep_decision.selected_route.route_id
         )
 
     # execution-path authority final selected_route is authoritative for bind/receipt/launch.
@@ -1973,6 +2049,10 @@ def build_production_controller_selection_hooks(
             "refusing catalog/passport-only controller selection",
         )
     recorded_admission: Callable[[datetime], AdmittedSet] | None = None
+
+    def _record_last_admission(admitted: AdmittedSet) -> None:
+        artifacts.last_admission = admitted
+
     if admission is not None:
         admission_source = admission
 
@@ -1998,6 +2078,7 @@ def build_production_controller_selection_hooks(
         compile_context_digests=resolved_compile,
         admission=recorded_admission,
         require_live_admission=bool(needs_admission),
+        record_admission=_record_last_admission,
     )
     return ProductionControllerSelectionBundle(hooks=hooks, artifacts=artifacts)
 

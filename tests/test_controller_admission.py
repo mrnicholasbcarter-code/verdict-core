@@ -48,6 +48,43 @@ def _admission(when: datetime) -> Any:
     return admit(CATALOG, CONNECTIONS, EXHAUSTED, now=when)
 
 
+def _pool_receipt(route_ids: list[str], confirmed: dict[str, bool]) -> Any:
+    """Candidate pool receipt carrying the budgeted confirm rows from prepare."""
+    from verdict.candidate_pool import CandidatePoolReceipt, ShortlistEntry, TaskFingerprint
+
+    return CandidatePoolReceipt(
+        task_fingerprint=TaskFingerprint(digest="sha256:task", task_family="controller"),
+        discovered_count=len(route_ids),
+        hard_drops=(),
+        probes=(),
+        shortlist=tuple(
+            ShortlistEntry(r, None, "omniroute", r, 1.0, 1.0, {}, "fixture") for r in route_ids
+        ),
+        uncertainty=(),
+        evidence_digest="sha256:evidence",
+        shortlist_digest="sha256:shortlist",
+        confirmation={
+            "receipt_id": "confirm-fixture",
+            "confirm": [
+                {"identity_id": r, "confirmed": ok, "status": "confirmed" if ok else "HTTP 429"}
+                for r, ok in confirmed.items()
+            ],
+        },
+    )
+
+
+def _confirming_prepare(confirmed: dict[str, bool], calls: list[Any] | None = None) -> Any:
+    """prepare that narrows nothing and reports a budgeted confirm per route."""
+
+    def prepare(task: str, criticality: str, context: dict, request: Any) -> Any:
+        if calls is not None:
+            calls.append(request)
+        ids = [o.route.route_id for o in request.offers]
+        return replace(request, pool_receipt=_pool_receipt(ids, confirmed))
+
+    return prepare
+
+
 class Spy:
     """Records every stage that would lead towards a launch."""
 
@@ -103,7 +140,13 @@ def test_without_admission_dead_route_would_be_selected() -> None:
 
 
 def test_controller_selects_only_from_admitted_seeds_and_records_receipt() -> None:
-    hooks, prepared, persisted = _hooks(seed=[_offer(DEAD, "ctx-dead"), _offer(OK, "ctx-ok")])
+    # OK has no runtime evidence (unknown), so it needs a successful live
+    # confirmation before it may launch.
+    prepared: list[Any] = []
+    hooks, _, persisted = _hooks(
+        seed=[_offer(DEAD, "ctx-dead"), _offer(OK, "ctx-ok")],
+        prepare=_confirming_prepare({f"omniroute/{OK}": True}, prepared),
+    )
     hooks = replace(hooks, admission=_admission, require_live_admission=True)
     decision = select_controller_launch(_mission(), hooks=hooks, now=NOW)
     assert decision.prime_target.prime_model == OK
@@ -171,7 +214,9 @@ def test_optimizer_cannot_select_outside_admitted_set() -> None:
         return replace(optimize_execution_path(request), selected_route=dead_route)
 
     hooks, _, _ = _hooks(
-        seed=[_offer(DEAD, "ctx-dead"), _offer(OK, "ctx-ok")], optimize=rogue_optimize
+        seed=[_offer(DEAD, "ctx-dead"), _offer(OK, "ctx-ok")],
+        optimize=rogue_optimize,
+        prepare=_confirming_prepare({f"omniroute/{OK}": True}),
     )
     hooks = replace(hooks, admission=_admission, require_live_admission=True)
     with pytest.raises(ControllerLaunchError) as exc:
@@ -215,3 +260,100 @@ def test_factory_with_admission_wires_hooks_and_records_last_admission() -> None
     assert exc.value.reason_code == "no_eligible_route"
     assert bundle.artifacts.last_admission is not None
     assert DEAD not in bundle.artifacts.last_admission
+
+
+# ---------------------------------------------------------------- launch gate
+FRESH_CATALOG = [{"id": OK, "owned_by": "kr", "context_length": 200_000}]
+
+
+def _fresh_host_admission(tmp_path: Any) -> Any:
+    """Real default runtime loader on a fresh host: both state files absent."""
+    from verdict.admission import default_runtime_evidence
+
+    def load(when: datetime) -> Any:
+        runtime = default_runtime_evidence(now=when, state_dir=tmp_path / "no-state")
+        return admit(FRESH_CATALOG, CONNECTIONS, runtime, now=when)
+
+    return load
+
+
+def test_no_runtime_evidence_and_failed_confirm_never_launches(tmp_path: Any) -> None:
+    recorded: list[Any] = []
+    hooks, _, persisted = _hooks(
+        seed=[_offer(OK, "ctx-ok")], prepare=_confirming_prepare({f"omniroute/{OK}": False})
+    )
+    spy = Spy()
+    hooks = replace(
+        _spied(hooks, spy),
+        prepare_execution_request=hooks.prepare_execution_request,
+        admission=_fresh_host_admission(tmp_path),
+        require_live_admission=True,
+        record_admission=recorded.append,
+    )
+    with pytest.raises(ControllerLaunchError) as exc:
+        select_controller_launch(_mission(), hooks=hooks, now=NOW)
+    assert exc.value.reason_code == "no_eligible_route"
+    assert f"{OK}:HEALTHY:HTTP 429@controller_confirm" in exc.value.detail
+    assert spy.calls == [] and persisted == []
+    # The persisted admission state names the stage and the confirmation source.
+    record = recorded[-1].receipt()["candidates"][0]
+    assert record["first_failed_stage"] == "HEALTHY"
+    assert record["source"].startswith("controller_confirm:admit_prove_confirm")
+    assert record["observed_at"] == NOW.isoformat()
+    assert recorded[-1].runtime_consulted == ()
+
+
+def test_no_runtime_evidence_and_no_confirm_never_launches(tmp_path: Any) -> None:
+    hooks, _, persisted = _hooks(seed=[_offer(OK, "ctx-ok")])
+    hooks = replace(hooks, admission=_fresh_host_admission(tmp_path), require_live_admission=True)
+    with pytest.raises(ControllerLaunchError) as exc:
+        select_controller_launch(_mission(), hooks=hooks, now=NOW)
+    assert exc.value.reason_code == "no_eligible_route"
+    assert "admitted_unverified" in exc.value.detail
+    assert persisted == []
+
+
+def test_unknown_plus_successful_confirm_launches_with_confirmation_source(tmp_path: Any) -> None:
+    recorded: list[Any] = []
+    hooks, _, persisted = _hooks(
+        seed=[_offer(OK, "ctx-ok")], prepare=_confirming_prepare({f"omniroute/{OK}": True})
+    )
+    hooks = replace(
+        hooks,
+        admission=_fresh_host_admission(tmp_path),
+        require_live_admission=True,
+        record_admission=recorded.append,
+    )
+    decision = select_controller_launch(_mission(), hooks=hooks, now=NOW)
+    assert decision.prime_target.prime_model == OK
+    ext = persisted[0].kwargs["extensions"]["controller_launch"]["admission"]
+    authority = ext["launch_authority"]
+    assert authority["basis"] == "live_confirmation"
+    assert authority["source"].startswith("controller_confirm:admit_prove_confirm")
+    assert authority["observed_at"] == NOW.isoformat()
+    assert ext["confirmations"][0]["confirmed"] is True
+    record = recorded[-1].record_for(OK)
+    assert record.health == "unknown" and record.confirmation_source == authority["source"]
+    assert not recorded[-1].proven_healthy(OK) and recorded[-1].launchable(OK)
+
+
+def test_optimizer_cannot_select_an_unconfirmed_route_after_select(tmp_path: Any) -> None:
+    ok_route = _ctrl_route(f"omniroute/{OK}", provider="omniroute", model=OK)
+    other = "kr/claude-other"
+    catalog = [*FRESH_CATALOG, {"id": other, "owned_by": "kr", "context_length": 200_000}]
+
+    def load(when: datetime) -> Any:
+        return admit(catalog, CONNECTIONS, RuntimeEvidence((), ("x:absent",)), now=when)
+
+    def rogue_optimize(request: Any) -> Any:
+        return replace(optimize_execution_path(request), selected_route=ok_route)
+
+    hooks, _, _ = _hooks(
+        seed=[_offer(OK, "ctx-ok"), _offer(other, "ctx-other")],
+        optimize=rogue_optimize,
+        prepare=_confirming_prepare({f"omniroute/{other}": True}),
+    )
+    hooks = replace(hooks, admission=load, require_live_admission=True)
+    with pytest.raises(ControllerLaunchError) as exc:
+        select_controller_launch(_mission(), hooks=hooks, now=NOW)
+    assert exc.value.reason_code == "admission_bypass"
