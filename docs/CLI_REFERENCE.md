@@ -377,8 +377,18 @@ shared diagnostics collector (`_collect_doctor_diagnostics` in
 `verdict/cli.py`), so they report the same `issues` and `warnings` and agree
 on exit code for the same host state. Text mode renders the result; `--json`
 serialises it (`status`, `issues`, `warnings`, `repaired`, `sections`,
-`documentation_preflight`, `shared_memory`, `capability_bootstrap`,
-`runtime_health`).
+`documentation_preflight`, `gateway_lifecycle`, `shared_memory`,
+`capability_bootstrap`, `runtime_health`).
+
+`gateway_lifecycle` reports gateway readiness as a named state
+(`not_required`, `already_ready`, `started`, `failed_to_start`, `unhealthy`)
+with the remediation for an unready gateway. `doctor` is report-only here: it
+probes at most once and never starts, stops or reconfigures a gateway, and the
+section does not change the exit code. To make the gateway ready, set
+`VERDICT_ENSURE_GATEWAY=true` for CLI execution or
+`VERDICT_SERVE_ENSURE_GATEWAY=true` for `verdict serve`, and configure
+`gateway_start_command` (see [CONFIGURATION.md](CONFIGURATION.md)). Verdict
+never guesses a start command.
 
 Issues (exit `1`):
 
