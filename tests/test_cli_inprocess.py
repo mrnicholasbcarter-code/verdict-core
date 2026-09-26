@@ -1075,22 +1075,177 @@ def test_cli_memory_docs_json_reports_repaired_state(
     assert report["repaired"] is True
 
 
-def test_cli_doctor_json_has_machine_readable_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import sys
+def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shared fixture: a fully healthy host for doctor exit-code tests."""
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text(
+        "schema_version: 1\n"
+        "primary_model: anthropic/claude-opus-5\n"
+        "log_path: route-log.jsonl\n"
+        "gateway_url: http://localhost:11434/v1\n"
+        "providers:\n"
+        "  ollama:\n"
+        "    base_url: http://localhost:11434/v1\n"
+    )
+
+    def mock_api_request(method, path, body=None):
+        if method == "GET" and path == "/api/provider-nodes":
+            return [{"id": "node1", "name": "Ollama", "baseUrl": "http://127.0.0.1:11434/v1"}]
+        return None
+
+    monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
+
+    import urllib.request
+
+    class _FakeHealthResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeHealthResp())
 
     import verdict.documentation_preflight as documentation_preflight
 
     monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *args, **kwargs: None)
+
+    import socket
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(
+        socket, "create_connection", lambda address, timeout=None, source_address=None: MagicMock()
+    )
+
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:0")
+
+    # Pre-populate the memory-bridge state so run_doctor_diagnostics reports
+    # no issues either.
+    verdict_dir = tmp_path / ".verdict"
+    verdict_dir.mkdir(parents=True, exist_ok=True)
+    (verdict_dir / "memory.db").touch()
+
+
+def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(i) A healthy host must exit 0 in --json mode with status "ok".
+
+    This replaces the old test_cli_doctor_json_has_machine_readable_report,
+    which enshrined the bug where run_doctor_diagnostics never returns
+    "healthy" (only "ok"/"issues_found"), so --json always exited 1.
+    """
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["documentation_preflight"]["status"] == "ready"
+    assert report["status"] == "ok"
+    assert report["issues"] == []
+    assert report["warnings"] == []
+
+
+def test_cli_doctor_json_missing_mcp_config_warns_but_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(iv) No .mcp.json is a non-fatal warning, not an issue: exit 0."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    cwd_dir = tmp_path / "no-mcp-cwd"
+    cwd_dir.mkdir()
+    monkeypatch.chdir(cwd_dir)
+    assert not (cwd_dir / ".mcp.json").exists()
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "ok"
+    assert report["issues"] == []
+    assert "missing_mcp_config" in report["warnings"]
+
+
+def test_cli_doctor_missing_required_credential_exits_one_both_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(ii) A missing required credential must exit 1 in text AND --json mode."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+
     monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 1
     report = json.loads(capsys.readouterr().out)
-    assert report["documentation_preflight"]["status"] == "ready"
     assert report["status"] == "issues_found"
+    assert any("OMNIROUTE_API_KEY" in issue for issue in report["issues"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Required credential OMNIROUTE_API_KEY is not set" in out
+
+
+def test_cli_doctor_corrupt_config_exits_one_both_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(iii) Corrupt verdict.yaml must exit 1 in text AND --json mode."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    cfg_dir = tmp_path / ".config" / "verdict"
+    (cfg_dir / "verdict.yaml").write_text("not: valid: yaml: [")
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "issues_found"
+    assert any("corrupted/invalid YAML" in issue for issue in report["issues"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Configuration file is corrupted/invalid YAML" in out
+
+
+def test_cli_doctor_fix_creates_mcp_config_and_reports_repaired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(v) --fix still creates .mcp.json and records it in `repaired`."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    cwd_dir = tmp_path / "fix-cwd"
+    cwd_dir.mkdir()
+    monkeypatch.chdir(cwd_dir)
+    assert not (cwd_dir / ".mcp.json").exists()
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", "--fix"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "ok"
+    assert "created_mcp_config" in report["repaired"]
+    assert (cwd_dir / ".mcp.json").exists()
 
 
 def test_cmd_doctor_issues_and_duplicates(
@@ -1139,7 +1294,12 @@ def test_cmd_doctor_issues_and_duplicates(
 
     monkeypatch.setattr(socket, "create_connection", mock_create_connection)
 
-    cli.cmd_doctor()
+    # Real, unresolved issues (literal secret in config, duplicate URL,
+    # offline nodes) must make text-mode doctor exit non-zero, matching
+    # --json behavior for the same inputs.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
 
     out = capsys.readouterr().out
     assert "Literal API key detected inside the host URL for provider" in out
@@ -1162,13 +1322,19 @@ def test_cmd_doctor_flags_legacy_config_filename_and_offers_fix(
 
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
 
-    cli.cmd_doctor()
+    # This fixture also leaves other unrelated issues unresolved (no gateway
+    # URL, missing required credential), so both calls exit non-zero.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "must be 'verdict.yaml'" in out
     assert (cfg_dir / "config.yaml").exists()
     assert not (cfg_dir / "verdict.yaml").exists()
 
-    cli.cmd_doctor(fix=True)
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor(fix=True)
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "Renamed" in out
     assert not (cfg_dir / "config.yaml").exists()
@@ -1194,7 +1360,11 @@ def test_cmd_doctor_flags_invalid_env_var_formats(
         lambda *a, **k: (_ for _ in ()).throw(URLError("connection refused")),
     )
 
-    cli.cmd_doctor()
+    # Malformed env vars plus missing config/gateway are real, unresolved
+    # issues, so text-mode doctor must exit non-zero.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "OMNIROUTE_BASE_URL has invalid format" in out
     assert "OPENAI_API_KEY appears invalid" in out
@@ -1213,11 +1383,17 @@ def test_cmd_doctor_flags_missing_schema_version_and_fixes_it(
     (cfg_dir / "verdict.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
 
-    cli.cmd_doctor()
+    # This fixture also leaves other unrelated issues unresolved (no gateway
+    # URL, missing required credential), so both calls exit non-zero.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "older Verdict version" in out
 
-    cli.cmd_doctor(fix=True)
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor(fix=True)
+    assert exc.value.code == 1
     saved = yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
     assert saved["schema_version"] == 1
 
@@ -1230,7 +1406,12 @@ def test_cmd_doctor_prints_env_example_pointer(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
 
-    cli.cmd_doctor()
+    # No config file / gateway / credentials in this fixture are real,
+    # unresolved issues, so doctor exits non-zero even though the
+    # .env.example pointer is still shown.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert ".env.example" in out
 

@@ -320,6 +320,13 @@ verdict doctor [flags]
 | Flag | Description |
 |------|-------------|
 | `--fix` | Auto-fix issues |
+| `--json` | Output a machine-readable report |
+
+Exit code: `0` when the host is healthy, `1` when unresolved issues remain
+(after `--fix` has been applied, if used). Both text and `--json` modes agree
+on exit code for the same host state. In `--json` mode, `issues` lists real
+problems that cause a non-zero exit; `warnings` lists non-fatal, optional
+items (for example a missing `.mcp.json`) that do not affect the exit code.
 
 ---
 

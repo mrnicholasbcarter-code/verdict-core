@@ -2179,6 +2179,52 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
         )
 
 
+def _doctor_config_file_issues() -> list[str]:
+    """Return issues from loading verdict.yaml (missing or corrupt).
+
+    Mirrors the read-only check performed by the text-mode doctor so that
+    ``--json`` mode can agree on exit status for the same host state.
+    """
+    config_dir = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
+    )
+    config_path = os.path.join(config_dir, "verdict.yaml")
+    issues: list[str] = []
+    if not os.path.exists(config_path):
+        issues.append("Configuration file (verdict.yaml) is missing.")
+    else:
+        try:
+            with open(config_path) as f:
+                yaml.safe_load(f)
+        except Exception as exc:
+            issues.append(f"Configuration file is corrupted/invalid YAML: {exc}")
+    return issues
+
+
+def _doctor_required_credential_issues() -> list[str]:
+    """Return issues for missing required credentials.
+
+    Mirrors the text-mode credentials check so that ``--json`` mode can
+    agree on exit status for the same host state.
+    """
+    from verdict.credentials_registry import CREDENTIALS
+    from verdict.credentials_store import CredentialsStore, get_credential_source
+
+    issues: list[str] = []
+    try:
+        store = CredentialsStore()
+        for cred in CREDENTIALS:
+            source, _masked = get_credential_source(cred.env_name, store)
+            if source == "missing" and not cred.optional:
+                issues.append(
+                    f"Required credential {cred.env_name} is not set. "
+                    f"Set with: verdict credentials set {cred.env_name}"
+                )
+    except Exception as e:
+        issues.append(f"Credential check failed: {e}")
+    return issues
+
+
 def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     """Scan the Verdict setup and OmniRoute connections for issues and repair them."""
     if output_json:
@@ -2192,8 +2238,18 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
         report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
         report["capability_bootstrap"] = doctor_capability_report()
+
+        # Fold in config-file and required-credential checks so --json agrees
+        # with text-mode exit status for the same host state (real problems
+        # such as a corrupt verdict.yaml or a missing required credential
+        # must not be swallowed by --json).
+        extra_issues = _doctor_config_file_issues() + _doctor_required_credential_issues()
+        if extra_issues:
+            report["issues"] = list(report.get("issues", [])) + extra_issues
+            report["status"] = "issues_found"
+
         print(json.dumps(report, indent=2, sort_keys=True))
-        if report["status"] != "healthy":
+        if report["status"] != "ok":
             raise SystemExit(1)
         return
 
@@ -2495,6 +2551,8 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         ui.panel(
             "Next step", "Run verdict setup to initialize your configuration file.", tone="WARNING"
         )
+    if issues_found:
+        raise SystemExit(1)
 
 
 def cmd_run(
