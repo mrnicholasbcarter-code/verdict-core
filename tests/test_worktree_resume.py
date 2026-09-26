@@ -1,4 +1,4 @@
-"""BOD-65/66 Wave-1 foundations: worktree registry, handoff, resume."""
+"""the worktree registry/handoff/resume design/66 Wave-1 foundations: worktree registry, handoff, resume."""
 
 from __future__ import annotations
 

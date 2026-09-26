@@ -28,5 +28,5 @@
       "sha256": "5c53d1544ed7d91bb74d3c733d7c2cc208c9b7745502792e9380912de57ccc57"
     }
   },
-  "schema_id": "https://llm-gate.dev/schemas/contracts.v1.json#/$defs/execution_envelope"
+  "schema_id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/contracts.v1.json#/$defs/execution_envelope"
 }

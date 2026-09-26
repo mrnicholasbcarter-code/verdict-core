@@ -1,4 +1,4 @@
-"""BOD-92 runtime certification — evidence-only proof fixtures (no live network)."""
+"""runtime certification — evidence-only proof fixtures (no live network)."""
 
 from __future__ import annotations
 

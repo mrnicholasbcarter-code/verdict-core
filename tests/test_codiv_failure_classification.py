@@ -1,4 +1,4 @@
-"""Tests for BOD-198 failure classification (429/529 handling)."""
+"""Tests for the codiv failure classification and provider identity design failure classification (429/529 handling)."""
 
 import unittest
 from datetime import datetime, timezone
@@ -68,7 +68,7 @@ class _AvailabilitySurface:
 
 
 class TestNormalizeFailure(unittest.TestCase):
-    """Test normalize_failure with BOD-198 enhancements."""
+    """Test normalize_failure with the codiv failure classification and provider identity design enhancements."""
 
     def setUp(self):
         self.test_now = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)

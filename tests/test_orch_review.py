@@ -1,8 +1,8 @@
-"""Tests for BOD-185 OpenCodeReviewer + StaticDiffGate (verdict.orchestration.review).
+"""Tests for OpenCodeReviewer + StaticDiffGate OpenCodeReviewer + StaticDiffGate (verdict.orchestration.review).
 
 No network: every ``ocr`` invocation goes through an injected fake runner and
 saved sanitized fixtures. Live evidence for the real schema is recorded in the
-BOD-185 delivery notes; the fixtures here are sanitized copies of that output.
+OpenCodeReviewer + StaticDiffGate delivery notes; the fixtures here are sanitized copies of that output.
 """
 
 from __future__ import annotations

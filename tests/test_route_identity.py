@@ -1,4 +1,4 @@
-"""Tests for BOD-209: route identity tracking in run receipts."""
+"""Tests for route identity tracking in run receipts: route identity tracking in run receipts."""
 
 from __future__ import annotations
 
@@ -201,7 +201,7 @@ def test_route_identity_mechanical_merge(tmp_path: Path) -> None:
 def test_route_identity_failed_terminal_timeout_unattested(tmp_path: Path) -> None:
     """Failed terminal (ok=False) with timeout is 'unattested' even if model == route_id.
 
-    This tests the BOD-191 fix: executors.py sets model=route_id on timeout failures,
+    This tests the route identity tracking fix: executors.py sets model=route_id on timeout failures,
     but since there was no actual harness attestation, route_identity must be "unattested".
     """
     run_dir = tmp_path / "run"

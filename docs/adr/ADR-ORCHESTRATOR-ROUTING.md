@@ -1,8 +1,8 @@
-> **Status: SUPERSEDED (BOD-17 / BOD-127)** — Ruflo swarm dispatch and neural/SONA selection are obsolete Core architecture and were deleted. Canonical serve path is BOD-104 execution-path → BOD-67 optimized dispatch → `verdict.dispatcher` authorized `selected_route` only. Docs hygiene continues under BOD-131.
+> **Status: SUPERSEDED ** — Ruflo swarm dispatch and neural/SONA selection are obsolete Core architecture and were deleted. Canonical serve path is the execution-path authority optimizer (ADR-035) execution-path → the hydrate-before-dispatch authorized execution path design optimized dispatch → `verdict.dispatcher` authorized `selected_route` only. Docs hygiene continues under the ongoing documentation-hygiene pass.
 
 # ADR-ORCHESTRATOR-ROUTING: Orchestrator-Driven Model Selection with Deterministic Enforcement
 
-- **Status**: SUPERSEDED (BOD-17)
+- **Status**: SUPERSEDED
 - **Date**: 2026-07-31
 - **Deciders**: Verdict Core maintainers
 - **Tags**: routing, architecture, orchestrator, neural-learning, eligibility-gate
@@ -32,7 +32,7 @@ Verdict splits routing into two distinct layers:
 ### 1. Selector Layer (Orchestrator) — Non-Deterministic, Adaptive
 - **Authority**: Frontier model (Claude Opus / Sonnet) or Hermes orchestrator
 - **Input**: Live OmniRoute `/v1/models` catalog (3600+ models with pricing, context, capabilities)
-- **Process**: 
+- **Process**:
   - Researches task requirements
   - Queries live catalog for candidate models
   - Selects appropriately-sized workers per slice
@@ -76,7 +76,7 @@ Verdict splits routing into two distinct layers:
 ### Pre-merge Requirements
 1. **ADR landed**: This ADR merged and ingested into OpenViking
 2. **Policy docs updated**: `ROUTING_POLICY.md` and `ENFORCEMENT_AND_LEARNING.md` amended to reference this ADR
-3. **Tests passing**: 
+3. **Tests passing**:
    - `GET /v1/models` returns pricing + capabilities
    - `GET /v1/route/explain?model_id=...` returns `exclusions` with reasons
    - Probe `denied` → candidate excluded from `admitted` set
@@ -105,7 +105,7 @@ Verdict splits routing into two distinct layers:
 
 - **Supersedes**: `ROUTING_POLICY.md` (selector coupling prohibitions), `ENFORCEMENT_AND_LEARNING.md` (Ruflo coupling prohibitions for selection)
 - **Amended by**: None (this is the reconciling ADR)
-- **Related**: 
+- **Related**:
   - `docs/adr/ADR-001-evidence-ledger.md` (evidence envelope)
   - `docs/adr/ADR-010-fail-closed-capability-passports.md` (capability gates)
   - `docs/adr/ADR-006-authoritative-documentation-preflight.md` (doc preflight)

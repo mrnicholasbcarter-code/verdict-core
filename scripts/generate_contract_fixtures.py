@@ -176,7 +176,7 @@ def generate_fixtures(output_dir: Path):
 
     manifest = {
         "contract_version": "1",
-        "schema_id": "https://llm-gate.dev/schemas/contracts.v1.json#/$defs/execution_envelope",
+        "schema_id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/contracts.v1.json#/$defs/execution_envelope",
         "evaluation_time": FIXED_NOW,
         "expected_policy_digest": CANONICAL_DIGEST,
         "fixtures": {},

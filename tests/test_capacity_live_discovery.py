@@ -1,4 +1,4 @@
-"""BOD-129 live local discovery — offline probes (no network, no secrets)."""
+"""live local discovery — offline probes (no network, no secrets)."""
 
 from __future__ import annotations
 

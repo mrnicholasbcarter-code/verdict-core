@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _write_controller_decision(
     path: Path, *, provider: str = "test", model: str = "exact", reasoning=None
 ) -> Path:
-    """Persisted authoritative BOD-104 decision + receipt ref for supervisor tests."""
+    """Persisted authoritative the execution-path authority optimizer (ADR-035) decision + receipt ref for supervisor tests."""
     now = datetime.now(timezone.utc)
     payload = {
         "execution_path_decision_digest": "bod104-test",
@@ -1321,7 +1321,7 @@ def _evidence_backed_offer(
     capability_tier: int = 2,
     when: datetime | None = None,
 ):
-    """Minimal evidence-backed ExecutionPathOffer for BOD-119 factory tests."""
+    """Minimal evidence-backed ExecutionPathOffer for session economics STAY/SWITCH factory tests."""
     from decimal import Decimal
 
     from verdict.cost_ledger import CostTerm
@@ -1449,7 +1449,7 @@ def test_production_factory_supplies_session_factories_without_prior_session(tmp
     def seed_offers(mission, when):
         return (offer,)
 
-    # Build real BOD-119 factories through the supervisor helper under test.
+    # Build real session economics STAY/SWITCH factories through the supervisor helper under test.
     cost_factory, task_factory, wrapped_seed = m._build_bod119_session_factories(
         seed_offers=seed_offers
     )
@@ -1480,7 +1480,7 @@ def test_production_factory_supplies_session_factories_without_prior_session(tmp
 
     def fake_factory(**kwargs):
         factory_calls.append(dict(kwargs))
-        # Real factory double: supply BOD-119 factories derived from evidence-backed
+        # Real factory double: supply session economics STAY/SWITCH factories derived from evidence-backed
         # seed offers (same contract as build_production_controller_selection_bundle).
         # Do not invent zero prices; reuse supervisor helper under test.
         hooks = SimpleNamespace(
@@ -1739,7 +1739,7 @@ def test_prior_session_state_is_pessimistic_until_live_preparation(tmp_path):
 
 @pytest.mark.parametrize("inject_fn", [False, True])
 def test_supervisor_production_bundle_certifies_loaded_passports(tmp_path, inject_fn):
-    """Supervisor forwards the report producer; defaults use real offline BOD-92."""
+    """Supervisor forwards the report producer; defaults use real offline runtime certification."""
     from dataclasses import replace
 
     from verdict.model_passports import ModelPassport
@@ -1763,7 +1763,7 @@ def test_supervisor_production_bundle_certifies_loaded_passports(tmp_path, injec
 
     def certify(**kwargs):
         calls.append(kwargs)
-        # Injected hook still returns genuine BOD-92 report contents.
+        # Injected hook still returns genuine runtime certification report contents.
         return certify_runtime(**kwargs)
 
     def force_unknown(**kwargs):

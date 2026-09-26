@@ -109,7 +109,7 @@ def _decision_for_route(
     from tests.test_worker_launch_authority import _decision
 
     # Legacy fixtures carry a requested alias plus a concrete served identity;
-    # BOD-104 decisions must bind to the concrete route.
+    # decisions must bind to the concrete route.
     model = str(
         route.get("actual_identity")
         or route.get("model")
@@ -375,7 +375,7 @@ def test_use_time_served_identity_is_recorded_distinct_from_requested_alias(repo
     report = run_packet_autodev(
         packet,
         repo,
-        # BOD-104: the decision binds the concrete served identity; the
+        # the decision binds the concrete served identity; the
         # requested alias survives only as provenance.
         admitted_route=_route("free/cheap-alias", "provider/served-v2"),
         executor_factory=_UseTimeFactory([{"content": "after\n"}]),
@@ -1632,7 +1632,7 @@ def test_packet_execute_probes_all_keep_then_picks_best_live_not_first_ready(rep
         executor_factory=factory,
         store=store,
         verification_runner=_Verifier("after\n"),
-        # BOD-104: the optimizer decision binds the concrete min-latency LIVE
+        # the optimizer decision binds the concrete min-latency LIVE
         # route; the catalog harvest still probes KEEP and cannot override it.
         execution_path_decision=_decision_for_route(
             {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}
@@ -1721,7 +1721,7 @@ def test_packet_execute_starts_at_need_then_drains_remaining_keep(repo: Path) ->
         executor_factory=factory,
         store=ReceiptStore(":memory:"),
         verification_runner=_Verifier("after\n"),
-        # BOD-104: the decision binds the harvested min-latency LIVE route;
+        # the decision binds the harvested min-latency LIVE route;
         # probing still waits for need and drains the remaining KEEP.
         execution_path_decision=_decision_for_route(
             {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}
@@ -1852,7 +1852,7 @@ def test_cli_packet_execute_trusted_decision_preempts_v1_catalog_harvest(
         allow_live=True,
         delegation="legwork",
         probe_transport=transport,
-        # BOD-104: a trusted decision populates the unbound packet, so the
+        # a trusted decision populates the unbound packet, so the
         # CLI must not load /v1/models or let a harvest select the worker.
         execution_path_decision=_decision_for_route(
             {"requested_identity": "fast/free:free", "actual_identity": "fast/free:free"}

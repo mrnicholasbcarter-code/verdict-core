@@ -1,4 +1,4 @@
-"""Tests for BOD-198 eligibility gates and absence (C & D)."""
+"""Tests for the codiv failure classification and provider identity design eligibility gates and absence (C & D)."""
 
 import importlib
 import unittest

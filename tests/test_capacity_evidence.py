@@ -1,4 +1,4 @@
-"""BOD-129 live capacity evidence — offline proof fixtures (no network)."""
+"""live capacity evidence — offline proof fixtures (no network)."""
 
 from __future__ import annotations
 
@@ -412,7 +412,7 @@ def test_projects_into_bod92_and_bod104_without_provider_imports() -> None:
     bag = project_execution_path_evidence((direct, grok))
     assert bag["schema"] == "capacity_execution_evidence.v1"
     assert bag["scarcest_pool"]["remaining_pct"] == 8.0
-    # No provider-specific keys required for BOD-104 consumption.
+    # No provider-specific keys required for the execution-path authority optimizer (ADR-035) consumption.
     assert "quota_evidence" in bag
     for item in bag["quota_evidence"]:
         assert set(item.keys()) <= set(QuotaEvidenceInput.__annotations__)

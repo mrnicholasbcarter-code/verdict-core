@@ -1,7 +1,7 @@
 # Getting Started with Verdict
 
 > **Shipped behavior.** Commands and paths below match the current CLI and config
-> loaders. Planned CLI/TUI work ([BOD-177](https://linear.app/bodanglin/issue/BOD-177))
+> loaders. Planned CLI/TUI work
 > may extend interactive presentation without changing these entry points.
 
 ## Quick Install

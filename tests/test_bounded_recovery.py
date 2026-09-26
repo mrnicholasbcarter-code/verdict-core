@@ -1,4 +1,4 @@
-"""Proof fixtures for failure-directed bounded recovery (BOD-55)."""
+"""Proof fixtures for failure-directed bounded recovery."""
 
 from __future__ import annotations
 

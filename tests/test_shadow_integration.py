@@ -1,4 +1,4 @@
-"""Integration tests for BOD-199 SHADOW decision signals."""
+"""Integration tests for decision signal contracts SHADOW decision signals."""
 
 import subprocess
 from datetime import datetime

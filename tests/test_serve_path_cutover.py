@@ -1,4 +1,4 @@
-"""BOD-127 invariants: no silent strategy bypass of optimize_execution_path."""
+"""invariants: no silent strategy bypass of optimize_execution_path."""
 
 from __future__ import annotations
 
@@ -496,7 +496,7 @@ def test_match_candidate_helper_no_invent() -> None:
 
 
 def test_api_route_injects_require_authority(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default API serve path must not silently invent outside BOD-104."""
+    """Default API serve path must not silently invent outside the execution-path authority optimizer (ADR-035)."""
     import asyncio
 
     import verdict.api as api

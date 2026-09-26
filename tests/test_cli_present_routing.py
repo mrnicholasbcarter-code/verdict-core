@@ -1,4 +1,4 @@
-"""Smoke tests for BOD-187 routing-family human output (present.* helpers)."""
+"""Smoke tests for the CLI migration to shared human-output helpers routing-family human output (present.* helpers)."""
 
 from __future__ import annotations
 

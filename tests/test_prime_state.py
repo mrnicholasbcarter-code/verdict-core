@@ -20,7 +20,7 @@ def packet(worktree):
     return {
         "schema_version": 1,
         "issue": "BOD-12",
-        "issue_url": "https://linear.app/issue/BOD-12",
+        "issue_url": "https://example.com/issue-tracker/BOD-12",
         "project": "Verdict",
         "team": "BOD",
         "issue_updated_at": "2026-09-13T00:00:00Z",

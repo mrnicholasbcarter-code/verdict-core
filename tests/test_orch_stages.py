@@ -1,4 +1,4 @@
-"""BOD-188: UNDERSTAND and HYDRATE stages in the orchestration run view."""
+"""UNDERSTAND and HYDRATE stages in the orchestration run view."""
 
 from __future__ import annotations
 

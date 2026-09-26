@@ -1,4 +1,4 @@
-"""BOD-127: SwarmDispatcher binds authorized selected_route only."""
+"""SwarmDispatcher binds authorized selected_route only."""
 
 from datetime import datetime, timezone
 from typing import Any

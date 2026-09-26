@@ -499,7 +499,7 @@ def test_admit_receipt_selected_because_survives_receipts_db_round_trip() -> Non
 
 
 def test_admit_receipt_pack_state_and_included_sources_survive_receipts_db() -> None:
-    """BOD-106: pack_state + included_sources persist through evidence/DB allowlist."""
+    """pack_state + included_sources persist through evidence/DB allowlist."""
     sources = [
         {"source_uri": "docs/adr/ADR-001-hydrate.md", "source_digest": "sha256:" + "b" * 64},
         {"source_uri": "docs/architecture/decision.md", "source_digest": "sha256:" + "c" * 64},

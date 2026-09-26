@@ -1,4 +1,4 @@
-"""Tests for the BOD-235 OpenJev provider (real Codiv API shapes).
+"""Tests for the OpenJev provider (real Codiv API shapes).
 
 Each test exercises the real code path.  Mutation proofs are inline:
 they temporarily break the production code and assert the test fails,
@@ -377,7 +377,7 @@ def test_error_529_overloaded():
 
 
 def test_retry_after_header_case_insensitive():
-    """Retry-After lookup is case-insensitive (BOD-235 requirement)."""
+    """Retry-After lookup is case-insensitive (the OpenJev provider (real Codiv API shapes) requirement)."""
     # Provider normalises headers to lowercase from http.client;
     # for transport the dict keys come in as given, so we normalise in provider.
     for header_key in ("retry-after", "Retry-After", "RETRY-AFTER"):
@@ -527,7 +527,7 @@ def test_parse_retry_after_garbage():
 
 
 # ---------------------------------------------------------------------------
-# normalize_failure: BOD-235 error_type table
+# normalize_failure: the OpenJev provider (real Codiv API shapes) error_type table
 # ---------------------------------------------------------------------------
 
 

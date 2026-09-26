@@ -1,4 +1,4 @@
-"""BOD-107 / BOD-100 / BOD-109 spend-preservation gates on the cheap path."""
+"""spend-preservation gates on the cheap path."""
 
 from __future__ import annotations
 
@@ -282,7 +282,7 @@ def test_gate_capability_unit_drops_false_tools() -> None:
 
 
 def test_task_that_exceeds_pack_budget_is_denied_not_executed(tmp_path) -> None:
-    """BOD-110: when the task itself does not fit the pack, deny — never send a pack without it."""
+    """when the task itself does not fit the pack, deny — never send a pack without it."""
     snapshot = _live_snapshot()
     passports = {PROVEN_FREE: _passport(PROVEN_FREE), PAID_TOOLS: _passport(PAID_TOOLS)}
     calls: list[tuple[str, str]] = []
@@ -308,7 +308,7 @@ def test_task_that_exceeds_pack_budget_is_denied_not_executed(tmp_path) -> None:
     ] == "task_instructions_omitted"
 
 
-# --- BOD-112: server-authoritative worthiness -------------------------------
+# --- server-authoritative worthiness -------------------------------
 
 
 def test_client_task_class_cannot_downgrade_worthy_work() -> None:

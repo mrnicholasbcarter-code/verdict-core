@@ -1,4 +1,4 @@
-# Branch, worktree and PR reconciliation (BOD-190)
+# Branch, worktree and PR reconciliation
 
 - **Date:** 2026-09-24
 - **Method:** a read-only audit (`gh`, git ancestry and patch equivalence). Every removal was then
@@ -31,8 +31,8 @@ Removed:
 | `main`, `wip/pre-wave-existing-state` | KEEP | protected |
 | `feat/interview-golden-path` | ACTIVE | PR #590 |
 | `fix/omniroute-cx-models-list` | ACTIVE | Applies cleanly to main. Adds `cx/*` models to the Prime harness picker. Candidate PR. |
-| `chore/core-usability-cleanup` | ACTIVE, overlaps #589 | Both delete `scripts/demo-routing.py` and `verdict/git_hooks.py` and rewrite `CLI_REFERENCE.md`. Folded into BOD-189. |
-| `feat/bod-133-confinement` | SUPERSEDED (pending review) | Main confines reads with `O_NOFOLLOW` (#571), and #570 closed BOD-134/135. The cherry-pick conflicts only with the newer code. 3 small deltas remain to review: secret-regex quoting, gates-report acceptance, proxy outbound. |
+| `chore/core-usability-cleanup` | ACTIVE, overlaps #589 | Both delete `scripts/demo-routing.py` and `verdict/git_hooks.py` and rewrite `CLI_REFERENCE.md`. Folded into the orchestration golden-path documentation pass. |
+| `feat/bod-133-confinement` | SUPERSEDED (pending review) | Main confines reads with `O_NOFOLLOW` (#571), and #570 closed the confinement follow-up work/135. The cherry-pick conflicts only with the newer code. 3 small deltas remain to review: secret-regex quoting, gates-report acceptance, proxy outbound. |
 | `feat/bod-136-live-execution` | MERGED (#570), dirty worktree | Patch archived. The operator reviews it, then the worktree is removed. |
 | `feat/bod-17-ruflo-experimental` | MERGED (#554) | Its worktree holds only untracked `.serena/` and `.venv/`. |
 
@@ -41,7 +41,7 @@ Removed:
 | PR | Recommendation |
 |---|---|
 | #574-#579 (dependabot) | All checks pass. Merge after owner approval, in one batch. |
-| #589 (cursor docs/cleanup) | Keep `scripts/terminal_preview.py`. Its certification doc is self-reported. Superseded in scope by BOD-189; reconcile into it. |
+| #589 (cursor docs/cleanup) | Keep `scripts/terminal_preview.py`. Its certification doc is self-reported. Superseded in scope by the orchestration golden-path documentation pass; reconcile into it. |
 | #590 (golden path) | CI in progress. Merge after checks and owner approval. |
 
 ## Remote branches

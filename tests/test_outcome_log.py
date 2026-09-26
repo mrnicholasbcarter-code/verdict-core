@@ -1,4 +1,4 @@
-"""BOD-117: post-execution outcome receipts are the only producer of measured spend."""
+"""post-execution outcome receipts are the only producer of measured spend."""
 
 from __future__ import annotations
 

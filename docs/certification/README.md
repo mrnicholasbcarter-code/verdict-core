@@ -4,7 +4,7 @@ This directory contains documentation and tooling for verdict-core's immutable, 
 
 ## Overview
 
-**BOD-195** operationalizes release certification as an executable, repeatable product feature. Instead of hand-edited certification documents, we generate machine-readable evidence bundles bound to an exact git SHA.
+operationalizes release certification as an executable, repeatable product feature. Instead of hand-edited certification documents, we generate machine-readable evidence bundles bound to an exact git SHA.
 
 ## Quick Start
 
@@ -220,7 +220,7 @@ To add to an existing workflow:
 
 ## Pointing to Latest Certification
 
-**BOD-195 Acceptance Criteria**: README and cheat sheet should point to the latest certified SHA instead of copying counts.
+**the release certification story Acceptance Criteria**: README and cheat sheet should point to the latest certified SHA instead of copying counts.
 
 ### In README.md
 
@@ -336,6 +336,6 @@ print(f"Platform: {env['platform']}")
 
 ## References
 
-- **BOD-195**: [Release certification story](https://linear.app/bodanglin/issue/BOD-195)
-- **BOD-183**: Original manual certification matrix (historical)
-- **BOD-92**: Runtime certification (different feature, runtime component detection)
+- Release certification story
+- Original manual certification matrix (historical)
+- Runtime certification (different feature, runtime component detection)

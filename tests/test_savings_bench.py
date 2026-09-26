@@ -1,4 +1,4 @@
-"""BOD-101 / BOD-114 paired legit-task savings bench: simulation never claims; live binds."""
+"""/ the paired legit-task savings bench paired legit-task savings bench: simulation never claims; live binds."""
 
 from __future__ import annotations
 
@@ -456,7 +456,7 @@ def test_omniroute_arm_executor_without_headers_yields_unbound_evidence() -> Non
         parse_measured_cost({"headers": dict(execution.headers)})
 
 
-# --- BOD-116: evidence must be observed from the gateway, never copied --------
+# --- evidence must be observed from the gateway, never copied --------
 
 
 def _arm_request(arm: str = "verdict", prompt: str = "Debug the null dereference.") -> ArmRequest:

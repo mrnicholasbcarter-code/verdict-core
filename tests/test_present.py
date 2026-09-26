@@ -1,4 +1,4 @@
-"""verdict.present: shared human-output helpers for the CLI migration (BOD-187)."""
+"""verdict.present: shared human-output helpers for the CLI migration."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 # Codiv Provider Integration
 
-**Status:** Optional OmniRoute execution candidate  
+**Status:** Optional OmniRoute execution candidate
 **BOD:** 198
 
 ## Overview
@@ -63,7 +63,7 @@ Test fixture: 529 response → `UPSTREAM` class (transient, retryable).
 
 When present in rate-limit responses, Retry-After is parsed and clamped:
 - **Min:** 1 second
-- **Max:** 300 seconds  
+- **Max:** 300 seconds
 - **Malicious values** (negative, huge, garbage): Clamped to safe bounds
 
 Test fixtures:
@@ -92,7 +92,7 @@ When fallback occurs:
 - `intended_provider` ≠ `executed_provider`
 - `provider_mismatch` = `true`
 
-Fields are **optional** (backward compatible with pre-BOD-198 receipts).
+Fields are **optional** (backward compatible with pre-the codiv failure classification and provider identity design receipts).
 
 ## Absence Safety
 
@@ -136,7 +136,7 @@ Run the smoke test to verify direct and OmniRoute-mediated calls:
 python scripts/smoke_codiv.py
 ```
 
-**Expected:** 
+**Expected:**
 - Exit 2 with "CODIV_API_KEY missing" if key not set
 - Exit 0 with response samples if key is valid
 
@@ -150,7 +150,7 @@ Latency and cost data require live `CODIV_API_KEY` and OmniRoute configuration.
 
 Sample collection (to be run manually):
 - Direct Codiv API latency: TBD
-- OmniRoute-mediated latency: TBD  
+- OmniRoute-mediated latency: TBD
 - Cost per 1K tokens: TBD
 
 ## Configuration
@@ -163,7 +163,7 @@ CODIV_API_KEY = os.getenv("CODIV_API_KEY")  # Optional, absence is safe
 
 ## References
 
-- **Linear:** BOD-198  
+- **Linear:** the codiv failure classification and provider identity design
 - **OpenSpec change:** `openspec/changes/bod-198-codiv-candidate/`
 - **Failure classification:** `verdict/gateway_adapters.py` (`NormalizedFailureClass`)
 - **Eligibility gates:** `verdict/eligibility.py`

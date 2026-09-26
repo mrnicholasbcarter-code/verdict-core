@@ -5,8 +5,8 @@
 - **Related:** ADR-0001 (eligibility before ranking), ADR-015/017 (receipts), ADR-023 (governed
   supervision, superseded in scope by this ADR for the orchestration runtime), ADR-031 (Prime
   workflow skills), ADR-032 (OmniRoute is inventory/execute/health only)
-- **Stories:** BOD-151 (topology), BOD-152 (failure intelligence), BOD-153 (DAG fan-out),
-  BOD-159..166 (controller survival, minimum slice), BOD-177 (terminal view), BOD-185 (independent review)
+- **Stories:** frontier decomposition and topology selection (topology), failure intelligence and same-node reassignment (failure intelligence), DAG fan-out and runtime concurrency (DAG fan-out),
+  controller survival (minimum slice)..166 (controller survival, minimum slice), the terminal view (terminal view), OpenCodeReviewer + StaticDiffGate (independent review)
 
 ## Context
 
@@ -19,7 +19,7 @@ the run, or made it hang. No verdict required independent review before a run co
 `verdict.orchestration` owns one run from goal to receipt. Prime Agent is only the execution
 harness. OmniRoute is only transport and inventory.
 
-1. **Frontier decomposition (BOD-151).** One frontier model call returns a JSON `WorkGraph`. The
+1. **Frontier decomposition .** One frontier model call returns a JSON `WorkGraph`. The
    frontier model is picked through the same eligibility ladder, with `frontier_worthy=True`.
    Verdict validates the graph: no cycles, no unknown dependencies, and no shared write ownership
    between nodes that can run at the same time. It normalizes planner free text to its own
@@ -35,13 +35,13 @@ harness. OmniRoute is only transport and inventory.
    free-only flags, pricing), not from model names. The order is
    subscription > free > metered > unknown. A configurable provider preference (default
    `claude`) and current load then spread concurrent nodes. There is no static fallback chain.
-3. **DAG runtime (BOD-153).** Ready nodes run at the same time, up to `max_parallel`. Each attempt
+3. **DAG runtime .** Ready nodes run at the same time, up to `max_parallel`. Each attempt
    runs in its own git worktree, based on its validated dependencies. Lifecycle:
    `PLANNED -> ADMITTED -> DISPATCHED -> RUNNING -> TERMINAL_SUCCESS/TERMINAL_FAILURE ->
    VALIDATED/REJECTED`. Admission is never success. A node is `VALIDATED` only after its
    ownership barrier and its verification command pass. Integration nodes merge validated commits
    and run the combined check. A failed node blocks only its dependents. Siblings keep running.
-4. **Failure intelligence and same-node reassignment (BOD-152).** Terminals are classified from
+4. **Failure intelligence and same-node reassignment .** Terminals are classified from
    the status code first and versioned text second. Classes include quota vs. rate limit,
    401/402/403/400/404, 5xx, timeout, transport, empty or no final answer, malformed, model
    mismatch, gateway admission shed, verification and ownership. Reset hints (`Retry-After`,
@@ -49,7 +49,7 @@ harness. OmniRoute is only transport and inventory.
    model-scoped caps cool down only the route. The same node contract is then sent to a newly
    selected route. Gateway-local admission sheds retry the same route without penalizing the
    model. When the bounded pool is empty, the result is an explicit `FAIL_CLOSED`.
-5. **Independent review (BOD-185).** After integration, Alibaba OpenCodeReview (`ocr`) reviews the
+5. **Independent review .** After integration, Alibaba OpenCodeReview (`ocr`) reviews the
    integrated diff. It runs on a reviewer model that the ladder selects, excluding every
    implementer route, and a different model family when one has capacity. The OCR config is
    isolated per run, and the key never appears in argv or in artifacts. An error, timeout, empty
@@ -61,13 +61,13 @@ harness. OmniRoute is only transport and inventory.
    and independence, and a digest of the event log. `completion_verdict` returns `COMPLETE` only
    with validated work, an ok integration barrier and a `PASS` review. Otherwise it returns
    `BLOCKED` with the first concrete reason.
-7. **Controller survival (BOD-159..166, minimum slice).** Frontier planning uses the same
+7. **Controller survival (controller survival (minimum slice)..166, minimum slice).** Frontier planning uses the same
    classify, cooldown and reselect loop, so controller-model quota moves planning to another
    frontier model. `verdict supervise` runs the controller as a child process and watches
    `progress.json`. It kills a stalled or quota-dead controller's process group, restarts with
    `--resume` (validated nodes are reused, and abandoned attempts are recorded), and has bounded
    restarts and a deadline. When it gives up, it writes `FAILED_CLOSED` and a `BLOCKED` verdict.
-8. **Terminal view (BOD-177).** `verdict orchestrate`, `watch`, `run-receipt`, `eligibility` and
+8. **Terminal view .** `verdict orchestrate`, `watch`, `run-receipt`, `eligibility` and
    `supervise` render the event stream with the existing Verdict design tokens from
    `terminal_ui.py`. There is a plain ASCII fallback for NO_COLOR, CI or non-TTY output.
 
@@ -83,7 +83,7 @@ harness. OmniRoute is only transport and inventory.
 
 ## Known limits (not shipped)
 
-- Worker concurrency within a story is not yet adapted from dogfood outcomes (BOD-157). The cap
+- Worker concurrency within a story is not yet adapted from dogfood outcomes . The cap
   is operator-set (default 3).
 - `WORKER_CRITIC` and `SOLO` topologies are selected and recorded. A separate critic pass per
   node is not yet executed. Independent review runs once per run, on the integrated diff.

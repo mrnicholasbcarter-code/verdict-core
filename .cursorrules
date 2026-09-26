@@ -1,6 +1,0 @@
-
-
-# Verdict Unified Memory Bridge
-- All sessions, context, and code graphs share one local-first MemoryPlane.
-- Query memory prior to task execution: `verdict memory search '<query>'`.
-- Export session records on completion: `verdict memory put <key> <content>`.

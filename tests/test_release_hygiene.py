@@ -1,4 +1,4 @@
-"""BOD-113: spend evidence, packaged fixtures, and install extras are truthful."""
+"""spend evidence, packaged fixtures, and install extras are truthful."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def test_dashboard_never_labels_hardcoded_prices_as_actual_cost() -> None:
 
 
 def test_dashboard_measures_spend_from_outcome_receipts_not_admit_receipts() -> None:
-    """BOD-117: the producer of measured spend is the post-execution outcome log."""
+    """the producer of measured spend is the post-execution outcome log."""
     source = (REPO / "verdict" / "dashboard.py").read_text(encoding="utf-8")
     assert "from verdict.outcome_log import" in source
     assert "load_outcomes(" in source

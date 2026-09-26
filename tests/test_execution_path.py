@@ -1,4 +1,4 @@
-"""Adversarial proof fixtures for execution-path optimizer (BOD-104)."""
+"""Adversarial proof fixtures for execution-path optimizer."""
 
 from __future__ import annotations
 

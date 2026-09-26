@@ -1,4 +1,4 @@
-"""Tests for BOD-238 OpenJev ADVISORY mode (decision_signals/advisory.py).
+"""Tests for OpenJev ADVISORY mode OpenJev ADVISORY mode (decision_signals/advisory.py).
 
 Coverage:
 - advise_order: economy/strength/inconclusive ordering
@@ -1173,7 +1173,7 @@ class TestNoSecondPlannerCall:
 
 
 # ---------------------------------------------------------------------------
-# BOD-238 item A+B: privacy=restricted route() skip + provider_from_env wiring
+# item A+B: privacy=restricted route() skip + provider_from_env wiring
 # ---------------------------------------------------------------------------
 
 

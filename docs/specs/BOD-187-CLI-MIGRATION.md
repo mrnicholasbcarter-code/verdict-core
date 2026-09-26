@@ -1,4 +1,4 @@
-# BOD-187 CLI migration plan
+# the CLI migration to shared human-output helpers CLI migration plan
 
 Goal: every `verdict` command renders its human output with Verdict's terminal design
 (`verdict.terminal_ui.TerminalUI`). `--json` output, exit codes and side-effect/consent behaviour stay

@@ -1,6 +1,6 @@
 # Documentation Audit — Disposition Record
 
-**Branch line:** orchestration golden path (BOD-189 documentation pass)
+**Branch line:** orchestration golden path (the orchestration golden-path documentation pass documentation pass)
 **Recorded:** 2026-09-24
 **Test count on this branch:** 2907 (from `pytest --collect-only -q`)
 **Repository:** https://github.com/mrnicholasbcarter-code/verdict-core
@@ -15,7 +15,7 @@ Status values:
   current product behavior).
 
 Context for archive decisions: Ruflo, RuVector, SONA, Hivemind, and swarm
-dispatch/supervision are obsolete in Core (BOD-17). See
+dispatch/supervision are obsolete in Core . See
 [ADR-023](adr/ADR-023-governed-swarm-supervision.md) (superseded) and
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md) (current
 orchestration).
@@ -52,7 +52,7 @@ orchestration).
 | docs/architecture.md | REWRITTEN | Broken sub-links already removed on this branch; ADR-036 orchestration section added in this pass; SwarmDispatcher correctly labeled a historical class name. |
 | docs/release-recovery.md | KEEP | Accurate partial-release recovery procedure. |
 | docs/typescript-contract-parity.md | KEEP | Current TypeScript parity guide. |
-| docs/BRANCH_RECONCILIATION.md | KEEP | Factual BOD-190 reconciliation record. |
+| docs/BRANCH_RECONCILIATION.md | KEEP | Factual the branch/worktree/PR reconciliation pass reconciliation record. |
 | docs/DOCS_AUDIT.md | KEEP | This disposition record. |
 
 ## docs/adr/
@@ -62,7 +62,7 @@ orchestration).
 | docs/adr/README.md | KEEP | Canonical ADR index; ADR-036 listed, ADR-023 marked SUPERSEDED. |
 | docs/adr/0001-verdict-control-plane-invariants.md | KEEP | Pre-scheme invariants; short and stable. |
 | docs/adr/ADR-001 … ADR-022 | KEEP | Correct Status fields; swarm/Ruflo appear only as superseded history. |
-| docs/adr/ADR-023-governed-swarm-supervision.md | KEEP | Self-marked SUPERSEDED (BOD-17); retained as the historical swarm record. |
+| docs/adr/ADR-023-governed-swarm-supervision.md | KEEP | Self-marked SUPERSEDED ; retained as the historical swarm record. |
 | docs/adr/ADR-024 … ADR-035 | KEEP | Accurate decision records. |
 | docs/adr/ADR-036-goal-to-receipt-orchestration.md | KEEP | Authoritative record for current orchestration. |
 | docs/adr/ADR-ORCHESTRATOR-ROUTING.md | KEEP | Unnumbered legacy record kept for the supersession trail; index flags it for renumbering. |
@@ -78,7 +78,7 @@ orchestration).
 | docs/architecture/DOCTOR_AND_UNINSTALL_SPECIFICATION.md | KEEP | doctor/uninstall commands exist and match the spec. |
 | docs/architecture/ADR-EVIDENCE-LEDGER.md | ARCHIVED | Duplicate of docs/adr/ADR-001-evidence-ledger.md; moved to docs/archive/architecture/. |
 | docs/architecture/ADR-ORCHESTRATOR-ROUTING.md | ARCHIVED | Duplicate of docs/adr/ADR-ORCHESTRATOR-ROUTING.md with obsolete Ruflo/SONA framing; moved to docs/archive/architecture/. |
-| docs/architecture/EXPANDED_TOOL_AUTOPILOT_SPECIFICATION.md | ARCHIVED | Describes Ruflo/swarm tool matrix removed by BOD-17; moved to docs/archive/architecture/. |
+| docs/architecture/EXPANDED_TOOL_AUTOPILOT_SPECIFICATION.md | ARCHIVED | Describes Ruflo/swarm tool matrix removed by the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035); moved to docs/archive/architecture/. |
 | docs/architecture/CODE_INTELLIGENCE_GRAPH_SPECIFICATION.md | ARCHIVED | Early ADR-005 spec with RuVector claims; partially implemented; moved to docs/archive/architecture/. |
 | docs/architecture/LEGACY_MEMORY_ARCHIVAL_AND_CLEANUP_SPECIFICATION.md | ARCHIVED | Completed cleanup spec; malformed regex-as-link fixed; moved to docs/archive/architecture/. |
 
@@ -87,7 +87,7 @@ orchestration).
 | File | Status | Reason |
 |------|--------|--------|
 | docs/specs/ROUTING_POLICY.md | REWRITTEN | Swarm/Ruflo dispatch and learning-loop references replaced with ADR-036 orchestration in this pass; core gate policy was accurate. |
-| docs/specs/ENFORCEMENT_AND_LEARNING.md | ARCHIVED | Describes the Ruflo/SONA learning loop removed by BOD-17; moved to docs/archive/specs/ with an archival banner. |
+| docs/specs/ENFORCEMENT_AND_LEARNING.md | ARCHIVED | Describes the Ruflo/SONA learning loop removed by the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035); moved to docs/archive/specs/ with an archival banner. |
 | docs/specs/268/ (5 files) | ARCHIVED | Completed story spec artifacts; moved to docs/archive/specs/268/. |
 | docs/specs/story-269/ (5 files) | ARCHIVED | Completed story spec with swarm references; moved to docs/archive/specs/story-269/. |
 
@@ -117,7 +117,7 @@ orchestration).
 | docs/guides/orchestration-golden-path.md | KEEP | Authoritative end-to-end orchestration proof; all five commands verified against `--help`. |
 | docs/guides/golden-path.md | KEEP | Accurate dated live-probe evidence; orchestration-golden-path.md is canonical for orchestration. |
 | docs/guides/admit-prove-confirm-smoke.md | KEEP | Commands match the CLI. |
-| docs/guides/autonomous-development.md | KEEP | BOD-17 note present; swarm mentions are labeled historical, not product claims. |
+| docs/guides/autonomous-development.md | KEEP | the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035) note present; swarm mentions are labeled historical, not product claims. |
 | docs/guides/claude-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/cline-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/codex-harness.md | KEEP | Accurate harness setup. |
@@ -127,18 +127,18 @@ orchestration).
 | docs/guides/cursor-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/execution-host-contract.md | KEEP | Accurate contract description. |
 | docs/guides/free-tier-admit-smoke.md | KEEP | Commands match the CLI. |
-| docs/guides/governed-swarm-implementation.md | KEEP | Carries a HISTORICAL / NON-NORMATIVE banner (BOD-17); retained as history. |
+| docs/guides/governed-swarm-implementation.md | KEEP | Carries a HISTORICAL / NON-NORMATIVE banner ; retained as history. |
 | docs/guides/local-development.md | KEEP | Accurate dev environment setup. |
 | docs/guides/memory-outbox-mirror.md | KEEP | Consistent with ADR-034. |
 | docs/guides/memory-plane-offline-verification.md | KEEP | Accurate verification guide. |
 | docs/guides/model-metadata-store.md | KEEP | Accurate per ADR-032. |
-| docs/guides/omniroute-workers.md | KEEP | BOD-17 note present; no live swarm claims remain. |
+| docs/guides/omniroute-workers.md | KEEP | the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035) note present; no live swarm claims remain. |
 | docs/guides/opencode-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/prime-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/prime-workflow.md | KEEP | Accurate per ADR-031. |
 | docs/guides/prove-at-rest-smoke.md | KEEP | Commands match the CLI. |
 | docs/guides/runtime-ownership.md | KEEP | Mentions Ruflo/claude-flow only as observed ADR-008 ownership records, which is factual. |
-| docs/guides/ruvector-advisory-readiness.md | KEEP | Carries a SUPERSEDED (BOD-17) banner; retained as history. |
+| docs/guides/ruvector-advisory-readiness.md | KEEP | Carries a SUPERSEDED banner; retained as history. |
 | docs/guides/setup-preview.md | KEEP | Short, accurate redirect. |
 | docs/guides/shared-memory-provider.md | KEEP | Accurate per ADR-033. |
 | docs/guides/unknown-not-healthy.md | KEEP | Accurate fail-closed principle. |
@@ -147,8 +147,8 @@ orchestration).
 
 | File | Status | Reason |
 |------|--------|--------|
-| docs/pages/index.mdx | REWRITTEN | Hivemind/Neural Learning feature claims removed in this pass (BOD-17). |
-| docs/pages/hivemind.mdx | KEEP | Carries a SUPERSEDED (BOD-17) banner; retained as history. |
+| docs/pages/index.mdx | REWRITTEN | Hivemind/Neural Learning feature claims removed in this pass . |
+| docs/pages/hivemind.mdx | KEEP | Carries a SUPERSEDED banner; retained as history. |
 | docs/pages/_meta.json | KEEP | hivemind nav entry already labeled "historical / superseded". |
 
 ## docs/patterns/, docs/portfolio/, docs/privacy/, docs/proof/
