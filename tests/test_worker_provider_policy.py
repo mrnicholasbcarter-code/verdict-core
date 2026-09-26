@@ -141,6 +141,7 @@ class _RuntimeAdapter:
         self.deleted.append(str(handle["model"]))
 
 
+@pytest.mark.asyncio
 async def test_provider_terminal_failure_rolls_to_next_provider_on_first_failure(
     tmp_path: Path,
 ) -> None:
@@ -164,11 +165,13 @@ async def test_provider_terminal_failure_rolls_to_next_provider_on_first_failure
     assert outcome.state == "SUCCESS"
     assert outcome.candidate is not None
     assert outcome.candidate.route_id == "kr/c"
+    # cc/b is skipped from the same provider cooldown; no duplicate Prime retry.
     assert adapter.spawned == ["omniroute/cc/a", "omniroute/kr/c"]
     assert adapter.deleted == ["omniroute/cc/a"]
     assert any(
-        event.get("event") == "exclusion"
+        event.get("event") == "health"
         and event.get("provider") == "cc"
         and event.get("classification") == "permission"
+        and event.get("eligible") is False
         for event in runtime.events
     )
