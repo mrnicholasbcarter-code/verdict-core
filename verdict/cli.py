@@ -817,11 +817,12 @@ def _ensure_cli_gateway_ready() -> None:
     """
     if os.getenv("VERDICT_ENSURE_GATEWAY", "false").lower() not in {"1", "true", "yes", "on"}:
         return
-    from verdict.gateway_lifecycle import http_gateway_probe, require_gateway_ready
+    from verdict.gateway_lifecycle import require_gateway_ready
     from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
 
     try:
-        outcome = require_gateway_ready(_cli_bootstrap(), probe=http_gateway_probe)
+        bootstrap = _cli_bootstrap()
+        outcome = require_gateway_ready(bootstrap, probe=_gateway_probe_for(bootstrap))
     except BootstrapError as exc:
         print(describe_bootstrap_failure(exc), file=sys.stderr)
         raise SystemExit(1) from exc
@@ -2345,6 +2346,37 @@ def _doctor_fix_gateway(
     return url
 
 
+def _gateway_probe_for(bootstrap: Any) -> Any:
+    """Readiness probe carrying the gateway credential, when one is configured.
+
+    A gateway that requires a key answers 401 to an unauthenticated probe, which
+    would be reported as unhealthy: ``doctor`` would call a healthy gateway broken,
+    and ensure would fail closed against it. The key is read by the name the
+    provider binding declares (``api_key_env``), from the exported environment and
+    then the credential store, and is never printed.
+    """
+    from verdict.gateway_lifecycle import authenticated_gateway_probe
+    from verdict.provider_bootstrap import load_credential_store_env
+
+    names = [
+        binding.api_key_env
+        for binding in bootstrap.providers.values()
+        if getattr(binding, "api_key_env", None)
+        and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
+    ]
+    api_key: str | None = None
+    store: dict[str, str] | None = None
+    for name in names:
+        api_key = (os.getenv(str(name)) or "").strip() or None
+        if api_key is None:
+            if store is None:
+                store = load_credential_store_env()
+            api_key = (store.get(str(name)) or "").strip() or None
+        if api_key is not None:
+            break
+    return authenticated_gateway_probe(api_key)
+
+
 def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
     """Report gateway readiness in ``verdict doctor``. Never starts anything.
 
@@ -2354,12 +2386,12 @@ def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
     already reported by the reachability check above, so this section adds the
     named state rather than a second failure.
     """
-    from verdict.gateway_lifecycle import http_gateway_probe, inspect_gateway
+    from verdict.gateway_lifecycle import inspect_gateway
     from verdict.provider_bootstrap import BootstrapError
 
     try:
         bootstrap = _cli_bootstrap()
-        outcome = inspect_gateway(bootstrap, probe=http_gateway_probe)
+        outcome = inspect_gateway(bootstrap, probe=_gateway_probe_for(bootstrap))
     except BootstrapError as exc:
         diag.gateway_lifecycle = {"state": "unknown", "reason": exc.reason_code}
         diag.sections.append(("Gateway lifecycle", "warn", exc.reason_code))

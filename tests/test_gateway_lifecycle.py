@@ -900,6 +900,110 @@ def test_lock_file_is_owner_only(tmp_path: Path) -> None:
     assert lock.stat().st_mode & 0o777 == 0o600
 
 
+# --- probe authentication ---------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+def _recording_httpx_get(status_code: int, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Replace httpx.get with a recorder. No socket is opened."""
+    import httpx
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_get(url: str, **kwargs: Any) -> Any:
+        calls.append({"url": url, **kwargs})
+        return _FakeResponse(status_code)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    return calls
+
+
+def test_the_probe_sends_the_configured_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gateway that requires a credential must receive one when we have it."""
+    calls = _recording_httpx_get(200, monkeypatch)
+
+    health = gl.http_gateway_probe(GATEWAY_URL, api_key="sk-GATEWAYKEY")
+
+    assert health.reachable is True
+    assert calls[0]["url"] == f"{GATEWAY_URL}/models"
+    assert calls[0]["headers"] == {"Authorization": "Bearer sk-GATEWAYKEY"}
+
+
+def test_the_probe_sends_no_authorization_header_without_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Behaviour without a configured key is unchanged: no header is invented."""
+    calls = _recording_httpx_get(200, monkeypatch)
+
+    gl.http_gateway_probe(GATEWAY_URL)
+
+    assert calls[0]["headers"] == {}
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_rejected_credential_is_reported_as_auth_failed_not_unhealthy(
+    status: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """401/403 means the gateway is running and refused us, which is a distinct fault.
+
+    Reporting it as unhealthy would call a perfectly healthy auth-protected gateway
+    broken, and would send the operator to the wrong remediation.
+    """
+    _recording_httpx_get(status, monkeypatch)
+
+    health = gl.http_gateway_probe(GATEWAY_URL, api_key="sk-WRONGKEY")
+
+    assert health.auth_failed is True
+    assert health.responded is True
+    assert health.reachable is False
+    assert "sk-WRONGKEY" not in health.detail, "the probe must never echo the key"
+
+    launcher = CountingLauncher()
+    outcome = _ensure(_result(), lambda url: health, tmp_path, launcher=launcher)
+
+    assert outcome.state == "unhealthy"
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_auth_failed"
+    assert outcome.diagnostic.diagnostic_class == "gateway_health"
+    assert "OMNIROUTE_API_KEY" in outcome.diagnostic.remediation
+    assert launcher.launches == [], "an auth failure must not start a second gateway"
+
+
+def test_a_plain_error_status_is_still_unhealthy_not_an_auth_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """503 is an unhealthy gateway; the two faults stay distinct in both directions."""
+    _recording_httpx_get(503, monkeypatch)
+
+    health = gl.http_gateway_probe(GATEWAY_URL)
+
+    assert health.auth_failed is False
+    assert health.responded is True
+
+    outcome = _ensure(_result(), lambda url: health, tmp_path, launcher=CountingLauncher())
+
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_unhealthy"
+
+
+def test_the_authenticated_probe_binds_the_key_for_the_lifecycle_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lifecycle calls probe(url), so the credential is bound by the caller."""
+    calls = _recording_httpx_get(200, monkeypatch)
+    probe = gl.authenticated_gateway_probe("sk-BOUNDKEY")
+
+    probe(GATEWAY_URL)
+
+    assert calls[0]["headers"] == {"Authorization": "Bearer sk-BOUNDKEY"}
+    assert gl.authenticated_gateway_probe(None)(GATEWAY_URL).reachable is True
+    assert calls[1]["headers"] == {}
+
+
 # --- report-only inspection -------------------------------------------------
 
 

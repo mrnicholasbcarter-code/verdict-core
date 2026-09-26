@@ -51,6 +51,7 @@ __all__ = [
     "GatewayState",
     "LaunchedGateway",
     "SubprocessGatewayLauncher",
+    "authenticated_gateway_probe",
     "ensure_gateway_ready",
     "gateway_lock_key",
     "gateway_lock_path",
@@ -94,6 +95,10 @@ class GatewayHealth:
     reachable: bool
     responded: bool = False
     detail: str = ""
+    #: The gateway answered but refused the credential (or the lack of one). It is
+    #: running and owns the port, so it is never replaced with a second process,
+    #: and the fault is a credential fault rather than an unhealthy gateway.
+    auth_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -279,27 +284,59 @@ def gateway_lock_path(gateway_url: str, *, state_dir: Path | None = None) -> Pat
     return (state_dir or gateway_state_dir()) / f"gateway-{digest}.lock"
 
 
-def http_gateway_probe(gateway_url: str, *, timeout: float = 2.0) -> GatewayHealth:
+def http_gateway_probe(
+    gateway_url: str, *, timeout: float = 2.0, api_key: str | None = None
+) -> GatewayHealth:
     """Read-only inventory probe: ``GET {gateway_url}/models``.
 
     The default production probe. It only reads; it never starts, stops or
     reconfigures anything. A non-2xx answer is a responding-but-unhealthy
     gateway, which the lifecycle refuses to duplicate.
+
+    ``api_key`` is sent as a bearer token when the caller has one. A gateway that
+    requires a credential answers 401 or 403, and without the token that would be
+    reported as unhealthy — so ``doctor`` would call a perfectly healthy gateway
+    broken, and ensure would fail closed against it. The key is never echoed: only
+    the status code and the URL reach the detail.
     """
     import httpx
 
     url = f"{gateway_url.rstrip('/')}/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        response = httpx.get(url, timeout=timeout)
+        response = httpx.get(url, timeout=timeout, headers=headers)
     except Exception as exc:
         return GatewayHealth(
             reachable=False, responded=False, detail=f"{type(exc).__name__}: {exc}"
         )
     if 200 <= response.status_code < 300:
         return GatewayHealth(reachable=True, responded=True, detail="inventory reachable")
+    if response.status_code in {401, 403}:
+        sent = "the configured API key was rejected" if api_key else "no API key was configured"
+        return GatewayHealth(
+            reachable=False,
+            responded=True,
+            auth_failed=True,
+            detail=f"HTTP {response.status_code} from {url}: {sent}",
+        )
     return GatewayHealth(
         reachable=False, responded=True, detail=f"HTTP {response.status_code} from {url}"
     )
+
+
+def authenticated_gateway_probe(
+    api_key: str | None, *, timeout: float = 2.0
+) -> Callable[[str], GatewayHealth]:
+    """Bind a credential to :func:`http_gateway_probe` for the lifecycle's seam.
+
+    The lifecycle calls a probe as ``probe(url)``, and this module reads no
+    configuration, so the caller resolves the credential and binds it here.
+    """
+
+    def probe(gateway_url: str) -> GatewayHealth:
+        return http_gateway_probe(gateway_url, timeout=timeout, api_key=api_key)
+
+    return probe
 
 
 def _health(outcome: Any) -> GatewayHealth:
@@ -307,7 +344,10 @@ def _health(outcome: Any) -> GatewayHealth:
     reachable = bool(getattr(outcome, "reachable", False))
     responded = bool(getattr(outcome, "responded", reachable))
     return GatewayHealth(
-        reachable=reachable, responded=responded, detail=str(getattr(outcome, "detail", "") or "")
+        reachable=reachable,
+        responded=responded,
+        detail=str(getattr(outcome, "detail", "") or ""),
+        auth_failed=bool(getattr(outcome, "auth_failed", False)),
     )
 
 
@@ -607,6 +647,27 @@ def _ensure(
             "already_ready",
             attempts=attempts,
             detail=health.detail or f"gateway at {shown} answered",
+        )
+    if health.auth_failed:
+        # The gateway is running and owns the port; it refused our credential. That
+        # is a credential fault, not an unhealthy gateway, and starting a second
+        # process would not fix it.
+        return emit(
+            "unhealthy",
+            attempts=attempts,
+            detail=health.detail or f"gateway at {shown} refused our credential",
+            diagnostic=_diagnostic(
+                "gateway_auth_failed",
+                detail=(
+                    f"gateway at {shown} is running but refused the credential we sent: "
+                    f"{health.detail}"
+                ),
+                remediation=(
+                    "export the gateway's API key (OMNIROUTE_API_KEY), or run "
+                    "'verdict credentials set OMNIROUTE_API_KEY'"
+                ),
+                source=source,
+            ),
         )
     if health.responded:
         # Something owns this URL and reports itself unhealthy. Starting a second

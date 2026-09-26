@@ -286,6 +286,46 @@ def test_serve_startup_report_stays_non_fatal_for_a_missing_gateway(
     assert report["gateway_lifecycle"]["ready"] is False
 
 
+def test_doctor_probe_carries_the_configured_gateway_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """doctor sends the gateway credential, so an auth-protected gateway reads healthy."""
+    _write_config()
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "sk-DOCTORKEY")
+    seen: list[dict[str, Any]] = []
+
+    def fake_probe(url: str, *, timeout: float = 2.0, api_key: str | None = None) -> Any:
+        seen.append({"url": url, "api_key": api_key})
+        return HEALTHY
+
+    monkeypatch.setattr(gateway_lifecycle, "http_gateway_probe", fake_probe)
+    diag = cli.DoctorDiagnostics()
+
+    cli._doctor_gateway_lifecycle(diag)
+
+    assert diag.gateway_lifecycle["state"] == "already_ready"
+    assert seen == [{"url": "http://127.0.0.1:29999/v1", "api_key": "sk-DOCTORKEY"}]
+    assert "sk-DOCTORKEY" not in repr(diag.gateway_lifecycle)
+    assert "sk-DOCTORKEY" not in repr(diag.sections)
+
+
+def test_the_gateway_probe_sends_no_key_when_none_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No key configured means no header invented; the previous behaviour is kept."""
+    _write_config()
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    seen: list[str | None] = []
+
+    def fake_probe(url: str, *, timeout: float = 2.0, api_key: str | None = None) -> Any:
+        seen.append(api_key)
+        return HEALTHY
+
+    monkeypatch.setattr(gateway_lifecycle, "http_gateway_probe", fake_probe)
+
+    cli._doctor_gateway_lifecycle(cli.DoctorDiagnostics())
+
+    assert seen == [None]
+
+
 # --- CLI execution path -----------------------------------------------------
 
 
