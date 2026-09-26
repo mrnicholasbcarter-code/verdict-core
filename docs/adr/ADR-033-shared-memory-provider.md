@@ -1,9 +1,8 @@
 # ADR-033: SharedMemoryProvider boundary and advisory envelope
 
-- **Status:** Accepted — implemented with the shared memory provider (ADR-033)
+- **Status:** Accepted — implemented
 - **Date:** 2026-09-22
 - **Deciders:** Product / Architect lock (MEMORY M1)
-- **Ticket:** the shared memory provider (ADR-033)
 - **Related:** [ADR-004](ADR-004-local-first-memory-plane.md), [ADR-009](ADR-009-durable-memory-write-gate.md), [ADR-005](ADR-005-code-intelligence-graph-memory-bridge.md)
 
 ## Context

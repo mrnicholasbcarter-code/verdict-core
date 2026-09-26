@@ -4,7 +4,7 @@ This directory contains documentation and tooling for verdict-core's immutable, 
 
 ## Overview
 
-operationalizes release certification as an executable, repeatable product feature. Instead of hand-edited certification documents, we generate machine-readable evidence bundles bound to an exact git SHA.
+Release certification is an executable, repeatable product feature. Instead of hand-edited certification documents, we generate machine-readable evidence bundles bound to an exact git SHA.
 
 ## Quick Start
 
@@ -220,7 +220,7 @@ To add to an existing workflow:
 
 ## Pointing to Latest Certification
 
-**the release certification story Acceptance Criteria**: README and cheat sheet should point to the latest certified SHA instead of copying counts.
+**Release certification acceptance criterion**: README and cheat sheet should point to the latest certified SHA instead of copying counts.
 
 ### In README.md
 
@@ -336,6 +336,6 @@ print(f"Platform: {env['platform']}")
 
 ## References
 
-- Release certification story
-- Original manual certification matrix (historical)
-- Runtime certification (different feature, runtime component detection)
+- Release certification generator: `scripts/certify_release.py` (tests: `tests/test_certify_release.py`)
+- Original manual certification matrix (historical; superseded by the generated evidence bundles above)
+- Runtime certification (different feature, runtime component detection): `verdict/runtime_certification.py`

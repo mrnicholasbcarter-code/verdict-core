@@ -75,7 +75,7 @@ protected work when fail-closed mode is enabled.
 candidates using historical MemoryPlane signals and expected-value estimates.
 
 Canonical durable memory is MemoryPlane (`verdict/memory_*`). Ruflo/swarm
-learning is not part of Core after the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035).
+learning is not part of Core after the Ruflo/swarm/hivemind removal (see ADR-023, superseded).
 
 ### 4. Availability Cache (`verdict/availability_cache.py`)
 
@@ -87,17 +87,17 @@ Bounded SWR cache (issue #56):
 - **Explicit states**: fresh, stale, unknown, error, refreshing
 - **Explain endpoint**: `GET /v1/route/explain` surfaces freshness + eligibility explain records
 
-### 5. Serve path / execution path (`verdict/serve_path.py`, the execution-path authority optimizer (ADR-035))
+### 5. Serve path / execution path (`verdict/serve_path.py`, [ADR-035](adr/ADR-035-authorized-selected-route-dispatch.md))
 
-On the API serve path, the execution-path authority optimizer (ADR-035) execution-path authority is required. Demoted
+On the API serve path, execution-path authority is required. Demoted
 legacy selectors may still feed candidate sets, but they are not routing
-authority when `require_execution_path_authority` is set (the authorized selected-route dispatch design (ADR-035) cutover).
+authority when `require_execution_path_authority` is set (the ADR-035 legacy-selector cutover).
 
 ### 6. Dispatcher (`verdict/dispatcher.py`)
 
 Binds an authorized `selected_route`, hydrates the execution plan, and emits
 assignment explanation. `SwarmDispatcher` is a legacy class name for the
-authorize-only dispatcher after the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035). It is not Ruflo swarm supervision and
+authorize-only dispatcher after the Ruflo/swarm removal. It is not Ruflo swarm supervision and
 does not supervise a swarm.
 
 ### 7. [OmniRoute transport (`verdict/omniroute.py`)](../verdict/omniroute.py)
@@ -251,7 +251,7 @@ omit it; any declared version other than `"1"` is rejected.
 | `RoutingDecisionContract` | Gate → Eligibility → Intelligence output |
 | `AvailabilitySnapshot` | Cache entry with metadata |
 | `OutcomeEpisode` | Feedback / outcome episode record |
-| `LearningEvent` | **Removed / superseded ** — was Ruflo learning; use MemoryPlane |
+| `LearningEvent` | **Removed / superseded** — was Ruflo learning; use MemoryPlane |
 | `VerificationPlan` | Post-deployment verification |
 
 ---
@@ -280,9 +280,9 @@ Use [`proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) for what is actually ce
 - [ADR-010 Fail-closed capability passports](adr/ADR-010-fail-closed-capability-passports.md)
 - [ADR-032 Core model metadata store](adr/ADR-032-core-model-metadata-store.md)
 - [ADR-023 Governed swarm supervision](adr/ADR-023-governed-swarm-supervision.md) — **SUPERSEDED** by [ADR-035](adr/ADR-035-authorized-selected-route-dispatch.md)
-- [ADR-035 Authorized selected-route dispatch](adr/ADR-035-authorized-selected-route-dispatch.md) — the execution-path authority optimizer (ADR-035) / the hydrate-before-dispatch authorized execution path design post-swarm path
-- [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** (the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035) / the authorized selected-route dispatch design (ADR-035) → ADR-035)
-- Cross-repo evidence: [verdict-ecosystem ADR_LIFECYCLE ](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)
+- [ADR-035 Authorized selected-route dispatch](adr/ADR-035-authorized-selected-route-dispatch.md) — execution-path authority + authorized dispatcher binding (post-swarm path)
+- [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** (Ruflo/swarm removal and legacy selector demotion → ADR-035)
+- Cross-repo evidence: [verdict-ecosystem ADR_LIFECYCLE](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)
 - [Unknown ≠ healthy](guides/unknown-not-healthy.md)
 - [Free-tier admit smoke](guides/free-tier-admit-smoke.md)
 - [Model metadata store](guides/model-metadata-store.md)

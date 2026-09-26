@@ -264,11 +264,11 @@ Each case has:
 2. Assert that the actual verdict matches `expected_verdict` exactly
 3. For Zod/TypeScript consumers: cases with `expected_verdict: REJECT_UNKNOWN` must fail Zod parsing; all other cases must parse successfully (runtime verdicts like `DENY`/`EXPIRED`/`DIGEST_MISMATCH` are beyond Zod's scope)
 
-This corpus proves that Python and Zod reject the same malformed envelopes, closing the validation gap described in the Python/Zod envelope-validation parity gap.
+This corpus proves that Python and Zod reject the same malformed envelopes, closing the gap where the two validators could disagree on malformed input.
 
-## Relation to the contract-parity effort Parity
+## Relation to the contract-parity effort
 
-This work supersedes the contract-parity effort historical TypeScript/Python parity with a **producer/consumer contract model**:
+This work supersedes the historical TypeScript/Python contract-parity effort with a **producer/consumer contract model**:
 
 - **verdict-core** (this repo): Canonical producer of ExecutionEnvelope
 - **Node/Cockpit**: Consumers that validate against the schema and fixtures

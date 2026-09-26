@@ -6,7 +6,7 @@
 
 > Historical note: earlier revisions of this specification also listed
 > Ruflo/Claude Flow and swarm coordination as hook targets. That integration
-> was removed from Core ; see
+> was removed from Core; see
 > [ADR-023](../adr/ADR-023-governed-swarm-supervision.md) (superseded) and
 > [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) (current
 > orchestration).

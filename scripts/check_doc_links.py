@@ -37,7 +37,9 @@ def slugify(heading: str) -> str:
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = text.strip().lower()
     text = re.sub(r"[^\w\- ]", "", text)
-    text = re.sub(r"\s+", "-", text)
+    # GitHub maps each remaining space to a hyphen (no run collapsing), so
+    # "A — B" -> "a--b" and "X & Y" -> "x--y".
+    text = text.replace(" ", "-")
     return text
 
 
