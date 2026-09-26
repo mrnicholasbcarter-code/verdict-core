@@ -1,0 +1,131 @@
+{
+  "admitted": [
+    "demo-free/birch-coder",
+    "demo-free/cedar-coder",
+    "demo-free2/elm-coder",
+    "demo-free2/fir-mini",
+    "demo-metered/delta-coder",
+    "demo-sub/atlas-coder"
+  ],
+  "candidates": [
+    {
+      "admitted": false,
+      "first_failed_stage": "DISCOVERED",
+      "health": "unknown",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "auto",
+      "reason": "opaque_route",
+      "route_id": "auto/best-coding",
+      "source": "inventory",
+      "until": null
+    },
+    {
+      "admitted": false,
+      "first_failed_stage": "AVAILABLE",
+      "health": "exhausted",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-busy",
+      "reason": "provider_rate_limited",
+      "route_id": "demo-busy/juniper-coder",
+      "source": "omniroute:/api/providers",
+      "until": "2026-09-26T19:54:37.678492+00:00"
+    },
+    {
+      "admitted": true,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-free",
+      "reason": "admitted_unverified",
+      "route_id": "demo-free/birch-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-free",
+      "reason": "admitted_unverified",
+      "route_id": "demo-free/cedar-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": false,
+      "first_failed_stage": "HEALTHY",
+      "health": "unhealthy",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-free",
+      "reason": "model_unavailable",
+      "route_id": "demo-free/hazel-coder",
+      "source": "fixture",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-free2",
+      "reason": "admitted_unverified",
+      "route_id": "demo-free2/elm-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-free2",
+      "reason": "admitted_unverified",
+      "route_id": "demo-free2/fir-mini",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-metered",
+      "reason": "admitted_unverified",
+      "route_id": "demo-metered/delta-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": false,
+      "first_failed_stage": "ENTITLED",
+      "health": "unknown",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-orphan",
+      "reason": "no_connection_evidence",
+      "route_id": "demo-orphan/gum-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-26T18:54:37.658594+00:00",
+      "provider": "demo-sub",
+      "reason": "admitted_unverified",
+      "route_id": "demo-sub/atlas-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    }
+  ],
+  "controller_identity": "unknown",
+  "digest": "sha256:ef58497108fce99d6700b0c17765c09ee1bd26c61ee0be54533b88a5981602ae",
+  "generated_at": "2026-09-26T18:54:37.658594+00:00",
+  "narrowing": [],
+  "schema": "verdict.admission/v1",
+  "sources": [
+    "fixture",
+    "omniroute:/api/providers"
+  ]
+}
