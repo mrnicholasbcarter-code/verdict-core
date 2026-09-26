@@ -61,6 +61,19 @@ coverage.xml
 CLAUDE.md
 skills-lock.json
 
+# .prime/agent/** is tracked source (ADR-031: skills, extensions, prompts,
+# settings.json). Its runtime state, caches, logs and backups are not.
+.prime/agent/sessions/
+.prime/agent/session-artifacts/
+.prime/agent/session-leases/
+.prime/agent/harness/
+.prime/agent/cache/
+.prime/agent/logs/
+.prime/agent/**/*.bak
+.prime/agent/**/*.bak-*
+.prime/agent/**/*.bak.*
+.prime/agent/**/*.log
+
 .env.memory
 .verdict/adaptive_state/
 
