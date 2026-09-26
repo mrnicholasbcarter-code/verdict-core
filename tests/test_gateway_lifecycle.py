@@ -8,6 +8,7 @@ gateway on 127.0.0.1:20128.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import shlex
 import signal
@@ -29,6 +30,9 @@ from verdict.provider_bootstrap import (
 )
 
 GATEWAY_URL = "http://127.0.0.1:29999/v1"
+#: Mirrors gl._MAX_BACKOFF_S; asserted against so a raised cap cannot hide a
+#: wait that runs past its deadline.
+_MAX_BACKOFF = 1.0
 
 
 @pytest.fixture(autouse=True)
@@ -81,18 +85,42 @@ def _result(
 
 
 class FakeClock:
-    """Monotonic clock advanced only by the injected sleep."""
+    """Monotonic clock advanced only by the injected sleep, with a watchdog.
 
-    def __init__(self) -> None:
+    The watchdog is the point: an unbounded wait loop (``while True`` instead of
+    ``while clock() < deadline``) would otherwise spin until the CI job's own
+    timeout, which reports as a hang rather than as a failure, and this repo has no
+    pytest timeout plugin. Reading the clock more times than any bounded wait
+    plausibly needs raises instead, so the defect fails in milliseconds with a
+    message that names it.
+
+    Every test in this module that injects a clock gets this, so the protection
+    cannot be bypassed by a test that forgets to ask for it.
+    """
+
+    def __init__(self, *, max_reads: int = 2000) -> None:
         self.now = 0.0
+        self.reads = 0
         self.slept: list[float] = []
+        self.max_reads = max_reads
 
     def __call__(self) -> float:
+        self.reads += 1
+        if self.reads > self.max_reads:
+            raise AssertionError(
+                f"the wait read the clock {self.reads} times without terminating: it is not "
+                f"bounded by the deadline"
+            )
         return self.now
 
     def sleep(self, seconds: float) -> None:
         self.slept.append(seconds)
         self.now += seconds
+        if len(self.slept) > self.max_reads:
+            raise AssertionError(
+                f"the wait slept {len(self.slept)} times without terminating: it is not "
+                f"bounded by the deadline"
+            )
 
 
 class FakeProbe:
@@ -439,7 +467,7 @@ def test_timeout_reaps_the_real_child_and_kills_its_descendants(tmp_path: Path) 
     """
     marker = tmp_path / "grandchild.pid"
     script = (
-        f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(120)' & "
+        f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(30)' & "
         f"echo $! > {shlex.quote(str(marker))}; wait"
     )
     probe = FakeProbe(CLOSED)
@@ -503,7 +531,7 @@ def test_a_child_that_ignores_sigterm_is_killed_and_reaped(tmp_path: Path) -> No
     """
     marker = tmp_path / "grandchild.pid"
     script = (
-        f"trap \"\" TERM; {shlex.quote(sys.executable)} -c 'import time; time.sleep(120)' & "
+        f"trap \"\" TERM; {shlex.quote(sys.executable)} -c 'import time; time.sleep(30)' & "
         f"echo $! > {shlex.quote(str(marker))}; wait"
     )
     child = gl.SubprocessGatewayLauncher().launch(("sh", "-c", script), cwd=tmp_path)
@@ -685,6 +713,77 @@ def test_two_concurrent_callers_launch_exactly_one_gateway(tmp_path: Path) -> No
     assert sum(1 for item in outcomes.values() if item.launched) <= 1
 
 
+def test_the_lock_alone_prevents_a_duplicate_when_no_probe_ever_succeeds(tmp_path: Path) -> None:
+    """The exclusive lock, not the re-probe, is what prevents the second launch.
+
+    The probe never reports healthy, so the re-probe under the lock cannot mask a
+    broken lock: if both callers become owners, both launch. Ordering is enforced
+    by an event rather than by timing -- the launcher holds the lock until the
+    other caller has entered the contender path -- so the assertion is
+    deterministic rather than a race the scheduler usually wins.
+
+    This is the test that kills a removed flock, LOCK_EX downgraded to LOCK_SH,
+    and no-lock-plus-no-reprobe. The pre-existing race test above exercises the
+    re-probe; this one isolates the lock.
+    """
+    state_dir = tmp_path / "state"
+    launches: list[tuple[str, ...]] = []
+    record = threading.Lock()
+    contender_arrived = threading.Event()
+    both_started = threading.Barrier(2, timeout=30)
+
+    class SequencedLauncher:
+        """Holds the launch lock until the other caller has decided what it is."""
+
+        def launch(self, argv: tuple[str, ...], *, cwd: Path) -> Any:
+            with record:
+                launches.append(argv)
+            # A correct implementation makes the other caller a contender, which
+            # sets this event. A broken lock makes it a second owner, which never
+            # does; the bounded wait then expires and the launch count exposes it.
+            contender_arrived.wait(timeout=10.0)
+            return FakeProcess()
+
+    def probe(url: str) -> gl.GatewayHealth:
+        return CLOSED
+
+    def observe(outcome: Any) -> None:
+        if outcome.waited_for_owner:
+            contender_arrived.set()
+
+    outcomes: dict[str, Any] = {}
+    failures: list[BaseException] = []
+
+    def run(name: str) -> None:
+        try:
+            both_started.wait()
+            outcomes[name] = gl.ensure_gateway_ready(
+                _result(timeout=1.0),
+                probe=probe,
+                launcher=SequencedLauncher(),
+                state_dir=state_dir,
+                observer=observe,
+            )
+        except BaseException as exc:  # surfaced below; a thread must not die silently
+            failures.append(exc)
+
+    threads = [threading.Thread(target=run, args=(name,)) for name in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+
+    assert failures == []
+    assert len(launches) == 1, (
+        f"exactly one launch expected, saw {len(launches)}: without an exclusive lock both "
+        f"callers become owners, and no probe ever reports healthy to hide it"
+    )
+    assert sum(1 for item in outcomes.values() if item.launched) == 1
+    assert sum(1 for item in outcomes.values() if item.waited_for_owner) == 1
+    assert set(outcomes) == {"a", "b"}
+
+
 def test_a_contender_waits_and_never_launches_when_the_owner_hangs(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     lock_path = gl.gateway_lock_path(GATEWAY_URL, state_dir=state_dir)
@@ -733,6 +832,76 @@ def test_a_contender_reports_started_when_the_owner_succeeds(tmp_path: Path) -> 
     assert outcome.waited_for_owner is True
     assert outcome.launched is False
     assert launcher.launches == []
+
+
+def test_the_contender_wait_is_bounded_by_the_same_deadline(tmp_path: Path) -> None:
+    """A contender stops at the owner's deadline, and a watchdog proves it terminates.
+
+    The lock is pre-held, so this caller takes the contender path. The watchdog
+    clock turns an unbounded loop into a fast failure instead of a hang, which is
+    what the review asked for: with no pytest timeout plugin in this repo, a hang
+    is indistinguishable from an infrastructure stall.
+    """
+    state_dir = tmp_path / "state"
+    lock_path = gl.gateway_lock_path(GATEWAY_URL, state_dir=state_dir)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    clock = FakeClock()
+    launcher = CountingLauncher()
+
+    with lock_path.open("a+", encoding="utf-8") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        outcome = gl.ensure_gateway_ready(
+            _result(timeout=3.0),
+            probe=FakeProbe(CLOSED),
+            launcher=launcher,
+            clock=clock,
+            sleep=clock.sleep,
+            state_dir=state_dir,
+        )
+
+    assert outcome.state == "failed_to_start"
+    assert outcome.waited_for_owner is True
+    assert outcome.diagnostic is not None
+    assert outcome.diagnostic.code == "gateway_ready_timeout"
+    assert launcher.launches == []
+    # The deadline is the owner's budget, so the contender cannot outlive it. With
+    # capped 1.0s backoff, a 3s budget cannot take more than a handful of probes.
+    assert clock.now <= 3.0 + _MAX_BACKOFF, f"the wait ran past the deadline: {clock.now}"
+    assert outcome.attempts <= 8, f"probing must back off, saw {outcome.attempts} attempts"
+    assert max(clock.slept) <= _MAX_BACKOFF
+
+
+def test_the_launch_wait_is_bounded_by_the_deadline_too(tmp_path: Path) -> None:
+    """The same watchdog applies to the owner's own readiness wait."""
+    clock = FakeClock()
+    process = FakeProcess()
+
+    outcome = _ensure(
+        _result(timeout=3.0),
+        FakeProbe(CLOSED),
+        tmp_path,
+        launcher=CountingLauncher(process),
+        clock=clock,
+    )
+
+    assert outcome.state == "failed_to_start"
+    assert clock.now <= 3.0 + _MAX_BACKOFF
+    assert outcome.attempts <= 8
+
+
+def test_a_zero_budget_terminates_immediately_without_probing_forever(tmp_path: Path) -> None:
+    """A budget that has already expired must not become an unbounded wait."""
+    clock = FakeClock()
+    outcome = _ensure(
+        _result(timeout=0.001),
+        FakeProbe(CLOSED),
+        tmp_path,
+        launcher=CountingLauncher(),
+        clock=clock,
+    )
+
+    assert outcome.state == "failed_to_start"
+    assert outcome.attempts <= 4
 
 
 def test_lock_path_is_per_url_and_under_the_state_dir(tmp_path: Path) -> None:
