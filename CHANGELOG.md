@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/v1/route/explain` eligibility now matches the live router's `dev_mode` (profile-derived), instead of a literal `dev_mode=True`.
 - The in-memory receipts test literal (`PYTEST_CURRENT_TEST` sniff) was removed from production code. Tests must set `VERDICT_RECEIPTS_DB` explicitly (`tests/conftest.py` does this via an autouse fixture); authenticated mode with no `VERDICT_RECEIPTS_DB` configured now fails startup the same way in tests as in production.
 - `verdict doctor` text mode now exits 1 when issues are found (previously exited 0). `--json` mode now exits 0 when healthy (previously non-zero) and adds a `warnings` key alongside `issues`.
+- Documented (no behaviour change): `DEFAULT_PROFILE` stays `development` and fail-closed admission does not depend on it (see `LLMGATE_INTELLIGENCE_PROFILE` in docs/CONFIGURATION.md); `SubagentModelSelector` `dev_mode` never widens admission beyond the adapter's eligible set.
 - Career/job-search-oriented docs and doc paths were removed or renamed; the security contact moved from email to GitHub Security Advisories. External deep links into the removed/renamed docs will break.
 
 ## [0.3.0] - 2026-09-25
