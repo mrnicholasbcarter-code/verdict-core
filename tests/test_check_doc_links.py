@@ -24,8 +24,22 @@ def test_detects_broken_and_ignores_external_and_fenced(tmp_path: Path) -> None:
     assert mod.broken_links(doc, tmp_path) == [(1, "missing.md")]
 
 
-def test_anchor_suffix_resolves_file(tmp_path: Path) -> None:
-    (tmp_path / "a.md").write_text("x")
+def test_anchor_matching_heading_resolves(tmp_path: Path) -> None:
+    """A link with an in-file anchor is valid only when the target file has a
+    heading that slugifies to that anchor (GitHub heading-slug rules)."""
+    (tmp_path / "a.md").write_text("# Title\n\n## Section Name\n")
+    doc = tmp_path / "doc.md"
+    doc.write_text("[a](a.md#section-name)")
+    assert mod.broken_links(doc, tmp_path) == []
+
+
+def test_anchor_not_matching_any_heading_is_broken(tmp_path: Path) -> None:
+    """A file that exists but has no heading matching the anchor is a broken link.
+
+    This was previously unchecked: any file#anchor resolved as long as the file
+    existed, regardless of whether the anchor pointed at a real heading.
+    """
+    (tmp_path / "a.md").write_text("# Title\n\nNo matching heading here.\n")
     doc = tmp_path / "doc.md"
     doc.write_text("[a](a.md#section)")
-    assert mod.broken_links(doc, tmp_path) == []
+    assert mod.broken_links(doc, tmp_path) == [(1, "a.md#section")]
