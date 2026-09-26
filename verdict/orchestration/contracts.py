@@ -417,7 +417,7 @@ EVENT_TYPES = frozenset(
         "review",
         "remediation",
         "controller",
-        "decision_signals",  # BOD-199: SHADOW decision signals
+        "decision_signals",  # SHADOW decision signals
         "run_finished",
     }
 )

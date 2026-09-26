@@ -7,7 +7,7 @@ regular file, so every production read of a repository-relative path walks the
 components with held directory descriptors and ``O_NOFOLLOW`` instead.
 
 This is the single boundary for that walk; callers must not open
-repository-relative paths themselves (BOD-133 residual).
+repository-relative paths themselves.
 """
 
 from __future__ import annotations

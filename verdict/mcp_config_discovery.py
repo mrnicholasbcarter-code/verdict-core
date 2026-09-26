@@ -1,6 +1,6 @@
 """Discover existing MCP server entries from supported harness config files.
 
-BOD-124 import/reuse: read config *paths* and server names only. Never copy
+Capability-bootstrap import/reuse: read config *paths* and server names only. Never copy
 ``env`` / tokens / secrets between tools. Config presence is not health.
 """
 

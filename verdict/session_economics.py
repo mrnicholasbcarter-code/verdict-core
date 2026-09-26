@@ -1,15 +1,15 @@
-"""Session economics — STAY / SWITCH / BLOCKED (session STAY/SWITCH decisions).
+"""Session economics — STAY / SWITCH / BLOCKED.
 
 Pure decision core over already-qualified concrete routes.  Expected remaining
 session cost (not next-call price alone) drives economics; hard eligibility,
 capability-tier deficits, and quota/cooldown override cost-driven stickiness.
 
-Consumes BOD-54 ``CostTerm`` / ``ExpectedStrategyCost`` without forking
-arithmetic.  Optionally records BOD-92 runtime evidence (quota/cooldown/cache)
+Consumes ``CostTerm`` / ``ExpectedStrategyCost`` without forking
+arithmetic.  Optionally records runtime-certification evidence (quota/cooldown/cache)
 as inputs — never as routing authority.
 
-Does **not** own strategy integration (BOD-104), cost_ledger ownership,
-runtime_certification ownership, or bounded recovery (BOD-55).
+Does **not** own execution-path strategy integration, cost_ledger ownership,
+runtime_certification ownership, or bounded recovery.
 """
 
 from __future__ import annotations
@@ -190,7 +190,7 @@ class TaskState:
 class CostState:
     """Expected remaining costs for STAY vs SWITCH trajectories.
 
-    ``stay_expected`` / ``switch_expected`` are BOD-54 strategy receipts.
+    ``stay_expected`` / ``switch_expected`` are expected-cost strategy receipts.
     Cache savings apply only when the term is observed **and** still fresh.
     """
 

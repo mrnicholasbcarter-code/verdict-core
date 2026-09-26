@@ -4,7 +4,7 @@ The planner deliberately performs no discovery probes and never reads config
 contents. It describes the first-run mutations that a future apply command may
 request, leaving consent and execution to a separate transaction boundary.
 
-Optional bootstrap enrichment actions (BOD-124) may be attached when callers
+Optional capability-bootstrap enrichment actions may be attached when callers
 pass discovered providers; those actions remain mutation-free until APPLY.
 """
 

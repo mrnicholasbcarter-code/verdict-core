@@ -14,7 +14,7 @@ fails closed — the caller must not treat frontier-primary fallback as success.
 Serve cheap-path callers then intersect this receipt with fresh prove-at-rest
 passports and a budgeted confirm probe (see ``verdict.admit_prove_confirm``).
 
-BOD-127: this module is a candidate *feed* only. ``chosen`` is an
+This module is a candidate *feed* only. ``chosen`` is an
 advisory ranking of admitted free∩active identities — never production
 serve-path strategy authority. Serve path must consume
 ``optimize_execution_path`` / ``ExecutionPathDecision``.
@@ -295,13 +295,13 @@ def build_cheap_path_context_pack(
 
     Gather real workspace units (repo docs / architecture / ADRs / project docs,
     plus MCP only when a source is configured), admit every external unit through
-    Context Trust (BOD-126), allocate via BudgetReceipt (BOD-125), then compile
+    Context Trust, allocate via BudgetReceipt, then compile
     only the allocated set. High-value roots (ADR, architecture, README) remain
     preferred under budget. Missing sources become named omissions — never
     invented content. An empty gather still compiles the task and does not block
     execute.
 
-    ``pack_state`` classifies the result for receipts (BOD-106). Savings stay
+    ``pack_state`` classifies the result for receipts. Savings stay
     blocked until ``hydrated``; empty/partial with a digest is still a hydrate
     FAIL. Hydrate/compiler errors stamp ``failed`` and still do not block execute.
     """

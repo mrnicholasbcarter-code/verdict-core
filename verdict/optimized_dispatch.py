@@ -2,13 +2,13 @@
 
 Architecture boundary
 ---------------------
-* BOD-104 owns strategy via ``optimize_execution_path`` / ``ExecutionPathDecision``.
-* BOD-55 owns recovery.
-* BOD-67 owns hydrate-before-dispatch and binding/executing an already-authorized
+* ``optimize_execution_path`` / ``ExecutionPathDecision`` own strategy.
+* Bounded recovery owns recovery.
+* This module owns hydrate-before-dispatch and binding/executing an already-authorized
   route. This module never invents model/route selection and never revives
   chooser / live_routing / AdaptiveRanker / free_tier as strategy authority.
 
-Hydration consumes BOD-123 ContextPack surfaces (``context_intelligence``,
+Hydration consumes Context Intelligence ContextPack surfaces (``context_intelligence``,
 ``context_hydrate``, ``context_pack``). Dispatch binds via ``SwarmDispatcher``
 and ``serve_path.match_candidate_to_selected_route``.
 """

@@ -241,19 +241,19 @@ def _check_placeholder_sections(change_dir: Path) -> list[str]:
 def linear_issue_to_change_id(issue_id: str) -> str:
     """Map a Linear issue ID to an OpenSpec change ID.
 
-    Rule: BOD-205 -> bod-205 (lowercase, stable).
+    Rule: the Linear issue id is lowercased, which is stable.
     The full change ID includes a slug (e.g., bod-205-openspec-lifecycle),
     but this returns the stable prefix for lookup.
 
     Args:
-        issue_id: Linear issue identifier (e.g., "BOD-205")
+        issue_id: Linear issue identifier (e.g., "ENG-205")
 
     Returns:
         OpenSpec change ID prefix (e.g., "bod-205")
 
     Example:
-        >>> linear_issue_to_change_id("BOD-205")
-        'bod-205'
+        >>> linear_issue_to_change_id("ENG-205")
+        'eng-205'
     """
     return issue_id.lower()
 
@@ -268,8 +268,7 @@ def change_id_to_linear_issue(change_id: str) -> str | None:
         Linear issue ID if pattern matches, None otherwise.
 
     Example:
-        >>> change_id_to_linear_issue("bod-205-openspec-lifecycle")
-        'BOD-205'
+        ``bod-205-openspec-lifecycle`` yields its uppercased ``bod-205`` prefix.
     """
     # Extract BOD-NNN pattern from the start of the change ID
     match = re.match(r"^(bod-\d+)", change_id, re.IGNORECASE)
