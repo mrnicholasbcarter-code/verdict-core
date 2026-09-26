@@ -80,7 +80,12 @@ def _confirming_prepare(confirmed: dict[str, bool], calls: list[Any] | None = No
         if calls is not None:
             calls.append(request)
         ids = [o.route.route_id for o in request.offers]
-        return replace(request, pool_receipt=_pool_receipt(ids, confirmed))
+        # Same assumption as the default _hooks prepare, so the fixtures agree.
+        return replace(
+            request,
+            pool_receipt=_pool_receipt(ids, confirmed),
+            assumptions=tuple([*request.assumptions, "live_eligibility_applied"]),
+        )
 
     return prepare
 
