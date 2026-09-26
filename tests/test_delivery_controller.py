@@ -31,7 +31,7 @@ def _packet(worktree: Path, **overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "schema_version": 1,
         "issue": "BOD-68",
-        "issue_url": "https://linear.app/bodanglin/issue/BOD-68",
+        "issue_url": "https://example.com/issue-tracker/BOD-68",
         "project": "Verdict",
         "team": "Bodanglin",
         "issue_updated_at": "2026-09-19T00:00:00Z",
