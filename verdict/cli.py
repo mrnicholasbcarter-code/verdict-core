@@ -807,6 +807,28 @@ def _configured_completion_endpoint(
     return None
 
 
+def _ensure_cli_gateway_ready() -> None:
+    """Make the gateway ready before the CLI executes through it, or fail closed.
+
+    Opt-in: ``VERDICT_ENSURE_GATEWAY`` turns the active path on, so an ordinary
+    ``verdict route`` keeps its current behaviour and never starts a process the
+    operator did not ask for. When it is on and the gateway cannot be made ready,
+    the command exits instead of quietly executing somewhere else.
+    """
+    if os.getenv("VERDICT_ENSURE_GATEWAY", "false").lower() not in {"1", "true", "yes", "on"}:
+        return
+    from verdict.gateway_lifecycle import http_gateway_probe, require_gateway_ready
+    from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
+
+    try:
+        outcome = require_gateway_ready(_cli_bootstrap(), probe=http_gateway_probe)
+    except BootstrapError as exc:
+        print(describe_bootstrap_failure(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+    if outcome.state != "not_required":
+        print(f"verdict: {outcome.describe()}", file=sys.stderr)
+
+
 def _execute_cli_decision(gate: Gate, task: str, dec: Any, *, allow_offline: bool) -> Any:
     """Send the selected route through the configured provider, or fail closed."""
     from dataclasses import replace
@@ -834,6 +856,7 @@ def _execute_cli_decision(gate: Gate, task: str, dec: Any, *, allow_offline: boo
             reason="no configured provider endpoint",
             execute_preview="no configured provider endpoint",
         )
+    _ensure_cli_gateway_ready()
     packed = dec.context_pack_prompt or task
     outcome, preview = execute_offload_chat(endpoint[0], dec.model, packed, api_key=endpoint[1])
     reason = dec.reason
@@ -2258,6 +2281,8 @@ class DoctorDiagnostics:
         self.documentation_preflight: dict[str, Any] = {}
         self.shared_memory: Any = None
         self.config_loaded: bool = False
+        #: Report-only gateway lifecycle state. ``doctor`` never starts a gateway.
+        self.gateway_lifecycle: dict[str, Any] = {}
 
 
 DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
@@ -2318,6 +2343,32 @@ def _doctor_fix_gateway(
     except PermissionError as exc:
         sections.append(("Credential store", "failed", str(exc)))
     return url
+
+
+def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
+    """Report gateway readiness in ``verdict doctor``. Never starts anything.
+
+    The requirement and URL come from the shared bootstrap contract, and the
+    state comes from ``inspect_gateway``, which probes at most once and never
+    launches, signals or locks. Exit status is unchanged: an unready gateway is
+    already reported by the reachability check above, so this section adds the
+    named state rather than a second failure.
+    """
+    from verdict.gateway_lifecycle import http_gateway_probe, inspect_gateway
+    from verdict.provider_bootstrap import BootstrapError
+
+    try:
+        bootstrap = _cli_bootstrap()
+        outcome = inspect_gateway(bootstrap, probe=http_gateway_probe)
+    except BootstrapError as exc:
+        diag.gateway_lifecycle = {"state": "unknown", "reason": exc.reason_code}
+        diag.sections.append(("Gateway lifecycle", "warn", exc.reason_code))
+        return
+    diag.gateway_lifecycle = outcome.to_dict()
+    state = "ok" if outcome.ready else "warn"
+    diag.sections.append(("Gateway lifecycle", state, outcome.describe()))
+    if outcome.diagnostic is not None:
+        diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
 
 
 def _collect_doctor_diagnostics(
@@ -2565,6 +2616,9 @@ def _collect_doctor_diagnostics(
                 "Run 'verdict detect' to find a running gateway."
             )
 
+    # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
+    _doctor_gateway_lifecycle(diag)
+
     # 1e. Env var format checks (T017)
     omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")
     if omniroute_base_url_env and not re.match(
@@ -2739,6 +2793,7 @@ def cmd_doctor(
                 for label, state, detail in diag.sections
             ],
             "documentation_preflight": diag.documentation_preflight,
+            "gateway_lifecycle": diag.gateway_lifecycle,
             "shared_memory": diag.shared_memory,
             "capability_bootstrap": diag.capability_report,
             "runtime_health": build_runtime_health_report(RuntimeManager().status()).to_dict(),

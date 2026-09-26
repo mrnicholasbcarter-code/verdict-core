@@ -617,7 +617,39 @@ def server_bootstrap_diagnostics() -> dict[str, Any]:
     report["gateway_url"] = redact_url(bootstrap.gateway_url) if bootstrap.gateway_url else None
     report["field_sources"] = dict(bootstrap.field_sources)
     report["diagnostics"].extend(d.to_dict() for d in bootstrap.diagnostics)
+    report["gateway_lifecycle"] = _serve_gateway_lifecycle(bootstrap)
     return report
+
+
+def _serve_gateway_lifecycle(bootstrap: Any) -> dict[str, Any]:
+    """Name the gateway lifecycle state for the serve startup line.
+
+    Report only. ``verdict serve`` proxies to whatever the operator configured
+    and admits candidates per request, so startup records the state (and the
+    remediation for an unready gateway) instead of starting a process during
+    server boot. ``VERDICT_SERVE_ENSURE_GATEWAY`` opts into the active path,
+    which reuses a healthy gateway and starts one only when the bootstrap
+    contract supplies a start command.
+    """
+    from verdict.gateway_lifecycle import ensure_gateway_ready, http_gateway_probe, inspect_gateway
+
+    ensure = os.getenv("VERDICT_SERVE_ENSURE_GATEWAY", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    try:
+        outcome = (
+            ensure_gateway_ready(bootstrap, probe=http_gateway_probe)
+            if ensure
+            else inspect_gateway(bootstrap, probe=http_gateway_probe)
+        )
+    except Exception as exc:  # pragma: no cover - defensive: startup must not crash here
+        return {"state": "unknown", "detail": f"{type(exc).__name__}: {exc}"}
+    payload = outcome.to_dict()
+    payload["ensure_requested"] = ensure
+    return payload
 
 
 def _build_proxy() -> UpstreamProxy:
@@ -771,6 +803,13 @@ async def lifespan(app: FastAPI) -> Any:
     validate_server_security(host=os.getenv("LLMGATE_HOST", "127.0.0.1"))
     global server_bootstrap_report
     server_bootstrap_report = server_bootstrap_diagnostics()
+    lifecycle = server_bootstrap_report.get("gateway_lifecycle") or {}
+    if lifecycle:
+        print(
+            f"verdict serve: gateway {lifecycle.get('state')} "
+            f"url={lifecycle.get('gateway_url')} ready={lifecycle.get('ready')}",
+            file=sys.stderr,
+        )
     for entry in server_bootstrap_report.get("diagnostics", []):
         print(
             f"verdict serve: {entry['code']} [{entry['class']}] field={entry['field']}: "
