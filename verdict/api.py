@@ -39,7 +39,7 @@ from verdict.effective_capability import (
     TaskSlice,
     VerificationStrategy,
 )
-from verdict.eligibility import EligibilityGate
+from verdict.eligibility import EligibilityGate, allow_unverified_dev_from_env
 from verdict.evidence import (
     AmbiguousEvidenceSelectorError,
     DurableEvidenceStore,
@@ -400,8 +400,8 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
 
     Returns ``None`` when no OmniRoute endpoint is configured, so the server
     still boots without availability explainability.  The transport is
-    loopback-only and credential-safe; a misconfigured base URL fails closed
-    to ``None`` rather than crashing startup.
+    loopback-only and credential-safe; a configured but invalid base URL
+    raises ``RuntimeError`` so startup fails closed.
     """
     base_url = os.getenv("OMNIROUTE_BASE_URL") or os.getenv("LLMGATE_UPSTREAM_BASE_URL")
     if not base_url or base_url.strip().lower() in {"", "none"}:
@@ -422,8 +422,10 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
             usage_api_key_id=usage_api_key_id,
             allow_private_hosts=allow_private,
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        # OMNIROUTE_BASE_URL is set but invalid: fail startup closed rather
+        # than silently serving routing without the eligibility gate.
+        raise RuntimeError(f"invalid OmniRoute configuration: {type(exc).__name__}: {exc}") from exc
     adapter: OmniRouteAvailabilityAdapter = OmniRouteAvailabilityAdapter(transport)
     # Issue #57 root cause: enrich the adapter with bounded live probes when the
     # production availability profile is enabled.  Reuses ProbeRunner + the
@@ -455,7 +457,11 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
     )
     from verdict.eligibility import EligibilityGate
 
-    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
+    gate = EligibilityGate(
+        cache.get,
+        protected_fail_closed=True,
+        allow_unverified_in_dev=allow_unverified_dev_from_env(),
+    )
     return cache, gate
 
 
@@ -574,9 +580,7 @@ async def lifespan(app: FastAPI) -> Any:
     max_entries = max(1, int(os.getenv("VERDICT_EVIDENCE_MAX_ENTRIES", "256")))
     if evidence_db:
         evidence_store_instance = DurableEvidenceStore(evidence_db, max_entries=max_entries)
-    elif os.getenv("PYTEST_CURRENT_TEST") or os.getenv(
-        "LLMGATE_ALLOW_ANONYMOUS", "false"
-    ).lower() in {"1", "true", "yes", "on"}:
+    elif os.getenv("LLMGATE_ALLOW_ANONYMOUS", "false").lower() in {"1", "true", "yes", "on"}:
         # Anonymous development/test mode has an explicit in-memory backend.
         # Authenticated deployments must configure a durable DB path.
         evidence_store_instance = DurableEvidenceStore(":memory:", max_entries=max_entries)
@@ -630,13 +634,10 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
     anonymous = os.getenv("LLMGATE_ALLOW_ANONYMOUS", "false").lower() in {"1", "true", "yes", "on"}
     if anonymous and not token:
         # Defense-in-depth: anonymous mode must only serve loopback clients.
-        # "testclient" is the synthetic peer hostname injected by Starlette's TestClient;
-        # we accept it as loopback so existing unit-test suites continue to work without
-        # forcing every test to pass client=("127.0.0.1", …).  Real non-loopback addresses
-        # are rejected here regardless of the LLMGATE_ALLOW_ANONYMOUS flag.
+        # Only real loopback IP addresses qualify; hostnames are never trusted.
         host = request.client.host if request.client is not None else ""
         try:
-            _is_loopback = host == "testclient" or ipaddress.ip_address(host).is_loopback
+            _is_loopback = ipaddress.ip_address(host).is_loopback
         except ValueError:
             _is_loopback = False
         if not _is_loopback:
@@ -1169,6 +1170,13 @@ def _evidence_headers(evidence: ExplainEvidence) -> dict[str, str]:
     return headers
 
 
+def _router_dev_mode() -> bool:
+    """Return the dev_mode the live router uses (``profile == "development"``)."""
+    if intelligence_instance is not None:
+        return intelligence_instance.profile == "development"
+    return os.getenv("LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE) == "development"
+
+
 @app.get("/v1/route/explain")
 async def route_explain(
     request: Request,
@@ -1237,7 +1245,7 @@ async def route_explain(
                     )
                     for mid in base["cached_models"]
                 ],
-                dev_mode=True,
+                dev_mode=_router_dev_mode(),
             )
             base["eligible_set"] = [m.id for m in gate_eval.eligible]
             base["exclusions"] = [r.to_dict() for r in gate_eval.exclusions]
@@ -1255,7 +1263,7 @@ async def route_explain(
                     capability_tier=2,
                 )
             ],
-            dev_mode=True,
+            dev_mode=_router_dev_mode(),
         )
         if gate_eval.records:
             record["eligibility"] = gate_eval.records[0].to_dict()

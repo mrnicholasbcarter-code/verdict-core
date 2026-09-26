@@ -187,3 +187,43 @@ def test_fingerprint_text_is_stable_and_non_plaintext() -> None:
     assert fingerprint != fingerprint_text("prompt-secret-2")
     assert fingerprint.startswith("sha256:")
     assert "prompt-secret" not in fingerprint
+
+
+def test_invalid_omniroute_url_fails_startup_closed(monkeypatch) -> None:
+    """C5: a configured but invalid OMNIROUTE_BASE_URL must fail startup, not
+    silently serve routing without the eligibility gate."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://203.0.113.9:1/v1")
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    client = TestClient(api.app)
+    with pytest.raises(RuntimeError, match="invalid OmniRoute configuration"):
+        client.__enter__()
+    assert api.eligibility_gate_instance is None
+
+
+def test_testclient_hostname_is_not_loopback(monkeypatch) -> None:
+    """C6: the synthetic "testclient" peer must not be treated as loopback."""
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    with TestClient(api.app, client=("testclient", 1)) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 403
+
+
+def test_authenticated_mode_requires_receipts_db(monkeypatch) -> None:
+    """C6: the in-memory receipts store is selected only by explicit config,
+    never by detecting pytest."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.delenv("VERDICT_RECEIPTS_DB", raising=False)
+    monkeypatch.delenv("VERDICT_EVIDENCE_DB", raising=False)
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    with pytest.raises(RuntimeError, match="VERDICT_RECEIPTS_DB"), TestClient(api.app):
+        pass
