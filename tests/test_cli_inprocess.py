@@ -1420,10 +1420,12 @@ def test_cmd_doctor_flags_legacy_config_filename_and_offers_fix(
     (cfg_dir / "config.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
 
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
-    # Keep --fix hermetic: no live local gateway may be discovered/persisted.
-    from verdict import provider_detection
+    # Keep --fix hermetic: no live local gateway may be discovered/persisted,
+    # and the documentation preflight must not fetch live GitHub sources.
+    from verdict import documentation_preflight, provider_detection
 
     monkeypatch.setattr(provider_detection, "probe_gateways", lambda: [])
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
 
     # This fixture also leaves other unrelated issues unresolved (no gateway
     # URL, missing required credential), so both calls exit non-zero.
@@ -1485,10 +1487,12 @@ def test_cmd_doctor_flags_missing_schema_version_and_fixes_it(
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
-    # Keep --fix hermetic: no live local gateway may be discovered/persisted.
-    from verdict import provider_detection
+    # Keep --fix hermetic: no live local gateway may be discovered/persisted,
+    # and the documentation preflight must not fetch live GitHub sources.
+    from verdict import documentation_preflight, provider_detection
 
     monkeypatch.setattr(provider_detection, "probe_gateways", lambda: [])
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
 
     # This fixture also leaves other unrelated issues unresolved (no gateway
     # URL, missing required credential), so both calls exit non-zero.

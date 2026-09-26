@@ -184,7 +184,7 @@ def enable(
     existed = paths.models.is_file()
     created_backup = False
     if existed and not paths.backup.exists():
-        shutil.copy2(paths.models, paths.backup)
+        _copy_private(paths.models, paths.backup)
         created_backup = True
     elif not existed and not paths.backup.exists() and not paths.absent_marker.exists():
         paths.absent_marker.write_text("absent\n", encoding="utf-8")
@@ -218,7 +218,7 @@ def disable(*, prime_home: Path | None = None) -> None:
         raise HarnessPrimeError(
             f"Verdict Prime Agent harness is not enabled: no backup at {paths.backup}"
         )
-    shutil.copy2(paths.backup, paths.models)
+    _copy_private(paths.backup, paths.models)
     paths.backup.unlink()
 
 
@@ -495,7 +495,7 @@ def sync_models(
         )
     stamp = now() if now is not None else _utc_stamp()
     backup = paths.models.with_name(f"models.json.verdict-sync-{stamp}.bak")
-    shutil.copy2(paths.models, backup)
+    _copy_private(paths.models, backup)
     new_provider = dict(provider)
     new_provider["models"] = [
         _live_model_entry(row, previous.get(rid)) for rid, row in live.items()
@@ -560,11 +560,31 @@ def _load_json(path: Path) -> dict[str, Any]:
     return dict(loaded) if isinstance(loaded, dict) else {}
 
 
+_PRIVATE_FILE_MODE = 0o600
+
+
 def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
+    """Atomically write ``data`` as JSON with owner-only (0600) permissions.
+
+    models.json may carry provider credentials, so the file is always 0600,
+    whatever the umask or the previous mode was.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(dict(data), indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    payload = (json.dumps(dict(data), indent=2, sort_keys=False) + "\n").encode("utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PRIVATE_FILE_MODE)
+    try:
+        os.fchmod(fd, _PRIVATE_FILE_MODE)
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
     tmp.replace(path)
+
+
+def _copy_private(src: Path, dst: Path) -> None:
+    """Copy ``src`` to ``dst`` and force owner-only permissions on the copy."""
+    shutil.copy2(src, dst)
+    os.chmod(dst, _PRIVATE_FILE_MODE)
 
 
 __all__ = [
