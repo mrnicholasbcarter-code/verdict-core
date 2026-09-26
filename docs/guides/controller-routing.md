@@ -1,4 +1,4 @@
-# Controller routing (BOD-156)
+# Controller routing
 
 Verdict selects the exact Prime root/controller provider, model, reasoning contract,
 and initial context **before** a fresh autonomous session launches. The supervisor
@@ -8,12 +8,12 @@ executes and verifies that decision. It never ranks, substitutes, or falls back.
 
 | BOD | Role |
 | --- | --- |
-| BOD-104 | Final automatic execution-path authority (`optimize_execution_path`) |
-| BOD-142 | Live hard eligibility before ranking |
-| BOD-143 | Candidate-specific ContextPlan before final selection |
-| BOD-144 | Append-only RoutingReceiptV1 evidence chain |
-| BOD-119 | STAY/SWITCH continuity economics |
-| BOD-149 | Worker launch authority remains separate |
+| the execution-path authority optimizer (ADR-035) | Final automatic execution-path authority (`optimize_execution_path`) |
+| the live task-fit candidate shortlist | Live hard eligibility before ranking |
+| the candidate-specific pre-hydration ContextPlan | Candidate-specific ContextPlan before final selection |
+| the RoutingReceiptV1 schema and persistence design | Append-only RoutingReceiptV1 evidence chain |
+| session economics STAY/SWITCH | STAY/SWITCH continuity economics |
+| worker launch authority | Worker launch authority remains separate |
 
 No ADR is required; these boundaries do not change.
 
@@ -28,7 +28,7 @@ Immutable contracts and fail-closed assembly/validation/observed-identity helper
 - `PrimeLaunchTarget` — trusted binding from upstream route → Prime CLI identity
 - `ObservedControllerIdentity` — owned root roster observation
 - `ControllerLaunchDecision` — versioned decision with digests and receipt ref
-- `PersistedAuthoritativeDecision` — already-authoritative BOD-104 decision + receipt
+- `PersistedAuthoritativeDecision` — already-authoritative the execution-path authority optimizer (ADR-035) decision + receipt
 - `ControllerLaunchError(reason_code, detail)` — named fail-closed refusal
 
 Public helpers:
@@ -51,10 +51,10 @@ Pipeline (authorities called, not reimplemented):
 
 1. Build seed offers from live eligible identities (injected `seed_offers`).
 2. `IntelligenceService.prepare_controller_execution_request` — strict live snapshot +
-   metadata, BOD-142 gates/confirmation, and BOD-143 ContextPlan per candidate.
-3. Optional `decide_session_route` (BOD-119) when a durable current route exists:
+   metadata, the live task-fit candidate shortlist gates/confirmation, and the candidate-specific pre-hydration ContextPlan ContextPlan per candidate.
+3. Optional `decide_session_route` when a durable current route exists:
    healthy → `STAY`, hard-ineligible/unhealthy → `SWITCH`, none → `BLOCKED`.
-4. `optimize_execution_path` (BOD-104) over the prepared offers.
+4. `optimize_execution_path` over the prepared offers.
 5. Bind `PrimeLaunchTarget` (exact provider/model; optional thinking only when supported).
 6. `build_routing_receipt` + `persist_routing_receipt` **before** returning a launchable
    `ControllerLaunchDecision` (stores EP digest, context plan/pack/receipt digests,
@@ -70,7 +70,7 @@ fail closed.
 **Automatic** (`--provider`/`--model` omitted together):
 
 1. Verdict generates the decision via `select_controller_launch` from live eligibility,
-   ContextPlans, BOD-104, and BOD-119 (when a durable route exists).
+   ContextPlans, the execution-path authority optimizer (ADR-035), and session economics STAY/SWITCH (when a durable route exists).
 2. A RoutingReceiptV1 is persisted before launch.
 3. Launch uses the exact approved Prime provider/model and optional supported thinking.
 4. Fail closed (write BLOCKED, launch nothing) if eligibility is missing, the decision
@@ -99,7 +99,7 @@ After launch the supervisor observes `prime-agent list --json`:
 - `models.json` and argv are not observed identity. Well-formed unrelated `draft`
   roster rows are ignored.
 
-## Continuity (BOD-119)
+## Continuity
 
 On fresh-session recovery, compare the durable current route with the fresh qualified
 route via `decide_session_route`:

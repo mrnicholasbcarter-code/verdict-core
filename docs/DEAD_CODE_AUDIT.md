@@ -1,4 +1,4 @@
-# Dead-Code Audit — BOD-181
+# Dead-Code Audit
 
 Generated: 2025-07-11 · Method: static import-reference scan across `verdict/`, `tests/`, `scripts/`, `pyproject.toml`
 
@@ -48,7 +48,7 @@ These modules have no importer in `verdict/` itself or `scripts/`. They are exer
 |--------|--------------|---------|----------|
 | `scripts/benchmark.py` | benchmark.yml, acceptance-gates.yml | **KEEP** | referenced by benchmark.yml, acceptance-gates.yml |
 | `scripts/check_doc_links.py` | lint.yml, test_check_doc_links.py | **KEEP** | referenced by lint.yml, test_check_doc_links.py |
-| `scripts/check_no_obsolete_architecture.py` | test_bod17_obsolete_architecture_absent.py | **KEEP** | referenced by test_bod17_obsolete_architecture_absent.py |
+| `scripts/check_no_obsolete_architecture.py` | test_obsolete_architecture_absent.py | **KEEP** | referenced by test_obsolete_architecture_absent.py |
 | `scripts/check_structural_risk.py` | ADR-029-portfolio-repositioning-plan.md, test_structural_risk.py | **KEEP** | referenced by ADR-029-portfolio-repositioning-plan.md, test_structural_risk.py |
 | `scripts/evidence_bundle.py` | test_evidence_bundle.py, acceptance-gates.yml | **KEEP** | referenced by test_evidence_bundle.py, acceptance-gates.yml |
 | `scripts/flagship_demo.py` | README.md, DEMO.md | **KEEP** | referenced by README.md, DEMO.md |

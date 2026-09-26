@@ -1,7 +1,7 @@
 # OpenSpec Lifecycle Integration
 
-**Status:** Active (BOD-205)  
-**Schema:** verdict-change-v1  
+**Status:** Active
+**Schema:** verdict-change-v1
 **OpenSpec Version:** 1.13.2 (pinned via `npx -y @fission-ai/openspec@1.13.2`)
 
 ## Overview

@@ -5,9 +5,9 @@ inventory, execute, and health only — never the metadata source of truth.
 OpenRouter catalog endpoints are likewise **not** a metadata source of truth
 (independence + ToS).
 
-Ticket: [BOD-108](https://linear.app/bodanglin/issue/BOD-108/shipp0-core-model-metadata-store-from-free-public-sources)
-(store). Identity join follow-up: [BOD-121](https://linear.app/bodanglin/issue/BOD-121/shipp0-join-gateway-model-ids-to-modelsdev-modelsjson-unique-leaf-no).
-Capability-gate wiring into admit is [BOD-100](https://linear.app/bodanglin/issue/BOD-100/shipp0-capability-hard-gate-requirements-omniroute-resolved-metadata);
+Ticket: the core model metadata store (ADR-032)
+(store). Identity join follow-up: the models.json id-join fix.
+Capability-gate wiring into admit is the spend-preservation gate design;
 this guide covers the store, fetchers, mapping/join, and the read API
 (`lookup_omniroute_id`) that receipts cite.
 
@@ -36,7 +36,7 @@ verdict metadata lookup agy/gemini-3.1-flash-lite --requires tools --json
 
 The on-disk snapshot defaults to `~/.verdict/model-metadata.json`.
 
-## Join rules (BOD-121)
+## Join rules
 
 `lookup_omniroute_id` resolves a gateway/provider inventory id in this order:
 

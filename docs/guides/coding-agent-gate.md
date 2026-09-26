@@ -134,7 +134,7 @@ See [claude-harness.md](claude-harness.md).
 
 Claude Code's default traffic is Anthropic Messages (`/v1/messages`). Verdict's
 proxy today is OpenAI-compatible only — full Anthropic Messages passthrough via
-Verdict is a **remaining gap** (BOD-102). Until then:
+Verdict is a **remaining gap** . Until then:
 
 1. Keep **SessionStart** fail-closed via `verdict hook claude-gate` (installed by
    `verdict harness claude enable`).

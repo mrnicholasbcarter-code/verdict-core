@@ -1,6 +1,6 @@
 # Configuration Reference
 
-> **Shipped behavior (BOD-180 / BOD-182).** Routing configuration is YAML under
+> **Shipped behavior .** Routing configuration is YAML under
 > XDG. A separate TOML path exists only for context-hydration settings.
 > Environment variables listed below are those the current code actually reads.
 

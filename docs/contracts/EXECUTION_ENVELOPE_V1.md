@@ -61,7 +61,7 @@ All ExecutionEnvelope instances carry `"schema_version": "1"`. This version is i
   - Removing required fields
   - Changing field types in incompatible ways
   - Changing validation semantics that would reject previously valid envelopes
-  
+
 - **Additive changes**: Minor version or patch (within v1.x)
   - Adding new optional fields
   - Relaxing validation constraints
@@ -115,7 +115,7 @@ The canonical fixtures are in `contracts/fixtures/execution-envelope/v1/`:
 - `expected_policy_digest`: The canonical digest expected by the verifier
 - `fixtures`: Map of filename → {sha256, expected_verdict}
 
-**Manifest sha256 values**: The `sha256` field for each fixture is the hash of the **raw file bytes** 
+**Manifest sha256 values**: The `sha256` field for each fixture is the hash of the **raw file bytes**
 exactly as written to disk (not canonicalized JSON). This ensures language-neutral verification:
 consumers can verify with any sha256 tool (`sha256sum`, `openssl dgst -sha256`, etc.) or library.
 
@@ -177,7 +177,7 @@ MUST verify it.
 
 ## Execution Constraints Schema
 
-The `execution_constraints` field contains hard constraints that govern execution behavior. 
+The `execution_constraints` field contains hard constraints that govern execution behavior.
 
 ### Canonical Keys (v1 Schema Parity)
 
@@ -203,7 +203,7 @@ Python, JSON Schema, and TypeScript/Zod contracts are now in parity and enforce 
 All three implementations reject unknown fields with `additionalProperties: false` (JSON Schema),
 `.strict()` (Zod), or `ContractValidationError` (Python).
 
-The cross-language parity test in `contracts/tests/execution-envelope-fixtures.test.ts` and 
+The cross-language parity test in `contracts/tests/execution-envelope-fixtures.test.ts` and
 `tests/test_execution_envelope_fixtures.py` ensures all fixtures pass/fail identically across
 Python and TypeScript.
 
@@ -264,11 +264,11 @@ Each case has:
 2. Assert that the actual verdict matches `expected_verdict` exactly
 3. For Zod/TypeScript consumers: cases with `expected_verdict: REJECT_UNKNOWN` must fail Zod parsing; all other cases must parse successfully (runtime verdicts like `DENY`/`EXPIRED`/`DIGEST_MISMATCH` are beyond Zod's scope)
 
-This corpus proves that Python and Zod reject the same malformed envelopes, closing the validation gap described in BOD-197.
+This corpus proves that Python and Zod reject the same malformed envelopes, closing the validation gap described in the Python/Zod envelope-validation parity gap.
 
-## Relation to BOD-12 Parity
+## Relation to the contract-parity effort Parity
 
-This work supersedes [BOD-12](https://linear.app/bodanglin/issue/BOD-12) historical TypeScript/Python parity with a **producer/consumer contract model**:
+This work supersedes the contract-parity effort historical TypeScript/Python parity with a **producer/consumer contract model**:
 
 - **verdict-core** (this repo): Canonical producer of ExecutionEnvelope
 - **Node/Cockpit**: Consumers that validate against the schema and fixtures
@@ -277,6 +277,6 @@ The Python `ExecutionEnvelope` dataclass is now the single source of truth, and 
 
 ## Related Work
 
-- **BOD-85**: Node adoption of canonical fixtures (separate story)
-- **BOD-14**: Cockpit adoption of canonical fixtures (separate story)
-- **BOD-193**: Earlier Ruflo references removed; Core → Node/Cockpit is the current model
+- Node adoption of canonical fixtures (separate story)
+- Cockpit adoption of canonical fixtures (separate story)
+- Earlier Ruflo references removed; Core → Node/Cockpit is the current model

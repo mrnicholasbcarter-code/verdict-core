@@ -136,7 +136,7 @@ verdict route "your task prompt" [flags]
 | `--terse` | On success, output only the selected model; failures remain structured and explicit |
 | `--criticality <level>` | `low` \| `medium` \| `high` \| `critical` |
 | `--allow-offline` | Disable network discovery/probes; does not enable the legacy selector |
-| `--allow-legacy-selector` | Explicit BOD-127 migration escape for the pre-BOD-104 selector |
+| `--allow-legacy-selector` | Explicit the authorized selected-route dispatch design (ADR-035) migration escape for the pre-the execution-path authority optimizer (ADR-035) selector |
 
 **Examples:**
 ```bash
@@ -195,7 +195,7 @@ verdict models [flags]
 
 ---
 
-### `verdict metadata` — Core model metadata store (BOD-108)
+### `verdict metadata` — Core model metadata store
 
 Independent of OmniRoute. See [`guides/model-metadata-store.md`](guides/model-metadata-store.md).
 

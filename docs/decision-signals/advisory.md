@@ -1,4 +1,4 @@
-# OpenJev ADVISORY Mode (BOD-238)
+# OpenJev ADVISORY Mode
 
 ADVISORY is an opt-in extension of SHADOW mode that may **reorder** the
 admitted candidate set before a routing pick is made. It never adds, restores,
@@ -16,7 +16,7 @@ When enabled, every `verdict route` / `/v1/route` call:
      prefers the cheapest admitted model. Cost is derived from `ModelInfo.pricing`
      (`input + output` cost per 1k tokens) when present; falls back to `cost_per_1k`,
      then `capability_tier` as a proxy (higher tier = cheaper/weaker). Tier is always
-     the secondary tiebreak. Both thresholds and price weights are uncalibrated (BOD-203).
+     the secondary tiebreak. Both thresholds and price weights are uncalibrated .
    - **strength** – `frontier_worthy >= 0.6` OR `complexity >= 0.6`:
      prefers the strongest (highest quality_confidence, lowest tier number)
      admitted model.
@@ -37,7 +37,7 @@ VERDICT_DECISION_SIGNALS_MODE=ADVISORY
 ```
 
 And supply an OpenJev provider (via `factory.provider_from_env()` once
-BOD-235 lands, or inject any `DecisionSignalProvider`-compatible object as
+the OpenJev provider (real Codiv API shapes) lands, or inject any `DecisionSignalProvider`-compatible object as
 `IntelligenceService(decision_signal_provider=...)`.
 
 ## Hard skip conditions (fail open to baseline)
@@ -55,9 +55,9 @@ Advisory is skipped — and the baseline order is used unchanged — when:
 | Signals are empty / None | `advisory:skipped:no_signals` |
 | Mode is OFF or SHADOW | Not called |
 | No provider configured | Not called |
-| `ExecutionPathDecision` is present (BOD-104) | Not called (returns before advisory) |
+| `ExecutionPathDecision` is present | Not called (returns before advisory) |
 
-## Cut-off values (uncalibrated — BOD-203)
+## Cut-off values (uncalibrated — decision-signal calibration)
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -65,14 +65,14 @@ Advisory is skipped — and the baseline order is used unchanged — when:
 | `VERDICT_DECISION_SIGNALS_TIMEOUT_MS` | `1500` | Timeout for provider call (ms) |
 
 The economy/strength thresholds (0.4 / 0.6) are fixed initial values.
-Calibration is tracked in BOD-203.
+Calibration is tracked in decision-signal calibration.
 
 ## Data sent per call
 
 In ADVISORY mode, a scrubbed task summary (first 500 chars of `task_str`)
 plus a `complexity_hints: {}` dict are sent to the OpenJev provider as a
 `DecisionQuestionV1`. No credentials, user PII, or model internals are
-included. See PRIVACY_POLICY.md for the full privacy notice (owned by BOD-235).
+included. See PRIVACY_POLICY.md for the full privacy notice (owned by the OpenJev provider (real Codiv API shapes)).
 
 ## Live-admit path (OmniRoute)
 

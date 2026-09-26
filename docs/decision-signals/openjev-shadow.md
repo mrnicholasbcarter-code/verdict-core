@@ -15,10 +15,10 @@ Two opt-in modes are supported in v0.3.0:
 | **ADVISORY** | Once per route call for non-protected, non-restricted tasks | Read-only by the intelligence layer; routing is never blocked |
 
 > **SHADOW scope**: when SHADOW is active the scrubbed goal is sent for **all** orchestrate
-> runs.  There is no per-task protected/restricted filter at the SHADOW call site.  See
+> runs. There is no per-task protected/restricted filter at the SHADOW call site. See
 > `PRIVACY_POLICY.md` §"SHADOW scope note" for mitigations.
 
-Both modes are **off by default**.  Routing outcomes are identical whether
+Both modes are **off by default**. Routing outcomes are identical whether
 the provider is healthy, failing, or absent.
 
 ---
@@ -46,8 +46,8 @@ export VERDICT_OPENJEV_MODEL="openjev-0.1"
 ```
 
 If `TYPESAFE_API_KEY` is empty or `VERDICT_DECISION_SIGNALS_MODE` is `OFF`,
-no network call is made.  The `OPENJEV_API_KEY` and `OPENJEV_BASE_URL`
-variables from the original BOD-199 prototype are no longer read.
+no network call is made. The `OPENJEV_API_KEY` and `OPENJEV_BASE_URL`
+variables from the original decision signal contracts prototype are no longer read.
 
 ---
 
@@ -74,14 +74,14 @@ The `state` field is:
 * **Never** sent when the mode is `OFF` or when `TYPESAFE_API_KEY` is absent.
 
 The fixed question set asks seven typed questions (noul / score / choice)
-about the task.  See `verdict/decision_signals/openjev.py` (`_QUESTIONS`)
+about the task. See `verdict/decision_signals/openjev.py` (`_QUESTIONS`)
 for the exact definitions.
 
 ---
 
 ## What is received and recorded
 
-A successful 200 response returns `{model, answers, usage}`.  The provider
+A successful 200 response returns `{model, answers, usage}`. The provider
 maps the answers to `DecisionSignalSetV1` signals in `[0,1]`:
 
 | Signal | Type | Mapping |
@@ -95,7 +95,7 @@ maps the answers to `DecisionSignalSetV1` signals in `[0,1]`:
 | `context_need` | score (3 levels) | `score / 2` |
 
 The signal set is written to the EventLog as a `decision_signals` event and
-is included in the receipt under `decision_signals`.  It does **not** alter
+is included in the receipt under `decision_signals`. It does **not** alter
 the planning result or any routing decision in SHADOW mode.
 
 In ADVISORY mode the intelligence layer may *read* the signals when selecting
@@ -131,7 +131,7 @@ call, only for tasks that are not privacy-restricted or marked trusted_upstream)
 
 ## Failure handling
 
-Failures never block planning.  The signal set records `failure_class`:
+Failures never block planning. The signal set records `failure_class`:
 
 | Condition | failure_class |
 |-----------|---------------|
@@ -161,20 +161,20 @@ No provider calls, no EventLog events, no receipt extension.
 ## Timeout
 
 The provider uses `VERDICT_DECISION_SIGNALS_TIMEOUT_MS` (default **1500 ms**) for the
-Codiv API call.  This runs **before** planning, so a slow call adds directly to the
+Codiv API call. This runs **before** planning, so a slow call adds directly to the
 orchestrate wall time.
 
 > **Cold-start note**: the 1.5 s default may be too tight when the Codiv API is
-> warming up (first call of the day, cold TLS handshake, etc.).  A live run recorded
+> warming up (first call of the day, cold TLS handshake, etc.). A live run recorded
 > 1515 ms latency against the 1500 ms cap, which correctly produced a `TIMEOUT`
 > failure and allowed planning to continue unaffected.
 >
 > If you see frequent `failure_class: timeout` in your EventLog while Codiv is
 > otherwise healthy, raise the limit:
 > ```bash
-> export VERDICT_DECISION_SIGNALS_TIMEOUT_MS=5000  # 5 s
+> export VERDICT_DECISION_SIGNALS_TIMEOUT_MS=5000 # 5 s
 > ```
-> BOD-238 (advisory mode) uses the same env var.
+> OpenJev ADVISORY mode (advisory mode) uses the same env var.
 
 
 ## Running the smoke test

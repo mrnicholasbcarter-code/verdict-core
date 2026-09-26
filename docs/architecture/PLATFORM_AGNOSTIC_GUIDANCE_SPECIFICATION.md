@@ -6,7 +6,7 @@
 >
 > Historical note: earlier revisions of this specification listed Ruflo /
 > Claude Flow as a supported guidance platform. That integration was removed
-> from Core (BOD-17); see [ADR-023](../adr/ADR-023-governed-swarm-supervision.md)
+> from Core ; see [ADR-023](../adr/ADR-023-governed-swarm-supervision.md)
 > (superseded) and [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md)
 > (current orchestration).
 

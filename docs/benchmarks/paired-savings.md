@@ -1,4 +1,4 @@
-# Paired savings bench: frontier-direct vs Verdict (BOD-101 / BOD-114)
+# Paired savings bench: frontier-direct vs Verdict
 
 Talk track: **we measure**. The bench compares a frontier-direct arm with the
 Verdict cheap-path arm on the same legit task (debug, refactor+tests,

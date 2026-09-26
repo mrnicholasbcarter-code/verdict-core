@@ -6,7 +6,7 @@ Prevents regression in safety-critical modules by enforcing branch coverage floo
 
 ## Critical Modules
 
-The following modules have coverage floors based on their measured branch coverage at the BOD-196 baseline:
+The following modules have coverage floors based on their measured branch coverage at the the eligibility-gate default construction fix baseline:
 
 - **verdict/eligibility.py** (85%): Candidate eligibility and admission logic
 - **verdict/contracts.py** (80%): Structured task/routing contracts

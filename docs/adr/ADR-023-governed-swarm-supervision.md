@@ -1,12 +1,12 @@
-> **Status: SUPERSEDED (BOD-17 / BOD-127)** — Governed-swarm / Ruflo supervision is obsolete architecture and has been **deleted** from Core.
+> **Status: SUPERSEDED ** — Governed-swarm / Ruflo supervision is obsolete architecture and has been **deleted** from Core.
 > **Successor ADR:** [ADR-035 — Authorized selected-route dispatch](ADR-035-authorized-selected-route-dispatch.md)
-> (closes BOD-169 `MISSING_SUCCESSOR`). Implementation trail: BOD-104 → BOD-67/`verdict.dispatcher`
-> (authorized `selected_route` only). Documentation hygiene continues under BOD-131.
+> (closes the cross-repo ADR lifecycle evidence audit `MISSING_SUCCESSOR`). Implementation trail: the execution-path authority optimizer (ADR-035) → the hydrate-before-dispatch authorized execution path design/`verdict.dispatcher`
+> (authorized `selected_route` only). Documentation hygiene continues under the ongoing documentation-hygiene pass.
 > Historical body below is retained for archaeology; do not rewrite paths to `experimental/`.
 
 # ADR-023: Governed Swarm Supervision
 
-**Status**: SUPERSEDED (BOD-17) — successor [ADR-035](ADR-035-authorized-selected-route-dispatch.md)
+**Status**: SUPERSEDED — successor [ADR-035](ADR-035-authorized-selected-route-dispatch.md)
 **Date**: 2026-08-16
 **Updated**: 2026-09-24
 **Story**: [VERDICT-SWARM-001](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/VERDICT-SWARM-001.md) (verdict-ecosystem)
