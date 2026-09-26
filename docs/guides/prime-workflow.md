@@ -17,7 +17,7 @@ prime-agent --cwd "$PWD" '/verdict-resume'
 ```
 
 For unattended operation use the external supervisor with a Verdict-selected controller
-decision . Automatic mode omits `--provider`/`--model` and asks Verdict to
+decision. Automatic mode omits `--provider`/`--model` and asks Verdict to
 generate the exact decision from live eligibility, ContextPlans, the execution-path authority optimizer (ADR-035), and session economics STAY/SWITCH.
 The supervisor persists a RoutingReceiptV1 before launch, never ranks or substitutes,
 and never launches `auto/*`. Missing live eligibility blocks launch.

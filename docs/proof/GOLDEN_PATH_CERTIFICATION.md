@@ -49,4 +49,4 @@ In every COMPLETE run:
 - A merge to `main` and CI on the merged commit. Merging is not authorized.
 - The remediation/re-review loop after a blocking OCR finding. A blocking finding stops the run
   as BLOCKED.
-- Adaptive concurrency , and a critic pass per node.
+- Adaptive concurrency, and a critic pass per node.

@@ -15,7 +15,7 @@ Status values:
   current product behavior).
 
 Context for archive decisions: Ruflo, RuVector, SONA, Hivemind, and swarm
-dispatch/supervision are obsolete in Core . See
+dispatch/supervision are obsolete in Core. See
 [ADR-023](adr/ADR-023-governed-swarm-supervision.md) (superseded) and
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md) (current
 orchestration).
@@ -147,7 +147,7 @@ orchestration).
 
 | File | Status | Reason |
 |------|--------|--------|
-| docs/pages/index.mdx | REWRITTEN | Hivemind/Neural Learning feature claims removed in this pass . |
+| docs/pages/index.mdx | REWRITTEN | Hivemind/Neural Learning feature claims removed in this pass. |
 | docs/pages/hivemind.mdx | KEEP | Carries a SUPERSEDED banner; retained as history. |
 | docs/pages/_meta.json | KEEP | hivemind nav entry already labeled "historical / superseded". |
 

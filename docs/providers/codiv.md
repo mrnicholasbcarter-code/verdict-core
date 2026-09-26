@@ -92,7 +92,7 @@ When fallback occurs:
 - `intended_provider` ≠ `executed_provider`
 - `provider_mismatch` = `true`
 
-Fields are **optional** (backward compatible with pre-the codiv failure classification and provider identity design receipts).
+Fields are **optional** (backward compatible with receipts written before the codiv failure classification and provider identity design).
 
 ## Absence Safety
 

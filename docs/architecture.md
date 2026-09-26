@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> **Shipped behavior .** This page describes the live control-plane path.
+> **Shipped behavior.** This page describes the live control-plane path.
 > Design-only specifications under `docs/architecture/*_SPECIFICATION.md` are
 > **not** additional shipped behaviour unless linked from an ADR marked CURRENT.
 

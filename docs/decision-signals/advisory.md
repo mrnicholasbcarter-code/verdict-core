@@ -16,7 +16,7 @@ When enabled, every `verdict route` / `/v1/route` call:
      prefers the cheapest admitted model. Cost is derived from `ModelInfo.pricing`
      (`input + output` cost per 1k tokens) when present; falls back to `cost_per_1k`,
      then `capability_tier` as a proxy (higher tier = cheaper/weaker). Tier is always
-     the secondary tiebreak. Both thresholds and price weights are uncalibrated .
+     the secondary tiebreak. Both thresholds and price weights are uncalibrated.
    - **strength** – `frontier_worthy >= 0.6` OR `complexity >= 0.6`:
      prefers the strongest (highest quality_confidence, lowest tier number)
      admitted model.

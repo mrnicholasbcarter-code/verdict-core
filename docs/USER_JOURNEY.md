@@ -39,7 +39,7 @@ verdict route "summarize this change" --criticality low --terse
 Use `verdict simulate "summarize this change"` for a no-send forecast.
 `--allow-offline` disables live discovery and probes; it exits non-zero with
 `transport_outcome=error` because no provider completion was sent. The separate
-`--allow-legacy-selector` flag is only the explicit pre-the execution-path authority optimizer (ADR-035) migration escape.
+`--allow-legacy-selector` flag is only the explicit migration escape to the selector that predates the execution-path authority optimizer (ADR-035).
 
 ## Orchestrate: goal to receipt
 

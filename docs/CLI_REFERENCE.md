@@ -175,7 +175,7 @@ verdict route "your task prompt" [flags]
 | `--terse` | On success, output only the selected model; failures remain structured and explicit |
 | `--criticality <level>` | `low` \| `medium` \| `high` \| `critical` |
 | `--allow-offline` | Disable network discovery/probes; does not enable the legacy selector |
-| `--allow-legacy-selector` | Explicit the authorized selected-route dispatch design (ADR-035) migration escape for the pre-the execution-path authority optimizer (ADR-035) selector |
+| `--allow-legacy-selector` | Explicit migration escape to the selector that predates the execution-path authority optimizer (ADR-035) |
 
 **Examples:**
 ```bash
