@@ -157,6 +157,16 @@ def _cost_with_context_plan(
     )
 
 
+# Kept "development" deliberately (S2-F F3, evidence in sprint2/s2-f-report.md).
+# No fail-closed guarantee depends on this default:
+# - admission: unknown/error/timeout candidates are excluded unless the operator
+#   opts in with VERDICT_ALLOW_UNVERIFIED_DEV (EligibilityGate default False);
+# - API serve: api._route_with_intelligence forces require_execution_path_authority
+#   regardless of profile.
+# "production" additionally makes serve_path_authority_required() true for every
+# IntelligenceService.route caller (CLI route, scripts/prime_supervisor.py), makes
+# VERDICT_ALLOW_UNVERIFIED_DEV inert, and changes /v1/route/explain exclusions.
+# Set LLMGATE_INTELLIGENCE_PROFILE=production to opt in.
 DEFAULT_PROFILE = "development"
 DEGRADED_PROFILE = "degraded"
 DEFAULT_TIMEOUT_MS = 1000

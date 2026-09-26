@@ -76,7 +76,7 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS` | Allow private upstream hosts |
 | `LLMGATE_MODEL_ALLOWLIST` | Comma-separated allowed model ids |
 | `LLMGATE_MODEL_DENYLIST` | Comma-separated denied model ids |
-| `LLMGATE_INTELLIGENCE_PROFILE` | Advisory ranking profile (`fast` / `balanced` / `thorough`) |
+| `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile. Default `development` (`verdict.intelligence.DEFAULT_PROFILE`). `production` makes every `IntelligenceService.route` caller (CLI `route`, supervisor) require a BOD-104 `ExecutionPathDecision` (`serve_path_authority_required`), makes `VERDICT_ALLOW_UNVERIFIED_DEV` inert, and makes `/v1/route/explain` exclude unverified candidates. The default is kept `development` on purpose: fail-closed admission does not depend on it (unknown/error/timeout candidates are excluded unless `VERDICT_ALLOW_UNVERIFIED_DEV=1`), and the API serve path forces execution-path authority in every profile |
 | `LLMGATE_INTELLIGENCE_TIMEOUT_MS` | Intelligence timeout |
 | `LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE` | Allow client-requested model override |
 | `LLMGATE_LOG_PATH` | Decision log path |
