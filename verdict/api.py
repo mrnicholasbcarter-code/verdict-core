@@ -579,12 +579,13 @@ def server_bootstrap_diagnostics() -> dict[str, Any]:
     from verdict.provider_bootstrap import (
         BootstrapError,
         load_credential_store_env,
+        redact_url,
         resolve_provider_bootstrap,
     )
 
     upstream_source = _upstream_base_url_source()
     report: dict[str, Any] = {
-        "upstream_base_url": _resolve_upstream_base_url(),
+        "upstream_base_url": redact_url(_resolve_upstream_base_url()),
         "upstream_base_url_source": upstream_source,
         "diagnostics": [],
     }
@@ -613,7 +614,7 @@ def server_bootstrap_diagnostics() -> dict[str, Any]:
         return report
     report["status"] = "ok"
     report["gateway_required"] = bootstrap.gateway_required
-    report["gateway_url"] = bootstrap.gateway_url
+    report["gateway_url"] = redact_url(bootstrap.gateway_url) if bootstrap.gateway_url else None
     report["field_sources"] = dict(bootstrap.field_sources)
     report["diagnostics"].extend(d.to_dict() for d in bootstrap.diagnostics)
     return report

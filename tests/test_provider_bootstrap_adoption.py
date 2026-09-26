@@ -620,3 +620,16 @@ def test_upstream_base_url_source_names_the_default(
 
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
     assert api._upstream_base_url_source() == "environment"
+
+
+def test_server_bootstrap_diagnostics_redact_url_userinfo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The serve report dict never carries a URL password, even though it is not rendered today."""
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://u:SECRETPW@127.0.0.1:20128")
+    monkeypatch.setenv("LLMGATE_UPSTREAM_BASE_URL", "http://u:SECRETPW@127.0.0.1:20128/v1")
+    _config_home(tmp_path, monkeypatch, _VALID_CONFIG)
+
+    report = api.server_bootstrap_diagnostics()
+
+    assert "SECRETPW" not in repr(report)

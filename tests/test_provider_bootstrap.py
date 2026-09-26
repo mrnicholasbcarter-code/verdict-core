@@ -655,3 +655,22 @@ def test_bootstrap_config_path_follows_xdg_then_home(tmp_path: Path) -> None:
 
     fallback = bootstrap_config_path({}, home=tmp_path)
     assert fallback == tmp_path / ".config" / "verdict" / "verdict.yaml"
+
+
+def test_unparsable_config_never_echoes_a_secret_on_the_rejected_line(tmp_path: Path) -> None:
+    """The YAML parser quotes the offending line; that text must never be rendered."""
+    body = "providers:\n  omniroute:\n    base_url: [http://u:SECRETPW@h/v1\n"
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_provider_bootstrap(env={}, config_path=_write(tmp_path, body))
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "config_file_unparsable"
+    assert "SECRETPW" not in diagnostic.detail
+    assert "SECRETPW" not in describe_bootstrap_failure(excinfo.value)
+    assert "SECRETPW" not in repr(excinfo.value.to_dict())
+
+
+def test_redact_url_handles_an_at_sign_inside_the_password() -> None:
+    """A raw '@' in the password is still fully redacted."""
+    assert redact_url("http://user:p@ss@127.0.0.1:20128/v1") == "http://***:***@127.0.0.1:20128/v1"
+    assert redact_url("see http://a:b@c@h/x and more") == "see http://***:***@h/x and more"

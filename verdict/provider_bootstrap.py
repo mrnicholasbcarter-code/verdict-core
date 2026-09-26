@@ -233,7 +233,7 @@ def bootstrap_config_path(
 
 #: Matches the ``user:password@`` userinfo of any ``scheme://`` URL, including a
 #: URL embedded in a longer message such as an exception string.
-_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s@]*@")
+_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s]*@")
 
 
 def load_credential_store_env() -> dict[str, str]:
