@@ -38,6 +38,10 @@ from verdict.subagent_selection import (
     openai_health_probe,
 )
 
+PROVIDER_SCOPE_FAILURE_CATEGORIES = frozenset(
+    {"authentication", "payment_required", "permission", "rate_limited"}
+)
+
 
 @dataclass(frozen=True)
 class RuntimeBudget:
@@ -277,7 +281,21 @@ class WorkerController:
     async def _run(self, prompt: str) -> WorkerOutcome:
         deadline = time.monotonic() + self.budget.total_seconds
         previous: str | None = None
+        blocked_providers: dict[str, str] = {}
         for candidate in self.candidates:
+            provider = candidate.route_id.split("/", 1)[0].strip().lower()
+            blocked_reason = blocked_providers.get(provider)
+            if blocked_reason is not None:
+                self.event(
+                    "exclusion",
+                    model=candidate.selector,
+                    provider=provider,
+                    classification=blocked_reason,
+                    provider_wide=True,
+                    replacement=True,
+                )
+                previous = candidate.selector
+                continue
             if time.monotonic() >= deadline:
                 return self.finish(
                     "FAIL_CLOSED",
@@ -311,16 +329,21 @@ class WorkerController:
             self.event(
                 "health",
                 model=candidate.selector,
-                provider=candidate.route_id.split("/")[0],
+                provider=provider,
                 classification=health.category,
                 eligible=health.healthy,
             )
             if not health.healthy:
+                provider_wide = health.category in PROVIDER_SCOPE_FAILURE_CATEGORIES
+                if provider_wide:
+                    blocked_providers[provider] = health.category
                 self.event(
                     "exclusion",
                     model=candidate.selector,
+                    provider=provider,
                     classification=health.category,
                     cooldown_seconds=_failure_cooldown(health),
+                    provider_wide=provider_wide,
                     replacement=True,
                 )
                 previous = candidate.selector
@@ -330,7 +353,7 @@ class WorkerController:
                 "selection",
                 attempt=number,
                 model=candidate.selector,
-                provider=candidate.route_id.split("/")[0],
+                provider=provider,
                 previous_model=previous,
                 replacement_model=candidate.selector if previous else None,
             )
@@ -384,15 +407,20 @@ class WorkerController:
                     # our unique name before permitting another writer.
                     handle = {"rlm_child_id": name, "model": candidate.selector}
                 health = self.failure(exc)
+                provider_wide = health.category in PROVIDER_SCOPE_FAILURE_CATEGORIES
+                if provider_wide:
+                    blocked_providers[provider] = health.category
                 self.attempts.append((candidate.selector, health.category))
                 self.cache.record_failure(candidate, health, now=self.now())
                 self.event(
                     "failure",
                     attempt=number,
                     model=candidate.selector,
+                    provider=provider,
                     spawn_id=spawn_id,
                     classification=health.category,
                     cooldown_seconds=_failure_cooldown(health),
+                    provider_wide=provider_wide,
                     excluded=True,
                     replacement=True,
                 )
