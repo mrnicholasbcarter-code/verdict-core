@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,8 @@ from verdict.admission import (
 from verdict.orchestration import cli as orch_cli
 from verdict.orchestration import run as orch_run
 from verdict.orchestration.contracts import EligibilityStage
-from verdict.orchestration.eligibility import EligibilityLadder
+from verdict.orchestration.eligibility import LADDER_CONFIRMATION_SOURCE, EligibilityLadder
+from verdict.subagent_selection import HealthResult
 
 DEAD = "cc/dead"
 OK = "kr/claude-sonnet-ok"
@@ -219,3 +220,68 @@ def test_eligibility_command_passes_task_requirements_into_admission(
         orch_cli._eligibility(args)
     assert captured["required_capabilities"] == frozenset({"tools"})
     assert captured["min_context_tokens"] == 32_000
+
+
+def test_build_selector_reads_evidence_from_the_state_file_it_uses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # --state-file / --inject shape: the ladder reads chaos-health.json, so
+    # admission must read the same file, not only orchestration-health.json.
+    monkeypatch.setattr(orch_run, "fetch_inventory", lambda gw, *, api_key, timeout=30: _rows())
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, timeout=30: _conns())
+    monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
+    monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
+    now = datetime.now(timezone.utc)
+    until = (now + timedelta(days=1)).isoformat()
+    state = tmp_path / "run" / "chaos-health.json"
+    state.parent.mkdir()
+    state.write_text(
+        json.dumps(
+            {
+                "health": {OK: {"healthy": True, "checked_at": now.isoformat(), "category": ""}},
+                "cooldowns": {f"route:{DEAD}": {"until": until, "category": "quota_exhausted"}},
+            }
+        )
+    )
+    ladder = orch_cli.build_selector("http://127.0.0.1:1", scope="", prefer="kr", state_file=state)
+    admitted = ladder.admitted
+    assert admitted is not None
+    assert "ladder_state:chaos-health.json" in admitted.runtime_consulted
+    dead = admitted.first_failure(DEAD)
+    assert dead.first_failed_stage is AdmissionStage.AVAILABLE
+    assert dead.source == "ladder_state:chaos-health.json"
+    assert admitted.proven_healthy(OK)
+    receipt = json.loads((state.parent / "admission-latest.json").read_text())
+    by_id = {c["route_id"]: c for c in receipt["candidates"]}
+    assert by_id[DEAD]["source"] == "ladder_state:chaos-health.json"
+
+
+def test_ladder_confirmations_are_persisted_to_admission_latest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(orch_run, "fetch_inventory", lambda gw, *, api_key, timeout=30: _rows())
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, timeout=30: _conns())
+    monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
+    monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
+    probed: list[str] = []
+
+    def fake_probe(*a: Any, **k: Any) -> Any:
+        def run(candidate: Any) -> HealthResult:
+            probed.append(candidate.route_id)
+            ok = candidate.route_id != DEAD
+            return HealthResult(ok, "" if ok else "rate_limited")
+
+        return run
+
+    monkeypatch.setattr("verdict.subagent_selection.openai_health_probe", fake_probe)
+    state = tmp_path / "orchestration-health.json"  # fresh host: absent
+    ladder = orch_cli.build_selector("http://127.0.0.1:1", scope="", prefer="cc", state_file=state)
+    ladder._harness_visible = lambda _r: True
+    chosen, _ = ladder.select(REQ, now=datetime.now(timezone.utc))
+    assert chosen is not None and chosen.route_id != DEAD
+    assert probed[0] == DEAD
+    receipt = json.loads((tmp_path / "admission-latest.json").read_text())
+    by_id = {c["route_id"]: c for c in receipt["candidates"]}
+    assert by_id[DEAD]["first_failed_stage"] == "HEALTHY"
+    assert by_id[chosen.route_id]["confirmation_source"] == LADDER_CONFIRMATION_SOURCE
+    assert by_id[chosen.route_id]["confirmed_at"]

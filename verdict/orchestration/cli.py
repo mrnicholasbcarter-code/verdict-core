@@ -230,7 +230,9 @@ def build_selector(
     admitted = admit(
         rows,
         connections,
-        default_runtime_evidence(now=now, state_dir=state_path.parent),
+        # Evidence comes from the ladder state file this ladder reads, so the
+        # admitted set and the ladder cannot disagree about cached health.
+        default_runtime_evidence(now=now, state_dir=state_path.parent, ladder_state=state_path),
         now=now,
         required_capabilities=required_capabilities,
         min_context_tokens=min_context_tokens,
@@ -238,7 +240,8 @@ def build_selector(
     prefixes = tuple(p.strip() for p in scope.split(",") if p.strip())
     admitted = admitted.restrict_prefixes(prefixes).restrict_families(provider_families)
     admitted = admitted.exclude_controller(active_controller_route())
-    admitted.write_receipt(state_path.parent / "admission-latest.json")
+    receipt_path = state_path.parent / "admission-latest.json"
+    admitted.write_receipt(receipt_path)
     if prefixes:
         rows = [r for r in rows if str(r.get("id", "")).startswith(prefixes)]
     if provider_families:
@@ -259,6 +262,7 @@ def build_selector(
         load=load,
         harness_visible=prime_visibility(live_ids=live_ids),
         admitted=admitted,
+        admission_receipt=receipt_path,
     )
 
 

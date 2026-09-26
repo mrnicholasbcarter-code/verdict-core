@@ -809,10 +809,18 @@ def active_controller_route(env: Mapping[str, str] | None = None) -> str | None:
     return value or None
 
 
-def default_runtime_evidence(*, now: datetime, state_dir: Path | None = None) -> RuntimeEvidence:
-    """Local persisted runtime evidence: ladder health/cooldowns + worker HealthCache."""
+def default_runtime_evidence(
+    *, now: datetime, state_dir: Path | None = None, ladder_state: Path | None = None
+) -> RuntimeEvidence:
+    """Local persisted runtime evidence: ladder health/cooldowns + worker HealthCache.
+
+    ``ladder_state`` names the ladder state file the caller actually uses
+    (for example a ``--state-file`` or a per-run chaos file). It defaults to
+    ``orchestration-health.json`` in ``state_dir``.
+    """
     base = state_dir or Path(os.environ.get("VERDICT_HOME", Path.home() / ".verdict"))
-    return evidence_from_ladder_state(base / "orchestration-health.json", now=now).merged(
+    ladder = ladder_state or (base / "orchestration-health.json")
+    return evidence_from_ladder_state(ladder, now=now).merged(
         evidence_from_health_cache(base / "subagent-health.json", now=now)
     )
 
