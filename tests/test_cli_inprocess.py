@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 import yaml
@@ -947,6 +947,13 @@ def test_cmd_doctor_all_healthy(
     monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:0")
 
+    # A healthy host also has the memory-bridge state: text mode now runs the
+    # same shared collector as --json, including run_doctor_diagnostics.
+    (tmp_path / ".verdict").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".verdict" / "memory.db").touch()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
     cli.cmd_doctor()
 
     out = capsys.readouterr().out
@@ -1506,6 +1513,256 @@ def test_cmd_doctor_prints_env_example_pointer(
     assert exc.value.code == 1
     out = capsys.readouterr().out
     assert ".env.example" in out
+
+
+# --- Shared-collector parity (review R3 cases A-F) and classifier tightening ---
+
+_PARITY_CFG_OK = (
+    "schema_version: 1\n"
+    "primary_model: anthropic/claude-opus-5\n"
+    "log_path: route-log.jsonl\n"
+    "gateway_url: http://localhost:11434/v1\n"
+    "providers:\n"
+    "  ollama:\n"
+    "    base_url: http://localhost:11434/v1\n"
+)
+
+
+def _doctor_parity_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cfg: str = _PARITY_CFG_OK,
+    memdb: bool = True,
+    gateway_ok: bool = True,
+    doc_report: object | None = None,
+) -> None:
+    import socket
+    import urllib.request
+    from unittest.mock import MagicMock
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text(cfg)
+    monkeypatch.setattr(
+        cli,
+        "_omniroute_api_request",
+        lambda m, p, body=None: (
+            [{"id": "n1", "name": "Ollama", "baseUrl": "http://127.0.0.1:11434/v1"}]
+            if (m, p) == ("GET", "/api/provider-nodes")
+            else None
+        ),
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+    def _urlopen(*a, **k):
+        if not gateway_ok:
+            raise OSError("connection refused")
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+    if doc_report is not None:
+        monkeypatch.setattr(
+            documentation_preflight, "run_documentation_preflight", lambda **k: doc_report
+        )
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: MagicMock())
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    if memdb:
+        (tmp_path / ".verdict").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".verdict" / "memory.db").touch()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+
+def _doctor_both_modes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[int, int, dict[str, Any]]:
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    try:
+        cli.main()
+        json_exit = 0
+    except SystemExit as exc:
+        json_exit = int(exc.code or 0)
+    report = json.loads(capsys.readouterr().out)
+    try:
+        cli.cmd_doctor()
+        text_exit = 0
+    except SystemExit as exc:
+        text_exit = int(exc.code or 0)
+    capsys.readouterr()
+    return json_exit, text_exit, report
+
+
+def _blocked_doc_report(*, missing: int, stale: int, errors: tuple[str, ...]) -> object:
+    import verdict.documentation_preflight as documentation_preflight
+
+    return documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=2,
+        inventory=missing + stale,
+        ingested=0,
+        skipped_fresh=0,
+        stale=stale,
+        missing=missing,
+        unverifiable=1,
+        errors=errors,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "host", "expect_exit", "issue_substr", "warning_substr"),
+    [
+        (
+            "A-schema-version-missing",
+            {"cfg": _PARITY_CFG_OK.replace("schema_version: 1\n", "")},
+            1,
+            "older Verdict version",
+            None,
+        ),
+        ("B-memory-db-missing", {"memdb": False}, 1, "missing_memory_db", None),
+        ("C-gateway-unreachable", {"gateway_ok": False}, 1, "Gateway unreachable", None),
+        (
+            "D-no-primary-model-literal-key",
+            {"cfg": "schema_version: 1\nproviders:\n  x:\n    base_url: http://h/sk-abc\n"},
+            1,
+            "Literal API key detected",
+            None,
+        ),
+        (
+            "E-missing-docs-with-one-rate-limit",
+            {
+                "doc_report": _blocked_doc_report(
+                    missing=800,
+                    stale=40,
+                    errors=(
+                        "ruvector:resolve:ValueError:authoritative fetch failed: "
+                        "HTTP Error 403: rate limit exceeded",
+                    ),
+                )
+            },
+            1,
+            "did not pass",
+            None,
+        ),
+        (
+            "F-forbidden-inventory",
+            {
+                "doc_report": _blocked_doc_report(
+                    missing=0,
+                    stale=0,
+                    errors=("adr:inventory:HTTPError:HTTP Error 403: Forbidden",),
+                )
+            },
+            1,
+            "did not pass",
+            None,
+        ),
+        (
+            "G-rate-limited-403-only",
+            {
+                "doc_report": _blocked_doc_report(
+                    missing=0,
+                    stale=0,
+                    errors=(
+                        "ruflo:resolve:ValueError:authoritative fetch failed: "
+                        "HTTP Error 403: rate limit exceeded",
+                    ),
+                )
+            },
+            0,
+            None,
+            "preflight unreachable",
+        ),
+        ("healthy", {}, 0, None, None),
+    ],
+)
+def test_cli_doctor_text_and_json_share_one_collector(
+    case: str,
+    host: dict[str, Any],
+    expect_exit: int,
+    issue_substr: str | None,
+    warning_substr: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Text and --json modes must agree on exit and classification (review R3)."""
+    _doctor_parity_host(tmp_path, monkeypatch, **host)
+    json_exit, text_exit, report = _doctor_both_modes(monkeypatch, capsys)
+    assert json_exit == text_exit == expect_exit, case
+    assert report["status"] == ("issues_found" if expect_exit else "ok")
+    if issue_substr is None:
+        assert report["issues"] == []
+    else:
+        assert any(issue_substr in issue for issue in report["issues"]), report["issues"]
+    if warning_substr is not None:
+        assert any(warning_substr in w for w in report["warnings"]), report["warnings"]
+
+
+@pytest.mark.parametrize(
+    ("missing", "stale", "orphaned", "errors", "expected"),
+    [
+        # E: real doc gaps are never masked by one network error.
+        (800, 40, 0, ("r:resolve:ValueError:HTTP Error 403: rate limit exceeded",), False),
+        # F: a bare 403 is auth/permission, not a rate limit.
+        (0, 0, 0, ("adr:inventory:HTTPError:HTTP Error 403: Forbidden",), False),
+        # G: a 403 with rate-limit text and no doc gap is network-only.
+        (0, 0, 0, ("r:resolve:ValueError:HTTP Error 403: rate limit exceeded",), True),
+        (0, 0, 0, ("r:resolve:HTTPError:HTTP Error 429: Too Many Requests",), True),
+        (0, 0, 0, ("r:inventory:URLError:<urlopen error timed out>",), True),
+        (0, 0, 0, ("r:inventory:URLError:[Errno 111] Connection refused",), True),
+        (0, 0, 0, ("r:resolve:URLError:Name or service not known",), True),
+        (0, 0, 1, ("r:resolve:HTTPError:HTTP Error 429: Too Many Requests",), False),
+        (0, 0, 0, (), False),
+        # Non-fetch error (content integrity) is never network-only.
+        (0, 0, 0, ("adr:implementation/adrs/ADR-001.md:ValueError:timed out",), False),
+        (
+            0,
+            0,
+            0,
+            (
+                "r:resolve:HTTPError:HTTP Error 429: Too Many Requests",
+                "adr:inventory:HTTPError:HTTP Error 403: Forbidden",
+            ),
+            False,
+        ),
+    ],
+)
+def test_doctor_documentation_preflight_network_only_classifier(
+    missing: int, stale: int, orphaned: int, errors: tuple[str, ...], expected: bool
+) -> None:
+    import verdict.documentation_preflight as documentation_preflight
+
+    report = documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=1,
+        inventory=missing + stale,
+        ingested=0,
+        skipped_fresh=0,
+        stale=stale,
+        missing=missing,
+        unverifiable=1,
+        errors=errors,
+        orphaned=orphaned,
+    )
+    assert cli._doctor_documentation_preflight_is_network_only_failure(report) is expected
 
 
 def test_serve_dev_flag_enables_reload_and_dev_profile(

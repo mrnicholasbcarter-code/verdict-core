@@ -323,14 +323,39 @@ verdict doctor [flags]
 | `--json` | Output a machine-readable report |
 
 Exit code: `0` when the host is healthy, `1` when unresolved issues remain
-(after `--fix` has been applied, if used). Both text and `--json` modes agree
-on exit code for the same host state. In `--json` mode, `issues` lists real
-problems that cause a non-zero exit; `warnings` lists non-fatal, optional
-items (for example a missing `.mcp.json`, or a documentation preflight
-blocked purely by a third-party GitHub rate limit / network error) that do
-not affect the exit code. A documentation preflight failure caused by a
-genuinely stale or missing local document set (not a network error) is
-still reported as an issue and does cause a non-zero exit.
+(after `--fix` has been applied, if used). Text and `--json` modes run one
+shared diagnostics collector (`_collect_doctor_diagnostics` in
+`verdict/cli.py`), so they report the same `issues` and `warnings` and agree
+on exit code for the same host state. Text mode renders the result; `--json`
+serialises it (`status`, `issues`, `warnings`, `repaired`, `sections`,
+`documentation_preflight`, `shared_memory`, `capability_bootstrap`,
+`runtime_health`).
+
+Issues (exit `1`):
+
+- `verdict.yaml` missing, invalid YAML, or not a mapping.
+- No `primary_model`; `providers` not a mapping.
+- Literal secret (`sk-` / `api_key`) in a provider `base_url`; duplicate provider `base_url`.
+- No `schema_version` (fixed by `--fix`).
+- Legacy `config.yaml` (renamed by `--fix`), or both `config.yaml` and `verdict.yaml` present.
+- No gateway URL, or gateway `/api/health` unreachable / not HTTP 200.
+- Malformed `OMNIROUTE_BASE_URL` (expected `http://host:port`, no trailing slash); `OPENAI_API_KEY` without the `sk-` prefix.
+- Duplicate OmniRoute provider nodes; unreachable provider nodes.
+- Missing required credential.
+- Memory bridge: `missing_memory_db`, `missing_memory_db_file` (fixed by `--fix`).
+- Documentation preflight did not pass, unless it is network-only (see below).
+
+Warnings (exit unaffected):
+
+- `missing_mcp_config` (no `./.mcp.json`; `--fix` creates it).
+- Documentation preflight network-only failure: `missing == 0`, `stale == 0`,
+  `orphaned == 0`, and every error is a `resolve`/`inventory` fetch error that
+  contains `rate limit`, `HTTP Error 429`, `URLError`, `timed out`,
+  `Connection refused`, or `Name or service not known`. A bare
+  `HTTP Error 403` (for example `Forbidden`) is an issue; a 403 counts as
+  network-only only when the same error also says `rate limit`.
+
+Text mode may prompt to delete duplicate OmniRoute nodes; `--json` never prompts.
 
 ---
 
