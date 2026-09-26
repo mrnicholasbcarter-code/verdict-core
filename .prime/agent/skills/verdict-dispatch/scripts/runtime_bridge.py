@@ -14,11 +14,44 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+DEFAULT_ALLOWED_ROUTE_PREFIXES = ("cc/", "kr/")
+LEGACY_CONTROLLER_MODELS = frozenset({"cx/gpt-5.6-sol", "cx/gpt-6-astra"})
+
 
 def write_json(path: Path, value: object) -> None:
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(value, default=str))
     temp.replace(path)
+
+
+def _route_id(value: str) -> str:
+    return value.strip().lower().removeprefix("omniroute/")
+
+
+def normalize_task_policy(
+    task: dict[str, Any] | None,
+    *,
+    controller_model: str,
+    allowed_route_prefixes: list[str] | tuple[str, ...] = DEFAULT_ALLOWED_ROUTE_PREFIXES,
+) -> dict[str, Any]:
+    """Inject the hard worker boundary and active-controller exclusion."""
+    controller = _route_id(controller_model)
+    if not controller:
+        raise ValueError("controller_model is required for worker isolation")
+    prefixes = [_route_id(prefix) for prefix in allowed_route_prefixes if _route_id(prefix)]
+    if not prefixes:
+        raise ValueError("at least one worker route prefix is required")
+
+    config = dict(task or {})
+    config["allowed_route_prefixes"] = prefixes
+    excluded = {
+        _route_id(str(item))
+        for item in config.get("excluded_route_ids", [])
+        if str(item).strip()
+    }
+    excluded.add(controller)
+    config["excluded_route_ids"] = sorted(excluded)
+    return config
 
 
 class PrimeWorkerOperation:
@@ -29,11 +62,21 @@ class PrimeWorkerOperation:
         repo: str,
         prompt: str,
         *,
+        controller_model: str,
         task: dict[str, Any] | None = None,
         budget: dict[str, Any] | None = None,
+        allowed_route_prefixes: tuple[str, ...] = DEFAULT_ALLOWED_ROUTE_PREFIXES,
     ) -> None:
         self.rlm = rlm
         self.repo = Path(repo).resolve()
+        self.controller_model = _route_id(controller_model)
+        task_config = normalize_task_policy(
+            task,
+            controller_model=self.controller_model,
+            allowed_route_prefixes=allowed_route_prefixes,
+        )
+        self.allowed_route_prefixes = tuple(task_config["allowed_route_prefixes"])
+
         git_path = self.repo / ".git"
         if git_path.is_file():
             git_path = (self.repo / git_path.read_text().strip().removeprefix("gitdir: ")).resolve()
@@ -44,7 +87,12 @@ class PrimeWorkerOperation:
         self.directory.mkdir(parents=True)
         write_json(
             self.directory / "config.json",
-            {"prompt": prompt, "task": task or {}, "budget": budget or {}},
+            {
+                "prompt": prompt,
+                "controller_model": self.controller_model,
+                "task": task_config,
+                "budget": budget or {},
+            },
         )
         self.handle = bash(
             f"cd {shlex.quote(str(self.repo))} && "
@@ -72,8 +120,11 @@ class PrimeWorkerOperation:
                     if method == "spawn":
                         # Exact selector is mandatory on every attempt. Never inherit controller.
                         model = request["model"]
-                        if model.removeprefix("omniroute/") in {"cx/gpt-5.6-sol", "cx/gpt-6-astra"}:
+                        route = _route_id(model)
+                        if route == self.controller_model or route in LEGACY_CONTROLLER_MODELS:
                             raise ValueError("controller cannot be a worker")
+                        if not any(route.startswith(prefix) for prefix in self.allowed_route_prefixes):
+                            raise ValueError("worker provider is outside the authorized route scope")
                         child = await self.rlm.spawn(
                             request["prompt"], name=request["name"], model=model
                         )

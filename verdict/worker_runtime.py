@@ -9,15 +9,25 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from verdict.availability import (
+    AvailabilityCandidate,
+    AvailabilityReport,
+    CandidateRequirements,
+    OmniRouteAvailabilityAdapter,
+    StaticOmniRouteTransport,
+)
+from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.subagent_selection import (
+    PROVIDER_SCOPE_FAILURE_CATEGORIES,
     HealthCache,
     HealthResult,
     LaunchCandidate,
@@ -26,7 +36,6 @@ from verdict.subagent_selection import (
     _failure_cooldown,
     classify_worker_failure,
     eligible_worker_candidates,
-    fetch_omniroute_inventory,
     openai_health_probe,
 )
 
@@ -77,6 +86,113 @@ class AttemptFailureError(RuntimeError):
     def __init__(self, category: str) -> None:
         super().__init__(category)
         self.category = category
+
+
+def configured_runtime_sources(
+    *, management_token: str | None, usage_api_key_id: str | None
+) -> frozenset[str]:
+    """Use every documented availability source that current credentials permit."""
+    sources = {"health"}
+    if management_token and management_token.strip():
+        sources.update({"rate_limits", "model_cooldowns"})
+        if usage_api_key_id and usage_api_key_id.strip():
+            sources.update({"budget", "token_limits"})
+    return frozenset(sources)
+
+
+def _csv_frozenset(value: str | None) -> frozenset[str]:
+    return frozenset(item.strip() for item in (value or "").split(",") if item.strip())
+
+
+def _route_id(value: str) -> str:
+    return value.strip().removeprefix("omniroute/")
+
+
+def worker_task_from_config(raw: Mapping[str, Any] | None) -> WorkerTask:
+    """Normalize durable task config and fence the active controller identity."""
+    config = dict(raw or {})
+    for key in ("required_capabilities", "allowed_route_prefixes", "excluded_route_ids"):
+        config[key] = frozenset(
+            str(item).strip() for item in config.get(key, ()) if str(item).strip()
+        )
+
+    if not config["allowed_route_prefixes"]:
+        config["allowed_route_prefixes"] = _csv_frozenset(
+            os.environ.get("VERDICT_WORKER_ROUTE_PREFIXES")
+        )
+
+    excluded = set(config["excluded_route_ids"])
+    controller = os.environ.get("VERDICT_CONTROLLER_MODEL", "").strip()
+    if controller:
+        excluded.add(_route_id(controller))
+    config["excluded_route_ids"] = frozenset(excluded)
+    return WorkerTask(**config)
+
+
+def _has_measured_usage(candidate: AvailabilityCandidate) -> bool:
+    """True only when runtime/probe evidence measured usable capacity."""
+    if candidate.headroom_pct is not None:
+        return True
+    token_headroom = candidate.normalized.get("token_headroom")
+    if type(token_headroom) is int:
+        return True
+    # A READY probe is only possible when probe metadata explicitly says
+    # usage_available=true; _probe_state validates that contract before READY.
+    return candidate.source == "verdict:probe" and candidate.state.value == "eligible"
+
+
+def admitted_worker_candidates(
+    task: WorkerTask,
+    inventory_rows: Iterable[Mapping[str, Any]],
+    prime_selectors: Iterable[str],
+    availability: AvailabilityReport,
+    *,
+    require_usage_evidence: bool = True,
+) -> tuple[LaunchCandidate, ...]:
+    """Narrow the canonical availability verdict; never locally re-admit a route."""
+    admitted_ids = {
+        candidate.model.id
+        for candidate in availability.eligible
+        if not require_usage_evidence or _has_measured_usage(candidate)
+    }
+    narrowed = [
+        row
+        for row in inventory_rows
+        if isinstance(row.get("id"), str) and str(row["id"]) in admitted_ids
+    ]
+    return eligible_worker_candidates(task, narrowed, prime_selectors)
+
+
+def _worker_requirements(task: WorkerTask) -> CandidateRequirements:
+    required = set(task.required_capabilities)
+    if task.reasoning:
+        required.add("reasoning")
+    # Worker execution changes code/state. Unknown/degraded runtime truth is not
+    # sufficient final admission evidence. Unknown usage may enter the pre-probe
+    # pool, but WorkerController requires a fresh/cache-valid inference probe before spawn.
+    return CandidateRequirements(required=frozenset(required), protected=True)
+
+
+def _catalog_rows(payload: Any) -> tuple[Mapping[str, Any], ...]:
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
+        raise ValueError("OmniRoute /v1/models response has no data array")
+    return tuple(row for row in data if isinstance(row, Mapping))
+
+
+def _availability_evidence(report: AvailabilityReport) -> list[dict[str, Any]]:
+    eligible = {item.model.id for item in report.eligible}
+    return [
+        {
+            "model": item.model.id,
+            "state": item.state.value,
+            "reasons": list(item.reasons),
+            "headroom_pct": item.headroom_pct,
+            "usage_measured": _has_measured_usage(item),
+            "admitted_by_availability": item.model.id in eligible,
+        }
+        for item in report.candidates
+    ]
 
 
 def validate_terminal(value: object) -> str:
@@ -164,7 +280,21 @@ class WorkerController:
     async def _run(self, prompt: str) -> WorkerOutcome:
         deadline = time.monotonic() + self.budget.total_seconds
         previous: str | None = None
+        blocked_providers: dict[str, str] = {}
         for candidate in self.candidates:
+            provider = candidate.route_id.split("/", 1)[0].strip().lower()
+            blocked_reason = blocked_providers.get(provider)
+            if blocked_reason is not None:
+                self.event(
+                    "exclusion",
+                    model=candidate.selector,
+                    provider=provider,
+                    classification=blocked_reason,
+                    provider_wide=True,
+                    replacement=True,
+                )
+                previous = candidate.selector
+                continue
             if time.monotonic() >= deadline:
                 return self.finish(
                     "FAIL_CLOSED",
@@ -198,16 +328,21 @@ class WorkerController:
             self.event(
                 "health",
                 model=candidate.selector,
-                provider=candidate.route_id.split("/")[0],
+                provider=provider,
                 classification=health.category,
                 eligible=health.healthy,
             )
             if not health.healthy:
+                provider_wide = health.category in PROVIDER_SCOPE_FAILURE_CATEGORIES
+                if provider_wide:
+                    blocked_providers[provider] = health.category
                 self.event(
                     "exclusion",
                     model=candidate.selector,
+                    provider=provider,
                     classification=health.category,
                     cooldown_seconds=_failure_cooldown(health),
+                    provider_wide=provider_wide,
                     replacement=True,
                 )
                 previous = candidate.selector
@@ -217,7 +352,7 @@ class WorkerController:
                 "selection",
                 attempt=number,
                 model=candidate.selector,
-                provider=candidate.route_id.split("/")[0],
+                provider=provider,
                 previous_model=previous,
                 replacement_model=candidate.selector if previous else None,
             )
@@ -271,15 +406,20 @@ class WorkerController:
                     # our unique name before permitting another writer.
                     handle = {"rlm_child_id": name, "model": candidate.selector}
                 health = self.failure(exc)
+                provider_wide = health.category in PROVIDER_SCOPE_FAILURE_CATEGORIES
+                if provider_wide:
+                    blocked_providers[provider] = health.category
                 self.attempts.append((candidate.selector, health.category))
                 self.cache.record_failure(candidate, health, now=self.now())
                 self.event(
                     "failure",
                     attempt=number,
                     model=candidate.selector,
+                    provider=provider,
                     spawn_id=spawn_id,
                     classification=health.category,
                     cooldown_seconds=_failure_cooldown(health),
+                    provider_wide=provider_wide,
                     excluded=True,
                     replacement=True,
                 )
@@ -458,17 +598,62 @@ async def cli_run(directory: Path) -> int:
             for line in stdout.decode().splitlines()[1:]
             if len(line.split()) >= 2
         ]
-        rows = await asyncio.to_thread(fetch_omniroute_inventory)
-        atomic_json(directory / "discovery.json", {"rows": rows, "prime_selectors": selectors})
-        task_config = config.get("task", {})
-        task_config["required_capabilities"] = frozenset(
-            task_config.get("required_capabilities", [])
+
+        task = worker_task_from_config(config.get("task", {}))
+        base_url = (
+            os.environ.get("OMNIROUTE_BASE_URL")
+            or os.environ.get("LLMGATE_UPSTREAM_BASE_URL")
+            or "http://127.0.0.1:20128/v1"
         )
+        api_key = os.environ.get("OMNIROUTE_API_KEY") or os.environ.get("VERDICT_OMNIROUTE_API_KEY")
+        management_token = os.environ.get("OMNIROUTE_MANAGEMENT_TOKEN")
+        usage_api_key_id = os.environ.get("OMNIROUTE_USAGE_API_KEY_ID")
+        transport = OmniRouteHTTPTransport(
+            base_url,
+            api_key=api_key,
+            management_token=management_token,
+            usage_api_key_id=usage_api_key_id,
+            runtime_sources=configured_runtime_sources(
+                management_token=management_token, usage_api_key_id=usage_api_key_id
+            ),
+            allow_private_hosts={"127.0.0.1", "::1"},
+            max_response_bytes=16_777_216,
+        )
+        catalog_payload, runtime_payload = await asyncio.gather(
+            asyncio.to_thread(transport.catalog), asyncio.to_thread(transport.runtime)
+        )
+        rows = _catalog_rows(catalog_payload)
+        availability = OmniRouteAvailabilityAdapter(
+            StaticOmniRouteTransport(catalog_payload, runtime_payload)
+        ).evaluate(_worker_requirements(task))
+        candidates = admitted_worker_candidates(
+            task, rows, selectors, availability, require_usage_evidence=False
+        )
+        preprobe_ids = {candidate.route_id for candidate in candidates}
+        narrowed_rows = [row for row in rows if str(row.get("id", "")) in preprobe_ids]
+        atomic_json(
+            directory / "discovery.json",
+            {
+                "rows": rows,
+                "prime_selectors": selectors,
+                "availability": _availability_evidence(availability),
+                "worker_preprobe_candidates": sorted(preprobe_ids),
+                "allowed_route_prefixes": sorted(task.allowed_route_prefixes),
+                "excluded_route_ids": sorted(task.excluded_route_ids),
+            },
+        )
+        if not candidates:
+            raise RuntimeError(
+                "no worker route passed canonical availability, Prime-visibility, "
+                "route-policy, and task gates"
+            )
+
+        probe_base = transport.base_url.rstrip("/") + "/v1"
         controller = WorkerController(
-            WorkerTask(**task_config),
-            inventory_rows=rows,
+            task,
+            inventory_rows=narrowed_rows,
             prime_selectors=selectors,
-            probe=openai_health_probe(),
+            probe=openai_health_probe(probe_base, api_key=api_key),
             adapter=PrimeFileAdapter(directory),
             cache=HealthCache(),
             budget=RuntimeBudget(**config.get("budget", {})),
