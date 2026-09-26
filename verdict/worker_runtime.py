@@ -27,6 +27,7 @@ from verdict.availability import (
 )
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.subagent_selection import (
+    PROVIDER_SCOPE_FAILURE_CATEGORIES,
     HealthCache,
     HealthResult,
     LaunchCandidate,
@@ -36,10 +37,6 @@ from verdict.subagent_selection import (
     classify_worker_failure,
     eligible_worker_candidates,
     openai_health_probe,
-)
-
-PROVIDER_SCOPE_FAILURE_CATEGORIES = frozenset(
-    {"authentication", "payment_required", "permission", "rate_limited"}
 )
 
 
@@ -115,7 +112,9 @@ def worker_task_from_config(raw: Mapping[str, Any] | None) -> WorkerTask:
     """Normalize durable task config and fence the active controller identity."""
     config = dict(raw or {})
     for key in ("required_capabilities", "allowed_route_prefixes", "excluded_route_ids"):
-        config[key] = frozenset(str(item).strip() for item in config.get(key, ()) if str(item).strip())
+        config[key] = frozenset(
+            str(item).strip() for item in config.get(key, ()) if str(item).strip()
+        )
 
     if not config["allowed_route_prefixes"]:
         config["allowed_route_prefixes"] = _csv_frozenset(
@@ -606,9 +605,7 @@ async def cli_run(directory: Path) -> int:
             or os.environ.get("LLMGATE_UPSTREAM_BASE_URL")
             or "http://127.0.0.1:20128/v1"
         )
-        api_key = os.environ.get("OMNIROUTE_API_KEY") or os.environ.get(
-            "VERDICT_OMNIROUTE_API_KEY"
-        )
+        api_key = os.environ.get("OMNIROUTE_API_KEY") or os.environ.get("VERDICT_OMNIROUTE_API_KEY")
         management_token = os.environ.get("OMNIROUTE_MANAGEMENT_TOKEN")
         usage_api_key_id = os.environ.get("OMNIROUTE_USAGE_API_KEY_ID")
         transport = OmniRouteHTTPTransport(
@@ -630,11 +627,7 @@ async def cli_run(directory: Path) -> int:
             StaticOmniRouteTransport(catalog_payload, runtime_payload)
         ).evaluate(_worker_requirements(task))
         candidates = admitted_worker_candidates(
-            task,
-            rows,
-            selectors,
-            availability,
-            require_usage_evidence=True,
+            task, rows, selectors, availability, require_usage_evidence=True
         )
         admitted_ids = {candidate.route_id for candidate in candidates}
         narrowed_rows = [row for row in rows if str(row.get("id", "")) in admitted_ids]
