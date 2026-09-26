@@ -3,11 +3,11 @@
 Economics only: this module accounts for complete-path spend (planning,
 hydration, tools, execution, verification, retry/escalation, cache, switching,
 subscription/quota opportunity, and metered cash).  It does **not** own
-STAY/SWITCH session decisions (BOD-119), execution-path optimization (BOD-104),
-or task-class/worthiness routing (BOD-107/109).
+STAY/SWITCH session decisions, execution-path optimization,
+or task-class/worthiness routing.
 
-Frozen consumer contract for BOD-119
-------------------------------------
+Frozen consumer contract for session economics
+----------------------------------------------
 Session Economics should consume these symbols without forking arithmetic:
 
 * ``CostTerm`` — atomic term with ``kind``, ``amount`` (``Decimal | None``),
@@ -18,7 +18,7 @@ Session Economics should consume these symbols without forking arithmetic:
   partial, or cached.
 * ``CostLedger.attribute_assistance`` — maps :class:`~verdict.effective_capability.AssistanceCost`
   token buckets onto the same trajectory.
-* Optional BOD-92 shapes: ``QuotaEvidenceInput``, ``PriceEvidenceInput``,
+* Optional runtime-certification shapes: ``QuotaEvidenceInput``, ``PriceEvidenceInput``,
   ``CacheEvidenceInput`` — unknown defaults; never invent cache savings.
 
 Cash, subscription opportunity, and quota pressure are distinct pools.

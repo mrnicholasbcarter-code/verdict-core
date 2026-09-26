@@ -1,8 +1,8 @@
-"""BOD-156: live controller selection before Prime launch.
+"""Live controller selection before Prime launch.
 
 ``select_controller_launch`` generates an exact Verdict decision from live
-eligibility (BOD-142), candidate ContextPlans (BOD-143), BOD-104 ranking, and
-optional BOD-119 session continuity. It persists a BOD-144 RoutingReceiptV1
+eligibility, candidate ContextPlans, execution-path ranking, and optional
+session economics continuity. It persists a RoutingReceiptV1
 before returning a launchable ``ControllerLaunchDecision``.
 
 This module does not reimplement ranking. Authorities are called through
@@ -401,7 +401,7 @@ def select_controller_launch(
 
     Pipeline:
       seed live offers -> prepare (eligibility + ContextPlan) -> optional
-      BOD-119 session decide -> BOD-104 optimize -> bind Prime target ->
+      session economics decide -> execution-path optimize -> bind Prime target ->
       persist RoutingReceiptV1 -> assemble ControllerLaunchDecision.
 
     Returns a validated decision, or raises ``ControllerLaunchError`` with
@@ -1291,7 +1291,7 @@ def _certify_controller_passports(
     Component ids are the passport inventory keys, not model leaf names or
     filesystem paths. The seed resolver falls back from normalized route_id to
     this exact identity_id. Only matching PROVIDER components from the report
-    count (BOD-92 has no MODEL kind for passport rows).
+    count (runtime certification has no MODEL kind for passport rows).
     """
     try:
         snapshots: list[DetectedSnapshot] = []
