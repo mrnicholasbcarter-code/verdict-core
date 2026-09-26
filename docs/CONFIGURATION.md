@@ -76,7 +76,7 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS` | Allow private upstream hosts |
 | `LLMGATE_MODEL_ALLOWLIST` | Comma-separated allowed model ids |
 | `LLMGATE_MODEL_DENYLIST` | Comma-separated denied model ids |
-| `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile. Default `development` (`verdict.intelligence.DEFAULT_PROFILE`). `production` makes every `IntelligenceService.route` caller (CLI `route`, supervisor) require an execution-path authority `ExecutionPathDecision` (`serve_path_authority_required`), makes `VERDICT_ALLOW_UNVERIFIED_DEV` inert, and makes `/v1/route/explain` exclude unverified candidates. The default is kept `development` on purpose: fail-closed admission does not depend on it (unknown/error/timeout candidates are excluded unless `VERDICT_ALLOW_UNVERIFIED_DEV=1`), and the API serve path forces execution-path authority in every profile |
+| `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile. Default `development` (`verdict.intelligence.DEFAULT_PROFILE`). `production` makes every `IntelligenceService.route` caller (CLI `route`, supervisor) require an execution-path authority `ExecutionPathDecision` (`serve_path_authority_required`), makes `VERDICT_ALLOW_UNVERIFIED_DEV` inert, and makes `/v1/route/explain` exclude unverified candidates. The default is kept `development` on purpose: fail-closed admission does not depend on it (unknown/error/timeout candidates are excluded unless `VERDICT_ALLOW_UNVERIFIED_DEV=1`), and `/v1/route` forces execution-path authority in every profile (the OpenAI-compatible relay surfaces do not; see [Admission boundary](#admission-boundary)) |
 | `LLMGATE_INTELLIGENCE_TIMEOUT_MS` | Intelligence timeout |
 | `LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE` | Allow client-requested model override |
 | `LLMGATE_LOG_PATH` | Decision log path |
@@ -85,6 +85,29 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_AVAILABILITY_TTL_SECONDS` | Availability cache TTL |
 | `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | Availability stale-while-revalidate window |
 | `VERDICT_ALLOW_UNVERIFIED_DEV` | Opt-in (`1`/`true`) to admit unverified (unknown/error/timeout) candidates for non-protected work when the intelligence profile is `development`. Default off: unknown-state models are excluded as `runtime_truth_absent` |
+
+### Admission boundary
+
+Controller and worker launches start from one canonical live admission set
+(`verdict/admission.py`). It is built from live inventory, provider connections
+and persisted runtime evidence before any ranking. Later stages can only narrow
+it. Catalog presence and an active connection are never enough on their own. A
+route with no runtime evidence stays `unknown`: it can get a bounded probe, but
+it is never recorded as healthy. Worker admission also hard-excludes the active
+controller, which the supervisor exports as `VERDICT_ACTIVE_CONTROLLER_ROUTE`.
+When that identity is not set, the receipt records `controller_identity=unknown`.
+
+The OpenAI-compatible relay (`/v1/chat/completions`, `/v1/responses`) has a
+narrower boundary:
+
+- In the default `development` profile, the relay is **not** under
+  authoritative live admission unless `verdict.api.relay_admission_provider`
+  is wired. It defaults to `None`.
+- When the provider is wired, the selected model and every alternative must be
+  in the admitted set. A provider error returns 503 before any upstream call.
+- Relay alternatives are admitted-only in every mode. An alternative is tried
+  only when the decision carries `admitted: true` candidate state for it.
+  Without that state, alternatives are dropped, not treated as eligible.
 
 ### Receipts / evidence
 

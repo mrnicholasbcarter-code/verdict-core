@@ -450,7 +450,9 @@ flowchart TD
 Verdict is admission control, not a gateway. It decides whether a model may be used at all,
 and proves that decision after the fact. Retries stay inside the admitted set: the relay may try
 at most 3 gate-admitted alternatives, only when the request is safe to retry (ADR-016), and
-orchestration recovery reassigns a failed node within its own eligible pool.
+orchestration recovery reassigns a failed node within its own eligible pool. Controller and worker
+launches start from one canonical live admission set; the relay's live-admission boundary is
+described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#admission-boundary).
 
 | Capability | Verdict | A typical LLM gateway (LiteLLM/Portkey/Bifrost-shaped) |
 |---|---|---|

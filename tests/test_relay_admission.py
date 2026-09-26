@@ -99,3 +99,30 @@ def test_relay_rejects_dead_selected_route_before_upstream_call(monkeypatch: Any
         response = client.post("/v1/responses", json={"input": "preserve all fields"})
     assert response.status_code == 503
     assert transport.requests == []
+
+
+def test_wired_hook_never_fails_over_to_admitted_out_alternative(monkeypatch: Any) -> None:
+    """Wired hook: a decision-admitted but live-dead alternative is never sent upstream."""
+    transport = ResponsesTransport(statuses=[503, 200])
+    _configure_test_app(monkeypatch, transport)
+
+    class Alternatives(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):  # type: ignore[no-untyped-def]
+            decision = await super().route(task, criticality, context)
+            return replace(
+                decision,
+                model="kr/ok",
+                alternatives=[DEAD],
+                candidate_states=[{"model_id": DEAD, "admitted": True, "state": "ready"}],
+            )
+
+    monkeypatch.setattr(api, "_build_intelligence", lambda: Alternatives())
+    monkeypatch.setattr(api, "relay_admission_provider", _admitted)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={"input": "preserve all fields"},
+            headers={"idempotency-key": "idem-dead"},
+        )
+    assert response.status_code == 503
+    assert [item["body"]["model"] for item in transport.requests] == ["kr/ok"]
