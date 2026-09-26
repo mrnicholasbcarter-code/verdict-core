@@ -85,6 +85,28 @@ diagnostic naming both values.
 `BootstrapResult.field_sources` records which source won for every field, so a
 value is never applied without a traceable origin.
 
+#### `verdict serve` precedence
+
+`verdict serve` resolves three fields on its own, because a long-running server
+must not change identity, profile or decision log the moment a routing config
+appears on disk:
+
+| Field (serve path only) | 1st | 2nd | 3rd |
+|---|---|---|---|
+| `primary_model` | env `LLMGATE_PRIMARY` | `verdict.contracts.DEFAULT_PRIMARY_MODEL` | — (routing config not read) |
+| `profile` | env `LLMGATE_INTELLIGENCE_PROFILE` | `development` | — (routing config not read) |
+| `log_path` | env `LLMGATE_LOG_PATH` | `verdict-decisions.jsonl` | — (routing config not read) |
+
+The routing config is still read at serve startup, only to detect disagreement.
+When `verdict.yaml` asks for a different value than the serve path applies, a
+non-fatal `precedence_conflict` diagnostic is written to stderr naming both
+sources, both values, and the environment variable that would apply the config
+value. A `profile: production` in `verdict.yaml` therefore does not flip the
+serve profile; export `LLMGATE_INTELLIGENCE_PROFILE=production` for that.
+
+Every other field — `providers`, `gateway_url`, credential names — follows the
+table above on the serve path too.
+
 ### Gateway decision
 
 `BootstrapResult` exposes the gateway decision as data, never as an action:

@@ -635,13 +635,72 @@ def _build_proxy() -> UpstreamProxy:
     )
 
 
+#: Serve-path precedence for the three identity/telemetry fields: environment,
+#: then the built-in default. The serve path deliberately does not adopt the
+#: routing YAML for these three, because doing so would silently change an
+#: already-deployed server's profile, identity and decision log.
+_SERVE_ENV_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("primary_model", "LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
+    ("profile", "LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE),
+    ("log_path", "LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),
+)
+
+
+def _serve_field_resolution(bootstrap: Any | None) -> tuple[dict[str, str], list[Any]]:
+    """Resolve the serve-path identity fields and report config-file disagreement.
+
+    Returns the resolved values plus one non-fatal ``precedence_conflict``
+    diagnostic per field where the routing YAML asks for a different value than
+    the serve path applies. The conflict names both sources and both values, so a
+    config the serve path does not honour is never silently ignored.
+    """
+    from verdict.provider_bootstrap import BootstrapDiagnostic, BootstrapSource
+
+    values: dict[str, str] = {}
+    conflicts: list[Any] = []
+    for field_name, env_name, default in _SERVE_ENV_FIELDS:
+        exported = (os.getenv(env_name) or "").strip()
+        applied = exported or default
+        applied_source: BootstrapSource = "environment" if exported else "default"
+        values[field_name] = applied
+        if bootstrap is None or bootstrap.source_of(field_name) != "config_file":
+            continue
+        configured = str(getattr(bootstrap, field_name))
+        if configured == applied:
+            continue
+        conflicts.append(
+            BootstrapDiagnostic(
+                code="precedence_conflict",
+                diagnostic_class="configuration",
+                field=field_name,
+                source=applied_source,
+                detail=(
+                    f"config file {bootstrap.config_path} sets {field_name}="
+                    f"{configured!r} while the serve path applies {applied!r} from "
+                    f"{applied_source} ({env_name}); the serve path resolves "
+                    f"{field_name} from the environment, then the built-in default, "
+                    f"and does not read the routing config for it"
+                ),
+                remediation=(
+                    f"set {env_name}={configured} to apply the config value to "
+                    f"'verdict serve', or remove {field_name} from "
+                    f"{bootstrap.config_path}"
+                ),
+                fatal=False,
+            )
+        )
+    return values, conflicts
+
+
 def _build_intelligence() -> IntelligenceService:
     """Build the public IntelligenceService boundary from environment settings.
 
-    Profile, log path and preferred identity come from the shared bootstrap
-    contract so the serve path, the CLI and the supervisor read the same
-    precedence. The provider map stays empty on purpose: the serve path admits a
-    concrete candidate per request rather than binding providers at startup.
+    ``primary_model``, ``profile`` and ``log_path`` keep the serve path's own
+    precedence: environment, then the built-in default. The routing YAML is read
+    only to detect and report a disagreement, never to override a running
+    server's identity. The provider map stays empty on purpose: the serve path
+    admits a concrete candidate per request rather than binding providers at
+    startup.
     """
     from verdict.provider_bootstrap import BootstrapError, resolve_provider_bootstrap
 
@@ -649,9 +708,10 @@ def _build_intelligence() -> IntelligenceService:
         bootstrap = resolve_provider_bootstrap()
     except BootstrapError:
         bootstrap = None
-    profile = os.getenv("LLMGATE_INTELLIGENCE_PROFILE") or (
-        bootstrap.profile if bootstrap is not None else DEFAULT_PROFILE
-    )
+    resolved, conflicts = _serve_field_resolution(bootstrap)
+    for conflict in conflicts:
+        print(f"verdict serve: {conflict.describe()}", file=sys.stderr)
+    profile = resolved["profile"]
     timeout_ms = int(os.getenv("LLMGATE_INTELLIGENCE_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS)))
     allow_client_model_override = os.getenv(
         "LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE", "false"
@@ -662,12 +722,8 @@ def _build_intelligence() -> IntelligenceService:
         if frontier_allowlist_raw
         else None
     )
-    primary_model = os.getenv("LLMGATE_PRIMARY") or (
-        bootstrap.primary_model if bootstrap is not None else DEFAULT_PRIMARY_MODEL
-    )
-    log_path = os.getenv("LLMGATE_LOG_PATH") or (
-        bootstrap.log_path if bootstrap is not None else "verdict-decisions.jsonl"
-    )
+    primary_model = resolved["primary_model"]
+    log_path = resolved["log_path"]
     providers: dict[str, ProviderConfig] = {}
     return IntelligenceService(
         primary_model=primary_model,

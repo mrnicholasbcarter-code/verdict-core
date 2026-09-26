@@ -412,18 +412,99 @@ def test_server_bootstrap_diagnostics_report_gateway_required_for_lifecycle_owne
     assert report["field_sources"]["providers"] == "config_file"
 
 
-def test_serve_intelligence_reads_profile_and_identity_from_the_contract(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_serve_intelligence_resolves_identity_from_environment_then_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The serve path shares the bootstrap precedence but keeps an empty provider map."""
-    _config_home(tmp_path, monkeypatch, _VALID_CONFIG + "profile: staging\n")
+    """Serve precedence for primary_model/profile/log_path is env, then default.
+
+    Rewritten from an earlier assertion that the serve path takes these three
+    fields from verdict.yaml. Reading them from the routing config would silently
+    change a running server's identity, profile and decision log the moment a
+    config file appeared, so the serve path keeps environment-then-default. The
+    config value is not ignored in silence: it is reported as a
+    precedence_conflict. This asserts every field the old test did, plus the
+    source, the conflict code and the remediation.
+    """
+    from verdict.contracts import DEFAULT_PRIMARY_MODEL
+    from verdict.intelligence import DEFAULT_PROFILE
+
+    body = _VALID_CONFIG.replace("anthropic/claude-opus-5", "vendor/cfg-model")
+    _config_home(tmp_path, monkeypatch, body + "profile: staging\n")
+
+    service = api._build_intelligence()
+
+    assert service.primary_model == DEFAULT_PRIMARY_MODEL
+    assert service.profile == DEFAULT_PROFILE
+    assert service.log_path == "verdict-decisions.jsonl"
+    assert service.providers == {}
+
+    err = capsys.readouterr().err
+    assert err.count("precedence_conflict") == 3
+    for field_name, env_name in (
+        ("primary_model", "LLMGATE_PRIMARY"),
+        ("profile", "LLMGATE_INTELLIGENCE_PROFILE"),
+        ("log_path", "LLMGATE_LOG_PATH"),
+    ):
+        assert f"field={field_name}" in err
+        assert env_name in err
+    assert "vendor/cfg-model" in err
+    assert "staging" in err
+    assert "decisions.jsonl" in err
+
+
+def test_serve_intelligence_applies_the_environment_over_the_config_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On an env/config disagreement the environment wins and the conflict is named."""
+    _config_home(tmp_path, monkeypatch, _VALID_CONFIG)
+    monkeypatch.setenv("LLMGATE_PRIMARY", "vendor/env-model")
+
+    service = api._build_intelligence()
+
+    assert service.primary_model == "vendor/env-model"
+    err = capsys.readouterr().err
+    assert "precedence_conflict" in err
+    assert "field=primary_model" in err
+    assert "source=environment" in err
+    assert "anthropic/claude-opus-5" in err
+    assert "vendor/env-model" in err
+
+
+def test_serve_intelligence_does_not_let_the_config_file_flip_the_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A YAML 'profile: production' must not change serve's profile.
+
+    The serve profile governs execution-path authority and /v1/route/explain
+    exclusions. A config file appearing on disk must not flip it.
+    """
+    from verdict.intelligence import DEFAULT_PROFILE
+
+    _config_home(tmp_path, monkeypatch, _VALID_CONFIG + "profile: production\n")
+
+    service = api._build_intelligence()
+
+    assert service.profile == DEFAULT_PROFILE
+    assert service.profile != "production"
+    err = capsys.readouterr().err
+    assert "precedence_conflict" in err
+    assert "field=profile" in err
+    assert "LLMGATE_INTELLIGENCE_PROFILE=production" in err
+
+
+def test_serve_intelligence_reports_no_conflict_when_sources_agree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Matching env and config values are not a conflict."""
+    _config_home(tmp_path, monkeypatch, _VALID_CONFIG)
+    monkeypatch.setenv("LLMGATE_PRIMARY", "anthropic/claude-opus-5")
+    monkeypatch.setenv("LLMGATE_LOG_PATH", "decisions.jsonl")
 
     service = api._build_intelligence()
 
     assert service.primary_model == "anthropic/claude-opus-5"
-    assert service.profile == "staging"
     assert service.log_path == "decisions.jsonl"
-    assert service.providers == {}
+    assert "precedence_conflict" not in capsys.readouterr().err
 
 
 def test_serve_intelligence_survives_incomplete_configuration(
