@@ -37,11 +37,36 @@ _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
     "payment_required": 3600.0,
     "permission": 3600.0,
     "unsupported": 86400.0,
+    "unservable": 21600.0,
     "timeout": 60.0,
     "upstream_temporary": 60.0,
     "transport_temporary": 60.0,
 }
 _DEFAULT_COOLDOWN_SECONDS = 60.0
+# Probe outcomes that describe the provider account (billing, entitlement), not
+# one route: every sibling route would fail the same way, so the whole provider
+# is cooled down and its remaining candidates are skipped without probing.
+_PROVIDER_SCOPE_CATEGORIES = frozenset({"payment_required", "permission", "authentication"})
+
+
+class HarnessVisibility:
+    """Harness gate: which route ids the worker harness can actually spawn.
+
+    ``ids`` is None when no inventory source was reachable. The gate then fails
+    closed and the ladder reports ``harness_inventory_unavailable`` instead of
+    ``not_harness_visible``.
+    """
+
+    def __init__(self, ids: frozenset[str] | None, *, source: str) -> None:
+        self.ids = ids
+        self.source = source
+
+    @property
+    def available(self) -> bool:
+        return self.ids is not None
+
+    def __call__(self, route_id: str) -> bool:
+        return self.ids is not None and route_id in self.ids
 
 
 def _parse_iso(value: str) -> datetime | None:
@@ -247,7 +272,9 @@ class EligibilityLadder:
             a.failed_stage, a.reason = EligibilityStage.ENTITLED, "no_active_account"
             return a
         if self._harness_visible is not None and not self._harness_visible(route_id):
-            a.failed_stage, a.reason = EligibilityStage.ENTITLED, "not_harness_visible"
+            unavailable = getattr(self._harness_visible, "available", True) is False
+            a.failed_stage = EligibilityStage.ENTITLED
+            a.reason = "harness_inventory_unavailable" if unavailable else "not_harness_visible"
             return a
 
         a.health, a.health_category = self._health_status(route_id, now)
@@ -358,17 +385,23 @@ class EligibilityLadder:
         self, requirements: TaskRequirements, *, now: datetime
     ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
         assessments, candidates = self._assess_all(requirements, now)
+        rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None
         chosen_rank: int | None = None
-        for rank, a in enumerate(candidates):
+        blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
+        for a in self._probe_order(candidates):
+            if a.provider in blocked:
+                a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
+                a.cooldown_until = blocked[a.provider]
+                continue
             if a.health != "healthy":
                 if probes_used >= self._max_probes:
                     a.reason = "probe_budget_exhausted"
                     continue
                 probes_used += 1
                 result = self._probe(a.route_id)
-                self._record_health(a.route_id, result, now)
+                self._record_health(a.route_id, result, now, provider=a.provider)
                 if not result.healthy:
                     a.health = "unhealthy"
                     a.failed_stage = EligibilityStage.HEALTHY
@@ -376,10 +409,17 @@ class EligibilityLadder:
                     entry = self._state["cooldowns"].get(f"route:{a.route_id}")
                     if isinstance(entry, dict):
                         a.cooldown_until = str(entry.get("until"))
+                    if result.category in _PROVIDER_SCOPE_CATEGORIES:
+                        until = self._active_cooldown(f"provider:{a.provider}", now)
+                        blocked[a.provider] = _iso(until) if until else str(a.cooldown_until)
                     continue
                 a.health, a.reason = "healthy", ""
-            chosen, chosen_rank = a, rank
+            chosen, chosen_rank = a, rank_of[a.route_id]
             break
+        for a in candidates:  # routes not reached before the break still inherit the block
+            if a.provider in blocked and a.failed_stage is None and a is not chosen:
+                a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
+                a.cooldown_until = blocked[a.provider]
         ranks = {c.route_id: i for i, c in enumerate(candidates)}
         verdicts: list[RouteVerdict] = []
         selected: RouteVerdict | None = None
@@ -402,7 +442,27 @@ class EligibilityLadder:
         self._last_verdicts = tuple(verdicts)
         return selected, tuple(verdicts)
 
-    def _record_health(self, route_id: str, result: HealthResult, now: datetime) -> None:
+    def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
+        """Rank order, but round-robin across providers within each capacity class.
+
+        One provider's failing top routes can no longer consume the whole probe
+        budget. Capacity classes stay in order, so spreading never trades a
+        SUBSCRIPTION route for a METERED one.
+        """
+        order: list[_Assessment] = []
+        tiers: dict[CapacityClass, dict[str, list[_Assessment]]] = {}
+        for a in candidates:  # already rank-sorted; dicts keep first-seen order
+            tiers.setdefault(a.capacity, {}).setdefault(a.provider, []).append(a)
+        for by_provider in tiers.values():
+            queues = list(by_provider.values())
+            depth = max(len(q) for q in queues)
+            for i in range(depth):
+                order.extend(q[i] for q in queues if i < len(q))
+        return order
+
+    def _record_health(
+        self, route_id: str, result: HealthResult, now: datetime, *, provider: str = ""
+    ) -> None:
         self._state["health"][route_id] = {
             "healthy": result.healthy,
             "category": result.category,
@@ -410,10 +470,10 @@ class EligibilityLadder:
         }
         if not result.healthy:
             seconds = cooldown_seconds_for(result.category, result.retry_after_seconds)
-            self._state["cooldowns"][f"route:{route_id}"] = {
-                "until": _iso(now + timedelta(seconds=seconds)),
-                "category": result.category,
-            }
+            entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": result.category}
+            self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
+            if provider and result.category in _PROVIDER_SCOPE_CATEGORIES:
+                self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
         self._persist()
 
     def record_failure(

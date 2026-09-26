@@ -161,10 +161,22 @@ class HealthCache:
         }
 
 
+_UNSERVABLE_MARKERS = ("not available in the active live catalog",)
+
+
 def classify_probe_status(
-    status_code: int | None, *, timed_out: bool = False, retry_after_seconds: float | None = None
+    status_code: int | None,
+    *,
+    timed_out: bool = False,
+    retry_after_seconds: float | None = None,
+    body: str = "",
 ) -> HealthResult:
-    """Classify launch health without conflating auth, payment, or permission."""
+    """Classify launch health without conflating auth, payment, or permission.
+
+    ``body`` is the (bounded) error response text. A 400 whose body says the
+    advertised id is not in the gateway's live catalog is ``unservable``: the
+    gateway lists the route but cannot serve it.
+    """
     if timed_out:
         return HealthResult(False, "timeout", retry_after_seconds=retry_after_seconds)
     if status_code is not None and 200 <= status_code < 300:
@@ -176,6 +188,8 @@ def classify_probe_status(
         403: "permission",
         429: "rate_limited",
     }
+    if status_code == 400 and any(m in body.lower() for m in _UNSERVABLE_MARKERS):
+        return HealthResult(False, "unservable", status_code, retry_after_seconds)
     if status_code in categories:
         return HealthResult(False, categories[status_code], status_code, retry_after_seconds)
     if status_code is not None and status_code >= 500:
@@ -522,11 +536,16 @@ def openai_health_probe(
                     return HealthResult(False, "malformed_response", response.status)
                 return classify_probe_status(response.status)
         except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read(4096).decode("utf-8", "replace")
+            except Exception:  # body is diagnostic only; never fail the probe on it
+                detail = ""
             return classify_probe_status(
                 exc.code,
                 retry_after_seconds=_retry_after_headers(
                     exc.headers, now=datetime.now(timezone.utc)
                 ),
+                body=detail,
             )
         except TimeoutError:
             return classify_probe_status(None, timed_out=True)
