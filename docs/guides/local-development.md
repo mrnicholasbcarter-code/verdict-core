@@ -50,7 +50,7 @@ For parallel agent workloads, apply the admission settings in
 
 ```bash
 # With OmniRoute integration
-export OMNIROUTE_BASE_URL=http://localhost:20128
+export OMNIROUTE_BASE_URL=http://127.0.0.1:20128   # loopback IP literal required for plain HTTP
 verdict serve --host 0.0.0.0 --port 8000
 
 # Test

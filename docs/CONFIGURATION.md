@@ -118,7 +118,7 @@ or `deny`, but always reports `authorization: "unchanged"`.
 ## Example: local gateway
 
 ```bash
-export OMNIROUTE_BASE_URL=http://localhost:20128
+export OMNIROUTE_BASE_URL=http://127.0.0.1:20128   # plain-HTTP gateways must use a loopback IP literal, not a hostname
 # export OMNIROUTE_API_KEY=...   # only when the gateway requires it
 
 verdict detect --json
