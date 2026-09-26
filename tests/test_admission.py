@@ -308,3 +308,30 @@ def test_proven_healthy_route_is_launchable_without_confirmation() -> None:
     assert admitted.runtime_consulted == ("probe",)
     assert admitted.require_launchable("kr/a", surface="t").health == "healthy"
     assert admitted.launch_authority("kr/a")["basis"] == "proven_healthy"
+
+
+def test_constructor_guard_is_a_capability_not_a_flag() -> None:
+    import verdict.admission as adm
+
+    admitted = admit([row("kr/a"), row("cc/dead")], [conn("kr")], RuntimeEvidence(), now=NOW)
+    widened = tuple(dataclasses.replace(r, admitted=True) for r in admitted.records)
+    # The old thread-local flag is gone; flipping a look-alike flag does nothing.
+    assert not hasattr(adm, "_BUILD")
+    adm._BUILD = type("Flag", (), {"active": True})()  # type: ignore[attr-defined]
+    try:
+        with pytest.raises(TypeError):
+            AdmittedSet(records=widened, generated_at="x", sources=())
+    finally:
+        del adm._BUILD  # type: ignore[attr-defined]
+    # The private builder refuses to mint without the module token.
+    with pytest.raises(TypeError):
+        adm._build_admitted_set(None, records=widened, generated_at="x", sources=())
+    with pytest.raises(TypeError):
+        adm._build_admitted_set(object(), records=widened, generated_at="x", sources=())
+    with pytest.raises(TypeError):
+        AdmittedSet(records=widened, generated_at="x", sources=(), _mint=object())
+    # dataclasses.replace does not carry the token either.
+    with pytest.raises(TypeError):
+        dataclasses.replace(admitted, records=widened)
+    # Legitimate derivations keep working and stay narrow.
+    assert admitted.narrow(AdmissionStage.DOWNSTREAM, "x", lambda _r: True).ids == admitted.ids

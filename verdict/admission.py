@@ -22,6 +22,10 @@ succeeded (``record_confirmation``). A failed confirmation drops the route at
 ``HEALTHY``. ``require_launchable`` is the asserted precondition at every launch
 site; it raises ``AdmissionBypassError``.
 
+Construction guard: ``AdmittedSet`` requires a private module token. Building
+one with ``object.__new__``, or by reading the private token, is unsupported
+and bypasses every guarantee in this module.
+
 Quota rows are evidence only (exhausted -> drop, unknown -> explicit).
 Headroom windows and bounded confirmation are handled elsewhere.
 """
@@ -31,9 +35,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import InitVar, dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -336,15 +339,21 @@ class AdmissionRecord:
         }
 
 
-_BUILD = threading.local()
+class _MintToken:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<admission mint token>"
 
 
-def _build_admitted_set(**kwargs: Any) -> AdmittedSet:
-    _BUILD.active = True
-    try:
-        return AdmittedSet(**kwargs)
-    finally:
-        _BUILD.active = False
+# Capability, not a flag: only code holding this object can build a set.
+_MINT = _MintToken()
+
+
+def _build_admitted_set(token: object, **kwargs: Any) -> AdmittedSet:
+    if token is not _MINT:
+        raise TypeError("AdmittedSet can only be produced by verdict.admission.admit()")
+    return AdmittedSet(**kwargs, _mint=token)
 
 
 @dataclass(frozen=True)
@@ -357,11 +366,13 @@ class AdmittedSet:
     controller_identity: str = CONTROLLER_IDENTITY_UNKNOWN
     narrowing: tuple[str, ...] = ()
     runtime_consulted: tuple[str, ...] = ()
+    _mint: InitVar[object] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _mint: object) -> None:
         # Direct construction and dataclasses.replace() both land here without
-        # the builder flag, so neither can mint or widen an admitted set.
-        if not getattr(_BUILD, "active", False):
+        # the private token (replace() does not carry InitVars), so neither can
+        # mint or widen an admitted set.
+        if _mint is not _MINT:
             raise TypeError("AdmittedSet can only be produced by verdict.admission.admit()")
 
     # ---------------------------------------------------------------- queries
@@ -558,6 +569,7 @@ class AdmittedSet:
         if not after <= before:
             raise AdmissionBypassError("AdmittedSet._derive", after - before)
         return _build_admitted_set(
+            _MINT,
             records=records,
             generated_at=self.generated_at,
             sources=self.sources,
@@ -778,6 +790,7 @@ def admit(
         for rid in sorted(rows)
     )
     return _build_admitted_set(
+        _MINT,
         records=records,
         generated_at=_iso(now),
         sources=tuple(dict.fromkeys((inventory_source, connections_source, *evidence.sources))),
