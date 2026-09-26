@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 from verdict.capability_passports import RouteIdentity
 from verdict.models import RoutingDecision
 from verdict.policy import Policy, PolicyCandidate
+
+if TYPE_CHECKING:
+    from verdict.admission import AdmittedSet
 from verdict.transitions import (
     ExecutionContext,
     RetrySafety,
@@ -128,7 +131,7 @@ def response_actual_route_status(response: Any) -> str:
 
 
 def build_attempts(
-    proxy: Any, decision: RoutingDecision, *, protocol: str
+    proxy: Any, decision: RoutingDecision, *, protocol: str, admitted: AdmittedSet | None = None
 ) -> tuple[RelayAttempt, ...]:
     models: list[str] = [decision.model]
     admitted_alternatives = {
@@ -138,12 +141,18 @@ def build_attempts(
         and record.get("admitted") is True
         and isinstance(record.get("model_id"), str)
     }
+    # Alternatives may only narrow the admitted set. Without per-candidate
+    # admission evidence an alternative is unproven, so it is dropped rather
+    # than silently treated as eligible.
     models.extend(
         item
         for item in decision.alternatives
         if isinstance(item, str)
-        and (not decision.candidate_states or item in admitted_alternatives)
+        and item in admitted_alternatives
+        and (admitted is None or item in admitted)
     )
+    if admitted is not None and decision.model not in admitted:
+        return ()
     attempts: list[RelayAttempt] = []
     seen: set[str] = set()
     for model in models:

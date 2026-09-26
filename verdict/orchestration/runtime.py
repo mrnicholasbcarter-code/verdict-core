@@ -43,6 +43,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     WorkNode,
     check_transition,
+    require_launchable,
     route_family,
     route_provider,
 )
@@ -404,6 +405,9 @@ class DagRuntime:
                     evidence=run.reason,
                 )
                 return
+            # Launch gate: the selected route must be proven healthy or confirmed
+            # live before it is bound. Raises AdmissionBypassError on violation.
+            require_launchable(self.selector, choice.route_id, surface="DagRuntime.bind")
             previous = run.route_id
             run.attempt += 1
             run.route_id = choice.route_id

@@ -37,6 +37,7 @@ from verdict.orchestration.contracts import (
     ReviewFinding,
     ReviewResult,
     TaskRequirements,
+    require_launchable,
 )
 
 __all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "StaticDiffGate"]
@@ -173,6 +174,9 @@ class OpenCodeReviewer:
             )
             if chosen is None:
                 break
+            # Launch gate: the reviewer route must be proven healthy or confirmed
+            # live before OCR runs on it. Raises AdmissionBypassError on violation.
+            require_launchable(self._selector, chosen.route_id, surface="OpenCodeReviewer.launch")
             result = await self._review_once(
                 chosen.route_id,
                 repo=repo,

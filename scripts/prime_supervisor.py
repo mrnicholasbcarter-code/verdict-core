@@ -16,7 +16,7 @@ import sys
 import time
 import types
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -204,11 +204,17 @@ def run_attempt(
     poll: float = 5,
     progress_made: Callable[[Any, Any], bool] | None = None,
     on_started: Callable[[subprocess.Popen[Any]], None] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     made_progress = progress_made or (lambda old, new: old != new)
     with log.open("w") as output:
         process = subprocess.Popen(
-            command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
+            command,
+            cwd=cwd,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=dict(env) if env is not None else None,
         )
         try:
             # Startup identity is an admission gate. Do not fingerprint/watchdog,
@@ -895,6 +901,55 @@ def _build_bod119_session_factories(
     return cost_state_factory, task_state_factory, None
 
 
+def _live_admission_gateway() -> str:
+    """Gateway for live admission, resolved by the shared bootstrap contract.
+
+    Uses the same precedence as every other production path (environment
+    ``OMNIROUTE_BASE_URL``, then config ``gateway_url``, then the gateway
+    provider's ``base_url``). A config-only operator therefore gets the gateway
+    they configured instead of a hardcoded loopback default. When the contract
+    names no gateway, admission is unavailable and the launch fails closed.
+    """
+    from verdict.admission import AdmissionUnavailableError
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
+
+    try:
+        bootstrap = resolve_provider_bootstrap(
+            require_authoritative=True, credential_store_env=load_credential_store_env()
+        )
+    except BootstrapError as exc:
+        raise AdmissionUnavailableError(
+            "live_admission_gateway_unresolved", _bootstrap_failure_detail(exc)
+        ) from exc
+    if not bootstrap.gateway_url:
+        raise AdmissionUnavailableError(
+            "live_admission_gateway_unresolved",
+            "the bootstrap contract names no gateway; set OMNIROUTE_BASE_URL or gateway_url",
+        )
+    return bootstrap.gateway_url.strip()
+
+
+def _default_live_admission_loader(state_dir: Path) -> Callable[[datetime], Any]:
+    """Canonical live admission for controller seeds (read-only OmniRoute GETs)."""
+
+    def load(when: datetime) -> Any:
+        from verdict.admission import load_live_admission
+
+        gateway = _live_admission_gateway()
+        key = (
+            os.environ.get("VERDICT_OMNIROUTE_API_KEY") or os.environ.get("OMNIROUTE_API_KEY") or ""
+        ).strip() or None
+        admitted = load_live_admission(gateway, now=when, api_key=key)
+        admitted.write_receipt(state_dir / "controller-admission-latest.json")
+        return admitted
+
+    return load
+
+
 def build_production_controller_selection_bundle(
     *,
     repo: Path,
@@ -966,6 +1021,11 @@ def build_production_controller_selection_bundle(
                 kwargs["task_state_factory"] = task_factory
             if wrapped_seed is not None and kwargs.get("seed_offers") is not None:
                 kwargs["seed_offers"] = wrapped_seed
+
+        # Authoritative config-built service: canonical live admission is the
+        # sole seed authority before ranking (read-only GETs; fails closed).
+        if service is not None and kwargs.get("admission") is None:
+            kwargs["admission"] = _default_live_admission_loader(state_dir)
 
         selection = _cs()
         if hasattr(selection, "build_production_controller_selection_bundle"):
@@ -1596,6 +1656,16 @@ def main() -> int:
                 },
             )
             raise ValueError(f"{exc.reason_code}: {exc.detail}") from exc
+        # Workers launched under this controller hard-exclude its identity.
+        child_env = {
+            **os.environ,
+            "VERDICT_ACTIVE_CONTROLLER_ROUTE": decision.selected_upstream_route,
+        }
+        last_admission = getattr(
+            getattr(production_bundle, "artifacts", None), "last_admission", None
+        )
+        if last_admission is not None:
+            last_admission.write_receipt(state / f"controller-admission-{token}.json")
         identity: dict[str, Any] | None = None
 
         def admit_started(process: subprocess.Popen[Any]) -> None:
@@ -1624,6 +1694,7 @@ def main() -> int:
                 poll=args.poll_seconds,
                 progress_made=progress_made,
                 on_started=admit_started,
+                env=child_env,
             )
         finally:
             stop_owned_daemon(args.prime, session_dir)

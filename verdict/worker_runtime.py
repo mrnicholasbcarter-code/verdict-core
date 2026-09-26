@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from verdict.admission import AdmittedSet, active_controller_route, load_live_admission
 from verdict.subagent_selection import (
+    DEFAULT_OMNIROUTE_URL,
     HealthCache,
     HealthResult,
     LaunchCandidate,
@@ -29,6 +31,9 @@ from verdict.subagent_selection import (
     fetch_omniroute_inventory,
     openai_health_probe,
 )
+
+# Source label for the bounded live confirmation the worker path runs before launch.
+CONFIRMATION_SOURCE = "worker_probe:openai_health_probe"
 
 
 @dataclass(frozen=True)
@@ -111,8 +116,19 @@ class WorkerController:
         now: Callable[[], datetime] | None = None,
         emit: Callable[[dict[str, Any]], None] | None = None,
         validator: Callable[[str], bool] | None = None,
+        admitted: AdmittedSet | None = None,
+        require_admission: bool = False,
     ) -> None:
-        self.candidates = eligible_worker_candidates(task, inventory_rows, prime_selectors)
+        # The canonical admitted set is applied before Prime visibility, ranking
+        # and probing; replacements iterate this same narrowed list only.
+        self.admitted = admitted
+        self.candidates = eligible_worker_candidates(
+            task,
+            inventory_rows,
+            prime_selectors,
+            admitted=admitted,
+            require_admission=require_admission,
+        )
         self.probe, self.adapter, self.cache, self.budget = probe, adapter, cache, budget
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.emit = emit or (lambda event: None)
@@ -181,6 +197,16 @@ class WorkerController:
                     "or restore provider capacity",
                 )
             health = self.cache.usable(candidate.selector, now=self.now())
+            # Launch gate: an admitted route that is not proven healthy needs a
+            # bounded live confirmation (this probe) for this exact route first.
+            # A cached healthy hit is not proof for an unverified route.
+            confirming = (
+                self.admitted is not None
+                and not self.admitted.launchable(candidate.route_id)
+                and (health is None or health.healthy)
+            )
+            if confirming:
+                health = None
             if health is None:
                 try:
                     health = await asyncio.wait_for(
@@ -195,6 +221,23 @@ class WorkerController:
                     self.cache.record(candidate.selector, health, now=self.now())
                 else:
                     self.cache.record_failure(candidate, health, now=self.now())
+                if confirming and self.admitted is not None:
+                    observed = self.now().isoformat()
+                    self.admitted = self.admitted.record_confirmation(
+                        candidate.route_id,
+                        healthy=health.healthy,
+                        source=CONFIRMATION_SOURCE,
+                        observed_at=observed,
+                        category=health.category,
+                    )
+                    self.event(
+                        "confirmation",
+                        model=candidate.selector,
+                        source=CONFIRMATION_SOURCE,
+                        observed_at=observed,
+                        confirmed=health.healthy,
+                        classification=health.category,
+                    )
             self.event(
                 "health",
                 model=candidate.selector,
@@ -212,6 +255,9 @@ class WorkerController:
                 )
                 previous = candidate.selector
                 continue
+            if self.admitted is not None:
+                # Asserted precondition: admitted AND (proven healthy OR confirmed).
+                self.admitted.require_launchable(candidate.route_id, surface="worker_runtime.spawn")
             number = len(self.attempts) + 1
             self.event(
                 "selection",
@@ -426,6 +472,53 @@ class PrimeFileAdapter:
         await self.rpc("delete", child_id=handle["rlm_child_id"])
 
 
+def _bootstrap_gateway_url() -> str | None:
+    """Gateway named by the shared bootstrap contract, or ``None`` if it names none.
+
+    Keeps the worker on the same gateway precedence as every other path
+    (environment, then config ``gateway_url``, then the gateway provider). A
+    configuration fault is not swallowed into a different gateway: it returns
+    ``None`` and the explicit runtime config / documented default applies.
+    """
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
+
+    try:
+        bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
+    except BootstrapError:
+        return None
+    return bootstrap.gateway_url
+
+
+def _worker_admission(config: Mapping[str, Any], rows: Iterable[Mapping[str, Any]]) -> AdmittedSet:
+    """Canonical live admission, then worker-only scope and controller exclusion."""
+    from verdict.orchestration.run import resolve_api_key
+
+    gateway = str(config.get("gateway") or _bootstrap_gateway_url() or DEFAULT_OMNIROUTE_URL)
+    task = config.get("task") or {}
+    required = {str(c) for c in task.get("required_capabilities") or ()}
+    if task.get("reasoning"):
+        required.add("reasoning")
+    admitted = load_live_admission(
+        gateway,
+        now=datetime.now(timezone.utc),
+        api_key=resolve_api_key(),
+        inventory_rows=list(rows),
+        required_capabilities=frozenset(required),
+        min_context_tokens=int(task.get("min_context_tokens") or 0),
+    )
+    prefixes = config.get("route_prefixes") or ()
+    if isinstance(prefixes, str):
+        prefixes = [p for p in prefixes.split(",") if p.strip()]
+    admitted = admitted.restrict_prefixes(list(prefixes))
+    return admitted.exclude_controller(
+        str(config.get("controller_route") or "") or active_controller_route()
+    )
+
+
 async def cli_run(directory: Path) -> int:
     config = json.loads((directory / "config.json").read_text())
     events = directory / "events.jsonl"
@@ -460,6 +553,8 @@ async def cli_run(directory: Path) -> int:
         ]
         rows = await asyncio.to_thread(fetch_omniroute_inventory)
         atomic_json(directory / "discovery.json", {"rows": rows, "prime_selectors": selectors})
+        admitted = await asyncio.to_thread(_worker_admission, config, rows)
+        admitted.write_receipt(directory / "admission.json")
         task_config = config.get("task", {})
         task_config["required_capabilities"] = frozenset(
             task_config.get("required_capabilities", [])
@@ -473,8 +568,15 @@ async def cli_run(directory: Path) -> int:
             cache=HealthCache(),
             budget=RuntimeBudget(**config.get("budget", {})),
             emit=emit,
+            admitted=admitted,
+            require_admission=True,
         )
-        outcome = await controller.run(config["prompt"])
+        try:
+            outcome = await controller.run(config["prompt"])
+        finally:
+            # Persist confirmation results (source + observed_at) with the set.
+            if controller.admitted is not None:
+                controller.admitted.write_receipt(directory / "admission.json")
     except Exception as exc:
         outcome = WorkerOutcome(
             "FAIL_CLOSED",
