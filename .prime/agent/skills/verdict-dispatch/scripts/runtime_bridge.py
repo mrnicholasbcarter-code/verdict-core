@@ -28,6 +28,32 @@ def _route_id(value: str) -> str:
     return value.strip().lower().removeprefix("omniroute/")
 
 
+def normalize_task_policy(
+    task: dict[str, Any] | None,
+    *,
+    controller_model: str,
+    allowed_route_prefixes: list[str] | tuple[str, ...] = DEFAULT_ALLOWED_ROUTE_PREFIXES,
+) -> dict[str, Any]:
+    """Inject the hard worker boundary and active-controller exclusion."""
+    controller = _route_id(controller_model)
+    if not controller:
+        raise ValueError("controller_model is required for worker isolation")
+    prefixes = [_route_id(prefix) for prefix in allowed_route_prefixes if _route_id(prefix)]
+    if not prefixes:
+        raise ValueError("at least one worker route prefix is required")
+
+    config = dict(task or {})
+    config["allowed_route_prefixes"] = prefixes
+    excluded = {
+        _route_id(str(item))
+        for item in config.get("excluded_route_ids", [])
+        if str(item).strip()
+    }
+    excluded.add(controller)
+    config["excluded_route_ids"] = sorted(excluded)
+    return config
+
+
 class PrimeWorkerOperation:
     def __init__(
         self,
@@ -44,23 +70,12 @@ class PrimeWorkerOperation:
         self.rlm = rlm
         self.repo = Path(repo).resolve()
         self.controller_model = _route_id(controller_model)
-        if not self.controller_model:
-            raise ValueError("controller_model is required for worker isolation")
-        self.allowed_route_prefixes = tuple(
-            _route_id(prefix) for prefix in allowed_route_prefixes if _route_id(prefix)
+        task_config = normalize_task_policy(
+            task,
+            controller_model=self.controller_model,
+            allowed_route_prefixes=allowed_route_prefixes,
         )
-        if not self.allowed_route_prefixes:
-            raise ValueError("at least one worker route prefix is required")
-
-        task_config = dict(task or {})
-        task_config.setdefault("allowed_route_prefixes", list(self.allowed_route_prefixes))
-        excluded = {
-            _route_id(str(item))
-            for item in task_config.get("excluded_route_ids", [])
-            if str(item).strip()
-        }
-        excluded.add(self.controller_model)
-        task_config["excluded_route_ids"] = sorted(excluded)
+        self.allowed_route_prefixes = tuple(task_config["allowed_route_prefixes"])
 
         git_path = self.repo / ".git"
         if git_path.is_file():
