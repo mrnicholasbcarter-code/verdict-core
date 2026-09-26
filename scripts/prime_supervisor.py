@@ -21,8 +21,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from verdict.contracts import DEFAULT_PRIMARY_MODEL
-
 
 def _load_py_module(name: str, path: Path) -> types.ModuleType:
     """Load a sibling/repo module by path without importing the heavy package root."""
@@ -588,6 +586,17 @@ def _supervisor_instruction_unit(
     )
 
 
+def _bootstrap_failure_detail(exc: Any) -> str:
+    """Render a bootstrap refusal as one deterministic supervisor detail line.
+
+    Keeps the configuration / gateway-health / model-eligibility class explicit so
+    startup diagnostics never collapse the three into one opaque message.
+    """
+    parts = [f"{exc.reason_code} [{exc.diagnostic_class}]"]
+    parts.extend(diagnostic.describe() for diagnostic in exc.diagnostics)
+    return "; ".join(parts)
+
+
 def _load_prime_target_map_from_config(repo: Path) -> dict[str, Any]:
     """Load trusted PrimeLaunchTarget map from explicit persisted config only.
 
@@ -645,70 +654,42 @@ def _load_prime_target_map_from_config(repo: Path) -> dict[str, Any]:
 
 
 def _build_intelligence_service_from_config(*, repo: Path, state_dir: Path) -> Any:
-    """Construct IntelligenceService from real persisted config / env only."""
-    from verdict.intelligence import DEFAULT_PROFILE, IntelligenceService
-    from verdict.models import ProviderConfig
+    """Construct IntelligenceService from the shared bootstrap contract.
 
-    config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "verdict"
-    config_path = config_dir / "verdict.yaml"
-    primary_model = os.environ.get("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL)
-    providers: dict[str, ProviderConfig] = {}
-    log_path = "verdict-decisions.jsonl"
-    profile = os.environ.get("LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE)
+    Production requires an authoritative provider set: no built-in local
+    default, no silent substitution of an unintended provider, and no use of the
+    controller model. A refusal names the exact missing field, its source and the
+    operator remediation.
 
-    if config_path.is_file():
-        try:
-            import yaml
+    Credential names are read from the local credential store through the
+    contract's ``credential_store_env`` seam, so a key held only in the store is
+    reported as ``source="credential_store"`` instead of being refused as
+    missing. Store values are passed as an argument, never exported into
+    ``os.environ``.
+    """
+    from verdict.intelligence import IntelligenceService
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
 
-            raw = yaml.safe_load(config_path.read_text("utf-8")) or {}
-            if not isinstance(raw, dict):
-                raise ControllerLaunchError(
-                    "production_factory_unavailable",
-                    f"verdict config at {config_path} must be a mapping",
-                )
-            if raw.get("primary_model"):
-                primary_model = str(raw["primary_model"])
-            if raw.get("log_path"):
-                log_path = str(raw["log_path"])
-            if raw.get("profile"):
-                profile = str(raw["profile"])
-            for name, value in (raw.get("providers") or {}).items():
-                if isinstance(value, dict):
-                    providers[str(name)] = ProviderConfig(
-                        base_url=value.get("base_url", ""), api_key_env=value.get("api_key_env")
-                    )
-        except ControllerLaunchError:
-            raise
-        except Exception as exc:
-            raise ControllerLaunchError(
-                "production_factory_unavailable",
-                f"failed to load verdict config from {config_path}: {exc}",
-            ) from exc
-
-    # OMNIROUTE_BASE_URL is an explicit env binding — merge without inventing.
-    base = os.environ.get("OMNIROUTE_BASE_URL")
-    if base and str(base).strip():
-        url = str(base).strip().rstrip("/")
-        if not url.endswith("/v1"):
-            url = f"{url}/v1"
-        providers.setdefault(
-            "omniroute", ProviderConfig(base_url=url, api_key_env="OMNIROUTE_API_KEY")
+    try:
+        bootstrap = resolve_provider_bootstrap(
+            require_authoritative=True, credential_store_env=load_credential_store_env()
         )
-
-    if not providers:
+    except BootstrapError as exc:
         raise ControllerLaunchError(
-            "production_factory_unavailable",
-            "no provider configuration available for IntelligenceService "
-            "(need ~/.config/verdict/verdict.yaml providers or OMNIROUTE_BASE_URL)",
-        )
+            "production_factory_unavailable", _bootstrap_failure_detail(exc)
+        ) from exc
 
     passport_store = Path.home() / ".verdict" / "prove-at-rest" / "state.json"
     metadata_store = Path.home() / ".verdict" / "model-metadata.json"
     return IntelligenceService(
-        primary_model=primary_model,
-        providers=providers,
-        profile=profile,
-        log_path=log_path,
+        primary_model=bootstrap.primary_model,
+        providers=bootstrap.provider_configs(),
+        profile=bootstrap.profile,
+        log_path=bootstrap.log_path,
         log_full_task=False,
         discovery_ttl=int(os.environ.get("LLMGATE_DISCOVERY_TTL_SECONDS", "60")),
         timeout_ms=int(os.environ.get("LLMGATE_INTELLIGENCE_TIMEOUT_MS", "1000")),

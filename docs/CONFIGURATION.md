@@ -50,6 +50,155 @@ Used only by context hydration (`verdict/context_hydrate.py`):
 
 ---
 
+## Provider bootstrap contract
+
+`verdict/provider_bootstrap.py` is the single supported way to construct a
+provider/gateway configuration. The CLI (`verdict route`, `verdict compare`),
+the API serve path, the Prime supervisor and the test suite all resolve through
+`resolve_provider_bootstrap()`, so they share one precedence and one set of
+diagnostics.
+
+The resolver is offline. Reading the routing YAML is its only I/O: no network
+call, no port scan, no gateway start or stop. It returns a `BootstrapResult`, or
+raises `BootstrapError` naming the exact missing field, its source and the
+remediation.
+
+### Precedence
+
+Highest source first. Only the sources listed below are consulted.
+
+| Field | 1st | 2nd | 3rd |
+|---|---|---|---|
+| `providers` | config file `providers` | env `OMNIROUTE_BASE_URL` | built-in local set (opt-in only, see below) |
+| `gateway_url` | env `OMNIROUTE_BASE_URL` | config file `gateway_url` | resolved gateway provider `base_url` |
+| `primary_model` | config file `primary_model` | env `LLMGATE_PRIMARY` | `verdict.contracts.DEFAULT_PRIMARY_MODEL` |
+| `profile` | config file `profile` | env `LLMGATE_INTELLIGENCE_PROFILE` | `development` |
+| `log_path` | config file `log_path` | env `LLMGATE_LOG_PATH` | `verdict-decisions.jsonl` |
+| any env name | exported process environment | credential store (`credentials.env`) | — |
+
+`providers` is config-first while `gateway_url` is environment-first. This is
+deliberate: both match shipped behaviour. When the config file and
+`OMNIROUTE_BASE_URL` disagree about the gateway provider, the config file wins
+for the provider map and the resolver emits a non-fatal `precedence_conflict`
+diagnostic naming both values.
+
+`BootstrapResult.field_sources` records which source won for every field, so a
+value is never applied without a traceable origin.
+
+#### `verdict serve` precedence
+
+`verdict serve` resolves three fields on its own, because a long-running server
+must not change identity, profile or decision log the moment a routing config
+appears on disk:
+
+| Field (serve path only) | 1st | 2nd | 3rd |
+|---|---|---|---|
+| `primary_model` | env `LLMGATE_PRIMARY` | `verdict.contracts.DEFAULT_PRIMARY_MODEL` | — (routing config not read) |
+| `profile` | env `LLMGATE_INTELLIGENCE_PROFILE` | `development` | — (routing config not read) |
+| `log_path` | env `LLMGATE_LOG_PATH` | `verdict-decisions.jsonl` | — (routing config not read) |
+
+The routing config is still read at serve startup, only to detect disagreement.
+When `verdict.yaml` asks for a different value than the serve path applies, a
+non-fatal `precedence_conflict` diagnostic is written to stderr naming both
+sources, both values, and the environment variable that would apply the config
+value. A `profile: production` in `verdict.yaml` therefore does not flip the
+serve profile; export `LLMGATE_INTELLIGENCE_PROFILE=production` for that.
+
+Every other field — `providers`, `gateway_url`, credential names — follows the
+table above on the serve path too.
+
+### Gateway decision
+
+`BootstrapResult` exposes the gateway decision as data, never as an action:
+
+- `gateway_required: bool` — true when the resolved provider set contains an
+  OmniRoute-shaped binding (named `omniroute`, or declaring
+  `api_key_env: OMNIROUTE_API_KEY`).
+- `gateway_url: str | None` — the resolved gateway URL.
+
+Gateway health is checked only through `verify_gateway_reachable(result,
+probe=...)` with a caller-supplied probe. Nothing in this module opens a socket,
+and nothing starts or stops a gateway.
+
+### Built-in local providers
+
+There is no silent fallback to an unintended provider. A provider set must come
+from a canonical source, with one narrow exception for interactive local use:
+
+- A caller may pass `allow_default_providers=True` to accept the built-in local
+  set (`DEFAULT_LOCAL_PROVIDERS`). That path is never silent —
+  `field_sources["providers"]` becomes `"default"` and a
+  `default_provider_fallback` diagnostic names the default and how to configure
+  it explicitly. The CLI prints it to stderr.
+- When `profile` is `production`, or the caller passes
+  `require_authoritative=True`, a defaulted provider set is a `configuration`
+  `BootstrapError` and execution does not proceed. The Prime supervisor always
+  requires authoritative bootstrap.
+
+### Diagnostic classes
+
+Every diagnostic carries a class, so startup output distinguishes the three
+failure kinds instead of collapsing them into one message.
+
+| Class | Meaning | Codes |
+|---|---|---|
+| `configuration` | an input is missing, malformed or only a default | `config_file_missing`, `config_file_unreadable`, `config_file_unparsable`, `config_file_not_mapping`, `config_providers_malformed`, `provider_entry_malformed`, `provider_base_url_missing`, `provider_base_url_invalid`, `no_provider_configuration`, `default_providers_forbidden`, `default_provider_fallback`, `default_primary_model`, `credential_env_missing`, `precedence_conflict` |
+| `gateway_health` | configuration is complete, the gateway is not answering | `gateway_required_but_absent`, `gateway_unreachable` |
+| `model_eligibility` | configuration and gateway are fine, no model qualifies | owned by the eligibility gate, not by bootstrap |
+
+`config_file_missing`, `default_provider_fallback`, `default_primary_model`,
+`credential_env_missing` and `precedence_conflict` are non-fatal notes
+(`fatal=False`), available via `BootstrapResult.notes()`. Every other code is a
+refusal.
+
+`default_primary_model` fires whenever `primary_model` falls through to
+`verdict.contracts.DEFAULT_PRIMARY_MODEL`, including under
+`require_authoritative=True`. `IntelligenceService` returns `primary_model` as
+its tier-0 / no-offload-match decision, so a defaulted identity can execute work;
+the note keeps that visible. It is a note, not a refusal: whether authoritative
+bootstrap should refuse a defaulted identity outright is an open decision.
+
+`describe_bootstrap_failure(exc)` renders a deterministic operator report. The
+Prime supervisor still raises `ControllerLaunchError("production_factory_unavailable", ...)`
+for wire compatibility, but the detail now carries the code, class, field, source
+and remediation rather than an opaque message.
+
+### Credential store
+
+Any environment name the contract reads (`OMNIROUTE_BASE_URL`,
+`OMNIROUTE_API_KEY`, `LLMGATE_PRIMARY`, ...) may come from the local credential
+store (`$XDG_CONFIG_HOME/verdict/credentials.env`, 0600) instead of the exported
+environment. The exported environment always wins; a name supplied only by the
+store reports `source="credential_store"` and does not raise
+`credential_env_missing`.
+
+`load_credential_store_env()` is the seam. The Prime supervisor and both API
+bootstrap paths (`verdict serve` startup and `server_bootstrap_diagnostics`) pass
+its result to `resolve_provider_bootstrap(credential_store_env=...)`. Store
+values are passed as an argument and are never exported into `os.environ`, so a
+stored credential does not leak into child processes. A missing, unreadable or
+insecurely permissioned store is not a bootstrap failure: it resolves to `{}` and
+any name that stays unset is still reported as `credential_env_missing`.
+
+### Secrets in rendered output
+
+Diagnostics are written to stderr, receipts and structured logs, so they never
+echo secret material:
+
+- API keys are referenced by environment-variable name (`api_key_env`), never by
+  value. This holds for exported environment values and credential-store values
+  alike.
+- A URL that carries `user:password@` userinfo is rendered as `***:***@host`
+  everywhere: diagnostic details, `ProviderBinding.to_dict`,
+  `BootstrapResult.to_dict`, `describe_bootstrap_failure` and the CLI/library
+  stderr notes. The runtime binding keeps the operator's real URL, so execution
+  is unaffected.
+- `config_file_unparsable` reports the parser's problem plus the 1-based line and
+  column. It never embeds the offending source line, which could itself hold a
+  credential.
+
+---
+
 ## Environment variable overrides
 
 ### Gateway / OmniRoute

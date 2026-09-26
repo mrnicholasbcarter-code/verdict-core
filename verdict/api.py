@@ -7,6 +7,7 @@ import ipaddress
 import json
 import logging
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import asdict, replace
@@ -394,6 +395,8 @@ eligibility_gate_instance: EligibilityGate | None = None
 evidence_store_instance: EvidenceStore | DurableEvidenceStore | None = None
 guidance_plane_instance: GuidanceControlPlane | None = None
 model_passport_store_instance: ModelPassportStore | None = None
+#: Startup bootstrap classification recorded by ``lifespan``.
+server_bootstrap_report: dict[str, Any] | None = None
 
 DEFAULT_AVAILABILITY_TTL_SECONDS = 60
 DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
@@ -540,7 +543,12 @@ def _openai_compatible_upstream_base(raw: str) -> str:
 
 
 def _resolve_upstream_base_url() -> str:
-    """Prefer explicit llmgate upstream, else OmniRoute via ``OMNIROUTE_BASE_URL``."""
+    """Prefer explicit llmgate upstream, else OmniRoute via ``OMNIROUTE_BASE_URL``.
+
+    The built-in default is a last resort and is reported by
+    :func:`server_bootstrap_diagnostics` as a ``default`` source, never applied
+    silently.
+    """
     explicit = (os.getenv("LLMGATE_UPSTREAM_BASE_URL") or "").strip()
     if explicit:
         return explicit
@@ -548,6 +556,68 @@ def _resolve_upstream_base_url() -> str:
     if omni:
         return _openai_compatible_upstream_base(omni)
     return DEFAULT_UPSTREAM_BASE_URL
+
+
+def _upstream_base_url_source() -> str:
+    """Name the bootstrap source that supplied the upstream base URL."""
+    if (os.getenv("LLMGATE_UPSTREAM_BASE_URL") or "").strip():
+        return "environment"
+    if (os.getenv("OMNIROUTE_BASE_URL") or "").strip():
+        return "environment"
+    return "default"
+
+
+def server_bootstrap_diagnostics() -> dict[str, Any]:
+    """Classify serve-path startup configuration via the shared contract.
+
+    Separates configuration failure from gateway health and from model
+    eligibility, so an operator reading startup output can tell which of the
+    three went wrong. Never fatal: the serve path admits candidates at request
+    time (an empty provider map is the documented serve posture), so this
+    records and reports rather than refusing to boot. No gateway is started.
+    """
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        redact_url,
+        resolve_provider_bootstrap,
+    )
+
+    upstream_source = _upstream_base_url_source()
+    report: dict[str, Any] = {
+        "upstream_base_url": redact_url(_resolve_upstream_base_url()),
+        "upstream_base_url_source": upstream_source,
+        "diagnostics": [],
+    }
+    if upstream_source == "default":
+        report["diagnostics"].append(
+            {
+                "code": "default_upstream_base_url",
+                "class": "configuration",
+                "field": "LLMGATE_UPSTREAM_BASE_URL",
+                "source": "default",
+                "detail": (
+                    f"no upstream configured; using the built-in default "
+                    f"{DEFAULT_UPSTREAM_BASE_URL}"
+                ),
+                "remediation": "set LLMGATE_UPSTREAM_BASE_URL or OMNIROUTE_BASE_URL",
+                "fatal": False,
+            }
+        )
+    try:
+        bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
+    except BootstrapError as exc:
+        report["status"] = "configuration_incomplete"
+        report["gateway_required"] = False
+        report["gateway_url"] = None
+        report["diagnostics"].extend(exc.to_dict()["diagnostics"])
+        return report
+    report["status"] = "ok"
+    report["gateway_required"] = bootstrap.gateway_required
+    report["gateway_url"] = redact_url(bootstrap.gateway_url) if bootstrap.gateway_url else None
+    report["field_sources"] = dict(bootstrap.field_sources)
+    report["diagnostics"].extend(d.to_dict() for d in bootstrap.diagnostics)
+    return report
 
 
 def _build_proxy() -> UpstreamProxy:
@@ -570,9 +640,87 @@ def _build_proxy() -> UpstreamProxy:
     )
 
 
+#: Serve-path precedence for the three identity/telemetry fields: environment,
+#: then the built-in default. The serve path deliberately does not adopt the
+#: routing YAML for these three, because doing so would silently change an
+#: already-deployed server's profile, identity and decision log.
+_SERVE_ENV_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("primary_model", "LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
+    ("profile", "LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE),
+    ("log_path", "LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),
+)
+
+
+def _serve_field_resolution(bootstrap: Any | None) -> tuple[dict[str, str], list[Any]]:
+    """Resolve the serve-path identity fields and report config-file disagreement.
+
+    Returns the resolved values plus one non-fatal ``precedence_conflict``
+    diagnostic per field where the routing YAML asks for a different value than
+    the serve path applies. The conflict names both sources and both values, so a
+    config the serve path does not honour is never silently ignored.
+    """
+    from verdict.provider_bootstrap import BootstrapDiagnostic, BootstrapSource
+
+    values: dict[str, str] = {}
+    conflicts: list[Any] = []
+    for field_name, env_name, default in _SERVE_ENV_FIELDS:
+        exported = (os.getenv(env_name) or "").strip()
+        applied = exported or default
+        applied_source: BootstrapSource = "environment" if exported else "default"
+        values[field_name] = applied
+        if bootstrap is None or bootstrap.source_of(field_name) != "config_file":
+            continue
+        configured = str(getattr(bootstrap, field_name))
+        if configured == applied:
+            continue
+        conflicts.append(
+            BootstrapDiagnostic(
+                code="precedence_conflict",
+                diagnostic_class="configuration",
+                field=field_name,
+                source=applied_source,
+                detail=(
+                    f"config file {bootstrap.config_path} sets {field_name}="
+                    f"{configured!r} while the serve path applies {applied!r} from "
+                    f"{applied_source} ({env_name}); the serve path resolves "
+                    f"{field_name} from the environment, then the built-in default, "
+                    f"and does not read the routing config for it"
+                ),
+                remediation=(
+                    f"set {env_name}={configured} to apply the config value to "
+                    f"'verdict serve', or remove {field_name} from "
+                    f"{bootstrap.config_path}"
+                ),
+                fatal=False,
+            )
+        )
+    return values, conflicts
+
+
 def _build_intelligence() -> IntelligenceService:
-    """Build the public IntelligenceService boundary from environment settings."""
-    profile = os.getenv("LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE)
+    """Build the public IntelligenceService boundary from environment settings.
+
+    ``primary_model``, ``profile`` and ``log_path`` keep the serve path's own
+    precedence: environment, then the built-in default. The routing YAML is read
+    only to detect and report a disagreement, never to override a running
+    server's identity. The provider map stays empty on purpose: the serve path
+    admits a concrete candidate per request rather than binding providers at
+    startup.
+    """
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
+
+    try:
+        bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
+    except BootstrapError:
+        bootstrap = None
+    resolved, conflicts = _serve_field_resolution(bootstrap)
+    for conflict in conflicts:
+        print(f"verdict serve: {conflict.describe()}", file=sys.stderr)
+    profile = resolved["profile"]
     timeout_ms = int(os.getenv("LLMGATE_INTELLIGENCE_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS)))
     allow_client_model_override = os.getenv(
         "LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE", "false"
@@ -583,12 +731,14 @@ def _build_intelligence() -> IntelligenceService:
         if frontier_allowlist_raw
         else None
     )
+    primary_model = resolved["primary_model"]
+    log_path = resolved["log_path"]
     providers: dict[str, ProviderConfig] = {}
     return IntelligenceService(
-        primary_model=os.getenv("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
+        primary_model=primary_model,
         providers=providers,
         profile=profile,
-        log_path=os.getenv("LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),
+        log_path=log_path,
         log_full_task=False,
         discovery_ttl=int(os.getenv("LLMGATE_DISCOVERY_TTL_SECONDS", "60")),
         timeout_ms=timeout_ms,
@@ -619,6 +769,14 @@ async def lifespan(app: FastAPI) -> Any:
     global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
     global guidance_plane_instance
     validate_server_security(host=os.getenv("LLMGATE_HOST", "127.0.0.1"))
+    global server_bootstrap_report
+    server_bootstrap_report = server_bootstrap_diagnostics()
+    for entry in server_bootstrap_report.get("diagnostics", []):
+        print(
+            f"verdict serve: {entry['code']} [{entry['class']}] field={entry['field']}: "
+            f"{entry['detail']}; remediation: {entry['remediation']}",
+            file=sys.stderr,
+        )
     intelligence_instance = _build_intelligence()
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,
