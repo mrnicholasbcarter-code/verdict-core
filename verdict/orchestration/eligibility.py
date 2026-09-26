@@ -52,6 +52,9 @@ _DEFAULT_COOLDOWN_SECONDS = 60.0
 _PROVIDER_SCOPE_CATEGORIES = frozenset({"payment_required", "permission", "authentication"})
 
 
+# Source recorded on an admission record confirmed by the ladder's own probe.
+LADDER_CONFIRMATION_SOURCE = "ladder_probe:openai_health_probe"
+
 _ADMISSION_TO_LADDER: Mapping[str, EligibilityStage] = {
     "DISCOVERED": EligibilityStage.DISCOVERED,
     "ENTITLED": EligibilityStage.ENTITLED,
@@ -167,6 +170,7 @@ class EligibilityLadder:
         max_per_route: int = 2,
         max_probes_per_select: int = 8,
         admitted: AdmittedSet | None = None,
+        admission_receipt: Path | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -183,10 +187,39 @@ class EligibilityLadder:
         # Canonical admitted set: a route it excludes fails before any ladder
         # stage, ranking or probe. The ladder can only narrow it further.
         self._admitted = admitted
+        # Where the admitted set (with live confirmations) is persisted.
+        self._admission_receipt = admission_receipt
 
     @property
     def admitted(self) -> AdmittedSet | None:
         return self._admitted
+
+    def require_launchable(self, route_id: str, *, surface: str) -> None:
+        """Launch precondition for callers that bind a selected route.
+
+        Raises ``AdmissionBypassError`` when an admitted set is attached and
+        ``route_id`` is neither proven healthy nor confirmed live.
+        """
+        if self._admitted is not None:
+            self._admitted.require_launchable(route_id, surface=surface)
+
+    def _record_confirmation(self, route_id: str, result: HealthResult, now: datetime) -> None:
+        """Fold one confirm probe into the admitted set and persist the receipt.
+
+        Success records the confirmation source and time. Failure drops the
+        route at ``HEALTHY``. A failed confirmation only narrows the set.
+        """
+        if self._admitted is None:
+            return
+        self._admitted = self._admitted.record_confirmation(
+            route_id,
+            healthy=result.healthy,
+            source=LADDER_CONFIRMATION_SOURCE,
+            observed_at=_iso(now),
+            category=result.category,
+        )
+        if self._admission_receipt is not None:
+            self._admitted.write_receipt(self._admission_receipt)
 
     def _load_state(self) -> dict[str, dict[str, dict[str, Any]]]:
         try:
@@ -424,13 +457,19 @@ class EligibilityLadder:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
                 a.cooldown_until = blocked[a.provider]
                 continue
-            if a.health != "healthy":
+            # Launch gate: an admitted route that is not proven healthy needs a
+            # bounded live confirmation for this exact route. A cached healthy
+            # hit in the ladder state is not proof for an unverified route.
+            confirming = self._admitted is not None and not self._admitted.launchable(a.route_id)
+            if a.health != "healthy" or confirming:
                 if probes_used >= self._max_probes:
                     a.reason = "probe_budget_exhausted"
                     continue
                 probes_used += 1
                 result = self._probe(a.route_id)
                 self._record_health(a.route_id, result, now, provider=a.provider)
+                if confirming:
+                    self._record_confirmation(a.route_id, result, now)
                 if not result.healthy:
                     a.health = "unhealthy"
                     a.failed_stage = EligibilityStage.HEALTHY
@@ -443,10 +482,9 @@ class EligibilityLadder:
                         blocked[a.provider] = _iso(until) if until else str(a.cooldown_until)
                     continue
                 a.health, a.reason = "healthy", ""
-            if self._admitted is not None and a.route_id not in self._admitted:
-                from verdict.admission import AdmissionBypassError
-
-                raise AdmissionBypassError("EligibilityLadder.select", [a.route_id])
+            if self._admitted is not None:
+                # Asserted precondition: admitted AND (proven healthy OR confirmed).
+                self._admitted.require_launchable(a.route_id, surface="EligibilityLadder.select")
             chosen, chosen_rank = a, rank_of[a.route_id]
             break
         for a in candidates:  # routes not reached before the break still inherit the block
