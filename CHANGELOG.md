@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - restricted and trusted_upstream tasks now require an explicit restricted_data_routes allowlist; fail closed
 - RoutingDecisionContract accepts an optional execution_envelope (validated with the ExecutionEnvelope rules; omitted when absent), matching the TypeScript contract.
+- The API server now fails closed by default: unknown/error/timeout availability states are no longer admitted in the development profile. Opt in with `VERDICT_ALLOW_UNVERIFIED_DEV=1` (development profile only; see docs/CONFIGURATION.md).
+- Startup now fails with `RuntimeError` when `OMNIROUTE_BASE_URL` (or the `LLMGATE_UPSTREAM_BASE_URL` OmniRoute fallback) is set to a value `OmniRouteHTTPTransport` rejects (bad scheme/path, non-loopback plain HTTP, non-allowlisted https host). `http://localhost:20128` is normalised to the loopback IP literal `http://127.0.0.1:20128` before validation, so the documented value still boots with the eligibility gate attached. A rejected `LLMGATE_UPSTREAM_BASE_URL` (used with no `OMNIROUTE_BASE_URL` set) is a direct-upstream proxy setting, not a misconfigured OmniRoute endpoint; it now logs a warning and boots without the availability cache instead of failing startup.
+- `/v1/route/explain` eligibility now matches the live router's `dev_mode` (profile-derived), instead of a literal `dev_mode=True`.
+- The in-memory receipts test literal (`PYTEST_CURRENT_TEST` sniff) was removed from production code. Tests must set `VERDICT_RECEIPTS_DB` explicitly (`tests/conftest.py` does this via an autouse fixture); authenticated mode with no `VERDICT_RECEIPTS_DB` configured now fails startup the same way in tests as in production.
+- `verdict doctor` text mode now exits 1 when issues are found (previously exited 0). `--json` mode now exits 0 when healthy (previously non-zero) and adds a `warnings` key alongside `issues`.
+- Career/job-search-oriented docs and doc paths were removed or renamed; the security contact moved from email to GitHub Security Advisories. External deep links into the removed/renamed docs will break.
 
 ## [0.3.0] - 2026-09-25
 

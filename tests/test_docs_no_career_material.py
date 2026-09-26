@@ -35,6 +35,8 @@ BANNED_TERMS = (
     "linkedin",
     "story bank",
     "resume suite",
+    "job-search",
+    "job search",
 )
 
 # The ONLY two literal strings allowed to contain a banned term anywhere in

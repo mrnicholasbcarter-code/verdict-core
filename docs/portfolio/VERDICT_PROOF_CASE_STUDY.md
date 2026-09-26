@@ -119,7 +119,7 @@ Those boundaries are part of the engineering result. A reviewer can inspect the
 source, focused tests, evidence rows, and limitations without trusting a
 marketing statement alone.
 
-## Job-search case-study framing
+## Engineering case-study framing
 
 **Problem:** model routing needs policy, freshness, and explanation rather than
 an opaque winner.
