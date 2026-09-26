@@ -26,7 +26,13 @@ DEFAULT_OMNIROUTE_URL = "http://127.0.0.1:20128/v1"
 
 @dataclass(frozen=True)
 class WorkerTask:
-    """Capabilities and capacity required by one worker spawn."""
+    """Capabilities and capacity required by one worker spawn.
+
+    ``allowed_route_prefixes`` is a hard admission boundary.  Empty preserves
+    the generic library behaviour; Prime/Verdict dispatch supplies an explicit
+    operator-approved scope.  ``excluded_route_ids`` fences identities such as
+    the active root controller even when they live inside an allowed provider.
+    """
 
     required_capabilities: frozenset[str] = field(default_factory=frozenset)
     min_context_tokens: int = 0
@@ -34,6 +40,8 @@ class WorkerTask:
     reasoning: bool = False
     protected: bool = False
     frontier_worthy: bool = False
+    allowed_route_prefixes: frozenset[str] = field(default_factory=frozenset)
+    excluded_route_ids: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def allow_frontier(self) -> bool:
@@ -267,6 +275,26 @@ def candidates_from_inventory(
     return tuple({item.selector: item for item in result}.values())
 
 
+def worker_candidate_exclusion_reason(task: WorkerTask, route_id: str) -> str | None:
+    """Return the hard policy reason that excludes a route, if any."""
+    normalized = route_id.strip().lower().removeprefix("omniroute/")
+    excluded = {
+        str(item).strip().lower().removeprefix("omniroute/")
+        for item in task.excluded_route_ids
+        if str(item).strip()
+    }
+    if normalized in excluded:
+        return "controller_excluded"
+    prefixes = tuple(
+        str(item).strip().lower().removeprefix("omniroute/")
+        for item in task.allowed_route_prefixes
+        if str(item).strip()
+    )
+    if prefixes and not any(normalized.startswith(prefix) for prefix in prefixes):
+        return "provider_not_allowed"
+    return None
+
+
 def eligible_worker_candidates(
     task: WorkerTask, inventory_rows: Iterable[Mapping[str, Any]], prime_selectors: Iterable[str]
 ) -> tuple[LaunchCandidate, ...]:
@@ -279,7 +307,8 @@ def eligible_worker_candidates(
             (
                 item
                 for item in candidates_from_inventory(inventory_rows, prime_selectors)
-                if required <= item.capabilities
+                if worker_candidate_exclusion_reason(task, item.route_id) is None
+                and required <= item.capabilities
                 and item.context_tokens >= task.min_context_tokens
                 and (task.allow_frontier or not item.is_frontier)
             ),
