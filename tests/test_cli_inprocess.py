@@ -1420,6 +1420,10 @@ def test_cmd_doctor_flags_legacy_config_filename_and_offers_fix(
     (cfg_dir / "config.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
 
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    # Keep --fix hermetic: no live local gateway may be discovered/persisted.
+    from verdict import provider_detection
+
+    monkeypatch.setattr(provider_detection, "probe_gateways", lambda: [])
 
     # This fixture also leaves other unrelated issues unresolved (no gateway
     # URL, missing required credential), so both calls exit non-zero.
@@ -1481,6 +1485,10 @@ def test_cmd_doctor_flags_missing_schema_version_and_fixes_it(
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    # Keep --fix hermetic: no live local gateway may be discovered/persisted.
+    from verdict import provider_detection
+
+    monkeypatch.setattr(provider_detection, "probe_gateways", lambda: [])
 
     # This fixture also leaves other unrelated issues unresolved (no gateway
     # URL, missing required credential), so both calls exit non-zero.
@@ -1636,7 +1644,7 @@ def _blocked_doc_report(*, missing: int, stale: int, errors: tuple[str, ...]) ->
             "older Verdict version",
             None,
         ),
-        ("B-memory-db-missing", {"memdb": False}, 1, "missing_memory_db", None),
+        ("B-memory-db-missing", {"memdb": False}, 0, None, "missing_memory_db"),
         ("C-gateway-unreachable", {"gateway_ok": False}, 1, "Gateway unreachable", None),
         (
             "D-no-primary-model-literal-key",
@@ -2399,3 +2407,229 @@ def test_cli_compare_dispatches(
     assert "usage: verdict" not in captured.out, (
         f"stdout should not contain usage: verdict, got: {captured.out[:200]}"
     )
+
+
+# --- doctor progress, --preflight-timeout, and old-config repair (S2-G) ---
+
+
+def test_cmd_doctor_text_mode_prints_preflight_progress_on_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Text mode announces the slow preflight and per-document progress on stderr."""
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_parity_host(tmp_path, monkeypatch)
+    real = documentation_preflight.run_documentation_preflight
+
+    def _fake(**kwargs: Any) -> Any:
+        kwargs["progress"]("ingesting 1/1 documents (fixture: README.md)...")
+        return real(**kwargs)
+
+    monkeypatch.setattr(documentation_preflight, "run_documentation_preflight", _fake)
+    cli.cmd_doctor(fix=True)
+    captured = capsys.readouterr()
+    assert "checking documentation memory (may take a while)..." in captured.err
+    assert "ingesting 1/1 documents" in captured.err
+    assert "ingesting" not in captured.out
+
+
+def test_cli_doctor_json_stdout_is_pure_json_without_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--json passes no progress callback, so stdout parses and stderr stays empty."""
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_parity_host(tmp_path, monkeypatch)
+    seen: dict[str, Any] = {}
+    real = documentation_preflight.run_documentation_preflight
+
+    def _spy(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(documentation_preflight, "run_documentation_preflight", _spy)
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", "--fix"])
+    cli.main()
+    captured = capsys.readouterr()
+    json.loads(captured.out)
+    assert seen["progress"] is None
+    assert "checking documentation memory" not in captured.out
+    assert "checking documentation memory" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [([], 120.0), (["--preflight-timeout", "7.5"], 7.5), (["--preflight-timeout", "0"], None)],
+)
+def test_cli_doctor_preflight_timeout_flag_reaches_preflight(
+    argv: list[str],
+    expected: float | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--preflight-timeout maps to deadline_seconds (default 120, 0 = unbounded)."""
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_parity_host(tmp_path, monkeypatch)
+    seen: dict[str, Any] = {}
+    real = documentation_preflight.run_documentation_preflight
+
+    def _spy(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(documentation_preflight, "run_documentation_preflight", _spy)
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", *argv])
+    cli.main()
+    capsys.readouterr()
+    assert seen["deadline_seconds"] == expected
+
+
+def test_cli_doctor_timed_out_preflight_is_an_issue_naming_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A timed-out preflight is never ready and never a mere network warning."""
+    import verdict.documentation_preflight as documentation_preflight
+
+    timed_out = documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=2,
+        inventory=0,
+        ingested=0,
+        skipped_fresh=0,
+        stale=0,
+        missing=0,
+        unverifiable=0,
+        errors=(),
+        timed_out=True,
+    )
+    _doctor_parity_host(tmp_path, monkeypatch, doc_report=timed_out)
+    json_exit, text_exit, report = _doctor_both_modes(monkeypatch, capsys)
+    assert json_exit == text_exit == 1
+    assert report["documentation_preflight"]["timed_out"] is True
+    assert any("--preflight-timeout" in issue for issue in report["issues"])
+    assert not any("unreachable" in w for w in report["warnings"])
+
+
+def _old_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An old-style home: verdict.yaml without schema_version/gateway_url and
+    no stored credentials, as written by pre-schema Verdict setup."""
+    import socket
+    import urllib.request
+    from unittest.mock import MagicMock
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    # setenv-then-delenv makes monkeypatch record the variable, so teardown
+    # removes the OMNIROUTE_BASE_URL that cli.main() loads from the repaired
+    # credentials store (otherwise it leaks into later tests).
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "unset-by-fixture")
+    monkeypatch.delenv("OMNIROUTE_BASE_URL")
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text("primary_model: anthropic/claude-opus-5\nproviders: {}\n")
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self) -> _Resp:
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+    monkeypatch.chdir(tmp_path)
+    return cfg_dir
+
+
+def _gateway(url: str, healthy: bool = True) -> Any:
+    from verdict.provider_detection import GatewayCandidate
+
+    port = int(url.rsplit(":", 1)[1])
+    return GatewayCandidate("127.0.0.1", port, url, healthy, "omniroute", "OmniRoute")
+
+
+def test_cli_doctor_fix_repairs_old_config_home_with_single_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--fix migrates schema_version and wires the one healthy local gateway."""
+    import sys
+
+    from verdict import provider_detection
+    from verdict.credentials_store import CredentialsStore
+
+    cfg_dir = _old_config_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        provider_detection, "probe_gateways", lambda: [_gateway("http://127.0.0.1:20128")]
+    )
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    before = json.loads(capsys.readouterr().out)
+    assert any("No gateway URL configured" in i for i in before["issues"])
+    assert any("OMNIROUTE_BASE_URL is not set" in i for i in before["issues"])
+    assert "gateway_url" not in yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", "--fix"])
+    cli.main()
+    fixed = json.loads(capsys.readouterr().out)
+    assert fixed["issues"] == [], fixed["issues"]
+    assert "No gateway URL configured" in fixed["repaired"]
+    assert "Config written by an older Verdict version" in fixed["repaired"]
+    saved = yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
+    assert saved["schema_version"] == 1
+    assert saved["gateway_url"] == "http://127.0.0.1:20128"
+    assert CredentialsStore().load()["OMNIROUTE_BASE_URL"] == "http://127.0.0.1:20128"
+    assert "OMNIROUTE_BASE_URL" not in os.environ
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    assert json.loads(capsys.readouterr().out)["issues"] == []
+
+
+@pytest.mark.parametrize(
+    "gateways",
+    [
+        [],
+        [_gateway("http://127.0.0.1:20128", healthy=False)],
+        [_gateway("http://127.0.0.1:20128"), _gateway("http://127.0.0.1:20129")],
+    ],
+    ids=["none", "unhealthy", "ambiguous"],
+)
+def test_cli_doctor_fix_leaves_gateway_issue_when_not_uniquely_detectable(
+    gateways: list[Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--fix never guesses a gateway: none/unhealthy/multiple stays an issue."""
+    import sys
+
+    from verdict import provider_detection
+
+    cfg_dir = _old_config_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(provider_detection, "probe_gateways", lambda: gateways)
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", "--fix"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert any("No gateway URL configured" in i for i in report["issues"])
+    saved = yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
+    assert saved["schema_version"] == 1
+    assert "gateway_url" not in saved
+    assert not (cfg_dir / "credentials.env").exists()

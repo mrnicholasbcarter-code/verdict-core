@@ -81,6 +81,7 @@ class DocumentationPreflightReport:
     orphaned: int = 0
     source_roots: dict[str, str | None] | None = None
     repaired: bool = False
+    timed_out: bool = False
 
     @property
     def passed(self) -> bool:
@@ -126,6 +127,7 @@ class DocumentationPreflightReport:
             },
             "duplicate_projections": [dict(item) for item in self.duplicate_projections],
             "repaired": self.repaired,
+            "timed_out": self.timed_out,
         }
 
 
@@ -226,6 +228,8 @@ def run_documentation_preflight(
     sources: Iterable[DocumentationSource] | None = None,
     now: float | None = None,
     fetch: Callable[[str], bytes] | None = None,
+    progress: Callable[[str], None] | None = None,
+    deadline_seconds: float | None = None,
 ) -> DocumentationPreflightReport:
     """Check and optionally repair authoritative documentation memory.
 
@@ -233,6 +237,17 @@ def run_documentation_preflight(
     absent/stale content and atomically appends verified records to the shared
     memory plane.  A network or provenance failure is never converted into a
     ready result.
+
+    ``progress``, when given, is called with a short human-readable status
+    line before each source is resolved and before each document is
+    fetched/ingested during ``fix=True``.
+
+    ``deadline_seconds``, when given, bounds the wall-clock time spent
+    checking/ingesting documents. The clock is polled between entries (never
+    via signals or threads, since a mid-write interrupt could corrupt the
+    shared SQLite memory plane); once exceeded, remaining sources/entries are
+    left unchecked and the report comes back with ``timed_out=True`` instead
+    of hanging.
     """
 
     current = time.time() if now is None else now
@@ -246,10 +261,17 @@ def run_documentation_preflight(
     # A read-only diagnostic must not initialize a missing shared database.
     # Use an in-memory plane until --fix explicitly authorizes persistence.
     plane = MemoryPlane(target_memory_path if fix or target_memory_path.exists() else ":memory:")
+    deadline_at = None if deadline_seconds is None else time.monotonic() + deadline_seconds
+    timed_out = False
     try:
         resolved_sources: list[DocumentationSource] = []
         for source in selected:
+            if deadline_at is not None and time.monotonic() >= deadline_at:
+                timed_out = True
+                break
             roots[source.source_id] = str(source.root) if source.root else None
+            if progress is not None:
+                progress(f"checking documentation source {source.source_id}...")
             try:
                 source = _resolve_source(source, fetch=fetch)
             except Exception as exc:
@@ -277,7 +299,11 @@ def run_documentation_preflight(
                     orphaned += len(stale_keys)
                     errors.append(f"{source.source_id}:orphaned:{len(stale_keys)} active records")
             source_details: list[dict[str, Any]] = []
-            for entry in entries:
+            entry_total = len(entries)
+            for entry_index, entry in enumerate(entries, start=1):
+                if deadline_at is not None and time.monotonic() >= deadline_at:
+                    timed_out = True
+                    break
                 key = _manifest_key(entry)
                 manifest = _manifest_for(plane, key)
                 detail: dict[str, Any] = {
@@ -310,6 +336,11 @@ def run_documentation_preflight(
                 if not fix:
                     source_details.append(detail)
                     continue
+                if progress is not None:
+                    progress(
+                        f"ingesting {entry_index}/{entry_total} documents "
+                        f"({source.source_id}: {entry.relative_path})..."
+                    )
                 try:
                     payload = _read_entry(entry, fetch=fetch)
                     raw_hash = hashlib.sha256(payload).hexdigest()
@@ -345,12 +376,19 @@ def run_documentation_preflight(
         duplicate_projections = _duplicate_projections(inventory_details)
         problems = stale + missing + unverifiable + orphaned
         status = "ready" if problems == 0 else "blocked"
-        if fix and (missing + stale) and unverifiable == 0:
+        if not timed_out and fix and (missing + stale) and unverifiable == 0:
             # A repair is ready only when every inventory item now has a fresh,
             # verified manifest; this also catches partial fetches.
             status = "ready" if _all_fresh(plane, resolved_sources, current, fetch) else "blocked"
-        if fix and orphaned and unverifiable == 0 and status == "ready":
+        if not timed_out and fix and orphaned and unverifiable == 0 and status == "ready":
             status = "ready" if _all_fresh(plane, resolved_sources, current, fetch) else "blocked"
+        if timed_out:
+            # A deadline cut the scan short before every source/entry was
+            # checked; "ready" would overclaim a verification that never
+            # finished, so the incomplete run is always reported as blocked.
+            # Re-verifying against the deadline is skipped entirely: any
+            # extra wall time here would defeat the point of bounding it.
+            status = "blocked"
         return DocumentationPreflightReport(
             status=status,
             sources=len(selected),
@@ -367,6 +405,7 @@ def run_documentation_preflight(
             inventory_details=inventory_details,
             duplicate_projections=duplicate_projections,
             repaired=bool(fix and ingested),
+            timed_out=timed_out,
         )
     finally:
         plane.close()

@@ -570,3 +570,91 @@ def test_implementation_hooks_allow_work_after_verified_preflight(
     controller = MemoryHookController(plane=MemoryPlane(db))
     assert controller.on_task_start("task", "implement", implementation=True)["status"] == "success"
     assert controller.on_file_edit_start("src/app.py", implementation=True)["status"] == "success"
+
+
+class _FakeClock:
+    """Stand-in for the ``time`` module inside documentation_preflight."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def time(self) -> float:
+        return self.now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _three_doc_source(tmp_path: Path) -> DocumentationSource:
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    for index in range(3):
+        (docs / f"ADR-00{index}.md").write_text(f"# Decision {index}\n", encoding="utf-8")
+    return _source(tmp_path)
+
+
+def test_preflight_fix_reports_progress_per_source_and_document(tmp_path: Path) -> None:
+    source = _three_doc_source(tmp_path)
+    lines: list[str] = []
+    report = run_documentation_preflight(
+        sources=[source],
+        memory_path=tmp_path / "memory.db",
+        fix=True,
+        now=100,
+        progress=lines.append,
+    )
+    assert report.passed and report.timed_out is False
+    assert lines[0] == "checking documentation source fixture..."
+    ingest = [line for line in lines if line.startswith("ingesting")]
+    assert len(ingest) == 3
+    assert ingest[0].startswith("ingesting 1/3 documents (fixture: docs/adr/")
+    assert ingest[-1].startswith("ingesting 3/3 documents")
+
+
+def test_preflight_deadline_stops_slow_ingest_and_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fake slow read advances a fake clock past the deadline (no real sleep)."""
+    import verdict.documentation_preflight as documentation_preflight
+
+    source = _three_doc_source(tmp_path)
+    clock = _FakeClock()
+    monkeypatch.setattr(documentation_preflight, "time", clock)
+    real_read = documentation_preflight._read_entry
+
+    def _slow_read(entry: object, *, fetch: object = None) -> bytes:
+        clock.now += 10.0  # each document "takes" 10 seconds
+        return real_read(entry, fetch=fetch)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(documentation_preflight, "_read_entry", _slow_read)
+    report = run_documentation_preflight(
+        sources=[source], memory_path=tmp_path / "memory.db", fix=True, now=100, deadline_seconds=15
+    )
+    assert report.timed_out is True
+    assert report.status == "blocked"
+    assert report.passed is False
+    assert report.ingested == 2  # third entry is never started
+    assert report.to_dict()["timed_out"] is True
+
+
+def test_preflight_zero_deadline_times_out_before_any_source(tmp_path: Path) -> None:
+    source = _three_doc_source(tmp_path)
+    report = run_documentation_preflight(
+        sources=[source], memory_path=tmp_path / "memory.db", fix=True, now=100, deadline_seconds=0
+    )
+    assert report.timed_out is True
+    assert report.status == "blocked"
+    assert report.ingested == 0
+
+
+def test_preflight_without_deadline_never_times_out(tmp_path: Path) -> None:
+    source = _three_doc_source(tmp_path)
+    report = run_documentation_preflight(
+        sources=[source],
+        memory_path=tmp_path / "memory.db",
+        fix=True,
+        now=100,
+        deadline_seconds=None,
+    )
+    assert report.timed_out is False
+    assert report.passed is True
