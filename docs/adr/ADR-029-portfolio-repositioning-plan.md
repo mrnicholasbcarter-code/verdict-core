@@ -77,4 +77,4 @@ this repo has no authority over them.
   operations work (visibility, docs, launch sequencing), not a spec-kit feature change to the
   router itself.
 
-> **the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035) outcome:** Core chose **deletion** of Ruflo/swarm/hivemind/SONA/neural modules (not `verdict/experimental/` relocation). Memory plane stayed canonical. See ADR-023 SUPERSEDED and the ongoing documentation-hygiene pass.
+> **Ruflo/swarm/hivemind removal outcome:** Core chose **deletion** of Ruflo/swarm/hivemind/SONA/neural modules (not `verdict/experimental/` relocation). Memory plane stayed canonical. See ADR-023 SUPERSEDED and the ongoing documentation-hygiene pass.

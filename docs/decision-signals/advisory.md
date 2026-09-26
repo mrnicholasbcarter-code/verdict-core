@@ -37,7 +37,7 @@ VERDICT_DECISION_SIGNALS_MODE=ADVISORY
 ```
 
 And supply an OpenJev provider (via `factory.provider_from_env()` once
-the OpenJev provider (real Codiv API shapes) lands, or inject any `DecisionSignalProvider`-compatible object as
+the real-API OpenJev provider lands, or inject any `DecisionSignalProvider`-compatible object as
 `IntelligenceService(decision_signal_provider=...)`.
 
 ## Hard skip conditions (fail open to baseline)
@@ -57,7 +57,7 @@ Advisory is skipped — and the baseline order is used unchanged — when:
 | No provider configured | Not called |
 | `ExecutionPathDecision` is present | Not called (returns before advisory) |
 
-## Cut-off values (uncalibrated — decision-signal calibration)
+## Cut-off values (uncalibrated)
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -65,14 +65,15 @@ Advisory is skipped — and the baseline order is used unchanged — when:
 | `VERDICT_DECISION_SIGNALS_TIMEOUT_MS` | `1500` | Timeout for provider call (ms) |
 
 The economy/strength thresholds (0.4 / 0.6) are fixed initial values.
-Calibration is tracked in decision-signal calibration.
+Calibration against observed routing outcomes is follow-up work; until then treat
+these values as provisional.
 
 ## Data sent per call
 
 In ADVISORY mode, a scrubbed task summary (first 500 chars of `task_str`)
 plus a `complexity_hints: {}` dict are sent to the OpenJev provider as a
 `DecisionQuestionV1`. No credentials, user PII, or model internals are
-included. See PRIVACY_POLICY.md for the full privacy notice (owned by the OpenJev provider (real Codiv API shapes)).
+included. See PRIVACY_POLICY.md for the full privacy notice, which is owned by the real-API OpenJev provider work.
 
 ## Live-admit path (OmniRoute)
 

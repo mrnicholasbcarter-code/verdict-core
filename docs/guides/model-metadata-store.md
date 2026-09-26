@@ -5,9 +5,10 @@ inventory, execute, and health only — never the metadata source of truth.
 OpenRouter catalog endpoints are likewise **not** a metadata source of truth
 (independence + ToS).
 
-Ticket: the core model metadata store (ADR-032)
-(store). Identity join follow-up: the models.json id-join fix.
-Capability-gate wiring into admit is the spend-preservation gate design;
+Decision record: [ADR-032](../adr/ADR-032-core-model-metadata-store.md)
+(store). Identity join follow-up: joining gateway model ids to models.dev
+`models.json` unique leaves. Capability-gate wiring into admit is the separate
+capability hard-gate work;
 this guide covers the store, fetchers, mapping/join, and the read API
 (`lookup_omniroute_id`) that receipts cite.
 

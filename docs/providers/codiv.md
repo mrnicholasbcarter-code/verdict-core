@@ -1,7 +1,6 @@
 # Codiv Provider Integration
 
 **Status:** Optional OmniRoute execution candidate
-**BOD:** 198
 
 ## Overview
 
@@ -92,7 +91,7 @@ When fallback occurs:
 - `intended_provider` ≠ `executed_provider`
 - `provider_mismatch` = `true`
 
-Fields are **optional** (backward compatible with receipts written before the codiv failure classification and provider identity design).
+Fields are **optional** (backward compatible with receipts written before Codiv failure classification and provider identity fields were added).
 
 ## Absence Safety
 
@@ -163,7 +162,6 @@ CODIV_API_KEY = os.getenv("CODIV_API_KEY")  # Optional, absence is safe
 
 ## References
 
-- **Linear:** the codiv failure classification and provider identity design
 - **OpenSpec change:** `openspec/changes/bod-198-codiv-candidate/`
 - **Failure classification:** `verdict/gateway_adapters.py` (`NormalizedFailureClass`)
 - **Eligibility gates:** `verdict/eligibility.py`

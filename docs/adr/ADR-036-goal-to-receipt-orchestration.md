@@ -5,8 +5,8 @@
 - **Related:** ADR-0001 (eligibility before ranking), ADR-015/017 (receipts), ADR-023 (governed
   supervision, superseded in scope by this ADR for the orchestration runtime), ADR-031 (Prime
   workflow skills), ADR-032 (OmniRoute is inventory/execute/health only)
-- **Stories:** frontier decomposition and topology selection (topology), failure intelligence and same-node reassignment (failure intelligence), DAG fan-out and runtime concurrency (DAG fan-out),
-  controller survival (minimum slice)..166 (controller survival, minimum slice), the terminal view (terminal view), OpenCodeReviewer + StaticDiffGate (independent review)
+- **Stories:** frontier decomposition and topology selection, failure intelligence and same-node reassignment, DAG fan-out and runtime concurrency,
+  controller survival (minimum slice), the terminal view, independent review (OpenCodeReviewer + StaticDiffGate)
 
 ## Context
 
@@ -61,7 +61,7 @@ harness. OmniRoute is only transport and inventory.
    and independence, and a digest of the event log. `completion_verdict` returns `COMPLETE` only
    with validated work, an ok integration barrier and a `PASS` review. Otherwise it returns
    `BLOCKED` with the first concrete reason.
-7. **Controller survival (controller survival (minimum slice)..166, minimum slice).** Frontier planning uses the same
+7. **Controller survival (minimum slice).** Frontier planning uses the same
    classify, cooldown and reselect loop, so controller-model quota moves planning to another
    frontier model. `verdict supervise` runs the controller as a child process and watches
    `progress.json`. It kills a stalled or quota-dead controller's process group, restarts with

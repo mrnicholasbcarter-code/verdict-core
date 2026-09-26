@@ -1,4 +1,4 @@
-> **Status: SUPERSEDED ** — Ruflo swarm dispatch and neural/SONA selection are obsolete Core architecture and were deleted. Canonical serve path is the execution-path authority optimizer (ADR-035) execution-path → the hydrate-before-dispatch authorized execution path design optimized dispatch → `verdict.dispatcher` authorized `selected_route` only. Docs hygiene continues under the ongoing documentation-hygiene pass.
+> **Status: SUPERSEDED** (see [ADR-035](ADR-035-authorized-selected-route-dispatch.md)) — Ruflo swarm dispatch and neural/SONA selection are obsolete Core architecture and were deleted. Canonical serve path is execution-path strategy authority → optimized dispatch → `verdict.dispatcher` authorized `selected_route` only. Docs hygiene continues under the ongoing documentation-hygiene pass.
 
 # ADR-ORCHESTRATOR-ROUTING: Orchestrator-Driven Model Selection with Deterministic Enforcement
 

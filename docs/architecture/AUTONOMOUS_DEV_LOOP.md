@@ -1,13 +1,13 @@
 # Autonomous Development Loop — Operational Contract
 
 **Status:** Approved (operational contract)
-**Date:** 2026-08-03 (revised for the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035): swarm/Ruflo coordination removed)
+**Date:** 2026-08-03 (revised for the Ruflo/swarm/hivemind removal: swarm/Ruflo coordination removed)
 **Applies to:** Every backlog issue worked by the Verdict autonomous development
 workflow (see `verdict/workflows/autodev.py`, `FEATURE_LIFECYCLE_GATE.md`).
 
 > Historical note: earlier revisions of this contract described a
 > queen/worker "swarm" coordination step backed by Ruflo/RuVector. That
-> coordination model was removed from Core ; see
+> coordination model was removed from Core; see
 > [ADR-023](../adr/ADR-023-governed-swarm-supervision.md) (superseded) and
 > [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) (current
 > goal-to-receipt orchestration).

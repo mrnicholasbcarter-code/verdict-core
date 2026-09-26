@@ -1,6 +1,6 @@
-> **Status: SUPERSEDED ** — Governed-swarm / Ruflo supervision is obsolete architecture and has been **deleted** from Core.
+> **Status: SUPERSEDED** — Governed-swarm / Ruflo supervision is obsolete architecture and has been **deleted** from Core.
 > **Successor ADR:** [ADR-035 — Authorized selected-route dispatch](ADR-035-authorized-selected-route-dispatch.md)
-> (closes the cross-repo ADR lifecycle evidence audit `MISSING_SUCCESSOR`). Implementation trail: the execution-path authority optimizer (ADR-035) → the hydrate-before-dispatch authorized execution path design/`verdict.dispatcher`
+> (closes the cross-repo ADR lifecycle audit `MISSING_SUCCESSOR` finding). Implementation trail: execution-path strategy authority (`verdict/serve_path.py`) → optimized dispatch/`verdict.dispatcher`
 > (authorized `selected_route` only). Documentation hygiene continues under the ongoing documentation-hygiene pass.
 > Historical body below is retained for archaeology; do not rewrite paths to `experimental/`.
 

@@ -12,7 +12,7 @@ superseded by a later record rather than edited away.
 | **Cross-repo evidence authority** | Exact SHA snapshots, duplicate hashes, conservative lifecycle + evidence levels across Verdict V2 repos | [`verdict-ecosystem` `docs/ADR_LIFECYCLE.md`](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md) + `evidence/ADR_LIFECYCLE.json` (the cross-repo ADR lifecycle evidence audit — **Done**) |
 | **In-repo navigable index** | Reviewer-facing table for `verdict-core` alone: titles, successors, how to read shipped vs historical | **This file** |
 
-**Do not invent a competing CURRENT-heavy taxonomy.** the cross-repo ADR lifecycle evidence audit deliberately marked
+**Do not invent a competing CURRENT-heavy taxonomy.** The cross-repo ADR lifecycle evidence audit deliberately marked
 **0 CURRENT** because source/test path presence alone is not end-to-end runtime proof.
 This index **consumes** those classifications for `verdict-core` rows and only adds:
 
@@ -101,7 +101,7 @@ hardening pass (successor for ADR-023).
 | [032](ADR-032-core-model-metadata-store.md) — Core owns model metadata | OmniRoute inventory/execute/health only | Accepted | PARTIALLY_TRUE | VERIFIED | — |
 | [033](ADR-033-shared-memory-provider.md) — Shared memory boundary | Shared recall advisory; local MemoryPlane authoritative | Accepted | PARTIALLY_TRUE | VERIFIED | — |
 | [034](ADR-034-memory-outbox-mirror-and-fail-open-shared-recall.md) — Outbox mirror | Durable outbox; fail-open shared recall | Accepted | PARTIALLY_TRUE | VERIFIED | — |
-| [035](ADR-035-authorized-selected-route-dispatch.md) — Authorized selected-route dispatch | the execution-path authority optimizer (ADR-035) serve path + the hydrate-before-dispatch authorized execution path design dispatcher; demoted selectors | Accepted | PARTIALLY_TRUE | *(new — pending ecosystem re-audit)* | Supersedes ADR-023 |
+| [035](ADR-035-authorized-selected-route-dispatch.md) — Authorized selected-route dispatch | Execution-path strategy authority on the serve path + authorize-only dispatcher binding; demoted selectors | Accepted | PARTIALLY_TRUE | *(new — pending ecosystem re-audit)* | Supersedes ADR-023 |
 | [036](ADR-036-goal-to-receipt-orchestration.md) — Goal-to-receipt orchestration | Frontier DAG, capacity-aware eligibility ladder, same-node reassignment, independent OCR review, fail-closed receipt, supervised controller | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (live runs + fresh-clone certification) | Scope successor to ADR-023 for multi-worker execution |
 
 ## Duplicate / superseded copies (retain for inbound links)
@@ -110,7 +110,7 @@ hardening pass (successor for ADR-023).
 |---|---|---|
 | `docs/architecture/ADR-EVIDENCE-LEDGER.md` (removed; was a duplicate) | DUPLICATE | [`ADR-001`](ADR-001-evidence-ledger.md) |
 | `docs/architecture/ADR-ORCHESTRATOR-ROUTING.md` (removed; was a duplicate) | DUPLICATE | Prefer [`ADR-002`](ADR-002-orchestrator-routing.md); Ruflo framing obsolete |
-| [`ADR-ORCHESTRATOR-ROUTING.md`](ADR-ORCHESTRATOR-ROUTING.md) | SUPERSEDED | the obsolete Ruflo/swarm/hivemind architecture removal (ADR-023, superseded by ADR-035) / the authorized selected-route dispatch design (ADR-035) → [`ADR-035`](ADR-035-authorized-selected-route-dispatch.md) |
+| [`ADR-ORCHESTRATOR-ROUTING.md`](ADR-ORCHESTRATOR-ROUTING.md) | SUPERSEDED | Ruflo/swarm removal and legacy selector demotion → [`ADR-035`](ADR-035-authorized-selected-route-dispatch.md) |
 
 Byte-identical copies in `verdict-core-memory` are classified DUPLICATE by the cross-repo ADR lifecycle evidence audit;
 `verdict-core` `docs/adr/` remains ownership.
@@ -127,9 +127,9 @@ Byte-identical copies in `verdict-core-memory` are classified DUPLICATE by the c
 Behaviours shipped and referenced by code/docs that still warrant dedicated ADRs
 or ecosystem re-proof (not silently inferred as CURRENT):
 
-1. **Session economics STAY/SWITCH ** — prompt-cache value / hysteresis after hard eligibility.
-2. **Effective capability + context budget ** — model + context + tools + decomposition + verification.
-3. **Full CURRENT promotion** — requires ecosystem re-audit with executable semantic proof per the cross-repo ADR lifecycle evidence audit evidence bar.
+1. **Session economics STAY/SWITCH** — prompt-cache value / hysteresis after hard eligibility.
+2. **Effective capability + context budget** — model + context + tools + decomposition + verification.
+3. **Full CURRENT promotion** — requires ecosystem re-audit with executable semantic proof per the cross-repo ADR lifecycle audit evidence bar.
 
 ## Ecosystem decision trail
 

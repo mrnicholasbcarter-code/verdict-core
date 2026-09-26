@@ -174,7 +174,7 @@ orchestrate wall time.
 > ```bash
 > export VERDICT_DECISION_SIGNALS_TIMEOUT_MS=5000 # 5 s
 > ```
-> OpenJev ADVISORY mode (advisory mode) uses the same env var.
+> OpenJev ADVISORY mode ([advisory.md](advisory.md)) uses the same env var.
 
 
 ## Running the smoke test

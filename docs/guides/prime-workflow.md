@@ -18,7 +18,7 @@ prime-agent --cwd "$PWD" '/verdict-resume'
 
 For unattended operation use the external supervisor with a Verdict-selected controller
 decision. Automatic mode omits `--provider`/`--model` and asks Verdict to
-generate the exact decision from live eligibility, ContextPlans, the execution-path authority optimizer (ADR-035), and session economics STAY/SWITCH.
+generate the exact decision from live eligibility, ContextPlans, the execution-path authority optimizer, and session economics STAY/SWITCH.
 The supervisor persists a RoutingReceiptV1 before launch, never ranks or substitutes,
 and never launches `auto/*`. Missing live eligibility blocks launch.
 
@@ -126,7 +126,7 @@ owns orchestration updates, worker owns only assigned files and its receipt/evid
 The supervisor serializes the entire repo loop via common-git flock, including across
 different worktrees. External legacy writers must be detected during reconciliation.
 
-### Cross-harness durable resume (the worktree registry/handoff/resume design/66)
+### Cross-harness durable resume
 
 Workers (Cursor, Claude Code, Codex, Prime) are interchangeable. Durable resume state
 must **not** live in proprietary chat history. Canonical sources are Git + worktree +

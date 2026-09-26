@@ -32,7 +32,7 @@ Removed:
 | `feat/interview-golden-path` | ACTIVE | PR #590 |
 | `fix/omniroute-cx-models-list` | ACTIVE | Applies cleanly to main. Adds `cx/*` models to the Prime harness picker. Candidate PR. |
 | `chore/core-usability-cleanup` | ACTIVE, overlaps #589 | Both delete `scripts/demo-routing.py` and `verdict/git_hooks.py` and rewrite `CLI_REFERENCE.md`. Folded into the orchestration golden-path documentation pass. |
-| `feat/bod-133-confinement` | SUPERSEDED (pending review) | Main confines reads with `O_NOFOLLOW` (#571), and #570 closed the confinement follow-up work/135. The cherry-pick conflicts only with the newer code. 3 small deltas remain to review: secret-regex quoting, gates-report acceptance, proxy outbound. |
+| `feat/bod-133-confinement` | SUPERSEDED (pending review) | Main confines reads with `O_NOFOLLOW` (#571), and #570 closed the two confinement follow-up items. The cherry-pick conflicts only with the newer code. 3 small deltas remain to review: secret-regex quoting, gates-report acceptance, proxy outbound. |
 | `feat/bod-136-live-execution` | MERGED (#570), dirty worktree | Patch archived. The operator reviews it, then the worktree is removed. |
 | `feat/bod-17-ruflo-experimental` | MERGED (#554) | Its worktree holds only untracked `.serena/` and `.venv/`. |
 
