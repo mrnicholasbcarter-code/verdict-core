@@ -260,7 +260,11 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     elif args.command == "suggest":
         legacy.cmd_suggest(args.log_path)
     elif args.command == "doctor":
-        legacy.cmd_doctor(fix=getattr(args, "fix", False), output_json=getattr(args, "json", False))
+        legacy.cmd_doctor(
+            fix=getattr(args, "fix", False),
+            output_json=getattr(args, "json", False),
+            preflight_timeout=getattr(args, "preflight_timeout", 120.0),
+        )
     elif args.command == "harness":
         if args.harness_target == "codex":
             legacy.cmd_harness_codex(

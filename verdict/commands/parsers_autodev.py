@@ -204,3 +204,13 @@ def register(subparsers: Any) -> None:
         "--fix", action="store_true", help="Automatically repair detected configuration issues"
     )
     doctor_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    doctor_p.add_argument(
+        "--preflight-timeout",
+        type=float,
+        default=120.0,
+        metavar="SECONDS",
+        help=(
+            "Bound the documentation preflight in seconds (default: 120; 0 = unbounded). "
+            "A timed-out preflight is reported as an issue."
+        ),
+    )

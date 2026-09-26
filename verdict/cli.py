@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
@@ -2242,12 +2243,82 @@ class DoctorDiagnostics:
         self.config_loaded: bool = False
 
 
-def _collect_doctor_diagnostics(fix: bool, *, interactive: bool) -> DoctorDiagnostics:
+DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
+
+
+def _doctor_progress(message: str) -> None:
+    """Write one doctor progress line to stderr so ``--json`` stdout stays pure."""
+    print(f"  {message}", file=sys.stderr, flush=True)
+
+
+def _doctor_fix_gateway(
+    config: dict[str, Any],
+    config_path: str,
+    sections: list[tuple[str, str, str]],
+    fixed_issues: list[str],
+) -> str | None:
+    """Persist the single healthy local gateway for an old config under --fix.
+
+    Writes ``gateway_url`` into ``verdict.yaml`` and, when the credential
+    store has no ``OMNIROUTE_BASE_URL`` yet, stores the same URL there (a URL,
+    not a secret). The process environment is never mutated. Returns the
+    repaired URL, or ``None`` when nothing was repaired.
+    """
+    from verdict import provider_detection
+    from verdict.credentials_store import CredentialsStore
+
+    try:
+        healthy = [g for g in provider_detection.probe_gateways() if g.health_ok]
+    except Exception as exc:
+        sections.append(("Gateway detection", "warn", str(exc)))
+        return None
+    if len(healthy) != 1:
+        if len(healthy) > 1:
+            sections.append(
+                (
+                    "Gateway detection",
+                    "warn",
+                    "Multiple healthy gateways found; set OMNIROUTE_BASE_URL to choose one.",
+                )
+            )
+        return None
+    url = healthy[0].url
+    config["gateway_url"] = url
+    try:
+        with open(config_path, "w") as f:
+            yaml.safe_dump(config, f, default_flow_style=False)
+    except Exception as exc:
+        sections.append(("Gateway repair failed", "failed", str(exc)))
+        return None
+    sections.append(("Gateway configured", "ok", f"gateway_url: {url}"))
+    fixed_issues.append("No gateway URL configured")
+    try:
+        store = CredentialsStore()
+        if "OMNIROUTE_BASE_URL" not in store.load():
+            store.set("OMNIROUTE_BASE_URL", url)
+            sections.append(("Stored credential", "ok", "OMNIROUTE_BASE_URL"))
+            fixed_issues.append("Required credential OMNIROUTE_BASE_URL is not set")
+    except PermissionError as exc:
+        sections.append(("Credential store", "failed", str(exc)))
+    return url
+
+
+def _collect_doctor_diagnostics(
+    fix: bool,
+    *,
+    interactive: bool,
+    preflight_timeout: float = DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
+    progress: Callable[[str], None] | None = None,
+) -> DoctorDiagnostics:
     """Run every ``verdict doctor`` check once and return the shared result.
 
     ``interactive`` controls only whether duplicate OmniRoute nodes may be
     removed after a confirmation prompt (never in ``--json`` mode, which must
     keep stdout machine-readable).
+
+    ``preflight_timeout`` bounds the documentation preflight in seconds
+    (``0`` or less means unbounded). ``progress``, when given, receives short
+    status lines before and during the (possibly slow) preflight work.
     """
     diag = DoctorDiagnostics()
     sections = diag.sections
@@ -2270,10 +2341,18 @@ def _collect_doctor_diagnostics(fix: bool, *, interactive: bool) -> DoctorDiagno
 
     from verdict.documentation_preflight import run_documentation_preflight
 
-    documentation_report = run_documentation_preflight(fix=fix)
+    if progress is not None:
+        progress("checking documentation memory (may take a while)...")
+    deadline_seconds = preflight_timeout if preflight_timeout > 0 else None
+    documentation_report = run_documentation_preflight(
+        fix=fix, progress=progress, deadline_seconds=deadline_seconds
+    )
     diag.documentation_preflight = documentation_report.to_dict()
-    network_only_doc_failure = not documentation_report.passed and (
-        _doctor_documentation_preflight_is_network_only_failure(documentation_report)
+    doc_timed_out = bool(getattr(documentation_report, "timed_out", False))
+    network_only_doc_failure = (
+        not doc_timed_out
+        and not documentation_report.passed
+        and _doctor_documentation_preflight_is_network_only_failure(documentation_report)
     )
     doc_state = (
         "ok" if documentation_report.passed else "warning" if network_only_doc_failure else "failed"
@@ -2288,7 +2367,16 @@ def _collect_doctor_diagnostics(fix: bool, *, interactive: bool) -> DoctorDiagno
             f"{documentation_report.missing} missing)",
         )
     )
-    if not documentation_report.passed:
+    if doc_timed_out:
+        # An incomplete scan never counts as ready or as a transient network
+        # warning: verification did not finish, so it is an unresolved issue.
+        issues_found.append(
+            f"Documentation preflight timed out after {preflight_timeout:g}s before every "
+            "document was checked. Rerun with 'verdict doctor --preflight-timeout 0' "
+            "(unbounded) or a larger value."
+        )
+        issues_found.extend(documentation_report.errors)
+    elif not documentation_report.passed:
         if network_only_doc_failure:
             # A rate-limited/unreachable third-party GitHub source with no
             # local documentation gap is a transient network condition, not
@@ -2431,6 +2519,12 @@ def _collect_doctor_diagnostics(fix: bool, *, interactive: bool) -> DoctorDiagno
 
     # 1d. Gateway reachability check (T015)
     gateway_url = os.getenv("OMNIROUTE_BASE_URL") or (config.get("gateway_url") if config else None)
+    if not gateway_url and fix and config is not None:
+        # Old-style configs (written before setup persisted gateway_url) have
+        # no gateway at all. --fix repairs this only when exactly one healthy
+        # local gateway answers the health protocol; an ambiguous or absent
+        # gateway is left as an issue for the operator to choose.
+        gateway_url = _doctor_fix_gateway(config, config_path, sections, fixed_issues)
     if not gateway_url:
         issues_found.append(
             "No gateway URL configured. Run 'verdict detect' or set OMNIROUTE_BASE_URL."
@@ -2599,17 +2693,25 @@ def _collect_doctor_diagnostics(fix: bool, *, interactive: bool) -> DoctorDiagno
     return diag
 
 
-def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
+def cmd_doctor(
+    fix: bool = False,
+    output_json: bool = False,
+    preflight_timeout: float = DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
+) -> None:
     """Scan the Verdict setup and OmniRoute connections for issues and repair them.
 
     Text and ``--json`` modes share one collector (``_collect_doctor_diagnostics``),
-    so both exit 1 iff unresolved issues remain after ``--fix``.
+    so both exit 1 iff unresolved issues remain after ``--fix``. Text mode
+    prints preflight progress lines on stderr; ``--json`` prints none, so
+    stdout stays pure JSON.
     """
     if output_json:
         from verdict.runtime_daemons import RuntimeManager
         from verdict.runtime_health import build_runtime_health_report
 
-        diag = _collect_doctor_diagnostics(fix, interactive=False)
+        diag = _collect_doctor_diagnostics(
+            fix, interactive=False, preflight_timeout=preflight_timeout
+        )
         report: dict[str, Any] = {
             "status": "issues_found" if diag.issues else "ok",
             "issues": diag.issues,
@@ -2633,7 +2735,9 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     ui.header("Doctor")
     # Interactive only for the optional duplicate-node removal prompt; the
     # set of issues/warnings is identical to --json mode.
-    diag = _collect_doctor_diagnostics(fix, interactive=True)
+    diag = _collect_doctor_diagnostics(
+        fix, interactive=True, preflight_timeout=preflight_timeout, progress=_doctor_progress
+    )
     ui.doctor(diag.capability_report)
     for label, state, detail in diag.sections:
         if state == "header":

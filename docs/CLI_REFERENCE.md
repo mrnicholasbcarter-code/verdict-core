@@ -360,6 +360,16 @@ verdict doctor [flags]
 |------|-------------|
 | `--fix` | Auto-fix issues |
 | `--json` | Output a machine-readable report |
+| `--preflight-timeout SECONDS` | Bound the documentation preflight (default `120`; `0` = unbounded) |
+
+Text mode prints progress lines on stderr before and during the documentation
+preflight (`checking documentation memory (may take a while)...`, then
+`checking documentation source <id>...` and, under `--fix`,
+`ingesting N/M documents (<source>: <path>)...`). `--json` prints no progress,
+so stdout stays pure JSON. The deadline is checked between documents and never
+interrupts a write. A preflight that hits the deadline reports
+`documentation_preflight.timed_out: true`, status `blocked`, and an issue that
+names `--preflight-timeout`. It is never reported as ready.
 
 Exit code: `0` when the host is healthy, `1` when unresolved issues remain
 (after `--fix` has been applied, if used). Text and `--json` modes run one
@@ -377,16 +387,23 @@ Issues (exit `1`):
 - Literal secret (`sk-` / `api_key`) in a provider `base_url`; duplicate provider `base_url`.
 - No `schema_version` (fixed by `--fix`).
 - Legacy `config.yaml` (renamed by `--fix`), or both `config.yaml` and `verdict.yaml` present.
-- No gateway URL, or gateway `/api/health` unreachable / not HTTP 200.
+- No gateway URL, or gateway `/api/health` unreachable / not HTTP 200. On an
+  old config with no `gateway_url`, `--fix` writes `gateway_url` only when
+  exactly one healthy local gateway is detected (ports 20128/20129/20132). It
+  also stores the same URL as `OMNIROUTE_BASE_URL` in the credentials store if
+  that entry is missing. When no gateway or more than one is found, the issue
+  stays.
 - Malformed `OMNIROUTE_BASE_URL` (expected `http://host:port`, no trailing slash); `OPENAI_API_KEY` without the `sk-` prefix.
 - Duplicate OmniRoute provider nodes; unreachable provider nodes.
 - Missing required credential.
-- Memory bridge: `missing_memory_db`, `missing_memory_db_file` (fixed by `--fix`).
-- Documentation preflight did not pass, unless it is network-only (see below).
+- Documentation preflight did not pass, unless it is network-only (see below),
+  or timed out (`--preflight-timeout`).
 
 Warnings (exit unaffected):
 
 - `missing_mcp_config` (no `./.mcp.json`; `--fix` creates it).
+- Memory bridge: `missing_memory_db`, `missing_memory_db_file` (`--fix` creates
+  `~/.verdict/` and initializes `memory.db`).
 - Documentation preflight network-only failure: `missing == 0`, `stale == 0`,
   `orphaned == 0`, and every error is a `resolve`/`inventory` fetch error that
   contains `rate limit`, `HTTP Error 429`, `URLError`, `timed out`,

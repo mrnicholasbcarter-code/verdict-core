@@ -931,14 +931,14 @@ class MemoryHookController:
 
 def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict[str, Any]:
     """Run diagnostics on memory bridge setup and optionally fix issues."""
-    issues = []
-    warnings = []
-    repaired = []
+    issues: list[str] = []
+    warnings: list[str] = []
+    repaired: list[str] = []
 
     # Check for .verdict directory
     verdict_dir = home_dir / ".verdict"
     if not verdict_dir.exists():
-        issues.append("missing_memory_db")
+        warnings.append("missing_memory_db")
         if fix:
             verdict_dir.mkdir(parents=True, exist_ok=True)
             repaired.append("created_verdict_dir")
@@ -946,7 +946,7 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
     # Check for memory.db
     memory_db = verdict_dir / "memory.db"
     if not memory_db.exists():
-        issues.append("missing_memory_db_file")
+        warnings.append("missing_memory_db_file")
         if fix:
             # Initialize empty SQLite database
             import sqlite3
