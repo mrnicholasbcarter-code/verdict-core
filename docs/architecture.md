@@ -130,7 +130,7 @@ and [ADR-032](adr/ADR-032-core-model-metadata-store.md).
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md) defines the shipped
 `verdict.orchestration` control plane. It owns a run from a goal through a
 validated DAG, bounded execution and independent review to a durable receipt.
-The [interview golden path](guides/interview-golden-path.md) documents the
+The [orchestration golden path](guides/orchestration-golden-path.md) documents the
 operator flow.
 
 ```

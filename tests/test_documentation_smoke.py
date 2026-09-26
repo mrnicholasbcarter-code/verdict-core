@@ -114,7 +114,7 @@ def test_documented_commands_are_present_and_maturity_is_truthful() -> None:
     assert "A blocked or skipped live run makes no lift claim." in readme
 
 
-def test_readme_recruiter_path_is_ordered_and_local_links_resolve() -> None:
+def test_readme_reader_path_is_ordered_and_local_links_resolve() -> None:
     readme_path = Path("README.md")
     readme = readme_path.read_text(encoding="utf-8")
 

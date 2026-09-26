@@ -1,6 +1,6 @@
 """External supervisor that keeps the orchestration controller process alive.
 
-BOD-159..166 (minimal interview-safe slice). The controller is a *process*
+BOD-159..166 (minimal demo-safe slice). The controller is a *process*
 (``python -m verdict orchestrate ... --resume <run_id>``) that publishes liveness
 in ``<run_dir>/progress.json`` and truth in ``<run_dir>/events.jsonl``. A
 controller killed by its own model quota cannot restart itself, so it is

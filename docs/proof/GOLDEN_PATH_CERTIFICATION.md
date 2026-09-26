@@ -1,9 +1,9 @@
-# Interview golden-path certification
+# Orchestration golden-path certification
 
-- **Branch:** `feat/interview-golden-path` @ `bafdfb5`. The fresh clone was made from this commit.
+- **Branch:** `feat/interview-golden-path` @ `bafdfb5` (historical branch name). The fresh clone was made from this commit.
 - **Date:** 2026-09-24
 - **Host:** 4 CPU, 8 GB RAM. OmniRoute v3.8.50 on 127.0.0.1:20128 with the admission and
-  limiter settings from [the runbook](../guides/interview-golden-path.md#prerequisites).
+  limiter settings from [the runbook](../guides/orchestration-golden-path.md#prerequisites).
 - **Evidence directory:** `~/.verdict/evidence/golden-path/`. It holds event logs, receipts,
   per-attempt records and console transcripts. Credentials were scanned out and none were found.
 

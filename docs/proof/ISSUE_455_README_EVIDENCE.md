@@ -46,11 +46,11 @@ Limitations: the capture proves an isolated wheel installation and deterministic
 Red phase after adding exact-output and link/fragment tests:
 
 - `test_readme_quickstart_output_matches_packaged_report` failed because README omitted the canonical `Task:` and `Required capabilities:` lines.
-- `test_readme_recruiter_path_is_ordered_and_local_links_resolve` initially failed because the validator treated a valid directory target (`docs/adr/`) as requiring a regular file.
+- `test_readme_reader_path_is_ordered_and_local_links_resolve` (renamed for audience-neutral wording in the public-docs remediation pass) initially failed because the validator treated a valid directory target (`docs/adr/`) as requiring a regular file.
 
 Green phase after minimal corrections:
 
-- Command: `.venv/bin/python -m pytest -q tests/test_flagship_demo.py::test_readme_quickstart_output_matches_packaged_report tests/test_documentation_smoke.py::test_readme_recruiter_path_is_ordered_and_local_links_resolve`
+- Command: `.venv/bin/python -m pytest -q tests/test_flagship_demo.py::test_readme_quickstart_output_matches_packaged_report tests/test_documentation_smoke.py::test_readme_reader_path_is_ordered_and_local_links_resolve`
 - Result: `2 passed`
 
 Final focused checks on the implementation dirty worktree:

@@ -1,7 +1,8 @@
 # ADR-029: Portfolio repositioning plan — hygiene, positioning, launch
 
-- **Status:** Accepted
+- **Status:** Superseded (by this remediation)
 - **Date:** 2026-09-06
+- **Superseded note:** The launch-sequencing and job-search framing in this ADR is no longer the repo's direction; the career-collateral artifacts it referenced (résumé and professional-network profile drafts, a technical-narrative bank, and a press-release package) were removed from the repository in the public-docs remediation pass. This record is kept for the historical decision trail cited by ADR-030 and `docs/DEAD_CODE_AUDIT.md`.
 - **Deciders:** Nick (repo owner)
 - **Related:** [ADR-028](ADR-028-launch-gate-tooling.md); workspace-level ADR "GitHub Portfolio Cleanup" in `/home/nick/dev/CLAUDE-decisions.md` (2026-09-06); tracked via GitHub Project "Verdict Portfolio Plan" (`mrnicholasbcarter-code`, project #5) and issues #439–#448 in this repo
 

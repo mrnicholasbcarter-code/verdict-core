@@ -1,6 +1,6 @@
 # Documentation Audit — Disposition Record
 
-**Branch line:** interview golden path (BOD-189 documentation pass)
+**Branch line:** orchestration golden path (BOD-189 documentation pass)
 **Recorded:** 2026-09-24
 **Test count on this branch:** 2907 (from `pytest --collect-only -q`)
 **Repository:** https://github.com/mrnicholasbcarter-code/verdict-core
@@ -114,8 +114,8 @@ orchestration).
 
 | File | Status | Reason |
 |------|--------|--------|
-| docs/guides/interview-golden-path.md | KEEP | Authoritative end-to-end orchestration proof; all five commands verified against `--help`. |
-| docs/guides/golden-path.md | KEEP | Accurate dated live-probe evidence; interview-golden-path.md is canonical for orchestration. |
+| docs/guides/orchestration-golden-path.md | KEEP | Authoritative end-to-end orchestration proof; all five commands verified against `--help`. |
+| docs/guides/golden-path.md | KEEP | Accurate dated live-probe evidence; orchestration-golden-path.md is canonical for orchestration. |
 | docs/guides/admit-prove-confirm-smoke.md | KEEP | Commands match the CLI. |
 | docs/guides/autonomous-development.md | KEEP | BOD-17 note present; swarm mentions are labeled historical, not product claims. |
 | docs/guides/claude-harness.md | KEEP | Accurate harness setup. |
@@ -156,21 +156,21 @@ orchestration).
 | File | Status | Reason |
 |------|--------|--------|
 | docs/patterns/privacy-safe-execution-evidence.md | KEEP | No live swarm claims; its ADR-001 link must be repointed to docs/archive/architecture/ (or docs/adr/ADR-001) by its owner after the archive move. |
-| docs/portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md | REWRITTEN | Ruflo product claims removed in this pass. |
+| docs/portfolio/[REMOVED: STAR-format career narrative collection] | DELETED | Career-collateral file removed in the public-docs remediation pass. |
 | docs/portfolio/AI_GATEWAY_ASSURANCE_AUDIT.md | KEEP | No stale technical claims. |
 | docs/portfolio/KALSHI_TRADING_BOTS_CASE_STUDY.md | KEEP | External case study; no Verdict claims to verify. |
-| docs/portfolio/LINKEDIN_PROFILE_AND_STRATEGY.md | REWRITTEN | Ruflo product claims removed in this pass. |
+| docs/portfolio/[REMOVED: professional-network profile draft] | DELETED | Career-collateral file removed in the public-docs remediation pass. |
 | docs/portfolio/PORTFOLIO_PROOF_MATRIX.md | KEEP | Verified claims with limitations noted. |
-| docs/portfolio/PRESS_RELEASE_AND_SHOWCASE_PACKAGE.md | REWRITTEN | Ruflo/swarm product claims removed in this pass. |
-| docs/portfolio/RESUME_SUITE.md | REWRITTEN | Ruflo/RuVector/SONA product claims removed in this pass. |
+| docs/portfolio/PRESS_RELEASE_AND_SHOWCASE_PACKAGE.md | DELETED | Career-collateral file removed in the public-docs remediation pass. |
+| docs/portfolio/RESUME_SUITE.md | DELETED | Career-collateral file removed in the public-docs remediation pass. |
 | docs/portfolio/VERDICT_PROOF_CASE_STUDY.md | KEEP | Bounded, hedged proof case study. |
 | docs/privacy/retention-erasure.md | KEEP | Consistent with ADR-017. |
 | docs/privacy/telemetry-consent.md | KEEP | Swarm telemetry described only as deleted; boundary note present. |
 | docs/proof/ADVERSARIAL_REVIEW_CHECKLIST.md | KEEP | Accurate review checklist. |
 | docs/proof/CLAIMS_AUDIT_2026-09-06.md | KEEP | Self-aware claim classification audit. |
 | docs/proof/EVIDENCE_INDEX.md | KEEP | Accurately cites limitations. |
-| docs/proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md | KEEP | Fresh-clone gates: 2907 tests, ruff, mypy; certified 2026-09-24. |
-| docs/proof/INTERVIEW_HARDENING_CERTIFICATION.md | KEEP | Factual BOD-178..183 cleanup record. |
+| docs/proof/GOLDEN_PATH_CERTIFICATION.md | KEEP | Fresh-clone gates: 2907 tests, ruff, mypy; certified 2026-09-24. Renamed to drop career framing in the public-docs remediation pass. |
+| docs/proof/[REMOVED: self-marked-superseded hardening record] | DELETED | Self-marked superseded record removed in the public-docs remediation pass. |
 | docs/proof/ISSUE_455_README_EVIDENCE.md | KEEP | Swarm mentioned only as accurately framed history. |
 | docs/proof/PRIVATE_LEDGER_TEMPLATE.md | KEEP | Template; no claims. |
 | docs/proof/REDACTION_POLICY.md | KEEP | Accurate redaction policy. |

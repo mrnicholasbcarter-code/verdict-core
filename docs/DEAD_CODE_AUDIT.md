@@ -65,7 +65,7 @@ These modules have no importer in `verdict/` itself or `scripts/`. They are exer
 | `scripts/proof/secrets_scan.py` | — | **REMOVE-CANDIDATE** | no references in CI, docs, pyproject, or tests |
 | `scripts/quickstart.py` | acceptance-gates.yml | **KEEP** | referenced by acceptance-gates.yml |
 | `scripts/record_waiver.py` | test_record_waiver.py | **KEEP** | referenced by test_record_waiver.py |
-| `scripts/terminal_preview.py` | BRANCH_RECONCILIATION.md, INTERVIEW_HARDENING_CERTIFICATION.md | **KEEP** | owner decision: KEEP |
+| `scripts/terminal_preview.py` | BRANCH_RECONCILIATION.md | **KEEP** | owner decision: KEEP |
 | `scripts/validate_contract_schema.py` | architecture.md, ci.yml | **KEEP** | referenced by architecture.md, ci.yml |
 | `scripts/verify_gates.py` | test_verify_gates.py, test_generate_gates_report.py | **KEEP** | referenced by test_verify_gates.py, test_generate_gates_report.py |
 | `scripts/verify_proof_matrix.py` | PORTFOLIO_PROOF_MATRIX.md, CLAIMS_AUDIT_2026-09-06.md | **KEEP** | referenced by PORTFOLIO_PROOF_MATRIX.md, CLAIMS_AUDIT_2026-09-06.md |

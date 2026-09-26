@@ -146,7 +146,7 @@ not the first public product slice and does not block the core vertical slice.
 
 Implementation is tracked in private GitHub Project #6 as four epics:
 
-- **E1 — Apply-ready flagship:** claim inventory, recruiter README, no-key proof demo, proof
+- **E1 — Apply-ready flagship:** claim inventory, review-ready README, no-key proof demo, proof
   matrix, and case study.
 - **E2 — Proof-carrying decision plane:** context pack, provider conformance, eligibility,
   fail-closed routing, receipts, and claims.
@@ -187,7 +187,7 @@ cockpit a consumer of real receipts.
 ### Optimize for 40k stars before applying
 
 **Rejected:** The portfolio review found no realistic solo-dev path to 40k stars in twelve
-months without a major coattail event. A recruiter-readable flagship, verifiable evidence, and
+months without a major coattail event. A clearly documented flagship, verifiable evidence, and
 a clear technical case study produce near-term job value; distribution and stars are later
 outcomes.
 

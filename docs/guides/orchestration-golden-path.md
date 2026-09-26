@@ -1,7 +1,7 @@
-# Interview golden path
+# Orchestration golden path
 
-One goal in, one verified receipt out. This guide uses only commands that exist on
-`feat/interview-golden-path`. Every claim below links to a recorded run. See [Evidence](#evidence).
+One goal in, one verified receipt out. This guide uses only commands that exist in
+this repository. Every claim below links to a recorded run. See [Evidence](#evidence).
 
 ## What the audience sees
 

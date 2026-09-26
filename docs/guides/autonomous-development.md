@@ -6,7 +6,7 @@ state agree.
 
 > **Current orchestration:** For goal-to-receipt execution, use
 > [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) and the
-> [interview golden path](interview-golden-path.md).
+> [orchestration golden path](orchestration-golden-path.md).
 
 ## 1. Establish context before editing
 
@@ -60,7 +60,7 @@ verdict run-receipt <run-id-or-directory>
 ```
 
 Use `verdict supervise` when the controller itself needs bounded restart and
-resume supervision. See [interview golden path](interview-golden-path.md) for
+resume supervision. See [orchestration golden path](orchestration-golden-path.md) for
 its required arguments and a complete example.
 
 ## 4. Treat model inventory as discovery, not proof
