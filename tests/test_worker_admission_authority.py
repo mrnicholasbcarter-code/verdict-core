@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from verdict import availability, omniroute, worker_runtime
+from verdict import omniroute, worker_runtime
 from verdict.availability import CandidateRequirements, OmniRouteAvailabilityAdapter, StaticOmniRouteTransport
 from verdict.subagent_selection import WorkerTask
 
@@ -37,12 +37,15 @@ def _runtime(**rows: dict[str, object]) -> dict[str, dict[str, object]]:
     }
 
 
-def test_candidate_requirements_can_require_measured_usage_evidence() -> None:
-    assert "require_usage_evidence" in CandidateRequirements.__dataclass_fields__
+def test_worker_admission_requires_measured_usage_evidence() -> None:
+    admit = getattr(worker_runtime, "admitted_worker_candidates", None)
+    assert callable(admit)
 
+    rows = _catalog("cc/no-usage", "kr/usable")["data"]
+    assert isinstance(rows, list)
     report = OmniRouteAvailabilityAdapter(
         StaticOmniRouteTransport(
-            _catalog("cc/no-usage", "kr/usable"),
+            {"data": rows},
             _runtime(
                 **{
                     "cc/no-usage": {},
@@ -50,25 +53,34 @@ def test_candidate_requirements_can_require_measured_usage_evidence() -> None:
                 }
             ),
         )
-    ).evaluate(CandidateRequirements(require_usage_evidence=True), now=NOW)
+    ).evaluate(CandidateRequirements(), now=NOW)
 
-    assert [candidate.model.id for candidate in report.eligible] == ["kr/usable"]
-    rejected = next(candidate for candidate in report.candidates if candidate.model.id == "cc/no-usage")
-    explanation = next(
-        row
-        for row in availability.explain_candidates(
-            list(report.candidates), CandidateRequirements(require_usage_evidence=True)
-        )
-        if row["model"] == rejected.model.id
+    # Canonical availability is authoritative; worker policy may only narrow it.
+    assert {candidate.model.id for candidate in report.eligible} == {"cc/no-usage", "kr/usable"}
+    task = WorkerTask(
+        required_capabilities=frozenset({"tools"}),
+        coding=True,
+        allowed_route_prefixes=frozenset({"cc/", "kr/"}),
     )
-    assert explanation["rejected"] is True
-    assert explanation["reason"] == "usage evidence unknown"
+    candidates = admit(
+        task,
+        rows,
+        ["omniroute/cc/no-usage", "omniroute/kr/usable"],
+        report,
+        require_usage_evidence=True,
+    )
+    assert [candidate.route_id for candidate in candidates] == ["kr/usable"]
 
 
 def test_zero_quota_is_never_admitted_even_if_health_is_healthy() -> None:
+    admit = getattr(worker_runtime, "admitted_worker_candidates", None)
+    assert callable(admit)
+
+    rows = _catalog("cc/exhausted", "kr/usable")["data"]
+    assert isinstance(rows, list)
     report = OmniRouteAvailabilityAdapter(
         StaticOmniRouteTransport(
-            _catalog("cc/exhausted", "kr/usable"),
+            {"data": rows},
             _runtime(
                 **{
                     "cc/exhausted": {"quota_remaining_pct": 0.0},
@@ -76,11 +88,22 @@ def test_zero_quota_is_never_admitted_even_if_health_is_healthy() -> None:
                 }
             ),
         )
-    ).evaluate(CandidateRequirements(require_usage_evidence=True), now=NOW)
+    ).evaluate(CandidateRequirements(), now=NOW)
 
-    assert [candidate.model.id for candidate in report.eligible] == ["kr/usable"]
     exhausted = next(candidate for candidate in report.candidates if candidate.model.id == "cc/exhausted")
     assert exhausted.state.value == "quota_exhausted"
+    candidates = admit(
+        WorkerTask(
+            required_capabilities=frozenset({"tools"}),
+            coding=True,
+            allowed_route_prefixes=frozenset({"cc/", "kr/"}),
+        ),
+        rows,
+        ["omniroute/cc/exhausted", "omniroute/kr/usable"],
+        report,
+        require_usage_evidence=True,
+    )
+    assert [candidate.route_id for candidate in candidates] == ["kr/usable"]
 
 
 def test_runtime_source_selection_uses_every_documented_source_credentials_allow() -> None:
@@ -112,7 +135,7 @@ def test_worker_runtime_intersects_canonical_availability_before_ranking() -> No
                 }
             ),
         )
-    ).evaluate(CandidateRequirements(require_usage_evidence=True), now=NOW)
+    ).evaluate(CandidateRequirements(), now=NOW)
 
     task = WorkerTask(
         required_capabilities=frozenset({"tools"}),
@@ -121,7 +144,7 @@ def test_worker_runtime_intersects_canonical_availability_before_ranking() -> No
         excluded_route_ids=frozenset({"cc/active-controller"}),
     )
     prime_selectors = [f"omniroute/{row['id']}" for row in rows]
-    candidates = admit(task, rows, prime_selectors, report)
+    candidates = admit(task, rows, prime_selectors, report, require_usage_evidence=True)
 
     assert [candidate.route_id for candidate in candidates] == ["kr/usable"]
 
