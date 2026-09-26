@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from verdict import worker_runtime
-from verdict.availability import CandidateRequirements, OmniRouteAvailabilityAdapter, StaticOmniRouteTransport
+from verdict.availability import (
+    CandidateRequirements,
+    OmniRouteAvailabilityAdapter,
+    StaticOmniRouteTransport,
+)
 from verdict.subagent_selection import WorkerTask
 
 NOW = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
@@ -46,12 +50,7 @@ def test_worker_admission_requires_measured_usage_evidence() -> None:
     report = OmniRouteAvailabilityAdapter(
         StaticOmniRouteTransport(
             {"data": rows},
-            _runtime(
-                **{
-                    "cc/no-usage": {},
-                    "kr/usable": {"quota_remaining_pct": 75.0},
-                }
-            ),
+            _runtime(**{"cc/no-usage": {}, "kr/usable": {"quota_remaining_pct": 75.0}}),
         )
     ).evaluate(CandidateRequirements(), now=NOW)
 
@@ -90,7 +89,9 @@ def test_zero_quota_is_never_admitted_even_if_health_is_healthy() -> None:
         )
     ).evaluate(CandidateRequirements(), now=NOW)
 
-    exhausted = next(candidate for candidate in report.candidates if candidate.model.id == "cc/exhausted")
+    exhausted = next(
+        candidate for candidate in report.candidates if candidate.model.id == "cc/exhausted"
+    )
     assert exhausted.state.value == "quota_exhausted"
     candidates = admit(
         WorkerTask(
