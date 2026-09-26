@@ -77,12 +77,11 @@ jobs:
         run: python scripts/produce_parity_evidence.py --evidence-dir evidence
 
       - name: Check out verdict-node forwarder suite (G4.4 evidence)
-        # Pinned to the exact commit of verdict-node PR #82 (ci/forwarder-junit).
-        # Move this to the released tag once BOD-233 ships.
+        # Pinned to verdict-node v0.2.0 (tag v0.2.0). Bump when a new verdict-node release ships.
         uses: actions/checkout@v7
         with:
           repository: mrnicholasbcarter-code/verdict-node
-          ref: bf073d34c2cb20280cd20be12891fad0c2fbd3fd
+          ref: 65feea5f62f9d219ddfaffeb0e6b03e31b987e70
           path: verdict-node
 
       - name: Install verdict-node dependencies and local contracts (G4.4 evidence)
