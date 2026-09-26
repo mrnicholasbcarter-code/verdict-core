@@ -2179,12 +2179,77 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
         )
 
 
+def _doctor_config_file_issues() -> list[str]:
+    """Return issues from loading verdict.yaml (missing or corrupt).
+
+    Mirrors the read-only check performed by the text-mode doctor so that
+    ``--json`` mode can agree on exit status for the same host state.
+    """
+    config_dir = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
+    )
+    config_path = os.path.join(config_dir, "verdict.yaml")
+    issues: list[str] = []
+    if not os.path.exists(config_path):
+        issues.append("Configuration file (verdict.yaml) is missing.")
+    else:
+        try:
+            with open(config_path) as f:
+                yaml.safe_load(f)
+        except Exception as exc:
+            issues.append(f"Configuration file is corrupted/invalid YAML: {exc}")
+    return issues
+
+
+def _doctor_required_credential_issues() -> list[str]:
+    """Return issues for missing required credentials.
+
+    Mirrors the text-mode credentials check so that ``--json`` mode can
+    agree on exit status for the same host state.
+    """
+    from verdict.credentials_registry import CREDENTIALS
+    from verdict.credentials_store import CredentialsStore, get_credential_source
+
+    issues: list[str] = []
+    try:
+        store = CredentialsStore()
+        for cred in CREDENTIALS:
+            source, _masked = get_credential_source(cred.env_name, store)
+            if source == "missing" and not cred.optional:
+                issues.append(
+                    f"Required credential {cred.env_name} is not set. "
+                    f"Set with: verdict credentials set {cred.env_name}"
+                )
+    except Exception as e:
+        issues.append(f"Credential check failed: {e}")
+    return issues
+
+
+def _doctor_documentation_preflight_is_network_only_failure(errors: tuple[str, ...]) -> bool:
+    """Return True when every documentation preflight error is a transient
+    network/rate-limit condition rather than a genuinely stale or missing
+    local documentation set.
+
+    The authoritative documentation preflight fetches third-party GitHub
+    repositories unrelated to routing. A rate-limited or unreachable
+    third-party API call must not fail ``verdict doctor`` on an otherwise
+    healthy OmniRoute host; it is a non-fatal warning instead. A real gap in
+    local documentation state (stale/missing content with no network error)
+    must still be reported as an issue.
+    """
+    if not errors:
+        return False
+    markers = ("http error 403", "http error 429", "urlerror", "timed out", "rate limit")
+    return all(any(marker in error.lower() for marker in markers) for error in errors)
+
+
 def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     """Scan the Verdict setup and OmniRoute connections for issues and repair them."""
     if output_json:
         from pathlib import Path
 
         from verdict.capability_bootstrap import doctor_capability_report
+        from verdict.documentation_preflight import run_documentation_preflight
         from verdict.memory_bridge import run_doctor_diagnostics
         from verdict.runtime_daemons import RuntimeManager
         from verdict.runtime_health import build_runtime_health_report
@@ -2192,8 +2257,36 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
         report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
         report["capability_bootstrap"] = doctor_capability_report()
+
+        # Fold in config-file, required-credential, and documentation
+        # preflight checks so --json agrees with text-mode exit status for
+        # the same host state (real problems such as a corrupt verdict.yaml
+        # or a missing required credential must not be swallowed by --json;
+        # conversely a third-party GitHub rate limit must not fail --json
+        # either, matching text mode).
+        extra_issues = _doctor_config_file_issues() + _doctor_required_credential_issues()
+
+        documentation_report = run_documentation_preflight(fix=fix)
+        report["documentation_preflight"] = documentation_report.to_dict()
+        report_warnings = list(report.get("warnings", []))
+        if not documentation_report.passed:
+            if _doctor_documentation_preflight_is_network_only_failure(documentation_report.errors):
+                report_warnings.append("authoritative documentation preflight unreachable")
+            else:
+                extra_issues.extend(
+                    [
+                        "authoritative documentation preflight did not pass",
+                        *documentation_report.errors,
+                    ]
+                )
+
+        if extra_issues:
+            report["issues"] = list(report.get("issues", [])) + extra_issues
+            report["status"] = "issues_found"
+        report["warnings"] = report_warnings
+
         print(json.dumps(report, indent=2, sort_keys=True))
-        if report["status"] != "healthy":
+        if report["status"] != "ok":
             raise SystemExit(1)
         return
 
@@ -2215,12 +2308,18 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
     ui.status("Capability coverage", "ok", f"{covered}/{total} covered (bootstrap view)")
 
     issues_found = []
+    warnings_found: list[str] = []
     fixed_issues = []
 
     from verdict.documentation_preflight import run_documentation_preflight
 
     documentation_report = run_documentation_preflight(fix=fix)
-    doc_state = "ok" if documentation_report.passed else "failed"
+    network_only_doc_failure = not documentation_report.passed and (
+        _doctor_documentation_preflight_is_network_only_failure(documentation_report.errors)
+    )
+    doc_state = (
+        "ok" if documentation_report.passed else "warning" if network_only_doc_failure else "failed"
+    )
     ui.status(
         "Documentation preflight",
         doc_state,
@@ -2230,9 +2329,17 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         f"{documentation_report.missing} missing)",
     )
     if not documentation_report.passed:
-        issues_found.extend(
-            ["authoritative documentation preflight did not pass", *documentation_report.errors]
-        )
+        if network_only_doc_failure:
+            # A rate-limited/unreachable third-party GitHub source is a
+            # transient network condition, not a real problem with this
+            # host's routing setup. It must not fail `verdict doctor`.
+            warnings_found.extend(
+                ["authoritative documentation preflight unreachable", *documentation_report.errors]
+            )
+        else:
+            issues_found.extend(
+                ["authoritative documentation preflight did not pass", *documentation_report.errors]
+            )
     elif fix and documentation_report.ingested:
         fixed_issues.append("authoritative documentation preflight repaired")
 
@@ -2490,11 +2597,15 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         issues_found.append(f"Credential check failed: {e}")
 
     # One shared presentation for the existing diagnostic results.
+    for warning in warnings_found:
+        ui.status("WARNING", "warning", warning)
     ui.doctor_summary(issues_found, fixed_issues)
     if issues_found and not config:
         ui.panel(
             "Next step", "Run verdict setup to initialize your configuration file.", tone="WARNING"
         )
+    if issues_found:
+        raise SystemExit(1)
 
 
 def cmd_run(
