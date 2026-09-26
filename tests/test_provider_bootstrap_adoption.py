@@ -241,7 +241,93 @@ def test_resolve_default_providers_announces_the_builtin_set(
     _primary, providers = resolve_default_providers(allow_offline=True)
 
     assert set(providers) == {"omniroute", "public_ollama"}
-    assert "default_provider_fallback" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "default_provider_fallback" in err
+    # Rendered through BootstrapDiagnostic.describe(), not a hand-built string.
+    assert "[configuration] field=providers source=default:" in err
+    assert "refused under profile 'production'" in err
+
+
+def test_resolve_default_providers_refuses_under_the_production_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The library resolver refuses a defaulted provider set exactly like the CLI."""
+    from verdict.gate import resolve_default_providers
+    from verdict.provider_bootstrap import BootstrapError
+
+    _config_home(tmp_path, monkeypatch, None)
+    monkeypatch.setenv("LLMGATE_INTELLIGENCE_PROFILE", "production")
+
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_default_providers(allow_offline=True)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "default_providers_forbidden"
+    assert diagnostic.diagnostic_class == "configuration"
+    assert diagnostic.field == "providers"
+
+
+def test_resolve_default_providers_refuses_when_authoritative_execution_is_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """require_authoritative refuses the built-in set in any profile."""
+    from verdict.gate import resolve_default_providers
+    from verdict.provider_bootstrap import BootstrapError
+
+    _config_home(tmp_path, monkeypatch, None)
+
+    with pytest.raises(BootstrapError) as excinfo:
+        resolve_default_providers(allow_offline=True, require_authoritative=True)
+
+    assert excinfo.value.diagnostics[0].code == "default_providers_forbidden"
+
+
+def test_gate_refuses_default_providers_under_production_without_port_scanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Gate() path (MCP server, comparison harness) fails closed under production.
+
+    The refusal is taken from the offline contract, so no provider detection
+    (a live localhost port scan) runs first.
+    """
+    import verdict.provider_detection as provider_detection
+    from verdict.gate import Gate
+    from verdict.provider_bootstrap import BootstrapError
+
+    _config_home(tmp_path, monkeypatch, None)
+    monkeypatch.setenv("LLMGATE_INTELLIGENCE_PROFILE", "production")
+
+    calls: list[object] = []
+
+    def _spy(*args: object, **kwargs: object) -> dict[str, object]:
+        calls.append(args)
+        return {}
+
+    monkeypatch.setattr(provider_detection, "detect_all_providers", _spy)
+
+    with pytest.raises(BootstrapError) as excinfo:
+        Gate()
+
+    assert excinfo.value.diagnostics[0].code == "default_providers_forbidden"
+    assert calls == []
+
+
+def test_gate_still_builds_the_builtin_set_outside_production(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interactive local use keeps the built-in set when detection finds nothing."""
+    import verdict.provider_detection as provider_detection
+    from verdict.gate import Gate
+
+    _config_home(tmp_path, monkeypatch, None)
+    monkeypatch.setattr(provider_detection, "detect_all_providers", lambda *a, **k: {})
+    monkeypatch.setattr(
+        provider_detection, "generate_verdict_config", lambda *a, **k: {"providers": {}}
+    )
+
+    gate = Gate()
+
+    assert set(gate.providers) == {"omniroute", "public_ollama"}
 
 
 # --- API serve path ---------------------------------------------------------

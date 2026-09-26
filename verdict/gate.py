@@ -64,24 +64,38 @@ def strategy_from_decision(decision: RoutingDecision) -> StrategySelection:
     )
 
 
-def resolve_default_providers(allow_offline: bool = False) -> tuple[str, dict[str, ProviderConfig]]:
+def resolve_default_providers(
+    allow_offline: bool = False, *, require_authoritative: bool = False
+) -> tuple[str, dict[str, ProviderConfig]]:
     """Load config via the shared bootstrap contract, else auto-detect.
 
     Malformed configuration is a named refusal from the bootstrap contract rather
     than a silently ignored file. The built-in local set remains the last resort
     for interactive use, and the bootstrap contract reports it as a ``default``
     source with an actionable diagnostic.
+
+    A defaulted provider set is refused, exactly as the CLI refuses it, when the
+    resolved profile is ``production`` or when the caller requires authoritative
+    execution: the ``default_providers_forbidden`` ``BootstrapError`` propagates.
+    That decision is taken before any provider detection runs, so a refused
+    bootstrap never triggers a port scan.
     """
     import sys
 
     from verdict.provider_bootstrap import (
         DEFAULT_LOCAL_PROVIDERS,
         BootstrapError,
+        BootstrapResult,
         resolve_provider_bootstrap,
     )
 
     primary_model = DEFAULT_PRIMARY_MODEL
     providers: dict[str, ProviderConfig] = {}
+
+    def report(result: BootstrapResult) -> None:
+        for note in result.notes():
+            if note.code != "config_file_missing":
+                print(f"verdict: {note.describe()}", file=sys.stderr)
 
     try:
         bootstrap = resolve_provider_bootstrap()
@@ -90,12 +104,22 @@ def resolve_default_providers(allow_offline: bool = False) -> tuple[str, dict[st
             # Malformed or unreadable configuration must not be swallowed.
             raise
         bootstrap = None
-    if bootstrap is not None:
+
+    fallback: BootstrapResult | None = None
+    if bootstrap is None:
+        # Resolve the built-in local set through the contract before touching the
+        # network. Under profile=production, or when the caller requires
+        # authoritative execution, this raises default_providers_forbidden.
+        fallback = resolve_provider_bootstrap(
+            allow_default_providers=True,
+            default_providers=DEFAULT_LOCAL_PROVIDERS,
+            require_authoritative=require_authoritative,
+        )
+        primary_model = fallback.primary_model
+    else:
         primary_model = bootstrap.primary_model
         providers = bootstrap.provider_configs()
-        for note in bootstrap.notes():
-            if note.code != "config_file_missing":
-                print(f"verdict: {note.describe()}", file=sys.stderr)
+        report(bootstrap)
 
     if not providers and not allow_offline:
         from verdict.provider_detection import detect_all_providers, generate_verdict_config
@@ -110,17 +134,9 @@ def resolve_default_providers(allow_offline: bool = False) -> tuple[str, dict[st
                     base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env")
                 )
 
-    if not providers:
-        providers = {
-            name: ProviderConfig(base_url=url) for name, url in DEFAULT_LOCAL_PROVIDERS.items()
-        }
-        print(
-            "verdict: default_provider_fallback [configuration] field=providers source=default: "
-            f"no provider configuration from any canonical source; using built-in local "
-            f"defaults ({', '.join(f'{n}={u}' for n, u in sorted(DEFAULT_LOCAL_PROVIDERS.items()))})"
-            "; remediation: set OMNIROUTE_BASE_URL, or run 'verdict setup'",
-            file=sys.stderr,
-        )
+    if not providers and fallback is not None:
+        providers = fallback.provider_configs()
+        report(fallback)
 
     return primary_model, providers
 
