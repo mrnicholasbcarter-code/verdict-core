@@ -335,3 +335,18 @@ def test_constructor_guard_is_a_capability_not_a_flag() -> None:
         dataclasses.replace(admitted, records=widened)
     # Legitimate derivations keep working and stay narrow.
     assert admitted.narrow(AdmissionStage.DOWNSTREAM, "x", lambda _r: True).ids == admitted.ids
+
+
+def test_prefix_scope_matches_on_family_boundary() -> None:
+    admitted = admit(
+        [row("kr/a"), row("krypton/b"), row("omniroute/kr/c")],
+        [conn("kr"), conn("krypton")],
+        RuntimeEvidence(),
+        now=NOW,
+    )
+    for scope in (["kr"], ["kr/"], ["omniroute/kr"], [" kr "]):
+        scoped = admitted.restrict_prefixes(scope)
+        assert scoped.ids == frozenset({"kr/a", "kr/c"}), scope
+        assert scoped.first_failure("krypton/b").first_failed_stage is AdmissionStage.WORKER_SCOPE
+    # A prefix that already names a path narrows within the family.
+    assert admitted.restrict_prefixes(["kr/a"]).ids == frozenset({"kr/a"})

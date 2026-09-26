@@ -517,7 +517,11 @@ class AdmittedSet:
         cleaned = tuple(p.strip() for p in prefixes if p and p.strip())
         if not cleaned:
             return self
-        canon = tuple(canonical_route_id(p) for p in cleaned)
+        # A bare family ("kr") matches on the family boundary ("kr/..."), so it
+        # never admits "krypton/...". A prefix with "/" narrows within a family.
+        canon = tuple(
+            c if "/" in c else c + "/" for c in (canonical_route_id(p) for p in cleaned) if c
+        )
         return self.narrow(
             AdmissionStage.WORKER_SCOPE,
             "outside_worker_route_prefix",
