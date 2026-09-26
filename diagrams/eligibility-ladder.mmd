@@ -1,0 +1,58 @@
+%% eligibility-ladder.mmd -- DISCOVERED -> ENTITLED -> HEALTHY -> AVAILABLE -> TASK_ELIGIBLE -> SELECTED
+%% Source (verified against code at this commit):
+%%   verdict/orchestration/contracts.py (EligibilityStage, RouteVerdict, TaskRequirements)
+%%   verdict/orchestration/eligibility.py (EligibilityLadder._assess, _task_gate, select, _rank_key, cooldown_seconds_for)
+stateDiagram-v2
+    direction TB
+    [*] --> DISCOVERED
+
+    DISCOVERED : present in the inventory rows passed to EligibilityLadder
+    ENTITLED : an active provider connection backs the route (conn.isActive)
+    HEALTHY : recent probe recorded healthy, or none yet recorded (lazy)
+    AVAILABLE : no active route/provider cooldown, no rate-limit window
+    TASK_ELIGIBLE : capabilities, context, exclusions, frontier policy fit
+    SELECTED : ranked first among selectable candidates and probe-confirmed healthy
+
+    state NotDiscovered {
+        [*] --> OpaqueSkipped
+        OpaqueSkipped : route id starts with auto/, combo/, router/, virtual/, or owned_by == "combo" -- skipped before assessment, never emitted
+    }
+
+    DISCOVERED --> NotDiscovered : opaque prefix or combo owner -> never DISCOVERED, no verdict at all
+    DISCOVERED --> ENTITLED : _connection_for(provider) returns a connection and conn.isActive
+    DISCOVERED --> FailedEntitled : conn is None or not isActive -> reason=no_active_account
+    DISCOVERED --> FailedEntitled2 : harness_visible(route_id) is False -> reason=not_harness_visible (or harness_inventory_unavailable if the harness gate itself is unavailable)
+
+    ENTITLED --> HEALTHY : _health_status returns anything other than unhealthy (healthy, unprobed, or stale all continue)
+    ENTITLED --> FailedHealthy : _health_status == unhealthy -> failed_stage=HEALTHY, reason=health_category, cooldown_until set if a route cooldown is active
+
+    HEALTHY --> AVAILABLE : no active cooldown for route:ROUTE_ID or provider:PROVIDER, and no rate_limited_until window covers now
+    HEALTHY --> FailedAvailable : active cooldown route:ROUTE_ID -> reason=cooldown:route
+    HEALTHY --> FailedAvailable2 : active cooldown provider:PROVIDER -> reason=cooldown:provider
+    HEALTHY --> FailedAvailable3 : _rate_limited_until(conn) covers now -> reason=provider_rate_limited
+
+    AVAILABLE --> TASK_ELIGIBLE : _task_gate returns empty string
+    AVAILABLE --> FailedTask : missing capability (required_capabilities vs row.capabilities; "tools" maps to tool_calling) -> reason=missing_capability:CAP_NAME
+    AVAILABLE --> FailedTask2 : max_input_tokens/context_length below min_context_tokens -> reason=insufficient_context
+    AVAILABLE --> FailedTask3 : route_id in exclude_routes, or route_family(route_id) in exclude_families -> reason=excluded_route / excluded_family
+    AVAILABLE --> FailedTask4 : route id matches a frontier marker and requirements.frontier_worthy is False -> reason=frontier_restricted
+    AVAILABLE --> FailedTask5 : route id is an effort-suffixed duplicate (-low/-medium/-high/-xhigh/-max/-ultra) of a base row that also exists -> reason=effort_duplicate
+
+    TASK_ELIGIBLE --> SELECTED : select() probes candidates in rank order (round-robin across providers within a capacity tier); first one that is healthy or probes healthy is chosen -> reason=selected
+    TASK_ELIGIBLE --> FailedSelected : load(route_id) >= max_per_route (2) before probing -> failed_stage=SELECTED, reason=at_capacity
+    TASK_ELIGIBLE --> ProbeBudgetExhausted : select() has already used max_probes_per_select (8) probes this call -> reason=probe_budget_exhausted (route stays TASK_ELIGIBLE, just not probed this call)
+
+    SELECTED --> [*]
+    FailedEntitled --> [*]
+    FailedEntitled2 --> [*]
+    FailedHealthy --> [*]
+    FailedAvailable --> [*]
+    FailedAvailable2 --> [*]
+    FailedAvailable3 --> [*]
+    FailedTask --> [*]
+    FailedTask2 --> [*]
+    FailedTask3 --> [*]
+    FailedTask4 --> [*]
+    FailedTask5 --> [*]
+    FailedSelected --> [*]
+    ProbeBudgetExhausted --> [*]
