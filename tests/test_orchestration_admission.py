@@ -160,3 +160,62 @@ def test_build_selector_scope_drop_reasons_are_recorded(
     assert admitted.first_failure(DEAD).first_failed_stage is AdmissionStage.AVAILABLE
     assert admitted.first_failure(OK).first_failed_stage is AdmissionStage.WORKER_SCOPE
     assert admitted.receipt()["controller_identity"] == "unknown"
+
+
+def test_build_selector_records_capability_drops_in_canonical_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    state = _patch_gateway(monkeypatch, tmp_path)
+    rows = [*_rows(), row("kr/no-tools", owned_by="kr", tools=False)]
+    monkeypatch.setattr(orch_run, "fetch_inventory", lambda gw, *, api_key, timeout=30: rows)
+    monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
+    ladder = orch_cli.build_selector(
+        "http://127.0.0.1:1",
+        scope="",
+        prefer="",
+        state_file=state,
+        required_capabilities=frozenset({"tools"}),
+        min_context_tokens=32_000,
+    )
+    admitted = ladder.admitted
+    assert admitted is not None and "kr/no-tools" not in admitted
+    record = admitted.first_failure("kr/no-tools")
+    assert record.first_failed_stage is AdmissionStage.CAPABILITY
+    assert record.reason == "missing_capability:tools"
+    receipt = json.loads((tmp_path / "admission-latest.json").read_text())
+    by_id = {c["route_id"]: c for c in receipt["candidates"]}
+    assert by_id["kr/no-tools"]["first_failed_stage"] == "CAPABILITY"
+    # Later narrowing still applies as defence in depth.
+    verdicts = {v.route_id: v for v in ladder.evaluate(REQ, now=NOW)}
+    assert verdicts["kr/no-tools"].failed_stage is not None
+
+
+def test_eligibility_command_passes_task_requirements_into_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import argparse
+
+    captured: dict[str, Any] = {}
+
+    class StopError(Exception):
+        pass
+
+    def fake_build(gateway: str, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        raise StopError
+
+    monkeypatch.setattr(orch_cli, "build_selector", fake_build)
+    args = argparse.Namespace(
+        gateway="http://127.0.0.1:1",
+        scope="",
+        prefer="",
+        provider_family=[],
+        reasoning=False,
+        frontier=False,
+        probe=False,
+        json=True,
+    )
+    with pytest.raises(StopError):
+        orch_cli._eligibility(args)
+    assert captured["required_capabilities"] == frozenset({"tools"})
+    assert captured["min_context_tokens"] == 32_000

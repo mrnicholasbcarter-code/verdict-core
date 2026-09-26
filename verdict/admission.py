@@ -825,8 +825,13 @@ def load_live_admission(
     state_dir: Path | None = None,
     inventory_rows: Sequence[Mapping[str, Any]] | None = None,
     timeout: float = 30,
+    required_capabilities: frozenset[str] = frozenset(),
+    min_context_tokens: int = 0,
 ) -> AdmittedSet:
     """Read-only live admission against an OmniRoute gateway (GET only).
+
+    When the caller knows the task requirements, pass them so CAPABILITY drops
+    appear in the canonical receipt.
 
     Any fetch failure is ``AdmissionUnavailableError``: authoritative callers
     fail closed instead of falling back to catalog truth.
@@ -848,7 +853,14 @@ def load_live_admission(
         connections = fetch_connections(base, api_key=api_key, timeout=timeout)
     except Exception as exc:
         raise AdmissionUnavailableError("connection_evidence_unavailable", str(exc)[:200]) from exc
-    return admit(rows, connections, default_runtime_evidence(now=now, state_dir=state_dir), now=now)
+    return admit(
+        rows,
+        connections,
+        default_runtime_evidence(now=now, state_dir=state_dir),
+        now=now,
+        required_capabilities=required_capabilities,
+        min_context_tokens=min_context_tokens,
+    )
 
 
 __all__ = [

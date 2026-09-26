@@ -477,11 +477,17 @@ def _worker_admission(config: Mapping[str, Any], rows: Iterable[Mapping[str, Any
     from verdict.orchestration.run import resolve_api_key
 
     gateway = str(config.get("gateway") or DEFAULT_OMNIROUTE_URL)
+    task = config.get("task") or {}
+    required = {str(c) for c in task.get("required_capabilities") or ()}
+    if task.get("reasoning"):
+        required.add("reasoning")
     admitted = load_live_admission(
         gateway,
         now=datetime.now(timezone.utc),
         api_key=resolve_api_key(),
         inventory_rows=list(rows),
+        required_capabilities=frozenset(required),
+        min_context_tokens=int(task.get("min_context_tokens") or 0),
     )
     prefixes = config.get("route_prefixes") or ()
     if isinstance(prefixes, str):

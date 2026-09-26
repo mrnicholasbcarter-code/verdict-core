@@ -204,7 +204,16 @@ def build_selector(
     load: Any = None,
     state_file: Path | None = None,
     provider_families: tuple[str, ...] = (),
+    required_capabilities: frozenset[str] = frozenset(),
+    min_context_tokens: int = 0,
 ) -> Any:
+    """Admitted eligibility ladder over the live gateway.
+
+    ``required_capabilities`` / ``min_context_tokens`` are the floor every
+    selection from this ladder needs. They go into canonical admission so
+    CAPABILITY drops appear in the receipt. The ladder still applies each
+    request's own requirements later.
+    """
     from verdict.admission import active_controller_route, admit, default_runtime_evidence
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
@@ -219,7 +228,12 @@ def build_selector(
     # Canonical admission over the full live inventory first. Scope, provider
     # family and the active controller are extra narrowing on that set.
     admitted = admit(
-        rows, connections, default_runtime_evidence(now=now, state_dir=state_path.parent), now=now
+        rows,
+        connections,
+        default_runtime_evidence(now=now, state_dir=state_path.parent),
+        now=now,
+        required_capabilities=required_capabilities,
+        min_context_tokens=min_context_tokens,
     )
     prefixes = tuple(p.strip() for p in scope.split(",") if p.strip())
     admitted = admitted.restrict_prefixes(prefixes).restrict_families(provider_families)
@@ -553,14 +567,19 @@ def _page(text: str, *, no_pager: bool) -> None:
 
 def _eligibility(args: argparse.Namespace) -> int:
     families = parse_provider_families(getattr(args, "provider_family", []) or [])
-    selector = build_selector(
-        args.gateway, scope=args.scope, prefer=args.prefer, provider_families=families
-    )
     requirements = TaskRequirements(
         required_capabilities=frozenset({"tools"}),
         coding=True,
         reasoning=args.reasoning,
         frontier_worthy=args.frontier,
+    )
+    selector = build_selector(
+        args.gateway,
+        scope=args.scope,
+        prefer=args.prefer,
+        provider_families=families,
+        required_capabilities=requirements.required_capabilities,
+        min_context_tokens=requirements.min_context_tokens,
     )
     now = datetime.now(timezone.utc)
     if args.probe:

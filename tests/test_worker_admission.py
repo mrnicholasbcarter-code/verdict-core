@@ -528,3 +528,18 @@ def test_cli_run_end_to_end_rejects_dead_route_with_zero_spawns(
     assert dead["source"].startswith("ladder_state")
     outcome = json.loads((run_dir / "outcome.json").read_text())
     assert outcome["state"] == "FAIL_CLOSED"
+
+
+def test_worker_cli_admission_records_capability_drops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_gateway(monkeypatch, tmp_path)
+    monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
+    small = {**row("kr/small"), "context_length": 8_000}
+    no_tools = {**row("kr/no-tools"), "capabilities": {}}
+    config = {"task": {"required_capabilities": ["tools"], "min_context_tokens": 100_000}}
+    admitted = worker_runtime._worker_admission(config, [*CATALOG, small, no_tools])
+    assert admitted.first_failure("kr/small").first_failed_stage is AdmissionStage.CAPABILITY
+    assert admitted.first_failure("kr/small").reason == "insufficient_context"
+    assert admitted.first_failure("kr/no-tools").reason == "missing_capability:tools"
+    assert OK_ROUTE in admitted
