@@ -7,7 +7,7 @@ import ipaddress
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
@@ -27,6 +27,7 @@ except ImportError as exc:
     ) from exc
 
 from verdict import __version__
+from verdict.admission import AdmittedSet
 from verdict.availability import OmniRouteAvailabilityAdapter
 from verdict.availability_cache import AvailabilityCache
 from verdict.catalog import configured_catalog_filters, normalize_catalog
@@ -389,6 +390,10 @@ logger = logging.getLogger("verdict.api")
 intelligence_instance: IntelligenceService | None = None
 gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
+# Optional canonical live admission for relay attempts. When set, the selected
+# model and every alternative must be inside the admitted set; a provider error
+# fails the relay closed (503) instead of falling back to catalog truth.
+relay_admission_provider: Callable[[], AdmittedSet] | None = None
 availability_cache_instance: AvailabilityCache | None = None
 eligibility_gate_instance: EligibilityGate | None = None
 evidence_store_instance: EvidenceStore | DurableEvidenceStore | None = None
@@ -1493,7 +1498,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     )
     request_key = idempotency_key(request, payload)
     safety = retry_safety(request, payload, request_key)
-    attempts = build_attempts(proxy_instance, decision, protocol=protocol)
+    relay_admitted: AdmittedSet | None = None
+    if relay_admission_provider is not None:
+        try:
+            relay_admitted = relay_admission_provider()
+        except Exception as exc:
+            return _proxy_error(503, f"live admission unavailable: {type(exc).__name__}")
+    attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:
         return _proxy_error(503, "no executable route was selected")
     attempted_routes = [item.route.to_dict() for item in attempts]
