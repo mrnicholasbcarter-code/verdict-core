@@ -205,6 +205,7 @@ def build_selector(
     state_file: Path | None = None,
     provider_families: tuple[str, ...] = (),
 ) -> Any:
+    from verdict.admission import active_controller_route, admit, default_runtime_evidence
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
     from verdict.subagent_selection import LaunchCandidate, openai_health_probe
@@ -212,12 +213,22 @@ def build_selector(
     key = resolve_api_key()
     rows = fetch_inventory(gateway, api_key=key)
     live_ids = [str(r.get("id")) for r in rows if r.get("id")]
+    connections = fetch_connections(gateway, api_key=key)
+    state_path = state_file or (_state_dir() / "orchestration-health.json")
+    now = datetime.now(timezone.utc)
+    # Canonical admission over the full live inventory first. Scope, provider
+    # family and the active controller are extra narrowing on that set.
+    admitted = admit(
+        rows, connections, default_runtime_evidence(now=now, state_dir=state_path.parent), now=now
+    )
     prefixes = tuple(p.strip() for p in scope.split(",") if p.strip())
+    admitted = admitted.restrict_prefixes(prefixes).restrict_families(provider_families)
+    admitted = admitted.exclude_controller(active_controller_route())
+    admitted.write_receipt(state_path.parent / "admission-latest.json")
     if prefixes:
         rows = [r for r in rows if str(r.get("id", "")).startswith(prefixes)]
     if provider_families:
         rows = [r for r in rows if route_prefix(str(r.get("id", ""))) in provider_families]
-    connections = fetch_connections(gateway, api_key=key)
     raw_probe = openai_health_probe(gateway.rstrip("/") + "/v1", api_key=key, timeout_seconds=30)
 
     def probe(route_id: str) -> Any:
@@ -229,10 +240,11 @@ def build_selector(
         rows,
         connections,
         probe,
-        state_file or (_state_dir() / "orchestration-health.json"),
+        state_path,
         prefer_providers=tuple(p.strip() for p in prefer.split(",") if p.strip()),
         load=load,
         harness_visible=prime_visibility(live_ids=live_ids),
+        admitted=admitted,
     )
 
 

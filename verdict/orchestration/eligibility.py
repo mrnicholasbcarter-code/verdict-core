@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from verdict.orchestration.contracts import (
     CapacityClass,
@@ -19,6 +19,9 @@ from verdict.orchestration.contracts import (
     route_family,
 )
 from verdict.subagent_selection import HealthResult
+
+if TYPE_CHECKING:
+    from verdict.admission import AdmittedSet
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
 _FRONTIER_MARKERS = ("opus", "gpt-5.6", "gpt-6-sol", "gpt-6-astra", "fable")
@@ -47,6 +50,14 @@ _DEFAULT_COOLDOWN_SECONDS = 60.0
 # one route: every sibling route would fail the same way, so the whole provider
 # is cooled down and its remaining candidates are skipped without probing.
 _PROVIDER_SCOPE_CATEGORIES = frozenset({"payment_required", "permission", "authentication"})
+
+
+_ADMISSION_TO_LADDER: Mapping[str, EligibilityStage] = {
+    "DISCOVERED": EligibilityStage.DISCOVERED,
+    "ENTITLED": EligibilityStage.ENTITLED,
+    "HEALTHY": EligibilityStage.HEALTHY,
+    "AVAILABLE": EligibilityStage.AVAILABLE,
+}
 
 
 class HarnessVisibility:
@@ -155,6 +166,7 @@ class EligibilityLadder:
         load: Callable[[str], int] | None = None,
         max_per_route: int = 2,
         max_probes_per_select: int = 8,
+        admitted: AdmittedSet | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -168,6 +180,13 @@ class EligibilityLadder:
         self._max_probes = max_probes_per_select
         self._state: dict[str, dict[str, dict[str, Any]]] = self._load_state()
         self._last_verdicts: tuple[RouteVerdict, ...] = ()
+        # Canonical admitted set: a route it excludes fails before any ladder
+        # stage, ranking or probe. The ladder can only narrow it further.
+        self._admitted = admitted
+
+    @property
+    def admitted(self) -> AdmittedSet | None:
+        return self._admitted
 
     def _load_state(self) -> dict[str, dict[str, dict[str, Any]]]:
         try:
@@ -268,6 +287,16 @@ class EligibilityLadder:
             route_id=route_id, provider=provider, capacity=capacity, plan_label=plan_label
         )
 
+        if self._admitted is not None and route_id not in self._admitted:
+            record = self._admitted.first_failure(route_id)
+            stage = _ADMISSION_TO_LADDER.get(
+                record.first_failed_stage.value if record.first_failed_stage else "",
+                EligibilityStage.TASK_ELIGIBLE,
+            )
+            a.failed_stage = stage
+            a.reason = f"admission:{record.reason}"
+            a.cooldown_until = record.until
+            return a
         if conn is None or not conn.get("isActive"):
             a.failed_stage, a.reason = EligibilityStage.ENTITLED, "no_active_account"
             return a
@@ -414,6 +443,10 @@ class EligibilityLadder:
                         blocked[a.provider] = _iso(until) if until else str(a.cooldown_until)
                     continue
                 a.health, a.reason = "healthy", ""
+            if self._admitted is not None and a.route_id not in self._admitted:
+                from verdict.admission import AdmissionBypassError
+
+                raise AdmissionBypassError("EligibilityLadder.select", [a.route_id])
             chosen, chosen_rank = a, rank_of[a.route_id]
             break
         for a in candidates:  # routes not reached before the break still inherit the block
