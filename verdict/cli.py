@@ -739,33 +739,50 @@ def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
     return {"omniroute": ProviderConfig(base_url=url, api_key_env="OMNIROUTE_API_KEY")}
 
 
-def _build_route_gate(allow_offline: bool = False) -> Gate:
-    """Build the CLI Gate from the user config (shared by route/compare)."""
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    config_path = os.path.join(config_dir, "verdict.yaml")
-    omniroute = _omniroute_provider_from_env()
+#: Interactive-CLI default provider set. Used only through the shared bootstrap
+#: contract, which reports it as ``field_sources["providers"] == "default"`` and
+#: refuses it under the production profile.
+_CLI_DEFAULT_PROVIDERS = {"public_ollama": "http://localhost:11434/v1"}
 
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            raw = yaml.safe_load(f) or {}
-        providers = {
-            k: ProviderConfig(base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env"))
-            for k, v in (raw.get("providers") or {}).items()
-        }
-        for name, cfg in omniroute.items():
-            providers.setdefault(name, cfg)
-        return Gate(
-            primary_model=raw.get("primary_model", DEFAULT_PRIMARY_MODEL),
-            providers=providers,
-            log_path=raw.get("log_path", "verdict-decisions.jsonl"),
-            allow_offline=allow_offline,
-        )
-    providers = {"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")}
-    providers.update(omniroute)
+
+def _cli_bootstrap(*, require_authoritative: bool = False) -> Any:
+    """Resolve the CLI provider/gateway bootstrap from the shared contract."""
+    from verdict.provider_bootstrap import resolve_provider_bootstrap
+
+    return resolve_provider_bootstrap(
+        allow_default_providers=True,
+        default_providers=_CLI_DEFAULT_PROVIDERS,
+        require_authoritative=require_authoritative,
+    )
+
+
+def _report_bootstrap_notes(result: Any) -> None:
+    """Print non-fatal bootstrap findings so no default stays silent."""
+    for note in result.notes():
+        if note.code == "config_file_missing":
+            continue
+        print(f"verdict: {note.describe()}", file=sys.stderr)
+
+
+def _build_route_gate(allow_offline: bool = False) -> Gate:
+    """Build the CLI Gate from the shared bootstrap contract (route/compare).
+
+    Configuration failures name the exact field, source and remediation instead
+    of failing later as an empty provider map.
+    """
+    from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
+
+    try:
+        bootstrap = _cli_bootstrap()
+    except BootstrapError as exc:
+        print(describe_bootstrap_failure(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+    _report_bootstrap_notes(bootstrap)
     return Gate(
-        primary_model=DEFAULT_PRIMARY_MODEL, providers=providers, allow_offline=allow_offline
+        primary_model=bootstrap.primary_model,
+        providers=bootstrap.provider_configs(),
+        log_path=bootstrap.log_path,
+        allow_offline=allow_offline,
     )
 
 

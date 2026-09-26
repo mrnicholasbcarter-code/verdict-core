@@ -65,30 +65,37 @@ def strategy_from_decision(decision: RoutingDecision) -> StrategySelection:
 
 
 def resolve_default_providers(allow_offline: bool = False) -> tuple[str, dict[str, ProviderConfig]]:
-    """Load config or auto-detect running OmniRoute and local servers."""
-    import os
-    from pathlib import Path
+    """Load config via the shared bootstrap contract, else auto-detect.
 
-    import yaml
+    Malformed configuration is a named refusal from the bootstrap contract rather
+    than a silently ignored file. The built-in local set remains the last resort
+    for interactive use, and the bootstrap contract reports it as a ``default``
+    source with an actionable diagnostic.
+    """
+    import sys
 
-    config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "verdict"
-    config_path = config_dir / "verdict.yaml"
+    from verdict.provider_bootstrap import (
+        DEFAULT_LOCAL_PROVIDERS,
+        BootstrapError,
+        resolve_provider_bootstrap,
+    )
 
     primary_model = DEFAULT_PRIMARY_MODEL
     providers: dict[str, ProviderConfig] = {}
 
-    if config_path.exists():
-        try:
-            raw = yaml.safe_load(config_path.read_text("utf-8")) or {}
-            if raw.get("primary_model"):
-                primary_model = str(raw["primary_model"])
-            for k, v in (raw.get("providers") or {}).items():
-                if isinstance(v, dict):
-                    providers[k] = ProviderConfig(
-                        base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env")
-                    )
-        except Exception:
-            pass
+    try:
+        bootstrap = resolve_provider_bootstrap()
+    except BootstrapError as exc:
+        if exc.diagnostics[0].code != "no_provider_configuration":
+            # Malformed or unreadable configuration must not be swallowed.
+            raise
+        bootstrap = None
+    if bootstrap is not None:
+        primary_model = bootstrap.primary_model
+        providers = bootstrap.provider_configs()
+        for note in bootstrap.notes():
+            if note.code != "config_file_missing":
+                print(f"verdict: {note.describe()}", file=sys.stderr)
 
     if not providers and not allow_offline:
         from verdict.provider_detection import detect_all_providers, generate_verdict_config
@@ -105,9 +112,15 @@ def resolve_default_providers(allow_offline: bool = False) -> tuple[str, dict[st
 
     if not providers:
         providers = {
-            "omniroute": ProviderConfig(base_url="http://localhost:20128/v1"),
-            "public_ollama": ProviderConfig(base_url="http://localhost:11434/v1"),
+            name: ProviderConfig(base_url=url) for name, url in DEFAULT_LOCAL_PROVIDERS.items()
         }
+        print(
+            "verdict: default_provider_fallback [configuration] field=providers source=default: "
+            f"no provider configuration from any canonical source; using built-in local "
+            f"defaults ({', '.join(f'{n}={u}' for n, u in sorted(DEFAULT_LOCAL_PROVIDERS.items()))})"
+            "; remediation: set OMNIROUTE_BASE_URL, or run 'verdict setup'",
+            file=sys.stderr,
+        )
 
     return primary_model, providers
 
