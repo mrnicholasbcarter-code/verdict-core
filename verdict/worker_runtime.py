@@ -168,8 +168,8 @@ def _worker_requirements(task: WorkerTask) -> CandidateRequirements:
     if task.reasoning:
         required.add("reasoning")
     # Worker execution changes code/state. Unknown/degraded runtime truth is not
-    # sufficient admission evidence; the worker-specific measured-usage gate is
-    # applied after this canonical report.
+    # sufficient final admission evidence. Unknown usage may enter the pre-probe
+    # pool, but WorkerController requires a fresh/cache-valid inference probe before spawn.
     return CandidateRequirements(required=frozenset(required), protected=True)
 
 
@@ -627,25 +627,25 @@ async def cli_run(directory: Path) -> int:
             StaticOmniRouteTransport(catalog_payload, runtime_payload)
         ).evaluate(_worker_requirements(task))
         candidates = admitted_worker_candidates(
-            task, rows, selectors, availability, require_usage_evidence=True
+            task, rows, selectors, availability, require_usage_evidence=False
         )
-        admitted_ids = {candidate.route_id for candidate in candidates}
-        narrowed_rows = [row for row in rows if str(row.get("id", "")) in admitted_ids]
+        preprobe_ids = {candidate.route_id for candidate in candidates}
+        narrowed_rows = [row for row in rows if str(row.get("id", "")) in preprobe_ids]
         atomic_json(
             directory / "discovery.json",
             {
                 "rows": rows,
                 "prime_selectors": selectors,
                 "availability": _availability_evidence(availability),
-                "worker_admitted": sorted(admitted_ids),
+                "worker_preprobe_candidates": sorted(preprobe_ids),
                 "allowed_route_prefixes": sorted(task.allowed_route_prefixes),
                 "excluded_route_ids": sorted(task.excluded_route_ids),
             },
         )
         if not candidates:
             raise RuntimeError(
-                "no worker route passed canonical availability, measured-usage, "
-                "Prime-visibility, route-policy, and task gates"
+                "no worker route passed canonical availability, Prime-visibility, "
+                "route-policy, and task gates"
             )
 
         probe_base = transport.base_url.rstrip("/") + "/v1"
