@@ -22,6 +22,9 @@ from typing import Any
 CONTROLLER_MODEL = "cx/gpt-5.6-sol"
 CONTROLLER_MODELS = frozenset({CONTROLLER_MODEL, "cx/gpt-6-astra"})
 DEFAULT_OMNIROUTE_URL = "http://127.0.0.1:20128/v1"
+PROVIDER_SCOPE_FAILURE_CATEGORIES = frozenset(
+    {"authentication", "payment_required", "permission", "rate_limited"}
+)
 
 
 @dataclass(frozen=True)
@@ -152,9 +155,9 @@ class HealthCache:
     def record_failure(
         self, candidate: LaunchCandidate, result: HealthResult, *, now: datetime
     ) -> None:
-        """Persist both candidate and provider cooldowns for a runtime failure."""
+        """Persist candidate cooldowns and provider-scoped capacity/auth failures."""
         self._record_key(candidate.selector, result, now=now)
-        if result.category == "rate_limited":
+        if result.category in PROVIDER_SCOPE_FAILURE_CATEGORIES:
             self._record_key(_provider_cache_key(candidate.selector), result, now=now)
         self._save()
 
@@ -344,7 +347,10 @@ def select_worker_model(
                 health = classify_probe_status(None, timed_out=True)
             except Exception as exc:
                 health = classify_worker_failure(exc, now=current)
-            cache.record(candidate.selector, health, now=current)
+            if health.healthy:
+                cache.record(candidate.selector, health, now=current)
+            else:
+                cache.record_failure(candidate, health, now=current)
         checked.append((candidate.selector, health.category))
         if health.healthy:
             return SelectionResult(candidate, tuple(checked))
