@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from verdict.headroom import check_headroom, UNKNOWN_HEADROOM
 from verdict.models import ProviderConfig, ConnectionIdentity
-from verdict.capacity_models import CapacitySnapshot, PoolStatus
 from verdict.cost_ledger import subscription_budgets, _subscription_reserved
 from decimal import Decimal
 from datetime import datetime, timezone

@@ -2,7 +2,6 @@
 
 import pytest
 from unittest.mock import MagicMock
-from verdict.models import ProviderConfig, ConnectionIdentity
 from verdict.subscription_headroom import (
     check_headroom_subscription,
     subscription_pool_key,

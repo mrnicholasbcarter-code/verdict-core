@@ -1,13 +1,13 @@
 # BOD-262: Subscription Usage & Headroom Semantics
 
 ## Overview
-Implement subscription usage tracking and headroom semantics for Verdict capacity admission. This maps existing <co>cost_ledger subscription pools</co: 12:[0]> to provider headroom evidence, enabling canonical admission decisions without live provider calls.
+Implement subscription usage tracking and headroom semantics for Verdict capacity admission. This maps existing cost_ledger subscription pools to provider headroom evidence, enabling canonical admission decisions without live provider calls.
 
 ## Context
-- <co>Subscription pools</co: 12:[0]>: <co>`subscription_credits` (prepaid), `subscription_opportunity` (window-based)</co: 12:[0]>
-- <co>Existing headroom system</co: 12:[0]>: <co>check_headroom() returns None for unknown/unavailable</co: 12:[0]>
-- <co>Capacity contracts</co: 12:[0]>: <co>CapacitySnapshot, ConnectionIdentity, PoolStatus (available/constrained/exhausted/cooldown/unknown)</co: 12:[0]>
-- <co>Admission flow</co: 12:[0]>: <co>Gate → Eligibility → Intelligence → Dispatcher</co: 12:[0]>
+- Subscription pools: `subscription_credits` (prepaid), `subscription_opportunity` (window-based)
+- Existing headroom system: `check_headroom()` returns None for unknown/unavailable
+- Capacity contracts: `CapacitySnapshot`, `ConnectionIdentity`, `PoolStatus`
+- Admission flow: Gate → Eligibility → Intelligence → Dispatcher
 
 ## Semantics
 ### 1. Pool Identity Preservation
@@ -16,45 +16,45 @@ Implement subscription usage tracking and headroom semantics for Verdict capacit
 - Never conflate different subscription pools
 
 ### 2. Headroom Evidence Integration
-- Headroom evidence from <co>check_headroom()</co: 12:[0]> feeds <co>canonical admission</co: 12:[0]>
-- <co>UNKNOWN_HEADROOM treated as explicit unknown</co: 12:[0]> (requires bounded confirmation)
+- Headroom evidence from `check_headroom()` feeds canonical admission
+- `UNKNOWN_HEADROOM` treated as explicit unknown (requires bounded confirmation)
 - Stale evidence rejected (TTL enforced)
 - Fresh evidence always overrides stale
 
 ### 3. Exhaustion Classification
 | Pool Status | Admission Action | Evidence Required |
 |-------------|------------------|-------------------|
-| <co>exhausted</co: 12:[0]> | Hard drop | <co>Current snapshot</co: 12:[0]> |
-| <co>constrained</co: 12:[0]> | Allow with warning | <co>Current snapshot + headroom_pct</co: 12:[0]> |
-| <co>available</co: 12:[0]> | Allow | <co>Current snapshot</co: 12:[0]> |
-| <co>cooldown</co: 12:[0]> | Temporary block | <co>Current snapshot + cooldown_until</co: 12:[0]> |
-| <co>unknown</co: 12:[0]> | Bounded confirmation | <co>Fresh evidence required within TTL</co: 12:[0]> |
+| exhausted | Hard drop | Current snapshot |
+| constrained | Allow with warning | Current snapshot + headroom_pct |
+| available | Allow | Current snapshot |
+| cooldown | Temporary block | Current snapshot + cooldown_until |
+| unknown | Bounded confirmation | Fresh evidence within TTL |
 
 ### 4. Distinct Reasons
-- <co>rate_limit: 429 responses, per-provider limits</co: 12:[0]>
-- <co>concurrency: simultaneous usage beyond capacity</co: 12:[0]>
-- <co>overload: provider system overload</co: 12:[0]>
-- <co>subscription_exhaustion: subscription_credits pool empty</co: 12:[0]>
-- <co>lockout: account suspended or payment overdue</co: 12:[0]>
-- <co>payment: subscription renewal failed</co: 12:[0]>
+- rate_limit: 429 responses, per-provider limits
+- concurrency: simultaneous usage beyond capacity
+- overload: provider system overload
+- subscription_exhaustion: subscription_credits pool empty
+- lockout: account suspended or payment overdue
+- payment: subscription renewal failed
 
 ## Implementation Notes
-- Use existing <co>cost_ledger subscription_budgets</co: 12:[0]> for tracking
-- Extend <co>capacity_resolve.py</co: 12:[0]> to handle subscription-specific logic
-- Add <co>check_headroom_subscription()</co: 12:[0]> wrapper for admission flow
-- Preserve existing <co>UNKNOWN_HEADROOM sentinel behavior</co: 12:[0]>
+- Use existing `cost_ledger` subscription_budgets for tracking
+- Extend `capacity_resolve.py` to handle subscription-specific logic
+- Add `check_headroom_subscription()` wrapper for admission flow
+- Preserve existing `UNKNOWN_HEADROOM` sentinel behavior
 - Add mutation-killing tests for each exhaustion scenario
 
 ## Test Coverage
-- <co>test_subscription_exhaustion_hard_drop</co: 12:[0]>
-- <co>test_subscription_headroom_unknown_confirmation</co: 12:[0]>
-- <co>test_subscription_stale_evidence_rejection</co: 12:[0]>
-- <co>test_subscription_pool_identity_preservation</co: 12:[0]>
-- <co>test_subscription_multiple_pool_support</co: 12:[0]>
+- `test_subscription_exhaustion_hard_drop`
+- `test_subscription_headroom_unknown_confirmation`
+- `test_subscription_stale_evidence_rejection`
+- `test_subscription_pool_identity_preservation`
+- `test_subscription_multiple_pool_support`
 
 ## Related Files
-- <co>`verdict/headroom.py</co: 12:[0]>` <co>(existing)</co: 12:[0]>
-- <co>`verdict/capacity_resolve.py</co: 12:[0]>` <co>(conflict resolution)</co: 12:[0]>
-- <co>`verdict/cost_ledger.py</co: 12:[0]>` <co>(subscription pools)</co: 12:[0]>
-- <co>`tests/test_headroom.py</co: 12:[0]>` <co>(existing tests)</co: 12:[0]>
+- `verdict/headroom.py` (existing)
+- `verdict/capacity_resolve.py` (conflict resolution)
+- `verdict/cost_ledger.py` (subscription pools)
+- `tests/test_headroom.py` (existing tests)
 - New tests in `tests/test_subscription_headroom.py`
