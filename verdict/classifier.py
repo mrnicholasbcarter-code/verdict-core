@@ -7,8 +7,21 @@ import re
 # Tier 0 = most capable (never used for cheap work)
 # Tier 3 = cheapest/fastest (only used for low-criticality)
 CAPABILITY_PATTERNS: dict[int, list[str]] = {
-    0: [r"opus", r"gpt-5\.6", r"gpt-5\.5", r"grok-4", r"o3-pro", r"o3(?!-mini)"],
+    # Current frontier families match the repo's own frontier markers
+    # (verdict/orchestration/eligibility.py _FRONTIER_MARKERS).
+    0: [
+        r"opus",
+        r"fable",
+        r"gpt-6-sol",
+        r"gpt-6-astra",
+        r"gpt-5\.6(?!-luna)",
+        r"gpt-5\.5",
+        r"grok-4",
+        r"o3-pro",
+        r"o3(?!-mini)",
+    ],
     1: [
+        r"sonnet-5",
         r"sonnet-4",
         r"gpt-5\.4",
         r"gpt-4o(?!-mini)",
@@ -72,6 +85,20 @@ def classify(model_id: str, overrides: dict[str, int] | None = None) -> int:
             return tier
 
     return 2  # default to medium if unknown
+
+
+def classify_known(model_id: str, overrides: dict[str, int] | None = None) -> int | None:
+    """Like :func:`classify`, but ``None`` when no override or pattern matches.
+
+    Assignment (BOD-271) must keep unknown capability explicit instead of
+    silently treating an unrecognized model as medium tier.
+    """
+    if overrides and model_id in overrides:
+        return overrides[model_id]
+    raw = model_id.split("/", 1)[-1].lower()
+    if not any(_matches_any(raw, patterns) for patterns in CAPABILITY_PATTERNS.values()):
+        return None
+    return classify(model_id, overrides)
 
 
 def _matches_any(raw: str, patterns: list[str]) -> bool:
