@@ -610,8 +610,10 @@ async def run_golden_path(
         rationale=list(graph.rationale),
     )
 
-    def prompt_for(node: WorkNode, cwd: Path) -> str:
-        return hydrate_node_prompt(node, repo=cwd, goal=goal)
+    def prompt_for(node: WorkNode, cwd: Path, *, context_budget_bytes: int = 60_000) -> str:
+        return hydrate_node_prompt(
+            node, repo=cwd, goal=goal, max_context_bytes=context_budget_bytes
+        )
 
     runtime = DagRuntime(
         repo=repo,
