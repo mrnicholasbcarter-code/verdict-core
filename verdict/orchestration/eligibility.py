@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
 _FRONTIER_MARKERS = ("opus", "gpt-5.6", "gpt-6-sol", "gpt-6-astra", "fable")
+# Ranks an unknown-capability route after every known one (tiers span 0..3).
+_UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
 _CODING_MARKERS = ("code", "codex", "sonnet", "fable", "opus")
 _CAPACITY_ORDER: Mapping[CapacityClass, int] = {
@@ -396,18 +398,20 @@ class EligibilityLadder:
         tier = _capability_tier(row, route_id)
         if tier is None:
             # Unknown capability is never promoted to sufficient. It only
-            # passes when the work accepts any tier, and then ranks as the
-            # least capable (no claimed slack beyond the floor).
+            # passes when the work accepts any tier, and then ranks after every
+            # route whose capability is known (it cannot win on a guess).
             if requirements.max_capability_tier < 3:
                 a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "unknown_capability"
                 return a
-            tier = 3
-        a.tier = tier
-        if a.tier > requirements.max_capability_tier:
-            # Insufficient for this work: dropped before ranking, however cheap.
-            a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "insufficient_capability"
-            return a
-        a.slack = requirements.max_capability_tier - a.tier
+            a.tier, a.slack = 3, _UNKNOWN_SLACK
+        else:
+            a.tier = tier
+            if a.tier > requirements.max_capability_tier:
+                # Insufficient for this work: dropped before ranking, however cheap.
+                a.failed_stage = EligibilityStage.TASK_ELIGIBLE
+                a.reason = "insufficient_capability"
+                return a
+            a.slack = requirements.max_capability_tier - a.tier
         a.price = _marginal_price(row)
         a.fit = self._fit(row, route_id, requirements)
         return a

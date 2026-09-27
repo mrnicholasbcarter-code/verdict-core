@@ -357,9 +357,10 @@ class TestCapacityAndRanking:
         assert [v.route_id for v in ranked] == ["cc/claude-sonnet-5", "gl/glm-5", "op/qwen3-coder"]
 
     def test_prefer_providers_is_configurable(self, tmp_path: Path) -> None:
+        # Preference orders routes of equal capability; declare both tiers.
         rows = [
-            row("cc/claude-sonnet-5", owned_by="claude"),
-            row("cx/gpt-6-codex", owned_by="codex"),
+            {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},
+            {**row("cx/gpt-6-codex", owned_by="codex"), "capability_tier": 1},
         ]
         connections = [conn("claude", plan="max"), conn("codex", plan="pro")]
         default, _ = make_ladder(tmp_path, rows, connections)
@@ -610,3 +611,32 @@ def test_unknown_capability_is_never_promoted_to_sufficient(tmp_path: Path) -> N
     # Bounded work that accepts any tier may still use it.
     chosen, _ = ladder.select(TaskRequirements(max_capability_tier=3), now=NOW)
     assert chosen is not None and chosen.route_id == "kr/mystery-model"
+
+
+@pytest.mark.parametrize(
+    ("route_id", "tier"),
+    [
+        ("cc/claude-opus-5-5", 0),
+        ("kr/claude-opus-5.5", 0),
+        ("cc/claude-fable-5-1", 0),
+        ("cx/gpt-6-sol", 0),
+        ("cx/gpt-6-astra", 0),
+        ("cx/gpt-5.6-sol", 0),
+        ("kr/claude-sonnet-5", 1),
+        ("kiro/claude-sonnet-5-thinking", 1),
+        ("cc/claude-haiku-4-5-20251001", 3),
+    ],
+)
+def test_current_live_families_have_known_tiers(route_id: str, tier: int) -> None:
+    """Real OmniRoute route ids in use must not fall into unknown capability."""
+    from verdict.classifier import classify_known
+
+    assert classify_known(route_id) == tier
+
+
+def test_unknown_capability_ranks_after_known_sufficient(tmp_path: Path) -> None:
+    """For bounded work an unknown route is usable, but never beats a known one."""
+    rows = [row("kr/mystery-model", owned_by="kiro"), row("kr/claude-sonnet-5", owned_by="kiro")]
+    ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")])
+    chosen, _ = ladder.select(TaskRequirements(max_capability_tier=3), now=NOW)
+    assert chosen is not None and chosen.route_id == "kr/claude-sonnet-5"
