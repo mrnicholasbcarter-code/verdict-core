@@ -115,3 +115,4 @@ contracts/*.tgz
 
 # Committed proof run: its event log is part of the verifiable receipt.
 !docs/proof/demo-run/events.jsonl
+!tests/fixtures/openjev/calibration/replay_sample.jsonl
