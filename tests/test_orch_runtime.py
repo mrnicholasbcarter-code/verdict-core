@@ -1039,3 +1039,81 @@ async def test_context_overflow_repacks_and_retries_the_same_route_once(repo: Pa
     assert (repack["from_budget_bytes"], repack["to_budget_bytes"]) == (60_000, 30_000)
     assert [e["budget_bytes"] for e in events.of("hydrate", "a")] == [60_000, 30_000]
     assert events.of("cooldown", "a") == []
+
+
+async def test_verification_failure_rehydrates_same_route_before_escalating(repo: Path) -> None:
+    """BOD-272: failing verification output goes back to the same route once."""
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    prompts: list[str] = []
+
+    class FailsFirst(Executor):
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            prompts.append(prompt)
+            node_id = prompt.split(":", 1)[0]
+            self.calls.append((node_id, route_id))
+            content = "FAIL\n" if len(prompts) == 1 else "ok\n"
+            (cwd / f"{node_id}.txt").write_text(content)
+            return WorkerTerminal(
+                ok=True, output="done\nRESULT: DONE", model=route_id, stop_reason="stop"
+            )
+
+    events, ex = Events(), FailsFirst({})
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=WorkGraph("g", (node("a"),)),
+        selector=Selector(["cc/s", "cx/g"]),
+        executor=ex,
+        classifier=FailureIntelligence(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(),
+        now=lambda: NOW,
+    )
+    result = await rt.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    # Same (cheaper) route, not escalated to cx/g.
+    assert [c[1] for c in ex.calls] == ["cc/s", "cc/s"]
+    assert "PREVIOUS_ATTEMPT_FAILED_VERIFICATION" not in prompts[0]
+    assert "PREVIOUS_ATTEMPT_FAILED_VERIFICATION" in prompts[1]
+    rehydrate = events.of("rehydrate", "a")[0]
+    assert (rehydrate["reason"], rehydrate["route_id"]) == ("verification_failed", "cc/s")
+
+
+async def test_second_verification_failure_escalates(repo: Path) -> None:
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    class AlwaysFailsOnCheap(Executor):
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            node_id = prompt.split(":", 1)[0]
+            self.calls.append((node_id, route_id))
+            content = "FAIL\n" if route_id == "cc/s" else "ok\n"
+            (cwd / f"{node_id}.txt").write_text(content)
+            return WorkerTerminal(
+                ok=True, output="done\nRESULT: DONE", model=route_id, stop_reason="stop"
+            )
+
+    events, ex = Events(), AlwaysFailsOnCheap({})
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=WorkGraph("g", (node("a"),)),
+        selector=Selector(["cc/s", "cx/g"]),
+        executor=ex,
+        classifier=FailureIntelligence(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(),
+        now=lambda: NOW,
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert [c[1] for c in ex.calls] == ["cc/s", "cc/s", "cx/g"]

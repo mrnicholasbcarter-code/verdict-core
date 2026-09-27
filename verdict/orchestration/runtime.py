@@ -116,6 +116,10 @@ class NodeRun:
     context_budget: int = 0
     # Routes already retried once with a smaller pack after an overflow.
     repacked_routes: set[str] = field(default_factory=set)
+    # BOD-272: verification evidence from the last failed attempt, appended to
+    # the next prompt so the same route can fix it before escalating.
+    failure_feedback: str = ""
+    rehydrated_routes: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -523,6 +527,25 @@ class DagRuntime:
                     run.repacked_routes.add(run.route_id)
                 else:
                     tried.add(run.route_id)
+            elif (
+                failures
+                and failures[-1].category == "verification_failed"
+                and run.route_id not in run.rehydrated_routes
+            ):
+                # BOD-272: failure-directed rehydration. The route produced a
+                # candidate that failed verification; give the SAME route one
+                # retry with the exact failing evidence before escalating to
+                # another (usually more expensive) route.
+                run.rehydrated_routes.add(run.route_id)
+                run.failure_feedback = failures[-1].evidence[-2000:]
+                self.events.emit(
+                    "rehydrate",
+                    node_id,
+                    reason="verification_failed",
+                    route_id=run.route_id,
+                    evidence_chars=len(run.failure_feedback),
+                    attempt=run.attempt,
+                )
             else:
                 tried.add(run.route_id)
             if failures and failures[-1].action == "BLOCK":
@@ -670,6 +693,12 @@ class DagRuntime:
                 self._set(run, NodeState.RUNNING)
                 budget = run.context_budget or self.policy.context_budget_bytes
                 prompt = self._prompt(node, worktree, budget)
+                if run.failure_feedback:
+                    prompt += (
+                        "\n\nPREVIOUS_ATTEMPT_FAILED_VERIFICATION:\n"
+                        + run.failure_feedback
+                        + "\nFix the cause above, then run VERIFICATION_COMMAND again.\n"
+                    )
                 prompt_bytes = len(prompt.encode())
                 self.events.emit(
                     "hydrate",
