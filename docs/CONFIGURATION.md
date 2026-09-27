@@ -311,9 +311,10 @@ echo secret material:
 |----------|---------|
 | `OMNIROUTE_BASE_URL` | Base URL of the local gateway (inventory/execute/health) |
 | `OMNIROUTE_API_KEY` | API key/token for the configured gateway |
-| `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane token for provider-node admin endpoints |
+| `VERDICT_OMNIROUTE_API_KEY` | Gateway key for `verdict orchestrate` and the OCR reviewer; usually the same value as `OMNIROUTE_API_KEY` |
+| `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane access token (`oma_…`, Settings → Access Tokens). A `read` scope is enough for Verdict. An `sk-` inference key does not work here |
 | `OMNIROUTE_ALLOW_PRIVATE_HOSTS` | Allow private/internal hosts (SSRF guard; default off) |
-| `OMNIROUTE_USAGE_API_KEY_ID` | Usage-reporting API key id |
+| `OMNIROUTE_USAGE_API_KEY_ID` | Id (not secret) of the inference key whose usage/budget Verdict reads; from `/api/keys` |
 | `VERDICT_GATEWAY_START_COMMAND` | Explicit command that starts a local gateway (shlex-split into an argv list; never run through a shell; the launched gateway inherits the exported environment) |
 | `VERDICT_GATEWAY_READY_TIMEOUT_S` | Readiness budget in seconds for the bounded gateway wait (default `30`; must be finite, positive and at most `600`) |
 | `VERDICT_ENSURE_GATEWAY` | Opt in to ensuring the gateway is ready before CLI execution (default off) |
