@@ -250,7 +250,9 @@ def test_build_selector_reads_evidence_from_the_state_file_it_uses(
     dead = admitted.first_failure(DEAD)
     assert dead.first_failed_stage is AdmissionStage.AVAILABLE
     assert dead.source == "ladder_state:chaos-health.json"
-    assert admitted.proven_healthy(OK)
+    assert not admitted.proven_healthy(OK)
+    assert not admitted.launchable(OK)
+    assert admitted.launch_authority(OK)["basis"] == "none"
     receipt = json.loads((state.parent / "admission-latest.json").read_text())
     by_id = {c["route_id"]: c for c in receipt["candidates"]}
     assert by_id[DEAD]["source"] == "ladder_state:chaos-health.json"

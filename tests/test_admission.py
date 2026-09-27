@@ -245,8 +245,29 @@ def test_ladder_state_and_health_cache_are_normalized(tmp_path: Path) -> None:
         now=NOW,
     )
     assert admitted.ids == frozenset({"kr/a", "kr/old"})
-    assert admitted.proven_healthy("kr/a")
+    # Persisted current health is a hint only; it cannot mint launch authority.
+    assert not admitted.proven_healthy("kr/a")
+    assert not admitted.launchable("kr/a")
     assert not admitted.proven_healthy("kr/old")
+
+
+def test_current_healthy_ladder_state_requires_exact_confirmation(tmp_path: Path) -> None:
+    state = tmp_path / "orchestration-health.json"
+    state.write_text(
+        json.dumps({"health": {"kr/a": {"healthy": True, "checked_at": NOW.isoformat()}}})
+    )
+    admitted = admit(
+        [row("kr/a")], [conn("kr")], evidence_from_ladder_state(state, now=NOW), now=NOW
+    )
+    assert "ladder_state:orchestration-health.json" in admitted.runtime_consulted
+    assert admitted.record_for("kr/a").health == "unknown"  # type: ignore[union-attr]
+    assert not admitted.launchable("kr/a")
+    assert admitted.launch_authority("kr/a")["basis"] == "none"
+    confirmed = admitted.record_confirmation(
+        "kr/a", healthy=True, source="exact_probe", observed_at=NOW.isoformat()
+    )
+    assert confirmed.launchable("kr/a")
+    assert confirmed.launch_authority("kr/a")["basis"] == "live_confirmation"
 
 
 def test_quota_rows_pass_through_as_evidence_only() -> None:

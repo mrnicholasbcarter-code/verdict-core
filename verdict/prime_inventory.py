@@ -25,6 +25,7 @@ class PrimeInventorySnapshot:
     source: str
     refreshed_at: str
     route_ids: tuple[str, ...]
+    excluded_ids: tuple[str, ...]
     count: int
     digest: str
 
@@ -33,6 +34,7 @@ class PrimeInventorySnapshot:
             "source": self.source,
             "refreshed_at": self.refreshed_at,
             "route_ids": list(self.route_ids),
+            "excluded_ids": list(self.excluded_ids),
             "count": self.count,
             "digest": self.digest,
         }
@@ -77,7 +79,9 @@ def sidecar_path(models_path: Path) -> Path:
     return models_path.parent / SIDECAR_NAME
 
 
-def concrete_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[tuple[Mapping[str, Any], ...], tuple[str, ...]]:
+def concrete_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[Mapping[str, Any], ...], tuple[str, ...]]:
     """Keep only explicit concrete route rows, in deterministic id order."""
     kept: dict[str, Mapping[str, Any]] = {}
     excluded: set[str] = set()
@@ -93,31 +97,54 @@ def concrete_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[tuple[Mapping[str,
     return tuple(kept[key] for key in sorted(kept)), tuple(sorted(excluded))
 
 
-def _digest(route_ids: tuple[str, ...]) -> str:
-    body = json.dumps({"route_ids": list(route_ids)}, sort_keys=True, separators=(",", ":"))
+def _digest(route_ids: tuple[str, ...], excluded_ids: tuple[str, ...]) -> str:
+    """Digest every auditable inventory classification, in canonical order."""
+    body = json.dumps(
+        {"excluded_ids": list(excluded_ids), "route_ids": list(route_ids)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+
+
+def _canonical_ids(value: Any) -> tuple[str, ...] | None:
+    """Accept only a sorted, duplicate-free JSON id list."""
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        return None
+    ids = tuple(value)
+    return ids if ids == tuple(sorted(set(ids))) else None
 
 
 def _parse_snapshot(value: Any) -> PrimeInventorySnapshot | None:
     if not isinstance(value, Mapping):
         return None
-    ids = value.get("route_ids")
-    if not isinstance(ids, list) or not all(isinstance(item, str) and item for item in ids):
+    route_ids = _canonical_ids(value.get("route_ids"))
+    excluded_ids = _canonical_ids(value.get("excluded_ids"))
+    if route_ids is None or excluded_ids is None:
         return None
-    route_ids = tuple(sorted(set(ids)))
-    source, refreshed_at, digest = value.get("source"), value.get("refreshed_at"), value.get("digest")
+    source, refreshed_at, digest = (
+        value.get("source"),
+        value.get("refreshed_at"),
+        value.get("digest"),
+    )
     if not all(isinstance(item, str) and item for item in (source, refreshed_at, digest)):
         return None
     assert isinstance(source, str) and isinstance(refreshed_at, str) and isinstance(digest, str)
-    if value.get("count") != len(route_ids) or digest != _digest(route_ids):
+    if value.get("count") != len(route_ids) or digest != _digest(route_ids, excluded_ids):
         return None
-    return PrimeInventorySnapshot(source, refreshed_at, route_ids, len(route_ids), digest)
+    return PrimeInventorySnapshot(
+        source, refreshed_at, route_ids, excluded_ids, len(route_ids), digest
+    )
 
 
 def _parse_failure(value: Any) -> PrimeInventoryFailure | None:
     if not isinstance(value, Mapping):
         return None
-    source, failed_at, error_type = value.get("source"), value.get("failed_at"), value.get("error_type")
+    source, failed_at, error_type = (
+        value.get("source"),
+        value.get("failed_at"),
+        value.get("error_type"),
+    )
     if not all(isinstance(item, str) and item for item in (source, failed_at, error_type)):
         return None
     assert isinstance(source, str) and isinstance(failed_at, str) and isinstance(error_type, str)
@@ -129,10 +156,14 @@ def _read(path: Path) -> tuple[PrimeInventorySnapshot | None, PrimeInventoryFail
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None, None
-    return _parse_snapshot(raw.get("last_success") if isinstance(raw, Mapping) else None), _parse_failure(raw.get("last_failure") if isinstance(raw, Mapping) else None)
+    return _parse_snapshot(
+        raw.get("last_success") if isinstance(raw, Mapping) else None
+    ), _parse_failure(raw.get("last_failure") if isinstance(raw, Mapping) else None)
 
 
-def _write(path: Path, snapshot: PrimeInventorySnapshot | None, failure: PrimeInventoryFailure | None) -> None:
+def _write(
+    path: Path, snapshot: PrimeInventorySnapshot | None, failure: PrimeInventoryFailure | None
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": "verdict.prime-inventory/v1",
@@ -144,8 +175,10 @@ def _write(path: Path, snapshot: PrimeInventorySnapshot | None, failure: PrimeIn
     temporary.replace(path)
 
 
-def _fresh(snapshot: PrimeInventorySnapshot | None, now: datetime, max_age_seconds: float) -> bool:
-    if snapshot is None or max_age_seconds < 0:
+def _fresh(
+    snapshot: PrimeInventorySnapshot | None, source: str, now: datetime, max_age_seconds: float
+) -> bool:
+    if snapshot is None or snapshot.source != source or max_age_seconds < 0:
         return False
     try:
         seen = datetime.fromisoformat(snapshot.refreshed_at.replace("Z", "+00:00"))
@@ -174,8 +207,15 @@ def refresh_prime_inventory(
     current = (now or (lambda: datetime.now(timezone.utc)))().astimezone(timezone.utc)
     state_path = sidecar_path(models_path)
     previous, previous_failure = _read(state_path)
-    if not force and _fresh(previous, current, max_age_seconds):
-        return PrimeInventoryStatus(previous, previous_failure, refreshed=False, fresh=True)
+    if not force and _fresh(previous, source, current, max_age_seconds):
+        assert previous is not None
+        return PrimeInventoryStatus(
+            previous,
+            previous_failure,
+            refreshed=False,
+            fresh=True,
+            excluded_ids=previous.excluded_ids,
+        )
     try:
         rows, excluded = concrete_rows(fetch_rows())
         if not rows:
@@ -186,6 +226,8 @@ def refresh_prime_inventory(
         _write(state_path, previous, failure)
         return PrimeInventoryStatus(previous, failure, refreshed=False, fresh=False)
     ids = tuple(str(row["id"]).strip() for row in rows)
-    snapshot = PrimeInventorySnapshot(source, current.isoformat(), ids, len(ids), _digest(ids))
+    snapshot = PrimeInventorySnapshot(
+        source, current.isoformat(), ids, excluded, len(ids), _digest(ids, excluded)
+    )
     _write(state_path, snapshot, None)
     return PrimeInventoryStatus(snapshot, None, refreshed=True, fresh=True, excluded_ids=excluded)
