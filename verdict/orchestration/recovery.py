@@ -17,6 +17,20 @@ from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY, is_context_lengt
 
 CLASSIFIER_VERSION = "v1"
 
+# 403 text that names a single model rather than the account/credential.
+_MODEL_SCOPED_403_MARKERS = (
+    "this model",
+    "for model",
+    "model not allowed",
+    "model is not allowed",
+    "not allowed to use model",
+    "does not have access to model",
+    "no access to model",
+    "model access",
+    "blocked model",
+    "model is blocked",
+)
+
 _GATEWAY_BUSY_RE = re.compile(
     r"chat_admission_busy|admission capacity is (?:temporarily unavailable|busy)"
     r"|Structurally heavy chat request capacity is busy",
@@ -151,7 +165,7 @@ class FailureIntelligence:
         - 429 otherwise -> rate_limited, REROUTE, provider, 60
         - 401 -> authentication, REROUTE, provider, 3600
         - 402 -> payment_required, REROUTE, provider, 3600
-        - 403 -> permission, REROUTE, route, 3600
+        - 403 -> permission, REROUTE, provider (route if the text names one model), 3600
         - 400 + unsupported -> unsupported, REROUTE, route, 86400
         - 404 or model_not_found -> model_unavailable, REROUTE, route, 3600
         - 5xx -> upstream_temporary, REROUTE, route, 60
@@ -290,13 +304,19 @@ class FailureIntelligence:
 
             # 403 - Permission Denied
             elif status == 403:
+                # A 403 denies the account/credential (OpenAI: unsupported
+                # country/region; gateways: key or connection not permitted), so
+                # it is provider-scoped like 401/402, matching the worker path
+                # (PROVIDER_SCOPE_FAILURE_CATEGORIES). An explicitly model-level
+                # denial stays route-scoped so sibling models remain eligible.
                 if not cooldown:
                     cooldown = 3600
+                model_scoped = any(marker in error_lower for marker in _MODEL_SCOPED_403_MARKERS)
                 return FailureClassification(
                     category="permission",
                     action="REROUTE",
                     cooldown_seconds=cooldown,
-                    scope="route",
+                    scope="route" if model_scoped else "provider",
                     evidence=_sanitize_error(error_text),
                 )
 
