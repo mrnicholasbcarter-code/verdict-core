@@ -80,8 +80,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("output", type=Path, help="JSONL calibration records to write")
     args = parser.parse_args(argv)
 
+    import os
+
     from verdict.decision_signals.factory import provider_from_env
 
+    # This script is measurement only, so it always runs the provider in
+    # SHADOW mode. It never enables ADVISORY for anything else.
+    os.environ["VERDICT_DECISION_SIGNALS_MODE"] = "SHADOW"
     provider = provider_from_env()
     if provider is None:
         print("Error: no OpenJev provider (TYPESAFE_API_KEY unset)", file=sys.stderr)
