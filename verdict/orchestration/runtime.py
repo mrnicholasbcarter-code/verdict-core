@@ -874,6 +874,10 @@ class DagRuntime:
                 ):
                     break
             assert review is not None
+            for number, attempt in enumerate(review.attempts, 1):
+                # BOD-224: every reviewer attempt is evidence, not only the last.
+                record: dict[str, Any] = dict(attempt)
+                self.events.emit("review_attempt", attempt=number, **record)
             self.events.emit(
                 "review",
                 status=review.status,

@@ -12,6 +12,7 @@ import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -71,6 +72,19 @@ def _verdict(route_id: str = "cx/gpt-5.5-low") -> RouteVerdict:
     )
 
 
+def _as_ocr_writes(payload: str, argv: Sequence[str]) -> str:
+    """Real ``ocr`` records the model it ran with ``--model`` in its manifest."""
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        return payload
+    execution = data.get("manifest", {}).get("execution") if isinstance(data, dict) else None
+    if isinstance(execution, dict) and "--model" in argv:
+        execution["model"] = list(argv)[list(argv).index("--model") + 1]
+        return json.dumps(data)
+    return payload
+
+
 class FakeRunner:
     """Records argv/env and returns scripted OcrRun results.
 
@@ -98,7 +112,7 @@ class FakeRunner:
         if self._review_payload is not None and "--output" in argv:
             out_path = Path(argv[argv.index("--output") + 1])
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(self._review_payload)
+            out_path.write_text(_as_ocr_writes(self._review_payload, argv))
         return self._review_run
 
 
@@ -404,7 +418,7 @@ class SequenceRunner(FakeRunner):
             return self._review_run
         out_path = Path(argv[argv.index("--output") + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(self._second_payload)
+        out_path.write_text(_as_ocr_writes(self._second_payload, argv))
         return OcrRun(exit_code=0)
 
 
@@ -431,3 +445,95 @@ def test_reviewer_pool_exhaustion_is_error_not_pass(
     runner = FakeRunner(OcrRun(exit_code=1))
     result = _run(_reviewer(tmp_path, selector, runner))
     assert result.status == "ERROR" and "exhausted" in result.detail
+
+
+def test_reviewer_provider_429_cools_the_provider_and_moves_off_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-224: a provider-scoped reviewer failure uses the shared failure policy."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    clean = (Path(__file__).parent / "fixtures" / "ocr" / "sample-clean.json").read_text()
+    clean_payload = json.loads(clean)
+    clean_payload["manifest"]["execution"]["model"] = "cx/good-reviewer"
+    selector = PoolSelector(["cc/a", "cx/good-reviewer"])
+    recorded: list[tuple[str, str, str]] = []
+    selector.record_failure = lambda route_id, failure, *, now: recorded.append(  # type: ignore[method-assign]
+        (route_id, failure.category, failure.scope)
+    )
+    runner = SequenceRunner(OcrRun(exit_code=1, stderr="429"), json.dumps(clean_payload))
+    reviewer = _reviewer(tmp_path, selector, runner)
+    reviewer._interpret = _wrap_first_as(reviewer, "ocr review exited 1: HTTP 429 rate limited")  # type: ignore[method-assign]
+    result = _run(reviewer)
+    assert result.status == "PASS" and result.route_id == "cx/good-reviewer"
+    assert recorded == [("cc/a", "rate_limited", "provider")]
+    assert [a["route_id"] for a in result.attempts] == ["cc/a", "cx/good-reviewer"]
+    assert result.attempts[0]["category"] == "rate_limited"
+    assert result.attempts[0]["scope"] == "provider"
+
+
+def test_reviewer_identity_substitution_fails_closed_and_reselects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A review that ran on a model Verdict did not select is not accepted."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    clean = json.loads(
+        (Path(__file__).parent / "fixtures" / "ocr" / "sample-clean.json").read_text()
+    )
+    substituted = json.loads(json.dumps(clean))
+    substituted["manifest"]["execution"]["model"] = "gc/some-default"
+    good = json.loads(json.dumps(clean))
+    good["manifest"]["execution"]["model"] = "cx/b"
+    selector = PoolSelector(["cc/a", "cx/b"])
+    runner = PayloadRunner([json.dumps(substituted), json.dumps(good)])
+    result = _run(_reviewer(tmp_path, selector, runner))
+    assert result.status == "PASS" and result.route_id == "cx/b"
+    assert selector.failed == ["cc/a"]
+    assert result.attempts[0]["category"] == "model_mismatch"
+    assert "identity_mismatch" in str(result.attempts[0]["detail"])
+
+
+def test_reviewer_identity_mismatch_everywhere_is_error_not_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    clean = json.loads(
+        (Path(__file__).parent / "fixtures" / "ocr" / "sample-clean.json").read_text()
+    )
+    clean["manifest"]["execution"]["model"] = "gc/some-default"
+    selector = PoolSelector(["cc/a", "cx/b"])
+    runner = PayloadRunner([json.dumps(clean), json.dumps(clean)])
+    result = _run(_reviewer(tmp_path, selector, runner))
+    assert result.status == "ERROR" and not result.passed
+    assert "identity_mismatch" in result.detail and "exhausted" in result.detail
+    assert len(result.attempts) == 2
+
+
+class PayloadRunner(FakeRunner):
+    """Each review call writes the next payload and exits 0."""
+
+    def __init__(self, payloads: list[str]) -> None:
+        super().__init__(OcrRun(exit_code=0))
+        self._payloads = list(payloads)
+
+    def __call__(self, argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> OcrRun:
+        argv = list(argv)
+        if "--version" in argv:
+            return OcrRun(exit_code=0, stdout="open-code-review v1.12.9\n")
+        self.calls.append({"argv": argv, "env": dict(env), "timeout": timeout})
+        out_path = Path(argv[argv.index("--output") + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(self._payloads.pop(0))
+        return OcrRun(exit_code=0)
+
+
+def _wrap_first_as(reviewer: OpenCodeReviewer, detail: str) -> Any:
+    original = reviewer._interpret
+    calls = {"n": 0}
+
+    def interpret(run: OcrRun, raw_path: Path, route_id: str) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return reviewer._error(route_id, str(raw_path), detail)
+        return original(run, raw_path, route_id)
+
+    return interpret

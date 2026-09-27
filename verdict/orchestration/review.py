@@ -22,6 +22,7 @@ variable at runtime and never written into the repo, argv, or logs.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import uuid
@@ -168,6 +169,7 @@ class OpenCodeReviewer:
         )
         tried: set[str] = set()
         last: ReviewResult | None = None
+        attempts: list[dict[str, object]] = []
         for _attempt in range(self._max_reviewer_attempts):
             chosen, _verdicts = self._selector.select(
                 replace(requirements, exclude_routes=frozenset(exclude_routes | tried)), now=now
@@ -185,26 +187,70 @@ class OpenCodeReviewer:
                 background=background,
             )
             if result.status != "ERROR" or not self._provider_failure(result):
-                return result
-            # The REVIEWER's provider failed (504/timeout/quota), not the review:
-            # cool the route down and reselect another independent reviewer.
+                attempts.append(
+                    {"route_id": chosen.route_id, "status": result.status, "category": ""}
+                )
+                return replace(result, attempts=tuple(attempts))
+            # The REVIEWER's provider failed (504/timeout/quota/identity), not the
+            # review: classify it with the shared failure policy, cool the
+            # correct scope, and reselect another independent reviewer.
+            failure = self._classify_failure(chosen.route_id, result, now=now)
+            attempts.append(
+                {
+                    "route_id": chosen.route_id,
+                    "status": result.status,
+                    "category": failure.category,
+                    "scope": failure.scope,
+                    "cooldown_seconds": failure.cooldown_seconds,
+                    "detail": result.detail[:200],
+                }
+            )
             last = result
             tried.add(chosen.route_id)
-            self._selector.record_failure(
-                chosen.route_id,
-                FailureClassification("upstream_temporary", "REROUTE", 300, "route", result.detail),
-                now=now,
-            )
+            if failure.scope != "none" and failure.cooldown_seconds > 0:
+                self._selector.record_failure(chosen.route_id, failure, now=now)
         if last is not None:
             return replace(
-                last, detail=f"{last.detail}; reviewer pool exhausted after {len(tried)}"
+                last,
+                detail=f"{last.detail}; reviewer pool exhausted after {len(tried)}",
+                attempts=tuple(attempts),
             )
         return ReviewResult(
             status="ERROR",
             reviewer=self._REVIEWER_PREFIX,
             route_id="",
             detail="no independent reviewer eligible",
+            attempts=tuple(attempts),
         )
+
+    @staticmethod
+    def _classify_failure(
+        route_id: str, result: ReviewResult, *, now: datetime
+    ) -> FailureClassification:
+        """Reviewer failures use the same policy as workers (BOD-224).
+
+        A provider 429/401/402 cools the whole provider; a timeout or 5xx cools
+        the route; an identity mismatch is route-scoped. An unclassifiable
+        reviewer error keeps the previous conservative route cooldown.
+        """
+        from verdict.orchestration.contracts import WorkerTerminal
+        from verdict.orchestration.recovery import FailureIntelligence
+
+        detail = result.detail
+        if detail.startswith("identity_mismatch"):
+            return FailureClassification("model_mismatch", "REROUTE", 3600, "route", detail)
+        match = re.search(r"(?<!\d)(4\d\d|5\d\d)(?!\d)", detail)
+        terminal = WorkerTerminal(
+            ok=False,
+            model=route_id,
+            error=detail,
+            status_code=int(match.group(1)) if match else None,
+            stop_reason="timeout" if "timed out" in detail.lower() else "error",
+        )
+        failure = FailureIntelligence().classify(terminal, now=now)
+        if failure.category in {"unknown", "no_final_answer"}:
+            return FailureClassification("upstream_temporary", "REROUTE", 300, "route", detail)
+        return failure
 
     async def _review_once(
         self, route_id: str, *, repo: Path, base_ref: str, head_ref: str, background: str
@@ -293,6 +339,15 @@ class OpenCodeReviewer:
         if self._every_item_failed(payload):
             return self._error(route_id, raw_ref, "every reviewed item failed")
 
+        observed = self._observed_model(payload)
+        if observed is not None and observed.removeprefix("omniroute/") != route_id.removeprefix(
+            "omniroute/"
+        ):
+            # Fail closed on substitution: the review ran on a model Verdict did
+            # not select, so it is not evidence from the selected reviewer.
+            return self._error(
+                route_id, raw_ref, f"identity_mismatch: selected {route_id}, observed {observed}"
+            )
         findings = self._parse_findings(payload)
         reviewer = self._reviewer_label(payload)
         status = "FAIL" if any(f.blocking() for f in findings) else "PASS"
@@ -305,11 +360,19 @@ class OpenCodeReviewer:
         )
 
     @staticmethod
+    def _observed_model(payload: Mapping[str, object]) -> str | None:
+        manifest = payload.get("manifest")
+        execution = manifest.get("execution") if isinstance(manifest, Mapping) else None
+        model = execution.get("model") if isinstance(execution, Mapping) else None
+        return str(model).strip() or None if model else None
+
+    @staticmethod
     def _provider_failure(result: ReviewResult) -> bool:
         detail = result.detail.lower()
         return any(
             token in detail
             for token in (
+                "identity_mismatch",
                 "every reviewed item failed",
                 "exited",
                 "timed out",

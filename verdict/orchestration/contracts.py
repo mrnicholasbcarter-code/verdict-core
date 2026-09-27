@@ -576,6 +576,8 @@ class ReviewResult:
     findings: tuple[ReviewFinding, ...] = ()
     raw_ref: str = ""  # path to raw reviewer output
     detail: str = ""
+    # Every reviewer attempt (route, status, failure category/scope/cooldown).
+    attempts: tuple[dict[str, object], ...] = ()
 
     @property
     def passed(self) -> bool:
