@@ -140,3 +140,12 @@ class TaskSpec:
     requirements: list[str] = field(default_factory=list)
     budget_per_1k: float | None = None
     privacy_level: str = "standard"
+
+
+# Capacity identity is re-exported here for legacy admission callers.
+from verdict.capacity_models import ConnectionIdentity  # noqa: E402,F401
+
+
+# Compatibility placeholder for older admission tests.
+class Route:  # pragma: no cover
+    pass

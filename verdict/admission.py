@@ -42,6 +42,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from verdict.capacity_models import CapacitySnapshot
+from verdict.cost_ledger import subscription_budgets
+from verdict.subscription_headroom import (
+    legacy_subscription_observations, subscription_observations,
+)
+
 GATEWAY_PREFIX = "omniroute/"
 ACTIVE_CONTROLLER_ENV = "VERDICT_ACTIVE_CONTROLLER_ROUTE"
 CONTROLLER_IDENTITY_UNKNOWN = "unknown"
@@ -146,6 +152,7 @@ class RuntimeObservation:
     source: str
     observed_at: str | None = None
     until: str | None = None
+    pool_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -679,8 +686,15 @@ def _judge(
                 )
 
     route_obs = runtime.for_key(f"route:{route_id}")
-    provider_obs = tuple(
+    provider_obs_all = tuple(
         o for name in {owned, prefix} if name for o in runtime.for_key(f"provider:{name}")
+    )
+    # A concrete pool marker must match this route.  This prevents an exhausted
+    # subscription window from being conflated with a separate pool/account.
+    marker = str(row.get("subscription_pool_id") or row.get("pool_id") or "")
+    provider_obs = tuple(
+        o for o in provider_obs_all
+        if not o.pool_id or not marker or o.pool_id == marker or o.pool_id in route_id
     )
     for obs in route_obs + provider_obs:
         if obs.state in {"unauthorized"}:
@@ -706,7 +720,7 @@ def _judge(
         if obs.state in {"exhausted", "cooldown"}:
             return drop(
                 AdmissionStage.AVAILABLE,
-                f"{obs.state}:{obs.category}",
+                "exhausted" if obs.category == "subscription_exhaustion" else obs.category if obs.category.startswith("subscription_") else f"{obs.state}:{obs.category}",
                 obs.source,
                 observed_at=obs.observed_at,
                 health=obs.state,
@@ -729,7 +743,7 @@ def _judge(
         if denied:
             return drop(AdmissionStage.POLICY, denied, "policy")
 
-    healthy = [o for o in route_obs if o.state == "healthy"]
+    healthy = [o for o in route_obs + provider_obs if o.state == "healthy"]
     if healthy:
         latest = healthy[-1]
         return AdmissionRecord(
@@ -753,6 +767,7 @@ def admit(
     required_capabilities: frozenset[str] = frozenset(),
     min_context_tokens: int = 0,
     deny: Callable[[str], str | None] | None = None,
+    subscription_snapshots: Sequence[CapacitySnapshot] | None = None,
 ) -> AdmittedSet:
     """Build the canonical admitted set from live evidence.
 
@@ -769,11 +784,42 @@ def admit(
         raise AdmissionUnavailableError("live_inventory_unavailable", inventory_source)
     if connections is None:
         raise AdmissionUnavailableError("connection_evidence_unavailable", connections_source)
-    if runtime is None and require_runtime:
+    if runtime is None and require_runtime and not subscription_snapshots and not any("/subscription/" in str(r.get("id", "")) for r in inventory_rows):
         raise AdmissionUnavailableError(
             "runtime_evidence_unavailable", "no runtime health/cooldown/quota source"
         )
     evidence = runtime or RuntimeEvidence()
+    if subscription_snapshots is None:
+        legacy_rows, legacy_sources = legacy_subscription_observations(
+            inventory_rows, connections, now=now
+        )
+        if legacy_rows:
+            evidence = evidence.merged(RuntimeEvidence(
+                observations=tuple(RuntimeObservation(
+                    key=row["key"], state=row["state"], category=row["category"],
+                    source=row["source"], observed_at=row.get("observed_at"),
+                    pool_id=row.get("pool_id"),
+                ) for row in legacy_rows), sources=legacy_sources
+            ))
+    if subscription_snapshots:
+        # Subscription observations are part of the canonical evidence object,
+        # not a downstream advisory check.  Stale snapshots are omitted by the
+        # projector and therefore cannot overwrite fresh route evidence.
+        subscription_rows, subscription_sources = subscription_observations(
+            subscription_snapshots, now=now
+        )
+        subscription_evidence = RuntimeEvidence(
+            observations=tuple(
+                RuntimeObservation(
+                    key=row["key"], state=row["state"], category=row["category"],
+                    source=row["source"], observed_at=row.get("observed_at"),
+                    until=row.get("until"), pool_id=row.get("pool_id"),
+                )
+                for row in subscription_rows
+            ),
+            sources=subscription_sources,
+        )
+        evidence = evidence.merged(subscription_evidence)
     rows: dict[str, Mapping[str, Any]] = {}
     for row in inventory_rows:
         rid = row.get("id")

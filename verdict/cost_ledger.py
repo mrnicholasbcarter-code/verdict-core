@@ -39,6 +39,11 @@ from verdict.effective_capability import AssistanceCost
 
 COST_LEDGER_SCHEMA_VERSION = "1"
 
+# Legacy process-wide subscription budget view.  New callers should prefer a
+# CostLedger instance; admission keeps this compatibility surface evidence-only.
+subscription_budgets: dict[str, Decimal] = {}
+_subscription_reserved: dict[str, Decimal] = {}
+
 CostTermStatus = Literal["observed", "estimated", "unknown", "assumed"]
 CostUnit = Literal["usd", "tokens", "quota_units", "subscription_units", "dimensionless"]
 SpendPool = Literal["cash", "subscription", "quota", "cheaper_inference"]

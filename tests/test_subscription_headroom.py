@@ -9,6 +9,8 @@ from verdict.subscription_headroom import (
     subscription_headroom_pct,
 )
 from decimal import Decimal
+from verdict.capacity_models import ConnectionIdentity
+from verdict.models import ProviderConfig
 
 
 def test_subscription_pool_key():

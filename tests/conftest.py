@@ -34,3 +34,13 @@ def _loopback_testclient_init(self: TestClient, *args: object, **kwargs: object)
 def _loopback_testclient_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make TestClient default to a real loopback peer address."""
     monkeypatch.setattr(TestClient, "__init__", _loopback_testclient_init)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_subscription_ledger():
+    from verdict.cost_ledger import subscription_budgets, _subscription_reserved
+    subscription_budgets.clear()
+    _subscription_reserved.clear()
+    yield
+    subscription_budgets.clear()
+    _subscription_reserved.clear()
