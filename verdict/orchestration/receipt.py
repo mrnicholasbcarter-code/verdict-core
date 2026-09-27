@@ -438,6 +438,11 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "cooldowns": _free("cooldown"),
         "review": _review_block(run_dir, events),
         "controller_events": _free("controller"),
+        "planner_attempts": [
+            {"seq": e.seq, "at": e.at, **dict(e.data)}
+            for e in events
+            if e.type in {"plan_started", "plan_repair_started", "plan_repair_terminal"}
+        ],
         "decision_signals": _free("decision_signals") or None,  # SHADOW signals (optional)
         "claimed_outcome": str(finished[-1].data.get("outcome", "")) if finished else "",
         "event_count": len(events),
@@ -445,6 +450,8 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "started_at": (started.at if started else events[0].at) if events else None,
         "finished_at": finished[-1].at if finished else None,
     }
+    if started and isinstance(started.data.get("retry_budget"), Mapping):
+        receipt["retry_budget"] = dict(started.data["retry_budget"])
     # route identity tracking: add route_identity_warning if any successful attempt had a mismatch
     if has_successful_mismatch:
         receipt["route_identity_warning"] = (

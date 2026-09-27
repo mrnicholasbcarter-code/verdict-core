@@ -18,12 +18,19 @@ import json
 import os
 import re
 import signal
+import tempfile
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from verdict.orchestration.contracts import WorkerExecutor, WorkerTerminal
+from verdict.orchestration.prime_settings import (
+    PROJECT_SETTINGS_RELPATH,
+    effective_prime_settings,
+    one_shot_prime_settings,
+    prime_retry_policy_problems,
+)
 
 __all__ = ["FaultInjectingExecutor", "PrimeHeadlessExecutor", "ScriptedExecutor"]
 
@@ -31,6 +38,11 @@ _STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _STDERR_TAIL_CHARS = 400
 _TERM_GRACE_SECONDS = 5.0
+
+
+def _one_shot_prime_settings() -> dict[str, Any]:
+    """Disable Prime semantic retries, usage waits, and backup routing."""
+    return one_shot_prime_settings()
 
 
 def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS) -> str:
@@ -137,7 +149,32 @@ class PrimeHeadlessExecutor:
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         started = time.monotonic()
-        child_env = {**os.environ, **self.env} if self.env is not None else None
+        child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
+        # Prime's retry policy is semantic: each launch must make at most one
+        # model request before Verdict classifies its terminal.
+        launch_config = tempfile.TemporaryDirectory(prefix="verdict-prime-")
+        config_dir = Path(launch_config.name)
+        (config_dir / "settings.json").write_text(
+            json.dumps(_one_shot_prime_settings()), encoding="utf-8"
+        )
+        child_env["PRIME_AGENT_CODING_AGENT_DIR"] = str(config_dir)
+        # Project settings win over this per-launch config dir in Prime, and
+        # Prime 0.9.6 has no per-launch escape, so assert the EFFECTIVE merge.
+        policy_problems = prime_retry_policy_problems(
+            effective_prime_settings(cwd=cwd, config_dir=config_dir)
+        )
+        if policy_problems:
+            launch_config.cleanup()
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error=(
+                    "prime retry policy not one-shot: "
+                    + "; ".join(policy_problems)
+                    + f" (fix {cwd / PROJECT_SETTINGS_RELPATH})"
+                ),
+                duration_seconds=time.monotonic() - started,
+            )
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self._command(prompt, route_id, cwd),
@@ -148,6 +185,7 @@ class PrimeHeadlessExecutor:
                 start_new_session=True,
             )
         except OSError as exc:
+            launch_config.cleanup()
             return WorkerTerminal(
                 ok=False,
                 model=route_id,
@@ -158,6 +196,7 @@ class PrimeHeadlessExecutor:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             await self._kill_group(proc)
+            launch_config.cleanup()
             return WorkerTerminal(
                 ok=False,
                 model=route_id,
@@ -165,6 +204,7 @@ class PrimeHeadlessExecutor:
                 duration_seconds=time.monotonic() - started,
             )
         duration = time.monotonic() - started
+        launch_config.cleanup()
         return self._interpret(
             stdout=stdout_b.decode("utf-8", "replace"),
             stderr=stderr_b.decode("utf-8", "replace"),

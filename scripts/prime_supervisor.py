@@ -13,6 +13,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import types
 import uuid
@@ -38,6 +39,21 @@ def load_state() -> types.ModuleType:
     """Reuse the workflow contract module instead of duplicating its rules."""
     path = Path(__file__).resolve().parent / "prime_state.py"
     return _load_py_module("prime_state_contracts", path)
+
+
+def load_prime_settings() -> types.ModuleType:
+    """Reuse the one Prime settings-precedence contract, path-loaded (stdlib only).
+
+    Controller and worker launches must enforce the SAME one-shot policy, so the
+    merge rules and the policy floor live in one module instead of a copy here.
+    """
+    existing = sys.modules.get("verdict.orchestration.prime_settings")
+    if existing is not None:
+        return existing
+    path = (
+        Path(__file__).resolve().parent.parent / "verdict" / "orchestration" / "prime_settings.py"
+    )
+    return _load_py_module("verdict.orchestration.prime_settings", path)
 
 
 def load_controller_launch() -> types.ModuleType:
@@ -194,6 +210,12 @@ def stop_group(process: subprocess.Popen[Any]) -> None:
     process.wait(timeout=5)
 
 
+def one_shot_prime_settings() -> dict[str, Any]:
+    """Disable Prime-side semantic retry, wait, and backup behavior."""
+    settings: dict[str, Any] = load_prime_settings().one_shot_prime_settings()
+    return settings
+
+
 def run_attempt(
     command: list[str],
     cwd: Path,
@@ -207,42 +229,68 @@ def run_attempt(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     made_progress = progress_made or (lambda old, new: old != new)
-    with log.open("w") as output:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            env=dict(env) if env is not None else None,
-        )
-        try:
-            # Startup identity is an admission gate. Do not fingerprint/watchdog,
-            # and therefore do not admit the mission, until it succeeds.
-            if on_started is not None:
-                on_started(process)
-            started = progress = time.monotonic()
-            previous = fingerprint()
-            while process.poll() is None:
-                current = fingerprint()
-                if made_progress(previous, current):
-                    previous, progress = current, time.monotonic()
-                else:
-                    previous = current
-                reason = stall_reason(
-                    now=time.monotonic(),
-                    started=started,
-                    progress=progress,
-                    idle_seconds=idle_seconds,
-                    timeout=timeout,
-                )
-                if reason:
-                    stop_group(process)
-                    return {"reason": reason, "returncode": process.returncode}
-                time.sleep(poll)
-            return {"reason": "EXIT", "returncode": process.returncode}
-        finally:
-            stop_group(process)
+    config_dir = Path(tempfile.mkdtemp(prefix="verdict-controller-prime-"))
+    (config_dir / "settings.json").write_text(
+        json.dumps(one_shot_prime_settings()), encoding="utf-8"
+    )
+    child_env = dict(os.environ if env is None else env)
+    child_env["PRIME_AGENT_CODING_AGENT_DIR"] = str(config_dir)
+    # Project settings win over this per-launch config dir in Prime, and Prime
+    # 0.9.6 has no per-launch escape, so gate on the EFFECTIVE merged settings.
+    # Fail closed: a hidden Prime retry would spend quota and hide a terminal.
+    settings_contract = load_prime_settings()
+    try:
+        settings_contract.assert_one_shot_launch(cwd=cwd, config_dir=config_dir)
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
+        raise
+    try:
+        with log.open("w") as output:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=child_env,
+            )
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
+        raise
+    try:
+        # Startup identity is an admission gate. Do not fingerprint/watchdog,
+        # and therefore do not admit the mission, until it succeeds.
+        if on_started is not None:
+            on_started(process)
+        started = progress = time.monotonic()
+        previous = fingerprint()
+        while process.poll() is None:
+            current = fingerprint()
+            if made_progress(previous, current):
+                previous, progress = current, time.monotonic()
+            else:
+                previous = current
+            reason = stall_reason(
+                now=time.monotonic(),
+                started=started,
+                progress=progress,
+                idle_seconds=idle_seconds,
+                timeout=timeout,
+            )
+            if reason:
+                stop_group(process)
+                return {"reason": reason, "returncode": process.returncode}
+            time.sleep(poll)
+        return {"reason": "EXIT", "returncode": process.returncode}
+    finally:
+        stop_group(process)
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
 
 
 def recover(attempt: Callable[[], dict[str, Any]], state: Path, max_restarts: int) -> int:

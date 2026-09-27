@@ -86,6 +86,87 @@ def test_real_process_is_killed_and_reaped(tmp_path):
     assert result["returncode"] is not None
 
 
+def test_run_attempt_uses_prime_config_override_and_one_shot_settings(tmp_path):
+    m = module()
+    capture = tmp_path / "capture.json"
+    code = (
+        "import json, os, pathlib; p=pathlib.Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR']); "
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'env': str(p), 'settings': json.loads((p/'settings.json').read_text())}}))"
+    )
+    result = m.run_attempt(
+        [sys.executable, "-c", code],
+        tmp_path,
+        tmp_path / "out.log",
+        lambda: "unchanged",
+        5,
+        5,
+        0.02,
+    )
+    assert result == {"reason": "EXIT", "returncode": 0}
+    data = json.loads(capture.read_text())
+    assert data["settings"]["retry"]["enabled"] is False
+    assert data["settings"]["retry"]["maxRetries"] == 0
+    assert data["settings"]["retry"]["provider"]["waitForUsage"] == {
+        "enabled": False,
+        "pauseUntilReset": False,
+    }
+    assert data["settings"]["providerBackupModel"] == ""
+    assert not Path(data["env"]).exists()
+
+
+def test_run_attempt_refuses_launch_when_project_settings_re_enable_retry(tmp_path):
+    """BOD266-2: the controller launch is gated on the EFFECTIVE merged settings.
+
+    Prime 0.9.6 merges ``<cwd>/.prime/agent/settings.json`` over the per-launch
+    config dir and offers no per-launch escape, so a project file that
+    re-enables retry must fail closed instead of launching.
+    """
+    m = module()
+    spawned = tmp_path / "spawned"
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps({"retry": {"enabled": True, "maxRetries": 3}})
+    )
+    settings = m.load_prime_settings()
+    with pytest.raises(settings.PrimeRetryPolicyError) as raised:
+        m.run_attempt(
+            [sys.executable, "-c", f"import pathlib; pathlib.Path({str(spawned)!r}).touch()"],
+            tmp_path,
+            tmp_path / "out.log",
+            lambda: "unchanged",
+            5,
+            5,
+            0.02,
+        )
+    assert "retry.enabled must be false" in str(raised.value)
+    assert "retry.maxRetries must be 0" in str(raised.value)
+    assert not spawned.exists()  # refused before spawn
+
+
+def test_run_attempt_effective_settings_are_one_shot_in_this_repo(tmp_path):
+    """The tracked project settings must not re-enable retry for a real launch."""
+    m = module()
+    settings = m.load_prime_settings()
+    capture = tmp_path / "capture.json"
+    code = (
+        "import json, os, pathlib; p=pathlib.Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR']); "
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'env': str(p)}}))"
+    )
+    repo = Path(m.__file__).resolve().parent.parent
+    result = m.run_attempt(
+        [sys.executable, "-c", code], repo, tmp_path / "out.log", lambda: "unchanged", 5, 5, 0.02
+    )
+    assert result == {"reason": "EXIT", "returncode": 0}
+    config_dir = tmp_path / "effective-config"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text(json.dumps(settings.one_shot_prime_settings()))
+    effective = settings.effective_prime_settings(cwd=repo, config_dir=config_dir)
+    assert settings.prime_retry_policy_problems(effective) == []
+    assert effective["retry"]["enabled"] is False
+    assert effective["retry"]["maxRetries"] == 0
+
+
 def test_run_attempt_admits_identity_before_watchdog(tmp_path):
     m = module()
     events = []

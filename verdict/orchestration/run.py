@@ -260,6 +260,9 @@ async def plan_with_failover(
                 route_id=choice.route_id,
                 timeout_seconds=timeout_seconds,
                 constraints=constraints,
+                events=events,
+                attempt=attempt,
+                max_attempts=max_attempts,
             )
         except OrchestrationError as exc:
             last = f"{choice.route_id}: {exc}"
@@ -421,7 +424,16 @@ async def run_golden_path(
     events = _Progress(log, run_dir / PROGRESS_FILE, run_dir.name)
     resumed = prior_validated(run_dir)
     events.emit(
-        "run_started", run_id=run_dir.name, goal=goal, repo=str(repo), resumed_nodes=sorted(resumed)
+        "run_started",
+        run_id=run_dir.name,
+        goal=goal,
+        repo=str(repo),
+        resumed_nodes=sorted(resumed),
+        retry_budget={
+            "max_attempts_per_node": policy.max_attempts_per_node,
+            "max_parallel": policy.max_parallel,
+            "max_cooldown_wait_seconds": policy.max_cooldown_wait_seconds,
+        },
     )
     if resumed:
         events.emit(
