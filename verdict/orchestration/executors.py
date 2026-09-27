@@ -25,6 +25,12 @@ from pathlib import Path
 from typing import Any
 
 from verdict.orchestration.contracts import WorkerExecutor, WorkerTerminal
+from verdict.orchestration.prime_settings import (
+    PROJECT_SETTINGS_RELPATH,
+    effective_prime_settings,
+    one_shot_prime_settings,
+    prime_retry_policy_problems,
+)
 
 __all__ = ["FaultInjectingExecutor", "PrimeHeadlessExecutor", "ScriptedExecutor"]
 
@@ -36,18 +42,7 @@ _TERM_GRACE_SECONDS = 5.0
 
 def _one_shot_prime_settings() -> dict[str, Any]:
     """Disable Prime semantic retries, usage waits, and backup routing."""
-    return {
-        "retry": {
-            "enabled": False,
-            "maxRetries": 0,
-            "baseDelayMs": 0,
-            "provider": {
-                "maxRetryDelayMs": 0,
-                "waitForUsage": {"enabled": False, "pauseUntilReset": False},
-            },
-        },
-        "providerBackupModel": "",
-    }
+    return one_shot_prime_settings()
 
 
 def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS) -> str:
@@ -163,6 +158,23 @@ class PrimeHeadlessExecutor:
             json.dumps(_one_shot_prime_settings()), encoding="utf-8"
         )
         child_env["PRIME_AGENT_CODING_AGENT_DIR"] = str(config_dir)
+        # Project settings win over this per-launch config dir in Prime, and
+        # Prime 0.9.6 has no per-launch escape, so assert the EFFECTIVE merge.
+        policy_problems = prime_retry_policy_problems(
+            effective_prime_settings(cwd=cwd, config_dir=config_dir)
+        )
+        if policy_problems:
+            launch_config.cleanup()
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error=(
+                    "prime retry policy not one-shot: "
+                    + "; ".join(policy_problems)
+                    + f" (fix {cwd / PROJECT_SETTINGS_RELPATH})"
+                ),
+                duration_seconds=time.monotonic() - started,
+            )
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self._command(prompt, route_id, cwd),

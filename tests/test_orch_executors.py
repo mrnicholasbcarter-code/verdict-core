@@ -60,6 +60,12 @@ def run(executor: object, prompt: str, cwd: Path, timeout: float = 30.0) -> Work
 
 
 def test_verdict_launch_uses_isolated_one_shot_prime_settings(tmp_path: Path) -> None:
+    """The launch's EFFECTIVE settings (Prime's global<-project merge) are one-shot.
+
+    The fake binary reproduces Prime 0.9.6 precedence: it merges the isolated
+    config dir it is pointed at with ``<cwd>/.prime/agent/settings.json``, which
+    is the file that wins in real Prime.
+    """
     capture = tmp_path / "launch.json"
     prime = make_fake_prime(
         tmp_path,
@@ -67,13 +73,26 @@ def test_verdict_launch_uses_isolated_one_shot_prime_settings(tmp_path: Path) ->
         "import json, os, sys\n"
         "root = Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR'])\n"
         "settings = json.loads((root / 'settings.json').read_text())\n"
-        f"Path({str(capture)!r}).write_text(json.dumps({{'home': str(root), 'settings': settings, 'argv': sys.argv[1:], 'legacy_env': os.getenv('PRIME_AGENT_HOME')}}))\n"
+        "cwd = sys.argv[sys.argv.index('--cwd') + 1]\n"
+        "project_file = Path(cwd) / '.prime' / 'agent' / 'settings.json'\n"
+        "project = json.loads(project_file.read_text()) if project_file.exists() else {}\n"
+        "effective = dict(settings)\n"
+        "for key, value in project.items():\n"
+        "    base = settings.get(key)\n"
+        "    if isinstance(value, dict) and isinstance(base, dict):\n"
+        "        effective[key] = {**base, **value}\n"
+        "    else:\n"
+        "        effective[key] = value\n"
+        f"Path({str(capture)!r}).write_text(json.dumps({{'home': str(root), 'settings': effective, 'argv': sys.argv[1:], 'legacy_env': os.getenv('PRIME_AGENT_HOME')}}))\n"
         f"print({success_payload()!r})\n",
     )
+    # A project file that agrees with the one-shot policy: the launch proceeds
+    # and the merged result is still one-shot. (The conflicting case is refused
+    # before spawn; see the test below.)
     project_agent = tmp_path / ".prime" / "agent"
     project_agent.mkdir(parents=True)
     (project_agent / "settings.json").write_text(
-        json.dumps({"retry": {"enabled": True, "maxRetries": 3}})
+        json.dumps({"retry": {"enabled": False, "maxRetries": 0}})
     )
     result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
     assert result.ok
@@ -93,6 +112,86 @@ def test_verdict_launch_uses_isolated_one_shot_prime_settings(tmp_path: Path) ->
     assert "--model" in launch["argv"]
     assert ROUTE in launch["argv"]
     assert not Path(launch["home"]).exists()  # per-launch state is removed
+
+
+def test_launch_refused_when_project_settings_re_enable_prime_retry(tmp_path: Path) -> None:
+    """BOD266-2: project settings win in Prime, so a conflict must fail closed.
+
+    Prime 0.9.6 offers no per-launch escape from project precedence, so a
+    project file that re-enables retry cannot be overridden at launch time. The
+    executor refuses to spawn instead of running a launch that could retry
+    silently, and it never reaches the binary.
+    """
+    spawned = tmp_path / "spawned"
+    prime = make_fake_prime(
+        tmp_path,
+        f"from pathlib import Path\n"
+        f"Path({str(spawned)!r}).write_text('spawned')\n"
+        f"print({success_payload()!r})\n",
+    )
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps({"retry": {"enabled": True, "maxRetries": 3}})
+    )
+    result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
+    assert not result.ok
+    assert "prime retry policy not one-shot" in (result.error or "")
+    assert "retry.enabled must be false" in (result.error or "")
+    assert "retry.maxRetries must be 0" in (result.error or "")
+    assert str(tmp_path / ".prime" / "agent" / "settings.json") in (result.error or "")
+    assert not spawned.exists()  # refused before spawn: no model request at all
+
+
+def test_launch_refused_when_project_settings_re_enable_usage_waits(tmp_path: Path) -> None:
+    """Prime merges nested objects one level deep, so a project ``retry.provider``
+    replaces the one-shot ``provider`` block wholesale and re-enables waits."""
+    spawned = tmp_path / "spawned"
+    prime = make_fake_prime(
+        tmp_path,
+        f"from pathlib import Path\n"
+        f"Path({str(spawned)!r}).write_text('spawned')\n"
+        f"print({success_payload()!r})\n",
+    )
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps(
+            {
+                "retry": {
+                    "enabled": False,
+                    "maxRetries": 0,
+                    "provider": {"waitForUsage": {"enabled": True, "pauseUntilReset": True}},
+                }
+            }
+        )
+    )
+    result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
+    assert not result.ok
+    assert "retry.provider.waitForUsage.enabled must be false" in (result.error or "")
+    assert "retry.provider.waitForUsage.pauseUntilReset must be false" in (result.error or "")
+    assert not spawned.exists()
+
+
+def test_launch_refused_when_project_settings_set_a_backup_model(tmp_path: Path) -> None:
+    """A backup model silently reroutes a quota-blocked turn to another model,
+    which would break Verdict's one-route-per-attempt attribution."""
+    spawned = tmp_path / "spawned"
+    prime = make_fake_prime(
+        tmp_path,
+        f"from pathlib import Path\n"
+        f"Path({str(spawned)!r}).write_text('spawned')\n"
+        f"print({success_payload()!r})\n",
+    )
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps({"retry": {"enabled": False, "maxRetries": 0}, "providerBackupModel": "x/y"})
+    )
+    result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
+    assert not result.ok
+    assert "providerBackupModel must be empty" in (result.error or "")
+    assert not spawned.exists()
 
 
 def test_success_parses_last_assistant_text(tmp_path: Path) -> None:

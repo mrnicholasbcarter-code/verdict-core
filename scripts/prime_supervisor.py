@@ -41,6 +41,21 @@ def load_state() -> types.ModuleType:
     return _load_py_module("prime_state_contracts", path)
 
 
+def load_prime_settings() -> types.ModuleType:
+    """Reuse the one Prime settings-precedence contract, path-loaded (stdlib only).
+
+    Controller and worker launches must enforce the SAME one-shot policy, so the
+    merge rules and the policy floor live in one module instead of a copy here.
+    """
+    existing = sys.modules.get("verdict.orchestration.prime_settings")
+    if existing is not None:
+        return existing
+    path = (
+        Path(__file__).resolve().parent.parent / "verdict" / "orchestration" / "prime_settings.py"
+    )
+    return _load_py_module("verdict.orchestration.prime_settings", path)
+
+
 def load_controller_launch() -> types.ModuleType:
     """Load BOD-156 contracts under canonical ``verdict.controller_launch``.
 
@@ -197,18 +212,8 @@ def stop_group(process: subprocess.Popen[Any]) -> None:
 
 def one_shot_prime_settings() -> dict[str, Any]:
     """Disable Prime-side semantic retry, wait, and backup behavior."""
-    return {
-        "retry": {
-            "enabled": False,
-            "maxRetries": 0,
-            "baseDelayMs": 0,
-            "provider": {
-                "maxRetryDelayMs": 0,
-                "waitForUsage": {"enabled": False, "pauseUntilReset": False},
-            },
-        },
-        "providerBackupModel": "",
-    }
+    settings: dict[str, Any] = load_prime_settings().one_shot_prime_settings()
+    return settings
 
 
 def run_attempt(
@@ -230,6 +235,17 @@ def run_attempt(
     )
     child_env = dict(os.environ if env is None else env)
     child_env["PRIME_AGENT_CODING_AGENT_DIR"] = str(config_dir)
+    # Project settings win over this per-launch config dir in Prime, and Prime
+    # 0.9.6 has no per-launch escape, so gate on the EFFECTIVE merged settings.
+    # Fail closed: a hidden Prime retry would spend quota and hide a terminal.
+    settings_contract = load_prime_settings()
+    try:
+        settings_contract.assert_one_shot_launch(cwd=cwd, config_dir=config_dir)
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
+        raise
     try:
         with log.open("w") as output:
             process = subprocess.Popen(

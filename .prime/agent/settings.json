@@ -1,12 +1,12 @@
 {
   "providerBackupModel": "",
   "retry": {
-    "enabled": true,
-    "maxRetries": 3,
-    "baseDelayMs": 3000,
+    "enabled": false,
+    "maxRetries": 0,
+    "baseDelayMs": 0,
     "provider": {
       "timeoutMs": 900000,
-      "maxRetryDelayMs": 30000,
+      "maxRetryDelayMs": 0,
       "waitForUsage": {
         "enabled": false,
         "pauseUntilReset": false
