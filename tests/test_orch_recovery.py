@@ -77,13 +77,36 @@ class TestFailureIntelligenceStatusCodes:
         assert result.cooldown_seconds == 3600
 
     def test_403_permission(self, classifier: FailureIntelligence, now: datetime) -> None:
-        """403 -> permission."""
+        """403 -> permission, provider-scoped: it denies the account/credential."""
         terminal = WorkerTerminal(ok=False, status_code=403, error="Access denied")
         result = classifier.classify(terminal, now=now)
         assert result.category == "permission"
         assert result.action == "REROUTE"
-        assert result.scope == "route"
+        assert result.scope == "provider"
         assert result.cooldown_seconds == 3600
+
+    def test_403_naming_one_model_stays_route_scoped(
+        self, classifier: FailureIntelligence, now: datetime
+    ) -> None:
+        """A 403 that names a single model leaves sibling models eligible."""
+        terminal = WorkerTerminal(
+            ok=False, status_code=403, error="Your key does not have access to model gpt-6-sol"
+        )
+        result = classifier.classify(terminal, now=now)
+        assert (result.category, result.scope) == ("permission", "route")
+
+    def test_403_scope_matches_worker_and_ladder_policy(
+        self, classifier: FailureIntelligence, now: datetime
+    ) -> None:
+        """All three failure paths agree that permission is provider-wide."""
+        from verdict.orchestration.eligibility import _PROVIDER_SCOPE_CATEGORIES
+        from verdict.subagent_selection import PROVIDER_SCOPE_FAILURE_CATEGORIES
+
+        terminal = WorkerTerminal(ok=False, status_code=403, error="Forbidden")
+        result = classifier.classify(terminal, now=now)
+        assert result.scope == "provider"
+        assert "permission" in PROVIDER_SCOPE_FAILURE_CATEGORIES
+        assert "permission" in _PROVIDER_SCOPE_CATEGORIES
 
     def test_400_unsupported(self, classifier: FailureIntelligence, now: datetime) -> None:
         """400 with 'unsupported' -> unsupported."""
