@@ -31,7 +31,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from verdict.orchestration.contracts import (
     FailureClassification,
@@ -43,7 +43,7 @@ from verdict.orchestration.contracts import (
     require_launchable,
 )
 
-__all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "StaticDiffGate"]
+__all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "StaticDiffGate", "make_subprocess_runner"]
 
 # OCR severity vocabulary -> Verdict's normalized ladder.
 _SEVERITY_MAP: Mapping[str, str] = {
@@ -81,6 +81,8 @@ class OcrRun:
     stdout: str = ""
     stderr: str = ""
     timed_out: bool = False
+    # BOD-224: killed because it made no progress (no output) for the idle window.
+    idle_timed_out: bool = False
 
 
 class OcrRunner(Protocol):
@@ -96,27 +98,100 @@ class OcrRunner(Protocol):
     ) -> OcrRun: ...
 
 
-def _subprocess_runner(argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> OcrRun:
-    """Default runner: run ``ocr`` as a child process with a hard timeout."""
-    import os
+def make_subprocess_runner(idle_seconds: float | None = None) -> OcrRunner:
+    """``ocr`` child-process runner with a hard timeout and an optional idle timeout.
 
-    child_env = {**os.environ, **env}
+    Progress is any new stdout/stderr bytes or growth of the ``--output`` file.
+    When nothing progresses for ``idle_seconds`` the whole process group is
+    killed and the run is reported as ``idle_timed_out`` (BOD-224), so a hung
+    reviewer is replaced long before the hard timeout.
+    """
+
+    def run(argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> OcrRun:
+        return _run_with_watchdog(argv, env=env, timeout=timeout, idle_seconds=idle_seconds)
+
+    return run
+
+
+def _run_with_watchdog(
+    argv: Sequence[str], *, env: Mapping[str, str], timeout: float, idle_seconds: float | None
+) -> OcrRun:
+    import os
+    import signal
+    import threading
+    import time
+
+    argv = list(argv)
+    output_path = Path(argv[argv.index("--output") + 1]) if "--output" in argv else None
     try:
-        completed = subprocess.run(
-            list(argv), env=child_env, capture_output=True, text=True, timeout=timeout, check=False
-        )
-    except subprocess.TimeoutExpired as exc:
-        return OcrRun(
-            exit_code=124,
-            stdout=exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
-            stderr=exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or ""),
-            timed_out=True,
+        proc = subprocess.Popen(
+            argv,
+            env={**os.environ, **env},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except (OSError, ValueError) as exc:
         return OcrRun(exit_code=127, stderr=str(exc))
-    return OcrRun(
-        exit_code=completed.returncode, stdout=completed.stdout or "", stderr=completed.stderr or ""
-    )
+
+    chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+    last_activity = [time.monotonic()]
+
+    def pump(name: str, stream: Any) -> None:
+        for chunk in iter(lambda: stream.read1(4096), b""):
+            chunks[name].append(chunk)
+            last_activity[0] = time.monotonic()
+
+    readers = [
+        threading.Thread(target=pump, args=(name, stream), daemon=True)
+        for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))
+    ]
+    for reader in readers:
+        reader.start()
+
+    started = time.monotonic()
+    output_size = -1
+    reason = ""
+    while proc.poll() is None:
+        now = time.monotonic()
+        if output_path is not None:
+            try:
+                size = output_path.stat().st_size
+            except OSError:
+                size = -1
+            if size != output_size:
+                output_size = size
+                if size >= 0:
+                    last_activity[0] = now
+        if now - started >= timeout:
+            reason = "timeout"
+            break
+        if idle_seconds is not None and now - last_activity[0] >= idle_seconds:
+            reason = "idle"
+            break
+        time.sleep(0.05)
+    if reason:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+    proc.wait()
+    for reader in readers:
+        reader.join(timeout=2)
+    stdout = b"".join(chunks["stdout"]).decode("utf-8", "replace")
+    stderr = b"".join(chunks["stderr"]).decode("utf-8", "replace")
+    if reason:
+        return OcrRun(
+            exit_code=124,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=reason == "timeout",
+            idle_timed_out=reason == "idle",
+        )
+    return OcrRun(exit_code=proc.returncode or 0, stdout=stdout, stderr=stderr)
+
+
+_subprocess_runner = make_subprocess_runner()
 
 
 class OpenCodeReviewer:
@@ -138,6 +213,7 @@ class OpenCodeReviewer:
         max_reviewer_attempts: int = 3,
         out_dir: Path,
         runner: OcrRunner | None = None,
+        idle_timeout_seconds: float | None = 300,
     ) -> None:
         self._selector = selector
         self._ocr_bin = ocr_bin
@@ -148,7 +224,8 @@ class OpenCodeReviewer:
         self._token_budget = int(token_budget)
         self._max_reviewer_attempts = max(1, int(max_reviewer_attempts))
         self._out_dir = Path(out_dir)
-        self._runner: OcrRunner = runner or _subprocess_runner
+        self._idle_timeout_seconds = idle_timeout_seconds
+        self._runner: OcrRunner = runner or make_subprocess_runner(idle_timeout_seconds)
 
     async def review(
         self,
@@ -349,6 +426,13 @@ class OpenCodeReviewer:
         raw_ref = str(raw_path)
         if run.timed_out:
             return self._error(route_id, raw_ref, "ocr review timed out")
+        if run.idle_timed_out:
+            # Worded so the shared failure policy classifies it as a timeout.
+            return self._error(
+                route_id,
+                raw_ref,
+                f"ocr review timed out: no progress for {self._idle_timeout_seconds}s",
+            )
         if run.exit_code != 0:
             return self._error(route_id, raw_ref, f"ocr review exited {run.exit_code}")
         if not raw_path.exists():

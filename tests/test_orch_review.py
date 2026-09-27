@@ -561,3 +561,58 @@ def test_reviewer_cooled_after_selection_is_never_launched(
     assert result.attempts[0]["status"] == "REVOKED"
     assert result.attempts[0]["category"] == "pre_dispatch_revoked"
     assert all("duration_seconds" in a for a in result.attempts)
+
+
+def test_idle_reviewer_is_killed_long_before_the_hard_timeout(tmp_path: Path) -> None:
+    """BOD-224 AC1: no progress for the idle window ends the run as idle_timed_out."""
+    import sys
+    import time
+
+    from verdict.orchestration.review import make_subprocess_runner
+
+    runner = make_subprocess_runner(idle_seconds=0.5)
+    started = time.monotonic()
+    run = runner([sys.executable, "-c", "import time; time.sleep(30)"], env={}, timeout=30)
+    assert run.idle_timed_out is True and run.timed_out is False
+    assert run.exit_code == 124
+    assert time.monotonic() - started < 10
+
+
+def test_progressing_reviewer_is_not_idle_killed(tmp_path: Path) -> None:
+    import sys
+
+    from verdict.orchestration.review import make_subprocess_runner
+
+    script = "import sys, time\nfor i in range(6):\n    print(i, flush=True)\n    time.sleep(0.2)\n"
+    run = make_subprocess_runner(idle_seconds=0.6)(
+        [sys.executable, "-c", script], env={}, timeout=30
+    )
+    assert run.idle_timed_out is False and run.timed_out is False
+    assert run.exit_code == 0
+    assert run.stdout.split() == ["0", "1", "2", "3", "4", "5"]
+
+
+def test_hard_timeout_still_applies_without_idle_window() -> None:
+    import sys
+
+    from verdict.orchestration.review import make_subprocess_runner
+
+    script = "import time\nwhile True:\n    print('x', flush=True)\n    time.sleep(0.05)\n"
+    run = make_subprocess_runner(idle_seconds=None)(
+        [sys.executable, "-c", script], env={}, timeout=0.5
+    )
+    assert run.timed_out is True and run.idle_timed_out is False
+
+
+def test_idle_reviewer_is_replaced_by_another_independent_reviewer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    clean = (Path(__file__).parent / "fixtures" / "ocr" / "sample-clean.json").read_text()
+    selector = PoolSelector(["cc/stuck", "cx/b"])
+    runner = SequenceRunner(OcrRun(exit_code=124, idle_timed_out=True), clean)
+    result = _run(_reviewer(tmp_path, selector, runner, idle_timeout_seconds=5))
+    assert result.status == "PASS" and result.route_id == "cx/b"
+    assert selector.failed == ["cc/stuck"]
+    assert result.attempts[0]["category"] == "timeout"
+    assert "no progress for 5" in str(result.attempts[0]["detail"])
