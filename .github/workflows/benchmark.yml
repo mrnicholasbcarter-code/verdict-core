@@ -23,44 +23,40 @@ jobs:
         run: uv sync --extra dev --extra dashboard --extra server
       - name: Run reproducible local benchmark gate
         run: uv run python benchmarks/run_reproducible.py --output-json benchmark-reproducible.json --fail-on-threshold
-      - name: Run coding benchmark
-        run: uv run python scripts/benchmark.py --workload coding --iterations 50 --warmup 10 --output benchmark-coding.json
-      - name: Run reasoning benchmark
-        run: uv run python scripts/benchmark.py --workload reasoning --iterations 50 --warmup 10 --output benchmark-reasoning.json
-      - name: Run chat benchmark
-        run: uv run python scripts/benchmark.py --workload chat --iterations 50 --warmup 10 --output benchmark-chat.json
+      - name: Model selection report (real selector, offline fixture)
+        run: uv run python scripts/selection_report.py --output-json benchmark-selection.json --output-md benchmark-selection.md
       - name: Upload benchmark results
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
-          path: benchmark-*.json
+          path: |
+            benchmark-reproducible.json
+            benchmark-selection.json
+            benchmark-selection.md
       - name: Comment benchmark results
-        if: github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
-            const files = ['benchmark-coding.json', 'benchmark-reasoning.json', 'benchmark-chat.json'];
-            let comment = '## 📊 Benchmark Results\n\n';
+            const marker = '<!-- verdict-benchmark-report -->';
+            let body = `${marker}\n## Benchmark\n\n`;
             if (fs.existsSync('benchmark-reproducible.json')) {
-              const report = JSON.parse(fs.readFileSync('benchmark-reproducible.json', 'utf8'));
-              comment += `Reproducible local gate: ${report.metrics.thresholds_passed ? 'passed' : 'failed'} (${report.metrics.sample_count} samples, fixture ${report.fixture_digest_sha256})\n\n`;
+              const r = JSON.parse(fs.readFileSync('benchmark-reproducible.json', 'utf8'));
+              body += `Reproducible local gate: **${r.metrics.thresholds_passed ? 'passed' : 'failed'}** `
+                + `(${r.metrics.sample_count} samples, fixture \`${r.fixture_digest_sha256.slice(0, 12)}\`).\n\n`;
             }
-            for (const file of files) {
-              if (fs.existsSync(file)) {
-                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-                const comparison = data.comparison || {};
-                comment += `### ${data.workload}\n`;
-                comment += `| Metric | Fixed | Verdict | Delta |\n`;
-                comment += `|--------|-------|---------|-------|\n`;
-                comment += `| Success Rate | ${(data.fixed_assignment.success_rate*100).toFixed(1)}% | ${(data.verdict_routing.success_rate*100).toFixed(1)}% | ${((data.verdict_routing.success_rate - data.fixed_assignment.success_rate)*100).toFixed(1)}% |\n`;
-                comment += `| Cost/req | $${data.fixed_assignment.cost.mean_usd.toFixed(6)} | $${data.verdict_routing.cost.mean_usd.toFixed(6)} | ${comparison.cost_savings_pct?.toFixed(1)}% |\n`;
-                comment += `| p95 Latency | ${data.fixed_assignment.latency.p95.toFixed(0)}ms | ${data.verdict_routing.latency.p95.toFixed(0)}ms | ${comparison.latency_p95_diff_ms?.toFixed(0)}ms |\n\n`;
-              }
+            body += fs.existsSync('benchmark-selection.md')
+              ? fs.readFileSync('benchmark-selection.md', 'utf8')
+              : 'Selection report did not run.\n';
+            body += `\n_Updated for ${context.payload.pull_request.head.sha.slice(0, 7)}._\n`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
