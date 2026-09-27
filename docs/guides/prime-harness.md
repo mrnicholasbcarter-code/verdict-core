@@ -60,3 +60,22 @@ verdict harness prime disable
 Restores the pre-enable backup byte-for-byte.
 
 See also [coding-agent-gate.md](coding-agent-gate.md) and [codex-harness.md](codex-harness.md).
+
+
+## Keeping the Prime model registry current
+
+Verdict refreshes `~/.prime/agent/models.json` from the live OmniRoute catalog
+whenever it selects a model (worker runs, `verdict eligibility`,
+`verdict orchestrate`). To also refresh it between runs, install the user timer:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/verdict-prime-sync.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now verdict-prime-sync.timer
+```
+
+Edit `VERDICT_CHECKOUT` in the service if your checkout is not at
+`~/dev/verdict-core`. `sync-models` writes nothing when the model set is
+unchanged, and keeps only the newest 5 `models.json.verdict-sync-*.bak` backups.
+Check the last run with `journalctl --user -u verdict-prime-sync`.

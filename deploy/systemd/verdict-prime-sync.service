@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Prime's OmniRoute model registry from the live gateway (Verdict)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# VERDICT_CHECKOUT must point at a verdict-core checkout with its .venv synced.
+Environment=VERDICT_CHECKOUT=%h/dev/verdict-core
+# Optional: OMNIROUTE_BASE_URL; the default gateway is http://127.0.0.1:20128.
+ExecStart=/bin/sh -c 'exec "$VERDICT_CHECKOUT/.venv/bin/python" -m verdict.cli harness prime sync-models'
+# A sync never shrinks the registry to nothing, is a no-op when the model set is
+# unchanged, and keeps only the newest few backups.
