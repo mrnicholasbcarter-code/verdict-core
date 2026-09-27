@@ -40,7 +40,7 @@ def test_wrapper_exhaustion_hard_drop():
     assert record is not None
     assert record.admitted is False
     assert record.first_failed_stage.value == "AVAILABLE"
-    assert record.reason == "exhausted"
+    assert record.reason == "subscription_exhaustion"
 
 
 def test_wrapper_available():

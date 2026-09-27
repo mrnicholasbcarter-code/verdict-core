@@ -11,7 +11,6 @@ from verdict.capacity_models import (
     ConnectionIdentity,
     EvidenceAuthority,
 )
-from verdict.cost_ledger import _subscription_reserved, subscription_budgets
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -40,20 +39,25 @@ def _inventory() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     )
 
 
-def test_legacy_subscription_exhaustion_hard_drop() -> None:
-    key = "openai/acct-123/subscription"
-    subscription_budgets[key] = 100
-    _subscription_reserved[key] = 100
+def test_explicit_subscription_exhaustion_hard_drop() -> None:
+    inventory = [
+        {"id": "openai/acct-123/subscription/gpt-4", "owned_by": "openai/acct-123/subscription"}
+    ]
+    connections = [
+        {"provider": "openai", "account_id": "acct-123", "isActive": True, "testStatus": "ok"}
+    ]
     result = admit(
-        [{"id": "openai/acct-123/subscription/gpt-4", "owned_by": "openai/acct-123/subscription"}],
-        [{"provider": "openai", "account_id": "acct-123", "isActive": True, "testStatus": "ok"}],
-        None,
+        inventory,
+        connections,
+        RuntimeEvidence(),
         now=NOW,
+        require_runtime=False,
+        subscription_snapshots=[_snapshot(CapacityPool("subscription", status="exhausted"))],
     )
     record = result.record_for("openai/acct-123/subscription/gpt-4")
     assert record is not None and not record.admitted
     assert record.first_failed_stage == AdmissionStage.AVAILABLE
-    assert record.reason == "exhausted"
+    assert record.reason == "subscription_exhaustion"
 
 
 def test_snapshot_exhaustion_is_canonical_hard_drop() -> None:
@@ -69,7 +73,7 @@ def test_snapshot_exhaustion_is_canonical_hard_drop() -> None:
     record = result.record_for("openai/gpt-4")
     assert record is not None and not record.admitted
     assert record.first_failed_stage == AdmissionStage.AVAILABLE
-    assert record.reason == "exhausted"
+    assert record.reason == "subscription_exhaustion"
 
 
 def test_stale_snapshot_does_not_overwrite_fresh_route_evidence() -> None:
