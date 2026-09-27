@@ -8,13 +8,13 @@ runtime observations consumed by ``verdict.admission.admit``.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
 from verdict.capacity_models import CapacityFailureClass, CapacitySnapshot, ConnectionIdentity
-from verdict.cost_ledger import _subscription_reserved, subscription_budgets
 from verdict.headroom import UNKNOWN_HEADROOM, check_headroom
+from verdict.cost_ledger import _subscription_reserved, subscription_budgets
 from verdict.models import ProviderConfig
 
 SUBSCRIPTION_SOURCE = "subscription_headroom"
@@ -43,8 +43,16 @@ def legacy_subscription_pool_key(identity: ConnectionIdentity) -> str:
     return f"{identity.provider_id}/{identity.account_id}/subscription"
 
 
-def _fresh(snapshot: CapacitySnapshot, now: datetime) -> bool:
-    return snapshot.fresh_until is None or snapshot.fresh_until >= now
+DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS = 300.0
+
+
+def _fresh(
+    snapshot: CapacitySnapshot, now: datetime, *, freshness_ttl_seconds: float
+) -> bool:
+    deadline = snapshot.fresh_until
+    if deadline is None:
+        deadline = snapshot.observed_at + timedelta(seconds=freshness_ttl_seconds)
+    return deadline >= now
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -69,7 +77,8 @@ def _pool_reason(pool: Any, now: datetime) -> tuple[str, str, str | None]:
 
 
 def subscription_observations(
-    snapshots: Sequence[CapacitySnapshot], *, now: datetime
+    snapshots: Sequence[CapacitySnapshot], *, now: datetime,
+    freshness_ttl_seconds: float = DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS
 ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
     """Project fresh subscription snapshots to normalized observation dicts.
 
@@ -85,7 +94,7 @@ def subscription_observations(
             f"{SUBSCRIPTION_SOURCE}:{snapshot.identity.provider_id}:{snapshot.identity.account_id}"
         )
         sources.append(source)
-        if not _fresh(snapshot, moment):
+        if not _fresh(snapshot, moment, freshness_ttl_seconds=freshness_ttl_seconds):
             continue
         provider = snapshot.identity.provider_id.lower()
         key = f"provider:{provider}"
@@ -103,6 +112,12 @@ def subscription_observations(
                 state, category = "unauthorized", "lockout"
             elif failure is CapacityFailureClass.RATE_LIMIT:
                 state, category = "cooldown", "rate_limit"
+            elif failure is CapacityFailureClass.CONCURRENCY_LIMIT:
+                state, category = "cooldown", "concurrency_limit"
+            elif failure is CapacityFailureClass.PROVIDER_OVERLOAD:
+                state, category = "cooldown", "provider_overload"
+            elif failure is CapacityFailureClass.PROVIDER_OUTAGE:
+                state, category = "cooldown", "provider_overload"
             elif "payment" in error.message.lower() or "billing" in error.message.lower():
                 state, category = "unauthorized", "payment"
             else:
@@ -120,6 +135,9 @@ def subscription_observations(
                     "source": source,
                     "observed_at": _iso(snapshot.observed_at),
                     "until": until,
+                    "provider_id": snapshot.identity.provider_id,
+                    "account_id": snapshot.identity.account_id,
+                    "workspace_id": snapshot.identity.workspace_id,
                 }
             )
         for pool in snapshot.pools:
@@ -135,7 +153,24 @@ def subscription_observations(
                     "pool_id": pool.pool_id,
                     "reset_at": _iso(pool.reset_at),
                     "remaining_pct": pool.remaining_pct,
+                    "provider_id": snapshot.identity.provider_id,
+                    "account_id": snapshot.identity.account_id,
+                    "workspace_id": snapshot.identity.workspace_id,
                     "retry_after_seconds": pool.retry_after_seconds,
+                }
+            )
+        if not snapshot.pools and not snapshot.balances and not snapshot.errors:
+            observations.append(
+                {
+                    "key": key,
+                    "state": "unknown",
+                    "category": "subscription_unknown",
+                    "source": source,
+                    "observed_at": _iso(snapshot.observed_at),
+                    "pool_id": None,
+                    "provider_id": snapshot.identity.provider_id,
+                    "account_id": snapshot.identity.account_id,
+                    "workspace_id": snapshot.identity.workspace_id,
                 }
             )
         for balance in snapshot.balances:
@@ -151,6 +186,9 @@ def subscription_observations(
                         "source": source,
                         "observed_at": _iso(snapshot.observed_at),
                         "pool_id": balance.balance_id,
+                        "provider_id": snapshot.identity.provider_id,
+                        "account_id": snapshot.identity.account_id,
+                        "workspace_id": snapshot.identity.workspace_id,
                     }
                 )
     return observations, tuple(dict.fromkeys(sources))
@@ -267,6 +305,7 @@ def legacy_subscription_observations(
 
 
 __all__ = [
+    "DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS",
     "SUBSCRIPTION_SOURCE",
     "UNKNOWN_HEADROOM",
     "check_headroom_subscription",
