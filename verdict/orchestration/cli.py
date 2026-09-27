@@ -136,6 +136,18 @@ def _add_prime_sync_models(subparsers: Any) -> None:
     sync.add_argument(
         "--dry-run", action="store_true", help="Print added/removed ids; write nothing"
     )
+    vis = prime_sub.add_parser(
+        "visibility",
+        help="Read-only drift report: live gateway models vs Prime-visible models, "
+        "with the last refresh timestamp/digest and last failure",
+    )
+    vis.add_argument(
+        "--gateway",
+        default=os.environ.get("OMNIROUTE_BASE_URL")
+        or os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128"),
+        help="OmniRoute gateway base URL (default: $OMNIROUTE_BASE_URL or :20128)",
+    )
+    vis.add_argument("--json", action="store_true", help="Print the report as JSON")
 
 
 def _subparsers_action(parser: Any) -> Any:
@@ -166,6 +178,12 @@ def dispatch(args: argparse.Namespace) -> int | None:
         and getattr(args, "harness_prime_command", "") == "sync-models"
     ):
         return _prime_sync_models(args)
+    if (
+        getattr(args, "command", "") == "harness"
+        and getattr(args, "harness_target", "") == "prime"
+        and getattr(args, "harness_prime_command", "") == "visibility"
+    ):
+        return _prime_visibility(args)
     handler = handlers.get(getattr(args, "command", ""))
     return handler(args) if handler else None
 
@@ -191,6 +209,79 @@ def _prime_sync_models(args: argparse.Namespace) -> int:
         return 1
     print(format_sync_models(result), end="")
     return 0
+
+
+def prime_visibility_report(live_rows: Any, *, prime_home: Path | None = None) -> dict[str, Any]:
+    """Compare live concrete gateway models with Prime's registry. Never writes."""
+    from verdict.harness_prime import resolve_paths
+    from verdict.prime_inventory import _read, concrete_rows, sidecar_path
+
+    paths = resolve_paths(prime_home=prime_home)
+    live_concrete, excluded = concrete_rows(live_rows)
+    live = {str(row["id"]) for row in live_concrete}
+    visible: set[str] = set()
+    registry_error = None
+    try:
+        data = json.loads(paths.models.read_text(encoding="utf-8"))
+        models = data["providers"]["omniroute"]["models"]
+        visible = {str(m["id"]) for m in models if isinstance(m, dict) and m.get("id")}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        registry_error = type(exc).__name__
+    snapshot, failure = _read(sidecar_path(paths.models))
+    return {
+        "schema": "verdict.prime-visibility/v1",
+        "registry": str(paths.models),
+        "registry_error": registry_error,
+        "live_count": len(live),
+        "live_opaque_excluded": len(excluded),
+        "prime_visible_count": len(visible),
+        "live_not_visible": sorted(live - visible),
+        "visible_not_live": sorted(visible - live),
+        "in_sync": registry_error is None and live == visible,
+        "last_refresh": snapshot.to_dict() | {"route_ids": None} if snapshot else None,
+        "last_failure": failure.to_dict() if failure else None,
+    }
+
+
+def _prime_visibility(args: argparse.Namespace) -> int:
+    from verdict.orchestration.run import fetch_inventory, resolve_api_key
+
+    gateway = str(args.gateway).rstrip("/")
+    if gateway.endswith("/v1"):
+        gateway = gateway[: -len("/v1")]
+    try:
+        rows = fetch_inventory(gateway, api_key=resolve_api_key())
+    except Exception as exc:  # report, never write
+        print(
+            f"BLOCKED: cannot read live inventory from {gateway}/v1/models: {exc}", file=sys.stderr
+        )
+        return 2
+    report = prime_visibility_report(rows)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["in_sync"] else 1
+    last = report["last_refresh"] or {}
+    lines = [
+        f"Prime visibility vs live gateway ({gateway})",
+        f"  registry: {report['registry']}"
+        + (f" (unreadable: {report['registry_error']})" if report["registry_error"] else ""),
+        f"  live concrete models: {report['live_count']}"
+        f" (+{report['live_opaque_excluded']} opaque excluded)",
+        f"  Prime-visible models: {report['prime_visible_count']}",
+        f"  live but not visible: {len(report['live_not_visible'])}",
+        f"  visible but not live: {len(report['visible_not_live'])}",
+        f"  last refresh: {last.get('refreshed_at', 'never')}"
+        f" digest {last.get('digest', '-')} count {last.get('count', '-')}",
+    ]
+    if report["last_failure"]:
+        fail = report["last_failure"]
+        lines.append(f"  last refresh failure: {fail['error_type']} at {fail['failed_at']}")
+    # Complete drift set: eligibility/visibility output is never truncated.
+    for label, key in (("+", "live_not_visible"), ("-", "visible_not_live")):
+        lines.extend(f"  {label} {rid}" for rid in report[key])
+    lines.append("  status: " + ("in sync" if report["in_sync"] else "DRIFT"))
+    print("\n".join(lines))
+    return 0 if report["in_sync"] else 1
 
 
 def _state_dir() -> Path:
