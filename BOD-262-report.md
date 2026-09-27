@@ -119,20 +119,130 @@ Commit: `e264022 test(admission): add mutation-killing tests for scoped subscrip
 - Replaced both `__import__("datetime").timedelta(...)` call sites with the
   top-level `timedelta` import already present in the module.
 
+## F4 — sibling-account suppression was fail-open (re-review of `04e299d`)
+
+The multi-account filter added at `verdict/admission.py:742-758` fired on
+connection cardinality alone (`len(active_accounts) > 1`) and then deleted the
+bad account's observations for **every** route on that provider. Three
+fail-open consequences, all fixed here:
+
+1. **Account-pinned routes lost their own account's exhaustion.** A route whose
+   inventory row declares `subscription_pool_id = "openai/acct-a/subscription"`,
+   or whose route id encodes `acct-a`, is unambiguously bound to `acct-a`. The
+   filter overrode both bindings.
+2. **ENTITLED-stage lockout was bypassed.** `"unauthorized"` was in
+   `_bad_states`, so `AUTH_EXPIRED`, `PERMISSION_DENIED` and the payment/billing
+   classification were all discardable by an unrelated sibling connection.
+3. **"Viable" was inferred from absence of evidence.** A sibling counted as
+   viable purely because no bad subscription observation named it, even when its
+   own connection reported a bad `testStatus`.
+
+### Fix
+
+The filter is now gated on three conditions, all of which must hold:
+
+- **No resolvable account binding.** `route_is_account_bound` is true when the
+  row carries a `subscription_pool_id`/`pool_id` marker or the route id encodes
+  an account (the same two markers the upstream scoping filter already trusts).
+  A bound route's own account governs and no sibling can stand in for it.
+- **Only `exhausted` and `cooldown` are suppressible.** `"unauthorized"` is
+  removed from the state set, so ENTITLED-stage lockout, auth and payment
+  failures are never cleared by a sibling account. Suppressing exhaustion to let
+  a sibling serve is routing policy; suppressing a credential failure is not.
+- **Positive viability for the sibling.** New `_connection_is_viable()` requires
+  an `isActive` connection whose `testStatus` is not in `_BAD_TEST_STATUS` and
+  which carries no live `rate_limited_until` window for the route. Absence of
+  bad subscription evidence is no longer viability.
+  `_connection_is_rate_limited()` factors out the window check so the per-route
+  key filtering (`canonical_route_id`) matches the existing loop in `_judge()`.
+
+### Reviewer repro, `/tmp/rev262r3_repro.py`
+
+All seven cases now match the `8d8b7f1` base:
+
+```text
+T1_POOL_PINNED_EXHAUSTED           {"admitted": false, "reason": "subscription_exhaustion", "launchable": false}
+T1b_POOL_PINNED_SINGLE_ACCT        {"admitted": false, "reason": "subscription_exhaustion", "launchable": false}
+T2_ENCODED_ROUTE_EXHAUSTED         {"admitted": false, "reason": "subscription_exhaustion", "launchable": false}
+T2b_ENCODED_ROUTE_LOCKOUT          {"admitted": false, "reason": "lockout", "launchable": false}
+T2c_ENCODED_ROUTE_PAYMENT          {"admitted": false, "reason": "lockout", "launchable": false}
+T3_SIBLING_TESTSTATUS_ERROR        {"admitted": false, "reason": "subscription_exhaustion", "launchable": false}
+T4_AGNOSTIC_LOCKOUT_SIBLING_SILENT {"admitted": false, "reason": "lockout", "launchable": false}
+```
+
+The F1 cases still behave as approved (`/tmp/rev262r3_probe.py`): `acct-a`
+exhausted with an active, unpinned, viable `acct-b` stays admitted
+(`R1`/`R2`), both-exhausted still hard-drops (`R3`), an account-less connection
+still ignores foreign-account evidence (`R4`), and a matching-account
+exhaustion still drops (`R5`).
+
+### New tests (restrictive direction)
+
+Five tests added to `tests/test_admission_subscription.py`. Four fail on
+`04e299d`, proven by extracting `git archive 04e299d` to `/tmp/f4-mut`,
+overwriting only the test file, and running it against the old source:
+
+```
+$ cd /tmp/f4-mut && python -m pytest tests/test_admission_subscription.py -q
+4 failed, 17 passed, 1 warning in 0.77s
+FAILED test_pool_pinned_route_keeps_own_account_exhaustion_despite_viable_sibling
+FAILED test_encoded_account_route_keeps_lockout_despite_viable_sibling
+FAILED test_agnostic_route_keeps_lockout_despite_viable_sibling
+FAILED test_sibling_with_bad_test_status_does_not_confer_viability
+```
+
+The fifth, `test_rate_limited_sibling_does_not_confer_viability`, is labelled a
+direction check in its docstring: it does not distinguish `04e299d`, because the
+earlier per-connection rate-limit loop in `_judge()` already hard-drops any
+route with a live window on any active connection. The rate-limit clause in
+`_connection_is_viable()` is defence-in-depth and the test pins the direction.
+
+### Mutation matrix, rebuilt on the F4 source
+
+Rebuilt from scratch at `/tmp/f4-matrix`: `git ls-files` export as `base`, then
+one independent source-level revert per mutant, each `py_compile`-verified, each
+run against the same 12 admission/capacity/headroom test files
+(`167 passed` at baseline). All 13 mutants die.
+
+| Mutant | Fix reverted | Result | Killing test |
+|---|---|---:|---|
+| M1 | account scoping in `_judge()` | KILLED | `test_connection_without_account_id_rejects_foreign_account_evidence` |
+| M2 | workspace scoping in `_judge()` | KILLED | `test_workspace_scope_isolates_foreign_workspace_exhaustion` |
+| M3 | default freshness TTL | KILLED | `test_default_freshness_ttl_rejects_snapshot_without_fresh_until` |
+| M4 | unknown-headroom gate in `_judge()` | KILLED (2 tests) | `test_unknown_headroom_admitted_but_not_launchable_without_confirmation` |
+| M5 | `launchable()` unknown guard | KILLED | `test_launchable_guard_blocks_unknown_reason_even_if_health_marked_healthy` |
+| M6 | `reset_at` in `to_dict()` | KILLED | `test_reset_at_is_preserved_in_admission_record_dict` |
+| M7 | `CONCURRENCY_LIMIT` classification | KILLED | `test_distinct_capacity_failure_classes_hard_drop[concurrency_limit]` |
+| M8 | `PROVIDER_OVERLOAD` classification | KILLED | `test_distinct_capacity_failure_classes_hard_drop[provider_overload]` |
+| M11 | wrapper unscoped ledger key | KILLED | `test_admission_wrapper.py::test_wrapper_exhaustion_hard_drop` |
+| **M12** | `route_is_account_bound` gate (`if True:`) | **KILLED** | `test_pool_pinned_route_keeps_own_account_exhaustion_despite_viable_sibling` |
+| **M13** | `"unauthorized"` back in `_suppressible_states` | **KILLED** | `test_agnostic_route_keeps_lockout_despite_viable_sibling` |
+| **M14** | viability inferred from absence of evidence | **KILLED** | `test_sibling_with_bad_test_status_does_not_confer_viability` |
+| **M15** | `testStatus` clause in `_connection_is_viable()` | **KILLED** | `test_sibling_with_bad_test_status_does_not_confer_viability` |
+
+M12-M15 are the four F4-specific mutants; M1-M8 and M11 were re-verified on the
+new source rather than carried over from the previous round.
+
+### Test integrity
+
+No existing test was deleted, skipped, weakened or re-asserted. The F1 case
+(`test_exhausted_account_does_not_drop_route_for_active_sibling_account`) and
+all nine previously killed mutants keep their original assertions. The F4 change
+is additive in `tests/` (+5 tests) and touches only the suppression block plus
+the two new helpers in `verdict/admission.py`.
+
 ## Validation
 
 Focused:
 ```
-$ /tmp/verdict-s3/venv/bin/python -m pytest -q -p no:cacheprovider \
-    tests/test_admission_subscription.py tests/test_admission_wrapper.py \
-    tests/test_subscription_headroom.py tests/test_admission.py
-50 passed, 1 warning in 0.54s
+$ /tmp/verdict-s3/venv/bin/python -m pytest -q tests/test_admission_subscription.py
+21 passed, 1 warning in 0.39s
 ```
 
 Full gate (run directly, not delegated):
 ```
 $ /tmp/verdict-s3/venv/bin/python -m pytest -q -p no:cacheprovider
-3745 passed, 11 skipped, 4 warnings in 320.53s (0:05:20)
+3750 passed, 11 skipped, 4 warnings in 324.80s (0:05:24)
 
 $ /tmp/verdict-s3/venv/bin/python -m ruff check .
 All checks passed!
@@ -149,7 +259,7 @@ doc links ok (263 files checked)
 
 All commands used `PYTHONPATH=/tmp/verdict-s3/bod-262-r3` and an isolated
 temp `HOME`. No network, push, PR, or Linear mutation was used. Worktree is
-clean at `e264022` on `s3/bod-262-r3`.
+clean on `s3/bod-262-r3`.
 
 ## Existing-test integrity
 

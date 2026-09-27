@@ -386,3 +386,174 @@ def test_launchable_guard_blocks_unknown_reason_even_if_health_marked_healthy() 
     assert forced_record.reason == "subscription_unknown"
     assert forced_record.health == "healthy"
     assert not forced.launchable("openai/gpt-4")
+
+
+def test_pool_pinned_route_keeps_own_account_exhaustion_despite_viable_sibling() -> None:
+    """F4: a route pinned to acct-a by pool marker must keep acct-a's exhaustion.
+
+    A viable sibling account cannot serve a route that a subscription_pool_id
+    binds to the exhausted account, so the sibling must not suppress the
+    evidence. Asserts the restrictive direction.
+    """
+    inventory = [
+        {
+            "id": "openai/gpt-4",
+            "owned_by": "openai",
+            "capabilities": {},
+            "subscription_pool_id": "openai/acct-a/subscription",
+        }
+    ]
+    connections = [
+        {"provider": "openai", "account_id": "acct-a", "isActive": True, "testStatus": "ok"},
+        {"provider": "openai", "account_id": "acct-b", "isActive": True, "testStatus": "ok"},
+    ]
+    result = admit(
+        inventory,
+        connections,
+        RuntimeEvidence(),
+        now=NOW,
+        require_runtime=False,
+        subscription_snapshots=[
+            _snapshot(
+                CapacityPool("openai/acct-a/subscription", status="exhausted"), account_id="acct-a"
+            )
+        ],
+    )
+    record = result.record_for("openai/gpt-4")
+    assert record is not None
+    assert not record.admitted, record.to_dict()
+    assert record.first_failed_stage == AdmissionStage.AVAILABLE
+    assert record.reason == "subscription_exhaustion"
+    assert not result.launchable("openai/gpt-4")
+
+
+def test_encoded_account_route_keeps_lockout_despite_viable_sibling() -> None:
+    """F4: an ENTITLED-stage lockout on the route's own account is never cleared.
+
+    The route id encodes acct-a, so acct-a's expired credentials bind to it. A
+    viable acct-b sibling must not clear an auth failure. Restrictive direction.
+    """
+    inventory = [{"id": "openai/acct-a/gpt-4", "owned_by": "openai/acct-a", "capabilities": {}}]
+    connections = [
+        {"provider": "openai", "account_id": "acct-a", "isActive": True, "testStatus": "ok"},
+        {"provider": "openai", "account_id": "acct-b", "isActive": True, "testStatus": "ok"},
+    ]
+    result = admit(
+        inventory,
+        connections,
+        RuntimeEvidence(),
+        now=NOW,
+        require_runtime=False,
+        subscription_snapshots=[
+            _snapshot(
+                errors=(CapacityObservationError(CapacityFailureClass.AUTH_EXPIRED, "expired"),),
+                account_id="acct-a",
+            )
+        ],
+    )
+    record = result.record_for("openai/acct-a/gpt-4")
+    assert record is not None
+    assert not record.admitted, record.to_dict()
+    assert record.first_failed_stage == AdmissionStage.ENTITLED
+    assert record.reason == "lockout"
+    assert not result.launchable("openai/acct-a/gpt-4")
+
+
+def test_agnostic_route_keeps_lockout_despite_viable_sibling() -> None:
+    """F4: lockout is not suppressible even for an account-agnostic route.
+
+    Auth, payment and permission failures are hard ENTITLED-stage floors. Only
+    exhausted/cooldown evidence is ever suppressible by a sibling account.
+    """
+    inventory = [{"id": "openai/gpt-4", "owned_by": "openai", "capabilities": {}}]
+    connections = [
+        {"provider": "openai", "account_id": "acct-a", "isActive": True, "testStatus": "ok"},
+        {"provider": "openai", "account_id": "acct-b", "isActive": True, "testStatus": "ok"},
+    ]
+    result = admit(
+        inventory,
+        connections,
+        RuntimeEvidence(),
+        now=NOW,
+        require_runtime=False,
+        subscription_snapshots=[
+            _snapshot(
+                errors=(
+                    CapacityObservationError(CapacityFailureClass.PERMISSION_DENIED, "denied"),
+                ),
+                account_id="acct-a",
+            )
+        ],
+    )
+    record = result.record_for("openai/gpt-4")
+    assert record is not None
+    assert not record.admitted, record.to_dict()
+    assert record.first_failed_stage == AdmissionStage.ENTITLED
+    assert record.reason == "lockout"
+
+
+def test_sibling_with_bad_test_status_does_not_confer_viability() -> None:
+    """F4: a sibling must be positively viable to suppress exhaustion evidence.
+
+    acct-b's connection reports testStatus=error, so it cannot serve the route.
+    Absence of bad subscription evidence for acct-b is not viability, and
+    acct-a's exhaustion must stand. Restrictive direction.
+    """
+    inventory = [{"id": "openai/gpt-4", "owned_by": "openai", "capabilities": {}}]
+    connections = [
+        {"provider": "openai", "account_id": "acct-a", "isActive": True, "testStatus": "ok"},
+        {"provider": "openai", "account_id": "acct-b", "isActive": True, "testStatus": "error"},
+    ]
+    result = admit(
+        inventory,
+        connections,
+        RuntimeEvidence(),
+        now=NOW,
+        require_runtime=False,
+        subscription_snapshots=[
+            _snapshot(CapacityPool("s", status="exhausted"), account_id="acct-a")
+        ],
+    )
+    record = result.record_for("openai/gpt-4")
+    assert record is not None
+    assert not record.admitted, record.to_dict()
+    assert record.first_failed_stage == AdmissionStage.AVAILABLE
+    assert record.reason == "subscription_exhaustion"
+    assert not result.launchable("openai/gpt-4")
+
+
+def test_rate_limited_sibling_does_not_confer_viability() -> None:
+    """F4 (direction check): a sibling under a live rate-limit window is not viable.
+
+    acct-b carries a future rate_limited_until window for the route, so it
+    cannot stand in for exhausted acct-a. This case does not distinguish
+    04e299d: the earlier per-connection rate-limit loop in _judge() already
+    hard-drops any route with a live window on any active connection, so the
+    rate-limit clause in _connection_is_viable() is defence-in-depth for
+    callers that reach it before that loop. Kept to pin the direction.
+    """
+    inventory = [{"id": "openai/gpt-4", "owned_by": "openai", "capabilities": {}}]
+    connections = [
+        {"provider": "openai", "account_id": "acct-a", "isActive": True, "testStatus": "ok"},
+        {
+            "provider": "openai",
+            "account_id": "acct-b",
+            "isActive": True,
+            "testStatus": "ok",
+            "rate_limited_until": {"openai/gpt-4": (NOW + timedelta(hours=1)).isoformat()},
+        },
+    ]
+    result = admit(
+        inventory,
+        connections,
+        RuntimeEvidence(),
+        now=NOW,
+        require_runtime=False,
+        subscription_snapshots=[
+            _snapshot(CapacityPool("s", status="exhausted"), account_id="acct-a")
+        ],
+    )
+    record = result.record_for("openai/gpt-4")
+    assert record is not None
+    assert not record.admitted, record.to_dict()
+    assert not result.launchable("openai/gpt-4")

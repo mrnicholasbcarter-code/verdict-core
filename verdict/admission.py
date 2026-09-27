@@ -636,6 +636,37 @@ def _connections_for(
     return [c for c in connections if str(c.get("provider", "")).lower() in wanted]
 
 
+def _connection_is_rate_limited(
+    connection: Mapping[str, Any], *, route_id: str, now: datetime
+) -> bool:
+    """True when this connection carries a live rate-limit window for the route."""
+    windows = connection.get("rate_limited_until") or {}
+    if not isinstance(windows, Mapping):
+        return False
+    for key, value in windows.items():
+        if "/" in str(key) and canonical_route_id(str(key)) != route_id:
+            continue
+        until = _parse_iso(value)
+        if until is not None and until > now:
+            return True
+    return False
+
+
+def _connection_is_viable(connection: Mapping[str, Any], *, route_id: str, now: datetime) -> bool:
+    """Positive viability for a connection that could serve ``route_id``.
+
+    Absence of bad subscription evidence is not viability. A connection is
+    viable only when it is active, its ``testStatus`` is not a known-bad
+    status, and it carries no live rate-limit window for the route.
+    """
+    if connection.get("isActive") is not True:
+        return False
+    status = str(connection.get("testStatus", "") or "").strip().lower()
+    if status in _BAD_TEST_STATUS:
+        return False
+    return not _connection_is_rate_limited(connection, route_id=route_id, now=now)
+
+
 def _judge(
     route_id: str,
     row: Mapping[str, Any],
@@ -739,17 +770,35 @@ def _judge(
         )
         and (not markers or not o.pool_id or o.pool_id in markers or o.pool_id in route_id)
     )
-    # Multiple active accounts on one provider and an account-agnostic route:
-    # a hard-drop signal for one exhausted/cooled-down/unauthorized account
-    # must not sink the whole provider while another active account carries
-    # no such evidence. Drop only the observations tied to the bad account(s)
-    # so a viable sibling account's evidence (or the absence of any) governs.
-    if len(active_accounts) > 1:
-        _bad_states = {"exhausted", "cooldown", "unauthorized"}
+    # Sibling-account suppression. An account-agnostic route may be served by
+    # any active account, so one exhausted or cooled-down account must not sink
+    # the provider while a demonstrably usable sibling account exists. Three
+    # guards keep this from failing open:
+    #   1. The route must have no resolvable account binding. A pool marker
+    #      (subscription_pool_id/pool_id) or an account encoded in the route id
+    #      pins the route to one account; that account's evidence governs and no
+    #      sibling can stand in for it.
+    #   2. Only "exhausted" and "cooldown" are suppressible. ENTITLED-stage
+    #      lockout, auth and payment failures ("unauthorized") are hard safety
+    #      floors and are never cleared by a sibling account.
+    #   3. The sibling must be positively viable: an active connection whose
+    #      testStatus is not bad and which is not itself rate limited. Absence
+    #      of bad subscription evidence alone is not viability.
+    route_is_account_bound = bool(markers) or bool(encoded_account)
+    if not route_is_account_bound:
+        _suppressible_states = {"exhausted", "cooldown"}
         _accounts_with_bad_evidence = {
-            o.account_id for o in provider_obs if o.account_id and o.state in _bad_states
+            o.account_id for o in provider_obs if o.account_id and o.state in _suppressible_states
         }
-        _viable_accounts = active_accounts - _accounts_with_bad_evidence
+        _viable_accounts = {
+            account
+            for account in active_accounts - _accounts_with_bad_evidence
+            if any(
+                str(c.get("account_id") or "") == account
+                and _connection_is_viable(c, route_id=route_id, now=now)
+                for c in active
+            )
+        }
         if _viable_accounts:
             provider_obs = tuple(
                 o
