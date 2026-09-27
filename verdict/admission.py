@@ -716,14 +716,14 @@ def _judge(
         active_accounts.add(encoded_account)
     active_workspaces = {str(c.get("workspace_id") or "") for c in active}
     active_workspaces.discard("")
+    # Ambiguous provider-only rows (no concrete account marker resolved for
+    # any active connection) reject account-scoped subscription evidence
+    # outright. This matches the comment above: never guess which account
+    # foreign evidence belongs to.
     provider_obs = tuple(
         o
         for o in provider_obs_all
-        if (
-            o.account_id is None
-            or o.account_id in active_accounts
-            or (not active_accounts and len(active) == 1)
-        )
+        if (o.account_id is None or o.account_id in active_accounts)
         and (
             o.workspace_id is None
             or not o.workspace_id
@@ -732,6 +732,23 @@ def _judge(
         )
         and (not markers or not o.pool_id or o.pool_id in markers or o.pool_id in route_id)
     )
+    # Multiple active accounts on one provider and an account-agnostic route:
+    # a hard-drop signal for one exhausted/cooled-down/unauthorized account
+    # must not sink the whole provider while another active account carries
+    # no such evidence. Drop only the observations tied to the bad account(s)
+    # so a viable sibling account's evidence (or the absence of any) governs.
+    if len(active_accounts) > 1:
+        _bad_states = {"exhausted", "cooldown", "unauthorized"}
+        _accounts_with_bad_evidence = {
+            o.account_id for o in provider_obs if o.account_id and o.state in _bad_states
+        }
+        _viable_accounts = active_accounts - _accounts_with_bad_evidence
+        if _viable_accounts:
+            provider_obs = tuple(
+                o
+                for o in provider_obs
+                if o.account_id is None or o.account_id not in _accounts_with_bad_evidence
+            )
     for obs in route_obs + provider_obs:
         if obs.state in {"unauthorized"}:
             return drop(

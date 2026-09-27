@@ -35,7 +35,7 @@ def _snapshot(
 def _inventory() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     return (
         [{"id": "openai/gpt-4", "owned_by": "openai", "capabilities": {}}],
-        [{"provider": "openai", "isActive": True, "testStatus": "ok"}],
+        [{"provider": "openai", "account_id": "acct-123", "isActive": True, "testStatus": "ok"}],
     )
 
 
