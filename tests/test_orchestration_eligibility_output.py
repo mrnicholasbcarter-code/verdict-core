@@ -142,3 +142,23 @@ def test_no_implicit_slices_in_eligibility_renderers() -> None:
             if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
                 pytest.fail(f"slice in {func.name} at line {node.lineno}: output may truncate")
     assert "--limit" not in Path(orch_cli.__file__).read_text(encoding="utf-8")
+
+
+def test_scoped_eligibility_never_shrinks_the_prime_registry(
+    wired: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A --scope/--provider-family run must refresh Prime from the full catalog.
+
+    Regression: `verdict eligibility --scope kr/` rewrote
+    ~/.prime/agent/models.json with only the 40 scoped kr rows, dropping
+    every other provider from the operator's Prime registry.
+    """
+    registry = Path.home() / ".prime" / "agent" / "models.json"
+    _run(capsys, scope="kr/")
+    ids = {m["id"] for m in json.loads(registry.read_text())["providers"]["omniroute"]["models"]}
+    assert any(i.startswith("cc/") for i in ids)
+    assert any(i.startswith("gc/") for i in ids)
+    assert any(i.startswith("kr/") for i in ids)
+    _run(capsys, provider_family=["kr"])
+    ids = {m["id"] for m in json.loads(registry.read_text())["providers"]["omniroute"]["models"]}
+    assert any(i.startswith("cc/") for i in ids)

@@ -242,6 +242,10 @@ def build_selector(
     admitted = admitted.exclude_controller(active_controller_route())
     receipt_path = state_path.parent / "admission-latest.json"
     admitted.write_receipt(receipt_path)
+    # Prime visibility is refreshed from the FULL live catalog. Scope and
+    # provider-family filters only narrow what this ladder evaluates; they
+    # must never shrink the operator's Prime registry to the scoped subset.
+    catalog_rows = list(rows)
     if prefixes:
         rows = [r for r in rows if str(r.get("id", "")).startswith(prefixes)]
     if provider_families:
@@ -260,7 +264,7 @@ def build_selector(
         state_path,
         prefer_providers=tuple(p.strip() for p in prefer.split(",") if p.strip()),
         load=load,
-        harness_visible=prime_visibility(live_rows=rows),
+        harness_visible=prime_visibility(live_rows=catalog_rows),
         admitted=admitted,
         admission_receipt=receipt_path,
     )
