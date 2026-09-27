@@ -123,3 +123,13 @@ def test_refresh_rejects_an_empty_concrete_live_inventory_and_keeps_existing_vis
     )
     assert result.snapshot is None and result.failure is not None
     assert [row["id"] for row in json.loads((home / "models.json").read_text())["providers"]["omniroute"]["models"]] == ["cx/old"]
+
+
+def test_refresh_bootstraps_only_a_minimal_visibility_provider(tmp_path: Path) -> None:
+    home = tmp_path / "agent"
+    home.mkdir()
+    refresh_omniroute_visibility(
+        prime_home=home, source="gateway", fetch_rows=lambda: [{"id": "cx/live"}], now=_now
+    )
+    data = json.loads((home / "models.json").read_text())
+    assert data == {"providers": {"omniroute": {"models": [{"id": "cx/live", "name": "cx/live", "reasoning": False, "input": ["text"], "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}}

@@ -512,6 +512,26 @@ def sync_models(
     )
 
 
+def _sync_visibility_models(rows: Sequence[Mapping[str, Any]], *, prime_home: Path | None) -> SyncModelsResult:
+    """Ensure a minimal OmniRoute visibility provider exists, then sync it.
+
+    Unlike the operator-facing ``sync_models`` command, automatic visibility
+    refresh may bootstrap an otherwise absent registry. It writes no endpoint,
+    token, or health claim; Prime still owns whether its configured adapter can
+    spawn the displayed explicit ids.
+    """
+    paths = resolve_paths(prime_home=prime_home)
+    data = _load_json(paths.models) if paths.models.is_file() else {}
+    providers = data.get("providers")
+    providers_copy = dict(providers) if isinstance(providers, Mapping) else {}
+    if not isinstance(providers_copy.get(OMNIROUTE_PROVIDER_ID), Mapping):
+        providers_copy[OMNIROUTE_PROVIDER_ID] = {"models": []}
+        updated = dict(data)
+        updated["providers"] = providers_copy
+        _atomic_write_json(paths.models, updated)
+    return sync_models(rows, prime_home=prime_home)
+
+
 def refresh_omniroute_visibility(
     *,
     fetch_rows: Callable[[], Sequence[Mapping[str, Any]]],
@@ -533,7 +553,7 @@ def refresh_omniroute_visibility(
         models_path=paths.models,
         source=source,
         fetch_rows=fetch_rows,
-        apply_rows=lambda rows: sync_models(rows, prime_home=prime_home),
+        apply_rows=lambda rows: _sync_visibility_models(rows, prime_home=prime_home),
         max_age_seconds=max_age_seconds,
         force=force,
         now=now,
