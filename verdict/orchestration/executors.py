@@ -26,9 +26,11 @@ from typing import Any
 
 from verdict.orchestration.contracts import WorkerExecutor, WorkerTerminal
 from verdict.orchestration.prime_settings import (
+    PRIME_AGENT_DIR_ENV,
     PROJECT_SETTINGS_RELPATH,
+    default_prime_agent_dir,
     effective_prime_settings,
-    one_shot_prime_settings,
+    prepare_launch_agent_dir,
     prime_retry_policy_problems,
 )
 
@@ -38,11 +40,6 @@ _STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _STDERR_TAIL_CHARS = 400
 _TERM_GRACE_SECONDS = 5.0
-
-
-def _one_shot_prime_settings() -> dict[str, Any]:
-    """Disable Prime semantic retries, usage waits, and backup routing."""
-    return one_shot_prime_settings()
 
 
 def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS) -> str:
@@ -150,14 +147,20 @@ class PrimeHeadlessExecutor:
     ) -> WorkerTerminal:
         started = time.monotonic()
         child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
-        # Prime's retry policy is semantic: each launch must make at most one
-        # model request before Verdict classifies its terminal.
+        # Prime's retry policy is semantic: each Verdict launch must make at
+        # most one model request before Verdict classifies its terminal. Only
+        # Verdict-owned launches are one-shot, so the policy travels in a
+        # per-launch agent dir, not in the tracked project file that every
+        # session in this checkout would otherwise inherit.
         launch_config = tempfile.TemporaryDirectory(prefix="verdict-prime-")
-        config_dir = Path(launch_config.name)
-        (config_dir / "settings.json").write_text(
-            json.dumps(_one_shot_prime_settings()), encoding="utf-8"
+        # PRIME_AGENT_CODING_AGENT_DIR replaces the WHOLE agent dir, so the
+        # launch dir mirrors auth.json, models.json, skills and the rest.
+        # Without that, a real launch would lose its credentials and registry.
+        launch_dir = prepare_launch_agent_dir(
+            Path(launch_config.name), source=default_prime_agent_dir(child_env)
         )
-        child_env["PRIME_AGENT_CODING_AGENT_DIR"] = str(config_dir)
+        config_dir = launch_dir.path
+        child_env[PRIME_AGENT_DIR_ENV] = str(config_dir)
         # Project settings win over this per-launch config dir in Prime, and
         # Prime 0.9.6 has no per-launch escape, so assert the EFFECTIVE merge.
         policy_problems = prime_retry_policy_problems(

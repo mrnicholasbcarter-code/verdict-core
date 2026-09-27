@@ -229,16 +229,23 @@ def run_attempt(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     made_progress = progress_made or (lambda old, new: old != new)
-    config_dir = Path(tempfile.mkdtemp(prefix="verdict-controller-prime-"))
-    (config_dir / "settings.json").write_text(
-        json.dumps(one_shot_prime_settings()), encoding="utf-8"
-    )
+    settings_contract = load_prime_settings()
+    # Only Verdict-owned launches are one-shot. The policy lives in this
+    # per-launch agent dir, not in the tracked project file, so manual sessions
+    # in this checkout keep Prime's own retries.
+    #
+    # PRIME_AGENT_CODING_AGENT_DIR replaces the WHOLE agent dir, so the launch
+    # dir mirrors the operator's auth.json, models.json, skills and extensions.
+    # An empty dir would launch the controller without credentials or registry.
     child_env = dict(os.environ if env is None else env)
-    child_env["PRIME_AGENT_CODING_AGENT_DIR"] = str(config_dir)
+    config_dir = Path(tempfile.mkdtemp(prefix="verdict-controller-prime-"))
+    settings_contract.prepare_launch_agent_dir(
+        config_dir, source=settings_contract.default_prime_agent_dir(child_env)
+    )
+    child_env[settings_contract.PRIME_AGENT_DIR_ENV] = str(config_dir)
     # Project settings win over this per-launch config dir in Prime, and Prime
     # 0.9.6 has no per-launch escape, so gate on the EFFECTIVE merged settings.
     # Fail closed: a hidden Prime retry would spend quota and hide a terminal.
-    settings_contract = load_prime_settings()
     try:
         settings_contract.assert_one_shot_launch(cwd=cwd, config_dir=config_dir)
     except BaseException:

@@ -167,6 +167,70 @@ def test_run_attempt_effective_settings_are_one_shot_in_this_repo(tmp_path):
     assert effective["retry"]["maxRetries"] == 0
 
 
+def test_run_attempt_launch_agent_dir_exposes_auth_and_models(tmp_path):
+    """PRIME_AGENT_CODING_AGENT_DIR replaces the WHOLE agent dir, so the
+    controller launch must still find credentials (``auth.json``) and the
+    provider/model registry (``models.json``). Dropping the mirror would launch
+    the controller unauthenticated, so the child asserts both are present."""
+    m = module()
+    operator_dir = tmp_path / "operator-agent"
+    (operator_dir / "skills").mkdir(parents=True)
+    (operator_dir / "settings.json").write_text(json.dumps({"theme": "dark"}))
+    (operator_dir / "auth.json").write_text(json.dumps({"omniroute": {"type": "api_key"}}))
+    (operator_dir / "models.json").write_text(json.dumps({"providers": {"omniroute": {}}}))
+    capture = tmp_path / "capture.json"
+    code = (
+        "import json, os, pathlib; p=pathlib.Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR']); "
+        "payload={'settings': json.loads((p/'settings.json').read_text()), "
+        "'auth': json.loads((p/'auth.json').read_text()), "
+        "'models': json.loads((p/'models.json').read_text()), "
+        "'skills': (p/'skills').is_dir()}; "
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps(payload))"
+    )
+    env = dict(os.environ)
+    env["PRIME_AGENT_CODING_AGENT_DIR"] = str(operator_dir)
+    result = m.run_attempt(
+        [sys.executable, "-c", code],
+        tmp_path,
+        tmp_path / "out.log",
+        lambda: "unchanged",
+        5,
+        5,
+        0.02,
+        env=env,
+    )
+    assert result == {"reason": "EXIT", "returncode": 0}
+    data = json.loads(capture.read_text())
+    assert data["auth"] == {"omniroute": {"type": "api_key"}}
+    assert data["models"] == {"providers": {"omniroute": {}}}
+    assert data["skills"] is True
+    assert data["settings"]["theme"] == "dark"  # operator keys survive
+    settings = m.load_prime_settings()
+    assert settings.prime_retry_policy_problems(data["settings"]) == []
+    # The operator's own files are never written by a launch.
+    assert json.loads((operator_dir / "auth.json").read_text()) == {
+        "omniroute": {"type": "api_key"}
+    }
+    assert json.loads((operator_dir / "settings.json").read_text()) == {"theme": "dark"}
+
+
+def test_run_attempt_manual_launch_would_keep_prime_retries(tmp_path):
+    """The other half of the owner rule: a session with no per-launch override
+    and a global file with no ``retry`` key keeps Prime's built-in retries. The
+    tracked project file must not change that."""
+    m = module()
+    settings = m.load_prime_settings()
+    repo = Path(m.__file__).resolve().parent.parent
+    operator_global = tmp_path / "operator-agent"
+    operator_global.mkdir()
+    (operator_global / "settings.json").write_text(json.dumps({"theme": "dark"}))
+    effective = settings.effective_prime_settings(cwd=repo, config_dir=operator_global)
+    assert "retry" not in effective
+    policy = settings.resolved_retry_policy(effective)
+    assert policy["enabled"] is True
+    assert policy["maxRetries"] == 3
+
+
 def test_run_attempt_admits_identity_before_watchdog(tmp_path):
     m = module()
     events = []
