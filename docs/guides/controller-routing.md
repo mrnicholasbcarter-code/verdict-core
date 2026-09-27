@@ -99,6 +99,31 @@ After launch the supervisor observes `prime-agent list --json`:
 - `models.json` and argv are not observed identity. Well-formed unrelated `draft`
   roster rows are ignored.
 
+## Root controller failover (generations)
+
+A root controller cannot replace its own model from inside its session, so
+root failover belongs to the supervisor. Each supervisor restart is a new
+**generation**:
+
+1. The generation's Prime process exits or is stopped (stall/timeout).
+2. The supervisor classifies the tail of `session-<token>.log` with the same
+   `FailureIntelligence` policy used for workers (category, scope, cooldown;
+   `Retry-After`/reset hints honored).
+3. Route- or provider-scoped failures are written to the ladder state
+   (`$VERDICT_HOME/orchestration-health.json`) **before** the next selection,
+   together with `generation-failure-<token>.json` in the state dir.
+4. The next generation re-runs live admission and selection. Admission reads
+   those cooldowns, so a cooled route/provider cannot be reselected.
+5. A request-scoped failure (for example HTTP 400 "Input is too long") writes
+   no cooldown: the route is healthy and the next generation may reuse it
+   after compaction.
+6. `--max-restarts` (0..5) bounds generations; exhaustion writes `BLOCKED`
+   and the supervisor exits 2 (fail closed).
+
+A bare `prime-agent --model ...` launch is **root-pinned**: it has no
+automatic root-model replacement. Use `scripts/prime_supervisor.py` for
+failover.
+
 ## Continuity
 
 On fresh-session recovery, compare the durable current route with the fresh qualified
