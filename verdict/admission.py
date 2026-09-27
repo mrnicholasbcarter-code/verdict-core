@@ -173,7 +173,14 @@ class RuntimeEvidence:
 def evidence_from_ladder_state(
     path: Path, *, now: datetime, healthy_ttl_seconds: float = 300.0
 ) -> RuntimeEvidence:
-    """Health and cooldowns persisted by the orchestration ladder."""
+    """Non-authoritative ladder hints plus authoritative negative evidence.
+
+    The state file is writable process state, not an exact live probe receipt.
+    Its fresh healthy rows are deliberately omitted, so they cannot mint
+    canonical launch authority.  The ladder may use them as a probe hint, but
+    admission still requires an exact bounded confirmation.  Negative health
+    categories and active cooldowns remain fail-closed evidence.
+    """
     source = f"ladder_state:{path.name}"
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -188,7 +195,12 @@ def evidence_from_ladder_state(
         if checked is None or (now - checked).total_seconds() > healthy_ttl_seconds:
             continue  # stale evidence proves nothing either way
         category = str(entry.get("category", "") or "")
-        state = "healthy" if entry.get("healthy") is True else _state_for_category(category)
+        if entry.get("healthy") is True:
+            # A current cached success is only a ladder scheduling hint.  It is
+            # intentionally not RuntimeEvidence: otherwise this writable file
+            # would make the route launchable without a live exact probe.
+            continue
+        state = _state_for_category(category)
         out.append(
             RuntimeObservation(
                 f"route:{canonical_route_id(route_id)}",
@@ -246,7 +258,11 @@ def evidence_from_health_cache(path: Path, *, now: datetime) -> RuntimeEvidence:
                 )
             )
             continue
-        state = "healthy" if healthy else _state_for_category(category)
+        if healthy:
+            # This cache is local writable state, so a positive entry is a
+            # scheduling hint only.  Exact confirmation remains mandatory.
+            continue
+        state = _state_for_category(category)
         out.append(
             RuntimeObservation(
                 f"route:{canonical_route_id(str(key))}",
@@ -254,7 +270,7 @@ def evidence_from_health_cache(path: Path, *, now: datetime) -> RuntimeEvidence:
                 category,
                 source,
                 entry.get("observed_at"),
-                None if healthy else _iso(expires),
+                _iso(expires),
             )
         )
     return RuntimeEvidence(tuple(out), (source,))

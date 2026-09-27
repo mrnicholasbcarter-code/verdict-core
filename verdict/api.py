@@ -395,6 +395,46 @@ proxy_instance: UpstreamProxy | None = None
 # model and every alternative must be inside the admitted set; a provider error
 # fails the relay closed (503) instead of falling back to catalog truth.
 relay_admission_provider: Callable[[], AdmittedSet] | None = None
+
+
+class CachedRelayAdmission:
+    """Bounded cache for relay admission; ``get`` is strictly network-free.
+
+    Refresh is an explicit lifecycle action. A stale or failed cache therefore
+    fails closed rather than causing a request-time gateway GET or accepting an
+    old admitted set as indefinite authority.
+    """
+
+    def __init__(self, refresh: Callable[[], AdmittedSet], *, ttl_seconds: float = 60.0) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("relay admission TTL must be positive")
+        self._refresh = refresh
+        self._ttl = timedelta(seconds=ttl_seconds)
+        self._value: AdmittedSet | None = None
+        self._expires_at: datetime | None = None
+        self.last_refresh_failure: str | None = None
+
+    def refresh(self, *, now: datetime | None = None) -> AdmittedSet:
+        current = now or datetime.now(timezone.utc)
+        try:
+            value = self._refresh()
+        except Exception as exc:
+            self.last_refresh_failure = type(exc).__name__
+            raise
+        self._value = value
+        self._expires_at = current + self._ttl
+        self.last_refresh_failure = None
+        return value
+
+    def get(self, *, now: datetime | None = None) -> AdmittedSet:
+        current = now or datetime.now(timezone.utc)
+        if self._value is None:
+            raise RuntimeError("relay_admission_cache_empty")
+        if self._expires_at is None or current > self._expires_at:
+            raise RuntimeError("relay_admission_cache_stale")
+        return self._value
+
+
 availability_cache_instance: AvailabilityCache | None = None
 eligibility_gate_instance: EligibilityGate | None = None
 evidence_store_instance: EvidenceStore | DurableEvidenceStore | None = None
@@ -926,6 +966,29 @@ async def lifespan(app: FastAPI) -> Any:
     # live routing path filters before ranking (single source of truth).
     if eligibility_gate_instance is not None:
         intelligence_instance.eligibility_gate = eligibility_gate_instance
+    # Relay admission is deliberately opt-in. The cache is refreshed once at
+    # startup and every request reads only its bounded in-memory value; no
+    # request path performs a live gateway GET. Persisted ladder state is
+    # evidence, never cache authority.
+    global relay_admission_provider
+    if os.getenv("VERDICT_RELAY_ADMISSION_CACHE", "false").lower() in {"1", "true", "yes", "on"}:
+        from verdict.admission import load_live_admission
+        from verdict.orchestration.run import resolve_api_key
+
+        gateway = os.getenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
+        cache = CachedRelayAdmission(
+            lambda: load_live_admission(
+                gateway, now=datetime.now(timezone.utc), api_key=resolve_api_key()
+            ),
+            ttl_seconds=float(os.getenv("VERDICT_RELAY_ADMISSION_TTL_SECONDS", "60")),
+        )
+        try:
+            cache.refresh()
+        except Exception as exc:
+            # Keep a callable fail-closed provider so a configured authority
+            # boundary cannot silently revert to catalog-based relay behavior.
+            logger.warning("relay admission startup refresh failed: %s", type(exc).__name__)
+        relay_admission_provider = cache.get
     yield
     intelligence_instance = None
     gate_instance = None
@@ -935,6 +998,7 @@ async def lifespan(app: FastAPI) -> Any:
     evidence_store_instance = None
     guidance_plane_instance = None
     model_passport_store_instance = None
+    relay_admission_provider = None
 
 
 app = FastAPI(
