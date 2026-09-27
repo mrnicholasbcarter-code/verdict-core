@@ -59,6 +59,27 @@ def run(executor: object, prompt: str, cwd: Path, timeout: float = 30.0) -> Work
 # ------------------------------------------------------------- PrimeHeadless
 
 
+def test_verdict_launch_uses_isolated_one_shot_prime_settings(tmp_path: Path) -> None:
+    capture = tmp_path / "launch.json"
+    prime = make_fake_prime(
+        tmp_path,
+        "from pathlib import Path\n"
+        "import json, os, sys\n"
+        "root = Path(os.environ['PRIME_AGENT_HOME'])\n"
+        "settings = json.loads((root / 'agent' / 'settings.json').read_text())\n"
+        f"Path({str(capture)!r}).write_text(json.dumps({{'home': str(root), 'settings': settings, 'argv': sys.argv[1:]}}))\n"
+        f"print({success_payload()!r})\n",
+    )
+    result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
+    assert result.ok
+    launch = json.loads(capture.read_text())
+    assert launch["settings"]["retry"] == {"enabled": False, "maxRetries": 0}
+    assert launch["home"] != str(Path.home() / ".prime")
+    assert "--model" in launch["argv"]
+    assert ROUTE in launch["argv"]
+    assert not Path(launch["home"]).exists()  # per-launch state is removed
+
+
 def test_success_parses_last_assistant_text(tmp_path: Path) -> None:
     payload = success_payload("PONG")
     prime = make_fake_prime(tmp_path, f"print({payload!r})\n")

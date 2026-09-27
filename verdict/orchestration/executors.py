@@ -18,6 +18,7 @@ import json
 import os
 import re
 import signal
+import tempfile
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
@@ -137,7 +138,19 @@ class PrimeHeadlessExecutor:
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         started = time.monotonic()
-        child_env = {**os.environ, **self.env} if self.env is not None else None
+        child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
+        # Prime's retry policy is semantic: a retry can bill a second model call
+        # before Verdict sees the failure. Give each Verdict-owned launch an
+        # isolated config home with provider retries disabled. Never mutate the
+        # operator's ~/.prime settings.
+        launch_home = tempfile.TemporaryDirectory(prefix="verdict-prime-")
+        agent_home = Path(launch_home.name) / "agent"
+        agent_home.mkdir(parents=True)
+        (agent_home / "settings.json").write_text(
+            json.dumps({"retry": {"enabled": False, "maxRetries": 0}}),
+            encoding="utf-8",
+        )
+        child_env["PRIME_AGENT_HOME"] = launch_home.name
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self._command(prompt, route_id, cwd),
@@ -148,6 +161,7 @@ class PrimeHeadlessExecutor:
                 start_new_session=True,
             )
         except OSError as exc:
+            launch_home.cleanup()
             return WorkerTerminal(
                 ok=False,
                 model=route_id,
@@ -158,6 +172,7 @@ class PrimeHeadlessExecutor:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             await self._kill_group(proc)
+            launch_home.cleanup()
             return WorkerTerminal(
                 ok=False,
                 model=route_id,
@@ -165,6 +180,7 @@ class PrimeHeadlessExecutor:
                 duration_seconds=time.monotonic() - started,
             )
         duration = time.monotonic() - started
+        launch_home.cleanup()
         return self._interpret(
             stdout=stdout_b.decode("utf-8", "replace"),
             stderr=stderr_b.decode("utf-8", "replace"),

@@ -445,6 +445,8 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "started_at": (started.at if started else events[0].at) if events else None,
         "finished_at": finished[-1].at if finished else None,
     }
+    if started and isinstance(started.data.get("retry_budget"), Mapping):
+        receipt["retry_budget"] = dict(started.data["retry_budget"])
     # route identity tracking: add route_identity_warning if any successful attempt had a mismatch
     if has_successful_mismatch:
         receipt["route_identity_warning"] = (
