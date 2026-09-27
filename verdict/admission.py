@@ -42,6 +42,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from verdict.capacity_models import CapacitySnapshot
+from verdict.subscription_headroom import (
+    DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS,
+    subscription_observations,
+)
+
 GATEWAY_PREFIX = "omniroute/"
 ACTIVE_CONTROLLER_ENV = "VERDICT_ACTIVE_CONTROLLER_ROUTE"
 CONTROLLER_IDENTITY_UNKNOWN = "unknown"
@@ -146,6 +152,11 @@ class RuntimeObservation:
     source: str
     observed_at: str | None = None
     until: str | None = None
+    pool_id: str | None = None
+    reset_at: str | None = None
+    provider_id: str | None = None
+    account_id: str | None = None
+    workspace_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -333,6 +344,7 @@ class AdmissionRecord:
     observed_at: str | None
     health: str  # healthy | unknown | <failure state>
     until: str | None = None
+    reset_at: str | None = None
     # Bounded live confirmation for this exact route, recorded before launch.
     confirmation_source: str | None = None
     confirmed_at: str | None = None
@@ -350,6 +362,7 @@ class AdmissionRecord:
             "observed_at": self.observed_at,
             "health": self.health,
             "until": self.until,
+            "reset_at": self.reset_at,
             "confirmation_source": self.confirmation_source,
             "confirmed_at": self.confirmed_at,
         }
@@ -414,9 +427,18 @@ class AdmittedSet:
         return bool(record and record.admitted and record.health == "healthy")
 
     def launchable(self, route_id: str) -> bool:
-        """Launch gate: proven healthy, or confirmed live for this exact route."""
+        """Launch gate: proven healthy, or confirmed live for this exact route.
+
+        Unknown subscription headroom is fail-closed by default, but a
+        successful bounded confirmation (``record_confirmation``) for this
+        exact route clears it, per the documented UNKNOWN_HEADROOM contract:
+        unknown headroom requires bounded confirmation, not a permanent
+        block.
+        """
         record = self.record_for(route_id)
         if record is None or not record.admitted:
+            return False
+        if record.reason == "subscription_unknown" and record.confirmation_source is None:
             return False
         return record.health == "healthy" or record.confirmation_source is not None
 
@@ -630,6 +652,37 @@ def _connections_for(
     return [c for c in connections if str(c.get("provider", "")).lower() in wanted]
 
 
+def _connection_is_rate_limited(
+    connection: Mapping[str, Any], *, route_id: str, now: datetime
+) -> bool:
+    """True when this connection carries a live rate-limit window for the route."""
+    windows = connection.get("rate_limited_until") or {}
+    if not isinstance(windows, Mapping):
+        return False
+    for key, value in windows.items():
+        if "/" in str(key) and canonical_route_id(str(key)) != route_id:
+            continue
+        until = _parse_iso(value)
+        if until is not None and until > now:
+            return True
+    return False
+
+
+def _connection_is_viable(connection: Mapping[str, Any], *, route_id: str, now: datetime) -> bool:
+    """Positive viability for a connection that could serve ``route_id``.
+
+    Absence of bad subscription evidence is not viability. A connection is
+    viable only when it is active, its ``testStatus`` is not a known-bad
+    status, and it carries no live rate-limit window for the route.
+    """
+    if connection.get("isActive") is not True:
+        return False
+    status = str(connection.get("testStatus", "") or "").strip().lower()
+    if status in _BAD_TEST_STATUS:
+        return False
+    return not _connection_is_rate_limited(connection, route_id=route_id, now=now)
+
+
 def _judge(
     route_id: str,
     row: Mapping[str, Any],
@@ -658,6 +711,7 @@ def _judge(
             kw.get("observed_at", stamp),
             kw.get("health", "unknown"),
             kw.get("until"),
+            kw.get("reset_at"),
         )
 
     if is_opaque(route_id) or owned == "combo":
@@ -695,9 +749,78 @@ def _judge(
                 )
 
     route_obs = runtime.for_key(f"route:{route_id}")
-    provider_obs = tuple(
+    provider_obs_all = tuple(
         o for name in {owned, prefix} if name for o in runtime.for_key(f"provider:{name}")
     )
+    # Capacity evidence is scoped to the concrete active connection. Provider
+    # names alone are never sufficient: acct-a must not govern acct-b.
+    markers = {str(row.get("subscription_pool_id") or row.get("pool_id") or "")}
+    markers.discard("")
+    active_accounts = {str(c.get("account_id") or "") for c in active}
+    active_accounts.discard("")
+    # Some legacy inventory rows encode the account in owned_by/route id while
+    # the connection payload omits it. Use that concrete marker, never a
+    # provider-only fallback. Ambiguous provider-only rows reject account
+    # scoped subscription evidence rather than applying the wrong account.
+    route_parts = route_id.split("/")
+    encoded_account = ""
+    if len(route_parts) > 2 and owned.startswith(prefix + "/"):
+        encoded_account = route_parts[1]
+    if not active_accounts and encoded_account:
+        active_accounts.add(encoded_account)
+    active_workspaces = {str(c.get("workspace_id") or "") for c in active}
+    active_workspaces.discard("")
+    # Ambiguous provider-only rows (no concrete account marker resolved for
+    # any active connection) reject account-scoped subscription evidence
+    # outright. This matches the comment above: never guess which account
+    # foreign evidence belongs to.
+    provider_obs = tuple(
+        o
+        for o in provider_obs_all
+        if (o.account_id is None or o.account_id in active_accounts)
+        and (
+            o.workspace_id is None
+            or not o.workspace_id
+            or o.workspace_id in active_workspaces
+            or (not active_workspaces and len(active) == 1)
+        )
+        and (not markers or not o.pool_id or o.pool_id in markers or o.pool_id in route_id)
+    )
+    # Sibling-account suppression. An account-agnostic route may be served by
+    # any active account, so one exhausted or cooled-down account must not sink
+    # the provider while a demonstrably usable sibling account exists. Three
+    # guards keep this from failing open:
+    #   1. The route must have no resolvable account binding. A pool marker
+    #      (subscription_pool_id/pool_id) or an account encoded in the route id
+    #      pins the route to one account; that account's evidence governs and no
+    #      sibling can stand in for it.
+    #   2. Only "exhausted" and "cooldown" are suppressible. ENTITLED-stage
+    #      lockout, auth and payment failures ("unauthorized") are hard safety
+    #      floors and are never cleared by a sibling account.
+    #   3. The sibling must be positively viable: an active connection whose
+    #      testStatus is not bad and which is not itself rate limited. Absence
+    #      of bad subscription evidence alone is not viability.
+    route_is_account_bound = bool(markers) or bool(encoded_account)
+    if not route_is_account_bound:
+        _suppressible_states = {"exhausted", "cooldown"}
+        _accounts_with_bad_evidence = {
+            o.account_id for o in provider_obs if o.account_id and o.state in _suppressible_states
+        }
+        _viable_accounts = {
+            account
+            for account in active_accounts - _accounts_with_bad_evidence
+            if any(
+                str(c.get("account_id") or "") == account
+                and _connection_is_viable(c, route_id=route_id, now=now)
+                for c in active
+            )
+        }
+        if _viable_accounts:
+            provider_obs = tuple(
+                o
+                for o in provider_obs
+                if o.account_id is None or o.account_id not in _accounts_with_bad_evidence
+            )
     for obs in route_obs + provider_obs:
         if obs.state in {"unauthorized"}:
             return drop(
@@ -707,6 +830,7 @@ def _judge(
                 observed_at=obs.observed_at,
                 health=obs.state,
                 until=obs.until,
+                reset_at=obs.reset_at,
             )
     for obs in route_obs:
         if obs.state == "unhealthy":
@@ -722,12 +846,49 @@ def _judge(
         if obs.state in {"exhausted", "cooldown"}:
             return drop(
                 AdmissionStage.AVAILABLE,
-                f"{obs.state}:{obs.category}",
+                obs.category
+                if obs.category
+                in {
+                    "subscription_exhaustion",
+                    "subscription_unknown",
+                    "rate_limit",
+                    "concurrency_limit",
+                    "provider_overload",
+                    "lockout",
+                    "payment",
+                }
+                else f"{obs.state}:{obs.category}",
                 obs.source,
                 observed_at=obs.observed_at,
                 health=obs.state,
                 until=obs.until,
+                reset_at=obs.reset_at,
             )
+
+    # Unknown subscription headroom is admitted only for bounded confirmation;
+    # unrelated healthy route evidence cannot make it launchable.
+    unknown_subscription = next(
+        (
+            o
+            for o in route_obs + provider_obs
+            if o.category == "subscription_unknown"
+            or (o.state == "unknown" and o.source.startswith("subscription_headroom:"))
+        ),
+        None,
+    )
+    if unknown_subscription is not None:
+        return AdmissionRecord(
+            route_id,
+            provider,
+            True,
+            None,
+            "subscription_unknown",
+            unknown_subscription.source,
+            unknown_subscription.observed_at,
+            "unknown",
+            unknown_subscription.until,
+            unknown_subscription.reset_at,
+        )
 
     if required_capabilities or min_context_tokens:
         caps = row.get("capabilities") or {}
@@ -745,7 +906,7 @@ def _judge(
         if denied:
             return drop(AdmissionStage.POLICY, denied, "policy")
 
-    healthy = [o for o in route_obs if o.state == "healthy"]
+    healthy = [o for o in route_obs + provider_obs if o.state == "healthy"]
     if healthy:
         latest = healthy[-1]
         return AdmissionRecord(
@@ -769,6 +930,8 @@ def admit(
     required_capabilities: frozenset[str] = frozenset(),
     min_context_tokens: int = 0,
     deny: Callable[[str], str | None] | None = None,
+    subscription_snapshots: Sequence[CapacitySnapshot] | None = None,
+    subscription_freshness_ttl_seconds: float = DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS,
 ) -> AdmittedSet:
     """Build the canonical admitted set from live evidence.
 
@@ -785,11 +948,45 @@ def admit(
         raise AdmissionUnavailableError("live_inventory_unavailable", inventory_source)
     if connections is None:
         raise AdmissionUnavailableError("connection_evidence_unavailable", connections_source)
-    if runtime is None and require_runtime:
+    if (
+        runtime is None
+        and require_runtime
+        and not subscription_snapshots
+        and not any("/subscription/" in str(r.get("id", "")) for r in inventory_rows)
+    ):
         raise AdmissionUnavailableError(
             "runtime_evidence_unavailable", "no runtime health/cooldown/quota source"
         )
     evidence = runtime or RuntimeEvidence()
+    if subscription_snapshots:
+        # Subscription observations are part of the canonical evidence object,
+        # not a downstream advisory check.  Stale snapshots are omitted by the
+        # projector and therefore cannot overwrite fresh route evidence.
+        subscription_rows, subscription_sources = subscription_observations(
+            subscription_snapshots,
+            now=now,
+            freshness_ttl_seconds=subscription_freshness_ttl_seconds,
+        )
+        subscription_evidence = RuntimeEvidence(
+            observations=tuple(
+                RuntimeObservation(
+                    key=row["key"],
+                    state=row["state"],
+                    category=row["category"],
+                    source=row["source"],
+                    observed_at=row.get("observed_at"),
+                    until=row.get("until"),
+                    pool_id=row.get("pool_id"),
+                    reset_at=row.get("reset_at"),
+                    provider_id=row.get("provider_id"),
+                    account_id=row.get("account_id"),
+                    workspace_id=row.get("workspace_id"),
+                )
+                for row in subscription_rows
+            ),
+            sources=subscription_sources,
+        )
+        evidence = evidence.merged(subscription_evidence)
     rows: dict[str, Mapping[str, Any]] = {}
     for row in inventory_rows:
         rid = row.get("id")

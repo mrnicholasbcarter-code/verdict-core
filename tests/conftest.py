@@ -82,3 +82,14 @@ def no_gateway_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         socket, "create_connection", lambda address, *a, **k: refuse(address), raising=False
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_subscription_ledger():
+    from verdict.cost_ledger import _subscription_reserved, subscription_budgets
+
+    subscription_budgets.clear()
+    _subscription_reserved.clear()
+    yield
+    subscription_budgets.clear()
+    _subscription_reserved.clear()
