@@ -410,9 +410,20 @@ async def _wait(process: SupervisedProcess) -> int:
 # --------------------------------------------------------------------- CLI
 
 
-def build_command_factory(run_id: str, extra: Sequence[str]) -> Callable[[int], list[str]]:
-    """``verdict orchestrate <args> --resume <run_id>`` for every controller generation."""
-    base = [sys.executable, "-m", "verdict", "orchestrate", *extra, "--resume", run_id]
+def build_command_factory(
+    run_id: str, extra: Sequence[str], runs_dir: Path | None = None
+) -> Callable[[int], list[str]]:
+    """``verdict orchestrate <args> --runs-dir <dir> --resume <run_id>`` for every generation.
+
+    ``runs_dir`` is the directory this supervisor watches. It is passed to every
+    controller so the run is written where the supervisor reads it; otherwise
+    orchestrate falls back to ``<repo>/.verdict/runs`` and the supervisor never
+    sees ``run_finished``, treating a COMPLETE generation as a crash.
+    """
+    args = list(extra)
+    if runs_dir is not None and "--runs-dir" not in args:
+        args += ["--runs-dir", str(Path(runs_dir).resolve())]
+    base = [sys.executable, "-m", "verdict", "orchestrate", *args, "--resume", run_id]
 
     def factory(generation: int) -> list[str]:
         del generation  # --resume makes every life reuse already VALIDATED nodes
@@ -444,9 +455,23 @@ def dispatch(args: argparse.Namespace) -> int:
     while extra and extra[0] == "--":
         extra.pop(0)
     run_id = str(args.run_id)
+    runs_dir = Path(args.runs_dir).resolve()
+    if "--runs-dir" in extra:
+        given = (
+            extra[extra.index("--runs-dir") + 1]
+            if extra.index("--runs-dir") + 1 < len(extra)
+            else ""
+        )
+        if not given or Path(given).resolve() != runs_dir:
+            print(
+                f"BLOCKED: orchestrate --runs-dir {given!r} differs from supervise "
+                f"--runs-dir {str(runs_dir)!r}; the supervisor would not see the run",
+                file=sys.stderr,
+            )
+            return 2
     supervisor = ControllerSupervisor(
-        build_command_factory(run_id, extra),
-        Path(args.runs_dir) / run_id,
+        build_command_factory(run_id, extra, runs_dir),
+        runs_dir / run_id,
         stall_seconds=float(getattr(args, "stall_seconds", 300.0)),
         poll_seconds=float(getattr(args, "poll_seconds", 5.0)),
         max_restarts=int(getattr(args, "max_restarts", 2)),
