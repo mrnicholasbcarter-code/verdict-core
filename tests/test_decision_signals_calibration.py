@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 
 from verdict.decision_signals.calibration import (
+    TASK_CLASSES,
     CalibrationRecord,
     CalibrationReport,
     ReliabilityBucket,
-    TASK_CLASSES,
     _mean,
     _median,
     _rate,
@@ -301,7 +301,7 @@ class TestEvaluate:
             verified=True,
             first_pass=True,
         )
-        extended_set = tiny_set + [no_confidence, with_usable]
+        extended_set = [*tiny_set, no_confidence, with_usable]
         report = evaluate(extended_set, threshold=0.5, min_confidence=0.6)
         # t4 is avoided (1 count from tiny_set)
         # t6 is avoided (2nd count from added records)
@@ -323,7 +323,9 @@ class TestEvaluate:
             verified=True,
             first_pass=True,
         )
-        report = evaluate(tiny_set + [sec_fn], threshold=0.5, min_confidence=0.6, security_threshold=0.5)
+        report = evaluate(
+            [*tiny_set, sec_fn], threshold=0.5, min_confidence=0.6, security_threshold=0.5
+        )
         assert report.security_fn_rate == 1.0  # 1 FN out of 1 security-relevant record
 
     def test_per_class_counts(self, sample_records: list[CalibrationRecord]) -> None:
@@ -505,18 +507,28 @@ class TestLoadRecords:
 
     def test_loads_valid_jsonl(self, sample_records: list[CalibrationRecord]) -> None:
         """load_records successfully reads valid JSONL file."""
-        assert len(sample_records) == 78
+        # Every non-blank fixture line is one record; none may be dropped silently.
+        lines = [
+            line
+            for line in (FIXTURES / "replay_sample.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        assert len(sample_records) == len(lines) >= 60
         assert all(isinstance(r, CalibrationRecord) for r in sample_records)
 
     def test_skips_empty_lines(self) -> None:
         """load_records skips empty lines in JSONL file."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-            f.write('{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, ')
+            f.write(
+                '{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
+            )
             f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
             f.write("\n")  # Empty line
-            f.write('{"task_id": "t2", "task_class": "bounded_implementation", "frontier_worthy": 0.5, ')
+            f.write(
+                '{"task_id": "t2", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
+            )
             f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
@@ -531,12 +543,16 @@ class TestLoadRecords:
     def test_raises_on_malformed_line(self) -> None:
         """load_records raises ValueError on malformed line with file:line context."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-            f.write('{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, ')
+            f.write(
+                '{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
+            )
             f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
-            f.write('this is not valid JSON\n')  # Malformed
-            f.write('{"task_id": "t3", "task_class": "bounded_implementation", "frontier_worthy": 0.5, ')
+            f.write("this is not valid JSON\n")  # Malformed
+            f.write(
+                '{"task_id": "t3", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
+            )
             f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
@@ -553,7 +569,9 @@ class TestLoadRecords:
     def test_handles_missing_optional_fields(self) -> None:
         """load_records handles records with missing optional fields."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-            f.write('{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, ')
+            f.write(
+                '{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
+            )
             f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-import tempfile
+import sys
 from pathlib import Path
 
-import pytest
-PYTHON = Path(__file__).parent.parent / ".venv" / "bin" / "python"
+PYTHON = Path(sys.executable)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "openjev" / "calibration"
@@ -58,7 +56,13 @@ def test_cli_custom_threshold() -> None:
 def test_cli_custom_min_confidence() -> None:
     """CLI accepts custom min_confidence via --min-confidence flag."""
     result = subprocess.run(
-        [str(PYTHON), str(SCRIPT), "--min-confidence", "0.5", str(FIXTURES / "replay_sample.jsonl")],
+        [
+            str(PYTHON),
+            str(SCRIPT),
+            "--min-confidence",
+            "0.5",
+            str(FIXTURES / "replay_sample.jsonl"),
+        ],
         capture_output=True,
         text=True,
     )
@@ -69,9 +73,7 @@ def test_cli_custom_min_confidence() -> None:
 def test_cli_missing_file() -> None:
     """CLI exits non-zero when input file is missing."""
     result = subprocess.run(
-        [str(PYTHON), str(SCRIPT), "/nonexistent/file.jsonl"],
-        capture_output=True,
-        text=True,
+        [str(PYTHON), str(SCRIPT), "/nonexistent/file.jsonl"], capture_output=True, text=True
     )
     assert result.returncode != 0
     assert "not found" in result.stderr.lower()
