@@ -1,0 +1,62 @@
+{
+  "schema_version": "verdict.orchestration/v1",
+  "goal": "live controller failover demo",
+  "topology": "PARALLEL_WORK_UNITS",
+  "rationale": [],
+  "max_parallel": 1,
+  "nodes": [
+    {
+      "node_id": "alpha",
+      "objective": "Create the file alpha.txt containing exactly the line: ok",
+      "kind": "implement",
+      "story": "",
+      "depends_on": [],
+      "owned_files": [
+        "alpha.txt"
+      ],
+      "required_context": [],
+      "acceptance": [],
+      "verification_command": [
+        "sh",
+        "-c",
+        "grep -qx ok alpha.txt"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "beta",
+      "objective": "Create the file beta.txt containing exactly the line: ok",
+      "kind": "implement",
+      "story": "",
+      "depends_on": [
+        "alpha"
+      ],
+      "owned_files": [
+        "beta.txt"
+      ],
+      "required_context": [],
+      "acceptance": [],
+      "verification_command": [
+        "sh",
+        "-c",
+        "grep -qx ok beta.txt"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    }
+  ],
+  "run_id": "ctrl-demo"
+}

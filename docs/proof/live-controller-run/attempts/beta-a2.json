@@ -1,0 +1,13 @@
+{
+ "node_id": "beta",
+ "attempt": 2,
+ "route_id": "kr/claude-haiku-4.5",
+ "ok": true,
+ "reported_model": "kr/claude-haiku-4.5",
+ "stop_reason": "stop",
+ "status_code": null,
+ "error": "",
+ "output_tail": "The objective is complete. I have successfully:\n\n1. Created `beta.txt` in the current working directory `/tmp/verdict-live-ctrl2-m385uvsg/runs/ctrl-demo/worktrees/beta-a2`\n2. Written exactly the line \"ok\" to the file\n3. Verified that the file passes the verification command `sh -c grep -qx ok beta.txt` (return code 0)\n\nRESULT: DONE",
+ "duration_seconds": 11.63724246295169,
+ "session_ref": ""
+}

@@ -1,0 +1,24 @@
+[GOAL] live controller failover demo
+[UNDERSTAND] goal_chars=29 risk=low scope=repo: repo proof=node verification, 
+integration barrier, independent review
+[DAG] 2 node(s) in 2 layer(s) (PARALLEL_WORK_UNITS)
+[PLAN] topology PARALLEL_WORK_UNITS max_parallel=1
+[SELECT] alpha ladder discovered=56 entitled=56 healthy=1 available=1 eligible=1
+[SELECT] alpha -> kr/claude-haiku-4.5 (subscription, rank 0)
+[WORKERS] alpha ADMITTED
+[WORKERS] alpha DISPATCHED
+[WORKERS] alpha dispatch kr/claude-haiku-4.5 attempt 1
+[WORKERS] alpha RUNNING
+[HYDRATE] alpha prompt 0.5KB context 0 file(s)
+[WORKERS] alpha terminal ok on kr/claude-haiku-4.5 in 11s
+[WORKERS] alpha TERMINAL_SUCCESS
+[VERIFY] barrier ownership ok 1 file(s) within ownership
+[VERIFY] alpha pass sh -c grep -qx ok alpha.txt (exit 0)
+[WORKERS] alpha VALIDATED
+[SELECT] beta ladder discovered=56 entitled=56 healthy=1 available=1 eligible=1
+[SELECT] beta -> kr/claude-haiku-4.5 (subscription, rank 0)
+[WORKERS] beta ADMITTED
+[WORKERS] beta DISPATCHED
+[WORKERS] beta dispatch kr/claude-haiku-4.5 attempt 1
+[WORKERS] beta RUNNING
+[HYDRATE] beta prompt 0.5KB context 0 file(s)

@@ -1,0 +1,22 @@
+[GOAL] live controller failover demo
+[WORKERS] controller RESUMED 1 validated node(s) reused
+[UNDERSTAND] goal_chars=29 risk=low scope=repo: repo proof=node verification, 
+integration barrier, independent review
+[DAG] 2 node(s) in 2 layer(s) (PARALLEL_WORK_UNITS)
+[WORKERS] controller ABANDONED_ATTEMPT 1 attempt(s) from a previous controller 
+life
+[PLAN] topology PARALLEL_WORK_UNITS max_parallel=1
+[SELECT] beta ladder discovered=56 entitled=56 healthy=1 available=1 eligible=1
+[SELECT] beta -> kr/claude-haiku-4.5 (subscription, rank 0)
+[WORKERS] beta ADMITTED
+[WORKERS] beta DISPATCHED
+[WORKERS] beta dispatch kr/claude-haiku-4.5 attempt 2
+[WORKERS] beta RUNNING
+[HYDRATE] beta prompt 0.5KB context 0 file(s)
+[WORKERS] beta terminal ok on kr/claude-haiku-4.5 in 12s
+[WORKERS] beta TERMINAL_SUCCESS
+[VERIFY] barrier ownership ok 1 file(s) within ownership
+[VERIFY] beta pass sh -c grep -qx ok beta.txt (exit 0)
+[WORKERS] beta VALIDATED
+[VERIFY] integrate ok 2 commit(s)
+[VERIFY] barrier integration ok 2 validated commit(s) merged
