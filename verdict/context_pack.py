@@ -144,6 +144,12 @@ def sanitize_injection_patterns(text: str) -> str:
     return sanitized
 
 
+def _content_fingerprint(text: str) -> str:
+    """Whitespace- and case-insensitive identity used to detect duplicate context."""
+    normalized = " ".join(text.split()).casefold()
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
 def estimate_tokens(text: str) -> int:
     """Conservative deterministic offline estimate (four characters per token)."""
     return max(1, (len(text) + 3) // 4)
@@ -635,6 +641,8 @@ class ContextPack:
     decisions: tuple[ContextDecision, ...] = ()
     receipt_id: str | None = None
     schema_version: str = CONTEXT_SCHEMA_VERSION
+    # Tokens of repeated/near-duplicate units that were not packed (BOD-272).
+    duplicate_tokens_suppressed: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -896,6 +904,8 @@ class ContextPackCompiler:
         decisions: list[ContextDecision] = []
         current_tokens = 0
         truncated = 0
+        included_fingerprints: dict[str, str] = {}
+        duplicate_tokens = 0
         evaluation_timestamp = evaluation_at or plan.created_at
         now = datetime.fromisoformat(
             _timestamp(evaluation_timestamp, "evaluation_at").replace("Z", "+00:00")
@@ -978,6 +988,27 @@ class ContextPackCompiler:
                 )
                 truncated += 1
                 continue
+            # BOD-272: suppress repeated/near-duplicate context. Identical
+            # content (after whitespace/case normalization) from another key
+            # or source costs tokens and adds nothing; the first (highest
+            # precedence) copy is kept and the exclusion points at it.
+            fingerprint = _content_fingerprint(unit.content)
+            kept_id = included_fingerprints.get(fingerprint)
+            if kept_id is not None:
+                decisions.append(
+                    ContextDecision(
+                        unit.unit_id,
+                        "exclude",
+                        "duplicate_content",
+                        unit.effective_token_count,
+                        0,
+                        "not_applicable",
+                        kept_id,
+                    )
+                )
+                duplicate_tokens += unit.effective_token_count
+                truncated += 1
+                continue
             content = sanitize_injection_patterns(unit.content)
             header = (
                 f"[{unit.slot_type.upper()}:{unit.key} "
@@ -1000,6 +1031,7 @@ class ContextPackCompiler:
                 truncated += 1
                 continue
             parts.append(rendered)
+            included_fingerprints[fingerprint] = unit.unit_id
             included_units.append(unit)
             included_slots.append(
                 ContextPackSlot(
@@ -1051,6 +1083,7 @@ class ContextPackCompiler:
             units=tuple(included_units),
             decisions=tuple(decisions),
             receipt_id=f"receipt:{actual_id}",
+            duplicate_tokens_suppressed=duplicate_tokens,
         )
 
     def compile(

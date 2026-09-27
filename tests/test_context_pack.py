@@ -303,3 +303,47 @@ def test_expiration_evaluation_uses_plan_timestamp() -> None:
 
     assert [item.unit_id for item in first.units] == ["future"]
     assert first.digest == second.digest
+
+
+def test_duplicate_content_is_suppressed_and_its_cost_is_observable() -> None:
+    """BOD-272: repeated context sources cost tokens and add nothing."""
+    plan = ContextPlan(
+        plan_id="plan-dup",
+        candidate_id="route-1",
+        token_budget=1000,
+        tenant_scope="tenant-a",
+        project_scope="project-a",
+    )
+    body = "def helper(x):\n    return x + 1\n"
+    units = [
+        _unit("a", body, key="helper-from-symbols"),
+        _unit("b", "  DEF helper(x):\n\n    return x + 1  ", key="helper-from-grep"),
+        _unit("c", "unrelated fact", key="other"),
+    ]
+    pack = ContextPackCompiler().compile_units(units, plan, evaluation_at="2026-07-31T00:02:00Z")
+
+    # Exactly one copy survives, chosen by the compiler's deterministic order
+    # (same slot/status/confidence, so the lower key wins: "helper-from-grep").
+    kept = {u.unit_id for u in pack.units}
+    assert kept == {"b", "c"}
+    dup = next(d for d in pack.decisions if d.unit_id == "a")
+    assert (dup.action, dup.reason, dup.reversible_ref) == ("exclude", "duplicate_content", "b")
+    assert dup.input_tokens > 0 and dup.output_tokens == 0
+    assert pack.duplicate_tokens_suppressed == dup.input_tokens
+    assert pack.compiled_prompt.count("return x + 1") == 1
+    # Contradictory content under one key is still a conflict, not a duplicate.
+    assert pack.conflicts == ()
+
+
+def test_distinct_content_is_never_treated_as_duplicate() -> None:
+    plan = ContextPlan(
+        plan_id="plan-nodup",
+        candidate_id="route-1",
+        token_budget=1000,
+        tenant_scope="tenant-a",
+        project_scope="project-a",
+    )
+    units = [_unit("a", "return x + 1", key="k1"), _unit("b", "return x + 2", key="k2")]
+    pack = ContextPackCompiler().compile_units(units, plan, evaluation_at="2026-07-31T00:02:00Z")
+    assert {u.unit_id for u in pack.units} == {"a", "b"}
+    assert pack.duplicate_tokens_suppressed == 0
