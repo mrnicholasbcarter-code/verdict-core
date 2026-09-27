@@ -24,7 +24,8 @@ if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
-_FRONTIER_MARKERS = ("opus", "gpt-5.6", "gpt-6-sol", "gpt-6-astra", "fable")
+# Capacity that costs nothing extra per call (already paid for or free).
+_PREPAID_CAPACITY = frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})
 # Ranks an unknown-capability route after every known one (tiers span 0..3).
 _UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
@@ -391,7 +392,7 @@ class EligibilityLadder:
             a.cooldown_until = _iso(limited)
             return a
 
-        reason = self._task_gate(row, route_id, requirements)
+        reason = self._task_gate(row, route_id, requirements, a.capacity)
         if reason:
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, reason
             return a
@@ -416,7 +417,13 @@ class EligibilityLadder:
         a.fit = self._fit(row, route_id, requirements)
         return a
 
-    def _task_gate(self, row: Mapping[str, Any], route_id: str, req: TaskRequirements) -> str:
+    def _task_gate(
+        self,
+        row: Mapping[str, Any],
+        route_id: str,
+        req: TaskRequirements,
+        capacity: CapacityClass = CapacityClass.UNKNOWN,
+    ) -> str:
         caps = row.get("capabilities") or {}
         caps = caps if isinstance(caps, Mapping) else {}
         for needed in sorted(req.required_capabilities):
@@ -431,7 +438,16 @@ class EligibilityLadder:
         if route_family(route_id) in req.exclude_families:
             return "excluded_family"
         lowered = route_id.lower()
-        if any(m in lowered for m in _FRONTIER_MARKERS) and not req.frontier_worthy:
+        # Spend guard: frontier capability (classifier tier 0, or a declared
+        # tier 0) is kept off non-frontier-worthy work only when it would cost
+        # per call. Subscription/free frontier capacity is already paid for, so
+        # it may serve as a fallback; the capability-slack ranking still
+        # prefers the cheapest sufficient route, so it never wins by strength.
+        if (
+            not req.frontier_worthy
+            and _capability_tier(row, route_id) == 0
+            and capacity not in _PREPAID_CAPACITY
+        ):
             return "frontier_restricted"
         for suffix in _EFFORT_SUFFIXES:
             if lowered.endswith(suffix) and route_id[: -len(suffix)] in self._rows:

@@ -7,8 +7,8 @@ import re
 # Tier 0 = most capable (never used for cheap work)
 # Tier 3 = cheapest/fastest (only used for low-criticality)
 CAPABILITY_PATTERNS: dict[int, list[str]] = {
-    # Current frontier families match the repo's own frontier markers
-    # (verdict/orchestration/eligibility.py _FRONTIER_MARKERS).
+    # Tier 0 is also the frontier spend guard in the orchestration ladder
+    # (verdict/orchestration/eligibility.py _task_gate).
     0: [
         r"opus",
         r"fable",

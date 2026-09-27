@@ -278,13 +278,35 @@ class TestTaskEligible:
         assert v.reason == "insufficient_context"
 
     def test_frontier_restricted_unless_worthy(self, tmp_path: Path) -> None:
-        rows = [row("cc/claude-opus-5", owned_by="claude")]
-        ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
+        # Metered frontier: kept off non-frontier-worthy work.
+        rows = [row("cx/gpt-6-sol", owned_by="codex")]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
         v = ladder.evaluate(REQ, now=NOW)[0]
         assert v.failed_stage is EligibilityStage.TASK_ELIGIBLE
         assert v.reason == "frontier_restricted"
         worthy = TaskRequirements(frontier_worthy=True)
         assert ladder.evaluate(worthy, now=NOW)[0].failed_stage is None
+
+    def test_prepaid_frontier_is_an_allowed_fallback(self, tmp_path: Path) -> None:
+        # Subscription frontier costs nothing extra per call: not restricted.
+        rows = [row("kr/claude-opus-5.5", owned_by="kiro")]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")])
+        assert ladder.evaluate(REQ, now=NOW)[0].failed_stage is None
+
+    def test_prepaid_frontier_never_beats_a_cheaper_sufficient_route(self, tmp_path: Path) -> None:
+        rows = [
+            row("kr/claude-opus-5.5", owned_by="kiro"),
+            row("kr/claude-haiku-4.5", owned_by="kiro"),
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")])
+        chosen, _ = ladder.select(REQ, now=NOW)
+        assert chosen is not None and chosen.route_id == "kr/claude-haiku-4.5"
+
+    def test_frontier_guard_uses_tier_not_name_list(self, tmp_path: Path) -> None:
+        # A frontier model whose name is on no list is still guarded by tier.
+        rows = [{**row("cx/new-frontier", owned_by="codex"), "capability_tier": 0}]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
+        assert ladder.evaluate(REQ, now=NOW)[0].reason == "frontier_restricted"
 
     def test_exclude_families_for_reviewer_independence(self, tmp_path: Path) -> None:
         rows = [
