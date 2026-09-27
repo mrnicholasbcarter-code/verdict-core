@@ -1,5 +1,9 @@
 """Test environment isolation - remove operator env leaks."""
 
+import os
+from pathlib import Path
+from typing import Any
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -93,3 +97,39 @@ def _isolate_subscription_ledger():
     yield
     subscription_budgets.clear()
     _subscription_reserved.clear()
+
+
+_REAL_PRIME_MODELS = Path(os.path.expanduser("~")) / ".prime" / "agent" / "models.json"
+
+
+def _fingerprint(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tests never read or write the operator's real home (~/.prime, ~/.verdict).
+
+    Code that defaults to ``Path.home()`` (for example Prime visibility refresh
+    writing ``~/.prime/agent/models.json``) otherwise rewrites the operator's
+    live Prime registry with fixture rows.
+    """
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    for name in ("PRIME_AGENT_HOME", "PRIME_HOME", "PRIME_AGENT_CODING_AGENT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _real_prime_registry_untouched() -> Any:
+    """Fail the run if any test modified the real Prime model registry."""
+    before = _fingerprint(_REAL_PRIME_MODELS)
+    yield
+    after = _fingerprint(_REAL_PRIME_MODELS)
+    assert before == after, f"a test modified the real {_REAL_PRIME_MODELS}"
