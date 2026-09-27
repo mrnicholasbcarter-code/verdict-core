@@ -132,4 +132,32 @@ def _real_prime_registry_untouched() -> Any:
     before = _fingerprint(_REAL_PRIME_MODELS)
     yield
     after = _fingerprint(_REAL_PRIME_MODELS)
+    if before != after and _changed_by_sync_timer(after):
+        return
     assert before == after, f"a test modified the real {_REAL_PRIME_MODELS}"
+
+
+def _changed_by_sync_timer(after: tuple[int, int] | None) -> bool:
+    """True when the change is the operator's verdict-prime-sync timer run.
+
+    That timer rewrites the real registry every 15 minutes from another
+    process, and every write leaves models.json.verdict-sync-<stamp>.bak
+    alongside it within seconds. Tests never write that backup name (HOME is
+    isolated), so a matching fresh backup identifies the timer, not a test.
+    """
+    if after is None:
+        return False
+    from datetime import datetime, timezone
+
+    written_at = after[0] / 1e9
+    for backup in _REAL_PRIME_MODELS.parent.glob("models.json.verdict-sync-*.bak"):
+        # The stamp in the name is when the sync ran; the file's own mtime is
+        # the PREVIOUS registry's (the backup preserves it), so use the name.
+        stamp = backup.name[len("models.json.verdict-sync-") : -len(".bak")]
+        try:
+            ran_at = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if abs(ran_at.timestamp() - written_at) <= 10:
+            return True
+    return False
