@@ -478,3 +478,24 @@ class TestSummary:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_dispatch_blocker_reads_cooldowns_written_after_selection(tmp_path: Path) -> None:
+    """BOD-223: a cooldown persisted by another writer after load blocks dispatch."""
+    import json
+
+    ladder, _ = make_ladder(tmp_path, [row("cc/a"), row("kr/b")], [])
+    assert ladder.dispatch_blocker("cc/a", now=NOW) is None
+    until = (NOW + timedelta(minutes=10)).isoformat()
+    (tmp_path / "state.json").write_text(
+        json.dumps(
+            {
+                "health": {},
+                "cooldowns": {"provider:cc": {"until": until, "category": "rate_limited"}},
+            }
+        )
+    )
+    assert ladder.dispatch_blocker("cc/a", now=NOW) == "provider:cc"
+    assert ladder.dispatch_blocker("kr/b", now=NOW) is None
+    # Expired evidence does not block.
+    assert ladder.dispatch_blocker("cc/a", now=NOW + timedelta(hours=1)) is None

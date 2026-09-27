@@ -43,6 +43,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     WorkNode,
     check_transition,
+    dispatch_blocker,
     require_launchable,
     route_family,
     route_provider,
@@ -339,6 +340,7 @@ class DagRuntime:
         failures: list[FailureClassification] = []
         tried: set[str] = set()
         waited_once = False
+        revocations = 0
         while True:
             if run.attempt >= self.policy.max_attempts_per_node:
                 run.reason = (
@@ -408,6 +410,34 @@ class DagRuntime:
             # Launch gate: the selected route must be proven healthy or confirmed
             # live before it is bound. Raises AdmissionBypassError on violation.
             require_launchable(self.selector, choice.route_id, surface="DagRuntime.bind")
+            # BOD-223: re-check launch-critical evidence immediately before
+            # dispatch. A route/provider cooled since selection is not launched;
+            # the node goes back through selection on the refreshed evidence.
+            blocker = dispatch_blocker(self.selector, choice.route_id, self.now())
+            if blocker is not None:
+                self.events.emit(
+                    "eligibility",
+                    node_id,
+                    **counts,
+                    selected=None,
+                    revoked=choice.route_id,
+                    reason=f"pre-dispatch recheck: {blocker} cooling",
+                )
+                tried.add(choice.route_id)
+                revocations += 1
+                if revocations > self.policy.max_attempts_per_node:
+                    run.reason = "pre-dispatch revalidation kept revoking selections"
+                    self._set(run, NodeState.BLOCKED, reason=run.reason)
+                    self.events.emit(
+                        "failure",
+                        node_id,
+                        category="pool_exhausted",
+                        action="FAIL_CLOSED",
+                        route_id=choice.route_id,
+                        evidence=run.reason,
+                    )
+                    return
+                continue
             previous = run.route_id
             run.attempt += 1
             run.route_id = choice.route_id

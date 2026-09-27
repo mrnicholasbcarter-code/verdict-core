@@ -285,6 +285,30 @@ class EligibilityLadder:
             return "healthy", ""
         return "unhealthy", str(entry.get("category", "unknown"))
 
+    def dispatch_blocker(self, route_id: str, *, now: datetime) -> str | None:
+        """Launch-critical re-check immediately before dispatch (BOD-223).
+
+        Evidence can change between selection and spawn: another node, the
+        root supervisor or a worker runtime may have cooled this route or its
+        provider in the shared ladder state. Reload persisted cooldowns (merge,
+        never drop in-memory ones), then return the blocking key, or ``None``
+        when the route may still launch. A blocked route must not be launched;
+        the caller reselects from this refreshed evidence.
+        """
+        fresh = self._load_state()["cooldowns"]
+        for key, entry in fresh.items():
+            current = self._state["cooldowns"].get(key)
+            if not isinstance(current, dict) or str(entry.get("until", "")) > str(
+                current.get("until", "")
+            ):
+                self._state["cooldowns"][key] = entry
+        provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
+        provider = provider or route_id.split("/", 1)[0].lower()
+        for key in (f"route:{route_id}", f"provider:{provider}"):
+            if self._active_cooldown(key, now) is not None:
+                return key
+        return None
+
     def _active_cooldown(self, key: str, now: datetime) -> datetime | None:
         entry = self._state["cooldowns"].get(key)
         if not isinstance(entry, dict):

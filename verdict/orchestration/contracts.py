@@ -591,3 +591,16 @@ def require_launchable(selector: Any, route_id: str, *, surface: str) -> None:
     gate = getattr(selector, "require_launchable", None)
     if callable(gate):
         gate(route_id, surface=surface)
+
+
+def dispatch_blocker(selector: Any, route_id: str, now: datetime) -> str | None:
+    """Pre-dispatch revalidation (BOD-223) on selectors that support it.
+
+    Returns the blocking evidence key when the route or its provider became
+    ineligible after selection; ``None`` means the route may launch.
+    """
+    check = getattr(selector, "dispatch_blocker", None)
+    if callable(check):
+        result = check(route_id, now=now)
+        return str(result) if result else None
+    return None
