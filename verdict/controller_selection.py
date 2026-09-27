@@ -482,6 +482,36 @@ def _session_decision_label(decision: SessionRouteDecision | None, *, fresh: boo
     return str(decision.decision)
 
 
+def mission_capability_floor(mission: ControllerMission) -> int:
+    """Classifier-scale capability floor for a controller (0 = frontier ... 3 = small).
+
+    Derived from the mission's declared burdens, never from model reputation:
+    frontier/critical/high burden needs tier <= 1, medium/standard needs <= 2,
+    otherwise any tier is acceptable.
+    """
+    burdens = {
+        str(value or "").strip().lower()
+        for value in (mission.orchestration_burden, mission.context_burden, mission.proof_burden)
+    }
+    if burdens & {"frontier", "critical", "high"}:
+        return 1
+    if burdens & {"medium", "standard", "elevated"}:
+        return 2
+    return 3
+
+
+def _controller_capability_gap(route: ConcreteRoute, floor: int) -> str | None:
+    """Why ``route`` cannot control a mission with ``floor``, or ``None`` if it can."""
+    from verdict.classifier import classify_known
+
+    tier = classify_known(route.model) if route.model else None
+    if tier is None and route.route_id:
+        tier = classify_known(route.route_id)
+    if tier is None:
+        return None if floor >= 3 else "unknown_capability"
+    return None if tier <= floor else f"insufficient_capability:tier{tier}"
+
+
 def select_controller_launch(
     mission: ControllerMission,
     *,
@@ -544,6 +574,32 @@ def select_controller_launch(
                 "canonical live admission rejected every controller seed before ranking "
                 f"({_admission_failure_detail(admitted, dropped)})",
             )
+    if override is None:
+        # BOD-271: automatic controller selection hard-drops routes that are
+        # insufficient (or of unknown capability) for this mission's burden
+        # BEFORE prepare/ranking. An explicit operator override is not
+        # second-guessed here; it still has to pass admission and prepare.
+        floor = mission_capability_floor(mission)
+        insufficient = [
+            (o.route.route_id, reason)
+            for o in seed_offers
+            if (reason := _controller_capability_gap(o.route, floor)) is not None
+        ]
+        if insufficient:
+            dropped_ids = {route_id for route_id, _ in insufficient}
+            seed_offers = tuple(o for o in seed_offers if o.route.route_id not in dropped_ids)
+            if admission_extension is not None:
+                admission_extension["capability_floor"] = floor
+                admission_extension["capability_dropped"] = [
+                    {"route_id": route_id, "reason": reason} for route_id, reason in insufficient
+                ]
+            if not seed_offers:
+                raise ControllerLaunchError(
+                    "no_eligible_route",
+                    f"no controller route meets capability tier <= {floor} for this mission ("
+                    + "; ".join(f"{r}:{why}" for r, why in insufficient[:5])
+                    + ")",
+                )
     allowed_ids = frozenset(canonical_route_id(o.route.route_id) for o in seed_offers)
 
     task_slice = _mission_task_slice(mission)

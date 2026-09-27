@@ -1700,3 +1700,78 @@ def test_passport_certification_failure_is_named_and_redacted(invalid_snapshot):
     assert blocked.value.reason_code == "runtime_certification_failed"
     assert "/home/" not in str(blocked.value)
     assert "secret" not in str(blocked.value)
+
+
+# ---------------------------------------------------------------------------
+# BOD-271: controller capability floor from the mission, before ranking
+# ---------------------------------------------------------------------------
+
+
+def _floor_offers() -> list[ExecutionPathOffer]:
+    return [
+        _ctrl_offer(
+            _ctrl_route(
+                "omniroute/kr/claude-haiku-4.5", provider="omniroute", model="kr/claude-haiku-4.5"
+            ),
+            ctx_digest="ctx-haiku",
+            execution_tokens=1_000,
+        ),
+        _ctrl_offer(
+            _ctrl_route(
+                "omniroute/kr/claude-opus-5.5", provider="omniroute", model="kr/claude-opus-5.5"
+            ),
+            ctx_digest="ctx-opus",
+            execution_tokens=50_000,
+            is_free=False,
+        ),
+    ]
+
+
+def test_high_burden_mission_drops_insufficient_controller_before_ranking() -> None:
+    from verdict.controller_selection import mission_capability_floor
+
+    mission = replace(_mission(), orchestration_burden="high")
+    assert mission_capability_floor(mission) == 1
+    ranked: list[list[str]] = []
+
+    def optimize(request):
+        ranked.append([o.route.route_id for o in request.offers])
+        return optimize_execution_path(request)
+
+    hooks, _, _ = _hooks(seed=_floor_offers(), optimize=optimize)
+    decision = select_controller_launch(mission, hooks=hooks, now=NOW)
+    # The cheap small model never reaches ranking for high-burden control.
+    assert ranked == [["omniroute/kr/claude-opus-5.5"]]
+    assert decision.prime_target.prime_model == "kr/claude-opus-5.5"
+
+
+def test_bounded_mission_keeps_the_cheaper_sufficient_controller() -> None:
+    from verdict.controller_selection import mission_capability_floor
+
+    mission = _mission()  # no declared burden: any tier is sufficient
+    assert mission_capability_floor(mission) == 3
+    hooks, _, _ = _hooks(seed=_floor_offers())
+    decision = select_controller_launch(mission, hooks=hooks, now=NOW)
+    assert decision.prime_target.prime_model == "kr/claude-haiku-4.5"
+
+
+def test_no_sufficient_controller_fails_closed_with_named_reason() -> None:
+    mission = replace(_mission(), proof_burden="frontier")
+    small = [_floor_offers()[0]]
+    hooks, _, _ = _hooks(seed=small)
+    with pytest.raises(ControllerLaunchError) as exc:
+        select_controller_launch(mission, hooks=hooks, now=NOW)
+    assert exc.value.reason_code == "no_eligible_route"
+    assert "insufficient_capability" in exc.value.detail
+
+
+def test_unknown_capability_controller_is_not_promoted_for_medium_burden() -> None:
+    mission = replace(_mission(), context_burden="medium")
+    mystery = _ctrl_offer(
+        _ctrl_route("omniroute/kr/mystery-model", provider="omniroute", model="kr/mystery-model"),
+        ctx_digest="ctx-mystery",
+    )
+    hooks, _, _ = _hooks(seed=[mystery])
+    with pytest.raises(ControllerLaunchError) as exc:
+        select_controller_launch(mission, hooks=hooks, now=NOW)
+    assert "unknown_capability" in exc.value.detail
