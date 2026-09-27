@@ -889,3 +889,51 @@ async def test_worktree_admin_operations_are_serialized() -> None:
 
         # Cleanup
         await git.remove_worktree(test_wt)
+
+
+class RacingSelector(Selector):
+    """Selector whose evidence changes between selection and dispatch (BOD-223)."""
+
+    def __init__(self, routes: list[str], cool_after_select: str) -> None:
+        super().__init__(routes)
+        self.cool_after_select = cool_after_select
+        self.checked: list[str] = []
+
+    def dispatch_blocker(self, route_id: str, *, now: datetime) -> str | None:
+        self.checked.append(route_id)
+        if route_id == self.cool_after_select:
+            # Another writer cooled the provider after this route was selected.
+            self.cool[route_id.split("/")[0]] = now.timestamp() + 600
+        provider = route_id.split("/")[0]
+        for key in (route_id, provider):
+            if self.cool.get(key, 0) > now.timestamp():
+                return f"provider:{provider}" if key == provider else f"route:{route_id}"
+        return None
+
+
+async def test_route_cooled_after_selection_is_never_dispatched(repo: Path) -> None:
+    graph = WorkGraph("g", (node("a"),))
+    ex = Executor({})
+    events = Events()
+    selector = RacingSelector(["cc/s", "cc/t", "cx/g"], cool_after_select="cc/s")
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=graph,
+        selector=selector,
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(),
+        now=lambda: NOW,
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    # cc/s was selected, revoked before spawn, and its cooled sibling skipped.
+    assert ex.calls == [("a", "cx/g")]
+    revoked = [e for e in events.of("eligibility", "a") if e.get("revoked")]
+    assert revoked and revoked[0]["revoked"] == "cc/s"
+    assert "provider:cc" in revoked[0]["reason"]
+    assert [e["route_id"] for e in events.of("dispatch", "a")] == ["cx/g"]

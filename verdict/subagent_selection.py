@@ -158,7 +158,12 @@ class HealthCache:
     def record_failure(
         self, candidate: LaunchCandidate, result: HealthResult, *, now: datetime
     ) -> None:
-        """Persist candidate cooldowns and provider-scoped capacity/auth failures."""
+        """Persist candidate cooldowns and provider-scoped capacity/auth failures.
+
+        A context-length failure is request-scoped: nothing is persisted.
+        """
+        if result.category == CONTEXT_LENGTH_CATEGORY:
+            return
         self._record_key(candidate.selector, result, now=now)
         if result.category in PROVIDER_SCOPE_FAILURE_CATEGORIES:
             self._record_key(_provider_cache_key(candidate.selector), result, now=now)
@@ -176,6 +181,27 @@ class HealthCache:
 
 
 _UNSERVABLE_MARKERS = ("not available in the active live catalog",)
+
+# A context-length 400 is a request/model capacity mismatch, not route or
+# provider ill-health: the same route serves smaller requests. It excludes the
+# route for this operation only and never writes a persistent cooldown. Any
+# "reset after" text in such a body is ignored (kiro appends quota reset hints).
+CONTEXT_LENGTH_CATEGORY = "context_length_exceeded"
+_CONTEXT_LENGTH_MARKERS = (
+    "input is too long",
+    "prompt is too long",
+    "context length",
+    "context_length_exceeded",
+    "maximum context",
+    "context window",
+    "too many tokens",
+)
+
+
+def is_context_length_error(text: str) -> bool:
+    """True when an error body/message names a context-length overflow."""
+    lowered = text.lower()
+    return any(marker in lowered for marker in _CONTEXT_LENGTH_MARKERS)
 
 
 def classify_probe_status(
@@ -204,6 +230,8 @@ def classify_probe_status(
     }
     if status_code == 400 and any(m in body.lower() for m in _UNSERVABLE_MARKERS):
         return HealthResult(False, "unservable", status_code, retry_after_seconds)
+    if status_code in {400, 413} and is_context_length_error(body):
+        return HealthResult(False, CONTEXT_LENGTH_CATEGORY, status_code)
     if status_code in categories:
         return HealthResult(False, categories[status_code], status_code, retry_after_seconds)
     if status_code is not None and status_code >= 500:
@@ -214,6 +242,8 @@ def classify_probe_status(
 def _failure_cooldown(result: HealthResult) -> float:
     if result.retry_after_seconds is not None and result.retry_after_seconds >= 0:
         return min(result.retry_after_seconds, 86_400.0)
+    if result.category == CONTEXT_LENGTH_CATEGORY:
+        return 0.0
     return {
         "unsupported": 86_400.0,
         "authentication": 3_600.0,
@@ -475,6 +505,8 @@ class WorkerTerminal:
 def classify_worker_failure(exc: BaseException, *, now: datetime | None = None) -> HealthResult:
     """Map runtime/client exceptions onto the same policy used by health probes."""
     status = _exception_status(exc)
+    if status in {400, 413, None} and is_context_length_error(str(exc)):
+        return HealthResult(False, CONTEXT_LENGTH_CATEGORY, status)
     retry_after = _exception_retry_after(exc, now=now)
     timed_out = isinstance(exc, (TimeoutError, socket.timeout))
     if status is None and _malformed_exception(exc):

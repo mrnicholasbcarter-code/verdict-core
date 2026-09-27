@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from verdict.orchestration.contracts import FailureClassification, WorkerTerminal
+from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY, is_context_length_error
 
 CLASSIFIER_VERSION = "v1"
 
@@ -183,6 +184,19 @@ class FailureIntelligence:
         # Extract base error text (already sanitized by executor)
         error_text = terminal.error or ""
         error_lower = error_text.lower()
+
+        # Context-length overflow (HTTP 400/413 "Input is too long", ...): the
+        # request does not fit this route; the route/provider stay healthy.
+        # Reroute to a candidate with more context and write no cooldown; any
+        # quota "reset after" text in the body must not become a cooldown.
+        if terminal.status_code in {400, 413, None} and is_context_length_error(error_text):
+            return FailureClassification(
+                category=CONTEXT_LENGTH_CATEGORY,
+                action="REROUTE",
+                cooldown_seconds=0,
+                scope="none",
+                evidence=_sanitize_error(error_text),
+            )
 
         # Check retry-after on terminal first
         cooldown = terminal.retry_after_seconds or 0.0

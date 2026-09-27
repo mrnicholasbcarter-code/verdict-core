@@ -300,6 +300,142 @@ def run_attempt(
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
+_STATUS_RE_PATTERNS = (
+    r"\[(\d{3})\]",
+    r"\b(?:HTTP|status)[ :=]*(\d{3})\b",
+    r"(?<!\d)(4\d\d|5\d\d)(?!\d)",
+)
+
+
+def _log_tail(path: Path, limit: int = 8192) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - limit))
+            return handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def ladder_state_path(env: Mapping[str, str] | None = None) -> Path:
+    """The ladder state that canonical live admission reads for cooldowns."""
+    source = os.environ if env is None else env
+    return (
+        Path(source.get("VERDICT_HOME") or Path.home() / ".verdict") / "orchestration-health.json"
+    )
+
+
+def classify_generation_failure(
+    result: Mapping[str, Any], log: Path, *, route_id: str, now: datetime
+) -> dict[str, Any]:
+    """Classify a dead controller generation with the shared failure policy.
+
+    The generation's terminal evidence is the tail of its own log. The same
+    ``FailureIntelligence`` classifier used for workers decides category,
+    scope and cooldown, so root and worker failover agree on semantics.
+    """
+    import re
+
+    from verdict.orchestration.contracts import WorkerTerminal
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    tail = _log_tail(log)
+    status: int | None = None
+    for pattern in _STATUS_RE_PATTERNS:
+        matches = re.findall(pattern, tail)
+        codes = [int(m) for m in matches if 400 <= int(m) <= 599]
+        if codes:
+            status = codes[-1]
+            break
+    reason = str(result.get("reason") or "")
+    stop_reason = "timeout" if reason in {"TIMEOUT", "NO_PROGRESS"} else "error"
+    terminal = WorkerTerminal(
+        ok=False,
+        model=route_id,
+        stop_reason=stop_reason,
+        error=tail[-2000:] or reason,
+        status_code=status,
+    )
+    failure = FailureIntelligence().classify(terminal, now=now)
+    return {
+        "route_id": route_id,
+        "provider": route_id.split("/", 1)[0].lower() if "/" in route_id else route_id.lower(),
+        "status_code": status,
+        "result_reason": reason,
+        "category": failure.category,
+        "scope": failure.scope,
+        "action": failure.action,
+        "cooldown_seconds": float(failure.cooldown_seconds),
+        "evidence": failure.evidence,
+        "observed_at": now.isoformat(timespec="seconds"),
+    }
+
+
+def persist_generation_cooldown(
+    classification: Mapping[str, Any], *, ladder: Path, now: datetime
+) -> dict[str, Any] | None:
+    """Write route/provider cooldowns BEFORE the next controller selection.
+
+    Uses the ladder-state format that ``admission.evidence_from_ladder_state``
+    reads, so the next generation's canonical admission cannot re-admit a
+    cooled route/provider. Request-scoped failures (scope ``none``, e.g. a
+    context-length 400) write nothing: the route itself is healthy.
+    """
+    from datetime import timedelta
+
+    scope = str(classification.get("scope") or "none")
+    seconds = float(classification.get("cooldown_seconds") or 0)
+    if scope not in {"route", "provider"} or seconds <= 0:
+        return None
+    until = (now + timedelta(seconds=min(seconds, 7 * 86_400))).isoformat(timespec="seconds")
+    entry = {
+        "until": until,
+        "category": str(classification.get("category") or "cooldown"),
+        "source": "prime_supervisor:generation_failure",
+    }
+    route = str(classification["route_id"])
+    try:
+        raw = json.loads(ladder.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    state = raw if isinstance(raw, dict) else {}
+    existing = state.get("cooldowns")
+    cooldowns: dict[str, Any] = existing if isinstance(existing, dict) else {}
+    state["cooldowns"] = cooldowns
+    state.setdefault("health", {})
+    keys = [f"route:{route}"]
+    if scope == "provider":
+        keys.append(f"provider:{classification['provider']}")
+    for key in keys:
+        cooldowns[key] = dict(entry)
+    ladder.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(ladder, state)
+    return {"keys": keys, **entry}
+
+
+def record_generation_failure(
+    *,
+    state: Path,
+    token: str,
+    route_id: str,
+    result: Mapping[str, Any],
+    log: Path,
+    ladder: Path | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Classify, persist cooldown, and write a generation-failure receipt."""
+    when = now or datetime.now(timezone.utc)
+    canonical = route_id.removeprefix("omniroute/")
+    classification = classify_generation_failure(result, log, route_id=canonical, now=when)
+    cooldown = persist_generation_cooldown(
+        classification, ladder=ladder or ladder_state_path(), now=when
+    )
+    receipt = {"generation": token, **classification, "cooldown": cooldown}
+    atomic_json(state / f"generation-failure-{token}.json", receipt)
+    return receipt
+
+
 def recover(attempt: Callable[[], dict[str, Any]], state: Path, max_restarts: int) -> int:
     for index in range(max_restarts + 1):
         result = attempt()
@@ -1753,6 +1889,18 @@ def main() -> int:
             )
         finally:
             stop_owned_daemon(args.prime, session_dir)
+        if not (result["reason"] == "EXIT" and result["returncode"] == 0):
+            # Supervisor owns root recovery: classify the dead generation and
+            # persist its cooldown before recover() starts the next generation,
+            # whose fresh admission then cannot reselect a cooled route/provider.
+            failure = record_generation_failure(
+                state=state,
+                token=token,
+                route_id=decision.selected_upstream_route,
+                result=result,
+                log=state / f"session-{token}.log",
+            )
+            result = {**result, "failure": failure}
         if result["reason"] == "EXIT" and result["returncode"] == 0:
             try:
                 outcome = json.loads((state / "outcome.json").read_text())
