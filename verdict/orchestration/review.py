@@ -25,6 +25,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -38,6 +39,7 @@ from verdict.orchestration.contracts import (
     ReviewFinding,
     ReviewResult,
     TaskRequirements,
+    dispatch_blocker,
     require_launchable,
 )
 
@@ -179,6 +181,22 @@ class OpenCodeReviewer:
             # Launch gate: the reviewer route must be proven healthy or confirmed
             # live before OCR runs on it. Raises AdmissionBypassError on violation.
             require_launchable(self._selector, chosen.route_id, surface="OpenCodeReviewer.launch")
+            # BOD-223/224: re-check launch-critical evidence immediately before
+            # OCR launches; a reviewer cooled since selection is not launched.
+            blocker = dispatch_blocker(self._selector, chosen.route_id, datetime.now(timezone.utc))
+            if blocker is not None:
+                attempts.append(
+                    {
+                        "route_id": chosen.route_id,
+                        "status": "REVOKED",
+                        "category": "pre_dispatch_revoked",
+                        "detail": f"pre-dispatch recheck: {blocker} cooling",
+                        "duration_seconds": 0.0,
+                    }
+                )
+                tried.add(chosen.route_id)
+                continue
+            started = time.monotonic()
             result = await self._review_once(
                 chosen.route_id,
                 repo=repo,
@@ -188,7 +206,12 @@ class OpenCodeReviewer:
             )
             if result.status != "ERROR" or not self._provider_failure(result):
                 attempts.append(
-                    {"route_id": chosen.route_id, "status": result.status, "category": ""}
+                    {
+                        "route_id": chosen.route_id,
+                        "status": result.status,
+                        "category": "",
+                        "duration_seconds": round(time.monotonic() - started, 3),
+                    }
                 )
                 return replace(result, attempts=tuple(attempts))
             # The REVIEWER's provider failed (504/timeout/quota/identity), not the
@@ -203,6 +226,7 @@ class OpenCodeReviewer:
                     "scope": failure.scope,
                     "cooldown_seconds": failure.cooldown_seconds,
                     "detail": result.detail[:200],
+                    "duration_seconds": round(time.monotonic() - started, 3),
                 }
             )
             last = result

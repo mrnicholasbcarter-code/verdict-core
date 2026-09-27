@@ -537,3 +537,27 @@ def _wrap_first_as(reviewer: OpenCodeReviewer, detail: str) -> Any:
         return original(run, raw_path, route_id)
 
     return interpret
+
+
+def test_reviewer_cooled_after_selection_is_never_launched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-224: the reviewer is re-checked immediately before OCR launches."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    clean = (Path(__file__).parent / "fixtures" / "ocr" / "sample-clean.json").read_text()
+
+    class RevokingSelector(PoolSelector):
+        def dispatch_blocker(self, route_id: str, *, now: datetime) -> str | None:
+            return "provider:cc" if route_id.startswith("cc/") else None
+
+    selector = RevokingSelector(["cc/a", "cx/b"])
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=clean)
+    result = _run(_reviewer(tmp_path, selector, runner))
+    assert result.status == "PASS" and result.route_id == "cx/b"
+    launched = [
+        c["argv"][c["argv"].index("--model") + 1] for c in runner.calls if "--model" in c["argv"]
+    ]
+    assert launched == ["cx/b"]
+    assert result.attempts[0]["status"] == "REVOKED"
+    assert result.attempts[0]["category"] == "pre_dispatch_revoked"
+    assert all("duration_seconds" in a for a in result.attempts)
