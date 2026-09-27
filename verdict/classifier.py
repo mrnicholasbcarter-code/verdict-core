@@ -43,7 +43,7 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
     3: [
         r"haiku",
         r"flash",
-        r"mini",
+        r"mini(?!max)",  # "minimax" is a model family, not a mini variant
         r"8b",
         r"7b",
         r"nano",

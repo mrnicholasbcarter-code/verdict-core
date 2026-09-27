@@ -189,3 +189,48 @@ async def test_provider_terminal_failure_rolls_to_next_provider_on_first_failure
         and event.get("provider_wide") is True
         for event in runtime.events
     )
+
+
+def test_worker_capability_floor_drops_unknown_and_insufficient_before_ranking() -> None:
+    """BOD-271 on the Prime worker path: the live kr lanes landed on unrecognized
+    models (qwen3-coder-next, minimax-m2.5) that rejected Prime requests."""
+    rows = [
+        _row("kr/qwen3-coder-next"),
+        _row("kr/minimax-m2.5"),
+        _row("kr/claude-haiku-4.5"),
+        _row("kr/claude-sonnet-5"),
+        _row("kr/claude-opus-5.5"),
+    ]
+    visible = [_selector(str(row["id"])) for row in rows]
+    coding = WorkerTask(
+        required_capabilities=frozenset({"tools"}),
+        coding=True,
+        allowed_route_prefixes=frozenset({"kr/"}),
+        max_capability_tier=1,
+    )
+    ranked = [c.route_id for c in eligible_worker_candidates(coding, rows, visible)]
+    # Unknown and small models are gone; frontier is filtered (not frontier-worthy);
+    # the cheapest sufficient known model is first.
+    assert ranked == ["kr/claude-sonnet-5"]
+
+    bounded = WorkerTask(allowed_route_prefixes=frozenset({"kr/"}))
+    ranked = [c.route_id for c in eligible_worker_candidates(bounded, rows, visible)]
+    # Any tier accepted: known small model first, unknown models rank last.
+    assert ranked[0] == "kr/claude-haiku-4.5"
+    assert set(ranked[-2:]) == {"kr/qwen3-coder-next", "kr/minimax-m2.5"}
+
+
+def test_worker_task_config_rejects_invalid_capability_floor() -> None:
+    from verdict.worker_runtime import worker_task_from_config
+
+    assert worker_task_from_config({"max_capability_tier": 1}).max_capability_tier == 1
+    with pytest.raises(ValueError):
+        worker_task_from_config({"max_capability_tier": 7})
+
+
+def test_minimax_is_not_classified_as_a_mini_variant() -> None:
+    from verdict.classifier import classify_known
+
+    assert classify_known("kr/minimax-m2.5") is None
+    assert classify_known("cx/gpt-5.4-mini") == 3
+    assert classify_known("gpt-4o-mini") == 2

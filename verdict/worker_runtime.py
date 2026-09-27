@@ -127,6 +127,11 @@ def worker_task_from_config(raw: Mapping[str, Any] | None) -> WorkerTask:
             os.environ.get("VERDICT_WORKER_ROUTE_PREFIXES")
         )
 
+    if "max_capability_tier" in config:
+        tier = config["max_capability_tier"]
+        if type(tier) is not int or not 0 <= tier <= 3:
+            raise ValueError("max_capability_tier must be an integer 0..3")
+
     excluded = set(config["excluded_route_ids"])
     controller = os.environ.get("VERDICT_CONTROLLER_MODEL", "").strip()
     if controller:
