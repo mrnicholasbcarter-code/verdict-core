@@ -471,6 +471,27 @@ class DagRuntime:
                     attempt=run.attempt,
                 )
             ok = await self._attempt(run, failures)
+            if ok is None:
+                # BOD-223: evidence changed while this node waited for a slot.
+                # Nothing was dispatched; undo the binding and reselect.
+                run.attempt -= 1
+                run.route_id = previous
+                self.inflight.pop(node_id, None)
+                tried.add(choice.route_id)
+                revocations += 1
+                if revocations > self.policy.max_attempts_per_node:
+                    run.reason = "pre-dispatch revalidation kept revoking selections"
+                    self._set(run, NodeState.BLOCKED, reason=run.reason)
+                    self.events.emit(
+                        "failure",
+                        node_id,
+                        category="pool_exhausted",
+                        action="FAIL_CLOSED",
+                        route_id=choice.route_id,
+                        evidence=run.reason,
+                    )
+                    return
+                continue
             if ok:
                 return
             if failures and failures[-1].action == "RETRY_INFRA":
@@ -555,11 +576,25 @@ class DagRuntime:
         )
         self._set(run, NodeState.VALIDATED, commit=base)
 
-    async def _attempt(self, run: NodeRun, failures: list[FailureClassification]) -> bool:
+    async def _attempt(self, run: NodeRun, failures: list[FailureClassification]) -> bool | None:
+        """Run one attempt. ``None`` means revoked before dispatch (nothing ran)."""
         node = run.node
         worktree = self.run_dir / "worktrees" / f"{node.node_id}-a{run.attempt}"
         branch = f"verdict/run-{self.run_dir.name}/{node.node_id}-a{run.attempt}"
         async with self._slots:
+            # BOD-223: the node may have waited for a slot while a sibling's
+            # failure cooled this route/provider. Re-check launch-critical
+            # evidence now, immediately before dispatch, not only at binding.
+            blocker = dispatch_blocker(self.selector, run.route_id, self.now())
+            if blocker is not None:
+                self.events.emit(
+                    "eligibility",
+                    node.node_id,
+                    selected=None,
+                    revoked=run.route_id,
+                    reason=f"pre-dispatch recheck: {blocker} cooling",
+                )
+                return None
             self._set(run, NodeState.ADMITTED)
             base = await self._node_base(node)
             await self.git.add_worktree(worktree, branch, base)

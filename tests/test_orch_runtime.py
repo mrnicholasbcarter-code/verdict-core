@@ -937,3 +937,57 @@ async def test_route_cooled_after_selection_is_never_dispatched(repo: Path) -> N
     assert revoked and revoked[0]["revoked"] == "cc/s"
     assert "provider:cc" in revoked[0]["reason"]
     assert [e["route_id"] for e in events.of("dispatch", "a")] == ["cx/g"]
+
+
+async def test_sibling_failure_cools_provider_before_waiting_node_dispatches(repo: Path) -> None:
+    """BOD-223 AC5, real EligibilityLadder: two parallel nodes on one provider.
+
+    One slot. The first node to run hits a provider-scoped 429 on ``cc``; the
+    ladder records the provider cooldown. The other node was already selected
+    onto ``cc`` while it waited for the slot. Its pre-dispatch recheck must see
+    the fresh cooldown, never dispatch to ``cc``, and reselect ``kr/c``.
+    """
+    from tests.test_orch_eligibility import FakeProbe, conn
+    from tests.test_orch_eligibility import row as inv_row
+    from verdict.orchestration.eligibility import EligibilityLadder
+
+    ladder = EligibilityLadder(
+        [inv_row("cc/a"), inv_row("cc/b"), inv_row("kr/c")],
+        [conn("cc"), conn("kr")],
+        FakeProbe(),
+        repo.parent / "ladder-state.json",
+    )
+    quota = {(n, r): "quota" for n in ("a", "b") for r in ("cc/a", "cc/b")}
+    ex = Executor(quota, delay=0.2)
+    events = Events()
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=WorkGraph("g", (node("a"), node("b")), max_parallel=1),
+        selector=ladder,
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(max_parallel=1),
+        now=lambda: NOW,
+    )
+    result = await rt.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    cc_dispatches = [e for e in events.of("dispatch") if e["route_id"].startswith("cc/")]
+    # Exactly one node ever reached the cooled provider; that was the failure.
+    assert len(cc_dispatches) == 1
+    revoked = [e for e in events.of("eligibility") if e.get("revoked")]
+    assert revoked and revoked[0]["revoked"].startswith("cc/")
+    # The waiting node was bound to the same cooled route; either key blocks it.
+    assert any(k in revoked[0]["reason"] for k in ("route:cc/", "provider:cc"))
+    # Provider scope: the sibling route cc/b was never dispatched either.
+    assert not [e for e in events.of("dispatch") if e["route_id"] == "cc/b"]
+    state = json.loads((repo.parent / "ladder-state.json").read_text())
+    assert "provider:cc" in state["cooldowns"]
+    assert revoked[0]["node_id"] != cc_dispatches[0]["node_id"]
+    # Both nodes complete on the other provider with the same node contract.
+    assert {n: r.route_id for n, r in result.nodes.items()} == {"a": "kr/c", "b": "kr/c"}
+    assert {c[0] for c in ex.calls if c[1] == "kr/c"} == {"a", "b"}
