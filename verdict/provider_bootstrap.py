@@ -14,15 +14,19 @@ Boundaries:
 - Candidate admission, eligibility and ranking stay outside this module. The
   ``model_eligibility`` diagnostic class exists so startup diagnostics can name
   that failure class distinctly; this module never decides eligibility.
-- ``gateway_required`` and ``gateway_url`` are reported, never acted on. Gateway
-  lifecycle management belongs to its own component.
+- ``gateway_required``, ``gateway_url``, ``gateway_start_command`` and
+  ``gateway_ready_timeout_s`` are reported, never acted on. Gateway lifecycle
+  management belongs to its own component (``verdict.gateway_lifecycle``), which
+  consumes these fields and never reads configuration itself.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import re
-from collections.abc import Mapping
+import shlex
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -32,7 +36,9 @@ from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.models import ProviderConfig
 
 __all__ = [
+    "DEFAULT_GATEWAY_READY_TIMEOUT_S",
     "DEFAULT_LOCAL_PROVIDERS",
+    "MAX_GATEWAY_READY_TIMEOUT_S",
     "PRODUCTION_PROFILE",
     "BootstrapDiagnostic",
     "BootstrapError",
@@ -44,6 +50,7 @@ __all__ = [
     "bootstrap_config_path",
     "describe_bootstrap_failure",
     "load_credential_store_env",
+    "redact_start_command",
     "redact_url",
     "resolve_provider_bootstrap",
     "verify_gateway_reachable",
@@ -79,6 +86,17 @@ _GATEWAY_PROVIDER_NAME = "omniroute"
 _PRIMARY_MODEL_ENV = "LLMGATE_PRIMARY"
 _PROFILE_ENV = "LLMGATE_INTELLIGENCE_PROFILE"
 _LOG_PATH_ENV = "LLMGATE_LOG_PATH"
+_GATEWAY_START_COMMAND_ENV = "VERDICT_GATEWAY_START_COMMAND"
+_GATEWAY_READY_TIMEOUT_ENV = "VERDICT_GATEWAY_READY_TIMEOUT_S"
+
+#: Readiness budget applied when the operator configures none. Bounded on
+#: purpose: an unbounded wait is indistinguishable from a hang.
+DEFAULT_GATEWAY_READY_TIMEOUT_S = 30.0
+
+#: Hard ceiling on the readiness budget. A gateway that has not answered in ten
+#: minutes is not starting, and an operator waiting on a wedged command cannot
+#: tell that from a hang. ``inf`` and ``1e308`` are refused for the same reason.
+MAX_GATEWAY_READY_TIMEOUT_S = 600.0
 
 _REMEDIATION_PROVIDERS = (
     "set OMNIROUTE_BASE_URL to the gateway base URL, or add a 'providers' "
@@ -192,6 +210,12 @@ class BootstrapResult:
     config_present: bool
     field_sources: Mapping[str, BootstrapSource]
     diagnostics: tuple[BootstrapDiagnostic, ...] = field(default_factory=tuple)
+    #: Explicit argv that starts the gateway, or ``None`` when the operator
+    #: configured none. Never guessed: the lifecycle owner refuses with a named
+    #: diagnostic rather than discovering a binary.
+    gateway_start_command: tuple[str, ...] | None = None
+    #: Readiness budget in seconds for the lifecycle owner's bounded wait.
+    gateway_ready_timeout_s: float = DEFAULT_GATEWAY_READY_TIMEOUT_S
 
     def provider_configs(self) -> dict[str, ProviderConfig]:
         """Runtime provider map for ``Gate`` / ``IntelligenceService``."""
@@ -218,6 +242,11 @@ class BootstrapResult:
             "config_present": self.config_present,
             "field_sources": dict(sorted(self.field_sources.items())),
             "diagnostics": [d.to_dict() for d in self.diagnostics],
+            # Rendered as program name plus a redacted-argument marker: the argv
+            # can carry a token, and this dict reaches receipts and logs. The
+            # runtime tuple is unchanged, so the launch is unaffected.
+            "gateway_start_command": redact_start_command(self.gateway_start_command),
+            "gateway_ready_timeout_s": self.gateway_ready_timeout_s,
         }
 
 
@@ -256,6 +285,29 @@ def load_credential_store_env() -> dict[str, str]:
         # A missing, unreadable or insecure store is not a bootstrap failure; the
         # resolver still reports any name that stays unset as credential_env_missing.
         return {}
+
+
+def redact_start_command(argv: Sequence[str] | None) -> str | None:
+    """Render a start command without its arguments.
+
+    A start command routinely carries a token on its command line (``--api-key
+    sk-...``), and ``to_dict`` output reaches receipts, structured logs and
+    ``--json``. Only the program name is rendered, plus a count of the arguments
+    that were withheld, so an operator can still tell which binary is configured
+    and whether it was given arguments.
+
+    The program name itself is basenamed: a full path can disclose a home
+    directory or a deployment layout.
+    """
+    if argv is None:
+        return None
+    if not argv:
+        return "<empty>"
+    program = os.path.basename(str(argv[0]).strip()) or "<unnamed>"
+    withheld = len(argv) - 1
+    if withheld <= 0:
+        return program
+    return f"{program} <{withheld} argument{'s' if withheld != 1 else ''} redacted>"
 
 
 def redact_url(value: str) -> str:
@@ -458,6 +510,119 @@ def _looks_like_gateway(binding: ProviderBinding) -> bool:
     return binding.name == _GATEWAY_PROVIDER_NAME or binding.api_key_env == _GATEWAY_KEY_ENV
 
 
+def _parse_start_command(
+    value: Any, *, source: BootstrapSource
+) -> tuple[tuple[str, ...] | None, BootstrapDiagnostic | None]:
+    """Parse a gateway start command into an explicit argv list.
+
+    A YAML sequence is taken element-wise; a string is split with ``shlex`` POSIX
+    rules. Either way the result is an argv list launched with ``shell=False``,
+    so no part of the operator's value reaches a shell. The offending value is
+    never echoed: a start command can carry a token on its command line.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None, None
+        try:
+            argv = shlex.split(text)
+        except ValueError as exc:
+            return None, BootstrapDiagnostic(
+                code="gateway_start_command_malformed",
+                diagnostic_class="configuration",
+                field="gateway_start_command",
+                source=source,
+                detail=f"cannot split the gateway start command into an argv list: {exc}",
+                remediation=(
+                    "supply gateway_start_command as a YAML list of arguments, or as a "
+                    "correctly quoted single line"
+                ),
+            )
+    elif isinstance(value, (list, tuple)):
+        argv = [str(item) for item in value]
+    else:
+        return None, BootstrapDiagnostic(
+            code="gateway_start_command_malformed",
+            diagnostic_class="configuration",
+            field="gateway_start_command",
+            source=source,
+            detail=(
+                f"gateway_start_command must be a list of arguments or a command "
+                f"string, found {type(value).__name__}"
+            ),
+            remediation="set gateway_start_command to a YAML list such as ['omniroute', 'serve']",
+        )
+    argv = [item for item in (part.strip() for part in argv) if item]
+    if not argv:
+        return None, None
+    return tuple(argv), None
+
+
+def _shadowed_note(invalid: BootstrapDiagnostic, env_name: str) -> BootstrapDiagnostic:
+    """Downgrade a malformed lower-precedence value to a non-fatal note.
+
+    The config file won precedence, so the malformed environment value is not the
+    one in force and refusing would be wrong. It is still reported, because a
+    silently ignored malformed value is how an operator ends up debugging the
+    wrong file. The offending value is never echoed: the original diagnostic
+    already withheld it, and this only re-frames it.
+    """
+    return BootstrapDiagnostic(
+        code="precedence_conflict",
+        diagnostic_class="configuration",
+        field=invalid.field,
+        source="environment",
+        detail=(
+            f"{env_name} is malformed and was ignored: {invalid.detail}. The config file "
+            f"value won precedence, so this does not stop Verdict."
+        ),
+        remediation=f"fix or unset {env_name}; the config file value is the one in force",
+        fatal=False,
+    )
+
+
+def _parse_ready_timeout(
+    value: Any, *, source: BootstrapSource
+) -> tuple[float | None, BootstrapDiagnostic | None]:
+    """Parse the readiness budget. Anything unbounded or non-positive is fatal.
+
+    ``nan``, ``0``, a negative number, ``inf`` and a value above
+    :data:`MAX_GATEWAY_READY_TIMEOUT_S` are all refused. The point of the field is
+    to bound the wait, so a budget that cannot bound it is a configuration error
+    rather than a silently clamped value.
+    """
+    text = str(value).strip()
+    if not text:
+        return None, None
+    try:
+        parsed = float(text)
+    except ValueError:
+        parsed = float("nan")
+
+    def refuse(reason: str) -> tuple[None, BootstrapDiagnostic]:
+        return None, BootstrapDiagnostic(
+            code="gateway_ready_timeout_invalid",
+            diagnostic_class="configuration",
+            field="gateway_ready_timeout_s",
+            source=source,
+            detail=f"{text!r} {reason}",
+            remediation=(
+                f"set gateway_ready_timeout_s to a positive number of seconds no greater "
+                f"than {MAX_GATEWAY_READY_TIMEOUT_S}, or unset "
+                f"{_GATEWAY_READY_TIMEOUT_ENV} to use the default "
+                f"{DEFAULT_GATEWAY_READY_TIMEOUT_S}"
+            ),
+        )
+
+    if not math.isfinite(parsed):
+        return refuse("is not a finite number of seconds, so the wait would be unbounded")
+    if parsed <= 0:
+        return refuse("is not a positive number of seconds")
+    if parsed > MAX_GATEWAY_READY_TIMEOUT_S:
+        return refuse(f"is longer than the {MAX_GATEWAY_READY_TIMEOUT_S}s maximum readiness budget")
+    return parsed, None
+
+
 def resolve_provider_bootstrap(
     *,
     env: Mapping[str, str] | None = None,
@@ -476,7 +641,11 @@ def resolve_provider_bootstrap(
     * ``gateway_url``: ``OMNIROUTE_BASE_URL``, then config ``gateway_url``.
     * ``primary_model`` / ``profile`` / ``log_path``: config file, then
       environment, then built-in default.
-    * any environment name: exported environment, then credential store.
+    * ``gateway_start_command`` / ``gateway_ready_timeout_s``: config file, then
+      exported environment. The credential store is not a source for either: a
+      start command is not a secret, and reading an argv out of a secrets file
+      would turn that file into a command-injection surface.
+    * any other environment name: exported environment, then credential store.
 
     Raises ``BootstrapError`` when configuration is incomplete or malformed.
     Never probes the network.
@@ -680,6 +849,67 @@ def resolve_provider_bootstrap(
         gateway_url = _normalize_gateway_url(providers[gateway_providers[0]].base_url)
         field_sources["gateway_url"] = providers[gateway_providers[0]].source
 
+    # Lifecycle inputs. Config file first, then the exported environment. The
+    # credential store is deliberately not a source for either: a start command
+    # is not a secret, and taking an argv from a secrets file would make that
+    # file a command-injection surface.
+    # Both lifecycle fields are config-file-first. A malformed value only refuses
+    # when it is the value that would have been used: a lower-precedence
+    # environment value that the config file shadows is reported as a non-fatal
+    # note, matching how every other shadowed value is treated. It fails closed
+    # the other way round, because then the malformed value is the winner.
+    lifecycle_fatal: list[BootstrapDiagnostic] = []
+    gateway_start_command: tuple[str, ...] | None = None
+    env_start = _text(exported, _GATEWAY_START_COMMAND_ENV)
+    env_start_invalid: BootstrapDiagnostic | None = None
+    if env_start:
+        parsed_argv, env_start_invalid = _parse_start_command(env_start, source="environment")
+        if env_start_invalid is None and parsed_argv is not None:
+            gateway_start_command = parsed_argv
+            field_sources["gateway_start_command"] = "environment"
+    if raw.get("gateway_start_command") is not None:
+        parsed_argv, invalid = _parse_start_command(
+            raw["gateway_start_command"], source="config_file"
+        )
+        if invalid is not None:
+            lifecycle_fatal.append(invalid)
+        elif parsed_argv is not None:
+            gateway_start_command = parsed_argv
+            field_sources["gateway_start_command"] = "config_file"
+    if env_start_invalid is not None:
+        if field_sources.get("gateway_start_command") == "config_file":
+            diagnostics.append(_shadowed_note(env_start_invalid, _GATEWAY_START_COMMAND_ENV))
+        else:
+            lifecycle_fatal.append(env_start_invalid)
+
+    gateway_ready_timeout_s = DEFAULT_GATEWAY_READY_TIMEOUT_S
+    field_sources["gateway_ready_timeout_s"] = "default"
+    env_timeout = _text(exported, _GATEWAY_READY_TIMEOUT_ENV)
+    env_timeout_invalid: BootstrapDiagnostic | None = None
+    if env_timeout:
+        parsed_timeout, env_timeout_invalid = _parse_ready_timeout(
+            env_timeout, source="environment"
+        )
+        if env_timeout_invalid is None and parsed_timeout is not None:
+            gateway_ready_timeout_s = parsed_timeout
+            field_sources["gateway_ready_timeout_s"] = "environment"
+    if raw.get("gateway_ready_timeout_s") is not None:
+        parsed_timeout, invalid = _parse_ready_timeout(
+            raw["gateway_ready_timeout_s"], source="config_file"
+        )
+        if invalid is not None:
+            lifecycle_fatal.append(invalid)
+        elif parsed_timeout is not None:
+            gateway_ready_timeout_s = parsed_timeout
+            field_sources["gateway_ready_timeout_s"] = "config_file"
+    if env_timeout_invalid is not None:
+        if field_sources.get("gateway_ready_timeout_s") == "config_file":
+            diagnostics.append(_shadowed_note(env_timeout_invalid, _GATEWAY_READY_TIMEOUT_ENV))
+        else:
+            lifecycle_fatal.append(env_timeout_invalid)
+    if lifecycle_fatal:
+        raise BootstrapError("bootstrap_configuration_invalid", tuple(lifecycle_fatal))
+
     for binding in providers.values():
         if binding.api_key_env and not _text(merged, binding.api_key_env):
             diagnostics.append(
@@ -712,6 +942,8 @@ def resolve_provider_bootstrap(
         config_present=present,
         field_sources=field_sources,
         diagnostics=tuple(diagnostics),
+        gateway_start_command=gateway_start_command,
+        gateway_ready_timeout_s=gateway_ready_timeout_s,
     )
 
 

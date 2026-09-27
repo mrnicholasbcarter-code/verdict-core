@@ -65,6 +65,20 @@ def _write_credential_store(tmp_path: Path, values: dict[str, str]) -> Path:
     return store
 
 
+def _fake_gateway_probe(*, reachable: bool = True) -> Any:
+    """Offline readiness answer for the ``server_bootstrap_diagnostics`` seam."""
+    from verdict.gateway_lifecycle import GatewayHealth
+
+    calls: list[str] = []
+
+    def probe(url: str, **kwargs: Any) -> GatewayHealth:
+        calls.append(url)
+        return GatewayHealth(reachable=reachable, responded=True, detail="fake inventory")
+
+    probe.calls = calls  # type: ignore[attr-defined]
+    return probe
+
+
 def _spy_on_bootstrap(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Record the kwargs and the result of the next resolve_provider_bootstrap call."""
     import verdict.provider_bootstrap as pb
@@ -485,18 +499,43 @@ def test_server_bootstrap_diagnostics_separate_configuration_from_gateway_health
 
 
 def test_server_bootstrap_diagnostics_report_gateway_required_for_lifecycle_owner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_gateway_network: None
 ) -> None:
-    """gateway_required and gateway_url are exposed; no gateway is started."""
+    """gateway_required and gateway_url are exposed; no gateway is started or contacted.
+
+    This test is configured with the same gateway URL as the operator's real
+    gateway, so it must prove it stays offline rather than assume it. The network
+    guard makes any real call a hard failure, and the injected probe is asserted
+    to have been called exactly once with the resolved URL. Every original
+    assertion is kept; the probe assertions are added.
+    """
     _config_home(tmp_path, monkeypatch, _VALID_CONFIG)
     monkeypatch.delenv("LLMGATE_UPSTREAM_BASE_URL", raising=False)
+    probe = _fake_gateway_probe()
 
-    report = api.server_bootstrap_diagnostics()
+    report = api.server_bootstrap_diagnostics(gateway_probe=probe)
 
     assert report["status"] == "ok"
     assert report["gateway_required"] is True
     assert report["gateway_url"] == "http://127.0.0.1:20128/v1"
     assert report["field_sources"]["providers"] == "config_file"
+    assert probe.calls == ["http://127.0.0.1:20128/v1"]
+    assert report["gateway_lifecycle"]["launched"] is False
+
+
+def test_server_bootstrap_diagnostics_do_no_gateway_io_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_gateway_network: None
+) -> None:
+    """With both lifecycle opt-ins off, startup diagnostics touch no network."""
+    _config_home(tmp_path, monkeypatch, _VALID_CONFIG)
+    monkeypatch.delenv("VERDICT_SERVE_ENSURE_GATEWAY", raising=False)
+
+    report = api.server_bootstrap_diagnostics()
+
+    assert report["status"] == "ok"
+    assert report["gateway_required"] is True
+    assert report["gateway_lifecycle"]["state"] == api.GATEWAY_NOT_PROBED
+    assert report["gateway_lifecycle"]["probed"] is False
 
 
 def test_serve_intelligence_resolves_identity_from_environment_then_default(
@@ -623,13 +662,29 @@ def test_upstream_base_url_source_names_the_default(
 
 
 def test_server_bootstrap_diagnostics_redact_url_userinfo(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_gateway_network: None
 ) -> None:
-    """The serve report dict never carries a URL password, even though it is not rendered today."""
+    """The serve report dict never carries a URL password, even though it is not rendered today.
+
+    Asserted on both paths now: the silent default and the injected report-only
+    probe. The probe is a fake and the network guard is on, so a password-bearing
+    URL is never sent anywhere. Previously this test reached the real gateway,
+    which meant the redaction claim was checked against whatever that gateway
+    happened to answer.
+    """
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://u:SECRETPW@127.0.0.1:20128")
     monkeypatch.setenv("LLMGATE_UPSTREAM_BASE_URL", "http://u:SECRETPW@127.0.0.1:20128/v1")
     _config_home(tmp_path, monkeypatch, _VALID_CONFIG)
 
-    report = api.server_bootstrap_diagnostics()
+    assert "SECRETPW" not in repr(api.server_bootstrap_diagnostics())
+
+    probe = _fake_gateway_probe()
+    report = api.server_bootstrap_diagnostics(gateway_probe=probe)
 
     assert "SECRETPW" not in repr(report)
+    assert "SECRETPW" not in repr(report["gateway_lifecycle"])
+    # The password-bearing value reaches only LLMGATE_UPSTREAM_BASE_URL here:
+    # _config_home clears OMNIROUTE_BASE_URL, so the gateway URL comes from the
+    # config file. The probe must therefore never be handed a userinfo URL.
+    assert probe.calls == ["http://127.0.0.1:20128/v1"]
+    assert not any("SECRETPW" in call for call in probe.calls)

@@ -572,7 +572,9 @@ def _upstream_base_url_source() -> str:
     return "default"
 
 
-def server_bootstrap_diagnostics() -> dict[str, Any]:
+def server_bootstrap_diagnostics(
+    *, gateway_probe: Callable[[str], Any] | None = None
+) -> dict[str, Any]:
     """Classify serve-path startup configuration via the shared contract.
 
     Separates configuration failure from gateway health and from model
@@ -580,6 +582,11 @@ def server_bootstrap_diagnostics() -> dict[str, Any]:
     three went wrong. Never fatal: the serve path admits candidates at request
     time (an empty provider map is the documented serve posture), so this
     records and reports rather than refusing to boot. No gateway is started.
+
+    ``gateway_probe`` is the readiness seam. It is called at most once, and only
+    when the readiness report is actually requested: with both lifecycle opt-ins
+    off there is no gateway I/O at all, so this function stays exactly as
+    offline as it was before the lifecycle landed. Tests pass a fake.
     """
     from verdict.provider_bootstrap import (
         BootstrapError,
@@ -622,7 +629,91 @@ def server_bootstrap_diagnostics() -> dict[str, Any]:
     report["gateway_url"] = redact_url(bootstrap.gateway_url) if bootstrap.gateway_url else None
     report["field_sources"] = dict(bootstrap.field_sources)
     report["diagnostics"].extend(d.to_dict() for d in bootstrap.diagnostics)
+    report["gateway_lifecycle"] = _serve_gateway_lifecycle(bootstrap, probe=gateway_probe)
     return report
+
+
+#: Reported instead of a state when nothing probed the gateway. Startup does no
+#: gateway I/O of its own, so the absence of a probe is named rather than being
+#: rendered as an unhealthy gateway nobody looked at.
+GATEWAY_NOT_PROBED = "not_probed"
+
+
+def _serve_gateway_lifecycle(
+    bootstrap: Any, *, probe: Callable[[str], Any] | None = None
+) -> dict[str, Any]:
+    """Name the gateway lifecycle state for the serve startup line.
+
+    Startup performs no gateway I/O unless it is asked to. With
+    ``VERDICT_SERVE_ENSURE_GATEWAY`` off and no injected ``probe``, this reports
+    ``not_probed`` without opening a socket, so importing or booting the server
+    never depends on whether a gateway happens to be listening.
+
+    ``VERDICT_SERVE_ENSURE_GATEWAY`` opts into the active path, which reuses a
+    healthy gateway and starts one only when the bootstrap contract supplies a
+    start command. An injected ``probe`` opts into the report-only path: the
+    caller supplied the transport, so the caller decides whether I/O happens.
+    """
+    from verdict.gateway_lifecycle import (
+        authenticated_gateway_probe,
+        ensure_gateway_ready,
+        inspect_gateway,
+    )
+    from verdict.provider_bootstrap import load_credential_store_env
+
+    ensure = os.getenv("VERDICT_SERVE_ENSURE_GATEWAY", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not ensure and probe is None:
+        return {
+            "state": GATEWAY_NOT_PROBED,
+            "ready": False,
+            "probed": False,
+            "ensure_requested": False,
+            "detail": (
+                "gateway readiness was not probed at startup; run 'verdict doctor', or set "
+                "VERDICT_SERVE_ENSURE_GATEWAY=true to ensure it at boot"
+            ),
+        }
+    if probe is not None:
+        probe_fn = probe
+    else:
+        # Match the CLI/doctor binding: resolve the key named by the provider
+        # binding for this gateway, preferring the exported environment and then
+        # the credential store.  Bind it to the lifecycle seam; never call the
+        # raw unauthenticated probe here.
+        names = [
+            binding.api_key_env
+            for binding in bootstrap.providers.values()
+            if getattr(binding, "api_key_env", None)
+            and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
+        ]
+        api_key: str | None = None
+        stored: dict[str, str] | None = None
+        for name in names:
+            api_key = (os.getenv(str(name)) or "").strip() or None
+            if api_key is None:
+                if stored is None:
+                    stored = load_credential_store_env()
+                api_key = (stored.get(str(name)) or "").strip() or None
+            if api_key is not None:
+                break
+        probe_fn = authenticated_gateway_probe(api_key)
+    try:
+        outcome = (
+            ensure_gateway_ready(bootstrap, probe=probe_fn)
+            if ensure
+            else inspect_gateway(bootstrap, probe=probe_fn)
+        )
+    except Exception as exc:  # pragma: no cover - defensive: startup must not crash here
+        return {"state": "unknown", "probed": True, "detail": f"{type(exc).__name__}: {exc}"}
+    payload = outcome.to_dict()
+    payload["probed"] = True
+    payload["ensure_requested"] = ensure
+    return payload
 
 
 def _build_proxy() -> UpstreamProxy:
@@ -776,6 +867,15 @@ async def lifespan(app: FastAPI) -> Any:
     validate_server_security(host=os.getenv("LLMGATE_HOST", "127.0.0.1"))
     global server_bootstrap_report
     server_bootstrap_report = server_bootstrap_diagnostics()
+    lifecycle = server_bootstrap_report.get("gateway_lifecycle") or {}
+    # Nothing probed the gateway, so there is no readiness fact to print. Startup
+    # output with the opt-in off is what it was before the lifecycle landed.
+    if lifecycle and lifecycle.get("probed"):
+        print(
+            f"verdict serve: gateway {lifecycle.get('state')} "
+            f"url={lifecycle.get('gateway_url')} ready={lifecycle.get('ready')}",
+            file=sys.stderr,
+        )
     for entry in server_bootstrap_report.get("diagnostics", []):
         print(
             f"verdict serve: {entry['code']} [{entry['class']}] field={entry['field']}: "
