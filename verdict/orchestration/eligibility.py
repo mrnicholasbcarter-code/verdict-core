@@ -115,6 +115,9 @@ class _Assessment:
     health: str = "unprobed"  # healthy | unhealthy | unprobed | stale
     health_category: str = ""
     fit: int = 0
+    tier: int = 2  # capability tier (0 = frontier ... 3 = small)
+    slack: int = 0  # tiers of capability beyond the task's sufficiency floor
+    price: float = 0.0  # marginal metered price per 1M tokens (in + out)
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -390,6 +393,13 @@ class EligibilityLadder:
         if reason:
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, reason
             return a
+        a.tier = _capability_tier(row, route_id)
+        if a.tier > requirements.max_capability_tier:
+            # Insufficient for this work: dropped before ranking, however cheap.
+            a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "insufficient_capability"
+            return a
+        a.slack = requirements.max_capability_tier - a.tier
+        a.price = _marginal_price(row)
         a.fit = self._fit(row, route_id, requirements)
         return a
 
@@ -425,14 +435,25 @@ class EligibilityLadder:
             score += 1
         return score
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, int, int, int, str]:
+    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
         try:
             pref = self._prefer_providers.index(a.provider)
         except ValueError:
             pref = len(self._prefer_providers)
+        # BOD-271: within a capacity class the cheapest SUFFICIENT route wins.
+        # Capability beyond the task's floor (slack) and metered price both cost
+        # something, so a stronger model never wins merely for being stronger.
         # Load comes before task fit: spreading concurrent nodes across equally
         # eligible routes of the preferred capacity beats piling onto one route.
-        return (_CAPACITY_ORDER[a.capacity], pref, self._load(a.route_id), -a.fit, a.route_id)
+        return (
+            _CAPACITY_ORDER[a.capacity],
+            a.slack,
+            a.price,
+            pref,
+            self._load(a.route_id),
+            -a.fit,
+            a.route_id,
+        )
 
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
@@ -608,3 +629,25 @@ class EligibilityLadder:
             "available": at_least(EligibilityStage.AVAILABLE),
             "eligible": at_least(EligibilityStage.TASK_ELIGIBLE),
         }
+
+
+def _capability_tier(row: Mapping[str, Any], route_id: str) -> int:
+    """Declared capability tier from inventory metadata, else the id classifier."""
+    declared = row.get("capability_tier")
+    if isinstance(declared, int) and not isinstance(declared, bool) and 0 <= declared <= 3:
+        return declared
+    from verdict.classifier import classify
+
+    return classify(route_id)
+
+
+def _marginal_price(row: Mapping[str, Any]) -> float:
+    pricing = row.get("pricing")
+    if not isinstance(pricing, Mapping):
+        return 0.0
+    total = 0.0
+    for key in ("input", "output", "prompt", "completion"):
+        value = pricing.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            total += float(value)
+    return total

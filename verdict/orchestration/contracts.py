@@ -346,6 +346,11 @@ class TaskRequirements:
     frontier_worthy: bool = False
     exclude_routes: frozenset[str] = frozenset()  # e.g. implementer ids for an independent reviewer
     exclude_families: frozenset[str] = frozenset()  # e.g. {"claude"} to force a different family
+    # BOD-271 sufficiency floor. Capability tiers: 0 = frontier ... 3 = small/fast.
+    # A route whose tier number is ABOVE this is insufficient for the work and is
+    # hard-dropped before ranking. Among sufficient routes the least-capable
+    # (cheapest sufficient) wins; extra capability is never a ranking bonus.
+    max_capability_tier: int = 3
 
     @classmethod
     def for_node(cls, node: WorkNode, **overrides: Any) -> TaskRequirements:
@@ -355,6 +360,7 @@ class TaskRequirements:
             coding=node.coding,
             reasoning=node.reasoning,
             frontier_worthy=node.risk == "high" or node.kind in {NodeKind.REVIEW},
+            max_capability_tier=required_capability_tier(node),
         )
         return cls(**{**asdict(base), **overrides})
 
@@ -606,3 +612,18 @@ def dispatch_blocker(selector: Any, route_id: str, now: datetime) -> str | None:
         result = check(route_id, now=now)
         return str(result) if result else None
     return None
+
+
+def required_capability_tier(node: WorkNode) -> int:
+    """Sufficiency floor derived from the work itself, not from model reputation.
+
+    Review and high-risk work need a strong model (tier <= 1); medium-risk or
+    reasoning-heavy work needs at least a mid-tier model (<= 2); low-risk
+    bounded work may use any tier. The floor only removes insufficient
+    candidates; ranking then prefers the cheapest sufficient one.
+    """
+    if node.kind is NodeKind.REVIEW or node.risk == "high":
+        return 1
+    if node.risk == "medium" or node.reasoning:
+        return 2
+    return 3
