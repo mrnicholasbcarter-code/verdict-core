@@ -530,6 +530,18 @@ async def cli_run(directory: Path) -> int:
             stream.write(json.dumps(event) + "\n")
 
     try:
+        # Refresh the concrete Prime registry from one bounded GET before listing
+        # selectors. The returned snapshot is visibility only; admission and the
+        # exact confirmation probe below still decide launch authority.
+        rows = await asyncio.to_thread(fetch_omniroute_inventory)
+        from verdict.harness_prime import refresh_omniroute_visibility
+
+        visibility = await asyncio.to_thread(
+            refresh_omniroute_visibility,
+            fetch_rows=lambda: rows,
+            source=DEFAULT_OMNIROUTE_URL.rstrip("/") + "/models",
+            force=True,
+        )
         # CLI registry listing is complete; find_models has a bounded search limit.
         process = await asyncio.create_subprocess_exec(
             "prime-agent",
@@ -551,8 +563,20 @@ async def cli_run(directory: Path) -> int:
             for line in stdout.decode().splitlines()[1:]
             if len(line.split()) >= 2
         ]
-        rows = await asyncio.to_thread(fetch_omniroute_inventory)
-        atomic_json(directory / "discovery.json", {"rows": rows, "prime_selectors": selectors})
+        atomic_json(
+            directory / "discovery.json",
+            {
+                "rows": rows,
+                "prime_selectors": selectors,
+                "prime_visibility": {
+                    "source": visibility.source,
+                    "timestamp": visibility.timestamp,
+                    "count": visibility.count,
+                    "digest": visibility.digest,
+                    "refresh_failure": visibility.failure.to_dict() if visibility.failure else None,
+                },
+            },
+        )
         admitted = await asyncio.to_thread(_worker_admission, config, rows)
         admitted.write_receipt(directory / "admission.json")
         task_config = config.get("task", {})

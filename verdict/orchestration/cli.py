@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import threading
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -221,7 +222,6 @@ def build_selector(
 
     key = resolve_api_key()
     rows = fetch_inventory(gateway, api_key=key)
-    live_ids = [str(r.get("id")) for r in rows if r.get("id")]
     connections = fetch_connections(gateway, api_key=key)
     state_path = state_file or (_state_dir() / "orchestration-health.json")
     now = datetime.now(timezone.utc)
@@ -260,7 +260,7 @@ def build_selector(
         state_path,
         prefer_providers=tuple(p.strip() for p in prefer.split(",") if p.strip()),
         load=load,
-        harness_visible=prime_visibility(live_ids=live_ids),
+        harness_visible=prime_visibility(live_rows=rows),
         admitted=admitted,
         admission_receipt=receipt_path,
     )
@@ -277,23 +277,30 @@ def parse_provider_families(values: list[str] | tuple[str, ...]) -> tuple[str, .
     return tuple(sorted(f for f in found if f))
 
 
-def prime_visibility(path: Path | None = None, *, live_ids: Any = None) -> Any:
-    """Harness gate: which route ids a Prime worker can be spawned on.
+def prime_visibility(path: Path | None = None, *, live_rows: Any = None) -> Any:
+    """Return the concrete ids Prime can actually spawn, never gateway authority.
 
-    The live gateway inventory (``live_ids``, the ids from ``GET /v1/models``)
-    is the source of truth. Prime's ``models.json`` is only a fallback signal
-    when no live inventory is supplied: it is a static snapshot and goes stale.
-    Reads model ids only (never credentials). With neither source available the
-    gate fails closed and every route is denied as
-    ``harness_inventory_unavailable``.
+    When the caller has just refreshed ``/v1/models``, it supplies those rows
+    here so the local Prime registry is synchronized before selection. A failed
+    sync leaves an LKG sidecar for audit but does not invent visibility: only
+    the concrete ids read from Prime's registry are returned. Health, capacity,
+    entitlement and launch authority stay in their separate gates.
     """
+    from verdict.harness_prime import refresh_omniroute_visibility
     from verdict.orchestration.eligibility import HarnessVisibility
 
-    if live_ids is not None:
-        ids = frozenset(str(i) for i in live_ids if i)
-        if ids:
-            return HarnessVisibility(ids, source="live")
     registry = path or Path.home() / ".prime" / "agent" / "models.json"
+    if live_rows is not None:
+        rows = tuple(row for row in live_rows if isinstance(row, Mapping))
+        # A successful refresh changes Prime's local registry before selection.
+        # On failure its LKG remains auditable, but only registry ids below can
+        # be claimed as actually spawn-visible.
+        refresh_omniroute_visibility(
+            prime_home=registry.parent,
+            source="omniroute:/v1/models",
+            fetch_rows=lambda: rows,
+            force=True,
+        )
     try:
         data = json.loads(registry.read_text(encoding="utf-8"))
         models = data["providers"]["omniroute"]["models"]

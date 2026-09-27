@@ -481,12 +481,14 @@ def sync_models(
     for item in old_models if isinstance(old_models, list) else []:
         if isinstance(item, Mapping) and item.get("id"):
             previous.setdefault(str(item["id"]), item)
+    from verdict.prime_inventory import concrete_rows
+
+    concrete, _excluded = concrete_rows(live_rows)
     live: dict[str, Mapping[str, Any]] = {}
-    for row in live_rows:
-        if isinstance(row, Mapping) and isinstance(row.get("id"), str) and row["id"].strip():
-            live.setdefault(row["id"], row)
+    for row in concrete:
+        live.setdefault(str(row["id"]).strip(), row)
     if not live:
-        raise HarnessPrimeError("live gateway inventory is empty; refusing to clear models")
+        raise HarnessPrimeError("live gateway inventory has no concrete models; refusing to clear models")
     added = tuple(sorted(set(live) - set(previous)))
     removed = tuple(sorted(set(previous) - set(live)))
     if dry_run:
@@ -507,6 +509,34 @@ def sync_models(
     _atomic_write_json(paths.models, updated)
     return SyncModelsResult(
         paths.models, backup, added, removed, len(live), dry_run=False, written=True
+    )
+
+
+def refresh_omniroute_visibility(
+    *,
+    fetch_rows: Callable[[], Sequence[Mapping[str, Any]]],
+    source: str,
+    prime_home: Path | None = None,
+    max_age_seconds: float = 300.0,
+    force: bool = False,
+    now: Callable[[], Any] | None = None,
+) -> Any:
+    """Refresh Prime's concrete OmniRoute visibility snapshot.
+
+    This writes visibility only. It neither probes nor declares routes healthy
+    or launchable; admission and confirmation remain separate gates.
+    """
+    from verdict.prime_inventory import refresh_prime_inventory
+
+    paths = resolve_paths(prime_home=prime_home)
+    return refresh_prime_inventory(
+        models_path=paths.models,
+        source=source,
+        fetch_rows=fetch_rows,
+        apply_rows=lambda rows: sync_models(rows, prime_home=prime_home),
+        max_age_seconds=max_age_seconds,
+        force=force,
+        now=now,
     )
 
 

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.test_proxy import FixedIntelligence, ResponsesTransport, _configure_test_app
@@ -126,3 +127,36 @@ def test_wired_hook_never_fails_over_to_admitted_out_alternative(monkeypatch: An
         )
     assert response.status_code == 503
     assert [item["body"]["model"] for item in transport.requests] == ["kr/ok"]
+
+
+def test_cached_relay_admission_never_performs_request_time_refresh() -> None:
+    from verdict.api import CachedRelayAdmission
+
+    calls = 0
+
+    def refresh() -> Any:
+        nonlocal calls
+        calls += 1
+        return _admitted()
+
+    cache = CachedRelayAdmission(refresh, ttl_seconds=10)
+    stamp = NOW
+    cache.refresh(now=stamp)
+    assert cache.get(now=stamp + timedelta(seconds=9)) is cache.get(now=stamp + timedelta(seconds=9))
+    assert calls == 1
+    with pytest.raises(RuntimeError, match="stale"):
+        cache.get(now=stamp + timedelta(seconds=11))
+    assert calls == 1
+
+
+def test_cached_relay_admission_refresh_failure_does_not_reuse_expired_authority() -> None:
+    from verdict.api import CachedRelayAdmission
+
+    cache = CachedRelayAdmission(_admitted, ttl_seconds=1)
+    cache.refresh(now=NOW)
+    cache._refresh = lambda: (_ for _ in ()).throw(TimeoutError())  # type: ignore[method-assign]
+    with pytest.raises(TimeoutError):
+        cache.refresh(now=NOW + timedelta(seconds=2))
+    assert cache.last_refresh_failure == "TimeoutError"
+    with pytest.raises(RuntimeError, match="stale"):
+        cache.get(now=NOW + timedelta(seconds=2))

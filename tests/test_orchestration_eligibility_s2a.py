@@ -26,7 +26,7 @@ def _models_json(path: Path, ids: list[str]) -> Path:
 class TestLiveHarnessGate:
     def test_live_inventory_admits_route_absent_from_models_json(self, tmp_path: Path) -> None:
         registry = _models_json(tmp_path / "models.json", ["cc/claude-sonnet-5"])
-        gate = prime_visibility(registry, live_ids=["cc/claude-sonnet-5", "cc/claude-new-6"])
+        gate = prime_visibility(registry, live_rows=[{"id": "cc/claude-sonnet-5"}, {"id": "cc/claude-new-6"}])
         ladder, _ = make_ladder(
             tmp_path,
             [row("cc/claude-new-6", owned_by="claude")],
@@ -38,7 +38,8 @@ class TestLiveHarnessGate:
         assert v.reason not in {"not_harness_visible", "harness_inventory_unavailable"}
 
     def test_live_gate_still_denies_ids_the_gateway_does_not_list(self, tmp_path: Path) -> None:
-        gate = prime_visibility(tmp_path / "missing.json", live_ids=["cc/other"])
+        registry = _models_json(tmp_path / "models.json", ["cc/old"])
+        gate = prime_visibility(registry, live_rows=[{"id": "cc/other"}])
         ladder, _ = make_ladder(
             tmp_path,
             [row("cc/claude-new-6", owned_by="claude")],
@@ -56,7 +57,7 @@ class TestLiveHarnessGate:
         assert gate.source == "models.json"
 
     def test_no_inventory_and_no_models_json_fails_closed(self, tmp_path: Path) -> None:
-        gate = prime_visibility(tmp_path / "absent.json", live_ids=None)
+        gate = prime_visibility(tmp_path / "absent.json", live_rows=None)
         assert gate is not None  # never "no gate": that would admit everything
         ladder, probe = make_ladder(
             tmp_path,
