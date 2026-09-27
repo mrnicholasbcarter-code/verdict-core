@@ -561,7 +561,7 @@ def test_dispatch_returns_nonzero_when_blocked(tmp_path: Path, monkeypatch: Any)
 
     from verdict.orchestration import supervisor as module
 
-    def fake_factory(run_id: str, extra: list[str]) -> Any:
+    def fake_factory(run_id: str, extra: list[str], runs_dir: Any = None) -> Any:
         return lambda generation: []
 
     monkeypatch.setattr(module, "build_command_factory", fake_factory)
@@ -611,3 +611,31 @@ emit("run_finished", outcome="COMPLETE", reason="new life")
         ControllerSupervisor(lambda g: argv_for(script, run_dir), run_dir, **FAST)
     )
     assert outcome.state == "COMPLETE" and outcome.reason == "new life"
+
+
+def test_command_factory_passes_the_watched_runs_dir(tmp_path: Path) -> None:
+    """Regression (live demo 2026-09-27): orchestrate wrote the run under
+    <repo>/.verdict/runs while supervise watched --runs-dir, so a COMPLETE
+    generation was reported CRASHED and restarted."""
+    argv = build_command_factory("r1", ["--repo", "x"], tmp_path)(0)
+    i = argv.index("--runs-dir")
+    assert Path(argv[i + 1]) == tmp_path.resolve()
+    assert argv[-2:] == ["--resume", "r1"]
+    # An explicit matching --runs-dir is not duplicated.
+    argv = build_command_factory("r1", ["--runs-dir", str(tmp_path)], tmp_path)(0)
+    assert argv.count("--runs-dir") == 1
+
+
+def test_dispatch_refuses_a_conflicting_orchestrate_runs_dir(tmp_path: Path) -> None:
+    import argparse
+
+    args = argparse.Namespace(
+        run_id="r1",
+        runs_dir=str(tmp_path / "watched"),
+        stall_seconds=0.2,
+        poll_seconds=0.02,
+        max_restarts=0,
+        total_deadline_seconds=5.0,
+        orchestrate_args=["--", "--runs-dir", str(tmp_path / "elsewhere")],
+    )
+    assert dispatch(args) == 2

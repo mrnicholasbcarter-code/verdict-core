@@ -1,0 +1,57 @@
+{
+  "status": "skipped",
+  "llm": {
+    "provider": "verdict-omniroute",
+    "model": "kr/gpt-5.6-terra"
+  },
+  "message": "Review skipped: no items were selected.",
+  "summary": {
+    "files_reviewed": 0,
+    "comments": 0,
+    "total_tokens": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "elapsed": "0s"
+  },
+  "tool_calls": {
+    "total": 0,
+    "by_tool": {},
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [],
+  "session_id": "a21176b1-54e1-484d-81a7-8fae8c9d24bf",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "a21176b1-54e1-484d-81a7-8fae8c9d24bf",
+    "operation": "review",
+    "terminal_state": "skipped",
+    "repository": {},
+    "input": {
+      "mode": "range",
+      "requested_from": "7c89260d012f3ad8c4373504a866cd7e577eaeb3",
+      "requested_head": "e1ace7d0cd300a8caaf3d9b0a6e818e8c7053228",
+      "resolved_base": "7c89260d012f3ad8c4373504a866cd7e577eaeb3",
+      "resolved_head": "e1ace7d0cd300a8caaf3d9b0a6e818e8c7053228",
+      "exact_range": "7c89260d012f3ad8c4373504a866cd7e577eaeb3..e1ace7d0cd300a8caaf3d9b0a6e818e8c7053228",
+      "source_artifact_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "execution": {
+      "ocr_version": "v1.12.9",
+      "provider": "verdict-omniroute",
+      "model": "kr/gpt-5.6-terra",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "9f33647a25a002db1b7770ce092ffab8b77ef98379e262871a243afd75f798d9",
+      "runtime_config_sha256": "94156565c956ca00819383e7987beb108004d3038b0ecb3e8e3025fef6e18b02"
+    },
+    "coverage": {
+      "selected": [],
+      "completed": [],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 21
+  }
+}

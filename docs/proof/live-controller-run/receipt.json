@@ -1,0 +1,173 @@
+{
+  "claimed_outcome": "COMPLETE",
+  "controller_events": [
+    {
+      "at": "2026-09-27T21:47:06.269007Z",
+      "category": "",
+      "detail": "no progress for 60s",
+      "exit_code": -15,
+      "generation": 0,
+      "node_id": "",
+      "seq": 24,
+      "state": "STALLED"
+    },
+    {
+      "argv": "/tmp/vsup/.venv/bin/python -m verdict orchestrate --repo /tmp/verdict-live-ctrl2-m385uvsg/repo --graph /tmp/verdict-live-ctrl2-m385uvsg/graph.json --scope kr/ --max-parallel 1 --attempt-timeout 600 --state-file /tmp/verdict-live-ctrl2-m385uvsg/ctrl-health.json --plain --runs-dir /tmp/verdict-live-ctrl2-m385uvsg/runs --resume ctrl-demo",
+      "at": "2026-09-27T21:47:06.271099Z",
+      "detail": "/tmp/vsup/.venv/bin/python -m verdict orchestrate --repo /tmp/verdict-live-ctrl2-m385uvsg/repo --graph /tmp/verdict-live-ctrl2-m385uvsg/graph.json --scope kr/ --max-parallel 1 --attempt-timeout 600 --state-file /tmp/verdict-live-ctrl2-m385uvsg/ctrl-health.json --plain --runs-dir /tmp/verdict-live-ctrl2-m385uvsg/runs --resume ctrl-demo",
+      "generation": 1,
+      "node_id": "",
+      "seq": 25,
+      "state": "REPLACED"
+    },
+    {
+      "at": "2026-09-27T21:47:07.489215Z",
+      "detail": "1 validated node(s) reused",
+      "node_id": "",
+      "seq": 27,
+      "state": "RESUMED"
+    },
+    {
+      "at": "2026-09-27T21:47:07.492472Z",
+      "detail": "1 attempt(s) from a previous controller life",
+      "node_id": "beta",
+      "seq": 30,
+      "state": "ABANDONED_ATTEMPT"
+    },
+    {
+      "at": "2026-09-27T21:47:21.134494Z",
+      "excluded_families": [
+        "claude"
+      ],
+      "excluded_routes": [
+        "kr/claude-haiku-4.5"
+      ],
+      "level": "family",
+      "node_id": "",
+      "reviewer_route": "kr/gpt-5.6-terra",
+      "seq": 46,
+      "state": "REVIEW_INDEPENDENCE"
+    }
+  ],
+  "cooldowns": [],
+  "decision_signals": null,
+  "event_count": 49,
+  "events_digest": "sha256:c4fd49b2128e481525f33f74c99a48f4a86a798e954befd716880c08d5cb1a1b",
+  "finished_at": "2026-09-27T21:47:21.136949Z",
+  "goal": "live controller failover demo",
+  "graph_digest": "sha256:8fa836e13a7c7450a41d8f6f9230e1a048216f3979458aea8ea2516e13d7ad3b",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 45
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 41
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 10.94,
+          "executed_model": "kr/claude-haiku-4.5",
+          "fault_injected": false,
+          "intended_route": "kr/claude-haiku-4.5",
+          "outcome": "success",
+          "provider": "kr",
+          "route_id": "kr/claude-haiku-4.5",
+          "route_identity": "match"
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "alpha",
+      "validated_by": [
+        {
+          "command": "sh -c grep -qx ok alpha.txt",
+          "exit_code": 0,
+          "seq": 15
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "fault_injected": false,
+          "outcome": "abandoned",
+          "provider": "kr",
+          "route_id": "kr/claude-haiku-4.5",
+          "route_identity": "unattested"
+        },
+        {
+          "attempt": 2,
+          "capacity_class": "subscription",
+          "duration_seconds": 11.64,
+          "executed_model": "kr/claude-haiku-4.5",
+          "fault_injected": false,
+          "intended_route": "kr/claude-haiku-4.5",
+          "outcome": "success",
+          "provider": "kr",
+          "route_id": "kr/claude-haiku-4.5",
+          "route_identity": "match"
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "beta",
+      "validated_by": [
+        {
+          "command": "sh -c grep -qx ok beta.txt",
+          "exit_code": 0,
+          "seq": 42
+        }
+      ]
+    }
+  ],
+  "outcome": "COMPLETE",
+  "planner_attempts": [],
+  "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
+  "reassignments": [],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 1
+  },
+  "review": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "category": "",
+        "duration_seconds": 0.053,
+        "route_id": "kr/gpt-5.6-terra",
+        "status": "PASS"
+      }
+    ],
+    "blocking": 0,
+    "reviewer": "open-code-review v1.12.9",
+    "route_id": "kr/gpt-5.6-terra",
+    "status": "PASS"
+  },
+  "route_identity_summary": {
+    "attempts": 3,
+    "match": 2,
+    "mechanical": 0,
+    "mismatch": 0,
+    "unattested": 1
+  },
+  "run_id": "ctrl-demo",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-09-27T21:45:49.942082Z",
+  "topology": "PARALLEL_WORK_UNITS"
+}
