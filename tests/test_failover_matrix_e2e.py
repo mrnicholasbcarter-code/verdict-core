@@ -221,3 +221,47 @@ def test_context_length_classification_ignores_quota_reset_text() -> None:
     assert orch.scope == "none"
     assert orch.cooldown_seconds == 0
     assert orch.action == "REROUTE"
+
+
+def test_context_overflow_skips_routes_that_cannot_fit_and_uses_a_larger_window(
+    tmp_path: Path,
+) -> None:
+    """BOD-272: no blind replay of an oversized request onto an equal/smaller window."""
+    rows = [
+        {**_row("cc/a"), "context_length": 200_000},
+        {**_row("cc/b"), "context_length": 128_000},
+        {**_row("kr/c"), "context_length": 1_000_000},
+    ]
+    visible = [f"omniroute/{r['id']}" for r in rows]
+    adapter = _Adapter({"omniroute/cc/a": _error(KIRO_CONTEXT_400)})
+    runtime = WorkerController(
+        WorkerTask(
+            required_capabilities=frozenset({"tools"}),
+            allowed_route_prefixes=frozenset({"cc/", "kr/"}),
+        ),
+        inventory_rows=rows,
+        prime_selectors=visible,
+        probe=lambda candidate: HealthResult(True, "healthy"),
+        adapter=adapter,
+        cache=HealthCache(tmp_path / "health.json"),
+        now=lambda: NOW,
+    )
+
+    outcome = asyncio.run(runtime.run("oversized task"))
+
+    assert outcome.state == "SUCCESS", outcome.diagnostic
+    ranked = [c.selector for c in runtime.candidates]
+    first = ranked[0]
+    assert first == "omniroute/cc/a"
+    # The smaller-window sibling is skipped with a named reason, never spawned.
+    assert "omniroute/cc/b" not in adapter.spawned
+    skipped = [
+        e
+        for e in runtime.events
+        if e.get("event") == "exclusion" and e.get("model") == "omniroute/cc/b"
+    ]
+    assert skipped and skipped[0]["classification"] == "context_too_small"
+    assert skipped[0]["overflowed_at"] == 200_000
+    # The larger-window route receives the same immutable prompt.
+    assert adapter.spawned == ["omniroute/cc/a", "omniroute/kr/c"]
+    assert adapter.prompts == ["oversized task", "oversized task"]

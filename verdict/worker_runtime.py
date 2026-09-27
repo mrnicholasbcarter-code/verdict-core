@@ -29,6 +29,7 @@ from verdict.availability import (
 )
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.subagent_selection import (
+    CONTEXT_LENGTH_CATEGORY,
     DEFAULT_OMNIROUTE_URL,
     PROVIDER_SCOPE_FAILURE_CATEGORIES,
     HealthCache,
@@ -316,8 +317,28 @@ class WorkerController:
         deadline = time.monotonic() + self.budget.total_seconds
         previous: str | None = None
         blocked_providers: dict[str, str] = {}
+        # BOD-272: after a context-length overflow the SAME prompt cannot fit a
+        # route with a strictly smaller advertised window. Skip those instead
+        # of blindly replaying the oversized request. Equal windows stay
+        # eligible: advertised windows are not reliable limits (a 1M-advertised
+        # route was observed failing near 200k), so a same-size route on
+        # another backend may still fit.
+        overflowed_at: int | None = None
         for candidate in self.candidates:
             provider = candidate.route_id.split("/", 1)[0].strip().lower()
+            if overflowed_at is not None and candidate.context_tokens < overflowed_at:
+                self.event(
+                    "exclusion",
+                    model=candidate.selector,
+                    provider=provider,
+                    classification="context_too_small",
+                    context_tokens=candidate.context_tokens,
+                    overflowed_at=overflowed_at,
+                    provider_wide=False,
+                    replacement=True,
+                )
+                previous = candidate.selector
+                continue
             blocked_reason = blocked_providers.get(provider)
             if blocked_reason is not None:
                 self.event(
@@ -474,6 +495,9 @@ class WorkerController:
                 provider_wide = health.category in PROVIDER_SCOPE_FAILURE_CATEGORIES
                 if provider_wide:
                     blocked_providers[provider] = health.category
+                if health.category == CONTEXT_LENGTH_CATEGORY:
+                    window = candidate.context_tokens
+                    overflowed_at = window if overflowed_at is None else max(overflowed_at, window)
                 self.attempts.append((candidate.selector, health.category))
                 self.cache.record_failure(candidate, health, now=self.now())
                 self.event(
