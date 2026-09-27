@@ -509,7 +509,7 @@ class TestDynamicAssignment:
 
     ROWS = (
         row("cc/claude-opus-5", owned_by="claude"),  # tier 0 (frontier)
-        row("cc/claude-sonnet-5", owned_by="claude"),  # tier 2 (classifier default)
+        {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 2},  # declared
         row("cc/claude-haiku-5", owned_by="claude"),  # tier 3 (small)
     )
 
@@ -597,3 +597,16 @@ class TestDynamicAssignment:
         ladder, _ = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
         chosen, _ = ladder.select(TaskRequirements(), now=NOW)
         assert chosen is not None and chosen.route_id == "cx/gpt-5.4-alt"
+
+
+def test_unknown_capability_is_never_promoted_to_sufficient(tmp_path: Path) -> None:
+    """BOD-271: an unrecognized model is not silently medium tier."""
+    rows = [row("kr/mystery-model", owned_by="kiro")]
+    ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")])
+    medium = TaskRequirements(max_capability_tier=2)
+    chosen, verdicts = ladder.select(medium, now=NOW)
+    assert chosen is None
+    assert by_route(verdicts)["kr/mystery-model"].reason == "unknown_capability"
+    # Bounded work that accepts any tier may still use it.
+    chosen, _ = ladder.select(TaskRequirements(max_capability_tier=3), now=NOW)
+    assert chosen is not None and chosen.route_id == "kr/mystery-model"

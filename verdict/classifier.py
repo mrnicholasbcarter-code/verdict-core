@@ -74,5 +74,19 @@ def classify(model_id: str, overrides: dict[str, int] | None = None) -> int:
     return 2  # default to medium if unknown
 
 
+def classify_known(model_id: str, overrides: dict[str, int] | None = None) -> int | None:
+    """Like :func:`classify`, but ``None`` when no override or pattern matches.
+
+    Assignment (BOD-271) must keep unknown capability explicit instead of
+    silently treating an unrecognized model as medium tier.
+    """
+    if overrides and model_id in overrides:
+        return overrides[model_id]
+    raw = model_id.split("/", 1)[-1].lower()
+    if not any(_matches_any(raw, patterns) for patterns in CAPABILITY_PATTERNS.values()):
+        return None
+    return classify(model_id, overrides)
+
+
 def _matches_any(raw: str, patterns: list[str]) -> bool:
     return any(re.search(pattern, raw, re.IGNORECASE) for pattern in patterns)

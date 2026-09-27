@@ -393,7 +393,16 @@ class EligibilityLadder:
         if reason:
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, reason
             return a
-        a.tier = _capability_tier(row, route_id)
+        tier = _capability_tier(row, route_id)
+        if tier is None:
+            # Unknown capability is never promoted to sufficient. It only
+            # passes when the work accepts any tier, and then ranks as the
+            # least capable (no claimed slack beyond the floor).
+            if requirements.max_capability_tier < 3:
+                a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "unknown_capability"
+                return a
+            tier = 3
+        a.tier = tier
         if a.tier > requirements.max_capability_tier:
             # Insufficient for this work: dropped before ranking, however cheap.
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "insufficient_capability"
@@ -631,14 +640,17 @@ class EligibilityLadder:
         }
 
 
-def _capability_tier(row: Mapping[str, Any], route_id: str) -> int:
-    """Declared capability tier from inventory metadata, else the id classifier."""
+def _capability_tier(row: Mapping[str, Any], route_id: str) -> int | None:
+    """Declared capability tier from inventory metadata, else the id classifier.
+
+    ``None`` means unknown: neither the inventory nor the classifier knows it.
+    """
     declared = row.get("capability_tier")
     if isinstance(declared, int) and not isinstance(declared, bool) and 0 <= declared <= 3:
         return declared
-    from verdict.classifier import classify
+    from verdict.classifier import classify_known
 
-    return classify(route_id)
+    return classify_known(route_id)
 
 
 def _marginal_price(row: Mapping[str, Any]) -> float:
