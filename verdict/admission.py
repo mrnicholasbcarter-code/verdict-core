@@ -44,8 +44,8 @@ from typing import Any
 
 from verdict.capacity_models import CapacitySnapshot
 from verdict.subscription_headroom import (
-    subscription_observations,
     DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS,
+    subscription_observations,
 )
 
 GATEWAY_PREFIX = "omniroute/"
@@ -717,9 +717,19 @@ def _judge(
     active_workspaces = {str(c.get("workspace_id") or "") for c in active}
     active_workspaces.discard("")
     provider_obs = tuple(
-        o for o in provider_obs_all
-        if (o.account_id is None or o.account_id in active_accounts or (not active_accounts and len(active) == 1))
-        and (o.workspace_id is None or not o.workspace_id or o.workspace_id in active_workspaces or (not active_workspaces and len(active) == 1))
+        o
+        for o in provider_obs_all
+        if (
+            o.account_id is None
+            or o.account_id in active_accounts
+            or (not active_accounts and len(active) == 1)
+        )
+        and (
+            o.workspace_id is None
+            or not o.workspace_id
+            or o.workspace_id in active_workspaces
+            or (not active_workspaces and len(active) == 1)
+        )
         and (not markers or not o.pool_id or o.pool_id in markers or o.pool_id in route_id)
     )
     for obs in route_obs + provider_obs:
@@ -748,10 +758,16 @@ def _judge(
             return drop(
                 AdmissionStage.AVAILABLE,
                 obs.category
-                if obs.category in {
-                    "subscription_exhaustion", "subscription_unknown",
-                    "subscription_constrained", "rate_limit", "concurrency_limit",
-                    "provider_overload", "lockout", "payment",
+                if obs.category
+                in {
+                    "subscription_exhaustion",
+                    "subscription_unknown",
+                    "subscription_constrained",
+                    "rate_limit",
+                    "concurrency_limit",
+                    "provider_overload",
+                    "lockout",
+                    "payment",
                 }
                 else f"{obs.state}:{obs.category}",
                 obs.source,
@@ -764,15 +780,26 @@ def _judge(
     # Unknown subscription headroom is admitted only for bounded confirmation;
     # unrelated healthy route evidence cannot make it launchable.
     unknown_subscription = next(
-        (o for o in route_obs + provider_obs
-         if o.category == "subscription_unknown" or o.state == "unknown" and o.source.startswith("subscription_headroom:")),
+        (
+            o
+            for o in route_obs + provider_obs
+            if o.category == "subscription_unknown"
+            or (o.state == "unknown" and o.source.startswith("subscription_headroom:"))
+        ),
         None,
     )
     if unknown_subscription is not None:
         return AdmissionRecord(
-            route_id, provider, True, None, "subscription_unknown",
-            unknown_subscription.source, unknown_subscription.observed_at, "unknown",
-            unknown_subscription.until, unknown_subscription.reset_at,
+            route_id,
+            provider,
+            True,
+            None,
+            "subscription_unknown",
+            unknown_subscription.source,
+            unknown_subscription.observed_at,
+            "unknown",
+            unknown_subscription.until,
+            unknown_subscription.reset_at,
         )
 
     if required_capabilities or min_context_tokens:
@@ -848,7 +875,8 @@ def admit(
         # not a downstream advisory check.  Stale snapshots are omitted by the
         # projector and therefore cannot overwrite fresh route evidence.
         subscription_rows, subscription_sources = subscription_observations(
-            subscription_snapshots, now=now,
+            subscription_snapshots,
+            now=now,
             freshness_ttl_seconds=subscription_freshness_ttl_seconds,
         )
         subscription_evidence = RuntimeEvidence(

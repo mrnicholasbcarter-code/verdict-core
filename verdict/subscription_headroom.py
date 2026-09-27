@@ -13,8 +13,8 @@ from decimal import Decimal
 from typing import Any
 
 from verdict.capacity_models import CapacityFailureClass, CapacitySnapshot, ConnectionIdentity
-from verdict.headroom import UNKNOWN_HEADROOM, check_headroom
 from verdict.cost_ledger import _subscription_reserved, subscription_budgets
+from verdict.headroom import UNKNOWN_HEADROOM, check_headroom
 from verdict.models import ProviderConfig
 
 SUBSCRIPTION_SOURCE = "subscription_headroom"
@@ -46,9 +46,7 @@ def legacy_subscription_pool_key(identity: ConnectionIdentity) -> str:
 DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS = 300.0
 
 
-def _fresh(
-    snapshot: CapacitySnapshot, now: datetime, *, freshness_ttl_seconds: float
-) -> bool:
+def _fresh(snapshot: CapacitySnapshot, now: datetime, *, freshness_ttl_seconds: float) -> bool:
     deadline = snapshot.fresh_until
     if deadline is None:
         deadline = snapshot.observed_at + timedelta(seconds=freshness_ttl_seconds)
@@ -77,8 +75,10 @@ def _pool_reason(pool: Any, now: datetime) -> tuple[str, str, str | None]:
 
 
 def subscription_observations(
-    snapshots: Sequence[CapacitySnapshot], *, now: datetime,
-    freshness_ttl_seconds: float = DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS
+    snapshots: Sequence[CapacitySnapshot],
+    *,
+    now: datetime,
+    freshness_ttl_seconds: float = DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS,
 ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
     """Project fresh subscription snapshots to normalized observation dicts.
 
@@ -114,9 +114,10 @@ def subscription_observations(
                 state, category = "cooldown", "rate_limit"
             elif failure is CapacityFailureClass.CONCURRENCY_LIMIT:
                 state, category = "cooldown", "concurrency_limit"
-            elif failure is CapacityFailureClass.PROVIDER_OVERLOAD:
-                state, category = "cooldown", "provider_overload"
-            elif failure is CapacityFailureClass.PROVIDER_OUTAGE:
+            elif (
+                failure is CapacityFailureClass.PROVIDER_OVERLOAD
+                or failure is CapacityFailureClass.PROVIDER_OUTAGE
+            ):
                 state, category = "cooldown", "provider_overload"
             elif "payment" in error.message.lower() or "billing" in error.message.lower():
                 state, category = "unauthorized", "payment"

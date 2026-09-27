@@ -8,7 +8,12 @@ from decimal import Decimal
 from typing import Any
 
 from verdict.admission import AdmittedSet, RuntimeEvidence, admit
-from verdict.capacity_models import CapacityPool, CapacitySnapshot, ConnectionIdentity, EvidenceAuthority
+from verdict.capacity_models import (
+    CapacityPool,
+    CapacitySnapshot,
+    ConnectionIdentity,
+    EvidenceAuthority,
+)
 from verdict.cost_ledger import _subscription_reserved, subscription_budgets
 
 
@@ -35,12 +40,18 @@ def admit_with_subscription(
         if not provider or not account or key not in subscription_budgets:
             continue
         remaining = subscription_budgets[key] - _subscription_reserved.get(key, Decimal("0"))
-        snapshots.append(CapacitySnapshot(
-            identity=ConnectionIdentity(provider_id=provider, account_id=account, adapter_id="legacy-ledger"),
-            source_kind="local_history", authority=EvidenceAuthority.LOCAL_HISTORY,
-            observed_at=moment, fresh_until=moment + timedelta(seconds=300),
-            pools=(CapacityPool(key, status="exhausted" if remaining <= 0 else "available"),),
-        ))
+        snapshots.append(
+            CapacitySnapshot(
+                identity=ConnectionIdentity(
+                    provider_id=provider, account_id=account, adapter_id="legacy-ledger"
+                ),
+                source_kind="local_history",
+                authority=EvidenceAuthority.LOCAL_HISTORY,
+                observed_at=moment,
+                fresh_until=moment + timedelta(seconds=300),
+                pools=(CapacityPool(key, status="exhausted" if remaining <= 0 else "available"),),
+            )
+        )
     return admit(
         inventory_rows,
         connections,
