@@ -649,7 +649,12 @@ def _serve_gateway_lifecycle(
     start command. An injected ``probe`` opts into the report-only path: the
     caller supplied the transport, so the caller decides whether I/O happens.
     """
-    from verdict.gateway_lifecycle import ensure_gateway_ready, http_gateway_probe, inspect_gateway
+    from verdict.gateway_lifecycle import (
+        authenticated_gateway_probe,
+        ensure_gateway_ready,
+        inspect_gateway,
+    )
+    from verdict.provider_bootstrap import load_credential_store_env
 
     ensure = os.getenv("VERDICT_SERVE_ENSURE_GATEWAY", "false").lower() in {
         "1",
@@ -668,7 +673,30 @@ def _serve_gateway_lifecycle(
                 "VERDICT_SERVE_ENSURE_GATEWAY=true to ensure it at boot"
             ),
         }
-    probe_fn = probe if probe is not None else http_gateway_probe
+    if probe is not None:
+        probe_fn = probe
+    else:
+        # Match the CLI/doctor binding: resolve the key named by the provider
+        # binding for this gateway, preferring the exported environment and then
+        # the credential store.  Bind it to the lifecycle seam; never call the
+        # raw unauthenticated probe here.
+        names = [
+            binding.api_key_env
+            for binding in bootstrap.providers.values()
+            if getattr(binding, "api_key_env", None)
+            and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
+        ]
+        api_key: str | None = None
+        stored: dict[str, str] | None = None
+        for name in names:
+            api_key = (os.getenv(str(name)) or "").strip() or None
+            if api_key is None:
+                if stored is None:
+                    stored = load_credential_store_env()
+                api_key = (stored.get(str(name)) or "").strip() or None
+            if api_key is not None:
+                break
+        probe_fn = authenticated_gateway_probe(api_key)
     try:
         outcome = (
             ensure_gateway_ready(bootstrap, probe=probe_fn)

@@ -286,6 +286,36 @@ def test_serve_startup_report_stays_non_fatal_for_a_missing_gateway(
     assert report["gateway_lifecycle"]["ready"] is False
 
 
+def test_serve_probe_carries_the_configured_gateway_key_and_never_uses_raw_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Serve lifecycle binds the BOD-269 key even when no socket is present."""
+    _write_config()
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "serve-secret")
+    monkeypatch.setenv("VERDICT_SERVE_ENSURE_GATEWAY", "true")
+    seen: list[tuple[str, str | None]] = []
+
+    def authenticated(api_key: str | None, *, timeout: float = 2.0) -> Any:
+        def probe(url: str) -> gateway_lifecycle.GatewayHealth:
+            seen.append((url, api_key))
+            return CLOSED
+
+        return probe
+
+    monkeypatch.setattr(gateway_lifecycle, "authenticated_gateway_probe", authenticated)
+    monkeypatch.setattr(
+        gateway_lifecycle,
+        "http_gateway_probe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("serve must not use the raw unauthenticated probe")
+        ),
+    )
+    report = api.server_bootstrap_diagnostics()
+
+    assert report["gateway_lifecycle"]["probed"] is True
+    assert seen == [("http://127.0.0.1:29999/v1", "serve-secret")]
+
+
 def test_doctor_probe_carries_the_configured_gateway_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """doctor sends the gateway credential, so an auth-protected gateway reads healthy."""
     _write_config()

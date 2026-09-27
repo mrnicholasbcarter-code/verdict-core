@@ -636,9 +636,7 @@ def test_only_a_process_group_we_created_is_ever_signalled(monkeypatch: pytest.M
     assert signalled == [(-1, signal.SIGTERM)], "no killpg may be issued for an unowned group"
 
 
-def test_an_exited_leader_still_stops_its_recorded_group(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_an_exited_leader_still_stops_its_recorded_group(monkeypatch: pytest.MonkeyPatch) -> None:
     """An exited wrapper cannot justify skipping cleanup of its owned group."""
     signals: list[tuple[int, int]] = []
     group_alive = True
@@ -656,7 +654,6 @@ def test_an_exited_leader_still_stops_its_recorded_group(
         signals.append((pgid, number))
         if number == signal.SIGTERM:
             group_alive = False
-
 
     class ExitedLeader:
         pid = 7778
