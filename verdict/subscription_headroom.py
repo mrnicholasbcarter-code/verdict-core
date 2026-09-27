@@ -7,7 +7,7 @@ runtime observations consumed by ``verdict.admission.admit``.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -68,9 +68,7 @@ def _pool_reason(pool: Any, now: datetime) -> tuple[str, str, str | None]:
     }.get(status, "subscription_unknown")
     until = pool.cooldown_until
     if until is None and pool.retry_after_seconds is not None:
-        until = now.replace(microsecond=0) + __import__("datetime").timedelta(
-            seconds=pool.retry_after_seconds
-        )
+        until = now.replace(microsecond=0) + timedelta(seconds=pool.retry_after_seconds)
     return status, category, _iso(until)
 
 
@@ -125,9 +123,7 @@ def subscription_observations(
                 continue
             until = None
             if error.retry_after_seconds is not None:
-                until = _iso(
-                    moment + __import__("datetime").timedelta(seconds=error.retry_after_seconds)
-                )
+                until = _iso(moment + timedelta(seconds=error.retry_after_seconds))
             observations.append(
                 {
                     "key": key,
@@ -261,57 +257,12 @@ def subscription_headroom_pct(identity: ConnectionIdentity, pool_key: str) -> fl
     )
 
 
-def legacy_subscription_observations(
-    inventory_rows: Sequence[Mapping[str, Any]],
-    connections: Sequence[Mapping[str, Any]],
-    *,
-    now: datetime,
-) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
-    """Project process-wide legacy budgets into canonical observations."""
-    moment = _utc(now)
-    out: list[dict[str, Any]] = []
-    sources: list[str] = []
-    seen: set[str] = set()
-    for row in inventory_rows:
-        owned = str(row.get("owned_by") or row.get("provider") or "")
-        provider = owned.split("/", 1)[0]
-        if not provider:
-            continue
-        conn = next(
-            (c for c in connections if str(c.get("provider", "")).lower() == provider.lower()), {}
-        )
-        account = str(conn.get("account_id") or "")
-        key = f"{provider}/{account}/subscription"
-        if not account or key in seen or key not in subscription_budgets:
-            continue
-        seen.add(key)
-        budget = subscription_budgets[key]
-        reserved = _subscription_reserved.get(key, Decimal("0"))
-        remaining = budget - reserved
-        state = "exhausted" if remaining <= 0 else "healthy"
-        category = "subscription_exhaustion" if state == "exhausted" else "subscription_available"
-        source = f"{SUBSCRIPTION_SOURCE}:legacy:{key}"
-        sources.append(source)
-        out.append(
-            {
-                "key": f"provider:{provider.lower()}",
-                "state": state,
-                "category": category,
-                "source": source,
-                "observed_at": _iso(moment),
-                "pool_id": key,
-            }
-        )
-    return out, tuple(sources)
-
-
 __all__ = [
     "DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS",
     "SUBSCRIPTION_SOURCE",
     "UNKNOWN_HEADROOM",
     "check_headroom_subscription",
     "is_subscription_exhausted",
-    "legacy_subscription_observations",
     "legacy_subscription_pool_key",
     "subscription_headroom_pct",
     "subscription_observations",

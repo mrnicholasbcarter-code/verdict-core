@@ -413,19 +413,16 @@ class AdmittedSet:
     def launchable(self, route_id: str) -> bool:
         """Launch gate: proven healthy, or confirmed live for this exact route.
 
-        Unknown/constrained subscription headroom is fail-closed by default,
-        but a successful bounded confirmation (``record_confirmation``) for
-        this exact route clears it, per the documented UNKNOWN_HEADROOM
-        contract: unknown headroom requires bounded confirmation, not a
-        permanent block.
+        Unknown subscription headroom is fail-closed by default, but a
+        successful bounded confirmation (``record_confirmation``) for this
+        exact route clears it, per the documented UNKNOWN_HEADROOM contract:
+        unknown headroom requires bounded confirmation, not a permanent
+        block.
         """
         record = self.record_for(route_id)
         if record is None or not record.admitted:
             return False
-        if (
-            record.reason in {"subscription_unknown", "subscription_constrained"}
-            and record.confirmation_source is None
-        ):
+        if record.reason == "subscription_unknown" and record.confirmation_source is None:
             return False
         return record.health == "healthy" or record.confirmation_source is not None
 
@@ -789,7 +786,6 @@ def _judge(
                 in {
                     "subscription_exhaustion",
                     "subscription_unknown",
-                    "subscription_constrained",
                     "rate_limit",
                     "concurrency_limit",
                     "provider_overload",
