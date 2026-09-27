@@ -339,8 +339,31 @@ def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
     else:
         found = [e for e in events if e.type == "review"]
         source = found[-1].data if found else None
+    # BOD-224: every reviewer attempt, not only the final one. Additive key;
+    # older runs without review_attempt events get an empty list.
+    attempts = [
+        {
+            key: e.data.get(key)
+            for key in (
+                "attempt",
+                "route_id",
+                "status",
+                "category",
+                "scope",
+                "cooldown_seconds",
+                "duration_seconds",
+                "detail",
+            )
+            if e.data.get(key) is not None
+        }
+        for e in events
+        if e.type == "review_attempt"
+    ]
+    # Only present when attempts were recorded, so receipts written before this
+    # field existed recompute byte-for-byte and still verify.
+    extra: dict[str, Any] = {"attempts": attempts} if attempts else {}
     if source is None:
-        return {"status": "MISSING", "reviewer": "", "route_id": "", "blocking": 0}
+        return {"status": "MISSING", "reviewer": "", "route_id": "", "blocking": 0, **extra}
     findings = source.get("findings")
     raw_blocking = source.get("blocking")
     if isinstance(findings, list):
@@ -360,6 +383,7 @@ def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
         "reviewer": str(source.get("reviewer", "")),
         "route_id": str(source.get("route_id", "")),
         "blocking": blocking,
+        **extra,
     }
 
 

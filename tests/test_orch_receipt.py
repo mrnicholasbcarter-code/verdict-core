@@ -368,3 +368,36 @@ def test_attempt_without_terminal_from_dead_controller_is_abandoned(tmp_path: Pa
     node_a = next(n for n in receipt["nodes"] if n["node_id"] == "a")
     outcomes = {a["attempt"]: a["outcome"] for a in node_a["attempts"]}
     assert outcomes[3] == "abandoned" and outcomes[4] == "success"
+
+
+def test_receipt_review_lists_every_reviewer_attempt(tmp_path: Path) -> None:
+    """BOD-224: the receipt shows all reviewer attempts, not only the final one."""
+    from verdict.orchestration.receipt import build_run_receipt
+
+    run_dir = _run(tmp_path, review=PASS)
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit(
+        "review_attempt",
+        attempt=1,
+        route_id="cc/stuck",
+        status="ERROR",
+        category="timeout",
+        scope="route",
+        cooldown_seconds=120,
+        duration_seconds=300.0,
+        detail="ocr review timed out: no progress for 300s",
+    )
+    log.emit("review_attempt", attempt=2, route_id="gm/gemini-3", status="PASS", category="")
+    review = build_run_receipt(run_dir)["review"]
+    assert review["status"] == "PASS" and review["route_id"] == "gm/gemini-3"
+    assert [a["route_id"] for a in review["attempts"]] == ["cc/stuck", "gm/gemini-3"]
+    assert review["attempts"][0]["category"] == "timeout"
+    assert review["attempts"][0]["duration_seconds"] == 300.0
+
+
+def test_receipt_review_without_attempts_is_unchanged(tmp_path: Path) -> None:
+    """Receipts from runs with no review_attempt events keep their exact shape."""
+    from verdict.orchestration.receipt import build_run_receipt
+
+    review = build_run_receipt(_run(tmp_path, review=PASS))["review"]
+    assert "attempts" not in review

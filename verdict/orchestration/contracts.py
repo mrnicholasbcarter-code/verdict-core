@@ -406,6 +406,8 @@ EVENT_TYPES = frozenset(
         "understand",
         "plan_started",
         "plan_ready",
+        "plan_repair_started",  # planner asked the same route to fix an invalid plan
+        "plan_repair_terminal",
         "hydrate",
         "topology",
         "eligibility",
@@ -424,6 +426,9 @@ EVENT_TYPES = frozenset(
         "remediation",
         "controller",
         "decision_signals",  # SHADOW decision signals
+        "review_attempt",  # BOD-224: one per reviewer attempt
+        "repack",  # BOD-272: context budget shrunk after a context-length overflow
+        "rehydrate",  # BOD-272: same-route retry with failing verification evidence
         "run_finished",
     }
 )
