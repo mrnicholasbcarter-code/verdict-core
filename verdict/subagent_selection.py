@@ -48,6 +48,10 @@ class WorkerTask:
     frontier_worthy: bool = False
     allowed_route_prefixes: frozenset[str] = field(default_factory=frozenset)
     excluded_route_ids: frozenset[str] = field(default_factory=frozenset)
+    # BOD-271 sufficiency floor on the classifier scale (0 = frontier ... 3 =
+    # small). Routes above it, or of unknown capability when it is < 3, are
+    # hard-dropped before ranking. 3 (default) accepts any tier.
+    max_capability_tier: int = 3
 
     @property
     def allow_frontier(self) -> bool:
@@ -367,6 +371,24 @@ def worker_candidate_exclusion_reason(task: WorkerTask, route_id: str) -> str | 
     return None
 
 
+def worker_capability_gap(task: WorkerTask, route_id: str) -> str | None:
+    """Why ``route_id`` is insufficient for ``task``, or ``None`` if it is sufficient."""
+    from verdict.classifier import classify_known
+
+    tier = classify_known(route_id.removeprefix("omniroute/"))
+    if tier is None:
+        return None if task.max_capability_tier >= 3 else "unknown_capability"
+    return None if tier <= task.max_capability_tier else f"insufficient_capability:tier{tier}"
+
+
+def _capability_slack(task: WorkerTask, route_id: str) -> int:
+    """Tiers of capability beyond the task's floor; unknown ranks after every known."""
+    from verdict.classifier import classify_known
+
+    tier = classify_known(route_id.removeprefix("omniroute/"))
+    return 4 if tier is None else task.max_capability_tier - tier
+
+
 def eligible_worker_candidates(
     task: WorkerTask,
     inventory_rows: Iterable[Mapping[str, Any]],
@@ -390,6 +412,7 @@ def eligible_worker_candidates(
                     require_admission=require_admission,
                 )
                 if worker_candidate_exclusion_reason(task, item.route_id) is None
+                and worker_capability_gap(task, item.route_id) is None
                 and required <= item.capabilities
                 and item.context_tokens >= task.min_context_tokens
                 and (task.allow_frontier or not item.is_frontier)
@@ -606,6 +629,8 @@ def _rank_key(candidate: LaunchCandidate, task: WorkerTask) -> tuple[Any, ...]:
     suitability = candidate.coding_score if task.coding else candidate.reasoning_score
     return (
         CAPACITY_CLASS_ORDER.index(capacity_class(candidate)),
+        # BOD-271: cheapest SUFFICIENT first; extra capability is not a bonus.
+        _capability_slack(task, candidate.route_id),
         -suitability,
         candidate.input_cost + candidate.output_cost,
         1 if candidate.is_frontier else 0,
