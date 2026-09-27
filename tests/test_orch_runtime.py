@@ -991,3 +991,51 @@ async def test_sibling_failure_cools_provider_before_waiting_node_dispatches(rep
     # Both nodes complete on the other provider with the same node contract.
     assert {n: r.route_id for n, r in result.nodes.items()} == {"a": "kr/c", "b": "kr/c"}
     assert {c[0] for c in ex.calls if c[1] == "kr/c"} == {"a", "b"}
+
+
+async def test_context_overflow_repacks_and_retries_the_same_route_once(repo: Path) -> None:
+    """BOD-272: an overflow shrinks the pack; the same route gets ONE smaller retry."""
+    budgets: list[int] = []
+
+    def hydrate(n: WorkNode, cwd: Path, *, context_budget_bytes: int = 60_000) -> str:
+        budgets.append(context_budget_bytes)
+        return f"{n.node_id}: {n.objective}"
+
+    class Overflow(Executor):
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            if len(budgets) == 1:
+                self.calls.append((prompt.split(":", 1)[0], route_id))
+                return WorkerTerminal(
+                    ok=False, model=route_id, status_code=400, error="[400]: Input is too long."
+                )
+            return await super().run(
+                prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            )
+
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    events, selector, ex = Events(), Selector(["cc/s", "cx/g"]), Overflow({})
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=WorkGraph("g", (node("a"),)),
+        selector=selector,
+        executor=ex,
+        classifier=FailureIntelligence(),
+        events=events,
+        prompt_for=hydrate,
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(),
+        now=lambda: NOW,
+    )
+    result = await rt.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert budgets == [60_000, 30_000]
+    assert [c[1] for c in ex.calls] == ["cc/s", "cc/s"]
+    repack = events.of("repack", "a")[0]
+    assert (repack["from_budget_bytes"], repack["to_budget_bytes"]) == (60_000, 30_000)
+    assert [e["budget_bytes"] for e in events.of("hydrate", "a")] == [60_000, 30_000]
+    assert events.of("cooldown", "a") == []

@@ -18,6 +18,7 @@ Isolation guarantees:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import shutil
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -48,6 +49,7 @@ from verdict.orchestration.contracts import (
     route_family,
     route_provider,
 )
+from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 # Indirection for testing
 _sleep = asyncio.sleep
@@ -93,6 +95,11 @@ class RuntimePolicy:
     require_review: bool = True
     max_review_rounds: int = 2
     max_cooldown_wait_seconds: float = 120.0
+    # BOD-272: REQUIRED_CONTEXT byte budget for a node's worker prompt. After a
+    # context-length overflow the next attempt gets a smaller pack (halved, not
+    # below the floor) instead of a blind replay of the oversized request.
+    context_budget_bytes: int = 60_000
+    min_context_budget_bytes: int = 4_000
 
 
 @dataclass
@@ -104,6 +111,11 @@ class NodeRun:
     history: list[dict[str, Any]] = field(default_factory=list)
     commit: str = ""
     reason: str = ""
+    # BOD-272: REQUIRED_CONTEXT byte budget for this node's next attempt
+    # (0 = RuntimePolicy.context_budget_bytes). Shrinks after a context overflow.
+    context_budget: int = 0
+    # Routes already retried once with a smaller pack after an overflow.
+    repacked_routes: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -497,6 +509,20 @@ class DagRuntime:
             if failures and failures[-1].action == "RETRY_INFRA":
                 # Gateway-local transient: same route is still healthy; wait and retry.
                 await asyncio.sleep(min(failures[-1].cooldown_seconds, 60.0))
+            elif failures and failures[-1].category == CONTEXT_LENGTH_CATEGORY:
+                # BOD-272: the request, not the route, was too large. Shrink the
+                # pack for every later attempt. Retry the SAME route at most once,
+                # and only when the prompt can actually get smaller; otherwise
+                # move on, so one route cannot burn the whole attempt budget.
+                shrunk = self._repack(run)
+                if (
+                    shrunk
+                    and self._hydrator_takes_budget()
+                    and run.route_id not in run.repacked_routes
+                ):
+                    run.repacked_routes.add(run.route_id)
+                else:
+                    tried.add(run.route_id)
             else:
                 tried.add(run.route_id)
             if failures and failures[-1].action == "BLOCK":
@@ -576,6 +602,36 @@ class DagRuntime:
         )
         self._set(run, NodeState.VALIDATED, commit=base)
 
+    def _hydrator_takes_budget(self) -> bool:
+        try:
+            return "context_budget_bytes" in inspect.signature(self.prompt_for).parameters
+        except (TypeError, ValueError):
+            return False
+
+    def _prompt(self, node: WorkNode, worktree: Path, budget: int) -> str:
+        """Hydrate the node prompt; pass the byte budget when the hydrator takes one."""
+        if self._hydrator_takes_budget():
+            hydrate: Any = self.prompt_for
+            return str(hydrate(node, worktree, context_budget_bytes=budget))
+        return self.prompt_for(node, worktree)
+
+    def _repack(self, run: NodeRun) -> bool:
+        """Halve the node's context budget after an overflow. False once at the floor."""
+        current = run.context_budget or self.policy.context_budget_bytes
+        smaller = max(self.policy.min_context_budget_bytes, current // 2)
+        if smaller >= current:
+            return False
+        run.context_budget = smaller
+        self.events.emit(
+            "repack",
+            run.node.node_id,
+            reason=CONTEXT_LENGTH_CATEGORY,
+            from_budget_bytes=current,
+            to_budget_bytes=smaller,
+            attempt=run.attempt,
+        )
+        return True
+
     async def _attempt(self, run: NodeRun, failures: list[FailureClassification]) -> bool | None:
         """Run one attempt. ``None`` means revoked before dispatch (nothing ran)."""
         node = run.node
@@ -612,7 +668,8 @@ class DagRuntime:
                     capacity_class=self._capacity.get(node.node_id, "unknown"),
                 )
                 self._set(run, NodeState.RUNNING)
-                prompt = self.prompt_for(node, worktree)
+                budget = run.context_budget or self.policy.context_budget_bytes
+                prompt = self._prompt(node, worktree, budget)
                 prompt_bytes = len(prompt.encode())
                 self.events.emit(
                     "hydrate",
@@ -620,7 +677,7 @@ class DagRuntime:
                     context_files=list(node.required_context),
                     prompt_bytes=prompt_bytes,
                     truncated="[truncated" in prompt.lower(),
-                    budget_bytes=60_000,
+                    budget_bytes=budget,
                 )
                 terminal = await self._execute(prompt, run.route_id, worktree)
             finally:
