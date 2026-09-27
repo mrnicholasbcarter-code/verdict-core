@@ -22,6 +22,7 @@ from verdict.admission import AdmittedSet, active_controller_route, load_live_ad
 from verdict.availability import (
     AvailabilityCandidate,
     AvailabilityReport,
+    AvailabilityState,
     CandidateRequirements,
     OmniRouteAvailabilityAdapter,
     StaticOmniRouteTransport,
@@ -160,6 +161,19 @@ def admitted_worker_candidates(
         for candidate in availability.eligible
         if not require_usage_evidence or _has_measured_usage(candidate)
     }
+    if not require_usage_evidence:
+        # A route whose ONLY shortfall is that the gateway reported no health
+        # for it may enter the PRE-PROBE pool (documented intent below and in
+        # BOD-262): it is not launchable yet. Canonical admission marks it
+        # unconfirmed and WorkerController runs the bounded live confirmation
+        # probe for that exact route before any spawn. Any measured problem
+        # (quota, rate limit, auth, lockout, circuit, cooldown) stays excluded.
+        admitted_ids |= {
+            candidate.model.id
+            for candidate in availability.candidates
+            if candidate.state is AvailabilityState.UNKNOWN
+            and candidate.reasons == ("health unknown",)
+        }
     narrowed = [
         row
         for row in inventory_rows
