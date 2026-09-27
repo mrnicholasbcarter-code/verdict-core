@@ -185,3 +185,44 @@ def test_worker_task_config_fences_active_controller_and_normalizes_sets(monkeyp
     assert task.required_capabilities == frozenset({"tools"})
     assert task.allowed_route_prefixes == frozenset({"cc/", "kr/"})
     assert "cc/claude-fable-5-1" in task.excluded_route_ids
+
+
+def test_unknown_health_enters_preprobe_pool_under_protected_worker_requirements() -> None:
+    """Regression: the gateway health endpoint reports no per-route health.
+
+    With protected worker requirements every route was 'health unknown' and
+    the worker runtime FAIL_CLOSED before probing anything, although the
+    documented contract is: unknown may enter the pre-probe pool, the exact
+    confirmation probe decides launch. Measured problems stay excluded.
+    """
+    rows = _catalog("kr/unknown", "kr/exhausted")["data"]
+    assert isinstance(rows, list)
+    report = OmniRouteAvailabilityAdapter(
+        StaticOmniRouteTransport(
+            {"data": rows},
+            {
+                **_runtime(**{"kr/exhausted": {"quota_remaining_pct": 0.0}}),
+                # The live gateway reports no per-route health for this route.
+                "kr/unknown": {
+                    "observed_at": NOW.isoformat(),
+                    "ttl_seconds": 60,
+                    "source": "fixture",
+                },
+            },
+        )
+    ).evaluate(worker_runtime._worker_requirements(WorkerTask()), now=NOW)
+    assert report.eligible == ()  # protected: nothing is eligible without evidence
+    task = WorkerTask(allowed_route_prefixes=frozenset({"kr/"}))
+    candidates = worker_runtime.admitted_worker_candidates(
+        task,
+        rows,
+        ["omniroute/kr/unknown", "omniroute/kr/exhausted"],
+        report,
+        require_usage_evidence=False,
+    )
+    assert {c.route_id for c in candidates} == {"kr/unknown"}
+    # With usage evidence required, unknown health is still not admitted.
+    strict = worker_runtime.admitted_worker_candidates(
+        task, rows, ["omniroute/kr/unknown"], report, require_usage_evidence=True
+    )
+    assert strict == ()
