@@ -564,6 +564,46 @@ def _run_g73(evidence_dir: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_g73_passes_with_stale_verdict_on_path(tmp_path: Path) -> None:
+    """G7.3: the producer certifies the in-tree CLI, not whatever `verdict` is on PATH.
+
+    A shim `verdict` that always exits 2 is put first on PATH. If the producer
+    resolved the binary from PATH it would report FAIL for every subcommand.
+    """
+    import os
+
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "verdict"
+    shim.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    shim.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = f"{shim_dir}{os.pathsep}{env.get('PATH', '')}"
+    evidence_dir = tmp_path / "evidence"
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "produce_readme_verification.py"),
+            "--evidence-dir",
+            str(evidence_dir),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).parent.parent),
+        env=env,
+    )
+    assert r.returncode == 0, f"Producer must not depend on PATH verdict: {r.stderr}\n{r.stdout}"
+    log = (evidence_dir / "readme_verification.log").read_text()
+    assert "FAIL: 0" in log, log
+
+
+def test_g73_does_not_shell_out_to_bare_verdict() -> None:
+    """G7.3: the producer never invokes a bare `verdict` argv (PATH-resolved binary)."""
+    script_text = (SCRIPTS / "produce_readme_verification.py").read_text()
+    assert '"verdict",' not in script_text, "producer must use sys.executable -m verdict.cli"
+    assert "sys.executable" in script_text and '"verdict.cli"' in script_text
+
+
 def test_g73_creates_log(tmp_path: Path) -> None:
     """G7.3: readme_verification.log is created."""
     r = _run_g73(tmp_path)

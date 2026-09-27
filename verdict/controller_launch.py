@@ -1,14 +1,14 @@
-"""BOD-156: Verdict-selected Prime controller launch contracts and verification.
+"""Verdict-selected Prime controller launch contracts and verification.
 
 This module owns immutable controller-launch contracts and the fail-closed
 assembly/validation/observed-identity seam used by the supervisor.
 
 Authority boundaries (unchanged):
-- BOD-104 remains final automatic execution-path authority.
-- BOD-142/143/119/144 remain eligibility, ContextPlan, continuity, and receipt
+- ``optimize_execution_path`` remains final automatic execution-path authority.
+- Eligibility, ContextPlan, session continuity, and routing receipts remain
   authorities outside this module's synthesis role.
 - Automatic mode never synthesizes live eligibility or offers here. It requires
-  an already authoritative persisted BOD-104-based decision and a pre-launch
+  an already authoritative persisted execution-path decision and a pre-launch
   persisted RoutingReceiptV1 reference.
 - Explicit override requires both provider and model and records provenance.
 - No hidden fallback, no ``auto/*``, no opaque/default identities.
@@ -623,7 +623,7 @@ def verify_observed_controller_identity(
 
 @dataclass(frozen=True)
 class PersistedAuthoritativeDecision:
-    """Already-authoritative BOD-104 decision + pre-launch receipt reference.
+    """Already-authoritative execution-path authority decision + pre-launch receipt reference.
 
     Automatic mode consumes this; it does not synthesize eligibility or offers.
     """
@@ -687,7 +687,7 @@ def decide_controller_launch(
     """Assemble a ControllerLaunchDecision fail-closed.
 
     Automatic mode (override is None):
-      Requires an already authoritative persisted BOD-104-based decision and a
+      Requires an already authoritative persisted execution-path decision and a
       pre-launch persisted receipt reference. Does **not** synthesize live
       eligibility or offers.
 

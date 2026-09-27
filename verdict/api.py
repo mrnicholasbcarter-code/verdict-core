@@ -5,14 +5,17 @@ import codecs
 import hashlib
 import ipaddress
 import json
+import logging
 import os
-from collections.abc import AsyncIterator
+import sys
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -25,6 +28,7 @@ except ImportError as exc:
     ) from exc
 
 from verdict import __version__
+from verdict.admission import AdmittedSet
 from verdict.availability import OmniRouteAvailabilityAdapter
 from verdict.availability_cache import AvailabilityCache
 from verdict.catalog import configured_catalog_filters, normalize_catalog
@@ -39,7 +43,7 @@ from verdict.effective_capability import (
     TaskSlice,
     VerificationStrategy,
 )
-from verdict.eligibility import EligibilityGate
+from verdict.eligibility import EligibilityGate, allow_unverified_dev_from_env
 from verdict.evidence import (
     AmbiguousEvidenceSelectorError,
     DurableEvidenceStore,
@@ -381,18 +385,87 @@ class ModelPassportStore:
         return fresh
 
 
+logger = logging.getLogger("verdict.api")
+
 # Singleton service instances
 intelligence_instance: IntelligenceService | None = None
 gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
+# Optional canonical live admission for relay attempts. When set, the selected
+# model and every alternative must be inside the admitted set; a provider error
+# fails the relay closed (503) instead of falling back to catalog truth.
+relay_admission_provider: Callable[[], AdmittedSet] | None = None
+
+
+class CachedRelayAdmission:
+    """Bounded cache for relay admission; ``get`` is strictly network-free.
+
+    Refresh is an explicit lifecycle action. A stale or failed cache therefore
+    fails closed rather than causing a request-time gateway GET or accepting an
+    old admitted set as indefinite authority.
+    """
+
+    def __init__(self, refresh: Callable[[], AdmittedSet], *, ttl_seconds: float = 60.0) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("relay admission TTL must be positive")
+        self._refresh = refresh
+        self._ttl = timedelta(seconds=ttl_seconds)
+        self._value: AdmittedSet | None = None
+        self._expires_at: datetime | None = None
+        self.last_refresh_failure: str | None = None
+
+    def refresh(self, *, now: datetime | None = None) -> AdmittedSet:
+        current = now or datetime.now(timezone.utc)
+        try:
+            value = self._refresh()
+        except Exception as exc:
+            self.last_refresh_failure = type(exc).__name__
+            raise
+        self._value = value
+        self._expires_at = current + self._ttl
+        self.last_refresh_failure = None
+        return value
+
+    def get(self, *, now: datetime | None = None) -> AdmittedSet:
+        current = now or datetime.now(timezone.utc)
+        if self._value is None:
+            raise RuntimeError("relay_admission_cache_empty")
+        if self._expires_at is None or current > self._expires_at:
+            raise RuntimeError("relay_admission_cache_stale")
+        return self._value
+
+
 availability_cache_instance: AvailabilityCache | None = None
 eligibility_gate_instance: EligibilityGate | None = None
 evidence_store_instance: EvidenceStore | DurableEvidenceStore | None = None
 guidance_plane_instance: GuidanceControlPlane | None = None
 model_passport_store_instance: ModelPassportStore | None = None
+#: Startup bootstrap classification recorded by ``lifespan``.
+server_bootstrap_report: dict[str, Any] | None = None
 
 DEFAULT_AVAILABILITY_TTL_SECONDS = 60
 DEFAULT_AVAILABILITY_STALE_WINDOW_SECONDS = 30
+
+
+def _normalize_omniroute_loopback(base_url: str) -> str:
+    """Rewrite an ``http://localhost[:port]`` OmniRoute URL to a loopback IP literal.
+
+    ``localhost`` is semantically identical to ``127.0.0.1`` for a local
+    OmniRoute deployment, but :class:`OmniRouteHTTPTransport` requires an IP
+    literal for plain HTTP destinations (verdict/omniroute.py).  Only the
+    ``localhost`` hostname over plain HTTP is rewritten; every other rule the
+    transport enforces (allow-listed https hosts, IPv6 ``[::1]``, path shape)
+    is left untouched.
+    """
+    stripped = base_url.strip()
+    parsed = urlsplit(stripped)
+    if parsed.scheme.lower() != "http":
+        return stripped
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if hostname != "localhost" or parsed.username or parsed.password:
+        return stripped
+    netloc = "127.0.0.1" if parsed.port is None else f"127.0.0.1:{parsed.port}"
+    return urlunsplit(parsed._replace(netloc=netloc))
 
 
 def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | None:
@@ -400,12 +473,26 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
 
     Returns ``None`` when no OmniRoute endpoint is configured, so the server
     still boots without availability explainability.  The transport is
-    loopback-only and credential-safe; a misconfigured base URL fails closed
-    to ``None`` rather than crashing startup.
+    loopback-only and credential-safe.
+
+    A configured but invalid ``OMNIROUTE_BASE_URL`` raises ``RuntimeError`` so
+    startup fails closed.  The ``LLMGATE_UPSTREAM_BASE_URL`` fallback is
+    different: it is a direct-upstream proxy setting, not an OmniRoute
+    endpoint, so a value the transport rejects (e.g. a public https host with
+    no OmniRoute semantics) degrades to no availability cache with a logged
+    warning instead of failing startup.
     """
-    base_url = os.getenv("OMNIROUTE_BASE_URL") or os.getenv("LLMGATE_UPSTREAM_BASE_URL")
+    omniroute_url = os.getenv("OMNIROUTE_BASE_URL")
+    fallback_url = os.getenv("LLMGATE_UPSTREAM_BASE_URL")
+    base_url = omniroute_url or fallback_url
     if not base_url or base_url.strip().lower() in {"", "none"}:
         return None
+    is_omniroute_configured = bool(
+        omniroute_url and omniroute_url.strip().lower() not in {"", "none"}
+    )
+    normalized_url = (
+        _normalize_omniroute_loopback(base_url) if is_omniroute_configured else base_url
+    )
     api_key = os.getenv("OMNIROUTE_API_KEY")
     management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
     usage_api_key_id = os.getenv("OMNIROUTE_USAGE_API_KEY_ID")
@@ -416,14 +503,34 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
     }
     try:
         transport = OmniRouteHTTPTransport(
-            base_url,
+            normalized_url,
             api_key=api_key,
             management_token=management_token,
             usage_api_key_id=usage_api_key_id,
             allow_private_hosts=allow_private,
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        if not is_omniroute_configured:
+            # LLMGATE_UPSTREAM_BASE_URL is a direct-upstream proxy setting, not
+            # an OmniRoute endpoint. A value OmniRoute's transport rejects is
+            # not a misconfigured OmniRoute; degrade to no availability cache
+            # rather than failing startup closed.
+            logger.warning(
+                "LLMGATE_UPSTREAM_BASE_URL is not usable as an OmniRoute "
+                "availability endpoint (%s: %s); continuing without the "
+                "availability cache and eligibility gate.",
+                type(exc).__name__,
+                exc,
+            )
+            return None
+        # OMNIROUTE_BASE_URL is set but invalid: fail startup closed rather
+        # than silently serving routing without the eligibility gate.
+        hint = ""
+        if isinstance(exc, ValueError) and "IP literal" in str(exc):
+            hint = " (use a loopback IP literal such as http://127.0.0.1:20128)"
+        raise RuntimeError(
+            f"invalid OmniRoute configuration: {type(exc).__name__}: {exc}{hint}"
+        ) from exc
     adapter: OmniRouteAvailabilityAdapter = OmniRouteAvailabilityAdapter(transport)
     # Issue #57 root cause: enrich the adapter with bounded live probes when the
     # production availability profile is enabled.  Reuses ProbeRunner + the
@@ -455,7 +562,11 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
     )
     from verdict.eligibility import EligibilityGate
 
-    gate = EligibilityGate(cache.get, protected_fail_closed=True, allow_unverified_in_dev=True)
+    gate = EligibilityGate(
+        cache.get,
+        protected_fail_closed=True,
+        allow_unverified_in_dev=allow_unverified_dev_from_env(),
+    )
     return cache, gate
 
 
@@ -477,7 +588,12 @@ def _openai_compatible_upstream_base(raw: str) -> str:
 
 
 def _resolve_upstream_base_url() -> str:
-    """Prefer explicit llmgate upstream, else OmniRoute via ``OMNIROUTE_BASE_URL``."""
+    """Prefer explicit llmgate upstream, else OmniRoute via ``OMNIROUTE_BASE_URL``.
+
+    The built-in default is a last resort and is reported by
+    :func:`server_bootstrap_diagnostics` as a ``default`` source, never applied
+    silently.
+    """
     explicit = (os.getenv("LLMGATE_UPSTREAM_BASE_URL") or "").strip()
     if explicit:
         return explicit
@@ -485,6 +601,159 @@ def _resolve_upstream_base_url() -> str:
     if omni:
         return _openai_compatible_upstream_base(omni)
     return DEFAULT_UPSTREAM_BASE_URL
+
+
+def _upstream_base_url_source() -> str:
+    """Name the bootstrap source that supplied the upstream base URL."""
+    if (os.getenv("LLMGATE_UPSTREAM_BASE_URL") or "").strip():
+        return "environment"
+    if (os.getenv("OMNIROUTE_BASE_URL") or "").strip():
+        return "environment"
+    return "default"
+
+
+def server_bootstrap_diagnostics(
+    *, gateway_probe: Callable[[str], Any] | None = None
+) -> dict[str, Any]:
+    """Classify serve-path startup configuration via the shared contract.
+
+    Separates configuration failure from gateway health and from model
+    eligibility, so an operator reading startup output can tell which of the
+    three went wrong. Never fatal: the serve path admits candidates at request
+    time (an empty provider map is the documented serve posture), so this
+    records and reports rather than refusing to boot. No gateway is started.
+
+    ``gateway_probe`` is the readiness seam. It is called at most once, and only
+    when the readiness report is actually requested: with both lifecycle opt-ins
+    off there is no gateway I/O at all, so this function stays exactly as
+    offline as it was before the lifecycle landed. Tests pass a fake.
+    """
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        redact_url,
+        resolve_provider_bootstrap,
+    )
+
+    upstream_source = _upstream_base_url_source()
+    report: dict[str, Any] = {
+        "upstream_base_url": redact_url(_resolve_upstream_base_url()),
+        "upstream_base_url_source": upstream_source,
+        "diagnostics": [],
+    }
+    if upstream_source == "default":
+        report["diagnostics"].append(
+            {
+                "code": "default_upstream_base_url",
+                "class": "configuration",
+                "field": "LLMGATE_UPSTREAM_BASE_URL",
+                "source": "default",
+                "detail": (
+                    f"no upstream configured; using the built-in default "
+                    f"{DEFAULT_UPSTREAM_BASE_URL}"
+                ),
+                "remediation": "set LLMGATE_UPSTREAM_BASE_URL or OMNIROUTE_BASE_URL",
+                "fatal": False,
+            }
+        )
+    try:
+        bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
+    except BootstrapError as exc:
+        report["status"] = "configuration_incomplete"
+        report["gateway_required"] = False
+        report["gateway_url"] = None
+        report["diagnostics"].extend(exc.to_dict()["diagnostics"])
+        return report
+    report["status"] = "ok"
+    report["gateway_required"] = bootstrap.gateway_required
+    report["gateway_url"] = redact_url(bootstrap.gateway_url) if bootstrap.gateway_url else None
+    report["field_sources"] = dict(bootstrap.field_sources)
+    report["diagnostics"].extend(d.to_dict() for d in bootstrap.diagnostics)
+    report["gateway_lifecycle"] = _serve_gateway_lifecycle(bootstrap, probe=gateway_probe)
+    return report
+
+
+#: Reported instead of a state when nothing probed the gateway. Startup does no
+#: gateway I/O of its own, so the absence of a probe is named rather than being
+#: rendered as an unhealthy gateway nobody looked at.
+GATEWAY_NOT_PROBED = "not_probed"
+
+
+def _serve_gateway_lifecycle(
+    bootstrap: Any, *, probe: Callable[[str], Any] | None = None
+) -> dict[str, Any]:
+    """Name the gateway lifecycle state for the serve startup line.
+
+    Startup performs no gateway I/O unless it is asked to. With
+    ``VERDICT_SERVE_ENSURE_GATEWAY`` off and no injected ``probe``, this reports
+    ``not_probed`` without opening a socket, so importing or booting the server
+    never depends on whether a gateway happens to be listening.
+
+    ``VERDICT_SERVE_ENSURE_GATEWAY`` opts into the active path, which reuses a
+    healthy gateway and starts one only when the bootstrap contract supplies a
+    start command. An injected ``probe`` opts into the report-only path: the
+    caller supplied the transport, so the caller decides whether I/O happens.
+    """
+    from verdict.gateway_lifecycle import (
+        authenticated_gateway_probe,
+        ensure_gateway_ready,
+        inspect_gateway,
+    )
+    from verdict.provider_bootstrap import load_credential_store_env
+
+    ensure = os.getenv("VERDICT_SERVE_ENSURE_GATEWAY", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not ensure and probe is None:
+        return {
+            "state": GATEWAY_NOT_PROBED,
+            "ready": False,
+            "probed": False,
+            "ensure_requested": False,
+            "detail": (
+                "gateway readiness was not probed at startup; run 'verdict doctor', or set "
+                "VERDICT_SERVE_ENSURE_GATEWAY=true to ensure it at boot"
+            ),
+        }
+    if probe is not None:
+        probe_fn = probe
+    else:
+        # Match the CLI/doctor binding: resolve the key named by the provider
+        # binding for this gateway, preferring the exported environment and then
+        # the credential store.  Bind it to the lifecycle seam; never call the
+        # raw unauthenticated probe here.
+        names = [
+            binding.api_key_env
+            for binding in bootstrap.providers.values()
+            if getattr(binding, "api_key_env", None)
+            and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
+        ]
+        api_key: str | None = None
+        stored: dict[str, str] | None = None
+        for name in names:
+            api_key = (os.getenv(str(name)) or "").strip() or None
+            if api_key is None:
+                if stored is None:
+                    stored = load_credential_store_env()
+                api_key = (stored.get(str(name)) or "").strip() or None
+            if api_key is not None:
+                break
+        probe_fn = authenticated_gateway_probe(api_key)
+    try:
+        outcome = (
+            ensure_gateway_ready(bootstrap, probe=probe_fn)
+            if ensure
+            else inspect_gateway(bootstrap, probe=probe_fn)
+        )
+    except Exception as exc:  # pragma: no cover - defensive: startup must not crash here
+        return {"state": "unknown", "probed": True, "detail": f"{type(exc).__name__}: {exc}"}
+    payload = outcome.to_dict()
+    payload["probed"] = True
+    payload["ensure_requested"] = ensure
+    return payload
 
 
 def _build_proxy() -> UpstreamProxy:
@@ -507,9 +776,87 @@ def _build_proxy() -> UpstreamProxy:
     )
 
 
+#: Serve-path precedence for the three identity/telemetry fields: environment,
+#: then the built-in default. The serve path deliberately does not adopt the
+#: routing YAML for these three, because doing so would silently change an
+#: already-deployed server's profile, identity and decision log.
+_SERVE_ENV_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("primary_model", "LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
+    ("profile", "LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE),
+    ("log_path", "LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),
+)
+
+
+def _serve_field_resolution(bootstrap: Any | None) -> tuple[dict[str, str], list[Any]]:
+    """Resolve the serve-path identity fields and report config-file disagreement.
+
+    Returns the resolved values plus one non-fatal ``precedence_conflict``
+    diagnostic per field where the routing YAML asks for a different value than
+    the serve path applies. The conflict names both sources and both values, so a
+    config the serve path does not honour is never silently ignored.
+    """
+    from verdict.provider_bootstrap import BootstrapDiagnostic, BootstrapSource
+
+    values: dict[str, str] = {}
+    conflicts: list[Any] = []
+    for field_name, env_name, default in _SERVE_ENV_FIELDS:
+        exported = (os.getenv(env_name) or "").strip()
+        applied = exported or default
+        applied_source: BootstrapSource = "environment" if exported else "default"
+        values[field_name] = applied
+        if bootstrap is None or bootstrap.source_of(field_name) != "config_file":
+            continue
+        configured = str(getattr(bootstrap, field_name))
+        if configured == applied:
+            continue
+        conflicts.append(
+            BootstrapDiagnostic(
+                code="precedence_conflict",
+                diagnostic_class="configuration",
+                field=field_name,
+                source=applied_source,
+                detail=(
+                    f"config file {bootstrap.config_path} sets {field_name}="
+                    f"{configured!r} while the serve path applies {applied!r} from "
+                    f"{applied_source} ({env_name}); the serve path resolves "
+                    f"{field_name} from the environment, then the built-in default, "
+                    f"and does not read the routing config for it"
+                ),
+                remediation=(
+                    f"set {env_name}={configured} to apply the config value to "
+                    f"'verdict serve', or remove {field_name} from "
+                    f"{bootstrap.config_path}"
+                ),
+                fatal=False,
+            )
+        )
+    return values, conflicts
+
+
 def _build_intelligence() -> IntelligenceService:
-    """Build the public IntelligenceService boundary from environment settings."""
-    profile = os.getenv("LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE)
+    """Build the public IntelligenceService boundary from environment settings.
+
+    ``primary_model``, ``profile`` and ``log_path`` keep the serve path's own
+    precedence: environment, then the built-in default. The routing YAML is read
+    only to detect and report a disagreement, never to override a running
+    server's identity. The provider map stays empty on purpose: the serve path
+    admits a concrete candidate per request rather than binding providers at
+    startup.
+    """
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
+
+    try:
+        bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
+    except BootstrapError:
+        bootstrap = None
+    resolved, conflicts = _serve_field_resolution(bootstrap)
+    for conflict in conflicts:
+        print(f"verdict serve: {conflict.describe()}", file=sys.stderr)
+    profile = resolved["profile"]
     timeout_ms = int(os.getenv("LLMGATE_INTELLIGENCE_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS)))
     allow_client_model_override = os.getenv(
         "LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE", "false"
@@ -520,12 +867,14 @@ def _build_intelligence() -> IntelligenceService:
         if frontier_allowlist_raw
         else None
     )
+    primary_model = resolved["primary_model"]
+    log_path = resolved["log_path"]
     providers: dict[str, ProviderConfig] = {}
     return IntelligenceService(
-        primary_model=os.getenv("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
+        primary_model=primary_model,
         providers=providers,
         profile=profile,
-        log_path=os.getenv("LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),
+        log_path=log_path,
         log_full_task=False,
         discovery_ttl=int(os.getenv("LLMGATE_DISCOVERY_TTL_SECONDS", "60")),
         timeout_ms=timeout_ms,
@@ -556,6 +905,23 @@ async def lifespan(app: FastAPI) -> Any:
     global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
     global guidance_plane_instance
     validate_server_security(host=os.getenv("LLMGATE_HOST", "127.0.0.1"))
+    global server_bootstrap_report
+    server_bootstrap_report = server_bootstrap_diagnostics()
+    lifecycle = server_bootstrap_report.get("gateway_lifecycle") or {}
+    # Nothing probed the gateway, so there is no readiness fact to print. Startup
+    # output with the opt-in off is what it was before the lifecycle landed.
+    if lifecycle and lifecycle.get("probed"):
+        print(
+            f"verdict serve: gateway {lifecycle.get('state')} "
+            f"url={lifecycle.get('gateway_url')} ready={lifecycle.get('ready')}",
+            file=sys.stderr,
+        )
+    for entry in server_bootstrap_report.get("diagnostics", []):
+        print(
+            f"verdict serve: {entry['code']} [{entry['class']}] field={entry['field']}: "
+            f"{entry['detail']}; remediation: {entry['remediation']}",
+            file=sys.stderr,
+        )
     intelligence_instance = _build_intelligence()
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,
@@ -574,9 +940,7 @@ async def lifespan(app: FastAPI) -> Any:
     max_entries = max(1, int(os.getenv("VERDICT_EVIDENCE_MAX_ENTRIES", "256")))
     if evidence_db:
         evidence_store_instance = DurableEvidenceStore(evidence_db, max_entries=max_entries)
-    elif os.getenv("PYTEST_CURRENT_TEST") or os.getenv(
-        "LLMGATE_ALLOW_ANONYMOUS", "false"
-    ).lower() in {"1", "true", "yes", "on"}:
+    elif os.getenv("LLMGATE_ALLOW_ANONYMOUS", "false").lower() in {"1", "true", "yes", "on"}:
         # Anonymous development/test mode has an explicit in-memory backend.
         # Authenticated deployments must configure a durable DB path.
         evidence_store_instance = DurableEvidenceStore(":memory:", max_entries=max_entries)
@@ -602,6 +966,29 @@ async def lifespan(app: FastAPI) -> Any:
     # live routing path filters before ranking (single source of truth).
     if eligibility_gate_instance is not None:
         intelligence_instance.eligibility_gate = eligibility_gate_instance
+    # Relay admission is deliberately opt-in. The cache is refreshed once at
+    # startup and every request reads only its bounded in-memory value; no
+    # request path performs a live gateway GET. Persisted ladder state is
+    # evidence, never cache authority.
+    global relay_admission_provider
+    if os.getenv("VERDICT_RELAY_ADMISSION_CACHE", "false").lower() in {"1", "true", "yes", "on"}:
+        from verdict.admission import load_live_admission
+        from verdict.orchestration.run import resolve_api_key
+
+        gateway = os.getenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
+        cache = CachedRelayAdmission(
+            lambda: load_live_admission(
+                gateway, now=datetime.now(timezone.utc), api_key=resolve_api_key()
+            ),
+            ttl_seconds=float(os.getenv("VERDICT_RELAY_ADMISSION_TTL_SECONDS", "60")),
+        )
+        try:
+            cache.refresh()
+        except Exception as exc:
+            # Keep a callable fail-closed provider so a configured authority
+            # boundary cannot silently revert to catalog-based relay behavior.
+            logger.warning("relay admission startup refresh failed: %s", type(exc).__name__)
+        relay_admission_provider = cache.get
     yield
     intelligence_instance = None
     gate_instance = None
@@ -611,6 +998,7 @@ async def lifespan(app: FastAPI) -> Any:
     evidence_store_instance = None
     guidance_plane_instance = None
     model_passport_store_instance = None
+    relay_admission_provider = None
 
 
 app = FastAPI(
@@ -630,13 +1018,10 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
     anonymous = os.getenv("LLMGATE_ALLOW_ANONYMOUS", "false").lower() in {"1", "true", "yes", "on"}
     if anonymous and not token:
         # Defense-in-depth: anonymous mode must only serve loopback clients.
-        # "testclient" is the synthetic peer hostname injected by Starlette's TestClient;
-        # we accept it as loopback so existing unit-test suites continue to work without
-        # forcing every test to pass client=("127.0.0.1", …).  Real non-loopback addresses
-        # are rejected here regardless of the LLMGATE_ALLOW_ANONYMOUS flag.
+        # Only real loopback IP addresses qualify; hostnames are never trusted.
         host = request.client.host if request.client is not None else ""
         try:
-            _is_loopback = host == "testclient" or ipaddress.ip_address(host).is_loopback
+            _is_loopback = ipaddress.ip_address(host).is_loopback
         except ValueError:
             _is_loopback = False
         if not _is_loopback:
@@ -867,7 +1252,7 @@ async def _route_with_intelligence(
 ) -> Any:
     if intelligence_instance is None:
         raise HTTPException(status_code=503, detail="Intelligence service not initialized")
-    # BOD-127: default API serve path requires BOD-104 authority (no silent invent).
+    # legacy selector demotion: default API serve path requires execution-path authority (no silent invent).
     from verdict.serve_path import CONTEXT_REQUIRE_AUTHORITY
 
     merged = dict(context or {})
@@ -1031,7 +1416,7 @@ def _safe_decision_dict(decision: Any) -> dict[str, Any]:
 
     data = asdict(decision)
     # The compiled pack is workspace content bound for the upstream model, not
-    # a client-facing decision field (BOD-111). Its digest lives in the receipt.
+    # a client-facing decision field (cheap-path pack). Its digest lives in the receipt.
     data.pop("context_pack_prompt", None)
     return cast(dict[str, Any], redact_contract_secrets(data))
 
@@ -1111,7 +1496,7 @@ def _record_execution_outcome(
     surface: str,
     result: BufferedUpstreamResponse | StreamedUpstreamResponse,
 ) -> None:
-    """Persist the gateway's post-execution receipt beside the decision log (BOD-117).
+    """Persist the gateway's post-execution receipt beside the decision log (outcome receipts).
 
     Streamed responses expose headers only; their body is not buffered here, so
     token counts fall back to headers and cost remains header-only either way.
@@ -1167,6 +1552,13 @@ def _evidence_headers(evidence: ExplainEvidence) -> dict[str, str]:
     if evidence.evidence_id:
         headers["x-verdict-evidence-id"] = evidence.evidence_id
     return headers
+
+
+def _router_dev_mode() -> bool:
+    """Return the dev_mode the live router uses (``profile == "development"``)."""
+    if intelligence_instance is not None:
+        return intelligence_instance.profile == "development"
+    return os.getenv("LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE) == "development"
 
 
 @app.get("/v1/route/explain")
@@ -1237,7 +1629,7 @@ async def route_explain(
                     )
                     for mid in base["cached_models"]
                 ],
-                dev_mode=True,
+                dev_mode=_router_dev_mode(),
             )
             base["eligible_set"] = [m.id for m in gate_eval.eligible]
             base["exclusions"] = [r.to_dict() for r in gate_eval.exclusions]
@@ -1255,7 +1647,7 @@ async def route_explain(
                     capability_tier=2,
                 )
             ],
-            dev_mode=True,
+            dev_mode=_router_dev_mode(),
         )
         if gate_eval.records:
             record["eligibility"] = gate_eval.records[0].to_dict()
@@ -1397,7 +1789,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if not correlation_id and isinstance(payload.get("correlation_id"), str):
         correlation_id = cast(str, payload["correlation_id"])
     # Resolve the request id *before* routing so the pre-execution decision row
-    # and the post-execution outcome receipt share one key (BOD-117).
+    # and the post-execution outcome receipt share one key.
     client_request_id = request.headers.get("x-verdict-request-id") or (
         payload.get("request_id") if isinstance(payload.get("request_id"), str) else None
     )
@@ -1428,7 +1820,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     )
     request_key = idempotency_key(request, payload)
     safety = retry_safety(request, payload, request_key)
-    attempts = build_attempts(proxy_instance, decision, protocol=protocol)
+    relay_admitted: AdmittedSet | None = None
+    if relay_admission_provider is not None:
+        try:
+            relay_admitted = relay_admission_provider()
+        except Exception as exc:
+            return _proxy_error(503, f"live admission unavailable: {type(exc).__name__}")
+    attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:
         return _proxy_error(503, "no executable route was selected")
     attempted_routes = [item.route.to_dict() for item in attempts]
@@ -1532,7 +1930,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         ):
             forwarded.pop(local_field, None)
         forwarded["model"] = attempt.model
-        # BOD-111: the hydrated pack the receipt describes is what the upstream
+        # cheap-path pack: the hydrated pack the receipt describes is what the upstream
         # receives. Injection is recorded per attempt and never claimed when
         # the pack is empty/failed or the task did not survive compilation.
         forwarded, injection = _inject_decision_pack(forwarded, decision, surface=surface)
@@ -1545,7 +1943,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 result = replace(result, body=_ValidatedSSEStream(result.body, surface=surface))
                 result = await _prime_stream(result)
             last_status = result.status_code
-            # BOD-117: the only place execution cost is observable is *after* the
+            # outcome receipts: the only place execution cost is observable is *after* the
             # upstream answers. Persist it per attempt, keyed to the decision.
             _record_execution_outcome(
                 request_id=decision.request_id,

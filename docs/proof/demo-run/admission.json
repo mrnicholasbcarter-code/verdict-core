@@ -1,0 +1,154 @@
+{
+  "admitted": [
+    "demo-free/birch-coder",
+    "demo-free/cedar-coder",
+    "demo-free2/elm-coder",
+    "demo-free2/fir-mini",
+    "demo-metered/delta-coder",
+    "demo-sub/atlas-coder"
+  ],
+  "candidates": [
+    {
+      "admitted": false,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": "DISCOVERED",
+      "health": "unknown",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "auto",
+      "reason": "opaque_route",
+      "route_id": "auto/best-coding",
+      "source": "inventory",
+      "until": null
+    },
+    {
+      "admitted": false,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": "AVAILABLE",
+      "health": "exhausted",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-busy",
+      "reason": "provider_rate_limited",
+      "route_id": "demo-busy/juniper-coder",
+      "source": "omniroute:/api/providers",
+      "until": "2026-09-27T07:21:32.552950+00:00"
+    },
+    {
+      "admitted": true,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-free",
+      "reason": "admitted_unverified",
+      "route_id": "demo-free/birch-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-free",
+      "reason": "admitted_unverified",
+      "route_id": "demo-free/cedar-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": false,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": "HEALTHY",
+      "health": "unhealthy",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-free",
+      "reason": "model_unavailable",
+      "route_id": "demo-free/hazel-coder",
+      "source": "fixture",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-free2",
+      "reason": "admitted_unverified",
+      "route_id": "demo-free2/elm-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-free2",
+      "reason": "admitted_unverified",
+      "route_id": "demo-free2/fir-mini",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-metered",
+      "reason": "admitted_unverified",
+      "route_id": "demo-metered/delta-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": false,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": "ENTITLED",
+      "health": "unknown",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-orphan",
+      "reason": "no_connection_evidence",
+      "route_id": "demo-orphan/gum-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    },
+    {
+      "admitted": true,
+      "confirmation_source": null,
+      "confirmed_at": null,
+      "first_failed_stage": null,
+      "health": "unknown",
+      "observed_at": "2026-09-27T06:21:32.531863+00:00",
+      "provider": "demo-sub",
+      "reason": "admitted_unverified",
+      "route_id": "demo-sub/atlas-coder",
+      "source": "omniroute:/api/providers",
+      "until": null
+    }
+  ],
+  "controller_identity": "unknown",
+  "digest": "sha256:dbae8a46a00708b14c649d9c36754296428df8faa3acb4dd1bccb4d8adfec6bd",
+  "generated_at": "2026-09-27T06:21:32.531863+00:00",
+  "narrowing": [],
+  "runtime_consulted": [
+    "fixture"
+  ],
+  "schema": "verdict.admission/v1",
+  "sources": [
+    "fixture",
+    "omniroute:/api/providers"
+  ]
+}

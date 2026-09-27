@@ -1,4 +1,5 @@
 import subprocess
+import sys
 
 from verdict.golden_path import Stage, StageStatus, run_golden_path
 
@@ -68,7 +69,7 @@ def test_timeout_is_bounded_and_denies(tmp_path):
         "verify sample",
         _repo(tmp_path),
         memory_path=tmp_path / "memory.db",
-        verification_command=("python", "-c", "import time; time.sleep(2)"),
+        verification_command=(sys.executable, "-c", "import time; time.sleep(2)"),
         timeout_seconds=0.05,
     )
     assert report.decision == "denied"
@@ -90,8 +91,21 @@ def test_changed_path_outside_declared_boundary_denies(tmp_path):
         "verify sample",
         _repo(tmp_path),
         memory_path=tmp_path / "memory.db",
-        verification_command=("python", "-c", "open('created.txt', 'w').write('x')"),
+        verification_command=(sys.executable, "-c", "open('created.txt', 'w').write('x')"),
         owned_paths=("allowed/",),
     )
     assert report.decision == "denied"
     assert report.stages[-1].evidence["outside_owned_paths"] == 1
+
+
+def test_receipt_command_evidence_never_carries_host_paths(tmp_path):
+    """An interpreter under /home/<user> must not leak into (or break) receipts."""
+    report = run_golden_path(
+        "verify sample",
+        _repo(tmp_path),
+        memory_path=tmp_path / "memory.db",
+        verification_command=("/home/runner/venv/bin/python", "-c", "pass"),
+    )
+    command = report.stages[-1].evidence["command"]
+    assert command[0] == "python"
+    assert not any("/home/" in part for part in command)

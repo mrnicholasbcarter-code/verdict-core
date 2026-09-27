@@ -1,4 +1,4 @@
-"""BOD-151 frontier decomposition: goal -> prompt -> WorkGraph, deterministic topology.
+"""Frontier decomposition: goal -> prompt -> WorkGraph, deterministic topology.
 
 Only this module decides *how many* concurrent workers a plan gets and *which*
 topology (SOLO / WORKER_CRITIC / PARALLEL_WORK_UNITS) runs it -- the rule is a
@@ -327,6 +327,9 @@ class FrontierPlanner:
         route_id: str,
         timeout_seconds: float = 600,
         constraints: str = "",
+        events: Any | None = None,
+        attempt: int = 1,
+        max_attempts: int = 1,
     ) -> tuple[WorkGraph, WorkerTerminal]:
         repo_map_text = repo_map(repo)
         prompt = build_planning_prompt(goal, repo_map_text, constraints)
@@ -346,9 +349,26 @@ class FrontierPlanner:
                 f"{prompt}\n\nYour previous response failed validation with this error:\n"
                 f"{first_error}\n\nEmit ONLY the corrected JSON object. No prose, no fences."
             )
+            if events is not None:
+                events.emit(
+                    "plan_repair_started",
+                    route_id=route_id,
+                    attempt=attempt + 1,
+                    budget=max_attempts + 1,
+                    reason=str(first_error)[:300],
+                )
             repaired = await executor.run(
                 repair_prompt, route_id=route_id, cwd=repo, timeout_seconds=timeout_seconds
             )
+            if events is not None:
+                events.emit(
+                    "plan_repair_terminal",
+                    route_id=route_id,
+                    attempt=attempt + 1,
+                    budget=max_attempts + 1,
+                    ok=repaired.ok,
+                    error=(repaired.error or "")[:300],
+                )
             if not repaired.ok:
                 raise PlanningExecutorError(
                     "FrontierPlanner: repair executor failed: "

@@ -931,13 +931,14 @@ class MemoryHookController:
 
 def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict[str, Any]:
     """Run diagnostics on memory bridge setup and optionally fix issues."""
-    issues = []
-    repaired = []
+    issues: list[str] = []
+    warnings: list[str] = []
+    repaired: list[str] = []
 
     # Check for .verdict directory
     verdict_dir = home_dir / ".verdict"
     if not verdict_dir.exists():
-        issues.append("missing_memory_db")
+        warnings.append("missing_memory_db")
         if fix:
             verdict_dir.mkdir(parents=True, exist_ok=True)
             repaired.append("created_verdict_dir")
@@ -945,7 +946,7 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
     # Check for memory.db
     memory_db = verdict_dir / "memory.db"
     if not memory_db.exists():
-        issues.append("missing_memory_db_file")
+        warnings.append("missing_memory_db_file")
         if fix:
             # Initialize empty SQLite database
             import sqlite3
@@ -983,10 +984,13 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
             conn.close()
             repaired.append("initialized_memory_db")
 
-    # Check .mcp.json
+    # Check .mcp.json — an MCP client config is an optional convenience for
+    # editor/agent integrations, not a routing requirement. A host with a
+    # healthy OmniRoute connection and no MCP client should not be reported
+    # as "issues_found" over this alone, so it is a non-fatal warning.
     mcp_local = cwd / ".mcp.json"
     if not mcp_local.exists():
-        issues.append("missing_mcp_config")
+        warnings.append("missing_mcp_config")
         if fix:
             mcp_local.write_text('{"mcpServers": {}}', encoding="utf-8")
             repaired.append("created_mcp_config")
@@ -996,6 +1000,7 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
     return {
         "status": "ok" if not issues else "issues_found",
         "issues": issues,
+        "warnings": warnings,
         "repaired": repaired,
         "documentation_preflight": {
             "status": "ready",

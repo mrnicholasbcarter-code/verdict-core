@@ -1,0 +1,88 @@
+{
+  "schema_version": "verdict.orchestration/v1",
+  "goal": "Add a --json flag to the invoice CLI, with a parser module and tests",
+  "topology": "PARALLEL_WORK_UNITS",
+  "rationale": [
+    "nodes=3 implement_nodes=2 risk_hint=medium risks=['low']",
+    "layers=2 widest_layer=2",
+    "decision=PARALLEL_WORK_UNITS: 2 implement nodes, widest_layer=2 -> max_parallel=min(3,2)=2"
+  ],
+  "max_parallel": 2,
+  "nodes": [
+    {
+      "node_id": "parser",
+      "objective": "Add invoice/parser.py with parse_invoice()",
+      "kind": "implement",
+      "story": "",
+      "depends_on": [],
+      "owned_files": [
+        "invoice/parser.py"
+      ],
+      "required_context": [],
+      "acceptance": [],
+      "verification_command": [
+        "python3",
+        "-c",
+        "import invoice.parser as p; assert p.parse_invoice('a,1') == {'a': 1}"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "cli_flag",
+      "objective": "Add a --json flag to invoice/cli.py",
+      "kind": "implement",
+      "story": "",
+      "depends_on": [],
+      "owned_files": [
+        "invoice/cli.py"
+      ],
+      "required_context": [],
+      "acceptance": [],
+      "verification_command": [
+        "python3",
+        "-c",
+        "import invoice.cli as c; assert c.FLAGS == ('--json',)"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "integrate",
+      "objective": "Merge both nodes and run the combined check",
+      "kind": "integrate",
+      "story": "",
+      "depends_on": [
+        "parser",
+        "cli_flag"
+      ],
+      "owned_files": [],
+      "required_context": [],
+      "acceptance": [],
+      "verification_command": [
+        "python3",
+        "-c",
+        "import invoice.cli, invoice.parser"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    }
+  ],
+  "run_id": "demo-run"
+}

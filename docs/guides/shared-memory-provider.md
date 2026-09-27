@@ -1,6 +1,6 @@
 # Shared Memory Provider
 
-Optional, advisory network memory for Verdict harnesses (BOD-145 / MEMORY M1).
+Optional, advisory network memory for Verdict harnesses (the shared memory provider (ADR-033) / MEMORY M1).
 
 Local `MemoryPlane` remains the durable authority. Shared hits normalize into
 `MemoryRecord` with `authority_verified=false` and

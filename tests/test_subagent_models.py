@@ -179,3 +179,38 @@ def test_unknown_role_is_rejected():
     selector, _ = _selector([_candidate("aa/x")], eligible=[_candidate("aa/x")])
     with pytest.raises(ValueError, match="Unknown role"):
         selector.select_for_role("not-a-role")
+
+
+@pytest.mark.parametrize("dev_mode", [True, False])
+@pytest.mark.parametrize("allow_unverified_in_dev", [True, False])
+@pytest.mark.parametrize(
+    "state", [AvailabilityState.UNKNOWN, AvailabilityState.DEGRADED, AvailabilityState.READY]
+)
+def test_dev_mode_and_allow_unverified_never_widen_admission(
+    dev_mode, allow_unverified_in_dev, state
+):
+    """dev_mode / allow_unverified_in_dev are non-widening at this seam.
+
+    Selection is narrowed to the adapter's `report.eligible` before the gate
+    runs, so a candidate the adapter excluded is never selected, whatever the
+    dev flags say (CLOSEOUT deferred #5 / REVIEW optional #2).
+    """
+    excluded = _candidate("zz/not-eligible", state=state)
+    report = AvailabilityReport(
+        candidates=(excluded,), eligible=(), source="test", freshness_seconds=1.0
+    )
+    cache = AvailabilityCache(source=lambda _req: report, ttl_seconds=60, stale_window_seconds=30)
+    gate = EligibilityGate(
+        cache.get, protected_fail_closed=True, allow_unverified_in_dev=allow_unverified_in_dev
+    )
+    intelligence = _StubIntelligence()
+    selector = SubagentModelSelector(
+        availability_cache=cache, eligibility_gate=gate, intelligence=intelligence
+    )
+
+    assert selector.select_for_role("worker", dev_mode=dev_mode) is None
+    assert selector.select_for_parallel_roles(["worker", "scout"], dev_mode=dev_mode) == {
+        "worker": None,
+        "scout": None,
+    }
+    assert intelligence.ranked_inputs == []

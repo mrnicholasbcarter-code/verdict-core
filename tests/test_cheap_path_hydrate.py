@@ -208,7 +208,7 @@ def test_gather_uses_configured_roots_only(tmp_path: Path) -> None:
 
 
 def test_adr_and_architecture_included_when_large_adrs_would_starve_budget(tmp_path: Path) -> None:
-    """BOD-99 / #516 QA: a normal ADR+architecture set must not be omissions-only.
+    """QA: a normal ADR+architecture set must not be omissions-only.
 
     Alphabetically, every ``docs/adr/*`` policy unit sorts before architecture.
     Without reserved high-value slots, a handful of large ADRs exhaust a 4096
@@ -294,7 +294,7 @@ def test_oversize_unit_omits_with_budget_reason_but_adr_still_included(tmp_path:
 
 
 def test_budget_that_only_fits_one_high_value_class_is_partial(tmp_path: Path) -> None:
-    """BOD-106: ADR+architecture on disk but budget fits one class → partial, not hydrated."""
+    """ADR+architecture on disk but budget fits one class → partial, not hydrated."""
     (tmp_path / "docs" / "adr").mkdir(parents=True)
     (tmp_path / "docs" / "architecture").mkdir(parents=True)
     body = ("HIGH-VALUE CLASS BODY " * 120) + "\n"
@@ -353,7 +353,7 @@ def test_hydrate_compiler_error_stamps_failed(tmp_path: Path, monkeypatch: objec
     assert packed.pack_digest.startswith("sha256:")
 
 
-# --- BOD-110: task- and requirement-complete hydration -----------------------
+# --- task- and requirement-complete hydration -----------------------
 
 
 def test_unicode_content_honors_max_file_bytes_by_bytes(tmp_path: Path) -> None:
@@ -465,7 +465,7 @@ def test_task_relevant_adr_included_is_hydrated(tmp_path: Path) -> None:
 def test_task_relevant_adr_beyond_gather_cap_is_named_and_makes_pack_partial(
     tmp_path: Path,
 ) -> None:
-    """BOD-110 gap: a required ADR the per-root unit cap never gathered is still required."""
+    """gap: a required ADR the per-root unit cap never gathered is still required."""
     (tmp_path / "docs" / "adr").mkdir(parents=True)
     (tmp_path / "docs" / "architecture").mkdir(parents=True)
     (tmp_path / "docs" / "architecture" / "overview.md").write_text(

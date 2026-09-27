@@ -1,4 +1,4 @@
-"""Tests for the BOD-89 canonical local/agent/CI proof pipeline."""
+"""Tests for the canonical local/agent/CI proof pipeline."""
 
 from __future__ import annotations
 

@@ -1,0 +1,13 @@
+{
+ "node_id": "cli_flag",
+ "attempt": 2,
+ "route_id": "demo-free/cedar-coder",
+ "ok": true,
+ "reported_model": "demo-free/cedar-coder",
+ "stop_reason": "",
+ "status_code": null,
+ "error": "",
+ "output_tail": "RESULT: DONE",
+ "duration_seconds": 0.0,
+ "session_ref": ""
+}

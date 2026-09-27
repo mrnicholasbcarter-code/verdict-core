@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://verdict-core.dev/schemas/evaluation.v1.json",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/evaluation.v1.json",
   "title": "Verdict evidence-gated evaluation artifacts",
   "description": "Versioned, payload-free evaluation manifests, observations, reports, promotion decisions, and replay-only counterfactual results.",
   "type": "object",

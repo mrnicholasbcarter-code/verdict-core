@@ -1,4 +1,4 @@
-"""SHADOW mode integration helpers (BOD-235)."""
+"""SHADOW mode integration helpers (TYPESAFE credentials migration)."""
 
 from __future__ import annotations
 

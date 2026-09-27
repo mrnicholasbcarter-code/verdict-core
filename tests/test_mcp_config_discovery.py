@@ -1,4 +1,4 @@
-"""Tests for harness MCP config import into capability bootstrap (BOD-124)."""
+"""Tests for harness MCP config import into capability bootstrap."""
 
 from __future__ import annotations
 

@@ -63,7 +63,7 @@ def test_lifespan_rejects_anonymous_non_loopback_configuration(monkeypatch) -> N
 
 
 def test_anonymous_non_loopback_client_is_rejected(monkeypatch) -> None:
-    """BOD-202: anonymous mode must block requests from non-loopback peers."""
+    """anonymous mode must block requests from non-loopback peers."""
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
     monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
     monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
@@ -76,7 +76,7 @@ def test_anonymous_non_loopback_client_is_rejected(monkeypatch) -> None:
 
 
 def test_anonymous_loopback_client_is_allowed(monkeypatch) -> None:
-    """BOD-202: anonymous mode must allow loopback peers."""
+    """anonymous mode must allow loopback peers."""
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
     monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
     monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
@@ -89,7 +89,7 @@ def test_anonymous_loopback_client_is_allowed(monkeypatch) -> None:
 
 
 def test_health_is_open_for_non_loopback_client(monkeypatch) -> None:
-    """BOD-202: /health must remain accessible regardless of peer address."""
+    """/health must remain accessible regardless of peer address."""
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
     monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
     monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
@@ -187,3 +187,86 @@ def test_fingerprint_text_is_stable_and_non_plaintext() -> None:
     assert fingerprint != fingerprint_text("prompt-secret-2")
     assert fingerprint.startswith("sha256:")
     assert "prompt-secret" not in fingerprint
+
+
+def test_invalid_omniroute_url_fails_startup_closed(monkeypatch) -> None:
+    """C5: a configured but invalid OMNIROUTE_BASE_URL must fail startup, not
+    silently serve routing without the eligibility gate."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://203.0.113.9:1/v1")
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    client = TestClient(api.app)
+    with pytest.raises(RuntimeError, match="invalid OmniRoute configuration"):
+        client.__enter__()
+    assert api.eligibility_gate_instance is None
+
+
+def test_invalid_omniroute_hostname_still_fails_startup_closed(monkeypatch) -> None:
+    """C5: a non-allowlisted https/plain-http hostname must still fail startup
+    closed. Only the documented ``localhost`` loopback hostname is normalised;
+    an arbitrary hostname is not."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://evil.example:1")
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    client = TestClient(api.app)
+    with pytest.raises(RuntimeError, match="invalid OmniRoute configuration"):
+        client.__enter__()
+    assert api.eligibility_gate_instance is None
+
+
+def test_documented_omniroute_localhost_url_boots_with_gate(monkeypatch) -> None:
+    """C5 fix: OMNIROUTE_BASE_URL=http://localhost:20128 is the value every
+    documented guide recommends (install.sh, AGENTS.md, README.md). It must
+    boot successfully WITH the eligibility gate attached, not raise."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:20128")
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    with TestClient(api.app):
+        assert api.eligibility_gate_instance is not None
+
+
+def test_llmgate_upstream_fallback_without_omniroute_boots_without_gate(monkeypatch) -> None:
+    """C5 fix: LLMGATE_UPSTREAM_BASE_URL pointing at a public https upstream
+    (no OMNIROUTE_BASE_URL set) is a legitimate direct-upstream proxy config,
+    not a misconfigured OmniRoute. It must boot without raising, with no
+    availability cache or eligibility gate."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.setenv("LLMGATE_UPSTREAM_BASE_URL", "https://api.openai.com/v1")
+
+    with TestClient(api.app):
+        assert api.eligibility_gate_instance is None
+        assert api.availability_cache_instance is None
+
+
+def test_testclient_hostname_is_not_loopback(monkeypatch) -> None:
+    """C6: the synthetic "testclient" peer must not be treated as loopback."""
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_HOST", "127.0.0.1")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    with TestClient(api.app, client=("testclient", 1)) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 403
+
+
+def test_authenticated_mode_requires_receipts_db(monkeypatch) -> None:
+    """C6: the in-memory receipts store is selected only by explicit config,
+    never by detecting pytest."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "caller-secret")
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.delenv("VERDICT_RECEIPTS_DB", raising=False)
+    monkeypatch.delenv("VERDICT_EVIDENCE_DB", raising=False)
+    monkeypatch.setattr(api, "_build_proxy", lambda: UpstreamProxy("https://api.example.test/v1"))
+
+    with pytest.raises(RuntimeError, match="VERDICT_RECEIPTS_DB"), TestClient(api.app):
+        pass

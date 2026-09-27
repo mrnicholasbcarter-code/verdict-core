@@ -1,13 +1,13 @@
 # Autonomous Development Loop — Operational Contract
 
 **Status:** Approved (operational contract)
-**Date:** 2026-08-03 (revised for BOD-17: swarm/Ruflo coordination removed)
+**Date:** 2026-08-03 (revised for the Ruflo/swarm/hivemind removal: swarm/Ruflo coordination removed)
 **Applies to:** Every backlog issue worked by the Verdict autonomous development
 workflow (see `verdict/workflows/autodev.py`, `FEATURE_LIFECYCLE_GATE.md`).
 
 > Historical note: earlier revisions of this contract described a
 > queen/worker "swarm" coordination step backed by Ruflo/RuVector. That
-> coordination model was removed from Core (BOD-17); see
+> coordination model was removed from Core; see
 > [ADR-023](../adr/ADR-023-governed-swarm-supervision.md) (superseded) and
 > [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) (current
 > goal-to-receipt orchestration).
@@ -63,7 +63,7 @@ The execution step (6) may run as either:
   `verdict autodev`) — for sequential stage-gated work.
 - **Goal-to-receipt orchestration** ([ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md),
   `verdict orchestrate`) — for goal decomposition into routed, receipted
-  attempts. See [docs/guides/interview-golden-path.md](../guides/interview-golden-path.md)
+  attempts. See [docs/guides/orchestration-golden-path.md](../guides/orchestration-golden-path.md)
   for the end-to-end proof path (`verdict orchestrate | supervise | watch |
   run-receipt | eligibility`).
 

@@ -1,4 +1,4 @@
-"""Tests for decision signal contracts (BOD-199)."""
+"""Tests for decision signal contracts."""
 
 import pytest
 

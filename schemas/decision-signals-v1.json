@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://verdict.dev/schemas/decision-signals-v1.json",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/decision-signals-v1.json",
   "title": "DecisionSignalSetV1",
   "description": "Versioned decision signal set with strict validation (BOD-199)",
   "type": "object",

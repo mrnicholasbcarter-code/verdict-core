@@ -124,19 +124,22 @@ def test_doctor_and_uninstall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
 
-    # 1. Run doctor scan (expect issues)
+    # 1. Run doctor scan. A missing memory DB is a non-fatal warning (the
+    # shared plane is created lazily / by --fix), so it must not be an issue.
+    # run_doctor_diagnostics does not run the documentation preflight itself,
+    # so with only warnings the bridge status is "ok".
     doc_res = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=False)
-    assert doc_res["status"] == "issues_found"
-    assert "missing_memory_db" in doc_res["issues"]
+    assert doc_res["status"] == "ok"
+    assert "missing_memory_db" in doc_res["warnings"]
+    assert "missing_memory_db" not in doc_res["issues"]
     assert "shared_memory" in doc_res
     assert doc_res["shared_memory"]["install_action"] == "none"
     assert "canary-secret" not in json.dumps(doc_res)
 
     # 2. Run doctor with fix=True
     fix_res = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=True)
-    # The documentation gate remains fail-closed when the fixture has no
-    # authoritative repository sources; unrelated bridge repairs still apply.
-    assert fix_res["status"] == "issues_found"
+    # Bridge repairs apply; nothing in the memory bridge remains an issue.
+    assert fix_res["status"] == "ok"
     assert "created_verdict_dir" in fix_res["repaired"]
 
     # 3. Configure bridges then test uninstall
@@ -144,3 +147,26 @@ def test_doctor_and_uninstall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     un_res = uninstall_memory_bridge(home_dir=home_dir, cwd=cwd_dir, purge_data=False)
     assert un_res["status"] == "success"
     assert ".mcp.json" in un_res["uninstalled_targets"]
+
+
+def test_doctor_missing_memory_db_is_warning_and_fix_repairs(tmp_path: Path) -> None:
+    """A fresh home reports both memory-DB keys as warnings; --fix repairs both."""
+    home_dir = tmp_path / "home"
+    cwd_dir = tmp_path / "repo"
+    home_dir.mkdir()
+    cwd_dir.mkdir()
+
+    scan = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=False)
+    for key in ("missing_memory_db", "missing_memory_db_file"):
+        assert key in scan["warnings"]
+        assert key not in scan["issues"]
+    assert not (home_dir / ".verdict").exists()
+
+    fixed = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=True)
+    assert "created_verdict_dir" in fixed["repaired"]
+    assert "initialized_memory_db" in fixed["repaired"]
+    assert (home_dir / ".verdict" / "memory.db").is_file()
+
+    after = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=False)
+    assert "missing_memory_db" not in after["warnings"]
+    assert "missing_memory_db_file" not in after["warnings"]

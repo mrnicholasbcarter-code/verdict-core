@@ -16,7 +16,7 @@ from verdict.session_economics import ConcreteRoute
 
 
 def _decision(route: ConcreteRoute, *, now: Any = None, trajectory_id: str = "traj-104"):
-    # Local proof-only fixture reuses the canonical BOD-104 contracts and optimizer.
+    # Local proof-only fixture reuses the canonical the execution-path authority optimizer (ADR-035) contracts and optimizer.
     from tests.test_execution_path import NOW, _budget, _cost, _offer, _plan, _slice
 
     plan = _plan(candidate_id=route.route_id, intrinsic=True)

@@ -1,4 +1,4 @@
-"""Tests for BOD-198 provider identity (codiv_routes)."""
+"""Tests for the codiv failure classification and provider identity design provider identity (codiv_routes)."""
 
 import unittest
 

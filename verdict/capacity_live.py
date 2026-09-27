@@ -1,4 +1,4 @@
-"""Local live capacity discovery (BOD-129 follow-up).
+"""Local live capacity discovery (capacity evidence follow-up).
 
 Evidence only: detect CLIs / config / auth presence, optionally shell official
 CLIs with fixed argv + bounded timeout, or load aggregator JSON from known

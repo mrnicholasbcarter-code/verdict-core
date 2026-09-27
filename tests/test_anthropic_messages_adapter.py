@@ -1,4 +1,4 @@
-"""Targeted BOD-102 adapter tests — thin Anthropic Messages boundary."""
+"""Targeted adapter tests — thin Anthropic Messages boundary."""
 
 from verdict.anthropic_messages_adapter import (
     SUPPORTED_SUBSET,

@@ -1,14 +1,15 @@
 # ADR-029: Portfolio repositioning plan — hygiene, positioning, launch
 
-- **Status:** Accepted
+- **Status:** Superseded (by this remediation)
 - **Date:** 2026-09-06
+- **Superseded note:** The launch-sequencing and career-collateral framing in this ADR is no longer the repo's direction; the career-collateral artifacts it referenced (résumé and professional-network profile drafts, a technical-narrative bank, and a press-release package) were removed from the repository in the public-docs remediation pass. This record is kept for the historical decision trail cited by ADR-030 and `docs/DEAD_CODE_AUDIT.md`.
 - **Deciders:** Nick (repo owner)
 - **Related:** [ADR-028](ADR-028-launch-gate-tooling.md); workspace-level ADR "GitHub Portfolio Cleanup" in `/home/nick/dev/CLAUDE-decisions.md` (2026-09-06); tracked via GitHub Project "Verdict Portfolio Plan" (`mrnicholasbcarter-code`, project #5) and issues #439–#448 in this repo
 
 ## Context
 
 A five-agent review of the whole GitHub portfolio (2026-09-06) found that `verdict-core` — the
-flagship repo for both a job search and a trending-repo push — tracked 860 files of AI-agent
+flagship repo for both career-collateral launch and a trending-repo push — tracked 860 files of AI-agent
 workspace artifacts (767 approval-log JSONs under `evidence/`, a duplicate `Docs/` tree,
 `discovery/`, `exports/`, two `CLAUDE.md` backups, a `.mcp.json` leaking a local absolute path,
 a dead `node/` stub, a one-off scratch script, and 79 regenerated `.verdict/adaptive_state/`
@@ -55,7 +56,7 @@ this repo has no authority over them.
 7. **Ship a LiteLLM custom-router plugin** (issue #446) as a one-import-line distribution
    surface inside an ecosystem this repo does not otherwise reach.
 8. **Publish a blog post** (issue #447) covering the benchmark and the cleanup story, for the
-   job-search track.
+   career-collateral launch track.
 9. **Sequence launch last** (issue #448): `Awesome-Routing-LLMs` PR now (low bar), a coordinated
    48-hour Tuesday–Thursday window (Show HN, r/LocalLLaMA, r/MachineLearning, X, Product Hunt),
    a LangChain/LlamaIndex integration PR the following week, newsletter outreach only after a
@@ -76,4 +77,4 @@ this repo has no authority over them.
   operations work (visibility, docs, launch sequencing), not a spec-kit feature change to the
   router itself.
 
-> **BOD-17 outcome:** Core chose **deletion** of Ruflo/swarm/hivemind/SONA/neural modules (not `verdict/experimental/` relocation). Memory plane stayed canonical. See ADR-023 SUPERSEDED and BOD-131.
+> **Ruflo/swarm/hivemind removal outcome:** Core chose **deletion** of Ruflo/swarm/hivemind/SONA/neural modules (not `verdict/experimental/` relocation). Memory plane stayed canonical. See ADR-023 SUPERSEDED and the ongoing documentation-hygiene pass.

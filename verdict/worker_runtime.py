@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from verdict.admission import AdmittedSet, active_controller_route, load_live_admission
 from verdict.availability import (
     AvailabilityCandidate,
     AvailabilityReport,
@@ -27,6 +28,7 @@ from verdict.availability import (
 )
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.subagent_selection import (
+    DEFAULT_OMNIROUTE_URL,
     PROVIDER_SCOPE_FAILURE_CATEGORIES,
     HealthCache,
     HealthResult,
@@ -38,6 +40,9 @@ from verdict.subagent_selection import (
     eligible_worker_candidates,
     openai_health_probe,
 )
+
+# Source label for the bounded live confirmation the worker path runs before launch.
+CONFIRMATION_SOURCE = "worker_probe:openai_health_probe"
 
 
 @dataclass(frozen=True)
@@ -227,8 +232,19 @@ class WorkerController:
         now: Callable[[], datetime] | None = None,
         emit: Callable[[dict[str, Any]], None] | None = None,
         validator: Callable[[str], bool] | None = None,
+        admitted: AdmittedSet | None = None,
+        require_admission: bool = False,
     ) -> None:
-        self.candidates = eligible_worker_candidates(task, inventory_rows, prime_selectors)
+        # The canonical admitted set is applied before Prime visibility, ranking
+        # and probing; replacements iterate this same narrowed list only.
+        self.admitted = admitted
+        self.candidates = eligible_worker_candidates(
+            task,
+            inventory_rows,
+            prime_selectors,
+            admitted=admitted,
+            require_admission=require_admission,
+        )
         self.probe, self.adapter, self.cache, self.budget = probe, adapter, cache, budget
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.emit = emit or (lambda event: None)
@@ -311,6 +327,16 @@ class WorkerController:
                     "or restore provider capacity",
                 )
             health = self.cache.usable(candidate.selector, now=self.now())
+            # Launch gate: an admitted route that is not proven healthy needs a
+            # bounded live confirmation (this probe) for this exact route first.
+            # A cached healthy hit is not proof for an unverified route.
+            confirming = (
+                self.admitted is not None
+                and not self.admitted.launchable(candidate.route_id)
+                and (health is None or health.healthy)
+            )
+            if confirming:
+                health = None
             if health is None:
                 try:
                     health = await asyncio.wait_for(
@@ -325,6 +351,23 @@ class WorkerController:
                     self.cache.record(candidate.selector, health, now=self.now())
                 else:
                     self.cache.record_failure(candidate, health, now=self.now())
+                if confirming and self.admitted is not None:
+                    observed = self.now().isoformat()
+                    self.admitted = self.admitted.record_confirmation(
+                        candidate.route_id,
+                        healthy=health.healthy,
+                        source=CONFIRMATION_SOURCE,
+                        observed_at=observed,
+                        category=health.category,
+                    )
+                    self.event(
+                        "confirmation",
+                        model=candidate.selector,
+                        source=CONFIRMATION_SOURCE,
+                        observed_at=observed,
+                        confirmed=health.healthy,
+                        classification=health.category,
+                    )
             self.event(
                 "health",
                 model=candidate.selector,
@@ -347,6 +390,9 @@ class WorkerController:
                 )
                 previous = candidate.selector
                 continue
+            if self.admitted is not None:
+                # Asserted precondition: admitted AND (proven healthy OR confirmed).
+                self.admitted.require_launchable(candidate.route_id, surface="worker_runtime.spawn")
             number = len(self.attempts) + 1
             self.event(
                 "selection",
@@ -566,6 +612,53 @@ class PrimeFileAdapter:
         await self.rpc("delete", child_id=handle["rlm_child_id"])
 
 
+def _bootstrap_gateway_url() -> str | None:
+    """Gateway named by the shared bootstrap contract, or ``None`` if it names none.
+
+    Keeps the worker on the same gateway precedence as every other path
+    (environment, then config ``gateway_url``, then the gateway provider). A
+    configuration fault is not swallowed into a different gateway: it returns
+    ``None`` and the explicit runtime config / documented default applies.
+    """
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
+
+    try:
+        bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
+    except BootstrapError:
+        return None
+    return bootstrap.gateway_url
+
+
+def _worker_admission(config: Mapping[str, Any], rows: Iterable[Mapping[str, Any]]) -> AdmittedSet:
+    """Canonical live admission, then worker-only scope and controller exclusion."""
+    from verdict.orchestration.run import resolve_api_key
+
+    gateway = str(config.get("gateway") or _bootstrap_gateway_url() or DEFAULT_OMNIROUTE_URL)
+    task = config.get("task") or {}
+    required = {str(c) for c in task.get("required_capabilities") or ()}
+    if task.get("reasoning"):
+        required.add("reasoning")
+    admitted = load_live_admission(
+        gateway,
+        now=datetime.now(timezone.utc),
+        api_key=resolve_api_key(),
+        inventory_rows=list(rows),
+        required_capabilities=frozenset(required),
+        min_context_tokens=int(task.get("min_context_tokens") or 0),
+    )
+    prefixes = config.get("route_prefixes") or ()
+    if isinstance(prefixes, str):
+        prefixes = [p for p in prefixes.split(",") if p.strip()]
+    admitted = admitted.restrict_prefixes(list(prefixes))
+    return admitted.exclude_controller(
+        str(config.get("controller_route") or "") or active_controller_route()
+    )
+
+
 async def cli_run(directory: Path) -> int:
     config = json.loads((directory / "config.json").read_text())
     events = directory / "events.jsonl"
@@ -577,28 +670,6 @@ async def cli_run(directory: Path) -> int:
             stream.write(json.dumps(event) + "\n")
 
     try:
-        # CLI registry listing is complete; find_models has a bounded search limit.
-        process = await asyncio.create_subprocess_exec(
-            "prime-agent",
-            "model",
-            "list",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), 20)
-        except TimeoutError:
-            process.kill()
-            await process.communicate()
-            raise
-        if process.returncode:
-            raise RuntimeError("Prime model registry unavailable: " + stderr.decode()[:500])
-        selectors = [
-            "/".join(line.split()[:2])
-            for line in stdout.decode().splitlines()[1:]
-            if len(line.split()) >= 2
-        ]
-
         task = worker_task_from_config(config.get("task", {}))
         base_url = (
             os.environ.get("OMNIROUTE_BASE_URL")
@@ -623,6 +694,39 @@ async def cli_run(directory: Path) -> int:
             asyncio.to_thread(transport.catalog), asyncio.to_thread(transport.runtime)
         )
         rows = _catalog_rows(catalog_payload)
+        # One catalog GET feeds both the Prime visibility refresh and admission.
+        # The snapshot is visibility only; admission and the exact confirmation
+        # probe below still decide launch authority.
+        from verdict.harness_prime import refresh_omniroute_visibility
+
+        visibility = await asyncio.to_thread(
+            refresh_omniroute_visibility,
+            fetch_rows=lambda: rows,
+            source=transport.base_url.rstrip("/") + "/v1/models",
+            force=True,
+        )
+        # CLI registry listing is complete; find_models has a bounded search limit.
+        process = await asyncio.create_subprocess_exec(
+            "prime-agent",
+            "model",
+            "list",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), 20)
+        except TimeoutError:
+            process.kill()
+            await process.communicate()
+            raise
+        if process.returncode:
+            raise RuntimeError("Prime model registry unavailable: " + stderr.decode()[:500])
+        selectors = [
+            "/".join(line.split()[:2])
+            for line in stdout.decode().splitlines()[1:]
+            if len(line.split()) >= 2
+        ]
+
         availability = OmniRouteAvailabilityAdapter(
             StaticOmniRouteTransport(catalog_payload, runtime_payload)
         ).evaluate(_worker_requirements(task))
@@ -640,8 +744,19 @@ async def cli_run(directory: Path) -> int:
                 "worker_preprobe_candidates": sorted(preprobe_ids),
                 "allowed_route_prefixes": sorted(task.allowed_route_prefixes),
                 "excluded_route_ids": sorted(task.excluded_route_ids),
+                "prime_visibility": {
+                    "source": visibility.source,
+                    "timestamp": visibility.timestamp,
+                    "count": visibility.count,
+                    "digest": visibility.digest,
+                    "refresh_failure": visibility.failure.to_dict() if visibility.failure else None,
+                },
             },
         )
+        # Canonical live admission stays authoritative; #626's availability and
+        # task policy narrow the pool further (intersection = fail closed).
+        admitted = await asyncio.to_thread(_worker_admission, config, rows)
+        admitted.write_receipt(directory / "admission.json")
         if not candidates:
             raise RuntimeError(
                 "no worker route passed canonical availability, Prime-visibility, "
@@ -658,8 +773,15 @@ async def cli_run(directory: Path) -> int:
             cache=HealthCache(),
             budget=RuntimeBudget(**config.get("budget", {})),
             emit=emit,
+            admitted=admitted,
+            require_admission=True,
         )
-        outcome = await controller.run(config["prompt"])
+        try:
+            outcome = await controller.run(config["prompt"])
+        finally:
+            # Persist confirmation results (source + observed_at) with the set.
+            if controller.admitted is not None:
+                controller.admitted.write_receipt(directory / "admission.json")
     except Exception as exc:
         outcome = WorkerOutcome(
             "FAIL_CLOSED",

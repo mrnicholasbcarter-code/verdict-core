@@ -1,4 +1,4 @@
-"""Decision-signal provider factory (BOD-235).
+"""Decision-signal provider factory (TYPESAFE credentials migration).
 
 Returns a provider when VERDICT_DECISION_SIGNALS_MODE is SHADOW or ADVISORY
 and TYPESAFE_API_KEY is present; returns None otherwise.

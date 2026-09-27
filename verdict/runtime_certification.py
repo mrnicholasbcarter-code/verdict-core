@@ -1,4 +1,4 @@
-"""Runtime certification — evidence-only discovery→normalize→certify (BOD-92).
+"""Runtime certification — evidence-only discovery→normalize→certify (passport).
 
 This module certifies harnesses, gateways, MCP/intelligence providers, and
 model pools from injected snapshots and optional plugin detectors.  It records
@@ -6,15 +6,16 @@ ready/degraded/unavailable/unsupported state, freshness/TTL, harness capability
 parity (``supported|partial|unsupported``), and memory/docs authority classes.
 
 **Not routing authority.** Reports never select routes, STAY/SWITCH, or
-dispatch targets.  Consumers (BOD-104/119/122/124) fuse this evidence later.
+dispatch targets.  Execution-path, session-economics, candidate-pool, and
+capability-bootstrap consumers fuse this evidence later.
 
-Harness parity contract (feeds BOD-124 setup recommendations)
--------------------------------------------------------------
+Harness parity contract (feeds capability-bootstrap setup recommendations)
+--------------------------------------------------------------------------
 For each discovered harness, ``CertifiedComponent.parity`` lists facets from
 ``HARNESS_PARITY_FACETS``.  Binary/config *presence* alone never upgrades a
-facet to ``supported``; each facet requires explicit evidence.  BOD-124 may
-read parity to recommend install/config steps; BOD-80 may surface unsupported
-hooks.  Unsupported ops and missing quota/cache remain explicit ``None`` /
+facet to ``supported``; each facet requires explicit evidence.  Capability
+bootstrap may read parity to recommend install/config steps; setup/doctor
+surfaces may surface unsupported hooks.  Unsupported ops and missing quota/cache remain explicit ``None`` /
 limitations — never fabricated.
 """
 
@@ -84,7 +85,7 @@ class CertificationState(str, Enum):
 
 
 class ParityLevel(str, Enum):
-    """Harness capability-parity levels consumed by BOD-124."""
+    """Harness capability-parity levels consumed by capability bootstrap DX."""
 
     SUPPORTED = "supported"
     PARTIAL = "partial"

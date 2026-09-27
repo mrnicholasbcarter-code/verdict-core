@@ -1,4 +1,4 @@
-"""Core-owned model metadata records with per-field provenance (BOD-108).
+"""Core-owned model metadata records with per-field provenance (Core metadata store).
 
 OmniRoute is inventory/execute/health only. Every stored cap or soft score
 cites ``source`` plus ``version`` and/or ``fetched_at``. Soft ranks are stored
@@ -323,7 +323,7 @@ class ModelMetadataRecord:
 
 @dataclass(frozen=True)
 class MetadataDrop:
-    """Named drop for BOD-100: unmapped, required-unknown, stale, or missing target."""
+    """Named drop for capability gate: unmapped, required-unknown, stale, or missing target."""
 
     omniroute_id: str
     reason: DropReason
@@ -433,7 +433,7 @@ class FieldConflict:
 
 @dataclass(frozen=True)
 class MetadataLookup:
-    """Read API for later BOD-100 capability gating."""
+    """Read API for later capability gating."""
 
     omniroute_id: str
     record: ModelMetadataRecord | None

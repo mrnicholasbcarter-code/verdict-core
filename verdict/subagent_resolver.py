@@ -231,7 +231,7 @@ def resolve_subagent_model(
     diversity_from: list[str] | None = None,
     json_output: bool = False,
 ) -> dict[str, Any] | None:
-    """Resolve a role to the already-authorized BOD-104 concrete route.
+    """Resolve a role to the already-authorized execution-path authority concrete route.
 
     ``role`` remains a caller label for compatibility. It is not a selector:
     automatic subagent launches must receive an in-process

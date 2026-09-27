@@ -1,0 +1,13 @@
+{
+ "node_id": "parser",
+ "attempt": 2,
+ "route_id": "demo-free/birch-coder",
+ "ok": false,
+ "reported_model": "demo-free/birch-coder",
+ "stop_reason": "",
+ "status_code": 429,
+ "error": "rate limited",
+ "output_tail": "",
+ "duration_seconds": 0.0,
+ "session_ref": "fault-injected:rate_limit"
+}

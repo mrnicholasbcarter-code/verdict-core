@@ -1,6 +1,6 @@
 """Streamlit analytics dashboard for the Verdict decision log.
 
-Spend truthfulness (BOD-113 / BOD-117): "measured" spend is shown only from
+Spend truthfulness (outcome receipts): "measured" spend is shown only from
 post-execution outcome receipts (``verdict-outcomes.jsonl``, written by the
 serve path after the gateway answers and joined to decisions by
 ``request_id``). The pre-execution decision row cannot know what an execution

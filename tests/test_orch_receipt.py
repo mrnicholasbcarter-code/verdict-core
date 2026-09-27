@@ -171,6 +171,21 @@ def test_unknown_event_type_rejected(tmp_path: Path) -> None:
 # ---------------------------------------------------------------- receipt
 
 
+def test_receipt_persists_run_retry_budget(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(_graph().to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit(
+        "run_started",
+        run_id="run-1",
+        goal="add feature x",
+        retry_budget={"max_attempts_per_node": 4, "max_parallel": 2},
+    )
+    receipt = build_run_receipt(run_dir)
+    assert receipt["retry_budget"] == {"max_attempts_per_node": 4, "max_parallel": 2}
+
+
 def test_receipt_fields_with_reassignment_and_fault_injection(tmp_path: Path) -> None:
     receipt = build_run_receipt(_run(tmp_path, review=PASS))
     assert receipt["schema"] == RECEIPT_SCHEMA

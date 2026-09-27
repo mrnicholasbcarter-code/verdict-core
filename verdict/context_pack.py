@@ -719,7 +719,7 @@ class ContextReceipt:
     unresolved_uncertainties: tuple[str, ...] = ()
     created_at: str = field(default_factory=_now_iso)
     schema_version: str = CONTEXT_SCHEMA_VERSION
-    # BOD-123 additive: capability coverage (requested/available/used/omitted).
+    # Context Intelligence additive: capability coverage (requested/available/used/omitted).
     capability_coverage: Mapping[str, Any] | None = None
 
     @classmethod
@@ -772,7 +772,7 @@ class ContextReceipt:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ContextReceipt:
         migrated = dict(value)
-        # Pre-BOD-123 receipts omit capability_coverage.
+        # Pre-Context Intelligence receipts omit capability_coverage.
         if "capability_coverage" not in migrated:
             migrated["capability_coverage"] = None
         payload = _strict(

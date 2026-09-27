@@ -1,5 +1,5 @@
 """
-Pure advisory reordering for OpenJev ADVISORY mode (BOD-238).
+Pure advisory reordering for OpenJev ADVISORY mode.
 
 advise_order() accepts an admitted candidate list and a DecisionSignalSetV1
 (or None) and returns the same candidates in advisory order plus an
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Public cut-off names (documented as uncalibrated initial values — BOD-203).
+# Public cut-off names (documented as uncalibrated initial values).
 _DEFAULT_MIN_CONFIDENCE = 0.6
 _FRONTIER_WORTHY_KEY = "frontier_worthy"
 _COMPLEXITY_KEY = "complexity"
@@ -58,7 +58,7 @@ def _mode_from_env() -> str:
     """Thin alias for shadow.get_signals_mode(); kept for test and caller back-compat.
 
     shadow.get_signals_mode() is the single authoritative parser; using it here
-    ensures ONE mode parser for the whole decision-signals stack (BOD-238 item B.1).
+    ensures ONE mode parser for the whole decision-signals stack.
     """
     from verdict.decision_signals.shadow import get_signals_mode as _gsm
 
@@ -189,7 +189,7 @@ def advise_order(
         # (tier-3 is cheaper/weaker than tier-1) as tiebreak, then stable id.
         # Cost is derived from ModelInfo.pricing (keys "input" and "output", cost
         # per 1k tokens) when present; falls back to cost_per_1k, then tier proxy.
-        # Both pricing and tier-proxy are documented as uncalibrated (BOD-203).
+        # Both pricing and tier-proxy are documented as uncalibrated.
         def _economy_cost(m: Any) -> tuple[float, int, str, str]:
             p: dict[str, float] = getattr(m, "pricing", None) or {}
             if p:

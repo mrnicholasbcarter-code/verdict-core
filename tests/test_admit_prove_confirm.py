@@ -305,7 +305,7 @@ def test_gate_loads_passports_from_prove_at_rest_store(tmp_path: Path) -> None:
     assert REASON_NO_PASSPORT in drop_reasons
 
 
-# --- BOD-112: authoritative free-first confirm shortlist --------------------
+# --- authoritative free-first confirm shortlist --------------------
 
 
 def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:

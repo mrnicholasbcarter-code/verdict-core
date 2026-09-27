@@ -1,4 +1,4 @@
-"""Offline contract tests for SharedMemoryProvider (BOD-145 / MEMORY M1)."""
+"""Offline contract tests for SharedMemoryProvider (the shared memory provider (ADR-033) / MEMORY M1)."""
 
 from __future__ import annotations
 

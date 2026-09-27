@@ -1,9 +1,9 @@
-"""Candidate Pool Intelligence — bounded evidence-fused Top-K shortlist (BOD-122).
+"""Candidate Pool Intelligence — bounded evidence-fused Top-K shortlist.
 
 Converts a huge advertised model universe into a small, high-recall,
 evidence-backed pool of potentially capable concrete routes.
 
-Funnel: discover → normalize identity (via BOD-121 ``lookup_omniroute_id``) →
+Funnel: discover → normalize identity (via ``lookup_omniroute_id``) →
 hard eliminate → task fingerprint → evidence fuse → targeted probe ladder →
 alias/family dedupe → provider diversity → Top-K.
 

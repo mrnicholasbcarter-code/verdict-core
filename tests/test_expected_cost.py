@@ -1,4 +1,4 @@
-"""Proof tests for expected complete-strategy cost (BOD-54)."""
+"""Proof tests for expected complete-strategy cost."""
 
 from __future__ import annotations
 

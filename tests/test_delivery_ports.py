@@ -1,4 +1,4 @@
-"""BOD-68 delivery ports — subprocess-mocked; no live GitHub."""
+"""delivery ports — subprocess-mocked; no live GitHub."""
 
 from __future__ import annotations
 

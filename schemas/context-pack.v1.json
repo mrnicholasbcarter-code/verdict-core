@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://verdict.dev/schemas/context-pack.v1.json",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/context-pack.v1.json",
   "title": "Verdict ContextPack v1",
   "type": "object",
   "required": ["schema_version", "plan", "unit", "pack", "receipt"],

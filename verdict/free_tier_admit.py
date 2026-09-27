@@ -14,7 +14,7 @@ fails closed — the caller must not treat frontier-primary fallback as success.
 Serve cheap-path callers then intersect this receipt with fresh prove-at-rest
 passports and a budgeted confirm probe (see ``verdict.admit_prove_confirm``).
 
-BOD-127: this module is a candidate *feed* only. ``chosen`` is an
+This module is a candidate *feed* only. ``chosen`` is an
 advisory ranking of admitted free∩active identities — never production
 serve-path strategy authority. Serve path must consume
 ``optimize_execution_path`` / ``ExecutionPathDecision``.
@@ -70,7 +70,7 @@ REASON_PAID_FALLBACK = "paid_fallback"
 REASON_TASK_INSTRUCTIONS_OMITTED = "task_instructions_omitted"
 REASON_SPEND_POLICY_EXCLUDES_PAID = "spend_policy_excludes_paid"
 REASON_SPEND_POLICY_REQUIRES_FRONTIER = "spend_policy_requires_frontier"
-# Stable public eligibility diagnostics (BOD-170). Legacy reason strings remain
+# Stable public eligibility diagnostics. Legacy reason strings remain
 # accepted on old receipts, but new production decisions use these names.
 REASON_OPAQUE_ROUTE_DISALLOWED = "opaque_route_disallowed"
 REASON_PROVIDER_NOT_CONNECTED = "provider_not_connected"
@@ -229,18 +229,18 @@ class CheapPathContextPack:
     units: tuple[ContextUnit, ...] = ()
     included: tuple[IncludedProvenance, ...] = ()
     pack_state: PackState = "empty"
-    # BOD-110 completeness contract: the task instructions must be packed, and
+    # pack completeness contract: the task instructions must be packed, and
     # every task-required source must be included, before ``hydrated`` is possible.
     task_complete: bool = True
     required_sources: tuple[str, ...] = ()
-    # BOD-128: BudgetReceipt + Context Trust feed for BOD-104 offers.
+    # BudgetReceipt + Context Trust feed for execution-path authority offers.
     budget_receipt: BudgetReceipt | None = None
     context_trust_admitted: bool = True
     capability_coverage: dict[str, Any] | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
-        """Receipt-facing alias of ``included`` (BOD-106 / QA smoke field)."""
+        """Receipt-facing alias of ``included`` (pack_state classification / QA smoke field)."""
         return self.included
 
     @property
@@ -295,13 +295,13 @@ def build_cheap_path_context_pack(
 
     Gather real workspace units (repo docs / architecture / ADRs / project docs,
     plus MCP only when a source is configured), admit every external unit through
-    Context Trust (BOD-126), allocate via BudgetReceipt (BOD-125), then compile
+    Context Trust, allocate via BudgetReceipt, then compile
     only the allocated set. High-value roots (ADR, architecture, README) remain
     preferred under budget. Missing sources become named omissions — never
     invented content. An empty gather still compiles the task and does not block
     execute.
 
-    ``pack_state`` classifies the result for receipts (BOD-106). Savings stay
+    ``pack_state`` classifies the result for receipts. Savings stay
     blocked until ``hydrated``; empty/partial with a digest is still a hydrate
     FAIL. Hydrate/compiler errors stamp ``failed`` and still do not block execute.
     """
@@ -432,7 +432,7 @@ def build_cheap_path_context_pack(
         )
     except ContextBudgetError as exc:
         if exc.code == "mandatory_overflow":
-            # Mandatory task cannot fit usable budget — BOD-110 failed pack.
+            # Mandatory task cannot fit usable budget — pack completeness contract failed pack.
             digest = f"sha256:{sha256(task.encode('utf-8')).hexdigest()}"
             return CheapPathContextPack(
                 pack_digest=digest,
@@ -516,7 +516,7 @@ def _external_source_kind(unit: ContextUnit) -> SourceKind | None:
 def _admit_external_units_for_compile(
     units: Sequence[ContextUnit], *, task_policy: str, epoch: str
 ) -> tuple[list[ContextUnit], tuple[NamedOmission, ...]]:
-    """Run BOD-126 admit on every external unit before model-bound compile."""
+    """Run security boundary admit on every external unit before model-bound compile."""
     admitted: list[ContextUnit] = []
     omissions: list[NamedOmission] = []
     for unit in units:
@@ -728,7 +728,7 @@ class FreeTierAdmitReceipt:
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
-        """Receipt-facing alias of ``included`` (BOD-106 / QA smoke field)."""
+        """Receipt-facing alias of ``included`` (pack_state classification / QA smoke field)."""
         return self.included
 
     @property
@@ -1072,7 +1072,7 @@ def _looks_free_by_name(identity_id: str) -> bool:
 def _choose_sort(
     identity_id: str, active_healthy: frozenset[str], free_admitted: Collection[str] | None = None
 ) -> tuple[int, int, int, str]:
-    """Free-first ordering keyed on authoritative free-tier membership (BOD-112).
+    """Free-first ordering keyed on authoritative free-tier membership.
 
     ``free_admitted`` is the free∩active set observed from OmniRoute's free-tier
     summary. When it is provided, an identity is free iff it is a member — a free

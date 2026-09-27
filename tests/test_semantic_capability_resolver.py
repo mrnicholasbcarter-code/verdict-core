@@ -1,4 +1,4 @@
-"""BOD-87: semantic capability vocabulary + provider resolver contract proofs."""
+"""semantic capability vocabulary + provider resolver contract proofs."""
 
 from __future__ import annotations
 

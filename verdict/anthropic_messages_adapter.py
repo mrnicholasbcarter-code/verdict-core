@@ -1,4 +1,4 @@
-"""Thin Anthropic Messages adapter for BOD-102.
+"""Thin Anthropic Messages adapter.
 
 Delegates the Messages wire protocol to a configured upstream gateway
 while preserving Verdict's admission, receipt, and context contracts.

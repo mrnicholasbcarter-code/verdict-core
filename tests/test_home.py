@@ -1,4 +1,4 @@
-"""BOD-186: `verdict` home screen."""
+"""`verdict` home screen."""
 
 from __future__ import annotations
 

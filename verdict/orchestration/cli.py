@@ -1,4 +1,4 @@
-"""``verdict orchestrate | watch | receipt | eligibility`` — the interview surface.
+"""``verdict orchestrate | watch | receipt | eligibility`` — the orchestration CLI surface.
 
 All four commands are thin: they wire live OmniRoute discovery into the
 orchestration components and render with ``verdict.orchestration.tui``.
@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import threading
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -94,7 +95,59 @@ def add_parsers(subparsers: Any) -> None:
     elig.add_argument("--probe", action="store_true", help="Probe lazily to reach SELECTED")
     elig.add_argument("--reasoning", action="store_true")
     elig.add_argument("--frontier", action="store_true")
+    elig.add_argument(
+        "--provider-family",
+        action="append",
+        default=[],
+        metavar="FAMILY[,FAMILY]",
+        help="Only evaluate routes whose id prefix (before '/') is one of these "
+        "families, e.g. cc,kr; repeatable. Listed in output metadata.",
+    )
     elig.add_argument("--json", action="store_true")
+    elig.add_argument(
+        "--no-pager", action="store_true", help="Never pipe human output through a pager"
+    )
+
+    _add_prime_sync_models(subparsers)
+
+
+def _add_prime_sync_models(subparsers: Any) -> None:
+    """Attach ``verdict harness prime sync-models`` to the existing harness parser.
+
+    ``harness prime`` is registered by ``verdict.commands.parsers_harness``
+    before this module runs; this only adds one leaf subcommand to it.
+    """
+    harness = getattr(subparsers, "choices", {}).get("harness")
+    prime = _subcommand(harness, "prime")
+    prime_sub = _subparsers_action(prime)
+    if prime_sub is None or "sync-models" in prime_sub.choices:
+        return
+    sync = prime_sub.add_parser(
+        "sync-models",
+        help="Rewrite providers.omniroute.models in ~/.prime/agent/models.json "
+        "from the live gateway /v1/models (backup first)",
+    )
+    sync.add_argument(
+        "--gateway",
+        default=os.environ.get("OMNIROUTE_BASE_URL")
+        or os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128"),
+        help="OmniRoute gateway base URL (default: $OMNIROUTE_BASE_URL or :20128)",
+    )
+    sync.add_argument(
+        "--dry-run", action="store_true", help="Print added/removed ids; write nothing"
+    )
+
+
+def _subparsers_action(parser: Any) -> Any:
+    for action in getattr(parser, "_actions", []):
+        if isinstance(action, argparse._SubParsersAction):
+            return action
+    return None
+
+
+def _subcommand(parser: Any, name: str) -> Any:
+    action = _subparsers_action(parser)
+    return action.choices.get(name) if action is not None else None
 
 
 def dispatch(args: argparse.Namespace) -> int | None:
@@ -107,8 +160,37 @@ def dispatch(args: argparse.Namespace) -> int | None:
         "run-receipt": _receipt,
         "eligibility": _eligibility,
     }
+    if (
+        getattr(args, "command", "") == "harness"
+        and getattr(args, "harness_target", "") == "prime"
+        and getattr(args, "harness_prime_command", "") == "sync-models"
+    ):
+        return _prime_sync_models(args)
     handler = handlers.get(getattr(args, "command", ""))
     return handler(args) if handler else None
+
+
+def _prime_sync_models(args: argparse.Namespace) -> int:
+    from verdict.harness_prime import HarnessPrimeError, format_sync_models, sync_models
+    from verdict.orchestration.run import fetch_inventory, resolve_api_key
+
+    gateway = str(args.gateway).rstrip("/")
+    if gateway.endswith("/v1"):
+        gateway = gateway[: -len("/v1")]
+    try:
+        rows = fetch_inventory(gateway, api_key=resolve_api_key())
+    except Exception as exc:  # network/shape failure: report, never write
+        print(
+            f"BLOCKED: cannot read live inventory from {gateway}/v1/models: {exc}", file=sys.stderr
+        )
+        return 2
+    try:
+        result = sync_models(rows, dry_run=bool(args.dry_run))
+    except HarnessPrimeError as exc:
+        print(f"BLOCKED: {exc}", file=sys.stderr)
+        return 1
+    print(format_sync_models(result), end="")
+    return 0
 
 
 def _state_dir() -> Path:
@@ -116,18 +198,54 @@ def _state_dir() -> Path:
 
 
 def build_selector(
-    gateway: str, *, scope: str, prefer: str, load: Any = None, state_file: Path | None = None
+    gateway: str,
+    *,
+    scope: str,
+    prefer: str,
+    load: Any = None,
+    state_file: Path | None = None,
+    provider_families: tuple[str, ...] = (),
+    required_capabilities: frozenset[str] = frozenset(),
+    min_context_tokens: int = 0,
 ) -> Any:
+    """Admitted eligibility ladder over the live gateway.
+
+    ``required_capabilities`` / ``min_context_tokens`` are the floor every
+    selection from this ladder needs. They go into canonical admission so
+    CAPABILITY drops appear in the receipt. The ladder still applies each
+    request's own requirements later.
+    """
+    from verdict.admission import active_controller_route, admit, default_runtime_evidence
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
     from verdict.subagent_selection import LaunchCandidate, openai_health_probe
 
     key = resolve_api_key()
     rows = fetch_inventory(gateway, api_key=key)
+    connections = fetch_connections(gateway, api_key=key)
+    state_path = state_file or (_state_dir() / "orchestration-health.json")
+    now = datetime.now(timezone.utc)
+    # Canonical admission over the full live inventory first. Scope, provider
+    # family and the active controller are extra narrowing on that set.
+    admitted = admit(
+        rows,
+        connections,
+        # Evidence comes from the ladder state file this ladder reads, so the
+        # admitted set and the ladder cannot disagree about cached health.
+        default_runtime_evidence(now=now, state_dir=state_path.parent, ladder_state=state_path),
+        now=now,
+        required_capabilities=required_capabilities,
+        min_context_tokens=min_context_tokens,
+    )
     prefixes = tuple(p.strip() for p in scope.split(",") if p.strip())
+    admitted = admitted.restrict_prefixes(prefixes).restrict_families(provider_families)
+    admitted = admitted.exclude_controller(active_controller_route())
+    receipt_path = state_path.parent / "admission-latest.json"
+    admitted.write_receipt(receipt_path)
     if prefixes:
         rows = [r for r in rows if str(r.get("id", "")).startswith(prefixes)]
-    connections = fetch_connections(gateway, api_key=key)
+    if provider_families:
+        rows = [r for r in rows if route_prefix(str(r.get("id", ""))) in provider_families]
     raw_probe = openai_health_probe(gateway.rstrip("/") + "/v1", api_key=key, timeout_seconds=30)
 
     def probe(route_id: str) -> Any:
@@ -139,27 +257,57 @@ def build_selector(
         rows,
         connections,
         probe,
-        state_file or (_state_dir() / "orchestration-health.json"),
+        state_path,
         prefer_providers=tuple(p.strip() for p in prefer.split(",") if p.strip()),
         load=load,
-        harness_visible=prime_visibility(),
+        harness_visible=prime_visibility(live_rows=rows),
+        admitted=admitted,
+        admission_receipt=receipt_path,
     )
 
 
-def prime_visibility(path: Path | None = None) -> Any:
-    """Harness gate: a route is spawnable only if Prime's registry lists it.
+def route_prefix(route_id: str) -> str:
+    """Provider family of a gateway route id: the prefix before '/' (``cc/x`` -> ``cc``)."""
+    return route_id.split("/", 1)[0].lower() if "/" in route_id else ""
 
-    Reads model ids only (never credentials) from Prime's models.json. Returns
-    None (no gate) when the registry is absent, e.g. for a non-Prime executor.
+
+def parse_provider_families(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """``["cc,kr", "gc"]`` -> ``("cc", "gc", "kr")`` (deduplicated, sorted, lowercase)."""
+    found = {part.strip().lower() for value in values for part in value.split(",")}
+    return tuple(sorted(f for f in found if f))
+
+
+def prime_visibility(path: Path | None = None, *, live_rows: Any = None) -> Any:
+    """Return the concrete ids Prime can actually spawn, never gateway authority.
+
+    When the caller has just refreshed ``/v1/models``, it supplies those rows
+    here so the local Prime registry is synchronized before selection. A failed
+    sync leaves an LKG sidecar for audit but does not invent visibility: only
+    the concrete ids read from Prime's registry are returned. Health, capacity,
+    entitlement and launch authority stay in their separate gates.
     """
+    from verdict.harness_prime import refresh_omniroute_visibility
+    from verdict.orchestration.eligibility import HarnessVisibility
+
     registry = path or Path.home() / ".prime" / "agent" / "models.json"
+    if live_rows is not None:
+        rows = tuple(row for row in live_rows if isinstance(row, Mapping))
+        # A successful refresh changes Prime's local registry before selection.
+        # On failure its LKG remains auditable, but only registry ids below can
+        # be claimed as actually spawn-visible.
+        refresh_omniroute_visibility(
+            prime_home=registry.parent,
+            source="omniroute:/v1/models",
+            fetch_rows=lambda: rows,
+            force=True,
+        )
     try:
         data = json.loads(registry.read_text(encoding="utf-8"))
         models = data["providers"]["omniroute"]["models"]
-        visible = {str(m["id"]) for m in models if isinstance(m, dict) and m.get("id")}
+        visible = frozenset(str(m["id"]) for m in models if isinstance(m, dict) and m.get("id"))
     except (OSError, ValueError, KeyError, TypeError):
-        return None
-    return lambda route_id: route_id in visible
+        return HarnessVisibility(None, source="none")
+    return HarnessVisibility(visible, source="models.json")
 
 
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
@@ -344,39 +492,118 @@ def _receipt(args: argparse.Namespace) -> int:
     return 0 if outcome == "COMPLETE" and not problems else 1
 
 
+_STAGE_ORDER = ("DISCOVERED", "ENTITLED", "HEALTHY", "AVAILABLE", "TASK_ELIGIBLE", "SELECTED")
+
+
+def eligibility_payload(
+    verdicts: Any, summary: dict[str, int], chosen: Any, filters: dict[str, list[str]]
+) -> dict[str, Any]:
+    """Complete, self-reconciling eligibility record set (never truncated).
+
+    ``summary`` keeps the ladder's cumulative stage counts and adds
+    ``selected`` (the chosen route id or None, equal to ``selected.route_id``)
+    and ``by_reached_stage``: exclusive buckets whose sum is ``evaluated_count``.
+    """
+    records = [v.to_dict() for v in verdicts]
+    buckets = dict.fromkeys(_STAGE_ORDER, 0)
+    buckets["NONE"] = 0
+    for record in records:
+        buckets[record["reached"] or "NONE"] += 1
+    full_summary: dict[str, Any] = dict(summary)
+    full_summary["selected"] = chosen.route_id if chosen else None
+    full_summary["by_reached_stage"] = buckets
+    return {
+        "filters": filters,
+        "evaluated_count": len(records),
+        "summary": full_summary,
+        "selected": chosen.to_dict() if chosen else None,
+        "verdicts": records,
+    }
+
+
+def render_eligibility_text(payload: dict[str, Any]) -> str:
+    """Human view listing every evaluated route: selected, ranked, then rejected by stage."""
+    filters = payload["filters"]
+    active = ", ".join(f"{k}={','.join(v)}" for k, v in sorted(filters.items()) if v)
+    summary = payload["summary"]
+    counts = "  ".join(f"{k.upper()} {v}" for k, v in summary.items() if isinstance(v, int))
+    lines = [
+        f"filters: {active or 'none'}",
+        f"evaluated: {payload['evaluated_count']}  {counts}  SELECTED {summary['selected'] or '-'}",
+    ]
+    records = payload["verdicts"]
+    selected_id = summary["selected"]
+
+    def fmt(r: dict[str, Any]) -> str:
+        rank = "-" if r["rank"] is None else str(r["rank"])
+        return (
+            f"  #{rank:<5} {r['route_id']:<48} {r['provider']:<14} "
+            f"{r['capacity_class']:<13} reached={r['reached'] or '-':<13} "
+            f"failed={r['failed_stage'] or '-':<13} reason={r['reason']}"
+            + (f" cooldown_until={r['cooldown_until']}" if r["cooldown_until"] else "")
+        )
+
+    chosen = [r for r in records if r["route_id"] == selected_id]
+    ranked = sorted(
+        (r for r in records if r["route_id"] != selected_id and r["failed_stage"] is None),
+        key=lambda r: (r["rank"] is None, r["rank"] or 0, r["route_id"]),
+    )
+    rejected = [r for r in records if r["route_id"] != selected_id and r["failed_stage"]]
+    lines.append(f"SELECTED ({len(chosen)})")
+    lines.extend(fmt(r) for r in chosen)
+    lines.append(f"RANKED / ELIGIBLE ({len(ranked)})")
+    lines.extend(fmt(r) for r in ranked)
+    for stage in _STAGE_ORDER:
+        group = [r for r in rejected if r["failed_stage"] == stage]
+        if group:
+            lines.append(f"REJECTED AT {stage} ({len(group)})")
+            lines.extend(fmt(r) for r in sorted(group, key=lambda r: (r["reason"], r["route_id"])))
+    return "\n".join(lines) + "\n"
+
+
+def _page(text: str, *, no_pager: bool) -> None:
+    """Pipe through $PAGER (else ``less -R``) on a TTY; never drops output."""
+    if no_pager or not sys.stdout.isatty():
+        sys.stdout.write(text)
+        return
+    import shlex
+    import subprocess  # nosec B404 - operator-configured pager only
+
+    command = shlex.split(os.environ.get("PAGER") or "less -R")
+    try:
+        subprocess.run(command, input=text, text=True, check=False)  # nosec B603
+    except OSError:
+        sys.stdout.write(text)
+
+
 def _eligibility(args: argparse.Namespace) -> int:
-    selector = build_selector(args.gateway, scope=args.scope, prefer=args.prefer)
+    families = parse_provider_families(getattr(args, "provider_family", []) or [])
     requirements = TaskRequirements(
         required_capabilities=frozenset({"tools"}),
         coding=True,
         reasoning=args.reasoning,
         frontier_worthy=args.frontier,
     )
+    selector = build_selector(
+        args.gateway,
+        scope=args.scope,
+        prefer=args.prefer,
+        provider_families=families,
+        required_capabilities=requirements.required_capabilities,
+        min_context_tokens=requirements.min_context_tokens,
+    )
     now = datetime.now(timezone.utc)
     if args.probe:
         chosen, verdicts = selector.select(requirements, now=now)
     else:
         chosen, verdicts = None, selector.evaluate(requirements, now=now)
-    summary = selector.summary()
+    filters = {
+        "provider_family": list(families),
+        "scope": [p.strip() for p in args.scope.split(",") if p.strip()],
+    }
+    payload = eligibility_payload(verdicts, selector.summary(), chosen, filters)
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "summary": summary,
-                    "selected": chosen.to_dict() if chosen else None,
-                    "verdicts": [v.to_dict() for v in verdicts],
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps(payload, indent=2))
         return 0
-    print("  ".join(f"{k.upper()} {v}" for k, v in summary.items()))
-    ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-    for v in ranked[:15]:
-        print(
-            f"  #{v.rank:<3} {v.route_id:<40} {v.capacity_class.value:<13} {v.plan_label[:28]:<28} "
-            f"{v.reached.value if v.reached else '-'}"
-        )
-    if chosen:
-        print(f"SELECTED {chosen.route_id} ({chosen.capacity_class.value})")
+    _page(render_eligibility_text(payload), no_pager=bool(getattr(args, "no_pager", False)))
     return 0

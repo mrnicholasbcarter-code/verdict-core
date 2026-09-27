@@ -63,17 +63,17 @@ from verdict.repository_files import _split as _split_repository_path
 from verdict.work_unit import WorkUnit, normalize_owned_path
 
 # Compatibility constant for legacy reporting only. Automatic launch paths do
-# not use a default: they require a concrete BOD-104 selected route.
+# not use a default: they require a concrete execution-path authority selected route.
 DEFAULT_EXECUTOR_MODEL = "unresolved/executor"
 
 
 def _resolve_default_executor_model() -> str:
-    """Reject legacy default selection; callers must provide BOD-104 authority."""
+    """Reject legacy default selection; callers must provide execution-path authority."""
     raise AutodevError("automatic executor selection is disabled; provide an ExecutionPathDecision")
 
 
 def _resolve_default_orchestrator_model() -> str:
-    """Reject legacy default selection; callers must provide BOD-104 authority."""
+    """Reject legacy default selection; callers must provide execution-path authority."""
     raise AutodevError(
         "automatic orchestrator selection is disabled; provide an ExecutionPathDecision"
     )
@@ -1059,7 +1059,7 @@ def run_packet_autodev(
     undelegable_reason: str | None = None,
     frontier_review: Callable[[PacketAttempt], str | None] | None = None,
 ) -> PacketAutodevReport:
-    """Run one packet task only on the concrete BOD-104-authorized route."""
+    """Run one packet task only on the concrete execution-path authority-authorized route."""
     decision = _require_launch_decision(execution_path_decision, surface="packet autodev")
     selected_route = decision.selected_route
     assert selected_route is not None  # established by _require_launch_decision
@@ -1122,7 +1122,7 @@ def run_packet_autodev(
             or ""
         )
         # Canary evidence can be recorded and audited, but it is not a route
-        # selector. The exact BOD-104 route remains the only launch identity.
+        # selector. The exact execution-path authority route remains the only launch identity.
         if overlay in admitted and overlay not in {selected_route.route_id, selected_route.model}:
             canary_overlay_ignored = True
 
@@ -1291,7 +1291,7 @@ def run_packet_autodev(
     while index < len(routes) and index < 2:
         route = routes[index]
         # Re-check at the final provider boundary. Harvest/canary/fallback data
-        # may enrich evidence, but it cannot change BOD-104's exact route.
+        # may enrich evidence, but it cannot change execution-path authority's exact route.
         identity = str(
             route.get("model")
             or route.get("actual_identity")
@@ -1459,7 +1459,7 @@ def run_packet_autodev(
 
         if index == 0 and failure_class is not None and replan_execution_path is not None:
             # Recovery cannot append a selector-picked fallback. The caller must
-            # obtain a fresh BOD-104 decision after classifying the failure.
+            # obtain a fresh execution-path authority decision after classifying the failure.
             replan_started_at = datetime.datetime.now(datetime.timezone.utc)
             refreshed = replan_execution_path(attempt)
             if isinstance(refreshed, tuple) and len(refreshed) == 2:
@@ -1487,7 +1487,7 @@ def run_packet_autodev(
                 if not _route_is_admitted(next_route, fallback=True):
                     # A recovery candidate that fails the primary-role fallback
                     # floor is refused, never launched: bounded recovery ends in
-                    # truthful failure (main-era semantics; BOD-55).
+                    # truthful failure (main-era semantics; bounded recovery).
                     index += 1
                     continue
                 _require_route_identity(
@@ -1813,7 +1813,7 @@ def _decision_is_fresher(
 
 
 def _require_launch_decision(decision: Any, *, surface: str) -> Any:
-    """Require BOD-104 authority and return its concrete launch route."""
+    """Require execution-path authority and return its concrete launch route."""
     from verdict.execution_path import ExecutionPathDecision, ExecutionPathError
     from verdict.serve_path import require_serve_path_decision
     from verdict.session_economics import ConcreteRoute
@@ -1888,7 +1888,7 @@ def run_autodev(
     runner: Any = subprocess.run,
 ) -> AutodevReport:
     """Decompose ``objective``, execute each unit, verify it, and record it."""
-    # BOD-104 is the only strategy/route authority for automatic worker launch.
+    # execution-path authority is the only strategy/route authority for automatic worker launch.
     # Resolve the decision before constructing a provider-backed executor.
     decision = _require_launch_decision(execution_path_decision, surface="autodev")
     selected_route = decision.selected_route
@@ -2022,6 +2022,13 @@ def _from_attempt(
     )
 
 
+def _is_ruff_command(cmd: Sequence[str]) -> bool:
+    """Return True if cmd is a ruff command (either 'ruff' or [python, '-m', 'ruff'])."""
+    if not cmd:
+        return False
+    return cmd[0] == "ruff" or (len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "ruff")
+
+
 def _try_mechanical(unit: WorkUnit, repo: Path, *, runner: Any) -> bool:
     """Attempt a deterministic fix, returning whether the tier claims the unit.
 
@@ -2030,9 +2037,12 @@ def _try_mechanical(unit: WorkUnit, repo: Path, *, runner: Any) -> bool:
     the tier ran and the unit's command now passes; verification still confirms
     it independently.
     """
-    if unit.verification_command[0] != "ruff":
+    if not _is_ruff_command(unit.verification_command):
         return False
-    fix = _run(["ruff", "check", "--fix", "--", *unit.owned_files], repo, runner=runner)
+    # Build fixer argv using the same interpreter as the verification command
+    cmd = unit.verification_command
+    prefix = list(cmd[:3]) if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "ruff" else ["ruff"]
+    fix = _run([*prefix, "check", "--fix", "--", *unit.owned_files], repo, runner=runner)
     if fix.get("returncode") == 127:
         return False
     check = _run(list(unit.verification_command), repo, runner=runner)

@@ -1,4 +1,4 @@
-# Dead-Code Audit — BOD-181
+# Dead-Code Audit
 
 Generated: 2025-07-11 · Method: static import-reference scan across `verdict/`, `tests/`, `scripts/`, `pyproject.toml`
 
@@ -48,7 +48,7 @@ These modules have no importer in `verdict/` itself or `scripts/`. They are exer
 |--------|--------------|---------|----------|
 | `scripts/benchmark.py` | benchmark.yml, acceptance-gates.yml | **KEEP** | referenced by benchmark.yml, acceptance-gates.yml |
 | `scripts/check_doc_links.py` | lint.yml, test_check_doc_links.py | **KEEP** | referenced by lint.yml, test_check_doc_links.py |
-| `scripts/check_no_obsolete_architecture.py` | test_bod17_obsolete_architecture_absent.py | **KEEP** | referenced by test_bod17_obsolete_architecture_absent.py |
+| `scripts/check_no_obsolete_architecture.py` | test_obsolete_architecture_absent.py | **KEEP** | referenced by test_obsolete_architecture_absent.py |
 | `scripts/check_structural_risk.py` | ADR-029-portfolio-repositioning-plan.md, test_structural_risk.py | **KEEP** | referenced by ADR-029-portfolio-repositioning-plan.md, test_structural_risk.py |
 | `scripts/evidence_bundle.py` | test_evidence_bundle.py, acceptance-gates.yml | **KEEP** | referenced by test_evidence_bundle.py, acceptance-gates.yml |
 | `scripts/flagship_demo.py` | README.md, DEMO.md | **KEEP** | referenced by README.md, DEMO.md |
@@ -65,7 +65,7 @@ These modules have no importer in `verdict/` itself or `scripts/`. They are exer
 | `scripts/proof/secrets_scan.py` | — | **REMOVE-CANDIDATE** | no references in CI, docs, pyproject, or tests |
 | `scripts/quickstart.py` | acceptance-gates.yml | **KEEP** | referenced by acceptance-gates.yml |
 | `scripts/record_waiver.py` | test_record_waiver.py | **KEEP** | referenced by test_record_waiver.py |
-| `scripts/terminal_preview.py` | BRANCH_RECONCILIATION.md, INTERVIEW_HARDENING_CERTIFICATION.md | **KEEP** | owner decision: KEEP |
+| `scripts/terminal_preview.py` | BRANCH_RECONCILIATION.md | **KEEP** | owner decision: KEEP |
 | `scripts/validate_contract_schema.py` | architecture.md, ci.yml | **KEEP** | referenced by architecture.md, ci.yml |
 | `scripts/verify_gates.py` | test_verify_gates.py, test_generate_gates_report.py | **KEEP** | referenced by test_verify_gates.py, test_generate_gates_report.py |
 | `scripts/verify_proof_matrix.py` | PORTFOLIO_PROOF_MATRIX.md, CLAIMS_AUDIT_2026-09-06.md | **KEEP** | referenced by PORTFOLIO_PROOF_MATRIX.md, CLAIMS_AUDIT_2026-09-06.md |
@@ -337,5 +337,5 @@ The audit is advisory. Nothing was deleted. The controller re-checked the script
 | `scripts/ingest_dependency_docs.py` | **KEEP (entry point).** It is a thin CLI wrapper over `verdict.dependency_ingest.ingest_dependency_docs`, which is library code with tests. Candidate for a `verdict` subcommand later. |
 | `scripts/proof/secrets_scan.py` | **REMOVE-CANDIDATE, confirmed.** CI writes `secrets_scan_results.txt` with an inline command and never calls this script. It is left in place until the owner decides. |
 
-`.serena/` was dropped from the proposed `.gitignore` additions because `.serena/project.yml` and
-`.serena/.gitignore` are tracked.
+`.serena/` was initially left out of the proposed `.gitignore` additions because `.serena/project.yml`
+and `.serena/.gitignore` were tracked. Both have since been untracked and `.serena/` is now ignored.

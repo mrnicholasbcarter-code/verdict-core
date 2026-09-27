@@ -1,10 +1,10 @@
-"""Versioned semantic capability vocabulary (BOD-87).
+"""Versioned semantic capability vocabulary.
 
 Capabilities are brand-free domain identifiers. Provider brands (Serena,
 Context7, Codebase Memory, etc.) belong on provider descriptors — never in
 capability ids.
 
-This vocabulary extends the BOD-123 Wave-1 native baseline; it does not
+This vocabulary extends the Context Intelligence Wave-1 native baseline; it does not
 replace Context Intelligence fabric contracts.
 """
 
@@ -46,7 +46,7 @@ SEMANTIC_CAPABILITIES: Final[frozenset[str]] = frozenset(
         "vcs.pr.read",
         "vcs.pr.write",
         "reasoning.sequential",
-        # Security boundary (BOD-126) — brand-free domain ids; scanners are providers
+        # Security boundary — brand-free domain ids; scanners are providers
         "security.prompt_injection",
         "security.secrets",
         "security.agent_config",

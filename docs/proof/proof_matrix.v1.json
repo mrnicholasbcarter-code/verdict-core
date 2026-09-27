@@ -381,29 +381,14 @@
       "status": "blocked",
       "evidence": [
         {
-          "path": "docs/portfolio/RESUME_SUITE.md",
-          "locator": "quantified project bullets",
-          "kind": "claim-source"
-        },
-        {
-          "path": "docs/portfolio/PRESS_RELEASE_AND_SHOWCASE_PACKAGE.md",
-          "locator": "quantified public wording",
-          "kind": "claim-source"
-        },
-        {
           "path": "docs/portfolio/KALSHI_TRADING_BOTS_CASE_STUDY.md",
           "locator": "throughput and latency claims",
-          "kind": "claim-source"
-        },
-        {
-          "path": "docs/portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md",
-          "locator": "quantified interview stories",
           "kind": "claim-source"
         }
       ],
       "verification": "For each metric, locate a reproducible artifact with definition, date, environment, and raw result before changing status.",
       "public_wording": "No quantified portfolio claim is currently approved by this matrix unless it resolves to a listed reproducible artifact.",
-      "gap": "Several existing portfolio documents contain claims whose supporting artifacts are not present in this repository."
+      "gap": "Several career-collateral drafts that previously carried unverified quantified claims were removed from the repository (public docs remediation); the remaining case study still lacks a reproducible artifact."
     },
     {
       "id": "PM-013",

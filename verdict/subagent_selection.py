@@ -17,7 +17,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from verdict.admission import AdmittedSet
 
 CONTROLLER_MODEL = "cx/gpt-5.6-sol"
 CONTROLLER_MODELS = frozenset({CONTROLLER_MODEL, "cx/gpt-6-astra"})
@@ -172,10 +175,22 @@ class HealthCache:
         }
 
 
+_UNSERVABLE_MARKERS = ("not available in the active live catalog",)
+
+
 def classify_probe_status(
-    status_code: int | None, *, timed_out: bool = False, retry_after_seconds: float | None = None
+    status_code: int | None,
+    *,
+    timed_out: bool = False,
+    retry_after_seconds: float | None = None,
+    body: str = "",
 ) -> HealthResult:
-    """Classify launch health without conflating auth, payment, or permission."""
+    """Classify launch health without conflating auth, payment, or permission.
+
+    ``body`` is the (bounded) error response text. A 400 whose body says the
+    advertised id is not in the gateway's live catalog is ``unservable``: the
+    gateway lists the route but cannot serve it.
+    """
     if timed_out:
         return HealthResult(False, "timeout", retry_after_seconds=retry_after_seconds)
     if status_code is not None and 200 <= status_code < 300:
@@ -187,6 +202,8 @@ def classify_probe_status(
         403: "permission",
         429: "rate_limited",
     }
+    if status_code == 400 and any(m in body.lower() for m in _UNSERVABLE_MARKERS):
+        return HealthResult(False, "unservable", status_code, retry_after_seconds)
     if status_code in categories:
         return HealthResult(False, categories[status_code], status_code, retry_after_seconds)
     if status_code is not None and status_code >= 500:
@@ -209,15 +226,37 @@ def _failure_cooldown(result: HealthResult) -> float:
     }.get(result.category, 60.0)
 
 
+def _require_admitted(admitted: AdmittedSet | None, require_admission: bool) -> AdmittedSet | None:
+    if admitted is None and require_admission:
+        from verdict.admission import AdmissionUnavailableError
+
+        raise AdmissionUnavailableError(
+            "worker_admission_required",
+            "worker selection requires the canonical admitted set before ranking",
+        )
+    return admitted
+
+
 def candidates_from_inventory(
-    rows: Iterable[Mapping[str, Any]], prime_selectors: Iterable[str]
+    rows: Iterable[Mapping[str, Any]],
+    prime_selectors: Iterable[str],
+    *,
+    admitted: AdmittedSet | None = None,
+    require_admission: bool = False,
 ) -> tuple[LaunchCandidate, ...]:
-    """Intersect OmniRoute live inventory with separately observed Prime visibility."""
+    """Intersect OmniRoute live inventory with separately observed Prime visibility.
+
+    With ``admitted`` the canonical admitted set is applied first: a route it
+    excludes can never become a candidate, whatever inventory or Prime say.
+    """
+    admitted = _require_admitted(admitted, require_admission)
     visible = {item.strip() for item in prime_selectors if isinstance(item, str) and item.strip()}
     result: list[LaunchCandidate] = []
     for row in rows:
         route_id = row.get("id")
         if not isinstance(route_id, str) or not route_id.strip():
+            continue
+        if admitted is not None and route_id not in admitted:
             continue
         selector = f"omniroute/{route_id}"
         if route_id in CONTROLLER_MODELS or selector not in visible or _opaque(route_id):
@@ -299,7 +338,12 @@ def worker_candidate_exclusion_reason(task: WorkerTask, route_id: str) -> str | 
 
 
 def eligible_worker_candidates(
-    task: WorkerTask, inventory_rows: Iterable[Mapping[str, Any]], prime_selectors: Iterable[str]
+    task: WorkerTask,
+    inventory_rows: Iterable[Mapping[str, Any]],
+    prime_selectors: Iterable[str],
+    *,
+    admitted: AdmittedSet | None = None,
+    require_admission: bool = False,
 ) -> tuple[LaunchCandidate, ...]:
     """Rank the entire unique eligible pool; never truncate a discovery prefix."""
     required = set(task.required_capabilities)
@@ -309,7 +353,12 @@ def eligible_worker_candidates(
         sorted(
             (
                 item
-                for item in candidates_from_inventory(inventory_rows, prime_selectors)
+                for item in candidates_from_inventory(
+                    inventory_rows,
+                    prime_selectors,
+                    admitted=admitted,
+                    require_admission=require_admission,
+                )
                 if worker_candidate_exclusion_reason(task, item.route_id) is None
                 and required <= item.capabilities
                 and item.context_tokens >= task.min_context_tokens
@@ -329,10 +378,18 @@ def select_worker_model(
     cache: HealthCache,
     now: datetime | None = None,
     max_probes: int | None = None,
+    admitted: AdmittedSet | None = None,
+    require_admission: bool = False,
 ) -> SelectionResult:
     """Return the cheapest qualified, currently healthy explicit spawn target."""
     current = now or datetime.now(timezone.utc)
-    candidates = eligible_worker_candidates(task, inventory_rows, prime_selectors)
+    candidates = eligible_worker_candidates(
+        task,
+        inventory_rows,
+        prime_selectors,
+        admitted=admitted,
+        require_admission=require_admission,
+    )
     checked: list[tuple[str, str]] = []
     probes = 0
     for candidate in candidates:
@@ -370,6 +427,8 @@ async def execute_with_worker_failover(
     max_replacements: int | None = None,
     total_timeout_seconds: float = 900,
     attempt_timeout_seconds: float = 180,
+    admitted: AdmittedSet | None = None,
+    require_admission: bool = False,
 ) -> WorkerExecutionResult:
     """Compatibility entry point; execute must return a completed terminal envelope.
 
@@ -388,6 +447,8 @@ async def execute_with_worker_failover(
         adapter=CallbackAdapter(execute),
         cache=cache,
         now=now,
+        admitted=admitted,
+        require_admission=require_admission,
         budget=RuntimeBudget(
             total_seconds=total_timeout_seconds,
             attempt_seconds=attempt_timeout_seconds,
@@ -557,11 +618,16 @@ def openai_health_probe(
                     return HealthResult(False, "malformed_response", response.status)
                 return classify_probe_status(response.status)
         except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read(4096).decode("utf-8", "replace")
+            except Exception:  # body is diagnostic only; never fail the probe on it
+                detail = ""
             return classify_probe_status(
                 exc.code,
                 retry_after_seconds=_retry_after_headers(
                     exc.headers, now=datetime.now(timezone.utc)
                 ),
+                body=detail,
             )
         except TimeoutError:
             return classify_probe_status(None, timed_out=True)

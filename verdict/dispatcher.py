@@ -135,7 +135,8 @@ def _capabilities(candidate: RuntimeCandidate) -> frozenset[str]:
 class SwarmDispatcher:
     """Bind an already-authorized runtime — never invent model/route selection.
 
-    BOD-104 owns strategy/route selection. BOD-67 owns dispatch. This module
+    ``optimize_execution_path`` owns strategy/route selection; hydrate-before-
+    dispatch owns dispatch. This module
     only validates eligibility of a caller-supplied ``authorized_runtime_id``
     against an availability snapshot (planning contract; no provider invoke).
     """
@@ -157,7 +158,7 @@ class SwarmDispatcher:
         """Bind an authorized selected_route; never least-cost invent.
 
         Fail closed when neither ``selected_route`` nor ``authorized_runtime_id``
-        is supplied — swarm must not autonomously select models (BOD-127).
+        is supplied — swarm must not autonomously select models.
         """
 
         active = policy or self.policy
@@ -196,7 +197,7 @@ class SwarmDispatcher:
 
         if selected_route is not None:
             # Raises ExecutionPathError when no eligible candidate matches —
-            # never invent an alternate (BOD-127).
+            # never invent an alternate (legacy selector demotion).
             authorized = match_candidate_to_selected_route(eligible, selected_route)
         else:
             authorized = next((c for c in eligible if c.runtime_id == authorized_runtime_id), None)

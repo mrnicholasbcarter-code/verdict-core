@@ -1,4 +1,4 @@
-"""Proof fixtures for session economics STAY/SWITCH (BOD-119)."""
+"""Proof fixtures for session economics STAY/SWITCH."""
 
 from __future__ import annotations
 

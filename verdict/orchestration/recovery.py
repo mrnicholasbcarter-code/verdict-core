@@ -1,6 +1,6 @@
 """Recovery and failure classification for orchestration workers.
 
-BOD-152: Normalized failure detection and bounded corrective actions based on
+Normalized failure detection and bounded corrective actions based on
 status code, error patterns, and parsed reset hints. Failure classification drives
 reassignment, repair, or fail-closed decisions via RecoveryBudget.
 """
@@ -131,7 +131,7 @@ def _parse_reset_hint(error_text: str) -> float | None:
 
 
 class FailureIntelligence:
-    """Classifies worker terminal failures per BOD-152.
+    """Classifies worker terminal failures per failure intelligence.
 
     Implements the FailureClassifier protocol. Uses status code as primary
     signal, then falls back to text pattern matching. Always reports evidence

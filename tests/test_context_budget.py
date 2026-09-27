@@ -1,4 +1,4 @@
-"""Proof tests for Context Budget Governor (BOD-125)."""
+"""Proof tests for Context Budget Governor."""
 
 from __future__ import annotations
 

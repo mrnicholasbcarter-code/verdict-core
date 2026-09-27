@@ -1,4 +1,4 @@
-"""BOD-185: independent, fail-closed semantic review via OpenCodeReview (``ocr``).
+"""Independent OpenCodeReview: independent, fail-closed semantic review via OpenCodeReview (``ocr``).
 
 ``OpenCodeReviewer`` runs Alibaba's ``open-code-review`` CLI (v1.12.x) as an
 independent semantic review gate that implements the :class:`Reviewer` protocol
@@ -37,6 +37,7 @@ from verdict.orchestration.contracts import (
     ReviewFinding,
     ReviewResult,
     TaskRequirements,
+    require_launchable,
 )
 
 __all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "StaticDiffGate"]
@@ -173,6 +174,9 @@ class OpenCodeReviewer:
             )
             if chosen is None:
                 break
+            # Launch gate: the reviewer route must be proven healthy or confirmed
+            # live before OCR runs on it. Raises AdmissionBypassError on violation.
+            require_launchable(self._selector, chosen.route_id, surface="OpenCodeReviewer.launch")
             result = await self._review_once(
                 chosen.route_id,
                 repo=repo,

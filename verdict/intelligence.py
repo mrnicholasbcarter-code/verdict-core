@@ -157,6 +157,16 @@ def _cost_with_context_plan(
     )
 
 
+# Kept "development" deliberately (S2-F F3, evidence in sprint2/s2-f-report.md).
+# No fail-closed guarantee depends on this default:
+# - admission: unknown/error/timeout candidates are excluded unless the operator
+#   opts in with VERDICT_ALLOW_UNVERIFIED_DEV (EligibilityGate default False);
+# - API serve: api._route_with_intelligence forces require_execution_path_authority
+#   regardless of profile.
+# "production" additionally makes serve_path_authority_required() true for every
+# IntelligenceService.route caller (CLI route, scripts/prime_supervisor.py), makes
+# VERDICT_ALLOW_UNVERIFIED_DEV inert, and changes /v1/route/explain exclusions.
+# Set LLMGATE_INTELLIGENCE_PROFILE=production to opt in.
 DEFAULT_PROFILE = "development"
 DEGRADED_PROFILE = "degraded"
 DEFAULT_TIMEOUT_MS = 1000
@@ -264,7 +274,7 @@ class IntelligenceService:
         self.metadata_snapshot = metadata_snapshot
         self.metadata_store_path = metadata_store_path
         self.identity_map = identity_map
-        # BOD-127: production/default serve fails closed without BOD-104.
+        # Production/default serve fails closed without an execution-path decision.
         # None = derive from profile / VERDICT_REQUIRE_EXECUTION_PATH / context.
         self.require_execution_path_authority = require_execution_path_authority
         if candidate_top_k < 1:
@@ -272,7 +282,7 @@ class IntelligenceService:
         self.candidate_top_k = candidate_top_k
         self.receipt_store = receipt_store
         self.persist_routing_receipts = persist_routing_receipts
-        # Optional decision signal provider for ADVISORY mode (BOD-238).
+        # Optional decision signal provider for ADVISORY mode.
         # None = no advisory; set to a DecisionSignalProvider-compatible object
         # to collect signals and apply advisory reordering in ADVISORY mode.
         # Default: consult factory.provider_from_env() so production callers get
@@ -357,7 +367,7 @@ class IntelligenceService:
     ) -> RoutingDecision:
         """Route ``task``. ``request_id`` (when the caller already owns one) is stamped
         on the decision *before* it is logged so post-execution outcome receipts
-        (BOD-117) can join back to this row."""
+        can join back to this row."""
         start_t = time.time()
 
         # Handle envelope input
@@ -372,7 +382,7 @@ class IntelligenceService:
         else:
             task_str = task
 
-        # BOD-104 / BOD-127: ExecutionPathDecision is sole strategy authority on
+        # ExecutionPathDecision is sole strategy authority on
         # the serve path. Legacy free-tier/chooser/ranker paths are feeds or
         # explicit migration escapes only — never silent inventors.
         from verdict.execution_path import ExecutionPathError
@@ -438,7 +448,7 @@ class IntelligenceService:
         # Planning estimates task capability needs. Criticality is retained as a
         # safety floor, not as a model selector: identical task semantics have
         # identical selection requirements unless a protected floor applies.
-        # Item A (BOD-238): initialise explicitly before the try-block so the advisory
+        # Initialise explicitly before the try-block so the advisory
         # block can read it directly without locals() or type: ignore tricks.
         _route_task_spec: Any = None
         try:
@@ -506,7 +516,7 @@ class IntelligenceService:
             )
             candidates = eligibility.eligible
 
-        # BOD-238 ADVISORY mode: collect signals, reorder the valid/admitted set,
+        # ADVISORY mode: collect signals, reorder the valid/admitted set,
         # then pick best_model from the advisory-ordered front.
         # Must not execute when task is protected (final_tier == 0), no provider,
         # ExecutionPathDecision present (already returned above), or mode != ADVISORY.
@@ -521,7 +531,7 @@ class IntelligenceService:
                 from verdict.decision_signals.contracts import DecisionQuestionV1
                 from verdict.decision_signals.shadow import get_signals_mode as _get_mode
 
-                _adv_mode = _get_mode()  # single authoritative parser (BOD-238 item B.1)
+                _adv_mode = _get_mode()  # single authoritative parser
                 _provider = self.decision_signal_provider
                 if _adv_mode == "ADVISORY" and _provider is not None:
                     # Item 4 / A: read privacy directly from _route_task_spec which is
@@ -806,12 +816,13 @@ class IntelligenceService:
     def _prepare_execution_path_request(
         self, task: str, criticality: str, context: dict[str, Any], request: Any
     ) -> Any:
-        """Qualify live offers, then hand the bounded set to BOD-104.
+        """Qualify live offers, then hand the bounded set to the execution-path optimizer.
 
         Existing requests that already carry a pool receipt are immutable
         evidence and are not rebuilt. When no live snapshot is configured,
         compatibility callers retain their original request; production still
-        fails closed later if BOD-104 cannot produce a valid decision.
+        fails closed later if the execution-path optimizer cannot produce a valid
+        decision.
         """
         from verdict.execution_path import ExecutionPathError, ExecutionPathRequest
 
@@ -1061,7 +1072,7 @@ class IntelligenceService:
         explicit_metadata = (
             self.metadata_snapshot is not None or self.metadata_store_path is not None
         )
-        # Compatibility callers without BOD-104 authority retain the legacy
+        # Compatibility callers without execution-path authority retain the legacy
         # admit path. Production/authority mode must use the default Core store
         # as the live shortlist source when it is available.
         use_candidate_pool = explicit_metadata or self.require_execution_path_authority is True
@@ -1162,7 +1173,7 @@ class IntelligenceService:
                 receipt = replace(
                     receipt, chosen=None, empty_intersection=True, selected_because=None
                 )
-        # BOD-238: advisory reordering is NOT applied on the live-admit path because
+        # Advisory reordering is NOT applied on the live-admit path because
         # the admitted set here contains string IDs, not ModelInfo objects, and the
         # ranker would have no pricing/tier data to sort on.  Record this explicitly
         # so monitoring can see advisory was skipped, not missing.
@@ -1237,7 +1248,7 @@ class IntelligenceService:
         preview: str | None = None,
         context_pack: Any | None = None,
     ) -> str | None:
-        """Default-on BOD-144 routing receipt persistence (never blocks routing)."""
+        """Default-on routing receipt persistence (never blocks routing)."""
         if not self.persist_routing_receipts:
             return None
         try:
@@ -1383,7 +1394,7 @@ class IntelligenceService:
             capability_coverage=context_pack.capability_coverage,
         )
         if not context_pack.task_complete:
-            # BOD-110: the compiled pack no longer carries the task instructions.
+            # Pack completeness: the compiled pack no longer carries the task instructions.
             # Executing it would send the model context without the request, so
             # the decision is denied with a named reason instead of "hydrated".
             self._persist_routing_receipt_from_admit(

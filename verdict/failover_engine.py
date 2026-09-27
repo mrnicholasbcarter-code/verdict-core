@@ -84,9 +84,9 @@ def _to_failure_entry(
 
 
 class FailoverEngine:
-    """Applies BOD-55-authorized replacements after a transient failure.
+    """Applies bounded recovery-authorized replacements after a transient failure.
 
-    Must not independently invent fallback models/providers (BOD-127). When an
+    Must not independently invent fallback models/providers. When an
     ``execution_path_decision`` is bound, recovery must go through
     ``BoundedRecoveryController`` / ``apply_bounded_recovery``.
     """
@@ -156,17 +156,17 @@ class FailoverEngine:
         execution_path_decision: Any | None = None,
         require_bounded_recovery: bool = False,
     ) -> ExecutionSession:
-        """Quarantine, rebind, and resume using a BOD-55-authorized replacement.
+        """Quarantine, rebind, and resume using a bounded recovery-authorized replacement.
 
         Returns the same session mutated in place and checkpointed, so callers
         can either keep the reference or use the returned value after a
         resume-from-disk round trip.
 
-        BOD-127: when an ``execution_path_decision`` is bound (or
+        When an ``execution_path_decision`` is bound (or
         ``require_bounded_recovery`` is set), FailoverEngine must not
         independently invent a replacement — callers use
         ``apply_bounded_recovery`` / ``BoundedRecoveryController`` with
-        BOD-104-prequalified stronger routes.
+        prequalified stronger routes.
         """
         if execution_path_decision is not None or require_bounded_recovery:
             from verdict.serve_path import failover_must_defer_to_bounded_recovery
@@ -259,7 +259,8 @@ class FailoverEngine:
     ) -> ModelPassport:
         """First authorized passport that still satisfies requirements.
 
-        Order is caller-defined (BOD-55 / BOD-104). Never re-rank by provider
+        Order is caller-defined (bounded recovery / execution-path authority).
+        Never re-rank by provider
         preference or lexicographic key.
         """
         for passport in authorized:

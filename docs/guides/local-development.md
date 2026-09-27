@@ -44,13 +44,13 @@ curl -s http://localhost:20128/v1/models | jq '.data | length'   # live model co
 ```
 
 For parallel agent workloads, apply the admission settings in
-[the interview golden path prerequisites](interview-golden-path.md#prerequisites).
+[the orchestration golden path prerequisites](orchestration-golden-path.md#prerequisites).
 
 ### 4. Run Verdict Core Server
 
 ```bash
 # With OmniRoute integration
-export OMNIROUTE_BASE_URL=http://localhost:20128
+export OMNIROUTE_BASE_URL=http://127.0.0.1:20128   # loopback IP literal required for plain HTTP
 verdict serve --host 0.0.0.0 --port 8000
 
 # Test

@@ -1,4 +1,4 @@
-"""Tests for verdict.orchestration.planner (BOD-151 frontier decomposition + topology)."""
+"""Tests for verdict.orchestration.planner (frontier decomposition and topology selection frontier decomposition + topology)."""
 
 from __future__ import annotations
 

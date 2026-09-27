@@ -7,6 +7,7 @@ CLI surface (do not rename):
     verdict harness prime disable
     verdict harness prime status
     verdict harness prime certify  [--force]
+    verdict harness prime sync-models [--dry-run] [--gateway ...]
 
 ``enable`` backs up ``~/.prime/agent/models.json`` before upserting a Verdict
 OpenAI-compatible provider (``baseUrl`` → Verdict ``:8000``, never OmniRoute
@@ -23,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -183,7 +184,7 @@ def enable(
     existed = paths.models.is_file()
     created_backup = False
     if existed and not paths.backup.exists():
-        shutil.copy2(paths.models, paths.backup)
+        _copy_private(paths.models, paths.backup)
         created_backup = True
     elif not existed and not paths.backup.exists() and not paths.absent_marker.exists():
         paths.absent_marker.write_text("absent\n", encoding="utf-8")
@@ -217,7 +218,7 @@ def disable(*, prime_home: Path | None = None) -> None:
         raise HarnessPrimeError(
             f"Verdict Prime Agent harness is not enabled: no backup at {paths.backup}"
         )
-    shutil.copy2(paths.backup, paths.models)
+    _copy_private(paths.backup, paths.models)
     paths.backup.unlink()
 
 
@@ -413,6 +414,178 @@ def apply_verdict_provider(
     return result
 
 
+OMNIROUTE_PROVIDER_ID = "omniroute"
+
+
+@dataclass(frozen=True)
+class SyncModelsResult:
+    config_path: Path
+    backup_path: Path | None
+    added: tuple[str, ...]
+    removed: tuple[str, ...]
+    total: int
+    dry_run: bool
+    written: bool
+
+
+def _live_model_entry(row: Mapping[str, Any], previous: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Prime model entry for one live gateway row; keeps prior per-model settings."""
+    if previous is not None:
+        return dict(previous)
+    route_id = str(row["id"])
+    caps = row.get("capabilities")
+    caps = caps if isinstance(caps, Mapping) else {}
+    context = int(row.get("max_input_tokens") or row.get("context_length") or 0)
+    entry: dict[str, Any] = {
+        "id": route_id,
+        "name": route_id,
+        "reasoning": bool(caps.get("reasoning")),
+        "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+    }
+    if context:
+        entry["contextWindow"] = context
+    max_out = int(row.get("max_output_tokens") or 0)
+    if max_out:
+        entry["maxTokens"] = max_out
+    return entry
+
+
+def sync_models(
+    live_rows: Sequence[Mapping[str, Any]],
+    *,
+    dry_run: bool = False,
+    prime_home: Path | None = None,
+    now: Callable[[], str] | None = None,
+) -> SyncModelsResult:
+    """Rewrite only ``providers.omniroute.models`` from the live gateway inventory.
+
+    Every other key in models.json (other providers, omniroute baseUrl/apiKey)
+    is preserved. Existing model entries keep their settings (e.g.
+    ``thinkingLevelMap``); new ids get a minimal entry. The file is backed up
+    to ``models.json.verdict-sync-<stamp>.bak`` before writing. ``dry_run``
+    computes the diff and writes nothing.
+    """
+    paths = resolve_paths(prime_home=prime_home)
+    if not paths.models.is_file():
+        raise HarnessPrimeError(f"Prime models.json not found at {paths.models}")
+    data = _load_json(paths.models)
+    providers = data.get("providers")
+    provider = providers.get(OMNIROUTE_PROVIDER_ID) if isinstance(providers, Mapping) else None
+    if not isinstance(provider, Mapping):
+        raise HarnessPrimeError(
+            f"no providers.{OMNIROUTE_PROVIDER_ID} entry in {paths.models}; refusing to create one"
+        )
+    old_models = provider.get("models")
+    previous: dict[str, Mapping[str, Any]] = {}
+    for item in old_models if isinstance(old_models, list) else []:
+        if isinstance(item, Mapping) and item.get("id"):
+            previous.setdefault(str(item["id"]), item)
+    from verdict.prime_inventory import concrete_rows
+
+    concrete, _excluded = concrete_rows(live_rows)
+    live: dict[str, Mapping[str, Any]] = {}
+    for row in concrete:
+        live.setdefault(str(row["id"]).strip(), row)
+    if not live:
+        raise HarnessPrimeError(
+            "live gateway inventory has no concrete models; refusing to clear models"
+        )
+    added = tuple(sorted(set(live) - set(previous)))
+    removed = tuple(sorted(set(previous) - set(live)))
+    if dry_run:
+        return SyncModelsResult(
+            paths.models, None, added, removed, len(live), dry_run=True, written=False
+        )
+    stamp = now() if now is not None else _utc_stamp()
+    backup = paths.models.with_name(f"models.json.verdict-sync-{stamp}.bak")
+    _copy_private(paths.models, backup)
+    new_provider = dict(provider)
+    new_provider["models"] = [
+        _live_model_entry(row, previous.get(rid)) for rid, row in live.items()
+    ]
+    new_providers = dict(providers) if isinstance(providers, Mapping) else {}
+    new_providers[OMNIROUTE_PROVIDER_ID] = new_provider
+    updated = dict(data)
+    updated["providers"] = new_providers
+    _atomic_write_json(paths.models, updated)
+    return SyncModelsResult(
+        paths.models, backup, added, removed, len(live), dry_run=False, written=True
+    )
+
+
+def _sync_visibility_models(
+    rows: Sequence[Mapping[str, Any]], *, prime_home: Path | None
+) -> SyncModelsResult:
+    """Ensure a minimal OmniRoute visibility provider exists, then sync it.
+
+    Unlike the operator-facing ``sync_models`` command, automatic visibility
+    refresh may bootstrap an otherwise absent registry. It writes no endpoint,
+    token, or health claim; Prime still owns whether its configured adapter can
+    spawn the displayed explicit ids.
+    """
+    paths = resolve_paths(prime_home=prime_home)
+    data = _load_json(paths.models) if paths.models.is_file() else {}
+    providers = data.get("providers")
+    providers_copy = dict(providers) if isinstance(providers, Mapping) else {}
+    if not isinstance(providers_copy.get(OMNIROUTE_PROVIDER_ID), Mapping):
+        providers_copy[OMNIROUTE_PROVIDER_ID] = {"models": []}
+        updated = dict(data)
+        updated["providers"] = providers_copy
+        _atomic_write_json(paths.models, updated)
+    return sync_models(rows, prime_home=prime_home)
+
+
+def refresh_omniroute_visibility(
+    *,
+    fetch_rows: Callable[[], Sequence[Mapping[str, Any]]],
+    source: str,
+    prime_home: Path | None = None,
+    max_age_seconds: float = 300.0,
+    force: bool = False,
+    now: Callable[[], Any] | None = None,
+) -> Any:
+    """Refresh Prime's concrete OmniRoute visibility snapshot.
+
+    This writes visibility only. It neither probes nor declares routes healthy
+    or launchable; admission and confirmation remain separate gates.
+    """
+    from verdict.prime_inventory import refresh_prime_inventory
+
+    paths = resolve_paths(prime_home=prime_home)
+    return refresh_prime_inventory(
+        models_path=paths.models,
+        source=source,
+        fetch_rows=fetch_rows,
+        apply_rows=lambda rows: _sync_visibility_models(rows, prime_home=prime_home),
+        max_age_seconds=max_age_seconds,
+        force=force,
+        now=now,
+    )
+
+
+def format_sync_models(result: SyncModelsResult) -> str:
+    mode = "dry-run (nothing written)" if result.dry_run else "written"
+    lines = [
+        f"Prime models.json omniroute sync: {mode}",
+        f"  config: {result.config_path}",
+        f"  live models: {result.total}",
+        f"  added: {len(result.added)}",
+        f"  removed: {len(result.removed)}",
+    ]
+    if result.backup_path is not None:
+        lines.append(f"  backup: {result.backup_path}")
+    for label, ids in (("+", result.added), ("-", result.removed)):
+        lines.extend(f"  {label} {rid}" for rid in ids)
+    return "\n".join(lines) + "\n"
+
+
+def _utc_stamp() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
 def _verdict_provider(data: Mapping[str, Any]) -> Mapping[str, Any] | None:
     providers = data.get("providers")
     if not isinstance(providers, Mapping):
@@ -441,11 +614,31 @@ def _load_json(path: Path) -> dict[str, Any]:
     return dict(loaded) if isinstance(loaded, dict) else {}
 
 
+_PRIVATE_FILE_MODE = 0o600
+
+
 def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
+    """Atomically write ``data`` as JSON with owner-only (0600) permissions.
+
+    models.json may carry provider credentials, so the file is always 0600,
+    whatever the umask or the previous mode was.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(dict(data), indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    payload = (json.dumps(dict(data), indent=2, sort_keys=False) + "\n").encode("utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PRIVATE_FILE_MODE)
+    try:
+        os.fchmod(fd, _PRIVATE_FILE_MODE)
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
     tmp.replace(path)
+
+
+def _copy_private(src: Path, dst: Path) -> None:
+    """Copy ``src`` to ``dst`` and force owner-only permissions on the copy."""
+    shutil.copy2(src, dst)
+    os.chmod(dst, _PRIVATE_FILE_MODE)
 
 
 __all__ = [
@@ -461,6 +654,7 @@ __all__ = [
     "HarnessPrimeError",
     "PrimeHarnessPaths",
     "StatusReport",
+    "SyncModelsResult",
     "apply_verdict_provider",
     "certify",
     "disable",
@@ -469,6 +663,8 @@ __all__ = [
     "format_certify",
     "format_discover",
     "format_status",
+    "format_sync_models",
     "resolve_paths",
     "status",
+    "sync_models",
 ]

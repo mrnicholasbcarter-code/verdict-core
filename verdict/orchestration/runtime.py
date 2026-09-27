@@ -1,4 +1,4 @@
-"""BOD-153 bounded DAG runtime: concurrent dispatch, same-node reassignment, barriers.
+"""Bounded DAG runtime: concurrent dispatch, same-node reassignment, barriers.
 
 The runtime owns orchestration only. It never chooses a model itself (the
 ``ModelSelector`` does), never classifies failures itself (the
@@ -43,6 +43,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     WorkNode,
     check_transition,
+    require_launchable,
     route_family,
     route_provider,
 )
@@ -404,6 +405,9 @@ class DagRuntime:
                     evidence=run.reason,
                 )
                 return
+            # Launch gate: the selected route must be proven healthy or confirmed
+            # live before it is bound. Raises AdmissionBypassError on violation.
+            require_launchable(self.selector, choice.route_id, surface="DagRuntime.bind")
             previous = run.route_id
             run.attempt += 1
             run.route_id = choice.route_id

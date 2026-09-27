@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 import yaml
@@ -46,7 +46,7 @@ def test_cmd_route_terse_uses_configured_primary(
 def test_cmd_route_and_run_send_configured_provider_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """BOD-136: default route/run must actually send, not preview with not_sent."""
+    """default route/run must actually send, not preview with not_sent."""
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text(
@@ -190,7 +190,7 @@ def test_cmd_route_offline_is_named_fail_closed(
 def test_cmd_route_allow_offline_does_not_enable_legacy_selector(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """BOD-127: offline catalog mode must not silently set CONTEXT_ALLOW_LEGACY."""
+    """offline catalog mode must not silently set CONTEXT_ALLOW_LEGACY."""
     from verdict.serve_path import CONTEXT_ALLOW_LEGACY
 
     cfg_dir = tmp_path / ".config" / "verdict"
@@ -947,6 +947,13 @@ def test_cmd_doctor_all_healthy(
     monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:0")
 
+    # A healthy host also has the memory-bridge state: text mode now runs the
+    # same shared collector as --json, including run_doctor_diagnostics.
+    (tmp_path / ".verdict").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".verdict" / "memory.db").touch()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
     cli.cmd_doctor()
 
     out = capsys.readouterr().out
@@ -1075,22 +1082,269 @@ def test_cli_memory_docs_json_reports_repaired_state(
     assert report["repaired"] is True
 
 
-def test_cli_doctor_json_has_machine_readable_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import sys
+def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shared fixture: a fully healthy host for doctor exit-code tests."""
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text(
+        "schema_version: 1\n"
+        "primary_model: anthropic/claude-opus-5\n"
+        "log_path: route-log.jsonl\n"
+        "gateway_url: http://localhost:11434/v1\n"
+        "providers:\n"
+        "  ollama:\n"
+        "    base_url: http://localhost:11434/v1\n"
+    )
+
+    def mock_api_request(method, path, body=None):
+        if method == "GET" and path == "/api/provider-nodes":
+            return [{"id": "node1", "name": "Ollama", "baseUrl": "http://127.0.0.1:11434/v1"}]
+        return None
+
+    monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
+
+    import urllib.request
+
+    class _FakeHealthResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeHealthResp())
 
     import verdict.documentation_preflight as documentation_preflight
 
     monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *args, **kwargs: None)
+
+    import socket
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(
+        socket, "create_connection", lambda address, timeout=None, source_address=None: MagicMock()
+    )
+
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:0")
+
+    # Pre-populate the memory-bridge state so run_doctor_diagnostics reports
+    # no issues either.
+    verdict_dir = tmp_path / ".verdict"
+    verdict_dir.mkdir(parents=True, exist_ok=True)
+    (verdict_dir / "memory.db").touch()
+
+
+def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(i) A healthy host must exit 0 in --json mode with status "ok".
+
+    This replaces the old test_cli_doctor_json_has_machine_readable_report,
+    which enshrined the bug where run_doctor_diagnostics never returns
+    "healthy" (only "ok"/"issues_found"), so --json always exited 1.
+    """
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["documentation_preflight"]["status"] == "ready"
+    assert report["status"] == "ok"
+    assert report["issues"] == []
+    assert report["warnings"] == []
+
+
+def test_cli_doctor_json_missing_mcp_config_warns_but_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(iv) No .mcp.json is a non-fatal warning, not an issue: exit 0."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    cwd_dir = tmp_path / "no-mcp-cwd"
+    cwd_dir.mkdir()
+    monkeypatch.chdir(cwd_dir)
+    assert not (cwd_dir / ".mcp.json").exists()
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "ok"
+    assert report["issues"] == []
+    assert "missing_mcp_config" in report["warnings"]
+
+
+def test_cli_doctor_missing_required_credential_exits_one_both_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(ii) A missing required credential must exit 1 in text AND --json mode."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+
     monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 1
     report = json.loads(capsys.readouterr().out)
-    assert report["documentation_preflight"]["status"] == "ready"
     assert report["status"] == "issues_found"
+    assert any("OMNIROUTE_API_KEY" in issue for issue in report["issues"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Required credential OMNIROUTE_API_KEY is not set" in out
+
+
+def test_cli_doctor_corrupt_config_exits_one_both_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(iii) Corrupt verdict.yaml must exit 1 in text AND --json mode."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    cfg_dir = tmp_path / ".config" / "verdict"
+    (cfg_dir / "verdict.yaml").write_text("not: valid: yaml: [")
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "issues_found"
+    assert any("corrupted/invalid YAML" in issue for issue in report["issues"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Configuration file is corrupted/invalid YAML" in out
+
+
+def test_cli_doctor_fix_creates_mcp_config_and_reports_repaired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(v) --fix still creates .mcp.json and records it in `repaired`."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    cwd_dir = tmp_path / "fix-cwd"
+    cwd_dir.mkdir()
+    monkeypatch.chdir(cwd_dir)
+    assert not (cwd_dir / ".mcp.json").exists()
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", "--fix"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "ok"
+    assert "created_mcp_config" in report["repaired"]
+    assert (cwd_dir / ".mcp.json").exists()
+
+
+def test_cli_doctor_network_rate_limited_preflight_warns_but_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(a) A documentation preflight blocked purely by third-party GitHub
+    rate limiting/network errors must not fail doctor in either mode."""
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    blocked_report = documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=2,
+        inventory=10,
+        ingested=0,
+        skipped_fresh=0,
+        stale=0,
+        missing=0,
+        unverifiable=2,
+        errors=(
+            "ruflo:resolve:ValueError:authoritative fetch failed: "
+            "HTTP Error 403: rate limit exceeded",
+            "ruvector:resolve:ValueError:authoritative fetch failed: "
+            "HTTP Error 403: rate limit exceeded",
+        ),
+    )
+    monkeypatch.setattr(
+        documentation_preflight, "run_documentation_preflight", lambda **kwargs: blocked_report
+    )
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "ok"
+    assert report["issues"] == []
+    assert any("preflight" in w for w in report["warnings"])
+
+    cli.cmd_doctor()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "System is healthy! All checks passed." in out
+
+
+def test_cli_doctor_non_network_preflight_failure_exits_one_both_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(b) A genuinely stale/missing local documentation set (no network
+    error) must still fail doctor in both modes."""
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    blocked_report = documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=1,
+        inventory=5,
+        ingested=0,
+        skipped_fresh=0,
+        stale=2,
+        missing=3,
+        unverifiable=0,
+        errors=(
+            "adr:implementation/adrs/ADR-001.md:ValueError:"
+            "source blob SHA does not match fetched content",
+        ),
+    )
+    monkeypatch.setattr(
+        documentation_preflight, "run_documentation_preflight", lambda **kwargs: blocked_report
+    )
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "issues_found"
+    assert any("did not pass" in issue for issue in report["issues"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "authoritative documentation preflight did not pass" in out
 
 
 def test_cmd_doctor_issues_and_duplicates(
@@ -1139,7 +1393,12 @@ def test_cmd_doctor_issues_and_duplicates(
 
     monkeypatch.setattr(socket, "create_connection", mock_create_connection)
 
-    cli.cmd_doctor()
+    # Real, unresolved issues (literal secret in config, duplicate URL,
+    # offline nodes) must make text-mode doctor exit non-zero, matching
+    # --json behavior for the same inputs.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
 
     out = capsys.readouterr().out
     assert "Literal API key detected inside the host URL for provider" in out
@@ -1161,14 +1420,26 @@ def test_cmd_doctor_flags_legacy_config_filename_and_offers_fix(
     (cfg_dir / "config.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
 
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    # Keep --fix hermetic: no live local gateway may be discovered/persisted,
+    # and the documentation preflight must not fetch live GitHub sources.
+    from verdict import documentation_preflight, provider_detection
 
-    cli.cmd_doctor()
+    monkeypatch.setattr(provider_detection, "probe_gateways", lambda: [])
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+
+    # This fixture also leaves other unrelated issues unresolved (no gateway
+    # URL, missing required credential), so both calls exit non-zero.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "must be 'verdict.yaml'" in out
     assert (cfg_dir / "config.yaml").exists()
     assert not (cfg_dir / "verdict.yaml").exists()
 
-    cli.cmd_doctor(fix=True)
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor(fix=True)
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "Renamed" in out
     assert not (cfg_dir / "config.yaml").exists()
@@ -1194,7 +1465,11 @@ def test_cmd_doctor_flags_invalid_env_var_formats(
         lambda *a, **k: (_ for _ in ()).throw(URLError("connection refused")),
     )
 
-    cli.cmd_doctor()
+    # Malformed env vars plus missing config/gateway are real, unresolved
+    # issues, so text-mode doctor must exit non-zero.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "OMNIROUTE_BASE_URL has invalid format" in out
     assert "OPENAI_API_KEY appears invalid" in out
@@ -1212,12 +1487,24 @@ def test_cmd_doctor_flags_missing_schema_version_and_fixes_it(
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    # Keep --fix hermetic: no live local gateway may be discovered/persisted,
+    # and the documentation preflight must not fetch live GitHub sources.
+    from verdict import documentation_preflight, provider_detection
 
-    cli.cmd_doctor()
+    monkeypatch.setattr(provider_detection, "probe_gateways", lambda: [])
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+
+    # This fixture also leaves other unrelated issues unresolved (no gateway
+    # URL, missing required credential), so both calls exit non-zero.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "older Verdict version" in out
 
-    cli.cmd_doctor(fix=True)
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor(fix=True)
+    assert exc.value.code == 1
     saved = yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
     assert saved["schema_version"] == 1
 
@@ -1230,9 +1517,264 @@ def test_cmd_doctor_prints_env_example_pointer(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
 
-    cli.cmd_doctor()
+    # No config file / gateway / credentials in this fixture are real,
+    # unresolved issues, so doctor exits non-zero even though the
+    # .env.example pointer is still shown.
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
     out = capsys.readouterr().out
     assert ".env.example" in out
+
+
+# --- Shared-collector parity (review R3 cases A-F) and classifier tightening ---
+
+_PARITY_CFG_OK = (
+    "schema_version: 1\n"
+    "primary_model: anthropic/claude-opus-5\n"
+    "log_path: route-log.jsonl\n"
+    "gateway_url: http://localhost:11434/v1\n"
+    "providers:\n"
+    "  ollama:\n"
+    "    base_url: http://localhost:11434/v1\n"
+)
+
+
+def _doctor_parity_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cfg: str = _PARITY_CFG_OK,
+    memdb: bool = True,
+    gateway_ok: bool = True,
+    doc_report: object | None = None,
+) -> None:
+    import socket
+    import urllib.request
+    from unittest.mock import MagicMock
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text(cfg)
+    monkeypatch.setattr(
+        cli,
+        "_omniroute_api_request",
+        lambda m, p, body=None: (
+            [{"id": "n1", "name": "Ollama", "baseUrl": "http://127.0.0.1:11434/v1"}]
+            if (m, p) == ("GET", "/api/provider-nodes")
+            else None
+        ),
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+    def _urlopen(*a, **k):
+        if not gateway_ok:
+            raise OSError("connection refused")
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+    if doc_report is not None:
+        monkeypatch.setattr(
+            documentation_preflight, "run_documentation_preflight", lambda **k: doc_report
+        )
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: MagicMock())
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    if memdb:
+        (tmp_path / ".verdict").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".verdict" / "memory.db").touch()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+
+def _doctor_both_modes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[int, int, dict[str, Any]]:
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    try:
+        cli.main()
+        json_exit = 0
+    except SystemExit as exc:
+        json_exit = int(exc.code or 0)
+    report = json.loads(capsys.readouterr().out)
+    try:
+        cli.cmd_doctor()
+        text_exit = 0
+    except SystemExit as exc:
+        text_exit = int(exc.code or 0)
+    capsys.readouterr()
+    return json_exit, text_exit, report
+
+
+def _blocked_doc_report(*, missing: int, stale: int, errors: tuple[str, ...]) -> object:
+    import verdict.documentation_preflight as documentation_preflight
+
+    return documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=2,
+        inventory=missing + stale,
+        ingested=0,
+        skipped_fresh=0,
+        stale=stale,
+        missing=missing,
+        unverifiable=1,
+        errors=errors,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "host", "expect_exit", "issue_substr", "warning_substr"),
+    [
+        (
+            "A-schema-version-missing",
+            {"cfg": _PARITY_CFG_OK.replace("schema_version: 1\n", "")},
+            1,
+            "older Verdict version",
+            None,
+        ),
+        ("B-memory-db-missing", {"memdb": False}, 0, None, "missing_memory_db"),
+        ("C-gateway-unreachable", {"gateway_ok": False}, 1, "Gateway unreachable", None),
+        (
+            "D-no-primary-model-literal-key",
+            {"cfg": "schema_version: 1\nproviders:\n  x:\n    base_url: http://h/sk-abc\n"},
+            1,
+            "Literal API key detected",
+            None,
+        ),
+        (
+            "E-missing-docs-with-one-rate-limit",
+            {
+                "doc_report": _blocked_doc_report(
+                    missing=800,
+                    stale=40,
+                    errors=(
+                        "ruvector:resolve:ValueError:authoritative fetch failed: "
+                        "HTTP Error 403: rate limit exceeded",
+                    ),
+                )
+            },
+            1,
+            "did not pass",
+            None,
+        ),
+        (
+            "F-forbidden-inventory",
+            {
+                "doc_report": _blocked_doc_report(
+                    missing=0,
+                    stale=0,
+                    errors=("adr:inventory:HTTPError:HTTP Error 403: Forbidden",),
+                )
+            },
+            1,
+            "did not pass",
+            None,
+        ),
+        (
+            "G-rate-limited-403-only",
+            {
+                "doc_report": _blocked_doc_report(
+                    missing=0,
+                    stale=0,
+                    errors=(
+                        "ruflo:resolve:ValueError:authoritative fetch failed: "
+                        "HTTP Error 403: rate limit exceeded",
+                    ),
+                )
+            },
+            0,
+            None,
+            "preflight unreachable",
+        ),
+        ("healthy", {}, 0, None, None),
+    ],
+)
+def test_cli_doctor_text_and_json_share_one_collector(
+    case: str,
+    host: dict[str, Any],
+    expect_exit: int,
+    issue_substr: str | None,
+    warning_substr: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Text and --json modes must agree on exit and classification (review R3)."""
+    _doctor_parity_host(tmp_path, monkeypatch, **host)
+    json_exit, text_exit, report = _doctor_both_modes(monkeypatch, capsys)
+    assert json_exit == text_exit == expect_exit, case
+    assert report["status"] == ("issues_found" if expect_exit else "ok")
+    if issue_substr is None:
+        assert report["issues"] == []
+    else:
+        assert any(issue_substr in issue for issue in report["issues"]), report["issues"]
+    if warning_substr is not None:
+        assert any(warning_substr in w for w in report["warnings"]), report["warnings"]
+
+
+@pytest.mark.parametrize(
+    ("missing", "stale", "orphaned", "errors", "expected"),
+    [
+        # E: real doc gaps are never masked by one network error.
+        (800, 40, 0, ("r:resolve:ValueError:HTTP Error 403: rate limit exceeded",), False),
+        # F: a bare 403 is auth/permission, not a rate limit.
+        (0, 0, 0, ("adr:inventory:HTTPError:HTTP Error 403: Forbidden",), False),
+        # G: a 403 with rate-limit text and no doc gap is network-only.
+        (0, 0, 0, ("r:resolve:ValueError:HTTP Error 403: rate limit exceeded",), True),
+        (0, 0, 0, ("r:resolve:HTTPError:HTTP Error 429: Too Many Requests",), True),
+        (0, 0, 0, ("r:inventory:URLError:<urlopen error timed out>",), True),
+        (0, 0, 0, ("r:inventory:URLError:[Errno 111] Connection refused",), True),
+        (0, 0, 0, ("r:resolve:URLError:Name or service not known",), True),
+        (0, 0, 1, ("r:resolve:HTTPError:HTTP Error 429: Too Many Requests",), False),
+        (0, 0, 0, (), False),
+        # Non-fetch error (content integrity) is never network-only.
+        (0, 0, 0, ("adr:implementation/adrs/ADR-001.md:ValueError:timed out",), False),
+        (
+            0,
+            0,
+            0,
+            (
+                "r:resolve:HTTPError:HTTP Error 429: Too Many Requests",
+                "adr:inventory:HTTPError:HTTP Error 403: Forbidden",
+            ),
+            False,
+        ),
+    ],
+)
+def test_doctor_documentation_preflight_network_only_classifier(
+    missing: int, stale: int, orphaned: int, errors: tuple[str, ...], expected: bool
+) -> None:
+    import verdict.documentation_preflight as documentation_preflight
+
+    report = documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=1,
+        inventory=missing + stale,
+        ingested=0,
+        skipped_fresh=0,
+        stale=stale,
+        missing=missing,
+        unverifiable=1,
+        errors=errors,
+        orphaned=orphaned,
+    )
+    assert cli._doctor_documentation_preflight_is_network_only_failure(report) is expected
 
 
 def test_serve_dev_flag_enables_reload_and_dev_profile(
@@ -1831,3 +2373,267 @@ def test_cmd_packet_canary_refuses_missing_apply_paths(
     assert exited.value.code == 1
     payload = json.loads(capsys.readouterr().out)
     assert "episodes" in payload["error"]
+
+
+def test_cli_compare_dispatches(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test that 'verdict compare' dispatches correctly to cmd_compare."""
+    # Track if cmd_compare was called
+    called = []
+
+    def mock_cmd_compare(
+        task: str, criticality: str = "medium", allow_offline: bool = False
+    ) -> None:
+        called.append({"task": task, "criticality": criticality, "allow_offline": allow_offline})
+
+    # Monkeypatch cmd_compare
+    monkeypatch.setattr(cli, "cmd_compare", mock_cmd_compare)
+
+    # Set up sys.argv
+    import sys
+
+    original_argv = sys.argv
+    try:
+        sys.argv = ["verdict", "compare", "add tests"]
+        cli.main()
+    finally:
+        sys.argv = original_argv
+
+    # Verify cmd_compare was called with correct arguments
+    assert len(called) == 1
+    assert called[0]["task"] == "add tests"
+    assert called[0]["criticality"] == "medium"  # default
+    assert called[0]["allow_offline"] is False  # default
+
+    # Verify stdout does NOT contain usage help
+    captured = capsys.readouterr()
+    assert "usage: verdict" not in captured.out, (
+        f"stdout should not contain usage: verdict, got: {captured.out[:200]}"
+    )
+
+
+# --- doctor progress, --preflight-timeout, and old-config repair (S2-G) ---
+
+
+def test_cmd_doctor_text_mode_prints_preflight_progress_on_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Text mode announces the slow preflight and per-document progress on stderr."""
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_parity_host(tmp_path, monkeypatch)
+    real = documentation_preflight.run_documentation_preflight
+
+    def _fake(**kwargs: Any) -> Any:
+        kwargs["progress"]("ingesting 1/1 documents (fixture: README.md)...")
+        return real(**kwargs)
+
+    monkeypatch.setattr(documentation_preflight, "run_documentation_preflight", _fake)
+    cli.cmd_doctor(fix=True)
+    captured = capsys.readouterr()
+    assert "checking documentation memory (may take a while)..." in captured.err
+    assert "ingesting 1/1 documents" in captured.err
+    assert "ingesting" not in captured.out
+
+
+def test_cli_doctor_json_stdout_is_pure_json_without_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--json passes no progress callback, so stdout parses and stderr stays empty."""
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_parity_host(tmp_path, monkeypatch)
+    seen: dict[str, Any] = {}
+    real = documentation_preflight.run_documentation_preflight
+
+    def _spy(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(documentation_preflight, "run_documentation_preflight", _spy)
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", "--fix"])
+    cli.main()
+    captured = capsys.readouterr()
+    json.loads(captured.out)
+    assert seen["progress"] is None
+    assert "checking documentation memory" not in captured.out
+    assert "checking documentation memory" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [([], 120.0), (["--preflight-timeout", "7.5"], 7.5), (["--preflight-timeout", "0"], None)],
+)
+def test_cli_doctor_preflight_timeout_flag_reaches_preflight(
+    argv: list[str],
+    expected: float | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--preflight-timeout maps to deadline_seconds (default 120, 0 = unbounded)."""
+    import sys
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    _doctor_parity_host(tmp_path, monkeypatch)
+    seen: dict[str, Any] = {}
+    real = documentation_preflight.run_documentation_preflight
+
+    def _spy(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(documentation_preflight, "run_documentation_preflight", _spy)
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", *argv])
+    cli.main()
+    capsys.readouterr()
+    assert seen["deadline_seconds"] == expected
+
+
+def test_cli_doctor_timed_out_preflight_is_an_issue_naming_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A timed-out preflight is never ready and never a mere network warning."""
+    import verdict.documentation_preflight as documentation_preflight
+
+    timed_out = documentation_preflight.DocumentationPreflightReport(
+        status="blocked",
+        sources=2,
+        inventory=0,
+        ingested=0,
+        skipped_fresh=0,
+        stale=0,
+        missing=0,
+        unverifiable=0,
+        errors=(),
+        timed_out=True,
+    )
+    _doctor_parity_host(tmp_path, monkeypatch, doc_report=timed_out)
+    json_exit, text_exit, report = _doctor_both_modes(monkeypatch, capsys)
+    assert json_exit == text_exit == 1
+    assert report["documentation_preflight"]["timed_out"] is True
+    assert any("--preflight-timeout" in issue for issue in report["issues"])
+    assert not any("unreachable" in w for w in report["warnings"])
+
+
+def _old_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An old-style home: verdict.yaml without schema_version/gateway_url and
+    no stored credentials, as written by pre-schema Verdict setup."""
+    import socket
+    import urllib.request
+    from unittest.mock import MagicMock
+
+    import verdict.documentation_preflight as documentation_preflight
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    # setenv-then-delenv makes monkeypatch record the variable, so teardown
+    # removes the OMNIROUTE_BASE_URL that cli.main() loads from the repaired
+    # credentials store (otherwise it leaks into later tests).
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "unset-by-fixture")
+    monkeypatch.delenv("OMNIROUTE_BASE_URL")
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "fake-key-for-test")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg_dir = tmp_path / ".config" / "verdict"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "verdict.yaml").write_text("primary_model: anthropic/claude-opus-5\nproviders: {}\n")
+    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self) -> _Resp:
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
+    monkeypatch.chdir(tmp_path)
+    return cfg_dir
+
+
+def _gateway(url: str, healthy: bool = True) -> Any:
+    from verdict.provider_detection import GatewayCandidate
+
+    port = int(url.rsplit(":", 1)[1])
+    return GatewayCandidate("127.0.0.1", port, url, healthy, "omniroute", "OmniRoute")
+
+
+def test_cli_doctor_fix_repairs_old_config_home_with_single_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--fix migrates schema_version and wires the one healthy local gateway."""
+    import sys
+
+    from verdict import provider_detection
+    from verdict.credentials_store import CredentialsStore
+
+    cfg_dir = _old_config_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        provider_detection, "probe_gateways", lambda: [_gateway("http://127.0.0.1:20128")]
+    )
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    before = json.loads(capsys.readouterr().out)
+    assert any("No gateway URL configured" in i for i in before["issues"])
+    assert any("OMNIROUTE_BASE_URL is not set" in i for i in before["issues"])
+    assert "gateway_url" not in yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", "--fix"])
+    cli.main()
+    fixed = json.loads(capsys.readouterr().out)
+    assert fixed["issues"] == [], fixed["issues"]
+    assert "No gateway URL configured" in fixed["repaired"]
+    assert "Config written by an older Verdict version" in fixed["repaired"]
+    saved = yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
+    assert saved["schema_version"] == 1
+    assert saved["gateway_url"] == "http://127.0.0.1:20128"
+    assert CredentialsStore().load()["OMNIROUTE_BASE_URL"] == "http://127.0.0.1:20128"
+    assert "OMNIROUTE_BASE_URL" not in os.environ
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    assert json.loads(capsys.readouterr().out)["issues"] == []
+
+
+@pytest.mark.parametrize(
+    "gateways",
+    [
+        [],
+        [_gateway("http://127.0.0.1:20128", healthy=False)],
+        [_gateway("http://127.0.0.1:20128"), _gateway("http://127.0.0.1:20129")],
+    ],
+    ids=["none", "unhealthy", "ambiguous"],
+)
+def test_cli_doctor_fix_leaves_gateway_issue_when_not_uniquely_detectable(
+    gateways: list[Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--fix never guesses a gateway: none/unhealthy/multiple stays an issue."""
+    import sys
+
+    from verdict import provider_detection
+
+    cfg_dir = _old_config_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(provider_detection, "probe_gateways", lambda: gateways)
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json", "--fix"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert any("No gateway URL configured" in i for i in report["issues"])
+    saved = yaml.safe_load((cfg_dir / "verdict.yaml").read_text())
+    assert saved["schema_version"] == 1
+    assert "gateway_url" not in saved
+    assert not (cfg_dir / "credentials.env").exists()

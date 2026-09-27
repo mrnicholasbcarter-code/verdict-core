@@ -1,15 +1,15 @@
-"""Session economics — STAY / SWITCH / BLOCKED (BOD-119).
+"""Session economics — STAY / SWITCH / BLOCKED.
 
 Pure decision core over already-qualified concrete routes.  Expected remaining
 session cost (not next-call price alone) drives economics; hard eligibility,
 capability-tier deficits, and quota/cooldown override cost-driven stickiness.
 
-Consumes BOD-54 ``CostTerm`` / ``ExpectedStrategyCost`` without forking
-arithmetic.  Optionally records BOD-92 runtime evidence (quota/cooldown/cache)
+Consumes ``CostTerm`` / ``ExpectedStrategyCost`` without forking
+arithmetic.  Optionally records runtime-certification evidence (quota/cooldown/cache)
 as inputs — never as routing authority.
 
-Does **not** own strategy integration (BOD-104), cost_ledger ownership,
-runtime_certification ownership, or bounded recovery (BOD-55).
+Does **not** own execution-path strategy integration, cost_ledger ownership,
+runtime_certification ownership, or bounded recovery.
 """
 
 from __future__ import annotations
@@ -160,7 +160,7 @@ class SessionState:
     cooldown_active: bool = False
     health_unusable: bool = False
     serving_failures: int = 0
-    # Optional BOD-92 evidence shapes (read-only consume).
+    # Optional runtime certification (passport) evidence shapes (read-only consume).
     quota_evidence: QuotaEvidenceInput | None = None
     cache_evidence: CacheEvidenceInput | None = None
 
@@ -190,7 +190,7 @@ class TaskState:
 class CostState:
     """Expected remaining costs for STAY vs SWITCH trajectories.
 
-    ``stay_expected`` / ``switch_expected`` are BOD-54 strategy receipts.
+    ``stay_expected`` / ``switch_expected`` are expected-cost strategy receipts.
     Cache savings apply only when the term is observed **and** still fresh.
     """
 
@@ -584,7 +584,7 @@ def apply_runtime_evidence(
     cooldown_active: bool | None = None,
     health_unusable: bool | None = None,
 ) -> SessionState:
-    """Merge optional BOD-92 evidence into session state (immutable replace)."""
+    """Merge optional runtime certification (passport) evidence into session state (immutable replace)."""
 
     exhausted = session.quota_exhausted if quota_exhausted is None else quota_exhausted
     remaining_pct = None if quota is None else quota.get("remaining_pct")

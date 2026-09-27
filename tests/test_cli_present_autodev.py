@@ -1,4 +1,4 @@
-"""BOD-187: autodev/packet/resume/benchmark human output goes through verdict.present."""
+"""autodev/packet/resume/benchmark human output goes through verdict.present."""
 
 from __future__ import annotations
 

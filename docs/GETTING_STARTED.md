@@ -1,7 +1,7 @@
 # Getting Started with Verdict
 
 > **Shipped behavior.** Commands and paths below match the current CLI and config
-> loaders. Planned CLI/TUI work ([BOD-177](https://linear.app/bodanglin/issue/BOD-177))
+> loaders. Planned CLI/TUI work
 > may extend interactive presentation without changing these entry points.
 
 ## Quick Install
@@ -53,7 +53,7 @@ verdict route "Refactor this Python module to use type hints" --terse
 
 ## Run the Golden Path
 
-The interview golden path runs a full orchestration: goal → frontier plan → DAG → eligibility →
+The orchestration golden path runs a full orchestration: goal → frontier plan → DAG → eligibility →
 parallel workers → recovery → independent review → digest-verified receipt.
 
 ```bash
@@ -70,7 +70,7 @@ verdict run-receipt <run-id>
 verdict eligibility
 ```
 
-See [`docs/guides/interview-golden-path.md`](guides/interview-golden-path.md) for prerequisites,
+See [`docs/guides/orchestration-golden-path.md`](guides/orchestration-golden-path.md) for prerequisites,
 a full walkthrough, and the recorded scenario matrix (A–J).
 
 ## Configuration
@@ -95,7 +95,7 @@ fail-open fallback when no candidate survives the eligibility gates.
 
 ## Next Steps
 
-- [Interview golden path](guides/interview-golden-path.md) — End-to-end orchestration walkthrough
+- [Orchestration golden path](guides/orchestration-golden-path.md) — End-to-end orchestration walkthrough
 - [CLI Reference](CLI_REFERENCE.md) — Commands and flags
 - [Configuration](CONFIGURATION.md) — Config paths and environment variables
 - [Architecture](architecture.md) — Gate → eligibility → intelligence → dispatch → orchestration

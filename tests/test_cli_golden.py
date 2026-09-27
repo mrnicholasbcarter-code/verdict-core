@@ -1,4 +1,4 @@
-"""BOD-187: every offline `--json` CLI contract stays byte-identical across the CLI migration.
+"""every offline `--json` CLI contract stays byte-identical across the CLI migration.
 
 Each case runs `python -m verdict <argv>` in an isolated HOME/cwd with copied input
 fixtures, then compares stdout (after normalizing the scratch paths) and the exit

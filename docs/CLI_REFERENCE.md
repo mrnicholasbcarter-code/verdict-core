@@ -111,7 +111,46 @@ verdict eligibility --frontier --json
 | `--probe` | Probe lazily to reach `SELECTED` |
 | `--reasoning` | Request reasoning-capable routes |
 | `--frontier` | Request frontier-capable routes |
+| `--provider-family FAMILY[,FAMILY]` | Only evaluate routes whose id prefix (before `/`) is listed, e.g. `cc,kr`; repeatable |
 | `--json` | Print JSON |
+| `--no-pager` | Never pipe human output through a pager |
+
+Output is never truncated. `--json` returns every evaluated verdict plus
+`filters` (active user filters), `evaluated_count` (= `len(verdicts)`), and a
+`summary` whose `selected` equals the top-level `selected.route_id` and whose
+`by_reached_stage` buckets sum to `evaluated_count`. Human output starts with a
+`filters:` line, then lists every route: selected, then ranked/eligible, then
+rejected grouped by failed stage. On a TTY it is piped through `$PAGER` (else
+`less -R`).
+
+The harness gate is the live gateway inventory (`GET /v1/models`, the same rows
+the ladder discovers). Prime's `~/.prime/agent/models.json` is only a fallback.
+With neither source available, every route is denied at `ENTITLED` with reason
+`harness_inventory_unavailable` (fail-closed).
+
+With `--probe`, the probe budget (8 per select) is spread round-robin across
+providers inside each capacity class. A `payment_required`, `permission`, or
+`authentication` probe failure sets a persisted `provider:<name>` cooldown. The
+other routes of that provider are then skipped (`cooldown:provider`) without a
+probe, in this select and in later ones. A 400 whose body says the id is "not
+available in the active live catalog" is `unservable`, with a 6 h route cooldown.
+
+### `verdict harness prime sync-models` — Sync Prime's OmniRoute model list
+
+```bash
+verdict harness prime sync-models --dry-run
+verdict harness prime sync-models --gateway http://127.0.0.1:20128
+```
+
+Fetches the live `/v1/models` and rewrites only `providers.omniroute.models` in
+`~/.prime/agent/models.json`. Existing per-model settings (for example
+`thinkingLevelMap`) are kept. Before it writes, it copies the file to
+`models.json.verdict-sync-<UTC stamp>.bak`. It prints the added and removed counts.
+
+| Flag | Description |
+|---|---|
+| `--gateway GATEWAY` | Gateway base URL (default `$OMNIROUTE_BASE_URL`, then `:20128`) |
+| `--dry-run` | Print the added/removed diff; write nothing |
 
 ---
 
@@ -136,7 +175,7 @@ verdict route "your task prompt" [flags]
 | `--terse` | On success, output only the selected model; failures remain structured and explicit |
 | `--criticality <level>` | `low` \| `medium` \| `high` \| `critical` |
 | `--allow-offline` | Disable network discovery/probes; does not enable the legacy selector |
-| `--allow-legacy-selector` | Explicit BOD-127 migration escape for the pre-BOD-104 selector |
+| `--allow-legacy-selector` | Explicit migration escape to the selector that predates the execution-path authority optimizer |
 
 **Examples:**
 ```bash
@@ -195,7 +234,7 @@ verdict models [flags]
 
 ---
 
-### `verdict metadata` — Core model metadata store (BOD-108)
+### `verdict metadata` — Core model metadata store
 
 Independent of OmniRoute. See [`guides/model-metadata-store.md`](guides/model-metadata-store.md).
 
@@ -320,6 +359,71 @@ verdict doctor [flags]
 | Flag | Description |
 |------|-------------|
 | `--fix` | Auto-fix issues |
+| `--json` | Output a machine-readable report |
+| `--preflight-timeout SECONDS` | Bound the documentation preflight (default `120`; `0` = unbounded) |
+
+Text mode prints progress lines on stderr before and during the documentation
+preflight (`checking documentation memory (may take a while)...`, then
+`checking documentation source <id>...` and, under `--fix`,
+`ingesting N/M documents (<source>: <path>)...`). `--json` prints no progress,
+so stdout stays pure JSON. The deadline is checked between documents and never
+interrupts a write. A preflight that hits the deadline reports
+`documentation_preflight.timed_out: true`, status `blocked`, and an issue that
+names `--preflight-timeout`. It is never reported as ready.
+
+Exit code: `0` when the host is healthy, `1` when unresolved issues remain
+(after `--fix` has been applied, if used). Text and `--json` modes run one
+shared diagnostics collector (`_collect_doctor_diagnostics` in
+`verdict/cli.py`), so they report the same `issues` and `warnings` and agree
+on exit code for the same host state. Text mode renders the result; `--json`
+serialises it (`status`, `issues`, `warnings`, `repaired`, `sections`,
+`documentation_preflight`, `gateway_lifecycle`, `shared_memory`,
+`capability_bootstrap`, `runtime_health`).
+
+`gateway_lifecycle` reports gateway readiness as a named state
+(`not_required`, `already_ready`, `started`, `failed_to_start`, `unhealthy`)
+with the remediation for an unready gateway. `doctor` is report-only here: it
+probes at most once and never starts, stops or reconfigures a gateway, and the
+section does not change the exit code. The probe carries the gateway API key when
+one is configured, so an auth-protected gateway is reported as healthy rather
+than unhealthy; a rejected credential is `gateway_auth_failed`. To make the gateway ready, set
+`VERDICT_ENSURE_GATEWAY=true` for CLI execution or
+`VERDICT_SERVE_ENSURE_GATEWAY=true` for `verdict serve`, and configure
+`gateway_start_command` (see [CONFIGURATION.md](CONFIGURATION.md)). Verdict
+never guesses a start command.
+
+Issues (exit `1`):
+
+- `verdict.yaml` missing, invalid YAML, or not a mapping.
+- No `primary_model`; `providers` not a mapping.
+- Literal secret (`sk-` / `api_key`) in a provider `base_url`; duplicate provider `base_url`.
+- No `schema_version` (fixed by `--fix`).
+- Legacy `config.yaml` (renamed by `--fix`), or both `config.yaml` and `verdict.yaml` present.
+- No gateway URL, or gateway `/api/health` unreachable / not HTTP 200. On an
+  old config with no `gateway_url`, `--fix` writes `gateway_url` only when
+  exactly one healthy local gateway is detected (ports 20128/20129/20132). It
+  also stores the same URL as `OMNIROUTE_BASE_URL` in the credentials store if
+  that entry is missing. When no gateway or more than one is found, the issue
+  stays.
+- Malformed `OMNIROUTE_BASE_URL` (expected `http://host:port`, no trailing slash); `OPENAI_API_KEY` without the `sk-` prefix.
+- Duplicate OmniRoute provider nodes; unreachable provider nodes.
+- Missing required credential.
+- Documentation preflight did not pass, unless it is network-only (see below),
+  or timed out (`--preflight-timeout`).
+
+Warnings (exit unaffected):
+
+- `missing_mcp_config` (no `./.mcp.json`; `--fix` creates it).
+- Memory bridge: `missing_memory_db`, `missing_memory_db_file` (`--fix` creates
+  `~/.verdict/` and initializes `memory.db`).
+- Documentation preflight network-only failure: `missing == 0`, `stale == 0`,
+  `orphaned == 0`, and every error is a `resolve`/`inventory` fetch error that
+  contains `rate limit`, `HTTP Error 429`, `URLError`, `timed out`,
+  `Connection refused`, or `Name or service not known`. A bare
+  `HTTP Error 403` (for example `Forbidden`) is an issue; a 403 counts as
+  network-only only when the same error also says `rate limit`.
+
+Text mode may prompt to delete duplicate OmniRoute nodes; `--json` never prompts.
 
 ---
 

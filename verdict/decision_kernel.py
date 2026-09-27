@@ -25,8 +25,8 @@ The outcome (``accepted``/``degraded``/``denied``) is the aggregate of the
 per-candidate eligibility verdicts -- there is no separate named-policy gate
 (FR-007).
 
-BOD-127: DecisionKernel remains an eligibility/advisory facade. Production
-serve strategy authority is ``optimize_execution_path`` (BOD-104); AdaptiveRanker
+DecisionKernel remains an eligibility/advisory facade. Production
+serve strategy authority is ``optimize_execution_path``; AdaptiveRanker
 inside this facade must not be treated as a competing route inventor.
 """
 
@@ -398,9 +398,13 @@ def decide(
         return None  # fixture-supplied non-report surface -> treat as absent
 
     # Availability/fail-closed gate over the capability-passing subset only.
+    # ``dev_mode`` is an explicit caller opt-in that "forwards to the eligibility
+    # gate's dev-mode relaxation toggle" (see docstring); the gate's own default
+    # is fail-closed, so the relaxation must be threaded through here.
     gate = EligibilityGate(
         cast("Callable[[str], AvailabilityReport | None]", availability_source),  # type: ignore[arg-type]
         protected_fail_closed=protected,
+        allow_unverified_in_dev=dev_mode,
         clock=clock,
     )
     eligibility: EligibilityResult = gate.evaluate(

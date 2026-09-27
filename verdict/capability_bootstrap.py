@@ -1,8 +1,9 @@
-"""Capability bootstrap / installer DX (BOD-124).
+"""Capability bootstrap / installer DX.
 
 Staged flow: discover → normalize → recommend → preflight → consent → apply → certify.
 
-Setup/DX only — not Core routing, cost ledger, or BOD-104. Third-party software is
+Setup/DX only — not Core routing, cost ledger, or execution-path authority.
+Third-party software is
 never silently installed. APPLY authorization is unified in
 ``authorize_bootstrap_actions``:
 
@@ -22,7 +23,7 @@ copied, and RECOMMEND/APPLY prefer reuse/repair over duplicate installs.
 Recommendations are capability-first (providers second). OmniRoute may be
 recommended but is never a hard dependency or routing authority.
 
-Certification consumes BOD-92 passport/certification helpers when available via a narrow
+Certification consumes runtime-certification passport helpers when available via a narrow
 ``Certifier`` Protocol seam; this module does not own evidence-type definitions.
 """
 
@@ -135,7 +136,7 @@ class StageName(str, Enum):
 
 @dataclass(frozen=True)
 class DiscoveredProvider:
-    """Normalized provider record feeding BOD-87 / BOD-92 consumers."""
+    """Normalized provider record feeding semantic capability registry / runtime certification (passport) consumers."""
 
     provider_id: str
     provider_kind: ProviderKind
@@ -200,7 +201,7 @@ class CapabilityRecommendation:
     selected_provider_id: str | None = None
     optional: bool = True
     hard_dependency: bool = False
-    parity: str | None = None  # supported | partial | unsupported (BOD-92 seam)
+    parity: str | None = None  # supported | partial | unsupported (runtime certification seam)
 
     def to_dict(self) -> dict[str, object]:
         # Capability fields first for machine + human consumers.
@@ -362,7 +363,7 @@ class BootstrapReport:
 
 
 class Certifier(Protocol):
-    """Narrow seam for BOD-92 runtime certification (evidence only)."""
+    """Narrow seam for runtime certification (passport; evidence only)."""
 
     def __call__(self, providers: tuple[DiscoveredProvider, ...]) -> Mapping[str, Any]: ...
 
@@ -612,7 +613,7 @@ def _provider_kind_to_component_kind(kind: ProviderKind) -> Any:
 
 
 def _health_claim_for_provider(provider: DiscoveredProvider) -> str:
-    """Map bootstrap lifecycle/health into BOD-92 health_claim vocabulary."""
+    """Map bootstrap lifecycle/health into runtime certification (passport) health_claim vocabulary."""
 
     if provider.lifecycle is ProviderLifecycle.NOT_INSTALLED:
         return "unsupported"
@@ -637,7 +638,7 @@ def _health_claim_for_provider(provider: DiscoveredProvider) -> str:
 
 
 def _safe_snapshot_capabilities(capabilities: frozenset[str]) -> frozenset[str]:
-    """Drop capability ids that BOD-92 ``_safe_text`` rejects (e.g. ``security.secrets``)."""
+    """Drop capability ids that runtime certification (passport) ``_safe_text`` rejects (e.g. ``security.secrets``)."""
 
     from verdict.runtime_certification import RuntimeCertificationError, _safe_text
 
@@ -653,7 +654,7 @@ def _safe_snapshot_capabilities(capabilities: frozenset[str]) -> frozenset[str]:
 def _discovered_to_snapshot(provider: DiscoveredProvider) -> Any:
     from verdict.runtime_certification import DetectedSnapshot
 
-    # Never put filesystem paths into identity — BOD-92 rejects private-path text.
+    # Never put filesystem paths into identity — runtime certification (passport) rejects private-path text.
     identity = provider.provider_id
     evidence: dict[str, object] = {
         "lifecycle": provider.lifecycle.value,
@@ -684,7 +685,7 @@ def _discovered_to_snapshot(provider: DiscoveredProvider) -> Any:
 
 
 def _parity_from_component(state: str, parity_facets: object) -> str:
-    """Collapse BOD-92 state + optional facets into bootstrap's single parity string."""
+    """Collapse runtime certification (passport) state + optional facets into bootstrap's single parity string."""
 
     if state == "ready":
         level = "supported"
@@ -709,7 +710,7 @@ def _parity_from_component(state: str, parity_facets: object) -> str:
 def _default_certifier(
     providers: tuple[DiscoveredProvider, ...], *, now: datetime | None = None
 ) -> Mapping[str, Any]:
-    """Certify bootstrap providers via BOD-92 ``certify_runtime`` (evidence only)."""
+    """Certify bootstrap providers via runtime certification (passport) ``certify_runtime`` (evidence only)."""
 
     from datetime import timezone
 
@@ -1026,7 +1027,7 @@ def recommend_capabilities(
         usable = tuple(item for item in candidates if _is_usable(item))
         selected: DiscoveredProvider | None = usable[0] if usable else None
 
-        # Prefer BOD-87 resolution when vocabulary knows the capability.
+        # Prefer semantic capability registry resolution when vocabulary knows the capability.
         decision: ResolveDecision | None = None
         try:
             decision = resolve_capability(capability_id, registry=active)
@@ -1986,7 +1987,7 @@ def doctor_capability_report(
                 selected = match.provider_id
                 authority = match.authority
                 health = match.health_state
-        # Augment with BOD-87 registry view when available.
+        # Augment with semantic capability registry view when available.
         try:
             decision = resolve_capability(recommendation.capability_id, registry=active)
             if decision.selected is not None and selected is None:

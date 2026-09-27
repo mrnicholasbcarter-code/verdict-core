@@ -302,7 +302,7 @@ def test_build_intelligence_disables_inline_execute_offload(monkeypatch) -> None
     assert not hasattr(svc, "ruflo_command")
 
 
-# --- BOD-111: hydrated pack is injected into the actual upstream request ------
+# --- hydrated pack is injected into the actual upstream request ------
 
 
 def _admit_service_with_workspace(snapshot, *, passports, confirm_transport, workspace_root):
@@ -418,7 +418,7 @@ def test_task_contract_pack_is_injected_without_workspace_files(monkeypatch, tmp
     assert "summarize this paragraph" in forwarded[0]["content"]
 
 
-# --- BOD-117: serving writes a post-execution outcome receipt --------------------
+# --- serving writes a post-execution outcome receipt --------------------
 
 
 class CostReportingTransport(RecordingTransport):

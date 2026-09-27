@@ -1,4 +1,4 @@
-"""BOD-111: compiled pack injection into upstream payloads is verifiable and honest."""
+"""compiled pack injection into upstream payloads is verifiable and honest."""
 
 from __future__ import annotations
 

@@ -68,7 +68,7 @@ def check_transition(current: NodeState, target: NodeState) -> None:
 
 
 class Topology(str, Enum):
-    """BOD-151 cognition topology; chosen by deterministic rules, never by a model."""
+    """Frontier-decomposition cognition topology; chosen by deterministic rules, never by a model."""
 
     SOLO = "SOLO"
     WORKER_CRITIC = "WORKER_CRITIC"
@@ -379,7 +379,7 @@ class WorkerTerminal:
 
 @dataclass(frozen=True)
 class FailureClassification:
-    """BOD-152 normalized failure and bounded corrective action."""
+    """Normalized failure and bounded corrective action."""
 
     category: str  # e.g. rate_limited, quota_exhausted, authentication, payment_required,
     # permission, unsupported, timeout, upstream_temporary,
@@ -417,7 +417,7 @@ EVENT_TYPES = frozenset(
         "review",
         "remediation",
         "controller",
-        "decision_signals",  # BOD-199: SHADOW decision signals
+        "decision_signals",  # SHADOW decision signals
         "run_finished",
     }
 )
@@ -540,7 +540,7 @@ class FailureClassifier(Protocol):
 
 
 class Reviewer(Protocol):
-    """Independent semantic review of an integrated diff (BOD-185)."""
+    """Independent semantic review of an integrated diff."""
 
     async def review(
         self,
@@ -580,3 +580,14 @@ class ReviewResult:
     @property
     def passed(self) -> bool:
         return self.status == "PASS" and not any(f.blocking() for f in self.findings)
+
+
+def require_launchable(selector: Any, route_id: str, *, surface: str) -> None:
+    """Assert the launch gate on selectors that carry an admitted set.
+
+    Selectors without ``require_launchable`` (no canonical admission attached)
+    are left to their own membership rules.
+    """
+    gate = getattr(selector, "require_launchable", None)
+    if callable(gate):
+        gate(route_id, surface=surface)

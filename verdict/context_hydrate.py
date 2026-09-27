@@ -85,7 +85,7 @@ class HydrateGather:
     ``required_uris`` names the task-relevant high-value sources (ADR /
     architecture files whose path or content matches the task terms). A pack
     that omits any of them is incomplete for this task even if some other ADR
-    landed (BOD-110).
+    landed (pack completeness contract).
     """
 
     units: tuple[ContextUnit, ...]
@@ -290,7 +290,7 @@ def _gather_root(
         if len(units) >= max_units:
             # The cap has been reached. Anything left that this task *requires*
             # (task-matching ADR / architecture) must be named as an omission so
-            # the pack cannot read hydrated while silently lacking it (BOD-110).
+            # the pack cannot read hydrated while silently lacking it (pack completeness contract).
             omissions.extend(
                 _capped_required_omissions(
                     workspace,
@@ -565,7 +565,7 @@ def truncate_utf8(text: str, max_bytes: int) -> str:
     """Bound ``text`` to ``max_bytes`` of UTF-8, never splitting a code point.
 
     ``max_file_bytes`` is a byte limit: multi-byte content must not be allowed
-    to exceed it by counting characters instead (BOD-110).
+    to exceed it by counting characters instead (pack completeness contract).
     """
     if max_bytes <= 0:
         return ""

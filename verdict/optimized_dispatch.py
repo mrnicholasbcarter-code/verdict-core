@@ -1,14 +1,14 @@
-"""BOD-67: hydrate proof-bound worker context and bind authorized dispatch.
+"""Hydrate proof-bound worker context and bind authorized dispatch.
 
 Architecture boundary
 ---------------------
-* BOD-104 owns strategy via ``optimize_execution_path`` / ``ExecutionPathDecision``.
-* BOD-55 owns recovery.
-* BOD-67 owns hydrate-before-dispatch and binding/executing an already-authorized
+* ``optimize_execution_path`` / ``ExecutionPathDecision`` own strategy.
+* Bounded recovery owns recovery.
+* This module owns hydrate-before-dispatch and binding/executing an already-authorized
   route. This module never invents model/route selection and never revives
   chooser / live_routing / AdaptiveRanker / free_tier as strategy authority.
 
-Hydration consumes BOD-123 ContextPack surfaces (``context_intelligence``,
+Hydration consumes Context Intelligence ContextPack surfaces (``context_intelligence``,
 ``context_hydrate``, ``context_pack``). Dispatch binds via ``SwarmDispatcher``
 and ``serve_path.match_candidate_to_selected_route``.
 """
@@ -477,7 +477,7 @@ def execute_optimized_dispatch(
     dispatcher: SwarmDispatcher | None = None,
     now: datetime | None = None,
 ) -> tuple[DispatchResult, DispatchReceipt]:
-    """Hydrate-aware bind of an already-authorized BOD-104 route.
+    """Hydrate-aware bind of an already-authorized execution-path authority route.
 
     Planning contract: ``dry_run`` defaults to True and no live provider invoke
     is performed. Missing explicit child models are rejected.

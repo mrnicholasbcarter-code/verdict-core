@@ -1,4 +1,4 @@
-"""BOD-177: Verdict-native live terminal view of one orchestration run.
+"""Verdict-native live terminal view of one orchestration run.
 
 :class:`RunView` is a pure projection over ``contracts.RunEvent``; :func:`render`
 turns it into a compact Rich dashboard built on the existing Verdict design
@@ -717,7 +717,7 @@ def _controller_lines(view: RunView) -> list[str]:
 
 
 def render(view: RunView, *, width: int = 100, plain: bool = False) -> RenderableType:
-    """Interview dashboard: one screen, one labelled block per orchestration stage.
+    """Run dashboard: one screen, one labelled block per orchestration stage.
 
     Layout (wide terminals): header, then GOAL, then CONTROLLER | PLAN+DAG side by
     side, SELECT, WORKERS (full width), QUOTA/COOLDOWN | FAILURE/REASSIGN side by

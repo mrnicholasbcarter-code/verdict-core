@@ -1,4 +1,4 @@
-"""Cheap-path pack_state classifier (BOD-106).
+"""Cheap-path pack_state classifier.
 
 Receipt-facing states:
 
@@ -8,11 +8,11 @@ Receipt-facing states:
 * ``hydrated`` — at least one included unit from each required high-value class
   that exists on disk (ADR + architecture when present; README is optional)
 * ``failed`` — hydrate / compiler error path, or the task instructions themselves
-  were omitted (BOD-110: a pack without its task is never hydrated or partial)
+  were omitted (a pack without its task is never hydrated or partial)
 
 Task-required sources (ADR / architecture files matching the task terms) must
 all be packed; a task-relevant ADR left out for budget is ``partial`` even if
-another, smaller ADR made it in (BOD-110).
+another, smaller ADR made it in.
 
 Invent-never: a missing root is a named ``source_missing`` omission only. It does
 not count as a present high-value class and must not be invented to reach
@@ -60,7 +60,7 @@ def classify_pack_state(
     ``included`` / ``gathered`` items are provenance rows (``source_uri``).
     ``omissions`` items are named drops (``name`` + ``reason``).
     ``required`` names task-specific sources that must be packed; omitting any
-    of them is ``partial`` even when the class-level thesis set landed (BOD-110).
+    of them is ``partial`` even when the class-level thesis set landed.
     ``task_complete=False`` means the task instructions themselves did not
     survive compilation, which is ``failed`` — never hydrated, never partial.
     """

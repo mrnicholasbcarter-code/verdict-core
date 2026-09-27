@@ -1,4 +1,4 @@
-"""One-story-one-worktree registry and safe lifecycle rules (BOD-65/66).
+"""One-story-one-worktree registry and safe lifecycle rules (cross-harness resume context).
 
 Foundations for durable resume: discover existing worktrees/branches before
 create, enforce reattach-before-create, protect dirty/unmerged trees from
@@ -206,13 +206,13 @@ class WorktreeRegistry:
     def story_matches_entry(self, story_id: str, entry: WorktreeEntry) -> bool:
         sid = normalize_story_id(story_id)
         token = sid.lower()
-        # Path or branch naming conventions: bod-65, BOD-65, feat/bod-65-...
+        # Path or branch naming conventions: bod-65, cross-harness resume context, feat/bod-65-...
         haystacks = [entry.path.lower(), (entry.branch or "").lower()]
         if any(token in h or token.replace("-", "") in h.replace("-", "") for h in haystacks):
             # Prefer explicit token presence (bod-65) over digit-only collisions.
             if token in entry.path.lower() or token in (entry.branch or "").lower():
                 return True
-            # Also accept path segments like bod-65-66-harness for BOD-65.
+            # Also accept path segments like bod-65-66-harness for cross-harness resume context.
             parts = re.split(r"[^a-z0-9]+", entry.path.lower() + " " + (entry.branch or "").lower())
             if token in parts:
                 return True

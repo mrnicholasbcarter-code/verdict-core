@@ -1,6 +1,6 @@
 # ADR-034: Durable outbox mirror and fail-open shared recall
 
-- **Status:** Accepted — BOD-146
+- **Status:** Accepted
 - **Date:** 2026-09-22
 - **Related:** ADR-004, ADR-009, ADR-022, ADR-027, ADR-033
 

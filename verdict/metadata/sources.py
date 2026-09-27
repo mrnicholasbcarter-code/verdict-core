@@ -1,4 +1,4 @@
-"""Fetch and normalize free public model metadata sources (BOD-108).
+"""Fetch and normalize free public model metadata sources (Core metadata store).
 
 P0: models.dev (primary) and LiteLLM (secondary cross-check).
 P1: stubbed unless a fixture payload is supplied — never invent scores.
@@ -230,7 +230,7 @@ def parse_models_dev_models(
     """Parse models.dev models.json (provider-agnostic id → facts).
 
     Callers should pass provenance with ``source=models.dev.models`` so unique-leaf
-    joins (BOD-121) can distinguish these rows from api.json provider catalogs.
+    joins can distinguish these rows from api.json provider catalogs.
     """
     if not isinstance(document, Mapping):
         raise ModelMetadataError("models.dev models.json must be an object")

@@ -1,11 +1,11 @@
-"""Context Budget Governor — total usable context account/allocate/enforce (BOD-125).
+"""Context Budget Governor — total usable context account/allocate/enforce.
 
 Treats the **entire** model context window as a scarce execution resource, not
 merely pack include-budget.  Builds on :mod:`verdict.context_pack` token
 estimates and provenance hygiene; does **not** replace ContextPackCompiler,
-Context Intelligence Fabric, or BOD-69/81 compaction.
+Context Intelligence Fabric, or the compaction lifecycle.
 
-Budget receipts are designed so BOD-120 Effective Capability can consume them
+Budget receipts are designed so Effective Capability planning can consume them
 later without this module depending on that planner.
 """
 
@@ -295,7 +295,7 @@ class ContextBudgetAccount:
 class BudgetReceipt:
     """Bounded allocation result — include/omit decisions with reasons.
 
-    Shape is intentionally consumable by BOD-120 Effective Capability later.
+    Shape is intentionally consumable by Effective Capability planning later.
     """
 
     candidate_id: str

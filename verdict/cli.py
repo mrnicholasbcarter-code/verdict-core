@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
@@ -738,33 +739,50 @@ def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
     return {"omniroute": ProviderConfig(base_url=url, api_key_env="OMNIROUTE_API_KEY")}
 
 
-def _build_route_gate(allow_offline: bool = False) -> Gate:
-    """Build the CLI Gate from the user config (shared by route/compare)."""
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    config_path = os.path.join(config_dir, "verdict.yaml")
-    omniroute = _omniroute_provider_from_env()
+#: Interactive-CLI default provider set. Used only through the shared bootstrap
+#: contract, which reports it as ``field_sources["providers"] == "default"`` and
+#: refuses it under the production profile.
+_CLI_DEFAULT_PROVIDERS = {"public_ollama": "http://localhost:11434/v1"}
 
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            raw = yaml.safe_load(f) or {}
-        providers = {
-            k: ProviderConfig(base_url=v.get("base_url", ""), api_key_env=v.get("api_key_env"))
-            for k, v in (raw.get("providers") or {}).items()
-        }
-        for name, cfg in omniroute.items():
-            providers.setdefault(name, cfg)
-        return Gate(
-            primary_model=raw.get("primary_model", DEFAULT_PRIMARY_MODEL),
-            providers=providers,
-            log_path=raw.get("log_path", "verdict-decisions.jsonl"),
-            allow_offline=allow_offline,
-        )
-    providers = {"public_ollama": ProviderConfig(base_url="http://localhost:11434/v1")}
-    providers.update(omniroute)
+
+def _cli_bootstrap(*, require_authoritative: bool = False) -> Any:
+    """Resolve the CLI provider/gateway bootstrap from the shared contract."""
+    from verdict.provider_bootstrap import resolve_provider_bootstrap
+
+    return resolve_provider_bootstrap(
+        allow_default_providers=True,
+        default_providers=_CLI_DEFAULT_PROVIDERS,
+        require_authoritative=require_authoritative,
+    )
+
+
+def _report_bootstrap_notes(result: Any) -> None:
+    """Print non-fatal bootstrap findings so no default stays silent."""
+    for note in result.notes():
+        if note.code == "config_file_missing":
+            continue
+        print(f"verdict: {note.describe()}", file=sys.stderr)
+
+
+def _build_route_gate(allow_offline: bool = False) -> Gate:
+    """Build the CLI Gate from the shared bootstrap contract (route/compare).
+
+    Configuration failures name the exact field, source and remediation instead
+    of failing later as an empty provider map.
+    """
+    from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
+
+    try:
+        bootstrap = _cli_bootstrap()
+    except BootstrapError as exc:
+        print(describe_bootstrap_failure(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+    _report_bootstrap_notes(bootstrap)
     return Gate(
-        primary_model=DEFAULT_PRIMARY_MODEL, providers=providers, allow_offline=allow_offline
+        primary_model=bootstrap.primary_model,
+        providers=bootstrap.provider_configs(),
+        log_path=bootstrap.log_path,
+        allow_offline=allow_offline,
     )
 
 
@@ -787,6 +805,29 @@ def _configured_completion_endpoint(
             key = os.getenv(str(env_name))
         return str(base_url).strip(), key
     return None
+
+
+def _ensure_cli_gateway_ready() -> None:
+    """Make the gateway ready before the CLI executes through it, or fail closed.
+
+    Opt-in: ``VERDICT_ENSURE_GATEWAY`` turns the active path on, so an ordinary
+    ``verdict route`` keeps its current behaviour and never starts a process the
+    operator did not ask for. When it is on and the gateway cannot be made ready,
+    the command exits instead of quietly executing somewhere else.
+    """
+    if os.getenv("VERDICT_ENSURE_GATEWAY", "false").lower() not in {"1", "true", "yes", "on"}:
+        return
+    from verdict.gateway_lifecycle import require_gateway_ready
+    from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
+
+    try:
+        bootstrap = _cli_bootstrap()
+        outcome = require_gateway_ready(bootstrap, probe=_gateway_probe_for(bootstrap))
+    except BootstrapError as exc:
+        print(describe_bootstrap_failure(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+    if outcome.state != "not_required":
+        print(f"verdict: {outcome.describe()}", file=sys.stderr)
 
 
 def _execute_cli_decision(gate: Gate, task: str, dec: Any, *, allow_offline: bool) -> Any:
@@ -816,6 +857,7 @@ def _execute_cli_decision(gate: Gate, task: str, dec: Any, *, allow_offline: boo
             reason="no configured provider endpoint",
             execute_preview="no configured provider endpoint",
         )
+    _ensure_cli_gateway_ready()
     packed = dec.context_pack_prompt or task
     outcome, preview = execute_offload_chat(endpoint[0], dec.model, packed, api_key=endpoint[1])
     reason = dec.reason
@@ -833,7 +875,7 @@ def cmd_route(
 ) -> None:
     """Route a single task.
 
-    BOD-127: authority is derived from profile / ``VERDICT_REQUIRE_EXECUTION_PATH``
+    Authority is derived from profile / ``VERDICT_REQUIRE_EXECUTION_PATH``
     (and production profile). Pass ``allow_legacy_selector=True`` only as an
     explicit migration escape — never silent. ``allow_offline`` only switches the
     catalog/network surface; it must not imply legacy selector escape. API serve
@@ -842,7 +884,7 @@ def cmd_route(
     from verdict.serve_path import CONTEXT_ALLOW_LEGACY
 
     gate = _build_route_gate(allow_offline=allow_offline)
-    # Never couple offline catalog mode to the BOD-127 legacy escape.
+    # Never couple offline catalog mode to the legacy-selector escape.
     if allow_legacy_selector is None:
         allow_legacy_selector = False
     context: dict[str, object] = {}
@@ -1006,7 +1048,7 @@ def cmd_benchmark(
             path = str(DEFAULT_SAVINGS_FIXTURE_PATH)
         execute_arm = None
         if live_paired:
-            # BOD-114: the only claim-capable mode. Both arms execute against the
+            # The only claim-capable mode. Both arms execute against the
             # configured OmniRoute gateway; without one we refuse rather than
             # silently degrade to the labeled simulation.
             from verdict.savings_live import LiveExecutorUnavailableError, executor_from_env
@@ -1220,10 +1262,10 @@ def cmd_detect(
 
 
 def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -> None:
-    """Emit a BOD-92 runtime certification report (evidence only, JSON).
+    """Emit a runtime certification report (evidence only, JSON).
 
     Reads DetectedSnapshot fixtures from ``--from`` when provided. Does not
-    perform live network probes or mutate setup/doctor state (BOD-124).
+    perform live network probes or mutate setup/doctor state (capability bootstrap).
     """
     from verdict.runtime_certification import ComponentKind, DetectedSnapshot, certify_runtime
 
@@ -1321,7 +1363,7 @@ def cmd_probe(
 
 
 def _execution_path_decision_from_request_file(path: str, *, task: str) -> Any:
-    """Build the mandatory BOD-104 decision in-process from the public contract."""
+    """Build the mandatory execution-path decision in-process from the public contract."""
 
     from verdict.execution_path import optimize_execution_path
     from verdict.subagent_resolver import public_execution_path_request
@@ -2179,32 +2221,215 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
         )
 
 
-def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
-    """Scan the Verdict setup and OmniRoute connections for issues and repair them."""
-    if output_json:
-        from pathlib import Path
+_DOCTOR_NETWORK_ERROR_MARKERS = (
+    "rate limit",
+    "http error 429",
+    "urlerror",
+    "timed out",
+    "connection refused",
+    "name or service not known",
+)
 
-        from verdict.capability_bootstrap import doctor_capability_report
-        from verdict.memory_bridge import run_doctor_diagnostics
-        from verdict.runtime_daemons import RuntimeManager
-        from verdict.runtime_health import build_runtime_health_report
 
-        report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
-        report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
-        report["capability_bootstrap"] = doctor_capability_report()
-        print(json.dumps(report, indent=2, sort_keys=True))
-        if report["status"] != "healthy":
-            raise SystemExit(1)
+def _doctor_documentation_preflight_is_network_only_failure(report: Any) -> bool:
+    """Return True only when a blocked documentation preflight is explained
+    entirely by a transient third-party network/rate-limit condition.
+
+    The preflight is network-only iff:
+
+    * the local documentation set has no real gaps (``missing == 0``,
+      ``stale == 0`` and ``orphaned == 0``), and
+    * there is at least one error, and every error is a ``resolve`` or
+      ``inventory`` fetch error that carries one of
+      ``_DOCTOR_NETWORK_ERROR_MARKERS``.
+
+    A bare ``HTTP Error 403`` (auth/permission) is NOT network-only; a 403
+    counts only when the same error text also says ``rate limit``. Anything
+    else is a real issue.
+    """
+    if getattr(report, "missing", 0) or getattr(report, "stale", 0):
+        return False
+    if getattr(report, "orphaned", 0):
+        return False
+    errors = tuple(getattr(report, "errors", ()) or ())
+    if not errors:
+        return False
+    for error in errors:
+        parts = error.split(":", 2)
+        if len(parts) < 3 or parts[1] not in {"resolve", "inventory"}:
+            return False
+        lowered = error.lower()
+        if not any(marker in lowered for marker in _DOCTOR_NETWORK_ERROR_MARKERS):
+            return False
+    return True
+
+
+class DoctorDiagnostics:
+    """Result of the single shared ``verdict doctor`` diagnostics collector.
+
+    Both text and ``--json`` modes render this same object, so they always
+    agree on ``issues`` (exit 1 iff non-empty) and ``warnings`` (non-fatal).
+    ``sections`` holds ``(label, state, detail)`` rows for text rendering;
+    ``state`` ``"section"`` / ``"header"`` render a heading, ``"note"`` a dim line.
+    """
+
+    def __init__(self) -> None:
+        self.issues: list[str] = []
+        self.warnings: list[str] = []
+        self.fixed: list[str] = []
+        self.sections: list[tuple[str, str, str]] = []
+        self.capability_report: dict[str, Any] = {}
+        self.documentation_preflight: dict[str, Any] = {}
+        self.shared_memory: Any = None
+        self.config_loaded: bool = False
+        #: Report-only gateway lifecycle state. ``doctor`` never starts a gateway.
+        self.gateway_lifecycle: dict[str, Any] = {}
+
+
+DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
+
+
+def _doctor_progress(message: str) -> None:
+    """Write one doctor progress line to stderr so ``--json`` stdout stays pure."""
+    print(f"  {message}", file=sys.stderr, flush=True)
+
+
+def _doctor_fix_gateway(
+    config: dict[str, Any],
+    config_path: str,
+    sections: list[tuple[str, str, str]],
+    fixed_issues: list[str],
+) -> str | None:
+    """Persist the single healthy local gateway for an old config under --fix.
+
+    Writes ``gateway_url`` into ``verdict.yaml`` and, when the credential
+    store has no ``OMNIROUTE_BASE_URL`` yet, stores the same URL there (a URL,
+    not a secret). The process environment is never mutated. Returns the
+    repaired URL, or ``None`` when nothing was repaired.
+    """
+    from verdict import provider_detection
+    from verdict.credentials_store import CredentialsStore
+
+    try:
+        healthy = [g for g in provider_detection.probe_gateways() if g.health_ok]
+    except Exception as exc:
+        sections.append(("Gateway detection", "warn", str(exc)))
+        return None
+    if len(healthy) != 1:
+        if len(healthy) > 1:
+            sections.append(
+                (
+                    "Gateway detection",
+                    "warn",
+                    "Multiple healthy gateways found; set OMNIROUTE_BASE_URL to choose one.",
+                )
+            )
+        return None
+    url = healthy[0].url
+    config["gateway_url"] = url
+    try:
+        with open(config_path, "w") as f:
+            yaml.safe_dump(config, f, default_flow_style=False)
+    except Exception as exc:
+        sections.append(("Gateway repair failed", "failed", str(exc)))
+        return None
+    sections.append(("Gateway configured", "ok", f"gateway_url: {url}"))
+    fixed_issues.append("No gateway URL configured")
+    try:
+        store = CredentialsStore()
+        if "OMNIROUTE_BASE_URL" not in store.load():
+            store.set("OMNIROUTE_BASE_URL", url)
+            sections.append(("Stored credential", "ok", "OMNIROUTE_BASE_URL"))
+            fixed_issues.append("Required credential OMNIROUTE_BASE_URL is not set")
+    except PermissionError as exc:
+        sections.append(("Credential store", "failed", str(exc)))
+    return url
+
+
+def _gateway_probe_for(bootstrap: Any) -> Any:
+    """Readiness probe carrying the gateway credential, when one is configured.
+
+    A gateway that requires a key answers 401 to an unauthenticated probe, which
+    would be reported as unhealthy: ``doctor`` would call a healthy gateway broken,
+    and ensure would fail closed against it. The key is read by the name the
+    provider binding declares (``api_key_env``), from the exported environment and
+    then the credential store, and is never printed.
+    """
+    from verdict.gateway_lifecycle import authenticated_gateway_probe
+    from verdict.provider_bootstrap import load_credential_store_env
+
+    names = [
+        binding.api_key_env
+        for binding in bootstrap.providers.values()
+        if getattr(binding, "api_key_env", None)
+        and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
+    ]
+    api_key: str | None = None
+    store: dict[str, str] | None = None
+    for name in names:
+        api_key = (os.getenv(str(name)) or "").strip() or None
+        if api_key is None:
+            if store is None:
+                store = load_credential_store_env()
+            api_key = (store.get(str(name)) or "").strip() or None
+        if api_key is not None:
+            break
+    return authenticated_gateway_probe(api_key)
+
+
+def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
+    """Report gateway readiness in ``verdict doctor``. Never starts anything.
+
+    The requirement and URL come from the shared bootstrap contract, and the
+    state comes from ``inspect_gateway``, which probes at most once and never
+    launches, signals or locks. Exit status is unchanged: an unready gateway is
+    already reported by the reachability check above, so this section adds the
+    named state rather than a second failure.
+    """
+    from verdict.gateway_lifecycle import inspect_gateway
+    from verdict.provider_bootstrap import BootstrapError
+
+    try:
+        bootstrap = _cli_bootstrap()
+        outcome = inspect_gateway(bootstrap, probe=_gateway_probe_for(bootstrap))
+    except BootstrapError as exc:
+        diag.gateway_lifecycle = {"state": "unknown", "reason": exc.reason_code}
+        diag.sections.append(("Gateway lifecycle", "warn", exc.reason_code))
         return
+    diag.gateway_lifecycle = outcome.to_dict()
+    state = "ok" if outcome.ready else "warn"
+    diag.sections.append(("Gateway lifecycle", state, outcome.describe()))
+    if outcome.diagnostic is not None:
+        diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
 
-    ui = TerminalUI(console)
-    ui.header("Doctor")
+
+def _collect_doctor_diagnostics(
+    fix: bool,
+    *,
+    interactive: bool,
+    preflight_timeout: float = DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
+    progress: Callable[[str], None] | None = None,
+) -> DoctorDiagnostics:
+    """Run every ``verdict doctor`` check once and return the shared result.
+
+    ``interactive`` controls only whether duplicate OmniRoute nodes may be
+    removed after a confirmation prompt (never in ``--json`` mode, which must
+    keep stdout machine-readable).
+
+    ``preflight_timeout`` bounds the documentation preflight in seconds
+    (``0`` or less means unbounded). ``progress``, when given, receives short
+    status lines before and during the (possibly slow) preflight work.
+    """
+    diag = DoctorDiagnostics()
+    sections = diag.sections
+    issues_found = diag.issues
+    warnings_found = diag.warnings
+    fixed_issues = diag.fixed
 
     from verdict.capability_bootstrap import doctor_capability_report
 
-    with ui.task("Inspecting capabilities"):
-        capability_report = doctor_capability_report()
-    ui.doctor(capability_report)
+    capability_report = doctor_capability_report()
+    diag.capability_report = capability_report
     capabilities = capability_report.get("capabilities", [])
     if not isinstance(capabilities, list):
         capabilities = []
@@ -2212,38 +2437,91 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         1 for item in capabilities if isinstance(item, dict) and item.get("status") == "covered"
     )
     total = len(capabilities)
-    ui.status("Capability coverage", "ok", f"{covered}/{total} covered (bootstrap view)")
-
-    issues_found = []
-    fixed_issues = []
+    sections.append(("Capability coverage", "ok", f"{covered}/{total} covered (bootstrap view)"))
 
     from verdict.documentation_preflight import run_documentation_preflight
 
-    documentation_report = run_documentation_preflight(fix=fix)
-    doc_state = "ok" if documentation_report.passed else "failed"
-    ui.status(
-        "Documentation preflight",
-        doc_state,
-        f"{documentation_report.status} ({documentation_report.inventory} documents, "
-        f"{documentation_report.ingested} ingested, "
-        f"{documentation_report.stale} stale, "
-        f"{documentation_report.missing} missing)",
+    if progress is not None:
+        progress("checking documentation memory (may take a while)...")
+    deadline_seconds = preflight_timeout if preflight_timeout > 0 else None
+    documentation_report = run_documentation_preflight(
+        fix=fix, progress=progress, deadline_seconds=deadline_seconds
     )
-    if not documentation_report.passed:
-        issues_found.extend(
-            ["authoritative documentation preflight did not pass", *documentation_report.errors]
+    diag.documentation_preflight = documentation_report.to_dict()
+    doc_timed_out = bool(getattr(documentation_report, "timed_out", False))
+    network_only_doc_failure = (
+        not doc_timed_out
+        and not documentation_report.passed
+        and _doctor_documentation_preflight_is_network_only_failure(documentation_report)
+    )
+    doc_state = (
+        "ok" if documentation_report.passed else "warning" if network_only_doc_failure else "failed"
+    )
+    sections.append(
+        (
+            "Documentation preflight",
+            doc_state,
+            f"{documentation_report.status} ({documentation_report.inventory} documents, "
+            f"{documentation_report.ingested} ingested, "
+            f"{documentation_report.stale} stale, "
+            f"{documentation_report.missing} missing)",
         )
+    )
+    if doc_timed_out:
+        # An incomplete scan never counts as ready or as a transient network
+        # warning: verification did not finish, so it is an unresolved issue.
+        issues_found.append(
+            f"Documentation preflight timed out after {preflight_timeout:g}s before every "
+            "document was checked. Rerun with 'verdict doctor --preflight-timeout 0' "
+            "(unbounded) or a larger value."
+        )
+        issues_found.extend(documentation_report.errors)
+    elif not documentation_report.passed:
+        if network_only_doc_failure:
+            # A rate-limited/unreachable third-party GitHub source with no
+            # local documentation gap is a transient network condition, not
+            # a real problem with this host's routing setup.
+            warnings_found.extend(
+                ["authoritative documentation preflight unreachable", *documentation_report.errors]
+            )
+        else:
+            issues_found.extend(
+                ["authoritative documentation preflight did not pass", *documentation_report.errors]
+            )
     elif fix and documentation_report.ingested:
         fixed_issues.append("authoritative documentation preflight repaired")
 
-    from verdict.shared_memory import doctor_shared_memory_report
+    # Memory bridge (~/.verdict/memory.db, ./.mcp.json) and shared memory.
+    from verdict.memory_bridge import run_doctor_diagnostics
 
-    shared_memory = doctor_shared_memory_report()
-    ui.status(
-        "Shared memory",
-        str(shared_memory.get("state", "unknown")),
-        str(shared_memory.get("endpoint") or shared_memory.get("provider_id") or ""),
+    memory_report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
+    memory_issues = [str(item) for item in memory_report.get("issues", [])]
+    memory_repaired = [str(item) for item in memory_report.get("repaired", [])]
+    fixed_issues.extend(memory_repaired)
+    # Exit status reflects the state AFTER --fix: drop findings that --fix repaired.
+    repaired_by = {
+        "missing_memory_db": "created_verdict_dir",
+        "missing_memory_db_file": "initialized_memory_db",
+        "missing_mcp_config": "created_mcp_config",
+    }
+    issues_found.extend(
+        issue for issue in memory_issues if repaired_by.get(issue) not in memory_repaired
     )
+    warnings_found.extend(
+        str(warning)
+        for warning in memory_report.get("warnings", [])
+        if repaired_by.get(str(warning)) not in memory_repaired
+    )
+    shared_memory = memory_report.get("shared_memory") or {}
+    diag.shared_memory = shared_memory
+    if isinstance(shared_memory, dict):
+        sections.append(
+            (
+                "Shared memory",
+                str(shared_memory.get("state", "unknown")),
+                str(shared_memory.get("endpoint") or shared_memory.get("provider_id") or ""),
+            )
+        )
 
     # 1. Config Check
     config_dir = os.path.join(
@@ -2261,6 +2539,11 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         except Exception as exc:
             issues_found.append(f"Configuration file is corrupted/invalid YAML: {exc}")
 
+    if config is not None and not isinstance(config, dict):
+        issues_found.append("Configuration file verdict.yaml must be a YAML mapping.")
+        config = None
+    diag.config_loaded = bool(config)
+
     if config is not None:
         primary_model = config.get("primary_model")
         if not primary_model:
@@ -2269,7 +2552,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
             from verdict.classifier import classify
 
             tier = classify(primary_model)
-            ui.status("Configured Primary Model", "ok", f"{primary_model} (Tier-{tier})")
+            sections.append(("Configured Primary Model", "ok", f"{primary_model} (Tier-{tier})"))
 
         providers = config.get("providers", {})
         if not isinstance(providers, dict):
@@ -2324,7 +2607,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
             if fix:
                 try:
                     os.rename(legacy_config_path, config_path)
-                    ui.console.print(f"  [green]✓[/] Renamed {legacy_config_path} -> {config_path}")
+                    sections.append(("Renamed", "ok", f"{legacy_config_path} -> {config_path}"))
                     fixed_issues.append("Config file is named 'config.yaml'")
                 except Exception as exc:
                     issues_found.append(f"Failed to rename config.yaml: {exc}")
@@ -2336,6 +2619,12 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
 
     # 1d. Gateway reachability check (T015)
     gateway_url = os.getenv("OMNIROUTE_BASE_URL") or (config.get("gateway_url") if config else None)
+    if not gateway_url and fix and config is not None:
+        # Old-style configs (written before setup persisted gateway_url) have
+        # no gateway at all. --fix repairs this only when exactly one healthy
+        # local gateway answers the health protocol; an ambiguous or absent
+        # gateway is left as an issue for the operator to choose.
+        gateway_url = _doctor_fix_gateway(config, config_path, sections, fixed_issues)
     if not gateway_url:
         issues_found.append(
             "No gateway URL configured. Run 'verdict detect' or set OMNIROUTE_BASE_URL."
@@ -2359,6 +2648,9 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                 "Run 'verdict detect' to find a running gateway."
             )
 
+    # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
+    _doctor_gateway_lifecycle(diag)
+
     # 1e. Env var format checks (T017)
     omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")
     if omniroute_base_url_env and not re.match(
@@ -2374,18 +2666,23 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         issues_found.append("OPENAI_API_KEY appears invalid (expected prefix 'sk-').")
 
     # 1f. Env var reference note (T024)
-    ui.section("Environment reference")
-    ui.console.print(
-        "  [dim]See .env.example in the repository root for the full environment "
-        "variable reference.[/dim]"
+    sections.append(
+        (
+            "Environment reference",
+            "section",
+            "See .env.example in the repository root for the full environment variable reference.",
+        )
     )
 
     # 2. OmniRoute nodes check
     existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
     if existing_nodes is None:
-        ui.section("OmniRoute nodes")
-        ui.console.print(
-            "[dim]OmniRoute server is not currently running/reachable to check nodes.[/dim]"
+        sections.append(
+            (
+                "OmniRoute nodes",
+                "section",
+                "OmniRoute server is not currently running/reachable to check nodes.",
+            )
         )
     else:
         items = []
@@ -2394,7 +2691,9 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
         elif isinstance(existing_nodes, dict) and "items" in existing_nodes:
             items = existing_nodes["items"]
 
-        ui.status("Connected to OmniRoute", "ok", f"Found {len(items)} configured node endpoints")
+        sections.append(
+            ("Connected to OmniRoute", "ok", f"Found {len(items)} configured node endpoints")
+        )
 
         # Check duplicate nodes in OmniRoute
         node_urls: dict[str, str] = {}
@@ -2414,33 +2713,38 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     node_urls[clean_url] = node_id
 
         if duplicates:
-            ui.section("Duplicate nodes detected")
+            sections.append(("Duplicate nodes detected", "section", ""))
             for node_id, name, _url, original_id in duplicates:
-                ui.status(
-                    f"Duplicate node {name}",
-                    "warn",
-                    f"({node_id}) is a duplicate of ({original_id})",
+                sections.append(
+                    (
+                        f"Duplicate node {name}",
+                        "warn",
+                        f"({node_id}) is a duplicate of ({original_id})",
+                    )
                 )
                 issues_found.append(f"Duplicate node '{name}' in OmniRoute configuration.")
 
-            try:
-                if (
-                    Prompt.ask(
-                        "\nWould you like to resolve and delete the duplicate provider nodes?",
-                        default="y",
-                    )
-                    .lower()
-                    .startswith("y")
-                ):
-                    for node_id, name, _url, _ in duplicates:
-                        res = _omniroute_api_request("DELETE", f"/api/provider-nodes/{node_id}")
-                        if res is not None:
-                            ui.status("Removed", "ok", f"Removed duplicate node: {name}")
-                            fixed_issues.append(f"Removed duplicate node {node_id}")
-                        else:
-                            ui.status("Removal failed", "failed", f"Node {node_id}")
-            except (KeyboardInterrupt, EOFError):
-                pass
+            if interactive:
+                try:
+                    if (
+                        Prompt.ask(
+                            "\nWould you like to resolve and delete the duplicate provider nodes?",
+                            default="y",
+                        )
+                        .lower()
+                        .startswith("y")
+                    ):
+                        for node_id, name, _url, _ in duplicates:
+                            res = _omniroute_api_request("DELETE", f"/api/provider-nodes/{node_id}")
+                            if res is not None:
+                                sections.append(
+                                    ("Removed", "ok", f"Removed duplicate node: {name}")
+                                )
+                                fixed_issues.append(f"Removed duplicate node {node_id}")
+                            else:
+                                sections.append(("Removal failed", "failed", f"Node {node_id}"))
+                except (KeyboardInterrupt, EOFError):
+                    pass
 
         # Check node reachability
         for node in items:
@@ -2464,7 +2768,7 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     )
 
     # Credentials check
-    ui.header("Credentials")
+    sections.append(("Credentials", "header", ""))
     from verdict.credentials_registry import CREDENTIALS
     from verdict.credentials_store import CredentialsStore, get_credential_source
 
@@ -2480,21 +2784,83 @@ def cmd_doctor(fix: bool = False, output_json: bool = False) -> None:
                     f"Set with: verdict credentials set {cred.env_name}"
                 )
             elif source == "missing":
-                ui.status(cred.env_name, "optional", "not set")
+                sections.append((cred.env_name, "optional", "not set"))
             else:
-                ui.status(cred.env_name, source, masked)
+                sections.append((cred.env_name, source, masked))
 
         if not missing_required:
-            ui.status("Required credentials", "ok", "all set")
+            sections.append(("Required credentials", "ok", "all set"))
     except Exception as e:
         issues_found.append(f"Credential check failed: {e}")
 
-    # One shared presentation for the existing diagnostic results.
-    ui.doctor_summary(issues_found, fixed_issues)
-    if issues_found and not config:
+    return diag
+
+
+def cmd_doctor(
+    fix: bool = False,
+    output_json: bool = False,
+    preflight_timeout: float = DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
+) -> None:
+    """Scan the Verdict setup and OmniRoute connections for issues and repair them.
+
+    Text and ``--json`` modes share one collector (``_collect_doctor_diagnostics``),
+    so both exit 1 iff unresolved issues remain after ``--fix``. Text mode
+    prints preflight progress lines on stderr; ``--json`` prints none, so
+    stdout stays pure JSON.
+    """
+    if output_json:
+        from verdict.runtime_daemons import RuntimeManager
+        from verdict.runtime_health import build_runtime_health_report
+
+        diag = _collect_doctor_diagnostics(
+            fix, interactive=False, preflight_timeout=preflight_timeout
+        )
+        report: dict[str, Any] = {
+            "status": "issues_found" if diag.issues else "ok",
+            "issues": diag.issues,
+            "warnings": diag.warnings,
+            "repaired": diag.fixed,
+            "sections": [
+                {"label": label, "state": state, "detail": detail}
+                for label, state, detail in diag.sections
+            ],
+            "documentation_preflight": diag.documentation_preflight,
+            "gateway_lifecycle": diag.gateway_lifecycle,
+            "shared_memory": diag.shared_memory,
+            "capability_bootstrap": diag.capability_report,
+            "runtime_health": build_runtime_health_report(RuntimeManager().status()).to_dict(),
+        }
+        print(json.dumps(report, indent=2, sort_keys=True, default=str))
+        if diag.issues:
+            raise SystemExit(1)
+        return
+
+    ui = TerminalUI(console)
+    ui.header("Doctor")
+    # Interactive only for the optional duplicate-node removal prompt; the
+    # set of issues/warnings is identical to --json mode.
+    diag = _collect_doctor_diagnostics(
+        fix, interactive=True, preflight_timeout=preflight_timeout, progress=_doctor_progress
+    )
+    ui.doctor(diag.capability_report)
+    for label, state, detail in diag.sections:
+        if state == "header":
+            ui.header(label)
+        elif state == "section":
+            ui.section(label)
+            if detail:
+                ui.console.print(f"  [dim]{detail}[/dim]")
+        else:
+            ui.status(label, state, detail)
+    for warning in diag.warnings:
+        ui.status("WARNING", "warning", warning)
+    ui.doctor_summary(diag.issues, diag.fixed)
+    if diag.issues and not diag.config_loaded:
         ui.panel(
             "Next step", "Run verdict setup to initialize your configuration file.", tone="WARNING"
         )
+    if diag.issues:
+        raise SystemExit(1)
 
 
 def cmd_run(
@@ -2679,7 +3045,7 @@ def cmd_receipt(
     db_path: str | None = None,
     output_json: bool = False,
 ) -> None:
-    """Inspect durable RoutingReceiptV1 records from ReceiptStore (BOD-144)."""
+    """Inspect durable RoutingReceiptV1 records from ReceiptStore."""
     from pathlib import Path
 
     from verdict.receipt_store import ReceiptStore
@@ -3631,7 +3997,7 @@ def cmd_resume(
     repo: Path | str | None = None,
     create_if_missing: bool = False,
 ) -> dict[str, Any]:
-    """Reconstruct durable resume state for a Linear story (BOD-65/66 foundations).
+    """Reconstruct durable resume state for a Linear story (cross-harness resume context).
 
     Canonical sources: Git worktree/branch/SHA, ``.verdict/handoff.md``, optional
     ``gh`` PR discovery. Does not read proprietary chat history. ``--with`` records

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://llm-gate.dev/schemas/contracts.v1.json",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/contracts.v1.json",
   "title": "Verdict shared contracts v1",
   "type": "object",
   "additionalProperties": false,

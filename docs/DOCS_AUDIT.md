@@ -1,6 +1,6 @@
 # Documentation Audit — Disposition Record
 
-**Branch line:** interview golden path (BOD-189 documentation pass)
+**Branch line:** orchestration golden path (orchestration golden-path documentation pass)
 **Recorded:** 2026-09-24
 **Test count on this branch:** 2907 (from `pytest --collect-only -q`)
 **Repository:** https://github.com/mrnicholasbcarter-code/verdict-core
@@ -15,7 +15,7 @@ Status values:
   current product behavior).
 
 Context for archive decisions: Ruflo, RuVector, SONA, Hivemind, and swarm
-dispatch/supervision are obsolete in Core (BOD-17). See
+dispatch/supervision are obsolete in Core. See
 [ADR-023](adr/ADR-023-governed-swarm-supervision.md) (superseded) and
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md) (current
 orchestration).
@@ -52,7 +52,7 @@ orchestration).
 | docs/architecture.md | REWRITTEN | Broken sub-links already removed on this branch; ADR-036 orchestration section added in this pass; SwarmDispatcher correctly labeled a historical class name. |
 | docs/release-recovery.md | KEEP | Accurate partial-release recovery procedure. |
 | docs/typescript-contract-parity.md | KEEP | Current TypeScript parity guide. |
-| docs/BRANCH_RECONCILIATION.md | KEEP | Factual BOD-190 reconciliation record. |
+| docs/BRANCH_RECONCILIATION.md | KEEP | Factual branch/worktree/PR reconciliation record. |
 | docs/DOCS_AUDIT.md | KEEP | This disposition record. |
 
 ## docs/adr/
@@ -62,7 +62,7 @@ orchestration).
 | docs/adr/README.md | KEEP | Canonical ADR index; ADR-036 listed, ADR-023 marked SUPERSEDED. |
 | docs/adr/0001-verdict-control-plane-invariants.md | KEEP | Pre-scheme invariants; short and stable. |
 | docs/adr/ADR-001 … ADR-022 | KEEP | Correct Status fields; swarm/Ruflo appear only as superseded history. |
-| docs/adr/ADR-023-governed-swarm-supervision.md | KEEP | Self-marked SUPERSEDED (BOD-17); retained as the historical swarm record. |
+| docs/adr/ADR-023-governed-swarm-supervision.md | KEEP | Self-marked SUPERSEDED; retained as the historical swarm record. |
 | docs/adr/ADR-024 … ADR-035 | KEEP | Accurate decision records. |
 | docs/adr/ADR-036-goal-to-receipt-orchestration.md | KEEP | Authoritative record for current orchestration. |
 | docs/adr/ADR-ORCHESTRATOR-ROUTING.md | KEEP | Unnumbered legacy record kept for the supersession trail; index flags it for renumbering. |
@@ -78,7 +78,7 @@ orchestration).
 | docs/architecture/DOCTOR_AND_UNINSTALL_SPECIFICATION.md | KEEP | doctor/uninstall commands exist and match the spec. |
 | docs/architecture/ADR-EVIDENCE-LEDGER.md | ARCHIVED | Duplicate of docs/adr/ADR-001-evidence-ledger.md; moved to docs/archive/architecture/. |
 | docs/architecture/ADR-ORCHESTRATOR-ROUTING.md | ARCHIVED | Duplicate of docs/adr/ADR-ORCHESTRATOR-ROUTING.md with obsolete Ruflo/SONA framing; moved to docs/archive/architecture/. |
-| docs/architecture/EXPANDED_TOOL_AUTOPILOT_SPECIFICATION.md | ARCHIVED | Describes Ruflo/swarm tool matrix removed by BOD-17; moved to docs/archive/architecture/. |
+| docs/architecture/EXPANDED_TOOL_AUTOPILOT_SPECIFICATION.md | ARCHIVED | Describes Ruflo/swarm tool matrix removed from Core (see ADR-023); moved to docs/archive/architecture/. |
 | docs/architecture/CODE_INTELLIGENCE_GRAPH_SPECIFICATION.md | ARCHIVED | Early ADR-005 spec with RuVector claims; partially implemented; moved to docs/archive/architecture/. |
 | docs/architecture/LEGACY_MEMORY_ARCHIVAL_AND_CLEANUP_SPECIFICATION.md | ARCHIVED | Completed cleanup spec; malformed regex-as-link fixed; moved to docs/archive/architecture/. |
 
@@ -87,7 +87,7 @@ orchestration).
 | File | Status | Reason |
 |------|--------|--------|
 | docs/specs/ROUTING_POLICY.md | REWRITTEN | Swarm/Ruflo dispatch and learning-loop references replaced with ADR-036 orchestration in this pass; core gate policy was accurate. |
-| docs/specs/ENFORCEMENT_AND_LEARNING.md | ARCHIVED | Describes the Ruflo/SONA learning loop removed by BOD-17; moved to docs/archive/specs/ with an archival banner. |
+| docs/specs/ENFORCEMENT_AND_LEARNING.md | ARCHIVED | Describes the Ruflo/SONA learning loop removed from Core (see ADR-023); moved to docs/archive/specs/ with an archival banner. |
 | docs/specs/268/ (5 files) | ARCHIVED | Completed story spec artifacts; moved to docs/archive/specs/268/. |
 | docs/specs/story-269/ (5 files) | ARCHIVED | Completed story spec with swarm references; moved to docs/archive/specs/story-269/. |
 
@@ -114,10 +114,10 @@ orchestration).
 
 | File | Status | Reason |
 |------|--------|--------|
-| docs/guides/interview-golden-path.md | KEEP | Authoritative end-to-end orchestration proof; all five commands verified against `--help`. |
-| docs/guides/golden-path.md | KEEP | Accurate dated live-probe evidence; interview-golden-path.md is canonical for orchestration. |
+| docs/guides/orchestration-golden-path.md | KEEP | Authoritative end-to-end orchestration proof; all five commands verified against `--help`. |
+| docs/guides/golden-path.md | KEEP | Accurate dated live-probe evidence; orchestration-golden-path.md is canonical for orchestration. |
 | docs/guides/admit-prove-confirm-smoke.md | KEEP | Commands match the CLI. |
-| docs/guides/autonomous-development.md | KEEP | BOD-17 note present; swarm mentions are labeled historical, not product claims. |
+| docs/guides/autonomous-development.md | KEEP | Ruflo/swarm removal note present; swarm mentions are labeled historical, not product claims. |
 | docs/guides/claude-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/cline-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/codex-harness.md | KEEP | Accurate harness setup. |
@@ -127,18 +127,18 @@ orchestration).
 | docs/guides/cursor-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/execution-host-contract.md | KEEP | Accurate contract description. |
 | docs/guides/free-tier-admit-smoke.md | KEEP | Commands match the CLI. |
-| docs/guides/governed-swarm-implementation.md | KEEP | Carries a HISTORICAL / NON-NORMATIVE banner (BOD-17); retained as history. |
+| docs/guides/governed-swarm-implementation.md | KEEP | Carries a HISTORICAL / NON-NORMATIVE banner; retained as history. |
 | docs/guides/local-development.md | KEEP | Accurate dev environment setup. |
 | docs/guides/memory-outbox-mirror.md | KEEP | Consistent with ADR-034. |
 | docs/guides/memory-plane-offline-verification.md | KEEP | Accurate verification guide. |
 | docs/guides/model-metadata-store.md | KEEP | Accurate per ADR-032. |
-| docs/guides/omniroute-workers.md | KEEP | BOD-17 note present; no live swarm claims remain. |
+| docs/guides/omniroute-workers.md | KEEP | Ruflo/swarm removal note present; no live swarm claims remain. |
 | docs/guides/opencode-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/prime-harness.md | KEEP | Accurate harness setup. |
 | docs/guides/prime-workflow.md | KEEP | Accurate per ADR-031. |
 | docs/guides/prove-at-rest-smoke.md | KEEP | Commands match the CLI. |
 | docs/guides/runtime-ownership.md | KEEP | Mentions Ruflo/claude-flow only as observed ADR-008 ownership records, which is factual. |
-| docs/guides/ruvector-advisory-readiness.md | KEEP | Carries a SUPERSEDED (BOD-17) banner; retained as history. |
+| docs/guides/ruvector-advisory-readiness.md | KEEP | Carries a SUPERSEDED banner; retained as history. |
 | docs/guides/setup-preview.md | KEEP | Short, accurate redirect. |
 | docs/guides/shared-memory-provider.md | KEEP | Accurate per ADR-033. |
 | docs/guides/unknown-not-healthy.md | KEEP | Accurate fail-closed principle. |
@@ -147,8 +147,8 @@ orchestration).
 
 | File | Status | Reason |
 |------|--------|--------|
-| docs/pages/index.mdx | REWRITTEN | Hivemind/Neural Learning feature claims removed in this pass (BOD-17). |
-| docs/pages/hivemind.mdx | KEEP | Carries a SUPERSEDED (BOD-17) banner; retained as history. |
+| docs/pages/index.mdx | REWRITTEN | Hivemind/Neural Learning feature claims removed in this pass. |
+| docs/pages/hivemind.mdx | KEEP | Carries a SUPERSEDED banner; retained as history. |
 | docs/pages/_meta.json | KEEP | hivemind nav entry already labeled "historical / superseded". |
 
 ## docs/patterns/, docs/portfolio/, docs/privacy/, docs/proof/
@@ -156,21 +156,21 @@ orchestration).
 | File | Status | Reason |
 |------|--------|--------|
 | docs/patterns/privacy-safe-execution-evidence.md | KEEP | No live swarm claims; its ADR-001 link must be repointed to docs/archive/architecture/ (or docs/adr/ADR-001) by its owner after the archive move. |
-| docs/portfolio/ADVERSARIAL_INTERVIEW_STORY_BANK.md | REWRITTEN | Ruflo product claims removed in this pass. |
+| docs/portfolio/[REMOVED: STAR-format career narrative collection] | DELETED | Career-collateral file removed in the public-docs remediation pass. |
 | docs/portfolio/AI_GATEWAY_ASSURANCE_AUDIT.md | KEEP | No stale technical claims. |
 | docs/portfolio/KALSHI_TRADING_BOTS_CASE_STUDY.md | KEEP | External case study; no Verdict claims to verify. |
-| docs/portfolio/LINKEDIN_PROFILE_AND_STRATEGY.md | REWRITTEN | Ruflo product claims removed in this pass. |
+| docs/portfolio/[REMOVED: professional-network profile draft] | DELETED | Career-collateral file removed in the public-docs remediation pass. |
 | docs/portfolio/PORTFOLIO_PROOF_MATRIX.md | KEEP | Verified claims with limitations noted. |
-| docs/portfolio/PRESS_RELEASE_AND_SHOWCASE_PACKAGE.md | REWRITTEN | Ruflo/swarm product claims removed in this pass. |
-| docs/portfolio/RESUME_SUITE.md | REWRITTEN | Ruflo/RuVector/SONA product claims removed in this pass. |
+| docs/portfolio/PRESS_RELEASE_AND_SHOWCASE_PACKAGE.md | DELETED | Career-collateral file removed in the public-docs remediation pass. |
+| docs/portfolio/RESUME_SUITE.md | DELETED | Career-collateral file removed in the public-docs remediation pass. |
 | docs/portfolio/VERDICT_PROOF_CASE_STUDY.md | KEEP | Bounded, hedged proof case study. |
 | docs/privacy/retention-erasure.md | KEEP | Consistent with ADR-017. |
 | docs/privacy/telemetry-consent.md | KEEP | Swarm telemetry described only as deleted; boundary note present. |
 | docs/proof/ADVERSARIAL_REVIEW_CHECKLIST.md | KEEP | Accurate review checklist. |
 | docs/proof/CLAIMS_AUDIT_2026-09-06.md | KEEP | Self-aware claim classification audit. |
 | docs/proof/EVIDENCE_INDEX.md | KEEP | Accurately cites limitations. |
-| docs/proof/INTERVIEW_GOLDEN_PATH_CERTIFICATION.md | KEEP | Fresh-clone gates: 2907 tests, ruff, mypy; certified 2026-09-24. |
-| docs/proof/INTERVIEW_HARDENING_CERTIFICATION.md | KEEP | Factual BOD-178..183 cleanup record. |
+| docs/proof/GOLDEN_PATH_CERTIFICATION.md | KEEP | Fresh-clone gates: 2907 tests, ruff, mypy; certified 2026-09-24. Renamed to drop career framing in the public-docs remediation pass. |
+| docs/proof/[REMOVED: self-marked-superseded hardening record] | DELETED | Self-marked superseded record removed in the public-docs remediation pass. |
 | docs/proof/ISSUE_455_README_EVIDENCE.md | KEEP | Swarm mentioned only as accurately framed history. |
 | docs/proof/PRIVATE_LEDGER_TEMPLATE.md | KEEP | Template; no claims. |
 | docs/proof/REDACTION_POLICY.md | KEEP | Accurate redaction policy. |

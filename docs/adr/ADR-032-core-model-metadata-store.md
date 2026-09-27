@@ -1,9 +1,8 @@
 # ADR-032: Core owns model metadata; OmniRoute does not
 
-- **Status:** Accepted — implemented with BOD-108
+- **Status:** Accepted — implemented (`verdict/metadata/`)
 - **Date:** 2026-09-18
 - **Deciders:** Product / Architect lock (2026-09-18)
-- **Ticket:** [BOD-108](https://linear.app/bodanglin/issue/BOD-108/shipp0-core-model-metadata-store-from-free-public-sources)
 - **Related:** [ADR-007](ADR-007-omniroute-catalog-qualification.md), [ADR-011](ADR-011-omniroute-catalog-qualification-baseline.md), [ADR-027](ADR-027-observed-free-status-and-context-omissions.md), [ADR-030](ADR-030-proof-carrying-decision-plane.md)
 
 ## Context
@@ -29,7 +28,7 @@ reason and the score stays null.
 Each stored field cites `source` plus `version` and/or `fetched_at`. OmniRoute
 ids join to models.dev ids through an explicit map (plus exact identity
 equality). Unmapped ids and required-unknown fields are named drops for
-BOD-100. This slice does not wire the capability gate into admit.
+the capability hard gate (spend preservation). This slice does not wire the capability gate into admit.
 
 ## Consequences
 

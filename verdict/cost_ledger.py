@@ -1,13 +1,13 @@
-"""Cost ledger — reservations, reconciliation, and trajectory economics (BOD-54).
+"""Cost ledger — reservations, reconciliation, and trajectory economics.
 
 Economics only: this module accounts for complete-path spend (planning,
 hydration, tools, execution, verification, retry/escalation, cache, switching,
 subscription/quota opportunity, and metered cash).  It does **not** own
-STAY/SWITCH session decisions (BOD-119), execution-path optimization (BOD-104),
-or task-class/worthiness routing (BOD-107/109).
+STAY/SWITCH session decisions, execution-path optimization,
+or task-class/worthiness routing.
 
-Frozen consumer contract for BOD-119
-------------------------------------
+Frozen consumer contract for session economics
+----------------------------------------------
 Session Economics should consume these symbols without forking arithmetic:
 
 * ``CostTerm`` — atomic term with ``kind``, ``amount`` (``Decimal | None``),
@@ -18,7 +18,7 @@ Session Economics should consume these symbols without forking arithmetic:
   partial, or cached.
 * ``CostLedger.attribute_assistance`` — maps :class:`~verdict.effective_capability.AssistanceCost`
   token buckets onto the same trajectory.
-* Optional BOD-92 shapes: ``QuotaEvidenceInput``, ``PriceEvidenceInput``,
+* Optional runtime-certification shapes: ``QuotaEvidenceInput``, ``PriceEvidenceInput``,
   ``CacheEvidenceInput`` — unknown defaults; never invent cache savings.
 
 Cash, subscription opportunity, and quota pressure are distinct pools.
@@ -38,6 +38,11 @@ from typing import Any, Literal, TypedDict
 from verdict.effective_capability import AssistanceCost
 
 COST_LEDGER_SCHEMA_VERSION = "1"
+
+# Legacy process-wide subscription budget view.  New callers should prefer a
+# CostLedger instance; admission keeps this compatibility surface evidence-only.
+subscription_budgets: dict[str, Decimal] = {}
+_subscription_reserved: dict[str, Decimal] = {}
 
 CostTermStatus = Literal["observed", "estimated", "unknown", "assumed"]
 CostUnit = Literal["usd", "tokens", "quota_units", "subscription_units", "dimensionless"]
@@ -68,7 +73,7 @@ class CostLedgerError(ValueError):
 
 
 class QuotaEvidenceInput(TypedDict, total=False):
-    """Optional normalized quota/cooldown evidence (BOD-92 consumer shape)."""
+    """Optional normalized quota/cooldown evidence (runtime certification (passport) consumer shape)."""
 
     pool_id: str
     remaining_pct: float | None

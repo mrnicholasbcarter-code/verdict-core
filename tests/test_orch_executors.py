@@ -18,6 +18,10 @@ from verdict.orchestration.executors import (
     PrimeHeadlessExecutor,
     ScriptedExecutor,
 )
+from verdict.orchestration.prime_settings import (
+    one_shot_prime_settings,
+    prime_retry_policy_problems,
+)
 
 ROUTE = "cc/claude-sonnet-5"
 
@@ -57,6 +61,173 @@ def run(executor: object, prompt: str, cwd: Path, timeout: float = 30.0) -> Work
 
 
 # ------------------------------------------------------------- PrimeHeadless
+
+
+def test_verdict_launch_uses_isolated_one_shot_prime_settings(tmp_path: Path) -> None:
+    """The launch's EFFECTIVE settings (Prime's global<-project merge) are one-shot.
+
+    The fake binary reproduces Prime 0.9.6 precedence: it merges the per-launch
+    agent dir it is pointed at with ``<cwd>/.prime/agent/settings.json``, which
+    is the file that wins in real Prime. The retry policy now travels in the
+    per-launch dir, so only Verdict-owned launches are one-shot.
+    """
+    capture = tmp_path / "launch.json"
+    prime = make_fake_prime(
+        tmp_path,
+        "from pathlib import Path\n"
+        "import json, os, sys\n"
+        "root = Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR'])\n"
+        "settings = json.loads((root / 'settings.json').read_text())\n"
+        "cwd = sys.argv[sys.argv.index('--cwd') + 1]\n"
+        "project_file = Path(cwd) / '.prime' / 'agent' / 'settings.json'\n"
+        "project = json.loads(project_file.read_text()) if project_file.exists() else {}\n"
+        "effective = dict(settings)\n"
+        "for key, value in project.items():\n"
+        "    base = settings.get(key)\n"
+        "    if isinstance(value, dict) and isinstance(base, dict):\n"
+        "        effective[key] = {**base, **value}\n"
+        "    else:\n"
+        "        effective[key] = value\n"
+        "entries = sorted(p.name for p in root.iterdir())\n"
+        f"Path({str(capture)!r}).write_text(json.dumps({{'home': str(root), 'settings': effective, 'argv': sys.argv[1:], 'legacy_env': os.getenv('PRIME_AGENT_HOME'), 'entries': entries}}))\n"
+        f"print({success_payload()!r})\n",
+    )
+    # A project file that agrees with the one-shot policy: the launch proceeds
+    # and the merged result is still one-shot. (The conflicting case is refused
+    # before spawn; see the test below.)
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps({"retry": {"enabled": False, "maxRetries": 0}})
+    )
+    result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
+    assert result.ok
+    launch = json.loads(capture.read_text())
+    assert launch["settings"]["retry"] == one_shot_prime_settings()["retry"]
+    assert prime_retry_policy_problems(launch["settings"]) == []
+    assert launch["settings"]["providerBackupModel"] == ""
+    assert launch["home"] != str(Path.home() / ".prime" / "agent")
+    assert launch["legacy_env"] is None  # mutation back to PRIME_AGENT_HOME fails above
+    assert "--model" in launch["argv"]
+    assert ROUTE in launch["argv"]
+    # PRIME_AGENT_CODING_AGENT_DIR replaces the whole agent dir, so the launch
+    # dir must expose what Prime reads from it, not just settings.json.
+    assert "settings.json" in launch["entries"]
+    assert not Path(launch["home"]).exists()  # per-launch state is removed
+
+
+def test_verdict_launch_agent_dir_exposes_auth_and_models(tmp_path: Path) -> None:
+    """A real launch resolves credentials (``auth.json``) and the provider/model
+    registry (``models.json``) from the agent dir the override replaces. Dropping
+    those links would leave a worker unable to authenticate, so the launch dir
+    mirrors the operator's dir and the child must see both files."""
+    capture = tmp_path / "launch.json"
+    operator_dir = tmp_path / "operator-agent"
+    (operator_dir / "skills").mkdir(parents=True)
+    (operator_dir / "settings.json").write_text(json.dumps({"theme": "dark"}))
+    (operator_dir / "auth.json").write_text(json.dumps({"omniroute": {"type": "api_key"}}))
+    (operator_dir / "models.json").write_text(json.dumps({"providers": {"omniroute": {}}}))
+    prime = make_fake_prime(
+        tmp_path,
+        "from pathlib import Path\n"
+        "import json, os\n"
+        "root = Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR'])\n"
+        "seen = {p.name: json.loads(p.read_text()) for p in root.iterdir() if p.is_file()}\n"
+        f"Path({str(capture)!r}).write_text(json.dumps({{'seen': seen, 'skills': (root / 'skills').is_dir()}}))\n"
+        f"print({success_payload()!r})\n",
+    )
+    executor = PrimeHeadlessExecutor(
+        prime_bin=prime, env={"PRIME_AGENT_CODING_AGENT_DIR": str(operator_dir)}
+    )
+    result = run(executor, "exact task", tmp_path)
+    assert result.ok
+    launch = json.loads(capture.read_text())
+    assert launch["seen"]["auth.json"] == {"omniroute": {"type": "api_key"}}
+    assert launch["seen"]["models.json"] == {"providers": {"omniroute": {}}}
+    assert launch["skills"] is True
+    # Operator settings survive except for the retry policy Verdict replaces.
+    assert launch["seen"]["settings.json"]["theme"] == "dark"
+    assert prime_retry_policy_problems(launch["seen"]["settings.json"]) == []
+
+
+def test_launch_refused_when_project_settings_re_enable_prime_retry(tmp_path: Path) -> None:
+    """BOD266-2: project settings win in Prime, so a conflict must fail closed.
+
+    Prime 0.9.6 offers no per-launch escape from project precedence, so a
+    project file that re-enables retry cannot be overridden at launch time. The
+    executor refuses to spawn instead of running a launch that could retry
+    silently, and it never reaches the binary.
+    """
+    spawned = tmp_path / "spawned"
+    prime = make_fake_prime(
+        tmp_path,
+        f"from pathlib import Path\n"
+        f"Path({str(spawned)!r}).write_text('spawned')\n"
+        f"print({success_payload()!r})\n",
+    )
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps({"retry": {"enabled": True, "maxRetries": 3}})
+    )
+    result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
+    assert not result.ok
+    assert "prime retry policy not one-shot" in (result.error or "")
+    assert "retry.enabled must be false" in (result.error or "")
+    assert "retry.maxRetries must be 0" in (result.error or "")
+    assert str(tmp_path / ".prime" / "agent" / "settings.json") in (result.error or "")
+    assert not spawned.exists()  # refused before spawn: no model request at all
+
+
+def test_launch_refused_when_project_settings_re_enable_usage_waits(tmp_path: Path) -> None:
+    """Prime merges nested objects one level deep, so a project ``retry.provider``
+    replaces the one-shot ``provider`` block wholesale and re-enables waits."""
+    spawned = tmp_path / "spawned"
+    prime = make_fake_prime(
+        tmp_path,
+        f"from pathlib import Path\n"
+        f"Path({str(spawned)!r}).write_text('spawned')\n"
+        f"print({success_payload()!r})\n",
+    )
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps(
+            {
+                "retry": {
+                    "enabled": False,
+                    "maxRetries": 0,
+                    "provider": {"waitForUsage": {"enabled": True, "pauseUntilReset": True}},
+                }
+            }
+        )
+    )
+    result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
+    assert not result.ok
+    assert "retry.provider.waitForUsage.enabled must be false" in (result.error or "")
+    assert "retry.provider.waitForUsage.pauseUntilReset must be false" in (result.error or "")
+    assert not spawned.exists()
+
+
+def test_launch_refused_when_project_settings_set_a_backup_model(tmp_path: Path) -> None:
+    """A backup model silently reroutes a quota-blocked turn to another model,
+    which would break Verdict's one-route-per-attempt attribution."""
+    spawned = tmp_path / "spawned"
+    prime = make_fake_prime(
+        tmp_path,
+        f"from pathlib import Path\n"
+        f"Path({str(spawned)!r}).write_text('spawned')\n"
+        f"print({success_payload()!r})\n",
+    )
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps({"retry": {"enabled": False, "maxRetries": 0}, "providerBackupModel": "x/y"})
+    )
+    result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
+    assert not result.ok
+    assert "providerBackupModel must be empty" in (result.error or "")
+    assert not spawned.exists()
 
 
 def test_success_parses_last_assistant_text(tmp_path: Path) -> None:
@@ -392,3 +563,19 @@ async def test_fault_key_by_dispatch_ordinal(tmp_path: Path) -> None:
     second = await fx.run("x", route_id="cc/b", cwd=tmp_path / "n2-a1", timeout_seconds=5)
     assert second.status_code == 429
     assert (await fx.run("x", route_id="cc/b", cwd=tmp_path / "n2-a2", timeout_seconds=5)).ok
+
+
+def test_installed_prime_096_declares_config_directory_override() -> None:
+    """Pin launch env to Prime 0.9.6's published real config contract."""
+    import shutil
+
+    binary = shutil.which("prime-agent")
+    if binary is None:
+        pytest.skip("prime-agent not installed")
+    package = Path(binary).resolve().parent
+    readme = (package / "README.md").read_text()
+    usage = (package / "docs" / "usage.md").read_text()
+    assert "PRIME_AGENT_CODING_AGENT_DIR" in readme
+    assert "Override config directory" in readme
+    assert "PRIME_AGENT_CODING_AGENT_DIR" in usage
+    assert "default is `~/.prime/agent`" in usage

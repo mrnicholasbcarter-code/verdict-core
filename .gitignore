@@ -54,8 +54,25 @@ coverage.xml
 .claude-flow/
 .hermes/
 .swarm/
+.codex/
+.cursorrules
+.hermes.md
+.serena/
 CLAUDE.md
 skills-lock.json
+
+# .prime/agent/** is tracked source (ADR-031: skills, extensions, prompts,
+# settings.json). Its runtime state, caches, logs and backups are not.
+.prime/agent/sessions/
+.prime/agent/session-artifacts/
+.prime/agent/session-leases/
+.prime/agent/harness/
+.prime/agent/cache/
+.prime/agent/logs/
+.prime/agent/**/*.bak
+.prime/agent/**/*.bak-*
+.prime/agent/**/*.bak.*
+.prime/agent/**/*.log
 
 .env.memory
 .verdict/adaptive_state/
@@ -89,10 +106,12 @@ CLAUDE.md.backup-*
 
 # MCP server runtime state (generated at runtime, not source)
 .playwright-mcp/
-# .serena/ is partly tracked (project.yml, .gitignore); its own .gitignore handles runtime state
 
 # Benchmark fixture workspace runtime state
 benchmarks/fixtures/legit_workspace/.verdict/
 coverage.xml.*
 # Tarball artifacts from consumer smoke test
 contracts/*.tgz
+
+# Committed proof run: its event log is part of the verifiable receipt.
+!docs/proof/demo-run/events.jsonl

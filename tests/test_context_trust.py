@@ -1,4 +1,4 @@
-"""BOD-126: Untrusted Context + Agent Tooling Security Boundary proofs."""
+"""Untrusted Context + Agent Tooling Security Boundary proofs."""
 
 from __future__ import annotations
 

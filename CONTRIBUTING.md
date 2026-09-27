@@ -23,6 +23,16 @@ uv run --extra dev --extra dashboard --extra server ruff format --check .
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 ```
 
+
+## Running the tests from a clean clone
+
+```bash
+uv sync --frozen --extra dev --extra server --extra dashboard
+.venv/bin/python -m pytest -q
+```
+
+Note: Running `pytest` directly from the system will fail collection due to missing `httpx` and other test dependencies. Tests must not depend on PATH binaries like `ruff` or `verdict`—use `.venv/bin/python -m pytest` and `sys.executable` in test commands.
+
 ## Pull Requests
 
 1. Fork the repo and create a branch from `main`.

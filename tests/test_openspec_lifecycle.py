@@ -1,4 +1,4 @@
-"""Tests for OpenSpec lifecycle binding (BOD-205)."""
+"""Tests for OpenSpec lifecycle binding."""
 
 from __future__ import annotations
 

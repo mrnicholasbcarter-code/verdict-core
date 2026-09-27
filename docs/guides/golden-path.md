@@ -2,7 +2,7 @@
 
 > **Scope:** This is the basic live-probe path. For the end-to-end goal,
 > orchestration, worker, review, and receipt path, see the
-> [interview golden path](interview-golden-path.md).
+> [orchestration golden path](orchestration-golden-path.md).
 
 Run this after `pip install verdict-core`. If a live step cannot talk to the
 gateway, the result is **blocked**, not a pass.
@@ -55,5 +55,5 @@ local gateway is live.
 
 This path proves only the steps you actually run: an offline quickstart, local
 gateway detection, and, with explicit consent, one named live liveness probe.
-Use [interview golden path](interview-golden-path.md) when you need the
+Use [orchestration golden path](orchestration-golden-path.md) when you need the
 orchestration receipt path.

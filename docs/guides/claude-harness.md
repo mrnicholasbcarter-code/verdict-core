@@ -18,7 +18,7 @@ Claude Code  →  Verdict (:8000)  →  OmniRoute (:20128)
 
 Claude Code's default traffic is Anthropic Messages (`/v1/messages`). Verdict's
 proxy today is OpenAI-compatible only — full Anthropic passthrough is tracked as
-**BOD-102**. Until then this adapter:
+. Until then this adapter:
 
 1. Sets `env.OPENAI_BASE_URL` → `http://127.0.0.1:8000/v1`
 2. Ensures SessionStart runs `verdict hook claude-gate`

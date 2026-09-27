@@ -4,7 +4,7 @@ The planner deliberately performs no discovery probes and never reads config
 contents. It describes the first-run mutations that a future apply command may
 request, leaving consent and execution to a separate transaction boundary.
 
-Optional bootstrap enrichment actions (BOD-124) may be attached when callers
+Optional capability-bootstrap enrichment actions may be attached when callers
 pass discovered providers; those actions remain mutation-free until APPLY.
 """
 
@@ -164,7 +164,7 @@ def _base_config_actions(config_exists: bool) -> tuple[SetupAction, ...]:
 def _bootstrap_setup_actions(
     bootstrap_providers: Sequence[DiscoveredProvider] | None, *, scope: str = "all"
 ) -> tuple[SetupAction, ...]:
-    """Translate BOD-124 bootstrap plan actions into SetupAction rows."""
+    """Translate capability bootstrap DX bootstrap plan actions into SetupAction rows."""
 
     if bootstrap_providers is None:
         return ()

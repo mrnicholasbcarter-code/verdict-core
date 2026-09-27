@@ -1,4 +1,4 @@
-"""BOD-108 Core model metadata store — offline unit tests (no network)."""
+"""Core model metadata store — offline unit tests (no network)."""
 
 from __future__ import annotations
 
@@ -194,7 +194,7 @@ class TestMappingAndDrops:
         assert found.record.id == "openai/gpt-4o-mini"
 
     def test_unique_leaf_joins_gateway_prefix_to_models_json(self, tmp_path: Path) -> None:
-        """BOD-121: agy/* inventory id joins via unique models.json leaf."""
+        """agy/* inventory id joins via unique models.json leaf."""
         snapshot = _refresh(tmp_path)
         found = lookup_omniroute_id(snapshot, "agy/gemini-2.0-flash", required=("tools",))
         assert found.drop is None
@@ -205,7 +205,7 @@ class TestMappingAndDrops:
         assert cited["tools"]["source"] == SOURCE_MODELS_DEV_MODELS
 
     def test_ambiguous_models_json_leaf_is_named_drop(self) -> None:
-        """BOD-121: same leaf on two models.json rows → unmapped, not arbitrary pick."""
+        """same leaf on two models.json rows → unmapped, not arbitrary pick."""
         prov = FieldProvenance(
             source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT, version="fixture"
         )
@@ -227,7 +227,7 @@ class TestMappingAndDrops:
         assert "ambiguous" in (found.drop.detail or "").lower()
 
     def test_variant_suffix_without_models_json_row_is_named_drop(self, tmp_path: Path) -> None:
-        """BOD-121: no silent strip of effort/variant suffixes to a base leaf."""
+        """no silent strip of effort/variant suffixes to a base leaf."""
         snapshot = _refresh(tmp_path)
         found = lookup_omniroute_id(snapshot, "agy/gemini-2.0-flash-high", required=("tools",))
         assert found.drop is not None

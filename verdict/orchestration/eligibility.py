@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from verdict.orchestration.contracts import (
     CapacityClass,
@@ -19,6 +19,9 @@ from verdict.orchestration.contracts import (
     route_family,
 )
 from verdict.subagent_selection import HealthResult
+
+if TYPE_CHECKING:
+    from verdict.admission import AdmittedSet
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
 _FRONTIER_MARKERS = ("opus", "gpt-5.6", "gpt-6-sol", "gpt-6-astra", "fable")
@@ -37,11 +40,47 @@ _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
     "payment_required": 3600.0,
     "permission": 3600.0,
     "unsupported": 86400.0,
+    "unservable": 21600.0,
     "timeout": 60.0,
     "upstream_temporary": 60.0,
     "transport_temporary": 60.0,
 }
 _DEFAULT_COOLDOWN_SECONDS = 60.0
+# Probe outcomes that describe the provider account (billing, entitlement), not
+# one route: every sibling route would fail the same way, so the whole provider
+# is cooled down and its remaining candidates are skipped without probing.
+_PROVIDER_SCOPE_CATEGORIES = frozenset({"payment_required", "permission", "authentication"})
+
+
+# Source recorded on an admission record confirmed by the ladder's own probe.
+LADDER_CONFIRMATION_SOURCE = "ladder_probe:openai_health_probe"
+
+_ADMISSION_TO_LADDER: Mapping[str, EligibilityStage] = {
+    "DISCOVERED": EligibilityStage.DISCOVERED,
+    "ENTITLED": EligibilityStage.ENTITLED,
+    "HEALTHY": EligibilityStage.HEALTHY,
+    "AVAILABLE": EligibilityStage.AVAILABLE,
+}
+
+
+class HarnessVisibility:
+    """Harness gate: which route ids the worker harness can actually spawn.
+
+    ``ids`` is None when no inventory source was reachable. The gate then fails
+    closed and the ladder reports ``harness_inventory_unavailable`` instead of
+    ``not_harness_visible``.
+    """
+
+    def __init__(self, ids: frozenset[str] | None, *, source: str) -> None:
+        self.ids = ids
+        self.source = source
+
+    @property
+    def available(self) -> bool:
+        return self.ids is not None
+
+    def __call__(self, route_id: str) -> bool:
+        return self.ids is not None and route_id in self.ids
 
 
 def _parse_iso(value: str) -> datetime | None:
@@ -130,6 +169,8 @@ class EligibilityLadder:
         load: Callable[[str], int] | None = None,
         max_per_route: int = 2,
         max_probes_per_select: int = 8,
+        admitted: AdmittedSet | None = None,
+        admission_receipt: Path | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -143,6 +184,42 @@ class EligibilityLadder:
         self._max_probes = max_probes_per_select
         self._state: dict[str, dict[str, dict[str, Any]]] = self._load_state()
         self._last_verdicts: tuple[RouteVerdict, ...] = ()
+        # Canonical admitted set: a route it excludes fails before any ladder
+        # stage, ranking or probe. The ladder can only narrow it further.
+        self._admitted = admitted
+        # Where the admitted set (with live confirmations) is persisted.
+        self._admission_receipt = admission_receipt
+
+    @property
+    def admitted(self) -> AdmittedSet | None:
+        return self._admitted
+
+    def require_launchable(self, route_id: str, *, surface: str) -> None:
+        """Launch precondition for callers that bind a selected route.
+
+        Raises ``AdmissionBypassError`` when an admitted set is attached and
+        ``route_id`` is neither proven healthy nor confirmed live.
+        """
+        if self._admitted is not None:
+            self._admitted.require_launchable(route_id, surface=surface)
+
+    def _record_confirmation(self, route_id: str, result: HealthResult, now: datetime) -> None:
+        """Fold one confirm probe into the admitted set and persist the receipt.
+
+        Success records the confirmation source and time. Failure drops the
+        route at ``HEALTHY``. A failed confirmation only narrows the set.
+        """
+        if self._admitted is None:
+            return
+        self._admitted = self._admitted.record_confirmation(
+            route_id,
+            healthy=result.healthy,
+            source=LADDER_CONFIRMATION_SOURCE,
+            observed_at=_iso(now),
+            category=result.category,
+        )
+        if self._admission_receipt is not None:
+            self._admitted.write_receipt(self._admission_receipt)
 
     def _load_state(self) -> dict[str, dict[str, dict[str, Any]]]:
         try:
@@ -243,11 +320,23 @@ class EligibilityLadder:
             route_id=route_id, provider=provider, capacity=capacity, plan_label=plan_label
         )
 
+        if self._admitted is not None and route_id not in self._admitted:
+            record = self._admitted.first_failure(route_id)
+            stage = _ADMISSION_TO_LADDER.get(
+                record.first_failed_stage.value if record.first_failed_stage else "",
+                EligibilityStage.TASK_ELIGIBLE,
+            )
+            a.failed_stage = stage
+            a.reason = f"admission:{record.reason}"
+            a.cooldown_until = record.until
+            return a
         if conn is None or not conn.get("isActive"):
             a.failed_stage, a.reason = EligibilityStage.ENTITLED, "no_active_account"
             return a
         if self._harness_visible is not None and not self._harness_visible(route_id):
-            a.failed_stage, a.reason = EligibilityStage.ENTITLED, "not_harness_visible"
+            unavailable = getattr(self._harness_visible, "available", True) is False
+            a.failed_stage = EligibilityStage.ENTITLED
+            a.reason = "harness_inventory_unavailable" if unavailable else "not_harness_visible"
             return a
 
         a.health, a.health_category = self._health_status(route_id, now)
@@ -358,17 +447,29 @@ class EligibilityLadder:
         self, requirements: TaskRequirements, *, now: datetime
     ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
         assessments, candidates = self._assess_all(requirements, now)
+        rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None
         chosen_rank: int | None = None
-        for rank, a in enumerate(candidates):
-            if a.health != "healthy":
+        blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
+        for a in self._probe_order(candidates):
+            if a.provider in blocked:
+                a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
+                a.cooldown_until = blocked[a.provider]
+                continue
+            # Launch gate: an admitted route that is not proven healthy needs a
+            # bounded live confirmation for this exact route. A cached healthy
+            # hit in the ladder state is not proof for an unverified route.
+            confirming = self._admitted is not None and not self._admitted.launchable(a.route_id)
+            if a.health != "healthy" or confirming:
                 if probes_used >= self._max_probes:
                     a.reason = "probe_budget_exhausted"
                     continue
                 probes_used += 1
                 result = self._probe(a.route_id)
-                self._record_health(a.route_id, result, now)
+                self._record_health(a.route_id, result, now, provider=a.provider)
+                if confirming:
+                    self._record_confirmation(a.route_id, result, now)
                 if not result.healthy:
                     a.health = "unhealthy"
                     a.failed_stage = EligibilityStage.HEALTHY
@@ -376,10 +477,20 @@ class EligibilityLadder:
                     entry = self._state["cooldowns"].get(f"route:{a.route_id}")
                     if isinstance(entry, dict):
                         a.cooldown_until = str(entry.get("until"))
+                    if result.category in _PROVIDER_SCOPE_CATEGORIES:
+                        until = self._active_cooldown(f"provider:{a.provider}", now)
+                        blocked[a.provider] = _iso(until) if until else str(a.cooldown_until)
                     continue
                 a.health, a.reason = "healthy", ""
-            chosen, chosen_rank = a, rank
+            if self._admitted is not None:
+                # Asserted precondition: admitted AND (proven healthy OR confirmed).
+                self._admitted.require_launchable(a.route_id, surface="EligibilityLadder.select")
+            chosen, chosen_rank = a, rank_of[a.route_id]
             break
+        for a in candidates:  # routes not reached before the break still inherit the block
+            if a.provider in blocked and a.failed_stage is None and a is not chosen:
+                a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
+                a.cooldown_until = blocked[a.provider]
         ranks = {c.route_id: i for i, c in enumerate(candidates)}
         verdicts: list[RouteVerdict] = []
         selected: RouteVerdict | None = None
@@ -402,7 +513,27 @@ class EligibilityLadder:
         self._last_verdicts = tuple(verdicts)
         return selected, tuple(verdicts)
 
-    def _record_health(self, route_id: str, result: HealthResult, now: datetime) -> None:
+    def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
+        """Rank order, but round-robin across providers within each capacity class.
+
+        One provider's failing top routes can no longer consume the whole probe
+        budget. Capacity classes stay in order, so spreading never trades a
+        SUBSCRIPTION route for a METERED one.
+        """
+        order: list[_Assessment] = []
+        tiers: dict[CapacityClass, dict[str, list[_Assessment]]] = {}
+        for a in candidates:  # already rank-sorted; dicts keep first-seen order
+            tiers.setdefault(a.capacity, {}).setdefault(a.provider, []).append(a)
+        for by_provider in tiers.values():
+            queues = list(by_provider.values())
+            depth = max(len(q) for q in queues)
+            for i in range(depth):
+                order.extend(q[i] for q in queues if i < len(q))
+        return order
+
+    def _record_health(
+        self, route_id: str, result: HealthResult, now: datetime, *, provider: str = ""
+    ) -> None:
         self._state["health"][route_id] = {
             "healthy": result.healthy,
             "category": result.category,
@@ -410,10 +541,10 @@ class EligibilityLadder:
         }
         if not result.healthy:
             seconds = cooldown_seconds_for(result.category, result.retry_after_seconds)
-            self._state["cooldowns"][f"route:{route_id}"] = {
-                "until": _iso(now + timedelta(seconds=seconds)),
-                "category": result.category,
-            }
+            entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": result.category}
+            self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
+            if provider and result.category in _PROVIDER_SCOPE_CATEGORIES:
+                self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
         self._persist()
 
     def record_failure(

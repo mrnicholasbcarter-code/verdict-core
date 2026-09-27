@@ -13,15 +13,14 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import types
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-
-from verdict.contracts import DEFAULT_PRIMARY_MODEL
 
 
 def _load_py_module(name: str, path: Path) -> types.ModuleType:
@@ -40,6 +39,21 @@ def load_state() -> types.ModuleType:
     """Reuse the workflow contract module instead of duplicating its rules."""
     path = Path(__file__).resolve().parent / "prime_state.py"
     return _load_py_module("prime_state_contracts", path)
+
+
+def load_prime_settings() -> types.ModuleType:
+    """Reuse the one Prime settings-precedence contract, path-loaded (stdlib only).
+
+    Controller and worker launches must enforce the SAME one-shot policy, so the
+    merge rules and the policy floor live in one module instead of a copy here.
+    """
+    existing = sys.modules.get("verdict.orchestration.prime_settings")
+    if existing is not None:
+        return existing
+    path = (
+        Path(__file__).resolve().parent.parent / "verdict" / "orchestration" / "prime_settings.py"
+    )
+    return _load_py_module("verdict.orchestration.prime_settings", path)
 
 
 def load_controller_launch() -> types.ModuleType:
@@ -196,6 +210,12 @@ def stop_group(process: subprocess.Popen[Any]) -> None:
     process.wait(timeout=5)
 
 
+def one_shot_prime_settings() -> dict[str, Any]:
+    """Disable Prime-side semantic retry, wait, and backup behavior."""
+    settings: dict[str, Any] = load_prime_settings().one_shot_prime_settings()
+    return settings
+
+
 def run_attempt(
     command: list[str],
     cwd: Path,
@@ -206,39 +226,78 @@ def run_attempt(
     poll: float = 5,
     progress_made: Callable[[Any, Any], bool] | None = None,
     on_started: Callable[[subprocess.Popen[Any]], None] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     made_progress = progress_made or (lambda old, new: old != new)
-    with log.open("w") as output:
-        process = subprocess.Popen(
-            command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
-        )
-        try:
-            # Startup identity is an admission gate. Do not fingerprint/watchdog,
-            # and therefore do not admit the mission, until it succeeds.
-            if on_started is not None:
-                on_started(process)
-            started = progress = time.monotonic()
-            previous = fingerprint()
-            while process.poll() is None:
-                current = fingerprint()
-                if made_progress(previous, current):
-                    previous, progress = current, time.monotonic()
-                else:
-                    previous = current
-                reason = stall_reason(
-                    now=time.monotonic(),
-                    started=started,
-                    progress=progress,
-                    idle_seconds=idle_seconds,
-                    timeout=timeout,
-                )
-                if reason:
-                    stop_group(process)
-                    return {"reason": reason, "returncode": process.returncode}
-                time.sleep(poll)
-            return {"reason": "EXIT", "returncode": process.returncode}
-        finally:
-            stop_group(process)
+    settings_contract = load_prime_settings()
+    # Only Verdict-owned launches are one-shot. The policy lives in this
+    # per-launch agent dir, not in the tracked project file, so manual sessions
+    # in this checkout keep Prime's own retries.
+    #
+    # PRIME_AGENT_CODING_AGENT_DIR replaces the WHOLE agent dir, so the launch
+    # dir mirrors the operator's auth.json, models.json, skills and extensions.
+    # An empty dir would launch the controller without credentials or registry.
+    child_env = dict(os.environ if env is None else env)
+    config_dir = Path(tempfile.mkdtemp(prefix="verdict-controller-prime-"))
+    settings_contract.prepare_launch_agent_dir(
+        config_dir, source=settings_contract.default_prime_agent_dir(child_env)
+    )
+    child_env[settings_contract.PRIME_AGENT_DIR_ENV] = str(config_dir)
+    # Project settings win over this per-launch config dir in Prime, and Prime
+    # 0.9.6 has no per-launch escape, so gate on the EFFECTIVE merged settings.
+    # Fail closed: a hidden Prime retry would spend quota and hide a terminal.
+    try:
+        settings_contract.assert_one_shot_launch(cwd=cwd, config_dir=config_dir)
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
+        raise
+    try:
+        with log.open("w") as output:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=child_env,
+            )
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
+        raise
+    try:
+        # Startup identity is an admission gate. Do not fingerprint/watchdog,
+        # and therefore do not admit the mission, until it succeeds.
+        if on_started is not None:
+            on_started(process)
+        started = progress = time.monotonic()
+        previous = fingerprint()
+        while process.poll() is None:
+            current = fingerprint()
+            if made_progress(previous, current):
+                previous, progress = current, time.monotonic()
+            else:
+                previous = current
+            reason = stall_reason(
+                now=time.monotonic(),
+                started=started,
+                progress=progress,
+                idle_seconds=idle_seconds,
+                timeout=timeout,
+            )
+            if reason:
+                stop_group(process)
+                return {"reason": reason, "returncode": process.returncode}
+            time.sleep(poll)
+        return {"reason": "EXIT", "returncode": process.returncode}
+    finally:
+        stop_group(process)
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
 
 
 def recover(attempt: Callable[[], dict[str, Any]], state: Path, max_restarts: int) -> int:
@@ -588,6 +647,17 @@ def _supervisor_instruction_unit(
     )
 
 
+def _bootstrap_failure_detail(exc: Any) -> str:
+    """Render a bootstrap refusal as one deterministic supervisor detail line.
+
+    Keeps the configuration / gateway-health / model-eligibility class explicit so
+    startup diagnostics never collapse the three into one opaque message.
+    """
+    parts = [f"{exc.reason_code} [{exc.diagnostic_class}]"]
+    parts.extend(diagnostic.describe() for diagnostic in exc.diagnostics)
+    return "; ".join(parts)
+
+
 def _load_prime_target_map_from_config(repo: Path) -> dict[str, Any]:
     """Load trusted PrimeLaunchTarget map from explicit persisted config only.
 
@@ -645,70 +715,42 @@ def _load_prime_target_map_from_config(repo: Path) -> dict[str, Any]:
 
 
 def _build_intelligence_service_from_config(*, repo: Path, state_dir: Path) -> Any:
-    """Construct IntelligenceService from real persisted config / env only."""
-    from verdict.intelligence import DEFAULT_PROFILE, IntelligenceService
-    from verdict.models import ProviderConfig
+    """Construct IntelligenceService from the shared bootstrap contract.
 
-    config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "verdict"
-    config_path = config_dir / "verdict.yaml"
-    primary_model = os.environ.get("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL)
-    providers: dict[str, ProviderConfig] = {}
-    log_path = "verdict-decisions.jsonl"
-    profile = os.environ.get("LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE)
+    Production requires an authoritative provider set: no built-in local
+    default, no silent substitution of an unintended provider, and no use of the
+    controller model. A refusal names the exact missing field, its source and the
+    operator remediation.
 
-    if config_path.is_file():
-        try:
-            import yaml
+    Credential names are read from the local credential store through the
+    contract's ``credential_store_env`` seam, so a key held only in the store is
+    reported as ``source="credential_store"`` instead of being refused as
+    missing. Store values are passed as an argument, never exported into
+    ``os.environ``.
+    """
+    from verdict.intelligence import IntelligenceService
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
 
-            raw = yaml.safe_load(config_path.read_text("utf-8")) or {}
-            if not isinstance(raw, dict):
-                raise ControllerLaunchError(
-                    "production_factory_unavailable",
-                    f"verdict config at {config_path} must be a mapping",
-                )
-            if raw.get("primary_model"):
-                primary_model = str(raw["primary_model"])
-            if raw.get("log_path"):
-                log_path = str(raw["log_path"])
-            if raw.get("profile"):
-                profile = str(raw["profile"])
-            for name, value in (raw.get("providers") or {}).items():
-                if isinstance(value, dict):
-                    providers[str(name)] = ProviderConfig(
-                        base_url=value.get("base_url", ""), api_key_env=value.get("api_key_env")
-                    )
-        except ControllerLaunchError:
-            raise
-        except Exception as exc:
-            raise ControllerLaunchError(
-                "production_factory_unavailable",
-                f"failed to load verdict config from {config_path}: {exc}",
-            ) from exc
-
-    # OMNIROUTE_BASE_URL is an explicit env binding — merge without inventing.
-    base = os.environ.get("OMNIROUTE_BASE_URL")
-    if base and str(base).strip():
-        url = str(base).strip().rstrip("/")
-        if not url.endswith("/v1"):
-            url = f"{url}/v1"
-        providers.setdefault(
-            "omniroute", ProviderConfig(base_url=url, api_key_env="OMNIROUTE_API_KEY")
+    try:
+        bootstrap = resolve_provider_bootstrap(
+            require_authoritative=True, credential_store_env=load_credential_store_env()
         )
-
-    if not providers:
+    except BootstrapError as exc:
         raise ControllerLaunchError(
-            "production_factory_unavailable",
-            "no provider configuration available for IntelligenceService "
-            "(need ~/.config/verdict/verdict.yaml providers or OMNIROUTE_BASE_URL)",
-        )
+            "production_factory_unavailable", _bootstrap_failure_detail(exc)
+        ) from exc
 
     passport_store = Path.home() / ".verdict" / "prove-at-rest" / "state.json"
     metadata_store = Path.home() / ".verdict" / "model-metadata.json"
     return IntelligenceService(
-        primary_model=primary_model,
-        providers=providers,
-        profile=profile,
-        log_path=log_path,
+        primary_model=bootstrap.primary_model,
+        providers=bootstrap.provider_configs(),
+        profile=bootstrap.profile,
+        log_path=bootstrap.log_path,
         log_full_task=False,
         discovery_ttl=int(os.environ.get("LLMGATE_DISCOVERY_TTL_SECONDS", "60")),
         timeout_ms=int(os.environ.get("LLMGATE_INTELLIGENCE_TIMEOUT_MS", "1000")),
@@ -914,6 +956,55 @@ def _build_bod119_session_factories(
     return cost_state_factory, task_state_factory, None
 
 
+def _live_admission_gateway() -> str:
+    """Gateway for live admission, resolved by the shared bootstrap contract.
+
+    Uses the same precedence as every other production path (environment
+    ``OMNIROUTE_BASE_URL``, then config ``gateway_url``, then the gateway
+    provider's ``base_url``). A config-only operator therefore gets the gateway
+    they configured instead of a hardcoded loopback default. When the contract
+    names no gateway, admission is unavailable and the launch fails closed.
+    """
+    from verdict.admission import AdmissionUnavailableError
+    from verdict.provider_bootstrap import (
+        BootstrapError,
+        load_credential_store_env,
+        resolve_provider_bootstrap,
+    )
+
+    try:
+        bootstrap = resolve_provider_bootstrap(
+            require_authoritative=True, credential_store_env=load_credential_store_env()
+        )
+    except BootstrapError as exc:
+        raise AdmissionUnavailableError(
+            "live_admission_gateway_unresolved", _bootstrap_failure_detail(exc)
+        ) from exc
+    if not bootstrap.gateway_url:
+        raise AdmissionUnavailableError(
+            "live_admission_gateway_unresolved",
+            "the bootstrap contract names no gateway; set OMNIROUTE_BASE_URL or gateway_url",
+        )
+    return bootstrap.gateway_url.strip()
+
+
+def _default_live_admission_loader(state_dir: Path) -> Callable[[datetime], Any]:
+    """Canonical live admission for controller seeds (read-only OmniRoute GETs)."""
+
+    def load(when: datetime) -> Any:
+        from verdict.admission import load_live_admission
+
+        gateway = _live_admission_gateway()
+        key = (
+            os.environ.get("VERDICT_OMNIROUTE_API_KEY") or os.environ.get("OMNIROUTE_API_KEY") or ""
+        ).strip() or None
+        admitted = load_live_admission(gateway, now=when, api_key=key)
+        admitted.write_receipt(state_dir / "controller-admission-latest.json")
+        return admitted
+
+    return load
+
+
 def build_production_controller_selection_bundle(
     *,
     repo: Path,
@@ -985,6 +1076,11 @@ def build_production_controller_selection_bundle(
                 kwargs["task_state_factory"] = task_factory
             if wrapped_seed is not None and kwargs.get("seed_offers") is not None:
                 kwargs["seed_offers"] = wrapped_seed
+
+        # Authoritative config-built service: canonical live admission is the
+        # sole seed authority before ranking (read-only GETs; fails closed).
+        if service is not None and kwargs.get("admission") is None:
+            kwargs["admission"] = _default_live_admission_loader(state_dir)
 
         selection = _cs()
         if hasattr(selection, "build_production_controller_selection_bundle"):
@@ -1615,6 +1711,16 @@ def main() -> int:
                 },
             )
             raise ValueError(f"{exc.reason_code}: {exc.detail}") from exc
+        # Workers launched under this controller hard-exclude its identity.
+        child_env = {
+            **os.environ,
+            "VERDICT_ACTIVE_CONTROLLER_ROUTE": decision.selected_upstream_route,
+        }
+        last_admission = getattr(
+            getattr(production_bundle, "artifacts", None), "last_admission", None
+        )
+        if last_admission is not None:
+            last_admission.write_receipt(state / f"controller-admission-{token}.json")
         identity: dict[str, Any] | None = None
 
         def admit_started(process: subprocess.Popen[Any]) -> None:
@@ -1643,6 +1749,7 @@ def main() -> int:
                 poll=args.poll_seconds,
                 progress_made=progress_made,
                 on_started=admit_started,
+                env=child_env,
             )
         finally:
             stop_owned_daemon(args.prime, session_dir)

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _write_controller_decision(
     path: Path, *, provider: str = "test", model: str = "exact", reasoning=None
 ) -> Path:
-    """Persisted authoritative BOD-104 decision + receipt ref for supervisor tests."""
+    """Persisted authoritative the execution-path authority optimizer (ADR-035) decision + receipt ref for supervisor tests."""
     now = datetime.now(timezone.utc)
     payload = {
         "execution_path_decision_digest": "bod104-test",
@@ -84,6 +84,151 @@ def test_real_process_is_killed_and_reaped(tmp_path):
     )
     assert result["reason"] == "NO_PROGRESS"
     assert result["returncode"] is not None
+
+
+def test_run_attempt_uses_prime_config_override_and_one_shot_settings(tmp_path):
+    m = module()
+    capture = tmp_path / "capture.json"
+    code = (
+        "import json, os, pathlib; p=pathlib.Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR']); "
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'env': str(p), 'settings': json.loads((p/'settings.json').read_text())}}))"
+    )
+    result = m.run_attempt(
+        [sys.executable, "-c", code],
+        tmp_path,
+        tmp_path / "out.log",
+        lambda: "unchanged",
+        5,
+        5,
+        0.02,
+    )
+    assert result == {"reason": "EXIT", "returncode": 0}
+    data = json.loads(capture.read_text())
+    assert data["settings"]["retry"]["enabled"] is False
+    assert data["settings"]["retry"]["maxRetries"] == 0
+    assert data["settings"]["retry"]["provider"]["waitForUsage"] == {
+        "enabled": False,
+        "pauseUntilReset": False,
+    }
+    assert data["settings"]["providerBackupModel"] == ""
+    assert not Path(data["env"]).exists()
+
+
+def test_run_attempt_refuses_launch_when_project_settings_re_enable_retry(tmp_path):
+    """BOD266-2: the controller launch is gated on the EFFECTIVE merged settings.
+
+    Prime 0.9.6 merges ``<cwd>/.prime/agent/settings.json`` over the per-launch
+    config dir and offers no per-launch escape, so a project file that
+    re-enables retry must fail closed instead of launching.
+    """
+    m = module()
+    spawned = tmp_path / "spawned"
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps({"retry": {"enabled": True, "maxRetries": 3}})
+    )
+    settings = m.load_prime_settings()
+    with pytest.raises(settings.PrimeRetryPolicyError) as raised:
+        m.run_attempt(
+            [sys.executable, "-c", f"import pathlib; pathlib.Path({str(spawned)!r}).touch()"],
+            tmp_path,
+            tmp_path / "out.log",
+            lambda: "unchanged",
+            5,
+            5,
+            0.02,
+        )
+    assert "retry.enabled must be false" in str(raised.value)
+    assert "retry.maxRetries must be 0" in str(raised.value)
+    assert not spawned.exists()  # refused before spawn
+
+
+def test_run_attempt_effective_settings_are_one_shot_in_this_repo(tmp_path):
+    """The tracked project settings must not re-enable retry for a real launch."""
+    m = module()
+    settings = m.load_prime_settings()
+    capture = tmp_path / "capture.json"
+    code = (
+        "import json, os, pathlib; p=pathlib.Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR']); "
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'env': str(p)}}))"
+    )
+    repo = Path(m.__file__).resolve().parent.parent
+    result = m.run_attempt(
+        [sys.executable, "-c", code], repo, tmp_path / "out.log", lambda: "unchanged", 5, 5, 0.02
+    )
+    assert result == {"reason": "EXIT", "returncode": 0}
+    config_dir = tmp_path / "effective-config"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text(json.dumps(settings.one_shot_prime_settings()))
+    effective = settings.effective_prime_settings(cwd=repo, config_dir=config_dir)
+    assert settings.prime_retry_policy_problems(effective) == []
+    assert effective["retry"]["enabled"] is False
+    assert effective["retry"]["maxRetries"] == 0
+
+
+def test_run_attempt_launch_agent_dir_exposes_auth_and_models(tmp_path):
+    """PRIME_AGENT_CODING_AGENT_DIR replaces the WHOLE agent dir, so the
+    controller launch must still find credentials (``auth.json``) and the
+    provider/model registry (``models.json``). Dropping the mirror would launch
+    the controller unauthenticated, so the child asserts both are present."""
+    m = module()
+    operator_dir = tmp_path / "operator-agent"
+    (operator_dir / "skills").mkdir(parents=True)
+    (operator_dir / "settings.json").write_text(json.dumps({"theme": "dark"}))
+    (operator_dir / "auth.json").write_text(json.dumps({"omniroute": {"type": "api_key"}}))
+    (operator_dir / "models.json").write_text(json.dumps({"providers": {"omniroute": {}}}))
+    capture = tmp_path / "capture.json"
+    code = (
+        "import json, os, pathlib; p=pathlib.Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR']); "
+        "payload={'settings': json.loads((p/'settings.json').read_text()), "
+        "'auth': json.loads((p/'auth.json').read_text()), "
+        "'models': json.loads((p/'models.json').read_text()), "
+        "'skills': (p/'skills').is_dir()}; "
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps(payload))"
+    )
+    env = dict(os.environ)
+    env["PRIME_AGENT_CODING_AGENT_DIR"] = str(operator_dir)
+    result = m.run_attempt(
+        [sys.executable, "-c", code],
+        tmp_path,
+        tmp_path / "out.log",
+        lambda: "unchanged",
+        5,
+        5,
+        0.02,
+        env=env,
+    )
+    assert result == {"reason": "EXIT", "returncode": 0}
+    data = json.loads(capture.read_text())
+    assert data["auth"] == {"omniroute": {"type": "api_key"}}
+    assert data["models"] == {"providers": {"omniroute": {}}}
+    assert data["skills"] is True
+    assert data["settings"]["theme"] == "dark"  # operator keys survive
+    settings = m.load_prime_settings()
+    assert settings.prime_retry_policy_problems(data["settings"]) == []
+    # The operator's own files are never written by a launch.
+    assert json.loads((operator_dir / "auth.json").read_text()) == {
+        "omniroute": {"type": "api_key"}
+    }
+    assert json.loads((operator_dir / "settings.json").read_text()) == {"theme": "dark"}
+
+
+def test_run_attempt_manual_launch_would_keep_prime_retries(tmp_path):
+    """The other half of the owner rule: a session with no per-launch override
+    and a global file with no ``retry`` key keeps Prime's built-in retries. The
+    tracked project file must not change that."""
+    m = module()
+    settings = m.load_prime_settings()
+    repo = Path(m.__file__).resolve().parent.parent
+    operator_global = tmp_path / "operator-agent"
+    operator_global.mkdir()
+    (operator_global / "settings.json").write_text(json.dumps({"theme": "dark"}))
+    effective = settings.effective_prime_settings(cwd=repo, config_dir=operator_global)
+    assert "retry" not in effective
+    policy = settings.resolved_retry_policy(effective)
+    assert policy["enabled"] is True
+    assert policy["maxRetries"] == 3
 
 
 def test_run_attempt_admits_identity_before_watchdog(tmp_path):
@@ -1321,7 +1466,7 @@ def _evidence_backed_offer(
     capability_tier: int = 2,
     when: datetime | None = None,
 ):
-    """Minimal evidence-backed ExecutionPathOffer for BOD-119 factory tests."""
+    """Minimal evidence-backed ExecutionPathOffer for session economics STAY/SWITCH factory tests."""
     from decimal import Decimal
 
     from verdict.cost_ledger import CostTerm
@@ -1449,7 +1594,7 @@ def test_production_factory_supplies_session_factories_without_prior_session(tmp
     def seed_offers(mission, when):
         return (offer,)
 
-    # Build real BOD-119 factories through the supervisor helper under test.
+    # Build real session economics STAY/SWITCH factories through the supervisor helper under test.
     cost_factory, task_factory, wrapped_seed = m._build_bod119_session_factories(
         seed_offers=seed_offers
     )
@@ -1480,7 +1625,7 @@ def test_production_factory_supplies_session_factories_without_prior_session(tmp
 
     def fake_factory(**kwargs):
         factory_calls.append(dict(kwargs))
-        # Real factory double: supply BOD-119 factories derived from evidence-backed
+        # Real factory double: supply session economics STAY/SWITCH factories derived from evidence-backed
         # seed offers (same contract as build_production_controller_selection_bundle).
         # Do not invent zero prices; reuse supervisor helper under test.
         hooks = SimpleNamespace(
@@ -1739,7 +1884,7 @@ def test_prior_session_state_is_pessimistic_until_live_preparation(tmp_path):
 
 @pytest.mark.parametrize("inject_fn", [False, True])
 def test_supervisor_production_bundle_certifies_loaded_passports(tmp_path, inject_fn):
-    """Supervisor forwards the report producer; defaults use real offline BOD-92."""
+    """Supervisor forwards the report producer; defaults use real offline runtime certification."""
     from dataclasses import replace
 
     from verdict.model_passports import ModelPassport
@@ -1763,7 +1908,7 @@ def test_supervisor_production_bundle_certifies_loaded_passports(tmp_path, injec
 
     def certify(**kwargs):
         calls.append(kwargs)
-        # Injected hook still returns genuine BOD-92 report contents.
+        # Injected hook still returns genuine runtime certification report contents.
         return certify_runtime(**kwargs)
 
     def force_unknown(**kwargs):

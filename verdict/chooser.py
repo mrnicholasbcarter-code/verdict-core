@@ -1,4 +1,4 @@
-"""Evidence-based model chooser for BOD-95.
+"""Evidence-based model chooser.
 
 Reuses EligibilityGate via select_eligible_route. The ranker is advisory only
 and never reintroduces excluded candidates. Resource class is config/evidence
@@ -392,8 +392,9 @@ def choose_route(
 ) -> ChooseReceipt:
     """Apply hard eligibility, then the production advisory ranker.
 
-    BOD-127: when ``execution_path_decision`` is supplied, the chooser is
-    dispatch-only — it yields to BOD-104 and cannot invent a conflicting model.
+    When ``execution_path_decision`` is supplied, the chooser is dispatch-only
+    — it yields to the execution-path authority and cannot invent a conflicting
+    model.
     Without an EP decision this remains an evidence/feed helper for assembling
     offers, not the production serve-path strategy authority.
     """
@@ -552,7 +553,7 @@ def rank_admitted_candidates(
 def _resource_class_for(identity_id: str, free_admitted: Sequence[str]) -> str:
     """Map an admitted identity onto a chooser resource class. Never invent scores.
 
-    ``free_admitted`` is authoritative (BOD-112): when the receipt carries the
+    ``free_admitted`` is authoritative (free-tier ordering): when the receipt carries the
     observed free∩active set, membership alone decides FREE. The ID-suffix
     heuristic applies only to receipts that never observed free-tier metadata.
     """

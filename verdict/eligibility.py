@@ -16,6 +16,7 @@ Fail-closed semantics (per ROUTING_POLICY + #57 AC): when a request is
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -129,6 +130,16 @@ def _state_for(report: AvailabilityReport | None, model_id: str) -> tuple[str, s
     return ("unknown", report.source)
 
 
+ALLOW_UNVERIFIED_DEV_ENV = "VERDICT_ALLOW_UNVERIFIED_DEV"
+
+
+def allow_unverified_dev_from_env() -> bool:
+    """Return True only when the operator explicitly opts in to admitting
+    unverified candidates in development mode (``VERDICT_ALLOW_UNVERIFIED_DEV``
+    set to ``1`` or ``true``). Default is False: unknown is not healthy."""
+    return os.getenv(ALLOW_UNVERIFIED_DEV_ENV, "").strip().lower() in {"1", "true"}
+
+
 class EligibilityGate:
     """Filter candidates by live eligibility before any ranking.
 
@@ -142,7 +153,7 @@ class EligibilityGate:
         availability_source: Callable[[str], AvailabilityReport] | None,
         *,
         protected_fail_closed: bool = True,
-        allow_unverified_in_dev: bool = True,
+        allow_unverified_in_dev: bool = False,
         clock: Any = None,
     ) -> None:
         # ``availability_source`` is the cache's ``get`` callable; ``None`` when

@@ -1,0 +1,80 @@
+%% route-flow.mmd -- POST /v1/route and the OpenAI-compatible relay surfaces
+%% Source (verified against code at this commit):
+%%   verdict/api.py (route_task, _authority_context, _route_with_intelligence, _relay_completion)
+%%   verdict/intelligence.py (IntelligenceService.route)
+%%   verdict/eligibility.py (EligibilityGate.evaluate, _judge)
+%%   verdict/router.py (select_best_model, select_best_eligible_model)
+%%   verdict/proxy.py (UpstreamProxy.chat/.responses/._forward)
+%%   verdict/dispatcher.py (SwarmDispatcher.dispatch -- separate planning contract, not on this HTTP path)
+flowchart TD
+    CLIENT["HTTP client"] --> POST["POST /v1/route -- route_task"]
+    CLIENT --> RELAY["POST /v1/chat/completions or /v1/responses -- _relay_completion"]
+    EMBED["Sync embedder -- Gate.route"] --> ISVC
+
+    POST --> AUTHCTX["_authority_context(payload) rejects a client-supplied execution_path_decision"]
+    AUTHCTX --> RWI["_route_with_intelligence sets CONTEXT_REQUIRE_AUTHORITY=True by default"]
+    RWI --> ISVC["IntelligenceService.route -- async"]
+    RELAY --> AUTHCTXR["_authority_context(payload) -- same client-decision rejection"]
+    AUTHCTXR -- "calls IntelligenceService.route directly, no default CONTEXT_REQUIRE_AUTHORITY (required only via serve_path_authority_required: env or profile=production)" --> ISVC
+
+    ISVC --> EP{"resolve_execution_path_decision(context) present?"}
+    EP -- yes --> AUTHREQ["require_serve_path_decision then selected_route_dispatch_identity(ep)"]
+    AUTHREQ --> DEC104["RoutingDecision decision=selected, safety_flags include bod104_strategy:SELECTED_STRATEGY"]
+    EP -- "no, and require_authority" --> EPERR["raise ExecutionPathError('missing ExecutionPathDecision...')"]
+    EPERR --> H400["HTTPException 400 detail=str(exc), caught by route_task / _relay_completion"]
+
+    EP -- "no, legacy feed path" --> SCAN["scan(task) heuristic tier (verdict/escalation.py) + self.planner.plan(task).task_spec"]
+    SCAN --> TIER["final_tier = min(task_tier, safety_floor, eff_tier)"]
+    TIER --> OFFLOAD["final_tier > 0 and not allow_offline -> _offload_free_tier may return an early decision"]
+    OFFLOAD --> CAND["candidates = static_catalog() (allow_offline) or fetch_models() per configured provider"]
+    CAND --> GATE["EligibilityGate.evaluate(candidates, protected=(final_tier==0), dev_mode=(profile=='development'))"]
+    GATE --> JUDGE["EligibilityGate._judge per candidate -> EligibilityRecord"]
+    JUDGE --> ADMIT["eligibility.eligible = admitted candidates"]
+
+    ADMIT --> RANK["select_best_eligible_model -> select_best_model: sorts by quality_confidence desc, capability_tier asc, provider priority desc, id"]
+    RANK --> HASBEST{"best_model found?"}
+    HASBEST -- yes --> DECSEL["RoutingDecision decision=selected, candidate_states=eligibility records"]
+    HASBEST -- no --> FALLBACK["best_model is None -- no exception raised"]
+    FALLBACK --> DECFB["RoutingDecision model=primary_model, tier=0, decision=fallback, reason='fallback — no offload match', safety_flags include eligibility_exclusions_applied when protected exclusions occurred"]
+    TIER -. "final_tier == 0 (protected)" .-> DECPROT["RoutingDecision tier=0, protected=True, decision=fallback, reason='critical — never offload'"]
+
+    DEC104 --> LOG["log_decision(...) appends to verdict-decisions.jsonl when log_path is set"]
+    DECSEL --> LOG
+    DECFB --> LOG
+    DECPROT --> LOG
+    LOG --> DENIED{"decision.decision == 'denied'?"}
+    DENIED -- no --> R200["route_task: JSONResponse status 200 with x-verdict-evidence-* headers"]
+    DENIED -- yes --> R503["route_task: status 503; _relay_completion: _proxy_error(503, decision.reason)"]
+
+    DENIED -- "no, relay surface" --> FWD["build_attempts(proxy_instance, decision, protocol) -- one or more attempted routes"]
+    FWD --> FORWARD["UpstreamProxy.chat / UpstreamProxy.responses -> UpstreamProxy._forward (httpx, buffered or streamed)"]
+
+    DISP["SwarmDispatcher.dispatch -- separate planning contract, NOT reached from this HTTP path"]
+    DISP --> DNOROUTE["selected_route is None and authorized_runtime_id is empty -> DispatchResult reason=missing_authorized_selected_route"]
+    DISP --> DNOELIG["eligible candidates list is empty -> DispatchResult reason='no eligible candidates'"]
+    DISP --> DMISMATCH["authorized_runtime_id has no matching eligible candidate -> raise ExecutionPathError"]
+%% evidence: verdict/api.py:944 async def route_task(request, req)
+%% evidence: verdict/api.py:909 def _authority_context(payload, *, task) -- rejects client execution_path_decision
+%% evidence: verdict/api.py:923 async def _route_with_intelligence(...)
+%% evidence: verdict/api.py:929,932 CONTEXT_REQUIRE_AUTHORITY imported from verdict.serve_path, merged.setdefault(..., True)
+%% evidence: verdict/api.py:936-940,949-952 ExecutionPathError caught -> HTTPException(400, str(exc))
+%% evidence: verdict/api.py:978 status_code = 200 if decision.decision != "denied" else 503
+%% evidence: verdict/api.py:1427 async def _relay_completion(request, *, surface)
+%% evidence: verdict/api.py:1515,1606,1608 decision.decision == "denied" branch; proxy_instance.responses / proxy_instance.chat
+%% evidence: verdict/gate.py:115,152-155 class Gate.route delegates to self.intelligence.route (sync/async bridge)
+%% evidence: verdict/intelligence.py:211,360 class IntelligenceService, async def route(...)
+%% evidence: verdict/intelligence.py:392-403 resolve_execution_path_decision / require_serve_path_decision imported and called
+%% evidence: verdict/intelligence.py:437 raise ExecutionPathError("missing ExecutionPathDecision; ...")
+%% evidence: verdict/intelligence.py:30 from verdict.escalation import scan; :447 self.planner.plan(task_str, ...).task_spec
+%% evidence: verdict/intelligence.py:476 final_tier = min(task_tier, safety_floor, eff_tier if eff_tier is not None else 3)
+%% evidence: verdict/intelligence.py:478 self._offload_free_tier(...) called when final_tier > 0 and not allow_offline
+%% evidence: verdict/intelligence.py:501,507 self.static_catalog() / fetch_models(name, cfg, self.discovery_ttl)
+%% evidence: verdict/intelligence.py:514 self.eligibility_gate.evaluate(candidates, protected=(final_tier == 0), dev_mode=...)
+%% evidence: verdict/intelligence.py:576-579 select_best_eligible_model(eligibility, final_tier, self.providers) if eligibility is not None else select_best_model(candidates, final_tier, self.providers)
+%% evidence: verdict/intelligence.py:623-644 final_tier == 0 or not best_model -> fallback RoutingDecision (decision="fallback" if best_model is None else "selected")
+%% evidence: verdict/eligibility.py:143,165,189 class EligibilityGate, def evaluate, def _judge
+%% evidence: verdict/router.py:7 select_best_model / router.py:44 select_best_eligible_model
+%% evidence: verdict/proxy.py:199 async def chat / proxy.py:205 async def responses / proxy.py:223 async def _forward
+%% evidence: verdict/dispatcher.py:135,147 class SwarmDispatcher, def dispatch
+%% evidence: verdict/dispatcher.py:181-195 missing_authorized_selected_route / "no eligible candidates"
+%% evidence: verdict/dispatcher.py:198-206 authorized_runtime_id mismatch -> raise ExecutionPathError
