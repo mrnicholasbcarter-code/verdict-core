@@ -1,0 +1,13 @@
+{
+ "node_id": "smoke",
+ "attempt": 1,
+ "route_id": "kr/claude-haiku-4.5",
+ "ok": false,
+ "reported_model": "kr/claude-haiku-4.5",
+ "stop_reason": "",
+ "status_code": 503,
+ "error": "upstream server error",
+ "output_tail": "",
+ "duration_seconds": 0.0,
+ "session_ref": "fault-injected:server"
+}

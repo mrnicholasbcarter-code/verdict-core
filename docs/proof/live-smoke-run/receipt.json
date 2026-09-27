@@ -1,0 +1,138 @@
+{
+  "claimed_outcome": "COMPLETE",
+  "controller_events": [
+    {
+      "at": "2026-09-27T19:37:08.514022Z",
+      "excluded_families": [
+        "claude"
+      ],
+      "excluded_routes": [
+        "kr/claude-sonnet-4"
+      ],
+      "level": "family",
+      "node_id": "",
+      "reviewer_route": "kr/gpt-5.6-terra",
+      "seq": 32,
+      "state": "REVIEW_INDEPENDENCE"
+    }
+  ],
+  "cooldowns": [
+    {
+      "at": "2026-09-27T19:36:49.799933Z",
+      "category": "upstream_temporary",
+      "key": "kr/claude-haiku-4.5",
+      "node_id": "smoke",
+      "scope": "route",
+      "seq": 15,
+      "until": "2026-09-27T19:37:49+00:00"
+    }
+  ],
+  "decision_signals": null,
+  "event_count": 35,
+  "events_digest": "sha256:4f0dcd79917cc655f1e37bde373ecf0a54bed230228116c0c4be18f937802f3c",
+  "finished_at": "2026-09-27T19:37:08.517254Z",
+  "goal": "live failover smoke: write smoke.txt",
+  "graph_digest": "sha256:35f6d25c288222d4cf3a46c3664588b1a8ddfd8e37a7600bb83466396f2bd792",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 31
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 27
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 0.0,
+          "executed_model": "kr/claude-haiku-4.5",
+          "failure_category": "upstream_temporary",
+          "fault_injected": true,
+          "intended_route": "kr/claude-haiku-4.5",
+          "outcome": "failure",
+          "provider": "kr",
+          "route_id": "kr/claude-haiku-4.5",
+          "route_identity": "unattested"
+        },
+        {
+          "attempt": 2,
+          "capacity_class": "subscription",
+          "duration_seconds": 16.7,
+          "executed_model": "kr/claude-sonnet-4",
+          "fault_injected": false,
+          "intended_route": "kr/claude-sonnet-4",
+          "outcome": "success",
+          "provider": "kr",
+          "route_id": "kr/claude-sonnet-4",
+          "route_identity": "match"
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "smoke",
+      "validated_by": [
+        {
+          "command": "sh -c grep -qx ok smoke.txt",
+          "exit_code": 0,
+          "seq": 28
+        }
+      ]
+    }
+  ],
+  "outcome": "COMPLETE",
+  "planner_attempts": [],
+  "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
+  "reassignments": [
+    {
+      "at": "2026-09-27T19:36:50.888620Z",
+      "attempt": 2,
+      "from_route": "kr/claude-haiku-4.5",
+      "node_id": "smoke",
+      "reason": "upstream_temporary",
+      "seq": 19,
+      "to_route": "kr/claude-sonnet-4"
+    }
+  ],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 1
+  },
+  "review": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "category": "",
+        "duration_seconds": 0.103,
+        "route_id": "kr/gpt-5.6-terra",
+        "status": "PASS"
+      }
+    ],
+    "blocking": 0,
+    "reviewer": "open-code-review v1.12.9",
+    "route_id": "kr/gpt-5.6-terra",
+    "status": "PASS"
+  },
+  "route_identity_summary": {
+    "attempts": 2,
+    "match": 1,
+    "mechanical": 0,
+    "mismatch": 0,
+    "unattested": 1
+  },
+  "run_id": "20260927T193648Z",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-09-27T19:36:48.944265Z",
+  "topology": "PARALLEL_WORK_UNITS"
+}
