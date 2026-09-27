@@ -1025,36 +1025,108 @@ def _signal_group(pgid: int | None, process: GatewayProcess, signal_number: int)
         process.terminate()
 
 
+def _group_exists(pgid: int) -> bool:
+    """Return whether the recorded process group still exists.
+
+    Signal zero is only an existence check.  The group id came from the launcher
+    when it created a new session, so this check and the subsequent signals can
+    never target an unrelated operator-owned group.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Permission and other kernel errors are fail-closed: do not claim that a
+        # group is gone when we cannot verify it.
+        return True
+    return True
+
+
+def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
+    """Wait briefly for a recorded group to disappear."""
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while _group_exists(pgid):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.01, remaining))
+    return True
+
+
 def _stop_launched(launched: LaunchedGateway, *, grace_s: float = _STOP_GRACE_S) -> str:
-    """Stop and reap the process this call launched, plus the group it leads.
+    """Stop and reap the process this call launched, plus its recorded group.
 
-    Escalates SIGTERM to SIGKILL on the group, then waits, so no zombie is left
-    behind and no descendant of the gateway survives. The returned sentence states
-    what actually happened — reaped, killed, or still running with its pid — and
-    is embedded in the timeout diagnostic verbatim.
-
-    Only a group recorded at launch is signalled. A pre-existing gateway has no
-    such record, so it is never reachable from here.
+    The leader can exit after spawning descendants.  Therefore an exited leader
+    is reaped first, but is *not* an early return when the launcher recorded a
+    process group.  Only that recorded group is signalled: a bare process handle
+    never authorizes a group signal.  SIGTERM gets a bounded grace period before
+    SIGKILL, and the leader is always waited so it cannot become a zombie.
     """
     process = launched.process
     pgid = launched.pgid
-    if process.poll() is not None:
+    leader_exited = process.poll() is not None
+    if leader_exited:
+        # Reap before touching the group.  The leader may have spawned a wrapper
+        # child that is still alive in the group we created.
         _reap(process, grace_s)
-        return "the process we started had already exited and was reaped"
+        if pgid is None:
+            return "the process we started had already exited and was reaped"
+
     try:
         _signal_group(pgid, process, signal.SIGTERM)
+    except ProcessLookupError:
+        if pgid is not None:
+            return "the process we started was reaped and its process group was already gone"
+        return (
+            f"terminating the process we started (pid {process.pid}) failed: "
+            "the process was already gone; it may still be running"
+        )
     except Exception as exc:
         return (
             f"terminating the process we started (pid {process.pid}) failed: "
             f"{type(exc).__name__}: {exc}; it may still be running"
         )
-    if _reap(process, grace_s) is not None:
+
+    if not leader_exited and _reap(process, grace_s) is None:
+        # The leader ignored TERM.  The escalation below also covers its group.
+        pass
+
+    if pgid is not None:
+        if _wait_for_group_exit(pgid, grace_s):
+            return (
+                f"the process we started (pid {process.pid}) stopped on SIGTERM and was "
+                "reaped, so no orphan remains"
+            )
+        try:
+            _signal_group(pgid, process, signal.SIGKILL)
+        except ProcessLookupError:
+            return (
+                f"the process we started (pid {process.pid}) was killed and reaped, so no "
+                "orphan remains"
+            )
+        except Exception as exc:
+            return (
+                f"the process we started (pid {process.pid}) ignored SIGTERM and could not be "
+                f"killed: {type(exc).__name__}: {exc}; it is still running"
+            )
+        if _reap(process, grace_s) is not None and _wait_for_group_exit(pgid, grace_s):
+            return (
+                f"the process we started (pid {process.pid}) was killed and reaped, so no "
+                "orphan remains"
+            )
+        return (
+            f"the process we started (pid {process.pid}) did not exit after SIGKILL and is "
+            "still running; stop it yourself"
+        )
+
+    if process.poll() is not None or _reap(process, grace_s) is not None:
         return (
             f"the process we started (pid {process.pid}) stopped on SIGTERM and was reaped, "
-            f"so no orphan remains"
+            "so no orphan remains"
         )
     try:
-        _signal_group(pgid, process, signal.SIGKILL)
+        _signal_group(None, process, signal.SIGKILL)
     except Exception as exc:
         return (
             f"the process we started (pid {process.pid}) ignored SIGTERM and could not be "
@@ -1063,9 +1135,9 @@ def _stop_launched(launched: LaunchedGateway, *, grace_s: float = _STOP_GRACE_S)
     if _reap(process, grace_s) is not None:
         return (
             f"the process we started (pid {process.pid}) was killed and reaped, so no orphan "
-            f"remains"
+            "remains"
         )
     return (
         f"the process we started (pid {process.pid}) did not exit after SIGKILL and is still "
-        f"running; stop it yourself"
+        "running; stop it yourself"
     )

@@ -636,6 +636,50 @@ def test_only_a_process_group_we_created_is_ever_signalled(monkeypatch: pytest.M
     assert signalled == [(-1, signal.SIGTERM)], "no killpg may be issued for an unowned group"
 
 
+def test_an_exited_leader_still_stops_its_recorded_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exited wrapper cannot justify skipping cleanup of its owned group."""
+    signals: list[tuple[int, int]] = []
+    group_alive = True
+
+    def killpg(pgid: int, number: int) -> None:
+        nonlocal group_alive
+        signals.append((pgid, number))
+        if number == signal.SIGTERM:
+            group_alive = False
+
+    def group_check(pgid: int, number: int) -> None:
+        nonlocal group_alive
+        if number == 0 and not group_alive:
+            raise ProcessLookupError
+        signals.append((pgid, number))
+        if number == signal.SIGTERM:
+            group_alive = False
+
+
+    class ExitedLeader:
+        pid = 7778
+
+        def poll(self) -> int | None:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def terminate(self) -> None:  # pragma: no cover - group is signalled
+            raise AssertionError("the exited leader must not be signalled individually")
+
+        def kill(self) -> None:  # pragma: no cover - group is signalled
+            raise AssertionError("the exited leader must not be signalled individually")
+
+    # _group_exists uses killpg(..., 0) for the recorded-group verification.
+    monkeypatch.setattr(gl.os, "killpg", group_check)
+    gl._stop_launched(gl.LaunchedGateway(process=ExitedLeader(), pgid=7778), grace_s=0.01)
+
+    assert signals[0] == (7778, signal.SIGTERM)
+
+
 def test_a_process_that_exits_early_still_has_its_group_reaped(tmp_path: Path) -> None:
     """A wrapper that exits before readiness must not leave its descendants behind."""
     stopped: list[str] = []
