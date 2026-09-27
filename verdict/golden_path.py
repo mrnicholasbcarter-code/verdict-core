@@ -55,6 +55,16 @@ def _safe_command(command: Sequence[str]) -> tuple[str, ...]:
     return tuple(command)
 
 
+def _portable_command(command: Sequence[str]) -> list[str]:
+    """Command as receipt evidence: absolute paths reduced to their basename.
+
+    Receipts are shareable evidence and must not carry host paths such as the
+    interpreter location (``/home/<user>/...``). The command still identifies
+    what ran; the exact argv is only used for execution, never persisted.
+    """
+    return [Path(part).name if Path(part).is_absolute() else part for part in command]
+
+
 @dataclass(frozen=True)
 class StageReceipt:
     stage: Stage
@@ -321,7 +331,7 @@ def run_golden_path(
             StageStatus.PASSED if result.returncode == 0 and not outside else StageStatus.FAILED
         )
         evidence = {
-            "command": list(command),
+            "command": _portable_command(command),
             "exit_code": result.returncode,
             "timed_out": False,
             "duration_ms": duration,
@@ -337,7 +347,7 @@ def run_golden_path(
         status, evidence, limitations = (
             StageStatus.FAILED,
             {
-                "command": list(command),
+                "command": _portable_command(command),
                 "exit_code": None,
                 "timed_out": True,
                 "duration_ms": 0.0,
@@ -352,7 +362,7 @@ def run_golden_path(
         status, evidence, limitations = (
             StageStatus.FAILED,
             {
-                "command": list(command),
+                "command": _portable_command(command),
                 "exit_code": None,
                 "timed_out": False,
                 "duration_ms": 0.0,
