@@ -43,9 +43,9 @@ from pathlib import Path
 from typing import Any
 
 from verdict.capacity_models import CapacitySnapshot
-from verdict.cost_ledger import subscription_budgets
 from verdict.subscription_headroom import (
-    legacy_subscription_observations, subscription_observations,
+    legacy_subscription_observations,
+    subscription_observations,
 )
 
 GATEWAY_PREFIX = "omniroute/"
@@ -693,7 +693,8 @@ def _judge(
     # subscription window from being conflated with a separate pool/account.
     marker = str(row.get("subscription_pool_id") or row.get("pool_id") or "")
     provider_obs = tuple(
-        o for o in provider_obs_all
+        o
+        for o in provider_obs_all
         if not o.pool_id or not marker or o.pool_id == marker or o.pool_id in route_id
     )
     for obs in route_obs + provider_obs:
@@ -720,7 +721,11 @@ def _judge(
         if obs.state in {"exhausted", "cooldown"}:
             return drop(
                 AdmissionStage.AVAILABLE,
-                "exhausted" if obs.category == "subscription_exhaustion" else obs.category if obs.category.startswith("subscription_") else f"{obs.state}:{obs.category}",
+                "exhausted"
+                if obs.category == "subscription_exhaustion"
+                else obs.category
+                if obs.category.startswith("subscription_")
+                else f"{obs.state}:{obs.category}",
                 obs.source,
                 observed_at=obs.observed_at,
                 health=obs.state,
@@ -784,7 +789,12 @@ def admit(
         raise AdmissionUnavailableError("live_inventory_unavailable", inventory_source)
     if connections is None:
         raise AdmissionUnavailableError("connection_evidence_unavailable", connections_source)
-    if runtime is None and require_runtime and not subscription_snapshots and not any("/subscription/" in str(r.get("id", "")) for r in inventory_rows):
+    if (
+        runtime is None
+        and require_runtime
+        and not subscription_snapshots
+        and not any("/subscription/" in str(r.get("id", "")) for r in inventory_rows)
+    ):
         raise AdmissionUnavailableError(
             "runtime_evidence_unavailable", "no runtime health/cooldown/quota source"
         )
@@ -794,13 +804,22 @@ def admit(
             inventory_rows, connections, now=now
         )
         if legacy_rows:
-            evidence = evidence.merged(RuntimeEvidence(
-                observations=tuple(RuntimeObservation(
-                    key=row["key"], state=row["state"], category=row["category"],
-                    source=row["source"], observed_at=row.get("observed_at"),
-                    pool_id=row.get("pool_id"),
-                ) for row in legacy_rows), sources=legacy_sources
-            ))
+            evidence = evidence.merged(
+                RuntimeEvidence(
+                    observations=tuple(
+                        RuntimeObservation(
+                            key=row["key"],
+                            state=row["state"],
+                            category=row["category"],
+                            source=row["source"],
+                            observed_at=row.get("observed_at"),
+                            pool_id=row.get("pool_id"),
+                        )
+                        for row in legacy_rows
+                    ),
+                    sources=legacy_sources,
+                )
+            )
     if subscription_snapshots:
         # Subscription observations are part of the canonical evidence object,
         # not a downstream advisory check.  Stale snapshots are omitted by the
@@ -811,9 +830,13 @@ def admit(
         subscription_evidence = RuntimeEvidence(
             observations=tuple(
                 RuntimeObservation(
-                    key=row["key"], state=row["state"], category=row["category"],
-                    source=row["source"], observed_at=row.get("observed_at"),
-                    until=row.get("until"), pool_id=row.get("pool_id"),
+                    key=row["key"],
+                    state=row["state"],
+                    category=row["category"],
+                    source=row["source"],
+                    observed_at=row.get("observed_at"),
+                    until=row.get("until"),
+                    pool_id=row.get("pool_id"),
                 )
                 for row in subscription_rows
             ),

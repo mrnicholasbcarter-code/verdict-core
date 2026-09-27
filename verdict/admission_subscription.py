@@ -1,85 +1,45 @@
-"""Subscription headroom integration for canonical admission.
+"""Compatibility wrapper for canonical subscription-aware admission.
 
-Adds subscription-aware check to admission pipeline. Headroom evidence feeds
-AdmittedSet with source/freshness metadata. Preserves UNKNOWN_HEADROOM behavior.
+Subscription evidence is owned by :func:`verdict.admission.admit`; this module
+keeps the historical import path without maintaining a second admission path.
 """
 
 from __future__ import annotations
 
-from verdict.admission import AdmissionRecord, AdmittedSet, _MINT
-from verdict.models import ProviderConfig, ConnectionIdentity, Route
-from verdict.capacity_models import CapacityEvidenceError, CapacitySnapshot, PoolStatus
-from verdict.subscription_headroom import (
-    check_headroom_subscription,
-    subscription_pool_key,
-    is_subscription_exhausted,
-)
-from verdict.cost_ledger import subscription_budgets, _subscription_reserved
-from datetime import datetime, timezone
-from typing import Optional, Tuple, Dict, Any, Sequence
-import hashlib
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
+from typing import Any
+
+from verdict.admission import AdmittedSet, RuntimeEvidence, admit
+from verdict.capacity_models import CapacitySnapshot
 
 
-def _build_admitted_set_with_subscription(
-    token: object,
-    inventory_rows: Sequence[Dict[str, Any]] | None,
-    connections: Sequence[Dict[str, Any]] | None,
-    runtime: Dict[str, Any] | None,
+def admit_with_subscription_snapshots(
+    inventory_rows: Sequence[Mapping[str, Any]] | None,
+    connections: Sequence[Mapping[str, Any]] | None,
+    runtime: RuntimeEvidence | None,
     *,
     now: datetime,
+    subscription_snapshots: Sequence[CapacitySnapshot] | None = None,
     required_capabilities: frozenset[str] = frozenset(),
     min_context_tokens: int = 0,
-    deny: Optional[callable] = None,
+    deny: Callable[[str], str | None] | None = None,
 ) -> AdmittedSet:
-    """Build AdmittedSet with subscription-aware headroom checks.
+    """Forward to canonical :func:`verdict.admission.admit`.
 
-    Headroom evidence becomes a runtime source. Unknown/exhausted cases are
-    preserved as explicit admission states with proper reasons.
+    The explicit name makes snapshot-aware callers clear while ensuring there
+    is no compatibility-specific authority or construction of ``AdmittedSet``.
     """
-    # Build base runtime evidence
-    base_evidence = {
-        "sources": [],
-        "observations": [],
-    }
+    return admit(
+        inventory_rows,
+        connections,
+        runtime,
+        now=now,
+        required_capabilities=required_capabilities,
+        min_context_tokens=min_context_tokens,
+        deny=deny,
+        subscription_snapshots=subscription_snapshots,
+    )
 
-    # Add subscription headroom evidence if available
-    def _add_headroom_evidence(identity: Optional[ConnectionIdentity]):
-        if not identity:
-            return
-        config = ProviderConfig(headroom_endpoint="https://api.example.com/usage")
-        is_avail, pct, reason, meta = check_headroom_subscription(
-            "gpt-4", identity.provider_id, config, identity, now
-        )
-        if meta.get("base_headroom") is None:
-            # Explicit unknown case
-            base_evidence["sources"].append("subscription_headroom:unknown")
-            base_evidence["observations"].append({
-                "key": f"provider:{identity.provider_id}",
-                "state": "unknown",
-                "category": "subscription_unknown",
-                "source": "subscription_headroom",
-                "observed_at": meta.get("now"),
-            })
-        elif reason == "exhausted":
-            base_evidence["sources"].append("subscription_headroom:exhausted")
-            base_evidence["observations"].append({
-                "key": f"provider:{identity.provider_id}",
-                "state": "exhausted",
-                "category": "subscription_exhausted",
-                "source": "subscription_headroom",
-                "observed_at": meta.get("now"),
-            })
-        else:
-            base_evidence["sources"].append("subscription_headroom:available")
-            base_evidence["observations"].append({
-                "key": f"provider:{identity.provider_id}",
-                "state": "healthy" if is_avail else "unknown",
-                "category": "subscription_available",
-                "source": "subscription_headroom",
-                "observed_at": meta.get("now"),
-            })
 
-    # This would be called per route during admission
-    # For now, integrate into capacity_resolve logic
-    return _MINT
-
+__all__ = ["admit_with_subscription_snapshots"]

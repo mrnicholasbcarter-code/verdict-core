@@ -1,16 +1,16 @@
 """Tests for subscription-aware headroom checks."""
 
-import pytest
-from unittest.mock import MagicMock
-from verdict.subscription_headroom import (
-    check_headroom_subscription,
-    subscription_pool_key,
-    is_subscription_exhausted,
-    subscription_headroom_pct,
-)
 from decimal import Decimal
+from unittest.mock import MagicMock
+
 from verdict.capacity_models import ConnectionIdentity
 from verdict.models import ProviderConfig
+from verdict.subscription_headroom import (
+    check_headroom_subscription,
+    is_subscription_exhausted,
+    subscription_headroom_pct,
+    subscription_pool_key,
+)
 
 
 def test_subscription_pool_key():
@@ -26,10 +26,11 @@ def test_check_headroom_subscription_available():
     identity = MagicMock(spec=ConnectionIdentity)
     identity.provider_id = "openai"
     identity.account_id = "acct-123"
-    from verdict.cost_ledger import subscription_budgets, _subscription_reserved
-    subscription_budgets["openai/acct-123/subscription"] = Decimal('100')
-    _subscription_reserved["openai/acct-123/subscription"] = Decimal('0')
-    
+    from verdict.cost_ledger import _subscription_reserved, subscription_budgets
+
+    subscription_budgets["openai/acct-123/subscription"] = Decimal("100")
+    _subscription_reserved["openai/acct-123/subscription"] = Decimal("0")
+
     is_avail, pct, reason, meta = check_headroom_subscription("gpt-4", "openai", config, identity)
     assert is_avail is True
     assert pct is not None
@@ -43,11 +44,12 @@ def test_check_headroom_subscription_exhausted():
     identity = MagicMock(spec=ConnectionIdentity)
     identity.provider_id = "openai"
     identity.account_id = "acct-123"
-    from verdict.cost_ledger import subscription_budgets, _subscription_reserved
-    subscription_budgets["openai/acct-123/subscription"] = Decimal('100')
-    _subscription_reserved["openai/acct-123/subscription"] = Decimal('100')
-    
-    is_avail, pct, reason, meta = check_headroom_subscription("gpt-4", "openai", config, identity)
+    from verdict.cost_ledger import _subscription_reserved, subscription_budgets
+
+    subscription_budgets["openai/acct-123/subscription"] = Decimal("100")
+    _subscription_reserved["openai/acct-123/subscription"] = Decimal("100")
+
+    is_avail, _pct, reason, meta = check_headroom_subscription("gpt-4", "openai", config, identity)
     assert is_avail is False
     assert reason == "exhausted"
     assert "subscription_budget" in meta
@@ -57,29 +59,30 @@ def test_check_headroom_subscription_unknown():
     config = MagicMock(spec=ProviderConfig)
     config.headroom_endpoint = None
     identity = MagicMock(spec=ConnectionIdentity)
-    is_avail, pct, reason, meta = check_headroom_subscription("gpt-4", "openai", config, identity)
+    is_avail, _pct, reason, _meta = check_headroom_subscription("gpt-4", "openai", config, identity)
     assert is_avail is False
     assert reason == "unknown"
 
 
 def test_is_subscription_exhausted():
-    from verdict.cost_ledger import subscription_budgets, _subscription_reserved
+    from verdict.cost_ledger import _subscription_reserved, subscription_budgets
+
     key = "test/key"
-    subscription_budgets[key] = Decimal('50')
+    subscription_budgets[key] = Decimal("50")
     assert not is_subscription_exhausted(key)
-    _subscription_reserved[key] = Decimal('50')
+    _subscription_reserved[key] = Decimal("50")
     assert is_subscription_exhausted(key)
-    _subscription_reserved[key] = Decimal('51')
+    _subscription_reserved[key] = Decimal("51")
     assert is_subscription_exhausted(key)
 
 
 def test_subscription_headroom_pct_calculation():
-    from verdict.cost_ledger import subscription_budgets, _subscription_reserved
-    key = "test/key"
-    subscription_budgets[key] = Decimal('100')
-    assert subscription_headroom_pct(MagicMock(), key) >= 0.0
-    _subscription_reserved[key] = Decimal('25')
-    assert subscription_headroom_pct(MagicMock(), key) == 75.0
-    _subscription_reserved[key] = Decimal('100')
-    assert subscription_headroom_pct(MagicMock(), key) == 0.0
+    from verdict.cost_ledger import _subscription_reserved, subscription_budgets
 
+    key = "test/key"
+    subscription_budgets[key] = Decimal("100")
+    assert subscription_headroom_pct(MagicMock(), key) >= 0.0
+    _subscription_reserved[key] = Decimal("25")
+    assert subscription_headroom_pct(MagicMock(), key) == 75.0
+    _subscription_reserved[key] = Decimal("100")
+    assert subscription_headroom_pct(MagicMock(), key) == 0.0

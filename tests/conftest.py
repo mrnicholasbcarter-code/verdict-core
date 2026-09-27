@@ -38,7 +38,8 @@ def _loopback_testclient_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_subscription_ledger():
-    from verdict.cost_ledger import subscription_budgets, _subscription_reserved
+    from verdict.cost_ledger import _subscription_reserved, subscription_budgets
+
     subscription_budgets.clear()
     _subscription_reserved.clear()
     yield
