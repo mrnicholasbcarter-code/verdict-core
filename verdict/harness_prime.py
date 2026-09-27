@@ -451,6 +451,27 @@ def _live_model_entry(row: Mapping[str, Any], previous: Mapping[str, Any] | None
     return entry
 
 
+# Newest verdict-sync backups kept next to models.json (each is a full copy).
+SYNC_BACKUPS_KEPT = 5
+
+
+def _prune_sync_backups(models: Path, *, keep: int) -> None:
+    """Delete all but the newest ``keep`` ``models.json.verdict-sync-*.bak`` files.
+
+    Only files this sync writes are touched; any other backup name is left alone.
+    """
+    backups = sorted(
+        models.parent.glob("models.json.verdict-sync-*.bak"),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    for stale in backups[keep:]:
+        try:
+            stale.unlink()
+        except OSError:
+            continue
+
+
 def sync_models(
     live_rows: Sequence[Mapping[str, Any]],
     *,
@@ -497,9 +518,16 @@ def sync_models(
         return SyncModelsResult(
             paths.models, None, added, removed, len(live), dry_run=True, written=False
         )
+    if not added and not removed:
+        # Same model set: nothing to write and no backup to take. This keeps a
+        # scheduled sync from filling the agent dir with identical copies.
+        return SyncModelsResult(
+            paths.models, None, added, removed, len(live), dry_run=False, written=False
+        )
     stamp = now() if now is not None else _utc_stamp()
     backup = paths.models.with_name(f"models.json.verdict-sync-{stamp}.bak")
     _copy_private(paths.models, backup)
+    _prune_sync_backups(paths.models, keep=SYNC_BACKUPS_KEPT)
     new_provider = dict(provider)
     new_provider["models"] = [
         _live_model_entry(row, previous.get(rid)) for rid, row in live.items()

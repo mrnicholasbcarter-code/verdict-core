@@ -153,3 +153,31 @@ def test_sync_writes_models_and_backup_owner_only(tmp_path: Path) -> None:
     assert stat.S_IMODE(models.stat().st_mode) == 0o600
     assert stat.S_IMODE(Path(result.backup_path).stat().st_mode) == 0o600
     assert not (home / "models.json.tmp").exists()
+
+
+def test_sync_is_a_noop_when_the_model_set_is_unchanged(tmp_path: Path) -> None:
+    """A scheduled sync must not write or back up an unchanged registry."""
+    home = _home(tmp_path)
+    same = [{"id": "cc/keep", "owned_by": "claude"}, {"id": "cc/gone", "owned_by": "claude"}]
+    before = (home / "models.json").read_bytes()
+    result = sync_models(same, prime_home=home, now=lambda: "20260926T000000Z")
+    assert result.written is False and result.backup_path is None
+    assert result.added == () and result.removed == ()
+    assert (home / "models.json").read_bytes() == before
+    assert sorted(p.name for p in home.iterdir()) == ["models.json"]
+
+
+def test_sync_keeps_only_the_newest_backups_and_ignores_other_files(tmp_path: Path) -> None:
+    from verdict.harness_prime import SYNC_BACKUPS_KEPT
+
+    home = _home(tmp_path)
+    for day in range(1, 9):
+        (home / f"models.json.verdict-sync-2026090{day}T000000Z.bak").write_text("{}")
+    unrelated = home / "models.json.bak-20260927T135036"
+    unrelated.write_text("{}")
+    sync_models(LIVE, prime_home=home, now=lambda: "20260926T000000Z")
+    kept = sorted(p.name for p in home.glob("models.json.verdict-sync-*.bak"))
+    assert len(kept) == SYNC_BACKUPS_KEPT
+    assert kept[-1] == "models.json.verdict-sync-20260926T000000Z.bak"
+    assert "models.json.verdict-sync-20260901T000000Z.bak" not in kept
+    assert unrelated.exists()
