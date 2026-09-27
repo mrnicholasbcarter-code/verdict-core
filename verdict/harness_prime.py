@@ -488,7 +488,9 @@ def sync_models(
     for row in concrete:
         live.setdefault(str(row["id"]).strip(), row)
     if not live:
-        raise HarnessPrimeError("live gateway inventory has no concrete models; refusing to clear models")
+        raise HarnessPrimeError(
+            "live gateway inventory has no concrete models; refusing to clear models"
+        )
     added = tuple(sorted(set(live) - set(previous)))
     removed = tuple(sorted(set(previous) - set(live)))
     if dry_run:
@@ -512,7 +514,9 @@ def sync_models(
     )
 
 
-def _sync_visibility_models(rows: Sequence[Mapping[str, Any]], *, prime_home: Path | None) -> SyncModelsResult:
+def _sync_visibility_models(
+    rows: Sequence[Mapping[str, Any]], *, prime_home: Path | None
+) -> SyncModelsResult:
     """Ensure a minimal OmniRoute visibility provider exists, then sync it.
 
     Unlike the operator-facing ``sync_models`` command, automatic visibility

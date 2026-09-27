@@ -142,7 +142,9 @@ def test_cached_relay_admission_never_performs_request_time_refresh() -> None:
     cache = CachedRelayAdmission(refresh, ttl_seconds=10)
     stamp = NOW
     cache.refresh(now=stamp)
-    assert cache.get(now=stamp + timedelta(seconds=9)) is cache.get(now=stamp + timedelta(seconds=9))
+    assert cache.get(now=stamp + timedelta(seconds=9)) is cache.get(
+        now=stamp + timedelta(seconds=9)
+    )
     assert calls == 1
     with pytest.raises(RuntimeError, match="stale"):
         cache.get(now=stamp + timedelta(seconds=11))

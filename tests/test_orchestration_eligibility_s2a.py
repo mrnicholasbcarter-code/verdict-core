@@ -26,7 +26,9 @@ def _models_json(path: Path, ids: list[str]) -> Path:
 class TestLiveHarnessGate:
     def test_live_inventory_admits_route_absent_from_models_json(self, tmp_path: Path) -> None:
         registry = _models_json(tmp_path / "models.json", ["cc/claude-sonnet-5"])
-        gate = prime_visibility(registry, live_rows=[{"id": "cc/claude-sonnet-5"}, {"id": "cc/claude-new-6"}])
+        gate = prime_visibility(
+            registry, live_rows=[{"id": "cc/claude-sonnet-5"}, {"id": "cc/claude-new-6"}]
+        )
         ladder, _ = make_ladder(
             tmp_path,
             [row("cc/claude-new-6", owned_by="claude")],

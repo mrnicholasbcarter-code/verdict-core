@@ -878,9 +878,7 @@ async def lifespan(app: FastAPI) -> Any:
         gateway = os.getenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
         cache = CachedRelayAdmission(
             lambda: load_live_admission(
-                gateway,
-                now=datetime.now(timezone.utc),
-                api_key=resolve_api_key(),
+                gateway, now=datetime.now(timezone.utc), api_key=resolve_api_key()
             ),
             ttl_seconds=float(os.getenv("VERDICT_RELAY_ADMISSION_TTL_SECONDS", "60")),
         )
