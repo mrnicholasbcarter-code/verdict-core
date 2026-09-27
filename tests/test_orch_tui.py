@@ -366,3 +366,27 @@ def test_wide_layout_shows_controller_history_and_independence() -> None:
     assert "QUOTA" in text and "[injected]" in text
     assert "sonnet-5" in text and "gpt-5.5" in text
     assert "excluded implementers: cx/gpt-5.5" in text
+
+
+def test_reviewer_failover_and_context_recovery_are_visible() -> None:
+    """BOD-267: reviewer attempts, repack and rehydrate events render in the view."""
+    from verdict.orchestration.tui import RunView, render_text
+
+    events = [
+        {"seq": 1, "at": "2026-09-27T20:00:00Z", "type": "repack", "node_id": "a",
+         "data": {"from_budget_bytes": 60000, "to_budget_bytes": 30000}},
+        {"seq": 2, "at": "2026-09-27T20:00:01Z", "type": "rehydrate", "node_id": "a",
+         "data": {"route_id": "kr/claude-haiku-4.5"}},
+        {"seq": 3, "at": "2026-09-27T20:00:02Z", "type": "review_attempt", "node_id": "",
+         "data": {"route_id": "cc/stuck", "status": "ERROR", "category": "timeout"}},
+        {"seq": 4, "at": "2026-09-27T20:00:03Z", "type": "review_attempt", "node_id": "",
+         "data": {"route_id": "cx/gpt-5.4", "status": "PASS", "category": ""}},
+        {"seq": 5, "at": "2026-09-27T20:00:04Z", "type": "review", "node_id": "",
+         "data": {"status": "PASS", "reviewer": "ocr", "route_id": "cx/gpt-5.4"}},
+    ]  # fmt: skip
+    view = RunView.from_events(events)
+    assert view.review_attempts == [("cc/stuck", "ERROR", "timeout"), ("cx/gpt-5.4", "PASS", "")]
+    text = render_text(events, width=140, plain=True)
+    assert "cc/stuck[ERROR:timeout] -> cx/gpt-5.4[PASS]" in text
+    assert "context 60000 -> 30000 bytes after overflow" in text
+    assert "retry on kr/claude-haiku-4.5 with verification evidence" in text

@@ -206,6 +206,8 @@ class RunView:
         self.cooldowns: dict[str, Cooldown] = {}
         self.reassignments: list[Reassignment] = []
         self.failures: list[Failure] = []
+        self.review_attempts: list[tuple[str, str, str]] = []
+        self.recoveries: list[str] = []
         self.barriers: list[CheckResult] = []
         self.verifications: list[CheckResult] = []
         self.integrations: list[CheckResult] = []
@@ -409,6 +411,29 @@ class RunView:
             _t(data.get("route_id", ""), 64),
             _i(data.get("blocking")) or 0,
             _count(data.get("findings")),
+        )
+
+    def _on_review_attempt(self, node_id: str, data: dict[str, Any]) -> None:
+        # BOD-267: every reviewer attempt, including failed/revoked ones.
+        self.review_attempts.append(
+            (
+                _t(data.get("route_id", ""), 64),
+                _t(data.get("status", ""), 24),
+                _t(data.get("category", ""), 40),
+            )
+        )
+
+    def _on_repack(self, node_id: str, data: dict[str, Any]) -> None:
+        # BOD-267: context shrunk after a context-length overflow.
+        self.recoveries.append(
+            f"{node_id}: context {_i(data.get('from_budget_bytes'))} -> "
+            f"{_i(data.get('to_budget_bytes'))} bytes after overflow"
+        )
+
+    def _on_rehydrate(self, node_id: str, data: dict[str, Any]) -> None:
+        # BOD-267: same-route retry with the failing verification output.
+        self.recoveries.append(
+            f"{node_id}: retry on {_t(data.get('route_id', ''), 64)} with verification evidence"
         )
 
     def _on_remediation(self, node_id: str, data: dict[str, Any]) -> None:
@@ -687,6 +712,7 @@ def _trouble_lines(view: RunView) -> list[str]:
         f"{r.node_id}: {r.from_route or 'unassigned'} -> {r.to_route or 'unassigned'} ({r.reason})"
         for r in view.reassignments
     ]
+    lines += view.recoveries
     return lines
 
 
@@ -699,6 +725,14 @@ def _review_lines(view: RunView) -> list[str]:
         f"{review.route_id or 'unassigned'} "
         f"({review.blocking} blocking / {review.findings} findings)"
     ]
+    if len(view.review_attempts) > 1:
+        lines.append(
+            "attempts: "
+            + " -> ".join(
+                f"{route or 'unassigned'}[{status}{':' + category if category else ''}]"
+                for route, status, category in view.review_attempts
+            )
+        )
     if view.review_independence:
         lines.append(f"independence: {view.review_independence}")
     if view.remediation_rounds:
