@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,9 @@ from verdict.orchestration.contracts import (
     CapacityClass,
     EligibilityStage,
     FailureClassification,
+    NodeKind,
     TaskRequirements,
+    WorkNode,
 )
 from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.subagent_selection import HealthResult
@@ -499,3 +502,98 @@ def test_dispatch_blocker_reads_cooldowns_written_after_selection(tmp_path: Path
     assert ladder.dispatch_blocker("kr/b", now=NOW) is None
     # Expired evidence does not block.
     assert ladder.dispatch_blocker("cc/a", now=NOW + timedelta(hours=1)) is None
+
+
+class TestDynamicAssignment:
+    """BOD-271: the cheapest SUFFICIENT route wins; insufficient routes are dropped."""
+
+    ROWS = (
+        row("cc/claude-opus-5", owned_by="claude"),  # tier 0 (frontier)
+        row("cc/claude-sonnet-5", owned_by="claude"),  # tier 2 (classifier default)
+        row("cc/claude-haiku-5", owned_by="claude"),  # tier 3 (small)
+    )
+
+    def _select(self, tmp_path: Path, req: TaskRequirements) -> tuple[str | None, dict[str, Any]]:
+        ladder, _ = make_ladder(tmp_path, list(self.ROWS), [conn("claude")])
+        chosen, verdicts = ladder.select(req, now=NOW)
+        return (chosen.route_id if chosen else None), by_route(verdicts)
+
+    def test_cheaper_sufficient_beats_unnecessary_premium(self, tmp_path: Path) -> None:
+        low_risk = TaskRequirements.for_node(
+            WorkNode(
+                "a",
+                "rename a helper",
+                owned_files=("x.py",),
+                verification_command=("true",),
+                risk="low",
+            )
+        )
+        chosen, _ = self._select(tmp_path, replace(low_risk, frontier_worthy=True))
+        # Even when frontier routes are allowed, bounded work takes the small model.
+        assert chosen == "cc/claude-haiku-5"
+
+    def test_insufficient_cheap_route_is_dropped_before_ranking(self, tmp_path: Path) -> None:
+        review = TaskRequirements.for_node(WorkNode("r", "review", kind=NodeKind.REVIEW))
+        chosen, verdicts = self._select(tmp_path, review)
+        assert verdicts["cc/claude-haiku-5"].failed_stage is EligibilityStage.TASK_ELIGIBLE
+        assert verdicts["cc/claude-haiku-5"].reason == "insufficient_capability"
+        assert verdicts["cc/claude-sonnet-5"].reason == "insufficient_capability"
+        assert chosen == "cc/claude-opus-5"
+
+    def test_different_work_units_get_different_models_from_same_inventory(
+        self, tmp_path: Path
+    ) -> None:
+        bounded = TaskRequirements.for_node(
+            WorkNode(
+                "a", "fix typo", owned_files=("x.py",), verification_command=("true",), risk="low"
+            )
+        )
+        medium = TaskRequirements.for_node(
+            WorkNode(
+                "b",
+                "refactor module",
+                owned_files=("x.py",),
+                verification_command=("true",),
+                risk="medium",
+            )
+        )
+        high = TaskRequirements.for_node(
+            WorkNode(
+                "c",
+                "security change",
+                owned_files=("x.py",),
+                verification_command=("true",),
+                risk="high",
+            )
+        )
+        picks = {
+            name: self._select(tmp_path / name, replace(req, frontier_worthy=True))[0]
+            for name, req in (("a", bounded), ("b", medium), ("c", high))
+        }
+        assert picks == {
+            "a": "cc/claude-haiku-5",
+            "b": "cc/claude-sonnet-5",
+            "c": "cc/claude-opus-5",
+        }
+
+    def test_declared_tier_outranks_name_heuristics(self, tmp_path: Path) -> None:
+        rows = [
+            {**row("kr/mystery-large", owned_by="kiro"), "capability_tier": 1},
+            row("kr/claude-haiku-5", owned_by="kiro"),
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")])
+        req = TaskRequirements.for_node(
+            WorkNode("c", "x", owned_files=("x.py",), verification_command=("true",), risk="high")
+        )
+        chosen, verdicts = ladder.select(req, now=NOW)
+        assert chosen is not None and chosen.route_id == "kr/mystery-large"
+        assert by_route(verdicts)["kr/claude-haiku-5"].reason == "insufficient_capability"
+
+    def test_equal_tier_prefers_lower_metered_price(self, tmp_path: Path) -> None:
+        rows = [
+            row("cx/gpt-5.4", owned_by="codex", pricing={"input": 5.0, "output": 15.0}),
+            row("cx/gpt-5.4-alt", owned_by="codex", pricing={"input": 1.0, "output": 3.0}),
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
+        chosen, _ = ladder.select(TaskRequirements(), now=NOW)
+        assert chosen is not None and chosen.route_id == "cx/gpt-5.4-alt"
