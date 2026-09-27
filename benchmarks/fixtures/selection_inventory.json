@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "note": "Offline fixture inventory for the PR selection report. Prices are illustrative USD per 1M tokens, not live quotes.",
+  "connections": [
+    {
+      "provider": "kiro",
+      "authType": "oauth",
+      "isActive": true,
+      "testStatus": "ok",
+      "plan_label": "subscription"
+    },
+    {
+      "provider": "claude",
+      "authType": "oauth",
+      "isActive": true,
+      "testStatus": "ok",
+      "plan_label": "max"
+    },
+    {
+      "provider": "codex",
+      "authType": "apikey",
+      "isActive": true,
+      "testStatus": "ok",
+      "plan_label": "pay"
+    }
+  ],
+  "inventory": [
+    {
+      "id": "kr/claude-opus-5.5",
+      "owned_by": "kiro",
+      "context_length": 200000,
+      "pricing": {
+        "input": 0,
+        "output": 0
+      }
+    },
+    {
+      "id": "kr/claude-sonnet-5",
+      "owned_by": "kiro",
+      "context_length": 200000,
+      "pricing": {
+        "input": 0,
+        "output": 0
+      }
+    },
+    {
+      "id": "kr/claude-haiku-4.5",
+      "owned_by": "kiro",
+      "context_length": 200000,
+      "pricing": {
+        "input": 0,
+        "output": 0
+      }
+    },
+    {
+      "id": "kr/qwen3-coder-next",
+      "owned_by": "kiro",
+      "context_length": 256000,
+      "pricing": {
+        "input": 0,
+        "output": 0
+      }
+    },
+    {
+      "id": "cc/claude-sonnet-4.6",
+      "owned_by": "claude",
+      "context_length": 200000,
+      "pricing": {
+        "input": 0,
+        "output": 0
+      }
+    },
+    {
+      "id": "cx/gpt-6-sol",
+      "owned_by": "codex",
+      "context_length": 400000,
+      "pricing": {
+        "input": 5.0,
+        "output": 20.0
+      }
+    },
+    {
+      "id": "cx/gpt-5.4",
+      "owned_by": "codex",
+      "context_length": 400000,
+      "pricing": {
+        "input": 1.25,
+        "output": 10.0
+      }
+    }
+  ]
+}
