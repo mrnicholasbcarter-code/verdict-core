@@ -86,6 +86,34 @@ def test_real_process_is_killed_and_reaped(tmp_path):
     assert result["returncode"] is not None
 
 
+def test_run_attempt_uses_prime_config_override_and_one_shot_settings(tmp_path):
+    m = module()
+    capture = tmp_path / "capture.json"
+    code = (
+        "import json, os, pathlib; p=pathlib.Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR']); "
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'env': str(p), 'settings': json.loads((p/'settings.json').read_text())}}))"
+    )
+    result = m.run_attempt(
+        [sys.executable, "-c", code],
+        tmp_path,
+        tmp_path / "out.log",
+        lambda: "unchanged",
+        5,
+        5,
+        0.02,
+    )
+    assert result == {"reason": "EXIT", "returncode": 0}
+    data = json.loads(capture.read_text())
+    assert data["settings"]["retry"]["enabled"] is False
+    assert data["settings"]["retry"]["maxRetries"] == 0
+    assert data["settings"]["retry"]["provider"]["waitForUsage"] == {
+        "enabled": False,
+        "pauseUntilReset": False,
+    }
+    assert data["settings"]["providerBackupModel"] == ""
+    assert not Path(data["env"]).exists()
+
+
 def test_run_attempt_admits_identity_before_watchdog(tmp_path):
     m = module()
     events = []

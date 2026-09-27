@@ -34,6 +34,22 @@ _STDERR_TAIL_CHARS = 400
 _TERM_GRACE_SECONDS = 5.0
 
 
+def _one_shot_prime_settings() -> dict[str, Any]:
+    """Disable Prime semantic retries, usage waits, and backup routing."""
+    return {
+        "retry": {
+            "enabled": False,
+            "maxRetries": 0,
+            "baseDelayMs": 0,
+            "provider": {
+                "maxRetryDelayMs": 0,
+                "waitForUsage": {"enabled": False, "pauseUntilReset": False},
+            },
+        },
+        "providerBackupModel": "",
+    }
+
+
 def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS) -> str:
     clean = _CONTROL_RE.sub("", text).strip()
     return clean[-limit:]
@@ -139,18 +155,14 @@ class PrimeHeadlessExecutor:
     ) -> WorkerTerminal:
         started = time.monotonic()
         child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
-        # Prime's retry policy is semantic: a retry can bill a second model call
-        # before Verdict sees the failure. Give each Verdict-owned launch an
-        # isolated config home with provider retries disabled. Never mutate the
-        # operator's ~/.prime settings.
-        launch_home = tempfile.TemporaryDirectory(prefix="verdict-prime-")
-        agent_home = Path(launch_home.name) / "agent"
-        agent_home.mkdir(parents=True)
-        (agent_home / "settings.json").write_text(
-            json.dumps({"retry": {"enabled": False, "maxRetries": 0}}),
-            encoding="utf-8",
+        # Prime's retry policy is semantic: each launch must make at most one
+        # model request before Verdict classifies its terminal.
+        launch_config = tempfile.TemporaryDirectory(prefix="verdict-prime-")
+        config_dir = Path(launch_config.name)
+        (config_dir / "settings.json").write_text(
+            json.dumps(_one_shot_prime_settings()), encoding="utf-8"
         )
-        child_env["PRIME_AGENT_HOME"] = launch_home.name
+        child_env["PRIME_AGENT_CODING_AGENT_DIR"] = str(config_dir)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self._command(prompt, route_id, cwd),
@@ -161,7 +173,7 @@ class PrimeHeadlessExecutor:
                 start_new_session=True,
             )
         except OSError as exc:
-            launch_home.cleanup()
+            launch_config.cleanup()
             return WorkerTerminal(
                 ok=False,
                 model=route_id,
@@ -172,7 +184,7 @@ class PrimeHeadlessExecutor:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             await self._kill_group(proc)
-            launch_home.cleanup()
+            launch_config.cleanup()
             return WorkerTerminal(
                 ok=False,
                 model=route_id,
@@ -180,7 +192,7 @@ class PrimeHeadlessExecutor:
                 duration_seconds=time.monotonic() - started,
             )
         duration = time.monotonic() - started
-        launch_home.cleanup()
+        launch_config.cleanup()
         return self._interpret(
             stdout=stdout_b.decode("utf-8", "replace"),
             stderr=stderr_b.decode("utf-8", "replace"),

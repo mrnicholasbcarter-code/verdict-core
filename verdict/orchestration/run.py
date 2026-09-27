@@ -260,6 +260,9 @@ async def plan_with_failover(
                 route_id=choice.route_id,
                 timeout_seconds=timeout_seconds,
                 constraints=constraints,
+                events=events,
+                attempt=attempt,
+                max_attempts=max_attempts,
             )
         except OrchestrationError as exc:
             last = f"{choice.route_id}: {exc}"

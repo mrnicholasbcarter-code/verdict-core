@@ -65,16 +65,31 @@ def test_verdict_launch_uses_isolated_one_shot_prime_settings(tmp_path: Path) ->
         tmp_path,
         "from pathlib import Path\n"
         "import json, os, sys\n"
-        "root = Path(os.environ['PRIME_AGENT_HOME'])\n"
-        "settings = json.loads((root / 'agent' / 'settings.json').read_text())\n"
-        f"Path({str(capture)!r}).write_text(json.dumps({{'home': str(root), 'settings': settings, 'argv': sys.argv[1:]}}))\n"
+        "root = Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR'])\n"
+        "settings = json.loads((root / 'settings.json').read_text())\n"
+        f"Path({str(capture)!r}).write_text(json.dumps({{'home': str(root), 'settings': settings, 'argv': sys.argv[1:], 'legacy_env': os.getenv('PRIME_AGENT_HOME')}}))\n"
         f"print({success_payload()!r})\n",
+    )
+    project_agent = tmp_path / ".prime" / "agent"
+    project_agent.mkdir(parents=True)
+    (project_agent / "settings.json").write_text(
+        json.dumps({"retry": {"enabled": True, "maxRetries": 3}})
     )
     result = run(PrimeHeadlessExecutor(prime_bin=prime), "exact task", tmp_path)
     assert result.ok
     launch = json.loads(capture.read_text())
-    assert launch["settings"]["retry"] == {"enabled": False, "maxRetries": 0}
-    assert launch["home"] != str(Path.home() / ".prime")
+    assert launch["settings"]["retry"] == {
+        "enabled": False,
+        "maxRetries": 0,
+        "baseDelayMs": 0,
+        "provider": {
+            "maxRetryDelayMs": 0,
+            "waitForUsage": {"enabled": False, "pauseUntilReset": False},
+        },
+    }
+    assert launch["settings"]["providerBackupModel"] == ""
+    assert launch["home"] != str(Path.home() / ".prime" / "agent")
+    assert launch["legacy_env"] is None  # mutation back to PRIME_AGENT_HOME fails above
     assert "--model" in launch["argv"]
     assert ROUTE in launch["argv"]
     assert not Path(launch["home"]).exists()  # per-launch state is removed
@@ -413,3 +428,19 @@ async def test_fault_key_by_dispatch_ordinal(tmp_path: Path) -> None:
     second = await fx.run("x", route_id="cc/b", cwd=tmp_path / "n2-a1", timeout_seconds=5)
     assert second.status_code == 429
     assert (await fx.run("x", route_id="cc/b", cwd=tmp_path / "n2-a2", timeout_seconds=5)).ok
+
+
+def test_installed_prime_096_declares_config_directory_override() -> None:
+    """Pin launch env to Prime 0.9.6's published real config contract."""
+    import shutil
+
+    binary = shutil.which("prime-agent")
+    if binary is None:
+        pytest.skip("prime-agent not installed")
+    package = Path(binary).resolve().parent
+    readme = (package / "README.md").read_text()
+    usage = (package / "docs" / "usage.md").read_text()
+    assert "PRIME_AGENT_CODING_AGENT_DIR" in readme
+    assert "Override config directory" in readme
+    assert "PRIME_AGENT_CODING_AGENT_DIR" in usage
+    assert "default is `~/.prime/agent`" in usage

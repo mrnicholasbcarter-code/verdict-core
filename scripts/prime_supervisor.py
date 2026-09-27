@@ -13,6 +13,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import types
 import uuid
@@ -194,6 +195,22 @@ def stop_group(process: subprocess.Popen[Any]) -> None:
     process.wait(timeout=5)
 
 
+def one_shot_prime_settings() -> dict[str, Any]:
+    """Disable Prime-side semantic retry, wait, and backup behavior."""
+    return {
+        "retry": {
+            "enabled": False,
+            "maxRetries": 0,
+            "baseDelayMs": 0,
+            "provider": {
+                "maxRetryDelayMs": 0,
+                "waitForUsage": {"enabled": False, "pauseUntilReset": False},
+            },
+        },
+        "providerBackupModel": "",
+    }
+
+
 def run_attempt(
     command: list[str],
     cwd: Path,
@@ -207,42 +224,57 @@ def run_attempt(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     made_progress = progress_made or (lambda old, new: old != new)
-    with log.open("w") as output:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            env=dict(env) if env is not None else None,
-        )
-        try:
-            # Startup identity is an admission gate. Do not fingerprint/watchdog,
-            # and therefore do not admit the mission, until it succeeds.
-            if on_started is not None:
-                on_started(process)
-            started = progress = time.monotonic()
-            previous = fingerprint()
-            while process.poll() is None:
-                current = fingerprint()
-                if made_progress(previous, current):
-                    previous, progress = current, time.monotonic()
-                else:
-                    previous = current
-                reason = stall_reason(
-                    now=time.monotonic(),
-                    started=started,
-                    progress=progress,
-                    idle_seconds=idle_seconds,
-                    timeout=timeout,
-                )
-                if reason:
-                    stop_group(process)
-                    return {"reason": reason, "returncode": process.returncode}
-                time.sleep(poll)
-            return {"reason": "EXIT", "returncode": process.returncode}
-        finally:
-            stop_group(process)
+    config_dir = Path(tempfile.mkdtemp(prefix="verdict-controller-prime-"))
+    (config_dir / "settings.json").write_text(
+        json.dumps(one_shot_prime_settings()), encoding="utf-8"
+    )
+    child_env = dict(os.environ if env is None else env)
+    child_env["PRIME_AGENT_CODING_AGENT_DIR"] = str(config_dir)
+    try:
+        with log.open("w") as output:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=child_env,
+            )
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
+        raise
+    try:
+        # Startup identity is an admission gate. Do not fingerprint/watchdog,
+        # and therefore do not admit the mission, until it succeeds.
+        if on_started is not None:
+            on_started(process)
+        started = progress = time.monotonic()
+        previous = fingerprint()
+        while process.poll() is None:
+            current = fingerprint()
+            if made_progress(previous, current):
+                previous, progress = current, time.monotonic()
+            else:
+                previous = current
+            reason = stall_reason(
+                now=time.monotonic(),
+                started=started,
+                progress=progress,
+                idle_seconds=idle_seconds,
+                timeout=timeout,
+            )
+            if reason:
+                stop_group(process)
+                return {"reason": reason, "returncode": process.returncode}
+            time.sleep(poll)
+        return {"reason": "EXIT", "returncode": process.returncode}
+    finally:
+        stop_group(process)
+        import shutil
+
+        shutil.rmtree(config_dir, ignore_errors=True)
 
 
 def recover(attempt: Callable[[], dict[str, Any]], state: Path, max_restarts: int) -> int:
