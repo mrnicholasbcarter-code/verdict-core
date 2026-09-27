@@ -45,9 +45,7 @@ def normalize_task_policy(
     config = dict(task or {})
     config["allowed_route_prefixes"] = prefixes
     excluded = {
-        _route_id(str(item))
-        for item in config.get("excluded_route_ids", [])
-        if str(item).strip()
+        _route_id(str(item)) for item in config.get("excluded_route_ids", []) if str(item).strip()
     }
     excluded.add(controller)
     config["excluded_route_ids"] = sorted(excluded)
@@ -123,8 +121,12 @@ class PrimeWorkerOperation:
                         route = _route_id(model)
                         if route == self.controller_model or route in LEGACY_CONTROLLER_MODELS:
                             raise ValueError("controller cannot be a worker")
-                        if not any(route.startswith(prefix) for prefix in self.allowed_route_prefixes):
-                            raise ValueError("worker provider is outside the authorized route scope")
+                        if not any(
+                            route.startswith(prefix) for prefix in self.allowed_route_prefixes
+                        ):
+                            raise ValueError(
+                                "worker provider is outside the authorized route scope"
+                            )
                         child = await self.rlm.spawn(
                             request["prompt"], name=request["name"], model=model
                         )

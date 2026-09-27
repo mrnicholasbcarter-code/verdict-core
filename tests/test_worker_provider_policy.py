@@ -96,11 +96,7 @@ def test_authorized_pool_exhaustion_fails_closed_without_provider_escape(tmp_pat
 
 
 def test_active_controller_identity_is_never_a_worker_candidate() -> None:
-    rows = [
-        _row("cc/claude-fable-5-1"),
-        _row("cc/claude-opus-5-5"),
-        _row("kr/claude-sonnet-5"),
-    ]
+    rows = [_row("cc/claude-fable-5-1"), _row("cc/claude-opus-5-5"), _row("kr/claude-sonnet-5")]
     visible = [_selector(str(row["id"])) for row in rows]
     task = WorkerTask(
         required_capabilities=frozenset({"tools"}),
