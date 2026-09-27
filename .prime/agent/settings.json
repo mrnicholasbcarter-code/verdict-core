@@ -1,7 +1,7 @@
 {
   "providerBackupModel": "",
   "retry": {
-    "enabled": true,
+    "enabled": false,
     "maxRetries": 3,
     "baseDelayMs": 3000,
     "provider": {

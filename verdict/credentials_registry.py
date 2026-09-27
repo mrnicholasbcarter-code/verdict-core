@@ -111,6 +111,13 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         live_check=_check_omniroute_api_key,
     ),
     CredentialSpec(
+        env_name="VERDICT_OMNIROUTE_API_KEY",
+        purpose="OmniRoute gateway key for orchestrate/review and worker admission",
+        features=("orchestration", "worker-admission"),
+        optional=True,
+        live_check=_check_omniroute_api_key,
+    ),
+    CredentialSpec(
         env_name="OMNIROUTE_BASE_URL",
         purpose="OmniRoute gateway endpoint",
         features=("routing", "gateway"),
