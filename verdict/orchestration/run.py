@@ -428,6 +428,10 @@ async def run_golden_path(
         run_id=run_dir.name,
         goal=goal,
         repo=str(repo),
+        # BOD-267: who controls this run and who owns root failover. Set by the
+        # external supervisor (prime_supervisor.py); absent for a bare launch.
+        controller_route=os.environ.get("VERDICT_ACTIVE_CONTROLLER_ROUTE", ""),
+        controller_generation=os.environ.get("VERDICT_CONTROLLER_GENERATION", ""),
         resumed_nodes=sorted(resumed),
         retry_budget={
             "max_attempts_per_node": policy.max_attempts_per_node,

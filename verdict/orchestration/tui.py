@@ -218,6 +218,10 @@ class RunView:
         self.controller: list[tuple[str, str]] = []
         self.controller_route = ""
         self.controller_state = ""
+        # BOD-267: the ROOT controller session (not the planner route) and
+        # whether root failover is supervisor-owned.
+        self.root_controller = ""
+        self.root_generation = ""
         self.review_independence = ""
         self.remediation_rounds = 0
         self.review: ReviewView | None = None
@@ -260,6 +264,10 @@ class RunView:
 
     def _on_run_started(self, node_id: str, data: dict[str, Any]) -> None:
         self.goal = _t(data.get("goal", ""), 200)
+        route = _t(data.get("controller_route", ""), 64)
+        if route:
+            self.root_controller = route.removeprefix("omniroute/")
+            self.root_generation = _t(data.get("controller_generation", ""), 8)
 
     def _on_understand(self, node_id: str, data: dict[str, Any]) -> None:
         self.understand = {
@@ -874,8 +882,15 @@ def _header(view: RunView, plain: bool, width: int) -> RenderableType:
         f"validated {counts.get('validated', 0)}  failed {counts.get('failed', 0)}  "
         f"reassignments {len(view.reassignments)}  cooldowns {len(view.cooldowns)}"
     )
+    root = (
+        f"root controller: {view.root_controller} (supervisor-owned failover"
+        + (f", generation {view.root_generation}" if view.root_generation else "")
+        + ")"
+        if view.root_controller
+        else "root controller: not recorded (bare launch: root-pinned, no automatic failover)"
+    )
     if plain:
-        return Group(Text("VERDICT  autonomous control plane"), Text(summary), Text(""))
+        return Group(Text("VERDICT  autonomous control plane"), Text(summary), Text(root), Text(""))
     title = Text("VERDICT", style=TOKENS["PRIMARY"])
     title.append("  autonomous control plane", style=TOKENS["SECONDARY"])
     line = Text(
@@ -885,7 +900,7 @@ def _header(view: RunView, plain: bool, width: int) -> RenderableType:
         else TOKENS["SUCCESS" if view.outcome == "COMPLETE" else "ERROR"],
     )
     return Panel(
-        Group(title, line),
+        Group(title, line, Text(root, style=TOKENS["SECONDARY"])),
         border_style=TOKENS["PRIMARY"],
         box=box.HEAVY,
         padding=(0, 1),
