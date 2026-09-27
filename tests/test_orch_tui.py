@@ -390,3 +390,41 @@ def test_reviewer_failover_and_context_recovery_are_visible() -> None:
     assert "cc/stuck[ERROR:timeout] -> cx/gpt-5.4[PASS]" in text
     assert "context 60000 -> 30000 bytes after overflow" in text
     assert "retry on kr/claude-haiku-4.5 with verification evidence" in text
+
+
+def test_candidate_panel_follows_each_route_through_failover() -> None:
+    """BOD-267: the recorded live run shows failed route -> cooldown -> replacement."""
+    import json
+    from pathlib import Path
+
+    from verdict.orchestration.tui import RunView, render_text
+
+    path = Path(__file__).resolve().parent.parent / "docs/proof/live-smoke-run/events.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    view = RunView.from_events(events)
+    assert view.candidates == {
+        "kr/claude-haiku-4.5": ["selected", "failed:upstream_temporary", "cooled:route"],
+        "kr/claude-sonnet-4": ["selected", "ok"],
+    }
+    text = render_text(events, width=140, plain=True)
+    assert "kr/claude-haiku-4.5  selected > failed:upstream_temporary > cooled:route" in text
+
+
+def test_candidate_panel_marks_revoked_and_provider_cooldown() -> None:
+    from verdict.orchestration.tui import RunView
+
+    events = [
+        {"seq": 1, "at": "2026-09-27T21:00:00Z", "type": "selection", "node_id": "a",
+         "data": {"route_id": "cc/a"}},
+        {"seq": 2, "at": "2026-09-27T21:00:01Z", "type": "eligibility", "node_id": "a",
+         "data": {"revoked": "cc/a", "reason": "pre-dispatch recheck"}},
+        {"seq": 3, "at": "2026-09-27T21:00:02Z", "type": "selection", "node_id": "a",
+         "data": {"route_id": "cc/b"}},
+        {"seq": 4, "at": "2026-09-27T21:00:03Z", "type": "failure", "node_id": "a",
+         "data": {"route_id": "cc/b", "category": "rate_limited"}},
+        {"seq": 5, "at": "2026-09-27T21:00:04Z", "type": "cooldown", "node_id": "a",
+         "data": {"key": "cc", "scope": "provider", "category": "rate_limited"}},
+    ]  # fmt: skip
+    view = RunView.from_events(events)
+    assert view.candidates["cc/a"] == ["selected", "revoked", "cooled:provider"]
+    assert view.candidates["cc/b"] == ["selected", "failed:rate_limited", "cooled:provider"]

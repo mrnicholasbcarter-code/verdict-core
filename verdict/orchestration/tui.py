@@ -208,6 +208,10 @@ class RunView:
         self.failures: list[Failure] = []
         self.review_attempts: list[tuple[str, str, str]] = []
         self.recoveries: list[str] = []
+        # BOD-267 candidate panel: route -> ordered states seen in the stream
+        # (selected, revoked, failed:<category>, cooled:<scope>, ok). Only what
+        # the runtime recorded; capacity is never inferred.
+        self.candidates: dict[str, list[str]] = {}
         self.barriers: list[CheckResult] = []
         self.verifications: list[CheckResult] = []
         self.integrations: list[CheckResult] = []
@@ -298,6 +302,8 @@ class RunView:
             self.rationale.append(line)
 
     def _on_eligibility(self, node_id: str, data: dict[str, Any]) -> None:
+        if data.get("revoked"):
+            self._mark(str(data["revoked"]), "revoked")
         for key in LADDER:
             value = _i(data.get(key))
             if value is not None:
@@ -316,6 +322,8 @@ class RunView:
         node.capacity_class = _t(data.get("capacity_class", ""), 24)
         node.rank = _i(data.get("rank"))
         node.attempt = _i(data.get("attempt")) or max(node.attempt, 1)
+
+        self._mark(str(data.get("route_id", "")), "selected")
 
     def _on_node_state(self, node_id: str, data: dict[str, Any]) -> None:
         node = self.node(node_id)
@@ -351,6 +359,9 @@ class RunView:
             duration = max(0.0, self.now - node.started_at)
         node.elapsed_seconds = duration
 
+        if data.get("ok"):
+            self._mark(route, "ok")
+
     def _on_failure(self, node_id: str, data: dict[str, Any]) -> None:
         self.failures.append(
             Failure(
@@ -363,6 +374,10 @@ class RunView:
             )
         )
 
+        self._mark(
+            str(data.get("route_id", "")), f"failed:{_t(data.get('category', 'unknown'), 40)}"
+        )
+
     def _on_cooldown(self, node_id: str, data: dict[str, Any]) -> None:
         key = _t(data.get("key", ""), 64)
         self.cooldowns[key] = Cooldown(
@@ -371,6 +386,14 @@ class RunView:
             _t(data.get("category", ""), 40),
             _t(data.get("until", ""), 32),
         )
+
+        scope = _t(data.get("scope", ""), 24)
+        if scope == "route":
+            self._mark(key, "cooled:route")
+        elif scope == "provider":
+            for route in list(self.candidates):
+                if route.split("/", 1)[0] == key:
+                    self._mark(route, "cooled:provider")
 
     def _on_reassign(self, node_id: str, data: dict[str, Any]) -> None:
         node = self.node(node_id)
@@ -412,6 +435,14 @@ class RunView:
             _i(data.get("blocking")) or 0,
             _count(data.get("findings")),
         )
+
+    def _mark(self, route_id: str, state: str) -> None:
+        route = _t(route_id, 64)
+        if not route:
+            return
+        states = self.candidates.setdefault(route, [])
+        if not states or states[-1] != state:
+            states.append(state)
 
     def _on_review_attempt(self, node_id: str, data: dict[str, Any]) -> None:
         # BOD-267: every reviewer attempt, including failed/revoked ones.
@@ -701,6 +732,11 @@ def _select_lines(view: RunView) -> list[str]:
     ]
 
 
+def _candidate_lines(view: RunView) -> list[str]:
+    """Per-route history, e.g. ``kr/a  selected > failed:rate_limited > cooled:provider``."""
+    return [f"{route}  {' > '.join(states)}" for route, states in view.candidates.items()]
+
+
 def _trouble_lines(view: RunView) -> list[str]:
     lines = [
         f"{f.node_id or 'run'}: {f.category} -> {f.action}"
@@ -772,7 +808,13 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
         "UNDERSTAND": _lines(_understand_lines(view), "no task profile recorded yet"),
         "CONTROLLER": _lines(_controller_lines(view)[-6:], "no controller events"),
         "PLAN / DAG": _lines(plan, "no plan recorded"),
-        "SELECT": _lines(_select_lines(view), "nothing selected yet"),
+        "SELECT": _lines(
+            [
+                *_select_lines(view),
+                *(["candidates:", *_candidate_lines(view)] if view.candidates else []),
+            ],
+            "nothing selected yet",
+        ),
         "HYDRATE": _lines(_hydrate_lines(view), "no prompt hydration recorded yet"),
         "WORKERS": _workers(view, plain),
         "QUOTA/COOLDOWN": _lines(
