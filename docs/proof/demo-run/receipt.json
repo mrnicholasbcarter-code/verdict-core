@@ -2,7 +2,7 @@
   "claimed_outcome": "COMPLETE",
   "controller_events": [
     {
-      "at": "2026-09-26T18:54:37.690748Z",
+      "at": "2026-09-27T06:21:32.560009Z",
       "detail": "plan produced",
       "node_id": "",
       "route_id": "demo-sub/atlas-coder",
@@ -10,7 +10,7 @@
       "state": "HEALTHY"
     },
     {
-      "at": "2026-09-26T18:54:38.031360Z",
+      "at": "2026-09-27T06:21:32.845327Z",
       "excluded_families": [
         "cedar",
         "elm"
@@ -28,31 +28,31 @@
   ],
   "cooldowns": [
     {
-      "at": "2026-09-26T18:54:37.719978Z",
+      "at": "2026-09-27T06:21:32.595492Z",
       "category": "quota_exhausted",
       "key": "demo-sub",
       "node_id": "parser",
       "scope": "provider",
       "seq": 21,
-      "until": "2026-09-26T20:54:37+00:00"
+      "until": "2026-09-27T08:21:32+00:00"
     },
     {
-      "at": "2026-09-26T18:54:37.737748Z",
+      "at": "2026-09-27T06:21:32.613515Z",
       "category": "no_final_answer",
       "key": "demo-sub/atlas-coder",
       "node_id": "cli_flag",
       "scope": "route",
       "seq": 29,
-      "until": "2026-09-26T18:59:37+00:00"
+      "until": "2026-09-27T06:26:32+00:00"
     },
     {
-      "at": "2026-09-26T18:54:37.774633Z",
+      "at": "2026-09-27T06:21:32.646854Z",
       "category": "rate_limited",
       "key": "demo-free",
       "node_id": "parser",
       "scope": "provider",
       "seq": 47,
-      "until": "2026-09-26T18:55:07+00:00"
+      "until": "2026-09-27T06:22:02+00:00"
     }
   ],
   "decision_signals": [
@@ -63,7 +63,7 @@
         "provider": "demo-sub",
         "route_id": "demo-sub/atlas-coder"
       },
-      "at": "2026-09-26T18:54:37.692220Z",
+      "at": "2026-09-27T06:21:32.561102Z",
       "mode": "SHADOW",
       "node_id": "",
       "seq": 5,
@@ -74,7 +74,7 @@
         "latency_ms": 0,
         "mode": "SHADOW",
         "model": "fixture",
-        "observed_at": "2026-09-26T18:54:37.684744+00:00",
+        "observed_at": "2026-09-27T06:21:32.556230+00:00",
         "provider": "fixture",
         "purpose": "frontier_planning",
         "request_id": "demo",
@@ -92,8 +92,8 @@
     }
   ],
   "event_count": 83,
-  "events_digest": "sha256:03c1146bc7d60c833255f5554537f3d411d0ea0385d80aec044574bf5a92b4f8",
-  "finished_at": "2026-09-26T18:54:38.032812Z",
+  "events_digest": "sha256:04ca24451d0e745d874eff0b39f65ec9f72df0d795669563aa6ff68a6d2a61c2",
+  "finished_at": "2026-09-27T06:21:32.847370Z",
   "goal": "Add a --json flag to the invoice CLI, with a parser module and tests",
   "graph_digest": "sha256:e0e5f305192c8f4d59f9ca6edd2be25b1b54e6dd7c587c92b3067cc246a2b4e4",
   "integration": {
@@ -161,7 +161,7 @@
         {
           "command": "python3 -c import invoice.parser as p; assert p.parse_invoice('a,1') == {'a': 1}",
           "exit_code": 0,
-          "seq": 68
+          "seq": 69
         }
       ]
     },
@@ -232,10 +232,20 @@
     }
   ],
   "outcome": "COMPLETE",
+  "planner_attempts": [
+    {
+      "at": "2026-09-27T06:21:32.556771Z",
+      "attempt": 1,
+      "capacity_class": "subscription",
+      "provider": "demo-sub",
+      "route_id": "demo-sub/atlas-coder",
+      "seq": 3
+    }
+  ],
   "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
   "reassignments": [
     {
-      "at": "2026-09-26T18:54:37.744940Z",
+      "at": "2026-09-27T06:21:32.620254Z",
       "attempt": 2,
       "from_route": "demo-sub/atlas-coder",
       "node_id": "parser",
@@ -244,7 +254,7 @@
       "to_route": "demo-free/birch-coder"
     },
     {
-      "at": "2026-09-26T18:54:37.753285Z",
+      "at": "2026-09-27T06:21:32.627108Z",
       "attempt": 2,
       "from_route": "demo-sub/atlas-coder",
       "node_id": "cli_flag",
@@ -253,7 +263,7 @@
       "to_route": "demo-free/cedar-coder"
     },
     {
-      "at": "2026-09-26T18:54:37.800811Z",
+      "at": "2026-09-27T06:21:32.673213Z",
       "attempt": 3,
       "from_route": "demo-free/birch-coder",
       "node_id": "parser",
@@ -262,6 +272,11 @@
       "to_route": "demo-free2/elm-coder"
     }
   ],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 2
+  },
   "review": {
     "blocking": 0,
     "reviewer": "fixture-reviewer (no model call)",
@@ -277,6 +292,6 @@
   },
   "run_id": "demo-run",
   "schema": "verdict.run-receipt/v1",
-  "started_at": "2026-09-26T18:54:37.681782Z",
+  "started_at": "2026-09-27T06:21:32.553552Z",
   "topology": "PARALLEL_WORK_UNITS"
 }
