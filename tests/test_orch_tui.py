@@ -428,3 +428,23 @@ def test_candidate_panel_marks_revoked_and_provider_cooldown() -> None:
     view = RunView.from_events(events)
     assert view.candidates["cc/a"] == ["selected", "revoked", "cooled:provider"]
     assert view.candidates["cc/b"] == ["selected", "failed:rate_limited", "cooled:provider"]
+
+
+def test_header_names_root_controller_and_failover_owner() -> None:
+    """BOD-267: supervised runs name the root model; bare launches say root-pinned."""
+    from verdict.orchestration.tui import render_text
+
+    supervised = [
+        {"seq": 1, "at": "2026-09-27T21:00:00Z", "type": "run_started", "node_id": "",
+         "data": {"goal": "g", "controller_route": "omniroute/kr/claude-opus-5.5",
+                  "controller_generation": "1"}},
+    ]  # fmt: skip
+    text = render_text(supervised, width=140, plain=True)
+    assert "root controller: kr/claude-opus-5.5 (supervisor-owned failover, generation 1)" in text
+
+    bare = [
+        {"seq": 1, "at": "2026-09-27T21:00:00Z", "type": "run_started", "node_id": "",
+         "data": {"goal": "g"}},
+    ]  # fmt: skip
+    text = render_text(bare, width=140, plain=True)
+    assert "bare launch: root-pinned, no automatic failover" in text
