@@ -252,6 +252,24 @@ def _patch_gateway(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, fail: boo
     )
 
 
+def _patch_catalog(monkeypatch: pytest.MonkeyPatch, rows: Any) -> None:
+    """cli_run reads the catalog once through OmniRouteHTTPTransport; fake it."""
+
+    class FakeTransport:
+        base_url = "http://127.0.0.1:20128"
+
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def catalog(self) -> Any:
+            return {"data": [dict(r) for r in rows]}
+
+        def runtime(self) -> Any:
+            return {}
+
+    monkeypatch.setattr(worker_runtime, "OmniRouteHTTPTransport", FakeTransport)
+
+
 def test_worker_cli_admission_applies_scope_and_active_controller(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -292,7 +310,7 @@ def test_worker_cli_fails_closed_when_live_admission_unavailable(
         return Proc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-    monkeypatch.setattr(worker_runtime, "fetch_omniroute_inventory", lambda: tuple(CATALOG))
+    _patch_catalog(monkeypatch, CATALOG)
     spawned: list[str] = []
 
     async def spawn(self: Any, prompt: str, *, name: str, model: str) -> Any:
@@ -463,9 +481,7 @@ def test_cli_run_end_to_end_rejects_dead_route_with_zero_spawns(
     _patch_gateway(monkeypatch, tmp_path)  # cc connection active; ladder: cc/dead cooling
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
     monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
-    monkeypatch.setattr(
-        worker_runtime, "fetch_omniroute_inventory", lambda: (row(DEAD), row(OK_ROUTE))
-    )
+    _patch_catalog(monkeypatch, (row(DEAD), row(OK_ROUTE)))
 
     class Proc:
         returncode = 0
