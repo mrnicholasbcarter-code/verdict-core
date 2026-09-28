@@ -702,8 +702,8 @@ graded by executable unit tests. Both arms sent the same prompt.
 
 | Measure (list price x observed tokens) | Overall | Standalone (n=10) | Repo-context (n=5) |
 |---|---|---|---|
-| Baseline arm cost | $0.7668 | $0.6225 | $0.1443 |
-| Verdict arm cost | $0.8386 | $0.6756 | $0.1631 |
+| Baseline list-price cost | $0.7668 | $0.6225 | $0.1443 |
+| Verdict list-price cost | $0.8386 | $0.6756 | $0.1631 |
 | (task, repeat) pairs compared | 26 | 20 | 6 |
 
 Same model and same prompt in both arms: the cost difference is token variance between
