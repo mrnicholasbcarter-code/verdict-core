@@ -10,8 +10,10 @@ upstream, network boundary, provider policy, and retention controls.
 
 Please do not open a public issue for sensitive vulnerabilities.
 
-GitHub private vulnerability reporting is currently **disabled** for this repository.
-Until it is enabled, report concerns directly to the maintainers with:
+Report privately through GitHub's private vulnerability reporting:
+[Report a vulnerability](https://github.com/mrnicholasbcarter-code/verdict-core/security/advisories/new)
+(the repository's **Security** tab, then **Report a vulnerability**). Only the
+maintainers can see the report. Please include:
 
 - Affected version or commit.
 - Reproduction steps.
