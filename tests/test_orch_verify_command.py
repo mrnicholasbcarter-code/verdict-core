@@ -244,18 +244,16 @@ async def test_runtime_verify_python_resolved_when_missing(
     # Point PATH to a dir with only git (needed by DagRuntime)
     import shutil as _shutil
 
-    # Find git location so we can include it in our restricted PATH
+    # Build a PATH that contains ONLY a git symlink. Using git's own directory
+    # is not enough: on CI runners git lives in /usr/bin next to python.
     git_path = _shutil.which("git")
     assert git_path is not None
-    git_dir = str(Path(git_path).parent)
-
-    # Create a minimal PATH without python/python3
     restricted_bin = tmp_path / "bin"
     restricted_bin.mkdir()
-    # We don't actually need to restrict PATH for the test itself,
-    # because _resolve_verify_argv checks shutil.which at call time.
-    # We just monkeypatch PATH so 'python' is not found.
-    monkeypatch.setenv("PATH", f"{restricted_bin}:{git_dir}")
+    (restricted_bin / "git").symlink_to(git_path)
+    monkeypatch.setenv("PATH", str(restricted_bin))
+    assert _shutil.which("python") is None
+    assert _shutil.which("python3") is None
 
     resolved, resolved_argv0 = _resolve_verify_argv(["python", "-m", "pytest", "--co", "-q"])
     assert resolved[0] == sys.executable
