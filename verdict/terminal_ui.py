@@ -20,17 +20,10 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-TOKENS = {
-    "PRIMARY": "bold #54c7b0",
-    "SECONDARY": "#8db8d8",
-    "ACCENT": "#e5b567",
-    "MUTED": "#929ca6",
-    "SUCCESS": "#83c995",
-    "WARNING": "#e5b567",
-    "ERROR": "bold #ee8585",
-    "INFO": "#8db8d8",
-    "BORDER": "#647580",
-}
+from verdict.design import (
+    TOKENS as TOKENS,  # re-export; keep `from verdict.terminal_ui import TOKENS` working
+)
+
 _CONTROLS = re.compile(
     r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))|[\x00-\x08\x0b-\x1f\x7f-\x9f]"
 )
@@ -68,13 +61,23 @@ class TerminalUI:
         source = console or Console()
         self.machine = machine
         self._can_prompt = source.is_terminal and not bool(os.getenv("CI"))
-        self.plain = (
-            not source.is_terminal
-            or "NO_COLOR" in os.environ
-            or os.getenv("TERM") == "dumb"
-            or bool(os.getenv("CI"))
-            or os.getenv("VERDICT_PLAIN") == "1"
-        )
+        from verdict.design import presentation_mode as _pm
+
+        class _ConsoleStream:
+            """Shim so presentation_mode sees Console.is_terminal, not file.isatty()."""
+
+            def __init__(self, c: Console) -> None:
+                self._c = c
+
+            def isatty(self) -> bool:
+                return bool(self._c.is_terminal)
+
+            @property
+            def width(self) -> int:
+                return self._c.width
+
+        _mode = _pm(_ConsoleStream(source))
+        self.plain = not _mode.color or os.getenv("VERDICT_PLAIN") == "1"
         self.console = Console(
             file=source.file,
             width=source.width,
