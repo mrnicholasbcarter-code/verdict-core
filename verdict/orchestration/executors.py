@@ -17,6 +17,7 @@ import contextlib
 import json
 import math
 import os
+import posixpath
 import re
 import signal
 import tempfile
@@ -24,6 +25,8 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from verdict.orchestration.contracts import AttemptUsage, WorkerExecutor, WorkerTerminal
 from verdict.orchestration.prime_settings import (
@@ -35,7 +38,12 @@ from verdict.orchestration.prime_settings import (
     prime_retry_policy_problems,
 )
 
-__all__ = ["FaultInjectingExecutor", "PrimeHeadlessExecutor", "ScriptedExecutor"]
+__all__ = [
+    "DirectGatewayExecutor",
+    "FaultInjectingExecutor",
+    "PrimeHeadlessExecutor",
+    "ScriptedExecutor",
+]
 
 _STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -610,3 +618,508 @@ class ScriptedExecutor:
         if isinstance(result, WorkerTerminal):
             return result
         return await result
+
+
+# ---------------------------------------------------------------- direct gateway
+
+
+class DirectGatewayExecutor:
+    """Run one prompt on one exact OmniRoute route via direct HTTP — no Prime harness.
+
+    Text-only nodes (research/review/plan) return the model's text content.
+    Implement-type nodes request a unified diff for owned files, apply it with
+    ``git apply --check`` then ``git apply`` inside the node worktree, and fail
+    closed with a named error if it does not apply or touches files outside
+    ``owned_files``.
+
+    Failures (4xx/5xx/timeout/empty) are mapped to :class:`WorkerTerminal`
+    fields compatible with the recovery classifier so that failover works
+    unchanged.
+    """
+
+    _OWNED_FILES_RE = re.compile(r"^OWNED_FILES:\s*(.+)$", re.MULTILINE)
+    _DIFF_FENCE_RE = re.compile(r"```(?:diff|patch)\n(.*?)```", re.DOTALL)
+    # Match --- a/path and +++ b/path lines in unified diffs
+    _DIFF_PATH_RE = re.compile(r"^[-+]{3}\s+[ab]/(.+)$", re.MULTILINE)
+
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:20128",
+        api_key: str | None = None,
+        timeout_connect: float = 10.0,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.timeout_connect = timeout_connect
+
+    def _headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {"content-type": "application/json"}
+        if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    @staticmethod
+    def _parse_owned_files(prompt: str) -> list[str]:
+        """Extract the OWNED_FILES list from a hydrated node prompt."""
+        m = DirectGatewayExecutor._OWNED_FILES_RE.search(prompt)
+        if not m:
+            return []
+        raw = m.group(1).strip()
+        if raw == "(none)":
+            return []
+        return [f.strip() for f in raw.split(",") if f.strip()]
+
+    @staticmethod
+    def _extract_diff(text: str) -> str | None:
+        """Extract a unified diff from model output (fenced or raw)."""
+        # Try fenced ```diff ... ``` first
+        m = DirectGatewayExecutor._DIFF_FENCE_RE.search(text)
+        if m:
+            return m.group(1).strip()
+        # Fallback: look for raw unified diff (starts with --- or diff --git)
+        lines = text.split("\n")
+        diff_lines: list[str] = []
+        in_diff = False
+        for line in lines:
+            if line.startswith("diff --git ") or (line.startswith("--- ") and not in_diff):
+                in_diff = True
+            if in_diff:
+                diff_lines.append(line)
+        if diff_lines:
+            return "\n".join(diff_lines)
+        return None
+
+    @staticmethod
+    def _validate_diff_paths(diff_text: str, owned_files: list[str]) -> str | None:
+        """Return an error string if the diff touches files outside owned_files."""
+        paths = DirectGatewayExecutor._DIFF_PATH_RE.findall(diff_text)
+        owned_set = set(owned_files)
+        for p in paths:
+            # Reject absolute paths
+            if p.startswith("/"):
+                return f"absolute path in diff: {p}"
+            # Reject path traversal
+            if ".." in p.split("/"):
+                return f"path traversal in diff: {p}"
+            # /dev/null is allowed (new file creation or deletion)
+            if p == "dev/null":
+                continue
+            if p not in owned_set:
+                return f"path outside owned_files: {p}"
+        return None
+
+    @staticmethod
+    def _normalize_path(p: str) -> str | None:
+        """Normalize a diff path; return None if invalid."""
+        # Strip leading a/ or b/ prefix (standard git diff format)
+        for prefix in ("a/", "b/"):
+            if p.startswith(prefix):
+                p = p[len(prefix) :]
+                break
+        normed = posixpath.normpath(p)
+        # Reject empty, absolute, traversal, .git paths
+        if not normed or normed == ".":
+            return None
+        if normed.startswith("/"):
+            return None
+        parts = normed.split("/")
+        if ".." in parts:
+            return None
+        if parts[0] == ".git" or ".git" in parts:
+            return None
+        return normed
+
+    async def _validate_diff_security(
+        self, diff_text: str, owned_files: list[str], cwd: Path
+    ) -> str | None:
+        """Use git to discover ALL paths a patch touches; reject unsafe ops.
+
+        Returns an error string if the diff is unsafe, None if safe.
+        This is the primary security gate — the regex-based
+        ``_validate_diff_paths`` is kept as defence in depth.
+        """
+        owned_set = {posixpath.normpath(f) for f in owned_files}
+
+        # Write the diff to a temp file for git commands
+        diff_path = cwd / ".verdict-validate.patch"
+        try:
+            diff_path.write_text(diff_text + "\n", encoding="utf-8")
+        except OSError as exc:
+            return f"cannot write patch for validation: {exc}"
+
+        try:
+            # --- Step 1: git apply --summary to detect dangerous operations ---
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "apply",
+                "--summary",
+                str(diff_path),
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            summary = stdout.decode("utf-8", errors="replace")
+            # --summary outputs lines like:
+            #   rename owned.py => evil.py (100%)
+            #   copy owned.py => evil.py (100%)
+            #   mode change 100644 => 100755 file.py
+            #   create mode 100644 file.py
+            #   delete mode 100644 file.py
+            #   create mode 120000 link (symlink)
+            #   create mode 160000 sub  (submodule)
+            for line in summary.splitlines():
+                line_lower = line.strip().lower()
+                if line_lower.startswith("rename "):
+                    return f"diff_rejected: rename operation not allowed: {line.strip()}"
+                if line_lower.startswith("copy "):
+                    return f"diff_rejected: copy operation not allowed: {line.strip()}"
+                if "mode change" in line_lower:
+                    return f"diff_rejected: mode change not allowed: {line.strip()}"
+                # Symlink: mode 120000
+                if "120000" in line:
+                    return f"diff_rejected: symlink creation not allowed: {line.strip()}"
+                # Submodule: mode 160000
+                if "160000" in line:
+                    return f"diff_rejected: submodule entry not allowed: {line.strip()}"
+                # Deletion
+                if line_lower.startswith("delete "):
+                    return f"diff_rejected: file deletion not allowed: {line.strip()}"
+
+            # --- Step 1b: reject binary patches ---
+            if "GIT binary patch" in diff_text or "Binary files " in diff_text:
+                return "diff_rejected: binary content not allowed"
+
+            # --- Step 2: git apply --numstat -z to collect ALL touched paths ---
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "apply",
+                "--numstat",
+                "-z",
+                str(diff_path),
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode != 0:
+                err_msg = stderr.decode("utf-8", errors="replace")[-300:]
+                return f"diff_rejected: git cannot parse patch: {err_msg}"
+
+            raw = stdout.decode("utf-8", errors="replace")
+            # --numstat -z output: records separated by NUL.
+            # Each record: "added\tdeleted\tpath" for normal files,
+            # or "added\tdeleted\t" + NUL + "from" + NUL + "to" for renames.
+            # Split on NUL and process.
+            parts = [p for p in raw.split("\0") if p.strip()]
+            touched_paths: list[str] = []
+            for part in parts:
+                if "\t" in part:
+                    # "added\tdeleted\tpath" — extract path after last tab
+                    fields = part.split("\t")
+                    if len(fields) >= 3 and fields[2]:
+                        touched_paths.append(fields[2])
+                else:
+                    # Standalone path (rename/copy source or dest)
+                    touched_paths.append(part)
+
+            # Also parse diff --git headers for rename/copy source/dest
+            # (belt-and-suspenders: catches cases --numstat might miss)
+            for line in diff_text.splitlines():
+                if line.startswith("rename from ") or line.startswith("rename to "):
+                    p = line.split(" ", 2)[-1].strip()
+                    touched_paths.append(p)
+                if line.startswith("copy from ") or line.startswith("copy to "):
+                    p = line.split(" ", 2)[-1].strip()
+                    touched_paths.append(p)
+
+            # Normalize and validate every path
+            for raw_path in touched_paths:
+                normed = self._normalize_path(raw_path)
+                if normed is None:
+                    return f"diff_rejected: invalid path: {raw_path!r}"
+                if normed not in owned_set:
+                    return f"diff_rejected: path outside owned_files: {normed}"
+
+            # If numstat returned NO paths but the diff has content,
+            # that's suspicious (could be mode-only or other exotic format)
+            if not touched_paths and diff_text.strip() and "diff --git " in diff_text:
+                return "diff_rejected: patch touches no files (mode-only or exotic format)"
+
+        except asyncio.TimeoutError:
+            return "diff_rejected: git validation timed out"
+        except OSError as exc:
+            return f"diff_rejected: git validation error: {exc}"
+        finally:
+            diff_path.unlink(missing_ok=True)
+
+        return None
+
+    @staticmethod
+    def _augment_prompt_for_diff(
+        prompt: str, owned_files: list[str], cwd: Path, budget_bytes: int = 60_000
+    ) -> str:
+        """Append diff-mode instructions and current file contents to the prompt."""
+        parts: list[str] = [prompt]
+        # Replace the generic RULES block's edit instruction with diff-specific one
+        parts.append("")
+        parts.append("OUTPUT_FORMAT: unified diff")
+        parts.append("You MUST output your changes as a single unified diff (git diff format).")
+        parts.append("Wrap the diff in a ```diff fenced code block.")
+        parts.append("The diff must use a/ and b/ prefixes (standard git diff format).")
+        parts.append("Only modify files listed in OWNED_FILES. Never include paths outside them.")
+        parts.append("Do NOT output any other file contents or edits outside the diff block.")
+        parts.append("")
+        parts.append("CURRENT FILE CONTENTS (for reference):")
+        remaining = budget_bytes
+        for rel in owned_files:
+            path = cwd / rel
+            if not path.exists():
+                parts.append(f"--- {rel} (does not exist yet — new file) ---")
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                parts.append(f"--- {rel} (unreadable: {exc}) ---")
+                continue
+            keep = min(len(data), remaining)
+            if keep <= 0:
+                parts.append(f"--- {rel} (omitted: budget exhausted) ---")
+                continue
+            text = data[:keep].decode("utf-8", errors="replace")
+            parts.append(f"--- {rel} ---")
+            parts.append(text)
+            if keep < len(data):
+                parts.append(f"[TRUNCATED: {len(data) - keep} bytes omitted]")
+            remaining -= keep
+        return "\n".join(parts)
+
+    async def _apply_diff(self, diff_text: str, cwd: Path) -> tuple[bool, str]:
+        """Run git apply --check then git apply. Returns (ok, error_detail)."""
+        # Write diff to a temp file
+        diff_path = cwd / ".verdict-pending.patch"
+        try:
+            diff_path.write_text(diff_text + "\n", encoding="utf-8")
+        except OSError as exc:
+            return False, f"cannot write patch file: {exc}"
+        try:
+            # --check first (dry run)
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "apply",
+                "--check",
+                str(diff_path),
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode != 0:
+                tail = stderr.decode("utf-8", errors="replace")[-300:]
+                return False, f"git apply --check failed: {tail}"
+            # Apply for real
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "apply",
+                "--whitespace=nowarn",
+                str(diff_path),
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode != 0:
+                tail = stderr.decode("utf-8", errors="replace")[-300:]
+                return False, f"git apply failed: {tail}"
+            return True, ""
+        except asyncio.TimeoutError:
+            return False, "git apply timed out"
+        except OSError as exc:
+            return False, f"git apply error: {exc}"
+        finally:
+            diff_path.unlink(missing_ok=True)
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        started = time.monotonic()
+        owned_files = self._parse_owned_files(prompt)
+        is_implement = bool(owned_files)
+
+        # For implement nodes, augment the prompt to request a unified diff
+        effective_prompt = prompt
+        if is_implement:
+            effective_prompt = self._augment_prompt_for_diff(prompt, owned_files, cwd)
+
+        url = f"{self.base_url}/v1/chat/completions"
+        payload = {
+            "model": route_id,
+            "messages": [{"role": "user", "content": effective_prompt}],
+            "stream": False,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                resp = await client.post(url, json=payload, headers=self._headers())
+        except httpx.TimeoutException:
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error="timeout",
+                duration_seconds=time.monotonic() - started,
+            )
+        except (httpx.TransportError, OSError) as exc:
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error=f"transport: {_sanitize(str(exc), 200)}",
+                duration_seconds=time.monotonic() - started,
+            )
+        duration = time.monotonic() - started
+
+        # Parse the HTTP response into a WorkerTerminal
+        terminal = self._interpret(resp, route_id=route_id, duration=duration)
+
+        # For non-implement nodes or failed HTTP, return as-is
+        if not is_implement or not terminal.ok:
+            return terminal
+
+        # --- Implement node: extract, validate, and apply the diff ---
+        diff_text = self._extract_diff(terminal.output)
+        if diff_text is None:
+            return WorkerTerminal(
+                ok=False,
+                output=terminal.output,
+                model=terminal.model,
+                error="diff_rejected: no unified diff found in model output",
+                duration_seconds=terminal.duration_seconds,
+                session_ref=terminal.session_ref,
+                usage=terminal.usage,
+            )
+
+        # Primary security gate: git-based path + operation validation
+        security_error = await self._validate_diff_security(diff_text, owned_files, cwd)
+        if security_error is not None:
+            return WorkerTerminal(
+                ok=False,
+                output=terminal.output,
+                model=terminal.model,
+                error=security_error
+                if security_error.startswith("diff_rejected:")
+                else f"diff_rejected: {security_error}",
+                duration_seconds=terminal.duration_seconds,
+                session_ref=terminal.session_ref,
+                usage=terminal.usage,
+            )
+
+        # Defence in depth: regex-based path check
+        path_error = self._validate_diff_paths(diff_text, owned_files)
+        if path_error is not None:
+            return WorkerTerminal(
+                ok=False,
+                output=terminal.output,
+                model=terminal.model,
+                error=f"diff_rejected: {path_error}",
+                duration_seconds=terminal.duration_seconds,
+                session_ref=terminal.session_ref,
+                usage=terminal.usage,
+            )
+
+        # Apply the diff
+        applied, apply_error = await self._apply_diff(diff_text, cwd)
+        if not applied:
+            return WorkerTerminal(
+                ok=False,
+                output=terminal.output,
+                model=terminal.model,
+                error=f"diff_apply_failed: {apply_error}",
+                duration_seconds=terminal.duration_seconds,
+                session_ref=terminal.session_ref,
+                usage=terminal.usage,
+            )
+
+        return terminal
+
+    @staticmethod
+    def _interpret(resp: httpx.Response, *, route_id: str, duration: float) -> WorkerTerminal:
+        """Map an OpenAI-compatible chat/completions response to WorkerTerminal."""
+        if resp.status_code >= 400:
+            error_text = _sanitize(resp.text, 400)
+            retry_after: float | None = None
+            raw_retry = resp.headers.get("retry-after")
+            if raw_retry:
+                with contextlib.suppress(ValueError):
+                    retry_after = float(raw_retry)
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error=error_text,
+                status_code=resp.status_code,
+                retry_after_seconds=retry_after,
+                duration_seconds=duration,
+            )
+        try:
+            body = resp.json()
+        except (ValueError, TypeError):
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error=f"malformed: {_sanitize(resp.text, 200)}",
+                duration_seconds=duration,
+            )
+        choices = body.get("choices") or []
+        if not choices:
+            return WorkerTerminal(
+                ok=False, model=route_id, error="empty_output", duration_seconds=duration
+            )
+        choice = choices[0]
+        message = choice.get("message", {})
+        text = message.get("content", "")
+        finish = choice.get("finish_reason", "")
+        stop_reason = "end_turn" if finish in {"stop", "end_turn"} else finish
+
+        # Extract usage
+        raw_usage = body.get("usage")
+        usage: AttemptUsage | None = None
+        if isinstance(raw_usage, dict):
+            inp = raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens")
+            out = raw_usage.get("completion_tokens") or raw_usage.get("output_tokens")
+            cost = raw_usage.get("cost")
+            if inp is not None or out is not None:
+                usage = AttemptUsage(
+                    input_tokens=int(inp) if inp is not None else None,
+                    output_tokens=int(out) if out is not None else None,
+                    cost_usd=float(cost) if cost is not None else None,
+                    tokens_source="http_response",
+                    turns=1,
+                )
+
+        reported_model = body.get("model", route_id)
+
+        if stop_reason not in {"end_turn", "stop", ""}:
+            return WorkerTerminal(
+                ok=False,
+                model=reported_model,
+                stop_reason=stop_reason,
+                error="no_final_answer",
+                duration_seconds=duration,
+                usage=usage,
+            )
+
+        if not text.strip():
+            return WorkerTerminal(
+                ok=False,
+                model=reported_model,
+                error="empty_output",
+                duration_seconds=duration,
+                usage=usage,
+            )
+
+        return WorkerTerminal(
+            ok=True,
+            output=text,
+            model=reported_model,
+            stop_reason=stop_reason or "end_turn",
+            duration_seconds=duration,
+            session_ref=f"direct-gateway:{body.get('id', '')}",
+            usage=usage,
+        )

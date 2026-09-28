@@ -502,6 +502,14 @@ async def run_golden_path(
     _otel_root = start_run_span(run_dir.name, goal, str(repo))
     events.set_trace_span(_otel_root)
     resumed = prior_validated(run_dir)
+    # BOD-188: record executor identity for harness-independence proof
+    _executor_identity = getattr(executor, "__class__", type(executor)).__name__
+    _executor_labels: dict[str, str] = {
+        "DirectGatewayExecutor": "direct-gateway",
+        "PrimeHeadlessExecutor": "prime-headless",
+        "FaultInjectingExecutor": "fault-injecting",
+        "ScriptedExecutor": "scripted",
+    }
     events.emit(
         "run_started",
         run_id=run_dir.name,
@@ -512,6 +520,7 @@ async def run_golden_path(
         controller_route=os.environ.get("VERDICT_ACTIVE_CONTROLLER_ROUTE", ""),
         controller_generation=os.environ.get("VERDICT_CONTROLLER_GENERATION", ""),
         resumed_nodes=sorted(resumed),
+        executor=_executor_labels.get(_executor_identity, _executor_identity),
         retry_budget={
             "max_attempts_per_node": policy.max_attempts_per_node,
             "max_parallel": policy.max_parallel,
