@@ -247,6 +247,7 @@ async def plan_with_failover(
     max_parallel: int = 3,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     decision_signal_provider: DecisionSignalProvider | None = None,
+    _precollected_signals: dict[str, Any] | None = None,
 ) -> WorkGraph:
     """Frontier decomposition with the same controller-model failover as workers.
 
@@ -265,9 +266,10 @@ async def plan_with_failover(
         decision_signal_provider = provider_from_env()
 
     # SHADOW decision signals: SHADOW/ADVISORY decision signal collection (before planning loop)
-    decision_signals_data: dict[str, Any] | None = None
+    # If orchestrate() already collected signals, reuse them (one provider call per run).
+    decision_signals_data: dict[str, Any] | None = _precollected_signals
     decision_signals_emitted = False  # emit at most once
-    if decision_signal_provider is not None:
+    if decision_signals_data is None and decision_signal_provider is not None:
         # Import at call time (not at module load)
         from verdict.decision_signals.shadow import should_collect_signals
 
@@ -508,6 +510,7 @@ async def run_golden_path(
             events.emit("eligibility", "", **counts)
     graph_path = run_dir / GRAPH_FILE
     events.emit("understand", **_task_profile(goal, repo, graph))
+    _run_signals_data: dict[str, Any] | None = None  # BOD-203: one provider call per run
     try:
         # Initialize openspec block from input if provided (OpenSpec spec_changed marker)
         openspec_block: dict[str, Any] | None = None
@@ -640,6 +643,27 @@ async def run_golden_path(
             # Load graph from file only if not provided
             if graph is None:
                 graph = WorkGraph.from_dict({k: v for k, v in graph_raw.items() if k != "run_id"})
+        # BOD-203: collect decision signals ONCE, reuse for both planning
+        # and context-budget advisory (one provider call per run).
+        if decision_signal_provider is not None:
+            from verdict.decision_signals.shadow import should_collect_signals
+
+            if should_collect_signals():
+                try:
+                    from verdict.decision_signals.contracts import DecisionQuestionV1
+
+                    _q = DecisionQuestionV1(
+                        purpose="frontier_planning",
+                        task_summary=goal[:500],
+                        complexity_hints={"max_parallel": policy.max_parallel},
+                    )
+                    _sig_set = decision_signal_provider.signals(
+                        _q, now=datetime.now(timezone.utc)
+                    )
+                    _run_signals_data = _sig_set.to_dict()
+                except Exception:
+                    pass  # provider failure must never break the run
+
         if graph is None:
             graph = await plan_with_failover(
                 goal,
@@ -651,6 +675,7 @@ async def run_golden_path(
                 constraints=constraints,
                 max_parallel=policy.max_parallel,
                 decision_signal_provider=decision_signal_provider,
+                _precollected_signals=_run_signals_data,
             )
     except OrchestrationError as exc:
         events.emit("run_finished", outcome=RunOutcome.BLOCKED.value, reason=str(exc)[:500])
@@ -712,26 +737,16 @@ async def run_golden_path(
     # ------------------------------------------------------------------
     # BOD-203 AC3: advisory context budget from OpenJev context_need
     # ------------------------------------------------------------------
-    # Collect signals in orchestrate() (independent of plan_with_failover's
-    # own collection) so the budget advisory is available for node dispatch.
+    # Reuse the signal set already collected above (one provider call per run).
     _advisory_ctx: dict[str, Any] | None = None
     try:
-        from verdict.decision_signals.shadow import get_signals_mode, should_collect_signals
+        from verdict.decision_signals.shadow import get_signals_mode
 
         _signals_mode = get_signals_mode()
-        if decision_signal_provider is not None and should_collect_signals():
-            from verdict.decision_signals.contracts import DecisionQuestionV1
-
-            _q = DecisionQuestionV1(
-                purpose="context_budget_advisory",
-                task_summary=goal[:500],
-                complexity_hints={"max_parallel": policy.max_parallel},
-            )
-            _sig_set = decision_signal_provider.signals(_q, now=datetime.now(timezone.utc))
-            _sig_dict = _sig_set.to_dict()
-            _sig_signals = _sig_dict.get("signals")
-            _sig_confidence = float(_sig_dict.get("confidence", 0.0))
-            _sig_failure = _sig_dict.get("failure_class")
+        if _run_signals_data is not None:
+            _sig_signals = _run_signals_data.get("signals")
+            _sig_confidence = float(_run_signals_data.get("confidence", 0.0))
+            _sig_failure = _run_signals_data.get("failure_class")
 
             advisory_budget, tier = _context_need_advisory_budget(
                 _sig_signals if _sig_failure is None else None,
