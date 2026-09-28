@@ -110,6 +110,7 @@ class TraceView:
     steps: tuple[TraceStep, ...]
     context_view: Mapping[str, Any] | None = None
     routing_view: Mapping[str, Any] | None = None
+    projection_errors: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # Validate ordering
@@ -143,6 +144,7 @@ class TraceView:
             d["context_view"] = dict(self.context_view)
         if self.routing_view is not None:
             d["routing_view"] = dict(self.routing_view)
+        d["projection_errors"] = list(self.projection_errors)
         return d
 
     def to_json(self, **kwargs: Any) -> str:
@@ -170,16 +172,43 @@ def _steps_from_events(events: Sequence[RunEvent]) -> list[TraceStep]:
         kind = _EVENT_TO_KIND.get(event.type)
         if kind is None:
             continue  # skip node_state, heartbeat, controller, etc.
-        steps.append(TraceStep(
-            seq=event.seq,
-            at=event.at,
-            kind=kind,
-            node_id=event.node_id,
-            evidence=_build_evidence(event),
-        ))
+        steps.append(
+            TraceStep(
+                seq=event.seq,
+                at=event.at,
+                kind=kind,
+                node_id=event.node_id,
+                evidence=_build_evidence(event),
+            )
+        )
     # Already sorted by seq because events are append-only ordered
     steps.sort(key=lambda s: s.seq)
     return steps
+
+
+# Wall-clock fields excluded so the projection is a pure function of the events.
+_NON_DETERMINISTIC_FIELDS = ("generated_at",)
+
+
+def _projections(
+    events: Sequence[RunEvent],
+) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None, tuple[str, ...]]:
+    """Reuse context_view/routing_view; surface failures instead of hiding them."""
+    errors: list[str] = []
+    ctx_v: Mapping[str, Any] | None = None
+    try:
+        ctx_v = _context_view(events).to_dict()
+    except Exception as exc:  # malformed records must be visible, not "unrecorded"
+        errors.append(f"context_view: {type(exc).__name__}: {exc}")
+    rout_v: Mapping[str, Any] | None = None
+    try:
+        routing = dict(_routing_view([e.to_dict() for e in events]).to_dict())
+        for key in _NON_DETERMINISTIC_FIELDS:
+            routing.pop(key, None)
+        rout_v = routing
+    except Exception as exc:
+        errors.append(f"routing_view: {type(exc).__name__}: {exc}")
+    return ctx_v, rout_v, tuple(errors)
 
 
 def trace_view(run_dir: Path | str) -> TraceView:
@@ -212,22 +241,7 @@ def trace_view(run_dir: Path | str) -> TraceView:
 
     steps = _steps_from_events(events)
 
-    # Reuse context_view and routing_view
-    ctx_v: Mapping[str, Any] | None = None
-    try:
-        cv = _context_view(events)
-        ctx_v = cv.to_dict()
-    except Exception:
-        pass
-
-    rout_v: Mapping[str, Any] | None = None
-    try:
-        event_dicts = [e.to_dict() for e in events]
-        rv = _routing_view(event_dicts)
-        rout_v = rv.to_dict()
-    except Exception:
-        pass
-
+    ctx_v, rout_v, errors = _projections(events)
     return TraceView(
         schema_version=SCHEMA_VERSION,
         run_id=run_id,
@@ -235,14 +249,12 @@ def trace_view(run_dir: Path | str) -> TraceView:
         steps=tuple(steps),
         context_view=ctx_v,
         routing_view=rout_v,
+        projection_errors=errors,
     )
 
 
 def trace_view_from_events(
-    events: Sequence[RunEvent],
-    *,
-    run_id: str = "",
-    goal: str = "",
+    events: Sequence[RunEvent], *, run_id: str = "", goal: str = ""
 ) -> TraceView:
     """Build a :class:`TraceView` from in-memory events (for testing).
 
@@ -267,22 +279,7 @@ def trace_view_from_events(
 
     steps = _steps_from_events(events)
 
-    # Build context/routing views from events
-    ctx_v: Mapping[str, Any] | None = None
-    try:
-        cv = _context_view(events)
-        ctx_v = cv.to_dict()
-    except Exception:
-        pass
-
-    rout_v: Mapping[str, Any] | None = None
-    try:
-        event_dicts = [e.to_dict() for e in events]
-        rv = _routing_view(event_dicts)
-        rout_v = rv.to_dict()
-    except Exception:
-        pass
-
+    ctx_v, rout_v, errors = _projections(events)
     return TraceView(
         schema_version=SCHEMA_VERSION,
         run_id=rid,
@@ -290,4 +287,5 @@ def trace_view_from_events(
         steps=tuple(steps),
         context_view=ctx_v,
         routing_view=rout_v,
+        projection_errors=errors,
     )

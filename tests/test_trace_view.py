@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from tests.test_flagship_failover_scenario import (
-    _run_scenario,
-)
-from verdict.orchestration.trace_view import (
-    SCHEMA_VERSION,
-    trace_view,
-    trace_view_from_events,
-)
+from tests.test_flagship_failover_scenario import _run_scenario
+from verdict.orchestration.trace_view import SCHEMA_VERSION, trace_view, trace_view_from_events
 
 # ---------------------------------------------------------------------------
 # Flagship failover scenario
@@ -45,8 +40,18 @@ class TestTraceViewFlagship:
     def test_steps_cover_key_kinds(self) -> None:
         kinds = {s.kind for s in self.tv.steps}
         # Flagship scenario exercises these
-        for k in ("request", "routing", "selection", "dispatch", "terminal",
-                   "failure", "cooldown", "reassign", "verify", "run_finished"):
+        for k in (
+            "request",
+            "routing",
+            "selection",
+            "dispatch",
+            "terminal",
+            "failure",
+            "cooldown",
+            "reassign",
+            "verify",
+            "run_finished",
+        ):
             assert k in kinds, f"missing kind: {k}"
 
     def test_per_node_order(self) -> None:
@@ -114,6 +119,7 @@ class TestTraceViewFromEvents:
         result = _run_scenario(tmp_path, monkeypatch=monkeypatch)
         self.run_dir = result.run_dir
         from verdict.orchestration.receipt import EventLog
+
         log = EventLog(result.run_dir / "events.jsonl")
         self.run_events = log.read()
         self.tv = trace_view_from_events(self.run_events)
@@ -135,13 +141,7 @@ class TestTraceViewFromEvents:
 class TestTraceViewCommittedProof:
     """Committed proof runs produce deterministic trace output."""
 
-    @pytest.mark.parametrize(
-        "proof_dir",
-        [
-            "docs/proof/demo-run",
-            "docs/proof/live-controller-run",
-        ],
-    )
+    @pytest.mark.parametrize("proof_dir", ["docs/proof/demo-run", "docs/proof/live-controller-run"])
     def test_proof_run_trace(self, proof_dir: str) -> None:
         run_dir = Path(proof_dir)
         if not (run_dir / "events.jsonl").exists():
@@ -152,12 +152,11 @@ class TestTraceViewCommittedProof:
         # Steps sorted
         seqs = [s.seq for s in tv.steps]
         assert seqs == sorted(seqs)
-        # Determinism
+        # Determinism: the FULL JSON is byte-identical across builds.
         tv2 = trace_view(run_dir)
-        assert len(tv.steps) == len(tv2.steps)
-        for s1, s2 in zip(tv.steps, tv2.steps, strict=True):
-            assert s1.seq == s2.seq
-            assert s1.kind == s2.kind
+        assert tv.to_json(sort_keys=True) == tv2.to_json(sort_keys=True)
+        assert "generated_at" not in (tv.routing_view or {})
+        assert tv.projection_errors == ()
 
     @pytest.mark.parametrize(
         "proof_dir",
@@ -175,6 +174,7 @@ class TestTraceViewCommittedProof:
         assert len(tv.steps) > 0
         seqs = [s.seq for s in tv.steps]
         assert seqs == sorted(seqs)
+        assert tv.to_json(sort_keys=True) == trace_view(run_dir).to_json(sort_keys=True)
 
 
 # ---------------------------------------------------------------------------
@@ -210,3 +210,25 @@ class TestStepEvidence:
     def test_verify_has_ok(self) -> None:
         for v in self.tv.steps_by_kind("verify"):
             assert "ok" in v.evidence
+
+
+# ---------------------------------------------------------------------------
+# Projection errors are surfaced, not hidden (review P2)
+# ---------------------------------------------------------------------------
+
+
+def test_projection_errors_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    import verdict.orchestration.trace_view as tv_mod
+    from verdict.orchestration.contracts import RunEvent
+
+    def boom(_events: Any) -> Any:
+        raise ValueError("malformed hydrate record")
+
+    monkeypatch.setattr(tv_mod, "_context_view", boom)
+    evs = [
+        RunEvent.from_dict({"seq": 1, "at": "t", "type": "run_started", "node_id": "", "data": {}})
+    ]
+    tv = tv_mod.trace_view_from_events(evs)
+    assert tv.context_view is None
+    assert any("malformed hydrate record" in e for e in tv.projection_errors)
+    assert tv.to_dict()["projection_errors"] == list(tv.projection_errors)
