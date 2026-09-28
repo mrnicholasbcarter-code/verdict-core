@@ -21,6 +21,11 @@ from typing import Any
 
 SCHEMA_VERSION = "verdict.orchestration/v1"
 
+# Barrier names the runtime actually emits.  ``barrier`` on a WorkNode must be
+# one of these (or empty).  Anything else is planner prose that would be treated
+# as an unrecorded barrier by completion_verdict, failing the run.
+KNOWN_BARRIERS: frozenset[str] = frozenset({"integration", "ownership", "no_change"})
+
 
 class OrchestrationError(ValueError):
     """Invalid plan, graph, or state transition."""
@@ -116,6 +121,9 @@ class WorkNode:
             object.__setattr__(self, "barrier", "integration" if self.barrier else "")
         elif not isinstance(self.barrier, str):
             object.__setattr__(self, "barrier", str(self.barrier))
+        # Reject prose barriers — only known runtime barrier names are valid.
+        if self.barrier and self.barrier not in KNOWN_BARRIERS:
+            object.__setattr__(self, "barrier", "")
         if not isinstance(self.risk, str) or self.risk.lower() not in {"low", "medium", "high"}:
             object.__setattr__(self, "risk", "medium")
         else:

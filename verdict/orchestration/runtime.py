@@ -964,6 +964,19 @@ class DagRuntime:
                     ok=True,
                     detail="no file changes; accepted only if verification passes",
                 )
+        elif not node.owned_files and changed:
+            # Non-implement nodes with no owned_files (e.g. research) must not
+            # produce file changes — their output belongs in the answer text.
+            self.events.emit(
+                "barrier",
+                node.node_id,
+                name="ownership",
+                ok=False,
+                detail="no owned_files but changed: " + ", ".join(changed[:8]),
+            )
+            return "ownership_violation: node has no owned_files but changed: " + ", ".join(
+                changed[:8]
+            )
         if node.verification_command:
             resolved, resolved_argv0 = _resolve_verify_argv(node.verification_command)
             code, out = await self.runner(resolved, worktree, self.policy.verify_timeout_seconds)

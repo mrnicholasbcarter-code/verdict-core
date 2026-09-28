@@ -143,6 +143,12 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
         - required_capabilities uses ONLY model features from: tools, reasoning,
           vision, structured_output (Verdict selects the model; describe work
           in "objective"/"acceptance", not here).
+        - barrier must be either "" (empty string) or one of the known runtime
+          barrier names: "integration", "ownership", "no_change". Do NOT put
+          prose descriptions in barrier; use acceptance or story for that.
+        - research nodes (kind="research") have owned_files=[] and produce
+          their output as answer text only, never files. Do NOT give a research
+          node any owned_files.
 
         RULES:
         1. Decompose into 2-8 nodes total.
@@ -515,8 +521,13 @@ def hydrate_node_prompt(
         lines.append("")
 
     lines.append("RULES:")
-    lines.append("  - Only edit files listed in OWNED_FILES. Never touch any other file.")
-    lines.append("  - Run VERIFICATION_COMMAND yourself and ensure it passes before finishing.")
+    if node.owned_files:
+        lines.append("  - Only edit files listed in OWNED_FILES. Never touch any other file.")
+    else:
+        lines.append("  - You have NO owned files. Do NOT create, edit, or write any files.")
+        lines.append("  - Put all findings, summaries, and notes in your final answer text.")
+    if node.verification_command:
+        lines.append("  - Run VERIFICATION_COMMAND yourself and ensure it passes before finishing.")
     lines.append(
         "  - Finish your final message with exactly 'RESULT: DONE' on success, "
         "or 'RESULT: BLOCKED <reason>' if you cannot complete the objective."
