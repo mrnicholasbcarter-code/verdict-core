@@ -199,60 +199,140 @@ def _multi_story_enabled() -> bool:
     return False
 
 
-def _check_admission(repo: Path, state: Path) -> dict[str, Any] | None:
+def _read_story_metadata(state: Path) -> dict[str, Any]:
+    """Read story metadata from the supervisor's existing state files.
+
+    Sources (in priority order):
+    1. checkpoint.json — contains issue id, write_paths (from OpenSpec), labels
+    2. mission JSON — contains story_id
+    3. Fall back to state directory name as story_id
+
+    Anything missing stays unknown, which fails closed (WAIT / SERIALIZE).
+    Never invents a footprint.
+    """
+    meta: dict[str, Any] = {
+        "story_id": f"supervisor-{state.name}",
+        "labels": frozenset(),
+        "deps": [],
+        "write_paths": frozenset(),
+        "authorities": frozenset(),
+    }
+
+    # Read checkpoint.json — the supervisor already writes/reads this.
+    checkpoint_path = state / "checkpoint.json"
+    if checkpoint_path.is_file():
+        try:
+            cp = json.loads(checkpoint_path.read_text())
+        except (ValueError, OSError):
+            cp = {}
+        # Story identity from checkpoint issue field.
+        if cp.get("issue"):
+            meta["story_id"] = str(cp["issue"])
+        # Write paths from OpenSpec change (written by workers into checkpoint).
+        if isinstance(cp.get("write_paths"), list):
+            meta["write_paths"] = frozenset(str(p) for p in cp["write_paths"] if p)
+        # Authorities from checkpoint.
+        if isinstance(cp.get("authorities"), list):
+            meta["authorities"] = frozenset(str(a) for a in cp["authorities"] if a)
+        # Labels from checkpoint (Linear labels forwarded by dispatch).
+        if isinstance(cp.get("labels"), list):
+            meta["labels"] = frozenset(str(lb) for lb in cp["labels"] if lb)
+        # Dependencies with MAIN_VERIFIED evidence.
+        if isinstance(cp.get("deps"), list):
+            from verdict.orchestration.ready_gate import DepEvidence
+
+            dep_list = []
+            for d in cp["deps"]:
+                if isinstance(d, dict) and d.get("identifier"):
+                    dep_list.append(
+                        DepEvidence(
+                            identifier=str(d["identifier"]),
+                            linear_done=d.get("linear_done"),
+                            merge_commit_on_main=d.get("merge_commit_on_main"),
+                            verification_record_present=d.get("verification_record_present"),
+                        )
+                    )
+            meta["deps"] = dep_list
+
+    return meta
+
+
+def _check_admission(repo: Path, state: Path) -> tuple[dict[str, Any] | None, Any]:
     """Run the BOD-157 admission pipeline when the multi-story flag is on.
 
-    Returns ``None`` when the flag is off (no-op — single-story flock).
-    Returns ``{"admit": True/False, ...}`` when the flag is on.
+    Returns ``(None, None)`` when the flag is off (no-op — single-story flock).
+    Returns ``(decision_dict, story_lock_handle_or_None)`` when the flag is on.
+    The caller MUST hold the story_lock_handle for the duration of the story
+    and release it when the story completes.
     """
     if not _multi_story_enabled():
-        return None
+        return None, None
     # Import lazily so flag-off has zero import cost.
     from verdict.orchestration.story_footprint import StoryFootprintV1
     from verdict.orchestration.supervisor_admission import (
         AdmissionState,
         SupervisorGovernorConfig,
+        acquire_story_lock,
         evaluate_admission,
+        write_story_metadata,
     )
 
     # If an external evaluator is injected (tests), delegate to it.
     if ADMISSION_EVALUATOR is not None:
-        return ADMISSION_EVALUATOR(repo=repo, state=state)
+        return ADMISSION_EVALUATOR(repo=repo, state=state), None
 
-    # Production path: conservative defaults.
-    # Story metadata is not yet available from the supervisor's issue tracking;
-    # use unknown/empty values which fail closed (WAIT/SERIALIZE/DEFER).
-    global _ADMISSION_STATE
+    # Read real story metadata from existing supervisor state files.
+    meta = _read_story_metadata(state)
+    story_id: str = meta["story_id"]
+    labels: frozenset[str] = meta["labels"]
+    deps: list[Any] = meta["deps"]
+    write_paths: frozenset[str] = meta["write_paths"]
+    authorities: frozenset[str] = meta["authorities"]
+
+    # Cross-process admission state: reads running set from file locks.
     config = SupervisorGovernorConfig()
-    if _ADMISSION_STATE is None:
-        _ADMISSION_STATE = AdmissionState()
-    admission_state = _ADMISSION_STATE
+    admission_state = AdmissionState(state_dir=state)
+
     main_sha = (
         subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], timeout=10)
         .decode()
         .strip()
     )
 
-    # Until the supervisor has story metadata plumbing, use fail-closed defaults:
-    # - no labels → not EXCLUDED
-    # - no deps → READY (per ready_gate)
-    # - unknown footprint → SERIALIZE (per story_footprint)
+    footprint = StoryFootprintV1(
+        story_id=story_id, write_paths=write_paths, authorities=authorities
+    )
+
     result = evaluate_admission(
-        story_id=f"supervisor-{state.name}",
-        labels=frozenset(),
-        deps=[],
+        story_id=story_id,
+        labels=labels,
+        deps=deps,
         main_sha=main_sha,
-        footprint=StoryFootprintV1(story_id=f"supervisor-{state.name}"),
+        footprint=footprint,
         admission_state=admission_state,
         config=config,
     )
-    return result.to_dict()
+
+    if not result.admit:
+        return result.to_dict(), None
+
+    # Acquire per-story file lock (non-blocking).  If another process
+    # already holds this story, the admission was stale — reject.
+    handle = acquire_story_lock(state, story_id)
+    if handle is None:
+        return {
+            "admit": False,
+            "reason_code": "LOCK_HELD",
+            "reason": f"story {story_id!r} lock already held by another process",
+        }, None
+
+    # Write footprint metadata so other processes can read it for collision.
+    write_story_metadata(handle, footprint, labels)
+
+    return result.to_dict(), handle
 
 
-# Global admission state — shared across supervisor invocations in-process.
-# Lazily initialised on first flag-on check to avoid importing governor
-# modules when the feature is off.
-_ADMISSION_STATE: Any = None
+# Global admission state removed — cross-process state now lives in file locks.
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -2043,7 +2123,7 @@ def main() -> int:
                 # (ready → collide → governor) must ADMIT before the
                 # story starts.  Flag off (default) → single-story flock,
                 # identical to origin/main.
-                admission_decision = _check_admission(repo, state)
+                admission_decision, story_lock = _check_admission(repo, state)
                 if admission_decision is not None and not admission_decision["admit"]:
                     print(json.dumps({"admission": "rejected", **admission_decision}), flush=True)
                     atomic_json(
@@ -2056,7 +2136,11 @@ def main() -> int:
                         },
                     )
                     return 0
-                return recover(attempt, state, args.max_restarts)
+                try:
+                    return recover(attempt, state, args.max_restarts)
+                finally:
+                    if story_lock is not None:
+                        story_lock.release()
             except (
                 ControllerLaunchError,
                 ValueError,

@@ -86,15 +86,17 @@ class TestFlagOffParity:
         m = module()
         monkeypatch.delenv("VERDICT_MULTI_STORY", raising=False)
         _git_init(tmp_path)
-        result = m._check_admission(tmp_path, tmp_path / "state")
+        result, handle = m._check_admission(tmp_path, tmp_path / "state")
         assert result is None, "flag-off must be a no-op (None)"
+        assert handle is None
 
     def test_flag_off_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         m = module()
         monkeypatch.setenv("VERDICT_MULTI_STORY", "off")
         _git_init(tmp_path)
-        result = m._check_admission(tmp_path, tmp_path / "state")
+        result, handle = m._check_admission(tmp_path, tmp_path / "state")
         assert result is None
+        assert handle is None
 
     def test_flag_off_multi_story_enabled_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         m = module()
@@ -104,13 +106,14 @@ class TestFlagOffParity:
     def test_recover_still_called_when_flag_off(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When flag is off, _check_admission is None so recover() runs."""
+        """When flag is off, _check_admission is (None, None) so recover() runs."""
         m = module()
         monkeypatch.delenv("VERDICT_MULTI_STORY", raising=False)
         _git_init(tmp_path)
-        result = m._check_admission(tmp_path, tmp_path / "state")
+        result, handle = m._check_admission(tmp_path, tmp_path / "state")
         # None means the supervisor proceeds to recover() — identical to today.
         assert result is None
+        assert handle is None
 
 
 # ===================================================================
@@ -326,15 +329,18 @@ class TestGovernorCapDefers:
 
 
 class TestIntegrationSerialized:
-    def test_integration_lock_serializes(self) -> None:
-        """AdmissionState.integration_lock serialises concurrent acquire."""
-        state = AdmissionState()
+    def test_integration_lock_serializes(self, tmp_path: Path) -> None:
+        """acquire_integration_lock serialises concurrent acquire across threads."""
+        from verdict.orchestration.supervisor_admission import acquire_integration_lock
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
         acquired_order: list[int] = []
         barrier = threading.Barrier(2, timeout=5)
 
         def worker(idx: int) -> None:
             barrier.wait()
-            with state.integration_lock:
+            with acquire_integration_lock(state_dir):
                 acquired_order.append(idx)
                 time.sleep(0.05)
 
@@ -407,10 +413,11 @@ class TestSupervisorFlagOnIntegration:
 
         m.ADMISSION_EVALUATOR = fake_evaluator
         try:
-            result = m._check_admission(tmp_path, tmp_path / "state")
+            result, handle = m._check_admission(tmp_path, tmp_path / "state")
             assert result is not None
             assert result["admit"] is True
             assert called["repo"] == tmp_path
+            assert handle is None  # evaluator path does not acquire locks
         finally:
             m.ADMISSION_EVALUATOR = None
 
@@ -426,10 +433,11 @@ class TestSupervisorFlagOnIntegration:
 
         m.ADMISSION_EVALUATOR = fake_evaluator
         try:
-            result = m._check_admission(tmp_path, tmp_path / "state")
+            result, handle = m._check_admission(tmp_path, tmp_path / "state")
             assert result is not None
             assert result["admit"] is False
             assert result["reason_code"] == "SERIALIZE"
+            assert handle is None  # rejected path does not acquire locks
         finally:
             m.ADMISSION_EVALUATOR = None
 
