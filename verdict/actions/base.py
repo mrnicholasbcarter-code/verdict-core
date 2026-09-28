@@ -23,6 +23,19 @@ class ActionSpec:
     tui_section: str
 
 
+@dataclass(frozen=True)
+class LaunchSpec:
+    """Metadata for a long-running/interactive command that launches separately.
+
+    reason: Command-specific explanation of why this launches (not ACTION/MACHINE_ONLY).
+    entry: Exact module:function that the CLI handler calls (e.g., 'verdict.cli:cmd_orchestrate').
+    section: TUI section grouping for launch actions.
+    """
+    reason: str
+    entry: str
+    section: str
+
+
 @dataclass
 class ActionEvent:
     """Presentation lifecycle event (never stored alongside orchestration data)."""

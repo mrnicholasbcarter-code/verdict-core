@@ -356,8 +356,8 @@ class TestThreeBucketClassification:
     def test_launch_reasons_are_long_running(self) -> None:
         from verdict.actions.registry import LAUNCH
 
-        for cmd, reason in LAUNCH.items():
-            assert reason.strip(), f"LAUNCH[{cmd!r}] has empty reason"
+        for cmd, spec in LAUNCH.items():
+            assert spec.reason.strip(), f"LAUNCH[{cmd!r}] has empty reason"
 
     def test_gap_entries_reference_bod(self) -> None:
         from verdict.actions.registry import GAP
