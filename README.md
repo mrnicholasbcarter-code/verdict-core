@@ -828,4 +828,3 @@ Six verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embedd
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
-| [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~2 MB | `demo-tui.cast` | `npx -y svg-term-cli@2.1.1 --in docs/assets/demo-tui.cast --out docs/assets/demo-tui.svg --window --width 110 --height 34` |
