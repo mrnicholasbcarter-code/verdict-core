@@ -714,13 +714,27 @@ class TestSupervisorLockNarrowingFlagOn:
 
         p1 = multiprocessing.Process(
             target=_subprocess_supervisor_lock_pattern,
-            args=(str(state_dir), "story-a", True, str(ready1), str(stop1),
-                  str(ts_file), "src/api.py"),
+            args=(
+                str(state_dir),
+                "story-a",
+                True,
+                str(ready1),
+                str(stop1),
+                str(ts_file),
+                "src/api.py",
+            ),
         )
         p2 = multiprocessing.Process(
             target=_subprocess_supervisor_lock_pattern,
-            args=(str(state_dir), "story-b", True, str(ready2), str(stop2),
-                  str(ts_file), "tests/test_x.py"),
+            args=(
+                str(state_dir),
+                "story-b",
+                True,
+                str(ready2),
+                str(stop2),
+                str(ts_file),
+                "tests/test_x.py",
+            ),
         )
         try:
             p1.start()
@@ -773,13 +787,27 @@ class TestSupervisorLockNarrowingFlagOn:
         # Both write to the SAME story_id → second can't acquire story lock.
         p1 = multiprocessing.Process(
             target=_subprocess_supervisor_lock_pattern,
-            args=(str(state_dir), "story-shared", True, str(ready1), str(stop1),
-                  str(ts_file), "src/api.py"),
+            args=(
+                str(state_dir),
+                "story-shared",
+                True,
+                str(ready1),
+                str(stop1),
+                str(ts_file),
+                "src/api.py",
+            ),
         )
         p2 = multiprocessing.Process(
             target=_subprocess_supervisor_lock_pattern,
-            args=(str(state_dir), "story-shared", True, str(ready2), str(stop2),
-                  str(ts_file), "src/api.py"),
+            args=(
+                str(state_dir),
+                "story-shared",
+                True,
+                str(ready2),
+                str(stop2),
+                str(ts_file),
+                "src/api.py",
+            ),
         )
         try:
             p1.start()
@@ -829,9 +857,7 @@ class TestSupervisorLockNarrowingFlagOn:
                 labels=frozenset(),
                 deps=[],
                 main_sha="abc123",
-                footprint=StoryFootprintV1(
-                    story_id="story-c", write_paths=frozenset(["src/c.py"])
-                ),
+                footprint=StoryFootprintV1(story_id="story-c", write_paths=frozenset(["src/c.py"])),
                 admission_state=admission,
                 config=config,
             )
@@ -859,13 +885,27 @@ class TestSupervisorLockNarrowingFlagOff:
 
         p1 = multiprocessing.Process(
             target=_subprocess_supervisor_lock_pattern,
-            args=(str(state_dir), "story-a", False, str(ready1), str(stop1),
-                  str(ts_file), "src/api.py"),
+            args=(
+                str(state_dir),
+                "story-a",
+                False,
+                str(ready1),
+                str(stop1),
+                str(ts_file),
+                "src/api.py",
+            ),
         )
         p2 = multiprocessing.Process(
             target=_subprocess_supervisor_lock_pattern,
-            args=(str(state_dir), "story-b", False, str(ready2), str(stop2),
-                  str(ts_file), "tests/test_x.py"),
+            args=(
+                str(state_dir),
+                "story-b",
+                False,
+                str(ready2),
+                str(stop2),
+                str(ts_file),
+                "tests/test_x.py",
+            ),
         )
         try:
             p1.start()
@@ -875,9 +915,7 @@ class TestSupervisorLockNarrowingFlagOff:
             p2.start()
             c2 = _wait_for_file(ready2, timeout=5)
             # p2 must be REJECTED — supervisor.lock held for entire run.
-            assert c2 == "REJECTED", (
-                f"Flag OFF: second process should be rejected, got: {c2}"
-            )
+            assert c2 == "REJECTED", f"Flag OFF: second process should be rejected, got: {c2}"
         finally:
             stop1.write_text("stop")
             stop2.write_text("stop")
