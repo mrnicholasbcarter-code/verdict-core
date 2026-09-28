@@ -565,7 +565,6 @@ def test_event_size_bound_stays_under_32kb_with_25_candidates() -> None:
     assert len(blob.encode()) < 32_768
 
 
-
 def test_rank_key_parity_with_original(tmp_path: Path) -> None:
     """Verify that refactored ranking produces identical sort order to origin/main.
 
@@ -583,6 +582,7 @@ def test_rank_key_parity_with_original(tmp_path: Path) -> None:
         load_map: Mapping[str, int],
     ) -> tuple[int, int, float, int, int, int, str]:
         from verdict.orchestration.eligibility import _CAPACITY_ORDER
+
         try:
             pref = prefer_providers.index(a.provider)
         except ValueError:
@@ -604,15 +604,21 @@ def test_rank_key_parity_with_original(tmp_path: Path) -> None:
         provider = random.choice(["anthropic", "openai", "google", "meta"])
         route_id = f"{provider}/model-{i:03d}"
         has_pricing = random.random() > 0.3  # 70% have pricing
-        pricing = {"input": random.uniform(0.5, 10.0), "output": random.uniform(1.0, 20.0)} if has_pricing else None
-        rows.append(_row(
-            route_id,
-            owned_by=provider,
-            context=random.choice([8_000, 32_000, 128_000, 200_000]),
-            tools=random.choice([True, False]),
-            reasoning=random.choice([True, False]),
-            pricing=pricing,
-        ))
+        pricing = (
+            {"input": random.uniform(0.5, 10.0), "output": random.uniform(1.0, 20.0)}
+            if has_pricing
+            else None
+        )
+        rows.append(
+            _row(
+                route_id,
+                owned_by=provider,
+                context=random.choice([8_000, 32_000, 128_000, 200_000]),
+                tools=random.choice([True, False]),
+                reasoning=random.choice([True, False]),
+                pricing=pricing,
+            )
+        )
 
     conns = [
         _conn("anthropic", plan="max"),
@@ -639,9 +645,7 @@ def test_rank_key_parity_with_original(tmp_path: Path) -> None:
     )
 
     requirements = TaskRequirements(
-        max_capability_tier=2,
-        min_context_tokens=16_000,
-        required_capabilities=frozenset(),
+        max_capability_tier=2, min_context_tokens=16_000, required_capabilities=frozenset()
     )
 
     # Get all assessments
