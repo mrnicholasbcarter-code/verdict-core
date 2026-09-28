@@ -429,13 +429,13 @@ def test_response_byte_budget_stops_scheduling_after_observed_response() -> None
 
 
 def test_run_duration_is_total_budget_all_probes_complete_with_ample_budget() -> None:
-    """Verify that all probes complete when total budget is ample relative to work."""
+    """Cumulative probe time may exceed one probe timeout; only the total budget limits the run."""
     calls: list[str] = []
 
     def response(model_id, payload, timeout):
         del payload, timeout
         calls.append(model_id)
-        time.sleep(0.01)  # Small work: 0.01s per probe
+        time.sleep(0.04)  # each probe is under the per-probe timeout
         return {
             "status_code": 200,
             "body": {
@@ -444,9 +444,10 @@ def test_run_duration_is_total_budget_all_probes_complete_with_ample_budget() ->
             },
         }
 
-    # 3 probes x 0.01s = 0.03s max; budget is 5s (huge margin)
+    # 3 probes x 0.04s = 0.12s: more than one per-probe timeout (0.1s), far below the
+    # 5s total budget. All three must run: the run limit is the total budget.
     run = ProbeRunner(
-        ProbePolicy(timeout_seconds=0.5, max_duration_seconds=5.0, max_models_per_run=3)
+        ProbePolicy(timeout_seconds=0.1, max_duration_seconds=5.0, max_models_per_run=3)
     ).run_with_diagnostics(
         ["a", "b", "c"],
         response,
