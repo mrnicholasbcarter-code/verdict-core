@@ -39,7 +39,7 @@ flowchart TB
         ENFORCEMENT["Enforcement\n(verdict/enforcement.py)"]
     end
 
-    subgraph Cockpit ["Cockpit — Fixture-Only Viewer"]
+    subgraph Cockpit ["Cockpit — Decision & Outcome Log Viewer"]
         DASHBOARD["Streamlit dashboard\n(verdict/dashboard.py)"]
         FIXTURES["Fixture paths\n(verdict/fixture_paths.py)"]
         OUTCOME_LOG["Outcome log reader\n(verdict/outcome_log.py)"]
@@ -71,10 +71,10 @@ flowchart TB
     API -->|"relays"| RELAY
     RELAY -->|"forwards"| PROXY
     PROXY -->|"transport"| OMNI
-    DASHBOARD -->|"reads fixtures"| FIXTURES
+    DASHBOARD -->|"reads"| OUTCOME_LOG
     ORCH_RUN -->|"dispatches"| EXECUTORS
     EXECUTORS -->|"uses harness"| HARNESS
-    ORCH_PLAN -->|"eligibility"| ORCH_ELIG
+    ORCH_RUN -->|"eligibility"| ORCH_ELIG
     ORCH_RUN -->|"recovery"| ORCH_RECV
     ORCH_RUN -->|"review"| ORCH_REV
     ORCH_RUN -->|"receipt"| ORCH_RCPT

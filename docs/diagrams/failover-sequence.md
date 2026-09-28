@@ -1,62 +1,59 @@
 # Failover Sequence — Single Node
 
 What happens when a worker node fails during orchestration execution.
+The entire recovery loop is inline in `DagRuntime._drive()`
+(`verdict/orchestration/runtime.py`); there is no separate failover engine
+or bounded-recovery controller.
 
 ```mermaid
 sequenceDiagram
-    participant Run as Run Loop<br/>(verdict/orchestration/run.py)
+    participant RT as DagRuntime._drive()<br/>(verdict/orchestration/runtime.py)
+    participant Sel as ModelSelector.select()<br/>(verdict/orchestration/contracts.py)
     participant Exec as PrimeHeadlessExecutor<br/>(verdict/orchestration/executors.py)
-    participant Sup as Supervisor<br/>(verdict/orchestration/supervisor.py)
-    participant Rec as Recovery / FailureIntelligence<br/>(verdict/orchestration/recovery.py)
-    participant Bounded as Bounded Recovery<br/>(verdict/bounded_recovery.py)
-    participant FE as FailoverEngine<br/>(verdict/failover_engine.py)
-    participant Probes as ProbeRunner<br/>(verdict/probes.py)
-    participant Elig as Orchestration Eligibility<br/>(verdict/orchestration/eligibility.py)
-    participant Hydrate as Context Hydrate<br/>(verdict/context_hydrate.py)
-    participant Pack as Context Pack<br/>(verdict/context_pack.py)
+    participant FI as FailureIntelligence.classify()<br/>(verdict/orchestration/recovery.py)
 
-    Run->>Exec: dispatch worker (model A, node N)
-    Exec->>Sup: start supervised process
-    Sup-->>Run: running (pid, health OK)
+    Note over RT: tried = ∅
+
+    RT->>Sel: select(requirements, exclude_routes=tried)
+    Sel->>Sel: eligibility ladder<br/>DISCOVERED → ENTITLED → HEALTHY →<br/>AVAILABLE → TASK_ELIGIBLE → SELECTED
+    Sel-->>RT: choice (model A, route_id)
+
+    RT->>RT: require_launchable(route_id)<br/>dispatch_blocker(route_id)
+    RT->>Exec: dispatch worker (model A, node N)
 
     Note over Exec: Worker hits provider error<br/>(429 / 502 / timeout)
 
-    Exec->>Run: TERMINAL_FAILURE (error_class, status)
-    Run->>Rec: classify failure
-    Rec->>Rec: FailureIntelligence.classify()
-    Rec-->>Run: transient + reroutable
+    Exec-->>RT: WorkerTerminal (FAILURE)
 
-    Run->>Bounded: choose recovery action
-    Bounded->>Bounded: check attempt/deadline/cost budgets
-    alt Within budgets
-        Bounded-->>Run: REHYDRATE or RETRY
-    else Budgets exhausted
-        Bounded-->>Run: BLOCK
-        Note over Run: Node → BLOCKED state
+    RT->>FI: classify(terminal)
+    FI-->>RT: FailureClassification<br/>(category, cooldown_seconds, scope)
+
+    RT->>Sel: record_failure(route_id, classification)<br/>cooldown with scope (route | provider)
+    Note over RT: tried.add(route_id)<br/>sleep(min(cooldown, 60s))
+
+    RT->>Sel: select(requirements, exclude_routes=tried)
+
+    alt No eligible model & short cooldown pending
+        Note over RT: Wait for earliest cooldown<br/>(≤ max_cooldown_wait_seconds)
+        RT->>Sel: select(requirements, exclude_routes=tried)
     end
 
-    Run->>FE: failover(session, failed_step)
-    FE->>FE: quarantine model A (cooldown)
-    FE->>FE: select replacement model B<br/>(capability-matched, not quarantined)
-    FE->>Probes: 1-token liveness probe (model B)
-    Probes-->>FE: probe OK
+    alt Pool exhausted (no eligible model)
+        Note over RT: pool_exhausted → FAIL_CLOSED<br/>Node → BLOCKED
+    else Model B selected
+        Sel-->>RT: choice (model B, route_id)
+        RT->>RT: require_launchable(route_id)<br/>dispatch_blocker(route_id)
 
-    FE-->>Run: FailoverPlan (model B)
-
-    Run->>Elig: re-evaluate model B
-    Elig->>Elig: DISCOVERED → ENTITLED → HEALTHY →<br/>AVAILABLE → TASK_ELIGIBLE → SELECTED
-
-    Run->>Hydrate: re-gather context sources
-    Hydrate-->>Run: context units
-    Run->>Pack: recompile context envelope
-    Pack-->>Run: ContextPack
-
-    Note over Run: Node transitions:<br/>TERMINAL_FAILURE → PLANNED → ADMITTED → DISPATCHED
-
-    Run->>Exec: redispatch worker (model B, node N)
-    Exec->>Sup: start new supervised process
-    Sup-->>Run: running (pid, health OK)
-    Exec-->>Run: TERMINAL_SUCCESS
-
-    Note over Run: Node → TERMINAL_SUCCESS → review
+        alt Pre-dispatch blocker found
+            Note over RT: tried.add(route_id)<br/>continue loop (reselect)
+        else Clear to launch
+            RT->>Exec: redispatch worker (model B, node N)
+            Exec-->>RT: WorkerTerminal (SUCCESS)
+            Note over RT: Node → TERMINAL_SUCCESS → review
+        end
+    end
 ```
+
+**Note:** `ControllerSupervisor` (`verdict/orchestration/supervisor.py`) wraps
+the *controller process* via `orchestration/cli.py`, not individual worker
+nodes inside the DAG runtime.
