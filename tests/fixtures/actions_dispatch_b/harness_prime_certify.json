@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "prime",
+    "certify"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  Prime Agent harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - Prime Agent certification  UNSUPPORTED\n    not healthy\n  base URL               (none)\n  token environment set  yes   \n\n  Facets\nFacet                 Level      \nbefore_first_turn     partial    \ncompaction_yield      partial    \nconfig_import         partial    \nedit_event            partial    \nhooks                 unsupported\nmcp                   partial    \nmodel_selection       partial    \nmutation_capability   partial    \nresume                partial    \nsession_end           partial    \nsession_start         partial    \nstructured_output     partial    \nsubagents             partial    \nsync_async_semantics  partial    \ntool_interception     unsupported\ntool_pre_post         unsupported\nverification_result   partial    \n\n  Notes\n  OpenAI-compatible provider via ~/.prime/agent/models.json \u2192 Verdict :8000\n  apiKey stored as env var name only; never writes secret values\n  Anthropic Messages / built-in Prime Inference remain outside this adapter\n  harness not enabled for Verdict-managed OpenAI path\n\n  Needs owner\n  live enable with secrets (export token_env; Prime /login and auth.json are \nNEEDS_OWNER)\n",
+  "stderr": ""
+}

@@ -1041,6 +1041,23 @@ def _action_harness_prime_sync_models(**kwargs: Any) -> ActionResult:
     return ActionResult(data=payload)
 
 
+def _action_autodev_packet_canary_rollback(**kwargs: Any) -> ActionResult:
+    """Restore the pre-canary baseline choice. Does not call EligibilityGate."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from verdict.autodev_run import rollback_shadow_canary
+
+    state_path: str = kwargs["state_path"]
+    state = _json.loads(_Path(state_path).expanduser().resolve().read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        return ActionResult(
+            data={"error": "canary rollback requires a canary state object"}, ok=False, exit_code=1
+        )
+    data = rollback_shadow_canary(state)
+    return ActionResult(data=data)
+
+
 def _action_harness_prime_visibility(**kwargs: Any) -> ActionResult:
     from verdict.orchestration.cli import prime_visibility_report
     from verdict.orchestration.run import fetch_inventory, resolve_api_key

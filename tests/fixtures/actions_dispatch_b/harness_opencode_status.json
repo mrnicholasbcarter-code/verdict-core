@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "opencode",
+    "status"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  OpenCode harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - OpenCode harness  WARNING\n    not configured\n  provider           (none)                                               \n  base URL           (none)                                               \n  integration        (none)                                               \n  token environment  LLMGATE_AUTH_TOKEN (set: yes)                        \n  config             /tmp/v275db-h-opencode/.config/opencode/opencode.json\n  model              (none)                                               \n",
+  "stderr": ""
+}
