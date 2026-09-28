@@ -1012,3 +1012,138 @@ def follow(
         if live is not None:
             live.stop()
     return view
+
+
+_FIXTURE_PREFIXES = ("demo-", "demo-sub/", "fixture")
+
+
+def _replay_kind(events: list[Any]) -> str:
+    """Classify a recorded run from its own events: 'fixture', 'real' or 'unknown'.
+
+    'real' requires at least one executed route and no fixture route. A run with
+    no executed routes makes no claim ('unknown'), so a label never says
+    'real models' without evidence.
+    """
+    routes = [
+        str(event.data.get("route_id") or "")
+        for event in events
+        if event.type in ("selection", "dispatch")
+    ]
+    routes = [r for r in routes if r]
+    if any(r.startswith(_FIXTURE_PREFIXES) for r in routes):
+        return "fixture"
+    return "real" if routes else "unknown"
+
+
+def _is_fixture_run(events: list[Any]) -> bool:
+    """True when any executed route is a fixture/demo route."""
+    return _replay_kind(events) == "fixture"
+
+
+def _print_integrity_check(run_dir: Path, console: Console, plain: bool) -> None:
+    """Print receipt integrity check at the end of replay."""
+    from verdict.orchestration.receipt import verify_run_receipt
+
+    problems = verify_run_receipt(run_dir)
+    if problems:
+        msg = f"integrity: FAILED ({'; '.join(problems)})"
+    else:
+        msg = "integrity: OK (events digest verified)"
+
+    if plain:
+        console.print(msg, markup=False, highlight=False)
+    else:
+        # For rich mode, print on a new line after the live view stops
+        style = "red" if problems else "green"
+        console.print(f"[{style}]{msg}[/{style}]")
+
+
+def follow_replay(
+    events_path: Path,
+    *,
+    console: Console | None = None,
+    refresh_hz: int = 4,
+    speed: float = 1.0,
+    max_gap: float = 1.5,
+) -> RunView:
+    """Replay a completed run from events.jsonl with timing from timestamps.
+
+    Args:
+        events_path: Path to events.jsonl
+        console: Rich console (defaults to new Console)
+        refresh_hz: Display refresh rate in Hz
+        speed: Time multiplier (2.0 = twice as fast)
+        max_gap: Maximum delay between events in seconds (before speed scaling)
+
+    The header identifies whether routes were real models or fixture/scripted.
+    """
+    import time
+
+    target = console or Console()
+    plain = plain_mode(console)
+    width = target.width or 100
+    view = RunView()
+    events = read_events(events_path)
+
+    if not events:
+        return view
+
+    # Get run_id from path
+    run_id = events_path.parent.name
+
+    # Detect if this is a fixture run by examining routes
+    kind = _replay_kind(events)
+
+    live = (
+        None
+        if plain
+        else Live(
+            render(view, width=width),
+            console=target,
+            refresh_per_second=max(1, int(refresh_hz * speed)),
+        )
+    )
+    if live is not None:
+        live.start(refresh=True)
+
+    try:
+        for i, event in enumerate(events):
+            view.apply(event)
+
+            # Inject replay marker into view after first event
+            if i == 0 and view.goal:
+                label = {
+                    "fixture": "fixture run {rid} (no model calls)",
+                    "real": "recorded run {rid} (real models)",
+                    "unknown": "recorded run {rid}",
+                }[kind].format(rid=run_id)
+                view.goal = f"REPLAY of {label} - time x{speed}"
+
+            if plain:
+                target.print(event_line(event), markup=False, highlight=False)
+
+            if live is not None:
+                live.update(render(view, width=width), refresh=True)
+
+            # Calculate delay for next event
+            if i < len(events) - 1:
+                event_time = _moment(event.at)
+                next_time = _moment(events[i + 1].at)
+
+                if event_time is not None and next_time is not None:
+                    delay = next_time - event_time
+                    # Cap the delay and scale by speed
+                    delay = min(delay, max_gap) / speed
+
+                    if delay > 0:
+                        time.sleep(delay)
+
+    finally:
+        if live is not None:
+            time.sleep(0.5 / speed)  # Brief pause to see final state
+            live.stop()
+
+        # Show integrity verification at the end
+        _print_integrity_check(events_path.parent, target, plain)
+
+    return view
