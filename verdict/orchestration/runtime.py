@@ -27,6 +27,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from verdict.orchestration.candidate_builder import (
+    MAX_CANDIDATES as _MAX_CANDIDATES,  # noqa: F401 re-exported; tests import from runtime
+)
+from verdict.orchestration.candidate_builder import build_candidates as _build_candidates
+from verdict.orchestration.candidate_builder import build_rejections as _build_rejections
 from verdict.orchestration.contracts import (
     TRANSITIONS,
     EligibilityStage,
@@ -1373,52 +1378,6 @@ def _ladder_counts(verdicts: Sequence[Any]) -> dict[str, int]:
         "available": counts["available"],
         "eligible": counts["task_eligible"],
     }
-
-
-_MAX_CANDIDATES = 25
-
-
-def _build_rejections(verdicts: Sequence[Any]) -> dict[str, dict[str, int]]:
-    """Aggregate rejection counts by stage and reason over all considered routes."""
-    rejections: dict[str, dict[str, int]] = {}
-    for v in verdicts:
-        stage = getattr(v, "failed_stage", None)
-        if stage is None:
-            continue
-        stage_key = stage.value if hasattr(stage, "value") else str(stage)
-        reason = getattr(v, "reason", "") or "unknown"
-        bucket = rejections.setdefault(stage_key, {})
-        bucket[reason] = bucket.get(reason, 0) + 1
-    return rejections
-
-
-def _build_candidates(
-    verdicts: Sequence[Any], selected_route: str | None
-) -> tuple[list[dict[str, Any]], int]:
-    """Build at most _MAX_CANDIDATES candidate dicts; selected route always included.
-
-    Returns ``(candidates_list, omitted_count)``.
-    """
-    total = len(verdicts)
-    if total == 0:
-        return [], 0
-
-    selected_verdict: dict[str, Any] | None = None
-    others: list[dict[str, Any]] = []
-
-    for v in verdicts:
-        d = v.to_dict() if hasattr(v, "to_dict") else {"route_id": str(getattr(v, "route_id", ""))}
-        rid = d.get("route_id", "")
-        if selected_route and rid == selected_route and selected_verdict is None:
-            selected_verdict = d
-        else:
-            others.append(d)
-
-    budget = _MAX_CANDIDATES - (1 if selected_verdict else 0)
-    kept = others[:budget]
-    result = [selected_verdict, *kept] if selected_verdict else kept[:_MAX_CANDIDATES]
-    omitted = total - len(result)
-    return result, omitted
 
 
 def _hydrate_sources(

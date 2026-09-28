@@ -11,6 +11,7 @@ from typing import Any
 from verdict.orchestration.contracts import EligibilityStage, TaskRequirements
 from verdict.orchestration.routing_view import (
     SCHEMA_VERSION,
+    InventorySource,
     routing_view,
     routing_view_from_inventory,
 )
@@ -315,7 +316,9 @@ class TestInventoryMode:
         rows = [_inv_row("kr/claude-opus"), _inv_row("kr/claude-sonnet")]
         conns = [_inv_conn("kr")]
         view = routing_view_from_inventory(
-            {}, _rows_override=rows, _conns_override=conns, state_path=tmp_path / "elig.json"
+            {},
+            inventory=InventorySource(rows=rows, connections=conns),
+            state_path=tmp_path / "elig.json",
         )
         assert view.source == "inventory"
         assert view.schema_version == SCHEMA_VERSION
@@ -346,7 +349,9 @@ class TestInventoryMode:
         )
 
         view = routing_view_from_inventory(
-            {}, _rows_override=rows, _conns_override=conns, state_path=tmp_path / "elig2.json"
+            {},
+            inventory=InventorySource(rows=rows, connections=conns),
+            state_path=tmp_path / "elig2.json",
         )
         view_selected = view.evaluations[0].selected_route
         assert view_selected == direct_selected
@@ -355,7 +360,9 @@ class TestInventoryMode:
         rows = [_inv_row("kr/claude-opus")]
         conns = [_inv_conn("kr")]
         view = routing_view_from_inventory(
-            {}, _rows_override=rows, _conns_override=conns, state_path=tmp_path / "elig.json"
+            {},
+            inventory=InventorySource(rows=rows, connections=conns),
+            state_path=tmp_path / "elig.json",
         )
         e = view.evaluations[0]
         assert e.funnel["DISCOVERED"] >= 1

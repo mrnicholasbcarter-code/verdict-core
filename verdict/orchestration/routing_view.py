@@ -30,6 +30,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.orchestration.candidate_builder import (
+    build_candidates as _build_candidates_from_verdicts,
+)
+from verdict.orchestration.candidate_builder import (
+    build_rejections as _build_rejections_from_verdicts,
+)
+
 SCHEMA_VERSION = "routing-view-v1"
 
 
@@ -378,57 +385,31 @@ def routing_view(source: Path | Sequence[Mapping[str, Any]]) -> RoutingView:
 
 
 # ---------------------------------------------------------------------------
-# Helpers: build candidates / rejections from RouteVerdict sequences
-# (Mirrors the logic from verdict.orchestration.runtime PR #711; inlined here
-# so this module works on the explorer-data branch before #711 merges.)
-# ---------------------------------------------------------------------------
-
-_MAX_CANDIDATES = 25
-
-
-def _build_rejections_from_verdicts(verdicts: Sequence[Any]) -> dict[str, dict[str, int]]:
-    """Aggregate rejection counts by stage and reason over all considered routes."""
-    rejections: dict[str, dict[str, int]] = {}
-    for v in verdicts:
-        stage = getattr(v, "failed_stage", None)
-        if stage is None:
-            continue
-        stage_key = stage.value if hasattr(stage, "value") else str(stage)
-        reason = getattr(v, "reason", "") or "unknown"
-        bucket = rejections.setdefault(stage_key, {})
-        bucket[reason] = bucket.get(reason, 0) + 1
-    return rejections
-
-
-def _build_candidates_from_verdicts(
-    verdicts: Sequence[Any], selected_route: str | None
-) -> tuple[list[dict[str, Any]], int]:
-    """Build at most _MAX_CANDIDATES candidate dicts; selected route always included."""
-    total = len(verdicts)
-    if total == 0:
-        return [], 0
-
-    selected_verdict: dict[str, Any] | None = None
-    others: list[dict[str, Any]] = []
-
-    for v in verdicts:
-        d = v.to_dict() if hasattr(v, "to_dict") else {"route_id": str(getattr(v, "route_id", ""))}
-        rid = d.get("route_id", "")
-        if selected_route and rid == selected_route and selected_verdict is None:
-            selected_verdict = d
-        else:
-            others.append(d)
-
-    budget = _MAX_CANDIDATES - (1 if selected_verdict else 0)
-    kept = others[:budget]
-    result = [selected_verdict, *kept] if selected_verdict else kept[:_MAX_CANDIDATES]
-    omitted = total - len(result)
-    return result, omitted
-
-
-# ---------------------------------------------------------------------------
 # Public: routing_view from live inventory (read-only)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Inventory source: explicit rows+connections for offline / test use.
+# ---------------------------------------------------------------------------
+
+
+class InventorySource:
+    """Explicit inventory rows and connections for offline or test use.
+
+    Pass an instance to ``routing_view_from_inventory(inventory=...)`` to
+    bypass the live OmniRoute fetch.  Tests that previously used the removed
+    ``_rows_override`` / ``_conns_override`` parameters should switch to this.
+
+    Example::
+
+        src = InventorySource(rows=[...], connections=[...])
+        view = routing_view_from_inventory({}, inventory=src)
+    """
+
+    def __init__(self, *, rows: list[dict[str, Any]], connections: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.connections = connections
 
 
 def routing_view_from_inventory(
@@ -438,9 +419,7 @@ def routing_view_from_inventory(
     api_key: str | None = None,
     state_path: Path | None = None,
     probe: bool = False,
-    # Test seams: supply rows/connections directly without hitting the network.
-    _rows_override: list[dict[str, Any]] | None = None,
-    _conns_override: list[dict[str, Any]] | None = None,
+    inventory: InventorySource | None = None,
 ) -> RoutingView:
     """Build a :class:`RoutingView` by running the real eligibility ladder read-only.
 
@@ -454,6 +433,9 @@ def routing_view_from_inventory(
 
     The ladder is called with ``evaluate`` (no probing) unless ``probe=True``,
     in which case ``select`` is used (max_probes_per_select=8).
+
+    Pass ``inventory=InventorySource(rows=..., connections=...)`` to bypass the
+    live OmniRoute fetch (useful for offline analysis and testing).
     """
     import tempfile
 
@@ -462,14 +444,11 @@ def routing_view_from_inventory(
     from verdict.orchestration.run import fetch_connections, fetch_inventory
     from verdict.subagent_selection import HealthResult
 
-    if _rows_override is not None:
-        inventory_rows = _rows_override
+    if inventory is not None:
+        inventory_rows = inventory.rows
+        connections = inventory.connections
     else:
         inventory_rows = fetch_inventory(gateway, api_key=api_key)
-
-    if _conns_override is not None:
-        connections = _conns_override
-    else:
         connections = fetch_connections(gateway, api_key=api_key)
 
     # Build TaskRequirements from profile dict.
@@ -562,6 +541,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "CandidateRecord",
     "EligibilityEvaluation",
+    "InventorySource",
     "RoutingView",
     "routing_view",
     "routing_view_from_inventory",
