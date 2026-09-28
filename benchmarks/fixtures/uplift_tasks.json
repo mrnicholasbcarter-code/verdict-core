@@ -1,0 +1,101 @@
+{
+  "schema": "verdict.context-uplift-fixture/v1",
+  "note": "Within-model A/B fixture for BOD-272. Every must_contain phrase is a project-local token that appears ONLY in benchmarks/fixtures/uplift_workspace docs, so a no-pack arm cannot satisfy it by guessing. Separate from legit_paired_savings.json, whose implement-from-ac quality miss is deliberate and must not be changed.",
+  "workspace": "benchmarks/fixtures/uplift_workspace",
+  "tasks": [
+    {
+      "id": "cooldown-clamp",
+      "prompt": "What sentinel does Verdict record an exhausted route's cooldown under, what value is the reset window clamped to, and what reason string is written to the receipt? Answer with the exact identifiers.",
+      "acceptance_criteria": [
+        "names the cooldown sentinel",
+        "gives the clamped window",
+        "gives the clamp reason"
+      ],
+      "checks": {
+        "must_contain": [
+          "cooldown_sentinel_7qx",
+          "4380",
+          "provider_string_untrusted"
+        ]
+      }
+    },
+    {
+      "id": "drop-codes-order",
+      "prompt": "List Verdict's four named drop codes in their fixed emitted order, using their exact identifiers.",
+      "acceptance_criteria": [
+        "lists all four codes",
+        "uses the exact identifiers"
+      ],
+      "checks": {
+        "must_contain": [
+          "drop_cap_unknown",
+          "drop_passport_stale_9f",
+          "drop_confirm_budget_2m",
+          "drop_inventory_ghost"
+        ]
+      }
+    },
+    {
+      "id": "uplift-ladder",
+      "prompt": "Name the six stages of the uplift ladder in order, and say which stage may assert a completed-with identity. Use the exact stage names.",
+      "acceptance_criteria": [
+        "names all six stages in order",
+        "identifies the identity-asserting stage"
+      ],
+      "checks": {
+        "must_contain": [
+          "seeded",
+          "probed",
+          "warranted",
+          "packed",
+          "bound",
+          "served"
+        ]
+      }
+    },
+    {
+      "id": "receipt-digest",
+      "prompt": "What algorithm computes the uplift receipt digest, what receipt field stores it, and what literal marker prefixes it? Use the exact identifiers.",
+      "acceptance_criteria": [
+        "names the digest algorithm",
+        "names the receipt field",
+        "gives the marker"
+      ],
+      "checks": {
+        "must_contain": [
+          "blake2s",
+          "uplift_digest_b2s",
+          "ud1:"
+        ]
+      }
+    },
+    {
+      "id": "metadata-stage",
+      "prompt": "Which single uplift-ladder stage is permitted to consult the Core metadata store, and where must a completed-with identity come from instead of the echoed body model?",
+      "acceptance_criteria": [
+        "names the one permitted stage",
+        "says identity comes from the gateway header"
+      ],
+      "checks": {
+        "must_contain": [
+          "warranted",
+          "header"
+        ]
+      }
+    },
+    {
+      "id": "truncation-cap",
+      "prompt": "What is the maximum packed file size in bytes, and what flag is set in the receipt when a file exceeds it? Use the exact flag identifier.",
+      "acceptance_criteria": [
+        "gives the byte cap",
+        "names the truncation flag"
+      ],
+      "checks": {
+        "must_contain": [
+          "8192",
+          "truncated_by_cap"
+        ]
+      }
+    }
+  ]
+}
