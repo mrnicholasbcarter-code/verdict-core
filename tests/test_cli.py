@@ -58,9 +58,10 @@ class TestCmdModels:
         )
         cli.cmd_models(output_json=True)
         payload = json.loads(capsys.readouterr().out)
-        assert isinstance(payload, list)
-        assert payload[0]["id"] == "anthropic/claude-opus-5"
-        assert "tier" in payload[0]
+        assert isinstance(payload, dict)
+        assert "models" in payload
+        assert payload["models"][0]["id"] == "anthropic/claude-opus-5"
+        assert "capability_tier" in payload["models"][0]
 
     def test_models_table_renders(self, capsys):
         cli.cmd_models(
@@ -170,7 +171,8 @@ class TestMainDispatch:
         monkeypatch.setattr(cli.sys, "argv", ["verdict", "models", "--json"])
         cli.main()
         payload = json.loads(capsys.readouterr().out)
-        assert isinstance(payload, list)
+        assert isinstance(payload, dict)
+        assert "models" in payload
 
     def test_main_dispatches_plan(self, capsys, monkeypatch, tmp_path):
         monkeypatch.setattr(cli.sys, "argv", ["verdict", "plan", "--json"])

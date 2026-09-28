@@ -60,8 +60,8 @@ class TestParityCLIAndTUI:
         ]
         result = run_action("models.list", {"catalog": mock_catalog})
         assert result.ok
-        assert len(result.data) == 1
-        assert result.data[0]["id"] == "test-model"
+        assert result.data["total"] == 1
+        assert result.data["models"][0]["id"] == "test-model"
 
     def test_doctor_via_run_action(self) -> None:
         """doctor action calls _collect_doctor_diagnostics."""
@@ -147,7 +147,7 @@ class TestParityCLIAndTUI:
         ]
         ok, data = run_palette_action("models.list", {"catalog": mock_catalog})
         assert ok
-        assert data[0]["id"] == "m1"
+        assert data["models"][0]["id"] == "m1"
 
 
 # ---------------------------------------------------------------------------
@@ -171,14 +171,22 @@ class TestJSONOutputUnchanged:
         ]
         with patch("verdict.actions.helpers.default_model_catalog", return_value=mock_catalog):
             result = run_action("models.list", {"catalog": mock_catalog})
-            entry = result.data[0]
+            # New output shape: dict with models list + summary
+            assert "models" in result.data
+            assert "total" in result.data
+            assert "provider_counts" in result.data
+            entry = result.data["models"][0]
             expected_keys = {
                 "id",
                 "provider",
-                "tier",
+                "capability_tier",
                 "context_window",
-                "cost_per_1k",
-                "availability_state",
+                "tools_support",
+                "structured_output",
+                "input_cost_per_million",
+                "output_cost_per_million",
+                "source",
+                "freshness",
             }
             assert set(entry.keys()) == expected_keys
 

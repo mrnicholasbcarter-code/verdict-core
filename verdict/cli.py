@@ -2133,37 +2133,125 @@ def cmd_choose(
     present.note(_render_choose_summary(result.data))
 
 
-def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False) -> None:
-    """List the qualified model catalog used for routing and simulation."""
+def cmd_models(
+    catalog: list[ModelInfo] | None = None,
+    output_json: bool = False,
+    provider: str | None = None,
+    search: str | None = None,
+    capability: str | None = None,
+    limit: int = 0,
+    show_all: bool = False,
+) -> None:
+    """List the authoritative model inventory from the live gateway."""
     from verdict.actions.registry import run_action
 
     params: dict[str, Any] = {}
     if catalog is not None:
-        params["catalog"] = catalog
+        # Legacy injection: convert ModelInfo list to enriched row dicts.
+        params["catalog_rows"] = [
+            {
+                "id": m.id,
+                "provider": m.provider,
+                "capability_tier": f"T{m.capability_tier}",
+                "context_window": m.context_window if m.context_window > 0 else None,
+                "tools_support": None,
+                "structured_output": None,
+                "input_cost_per_million": None,
+                "output_cost_per_million": None,
+                "source": "config",
+                "freshness": None,
+            }
+            for m in catalog
+        ]
+    if provider:
+        params["provider"] = provider
+    if search:
+        params["search"] = search
+    if capability:
+        params["capability"] = capability
+    if limit:
+        params["limit"] = limit
+    if show_all:
+        params["show_all"] = True
+
     result = run_action("models.list", params or None)
     if output_json:
         print(json.dumps(result.data, indent=2, sort_keys=True))
         return
+
     from verdict import present
 
-    present.header("Model catalog")
-    entries = result.data if isinstance(result.data, list) else []
+    data = result.data if isinstance(result.data, dict) else {}
+    total = data.get("total", 0)
+    shown = data.get("shown", 0)
+    total_filtered = data.get("total_filtered", 0)
+    source = data.get("source", "unknown")
+    provider_counts = data.get("provider_counts", {})
+    freshness = data.get("freshness")
+    entries = data.get("models", [])
+
+    if source == "config_only":
+        present.header("Model catalog (gateway unreachable: showing configured models only)")
+    else:
+        present.header("Model inventory")
+
+    # Summary line.
+    top_providers = sorted(provider_counts.items(), key=lambda kv: kv[1], reverse=True)[:8]
+    provider_summary = ", ".join(f"{p}: {c}" for p, c in top_providers)
+    present.note(f"{total} models total across {len(provider_counts)} providers")
+    if provider_summary:
+        present.note(f"Top providers: {provider_summary}")
+    if freshness:
+        present.note(f"Metadata freshness: {freshness}")
+
+    # Table of shown rows.
+    def _fmt_ctx(v: Any) -> str:
+        if v is None:
+            return "-"
+        try:
+            n = int(v)
+            return f"{n:,}" if n > 0 else "-"
+        except (TypeError, ValueError):
+            return "-"
+
+    def _fmt_cost(v: Any) -> str:
+        if v is None:
+            return "-"
+        try:
+            return f"${float(v):.2f}"
+        except (TypeError, ValueError):
+            return "-"
+
+    def _fmt_bool(v: Any) -> str:
+        if v is True:
+            return "yes"
+        if v is False:
+            return "no"
+        return "-"
+
     present.table(
-        ["ID", "Provider", "Tier", "Context", "Cost/1k", "State"],
+        ["ID", "Provider", "Tier", "Context", "Tools", "$/M in", "Source"],
         [
             (
                 str(m.get("id", "")),
                 str(m.get("provider", "")),
-                f"T{m.get('tier', '?')}",
-                str(m.get("context_window", "-")),
-                f"${m.get('cost_per_1k', 0):.4f}" if m.get("cost_per_1k") else "-",
-                str(m.get("availability_state", "")),
+                str(m.get("capability_tier", "-")),
+                _fmt_ctx(m.get("context_window")),
+                _fmt_bool(m.get("tools_support")),
+                _fmt_cost(m.get("input_cost_per_million")),
+                str(m.get("source", "")),
             )
             for m in entries
         ],
-        empty="catalog is empty",
+        empty="no models found",
     )
-    present.note(f"{len(entries)} model(s). Live eligibility: verdict eligibility --probe")
+    if total_filtered > shown:
+        present.note(
+            f"Showing {shown} of {total_filtered} filtered models "
+            f"(use --all or --limit N to see more)"
+        )
+    else:
+        present.note(f"{shown} model(s) shown. Live eligibility: verdict eligibility --probe")
 
 
 def cmd_inspect(

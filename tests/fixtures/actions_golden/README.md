@@ -14,7 +14,7 @@ the captured JSON when parsed.
 
 | Fixture | Command | Action name | Notes |
 |---------|---------|-------------|-------|
-| `models__default.json` | `models --json` | `models.list` | Stable static catalog |
+| `models__default.json` | `models --json` | `models.list` | Authoritative inventory (config-only fallback when gateway unreachable); operator-requested change from BOD-277 — config-only catalog was a defect |
 | `plan__default.json` | `plan --json` | `setup.plan` | Deterministic offline plan |
 | `probe__refused.json` | `probe model-a --json` | `probe` | Exit 2; no live consent |
 | `probe__success.json` | `probe kr/claude-sonnet-5-thinking --json` (via shim) | `probe` | Exit 0; transport faked in-process; timing normalised |
