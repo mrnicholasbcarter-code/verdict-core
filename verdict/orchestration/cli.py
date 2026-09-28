@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from verdict.orchestration.contracts import TaskRequirements, WorkerExecutor
+from verdict.orchestration.contracts import WorkerExecutor
 from verdict.orchestration.runtime import RuntimePolicy
 
 DEFAULT_RUNS = Path(".verdict") / "runs"
@@ -559,16 +559,24 @@ def _watch(args: argparse.Namespace) -> int:
 
 
 def _receipt(args: argparse.Namespace) -> int:
-    from verdict.orchestration.receipt import completion_verdict, verify_run_receipt
+    from verdict.actions.registry import run_action
 
     run_dir = _resolve_run(args.run, args.runs_dir)
     path = run_dir / "receipt.json"
     if not path.exists():
         print(f"no receipt at {path}", file=sys.stderr)
         return 2
-    receipt = json.loads(path.read_text())
-    problems = verify_run_receipt(run_dir)
-    outcome, reason = completion_verdict(receipt)
+    result = run_action("run-receipt", {"run_dir": str(run_dir), "runs_dir": args.runs_dir})
+    data = result.data
+    if data.get("error"):
+        # No receipt at path — already handled above; any other error path
+        # from the action is a broken state.
+        print(data["error"], file=sys.stderr)
+        return 2
+    outcome = data["outcome"]
+    reason = data["reason"]
+    problems = data["problems"]
+    receipt = data["receipt"]
     if args.json:
         print(
             json.dumps(
@@ -683,31 +691,21 @@ def _page(text: str, *, no_pager: bool) -> None:
 
 
 def _eligibility(args: argparse.Namespace) -> int:
-    families = parse_provider_families(getattr(args, "provider_family", []) or [])
-    requirements = TaskRequirements(
-        required_capabilities=frozenset({"tools"}),
-        coding=True,
-        reasoning=args.reasoning,
-        frontier_worthy=args.frontier,
+    from verdict.actions.registry import run_action
+
+    result = run_action(
+        "eligibility",
+        {
+            "gateway": args.gateway,
+            "scope": args.scope,
+            "prefer": args.prefer,
+            "provider_family": list(getattr(args, "provider_family", []) or []),
+            "reasoning": bool(args.reasoning),
+            "frontier": bool(args.frontier),
+            "probe": bool(args.probe),
+        },
     )
-    selector = build_selector(
-        args.gateway,
-        scope=args.scope,
-        prefer=args.prefer,
-        provider_families=families,
-        required_capabilities=requirements.required_capabilities,
-        min_context_tokens=requirements.min_context_tokens,
-    )
-    now = datetime.now(timezone.utc)
-    if args.probe:
-        chosen, verdicts = selector.select(requirements, now=now)
-    else:
-        chosen, verdicts = None, selector.evaluate(requirements, now=now)
-    filters = {
-        "provider_family": list(families),
-        "scope": [p.strip() for p in args.scope.split(",") if p.strip()],
-    }
-    payload = eligibility_payload(verdicts, selector.summary(), chosen, filters)
+    payload = result.data
     if args.json:
         print(json.dumps(payload, indent=2))
         return 0

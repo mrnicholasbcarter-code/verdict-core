@@ -1,0 +1,1 @@
+{"run_id": "run-fake", "goal": "demo", "started_at": "2026-01-01T00:00:00Z", "ended_at": "2026-01-01T00:00:00Z", "events_digest": "sha256:0000", "nodes": [], "review": {"status": "N/A", "reviewer": null, "route_id": null}, "outcome": "COMPLETE"}

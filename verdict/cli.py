@@ -880,22 +880,47 @@ def cmd_route(
     catalog/network surface; it must not imply legacy selector escape. API serve
     still forces authority.
     """
-    from verdict.serve_path import CONTEXT_ALLOW_LEGACY
+    from verdict.actions.registry import run_action
 
-    gate = _build_route_gate(allow_offline=allow_offline)
-    # Never couple offline catalog mode to the legacy-selector escape.
     if allow_legacy_selector is None:
         allow_legacy_selector = False
-    context: dict[str, object] = {}
-    if allow_legacy_selector:
-        context[CONTEXT_ALLOW_LEGACY] = True
-    # Do not force CONTEXT_REQUIRE_AUTHORITY here — development/smoke CLI must
-    # still route via the legacy feed path; production/env opt-in fail-closed.
+
+    gate = _build_route_gate(allow_offline=allow_offline)
+    params = {
+        "task": task,
+        "criticality": criticality,
+        "allow_offline": allow_offline,
+        "allow_legacy_selector": allow_legacy_selector,
+        "gate": gate,
+        "terse": terse,
+    }
+    if terse:
+        result = run_action("route", params)
+    else:
+        status_label = (
+            "[bold green]Evaluating static catalog (offline)..."
+            if allow_offline
+            else "[bold green]Evaluating network & heuristics..."
+        )
+        with console.status(status_label, spinner="dots"):
+            result = run_action("route", params)
+
+    data = result.data
+    gate = data["gate"]
+    dec = _execute_cli_decision(gate, task, data["decision"], allow_offline=allow_offline)
+    base_selection = data["selection"]
+    selection = None
+    if base_selection is not None:
+        selection = type(base_selection)(
+            strategy="DIRECT",
+            model=dec.model,
+            reasoning="CLI route/run dispatched one provider completion directly",
+            timestamp=base_selection.timestamp,
+        )
+    transport_ok = dec.transport_outcome in {"sent", "success"}
 
     if terse:
-        dec = gate.route(task, criticality, context=context or None)
-        dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
-        if getattr(dec, "transport_outcome", "not_sent") not in {"sent", "success"}:
+        if not transport_ok:
             error_payload = {
                 "model": getattr(dec, "model", None),
                 "provider": getattr(dec, "provider", None),
@@ -909,23 +934,9 @@ def cmd_route(
         print(dec.model)
         return
 
-    status_label = (
-        "[bold green]Evaluating static catalog (offline)..."
-        if allow_offline
-        else "[bold green]Evaluating network & heuristics..."
-    )
-    with console.status(status_label, spinner="dots"):
-        dec, selection = gate.route_with_strategy(task, criticality, context=context or None)
-        dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
-        selection = type(selection)(
-            strategy="DIRECT",
-            model=dec.model,
-            reasoning="CLI route/run dispatched one provider completion directly",
-            timestamp=selection.timestamp,
-        )
-
     from verdict import present
 
+    assert selection is not None  # non-terse always requests a strategy
     present.header("Routing Decision")
     present.kv(
         {
@@ -943,7 +954,6 @@ def cmd_route(
             "Reason": dec.reason,
         }
     )
-    # Machine-readable StrategySelection record (issue #265).
     payload: dict[str, Any] = {
         "strategy_selection": selection.to_dict(),
         "transport_outcome": dec.transport_outcome,
@@ -956,56 +966,37 @@ def cmd_route(
     if dec.execute_preview:
         payload["execute_preview"] = dec.execute_preview[:500]
     print(json.dumps(payload, sort_keys=True))
-    if dec.transport_outcome not in {"sent", "success"}:
+    if not transport_ok:
         raise SystemExit(1)
 
 
 def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
     """Compare a DIRECT frontier call against the Verdict route (issue #265)."""
-    from verdict.comparison import ComparisonHarness
+    from verdict.actions.registry import run_action
 
     gate = _build_route_gate(allow_offline=allow_offline)
-    harness = ComparisonHarness(gate=gate)
-    report = harness.compare(task, criticality=criticality)
-    print(json.dumps({"comparison_report": report.to_dict()}, sort_keys=True, indent=2))
+    result = run_action(
+        "compare",
+        {"task": task, "criticality": criticality, "allow_offline": allow_offline, "gate": gate},
+    )
+    print(json.dumps(result.data, sort_keys=True, indent=2))
 
 
 def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     """Parse JSONL logs and build analytics."""
     from verdict import present
+    from verdict.actions.registry import run_action
 
-    if not os.path.exists(log_path):
-        present.header("Routing stats")
-        present.warn("log", f"No log file found at {log_path}")
-        return
-
-    tiers: dict[int, int] = {}
-    models: dict[str, int] = {}
-    latencies: list[float] = []
-
-    with open(log_path) as f:
-        for line in f:
-            try:
-                entry = json.loads(line)
-                decision = entry.get("decision")
-                if isinstance(decision, dict):
-                    t = decision.get("tier", 2)
-                    m = decision.get("model", "unknown")
-                    lat = decision.get("latency_ms", 0)
-                else:
-                    t = entry.get("effective_tier", entry.get("tier", 2))
-                    m = entry.get("model_chosen", entry.get("model", "unknown"))
-                    lat = entry.get("latency_ms", 0)
-                tiers[t] = tiers.get(t, 0) + 1
-                models[m] = models.get(m, 0) + 1
-                latencies.append(lat)
-            except json.JSONDecodeError:
-                continue
-
-    total = sum(tiers.values())
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0
-
+    result = run_action("stats", {"log_path": log_path})
+    data = result.data
     present.header("Routing stats")
+    if data.get("missing"):
+        present.warn("log", f"No log file found at {data['log_path']}")
+        return
+    tiers: dict[int, int] = data["tiers"]
+    total = data["total_requests"]
+    avg_latency = data["avg_latency_ms"]
+    top_models = data["top_models"]
     present.table(
         ["Tier", "Count", "Pct"],
         [
@@ -1016,13 +1007,7 @@ def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     )
     present.kv({"Total Requests": str(total), "P50 Latency": f"{avg_latency:.2f}ms"})
     present.section("Top Routed Models")
-    present.table(
-        ["Model", "Calls"],
-        [
-            (mod, str(count))
-            for mod, count in sorted(models.items(), key=lambda x: x[1], reverse=True)[:5]
-        ],
-    )
+    present.table(["Model", "Calls"], [(mod, str(count)) for mod, count in top_models])
 
 
 def cmd_benchmark(
@@ -1116,42 +1101,21 @@ def cmd_quickstart(
 def cmd_cost_report() -> None:
     """Calculates and prints the estimated token usage execution cost from historic routing decisions."""
     from verdict import present
+    from verdict.actions.registry import run_action
 
     present.header("Cost and Usage Report")
-
-    log_path = "verdict-decisions.jsonl"
-    if not os.path.exists(log_path):
+    result = run_action("cost-report", {"log_path": "verdict-decisions.jsonl"})
+    data = result.data
+    if data.get("missing"):
         present.warn("log", "No routing telemetry found (Verdict decision log missing).")
         return
-
-    total_requests = 0
-    t0_requests = 0
-
-    with open(log_path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                decision = data.get("decision")
-                if isinstance(decision, dict):
-                    tier = decision.get("tier", 2)
-                else:
-                    tier = data.get("effective_tier", data.get("tier", 2))
-                if tier == 0:
-                    t0_requests += 1
-                total_requests += 1
-            except Exception:
-                pass
-
-    savings = (total_requests - t0_requests) * 0.005
     present.table(
         ["Metric", "Value"],
         [
-            ("Total Routing Requests", str(total_requests)),
-            ("T0 (Critical) Forwarded", str(t0_requests)),
-            ("Offloaded Tasks (T1-T3)", str(total_requests - t0_requests)),
-            ("Estimated Savings vs T0 Only", f"${savings:.2f}"),
+            ("Total Routing Requests", str(data["total_requests"])),
+            ("T0 (Critical) Forwarded", str(data["t0_requests"])),
+            ("Offloaded Tasks (T1-T3)", str(data["offloaded_requests"])),
+            ("Estimated Savings vs T0 Only", f"${data['estimated_savings_usd']:.2f}"),
         ],
         title="Usage Summary",
     )
@@ -1164,20 +1128,24 @@ def cmd_detect(
     offline: bool = False,
 ) -> None:
     """Detect available LLM providers."""
+    from verdict.actions.registry import run_action
+
+    result = run_action("detect", {"offline": offline})
+    data = result.data
+    if data.get("status") == "failed":
+        from verdict import present
+
+        present.header("Provider detection")
+        present.fail("Detection failed", data["error"])
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
     if offline:
-        payload: dict[str, Any] = {
-            "mode": "offline",
-            "network_access": False,
-            "credentials_read": False,
-            "local_providers": [],
-            "cli_providers": [],
-            "centralized_routers": [],
-            "cloud_apis": [],
-            "custom_endpoints": [],
-            "gateways": [],
-        }
+        # For --json / --config, print the offline payload verbatim from data.
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(data, indent=2, sort_keys=True))
         elif output_config:
             print(yaml.dump({"providers": {}}, default_flow_style=False))
         else:
@@ -1188,76 +1156,37 @@ def cmd_detect(
             present.note("Offline mode reports nothing by design. Run `verdict detect` to probe.")
         return
 
-    try:
-        from verdict.provider_detection import (
-            detect_all_providers,
-            format_detection_report,
-            generate_verdict_config,
-            probe_gateways,
+    if output_json:
+        payload = {k: v for k, v in data.items() if not k.startswith("_")}
+        print(json.dumps(payload, indent=2))
+        return
+    if output_config:
+        from verdict.provider_detection import generate_verdict_config
+
+        config = generate_verdict_config(data["_result"])
+        print(yaml.dump(config, default_flow_style=False))
+        return
+
+    from verdict import present
+    from verdict.provider_detection import format_detection_report
+
+    healthy_gateways = data["_healthy_gateways"]
+    present.header("Provider detection")
+    present.note(format_detection_report(data["_result"], verbose=verbose))
+    present.section("Gateways (HTTP-validated)")
+    if healthy_gateways:
+        present.table(
+            ["Gateway", "Identity", "URL", "Port"],
+            [(g.display_name, g.identity, g.url, g.port) for g in healthy_gateways],
         )
-
-        result = detect_all_providers()
-
-        # T018/T019/T020: HTTP-validated gateway detection (TCP + /api/health),
-        # replacing reliance on the TCP-only centralized-router heuristic for
-        # gateway selection purposes.
-        gateways = probe_gateways()
-        healthy_gateways = [g for g in gateways if g.health_ok]
-        no_gateway_message = "No local gateway found on ports 20128, 20129, 20132."
-        multi_gateway_message = (
-            "Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the above to select it."
-        )
-        gateway_message = None
-        if not healthy_gateways:
-            gateway_message = no_gateway_message
-        elif len(healthy_gateways) > 1:
-            gateway_message = multi_gateway_message
-
-        if output_json:
-            print(
-                json.dumps(
-                    {
-                        "local_servers": [p.__dict__ for p in result.local_servers],
-                        "cli_providers": [p.__dict__ for p in result.cli_providers],
-                        "centralized_routers": [p.__dict__ for p in result.centralized_routers],
-                        "cloud_apis": [p.__dict__ for p in result.cloud_apis],
-                        "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
-                        "gateways": [g.__dict__ for g in gateways],
-                        "message": gateway_message,
-                    },
-                    indent=2,
-                )
+        if len(healthy_gateways) > 1:
+            present.warn(
+                "gateway selection",
+                "Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the above to select it.",
             )
-        elif output_config:
-            config = generate_verdict_config(result)
-            print(yaml.dump(config, default_flow_style=False))
-        else:
-            from verdict import present
-
-            present.header("Provider detection")
-            # Keep the established provider report as a note so its detailed
-            # wording remains available while presentation owns the framing.
-            present.note(format_detection_report(result, verbose=verbose))
-            present.section("Gateways (HTTP-validated)")
-            if healthy_gateways:
-                present.table(
-                    ["Gateway", "Identity", "URL", "Port"],
-                    [(g.display_name, g.identity, g.url, g.port) for g in healthy_gateways],
-                )
-                if len(healthy_gateways) > 1:
-                    present.warn("gateway selection", multi_gateway_message)
-            else:
-                present.warn("gateway", no_gateway_message)
-                present.note("To start OmniRoute: npm install -g omniroute && omniroute serve")
-    except Exception as e:
-        from verdict import present
-
-        present.header("Provider detection")
-        present.fail("Detection failed", str(e))
-        import traceback
-
-        traceback.print_exc()
-        sys.exit(1)
+    else:
+        present.warn("gateway", "No local gateway found on ports 20128, 20129, 20132.")
+        present.note("To start OmniRoute: npm install -g omniroute && omniroute serve")
 
 
 def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -> None:
@@ -2070,98 +1999,36 @@ def cmd_catalog(
     allow_live_probe: bool = False,
 ) -> None:
     """Qualify one or both documented OmniRoute catalog projections."""
-    import urllib.request
+    from verdict.actions.registry import run_action
 
-    from verdict.omniroute_catalog import (
-        CATALOG_FETCH_TIMEOUT_SECONDS,
-        CatalogQualificationReport,
-        probe_catalog,
-        qualify_catalog,
-        reconcile_catalog_projections,
-        store_qualification,
+    result = run_action(
+        "catalog",
+        {
+            "base_url": base_url,
+            "management": management,
+            "expected_rows": expected_rows,
+            "freshness_seconds": freshness_seconds,
+            "db_path": db_path,
+            "probe": probe,
+            "probe_limit": probe_limit,
+            "probe_timeout": probe_timeout,
+            "allow_live_probe": allow_live_probe,
+        },
     )
-
-    if probe and not allow_live_probe:
-        message = "catalog live probes require explicit consent; pass --allow-live-probe"
+    data = result.data
+    if data.get("status") == "refused":
         if output_json:
-            print(json.dumps({"error": message, "probes": None}, sort_keys=True))
+            print(json.dumps({"error": data["error"], "probes": None}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Catalog qualification")
-            present.fail("catalog", message)
+            present.fail("catalog", data["error"])
         raise SystemExit(2)
-
-    paths = [
-        (
-            "management" if management else "public",
-            "/api/models/catalog" if management else "/v1/models",
-        )
-    ]
-    if not management:
-        paths.append(("management", "/api/models/catalog"))
-    reports: dict[str, CatalogQualificationReport] = {}
-    payloads: dict[str, bytes] = {}
-    for label, path in paths:
-        source_url = base_url.rstrip("/") + path
-        request = urllib.request.Request(source_url, headers={"Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(  # nosec B310
-                request, timeout=CATALOG_FETCH_TIMEOUT_SECONDS
-            ) as response:
-                payload = response.read()
-        except TimeoutError as exc:
-            del exc
-            reports[label] = CatalogQualificationReport(
-                "unknown", None, ("catalog_fetch_timeout", "TimeoutError")
-            )
-            continue
-        except Exception as exc:
-            reports[label] = CatalogQualificationReport("unknown", None, (type(exc).__name__,))
-            continue
-        payloads[label] = payload
-        reports[label] = qualify_catalog(
-            payload,
-            source_url=source_url,
-            expected_row_count=expected_rows,
-            freshness_seconds=freshness_seconds,
-        )
-    report = reports["management" if management else "public"]
-    reconciliation = None
-    if not management and all(label in reports for label in ("public", "management")):
-        reconciliation = reconcile_catalog_projections(reports["public"], reports["management"])
-    report_payload: dict[str, Any] = report.to_dict()
-    if not management:
-        report_payload["projections"] = {label: value.to_dict() for label, value in reports.items()}
-    probe_summary = None
-    if probe and report.snapshot and report.passed:
-        from verdict.probes import openai_probe_transport
-
-        probe_summary = probe_catalog(
-            payloads["management" if management else "public"],
-            openai_probe_transport(
-                base_url.rstrip("/") + "/v1", api_key=os.getenv("OPENAI_API_KEY")
-            ),
-            limit=probe_limit,
-            timeout_seconds=probe_timeout,
-            live=True,
-            consented=allow_live_probe,
-            provider_name="omniroute",
-        )
-    if db_path:
-        for label, projection in reports.items():
-            if projection.snapshot:
-                store_qualification(
-                    projection,
-                    memory_path=db_path,
-                    probes=probe_summary
-                    if label == ("management" if management else "public")
-                    else None,
-                )
-    if probe_summary:
-        report_payload["probes"] = probe_summary.to_dict()
-    if reconciliation:
-        report_payload["projection_reconciliation"] = reconciliation.to_dict()
+    report_payload = data["report_payload"]
+    report = data["report"]
+    reconciliation = data["reconciliation"]
+    probe_summary = data["probe_summary"]
     if output_json:
         print(json.dumps(report_payload, sort_keys=True))
     else:
@@ -2184,17 +2051,17 @@ def cmd_catalog(
             present.status("projection reconciliation", "ok" if reconciliation.passed else "failed")
         if probe_summary:
             present.note(f"probes: {json.dumps(probe_summary.to_dict(), sort_keys=True)}")
-    if not report.passed or (reconciliation is not None and not reconciliation.passed):
+    if not data["passed"]:
         sys.exit(1)
 
 
 def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
     """Run the SuggestionService to propose evidence-backed improvements."""
     from verdict import present
-    from verdict.suggestions import SuggestionService
+    from verdict.actions.registry import run_action
 
-    svc = SuggestionService(log_path=log_path)
-    suggestions = svc.generate_suggestions()
+    result = run_action("suggest", {"log_path": log_path})
+    suggestions = result.data["suggestions"]
 
     present.header("Verdict Intelligence Suggestions")
     if not suggestions:
@@ -2202,18 +2069,18 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
         return
 
     for s in suggestions:
-        present.section(f"{s.title} ({s.id})")
+        present.section(f"{s['title']} ({s['id']})")
         present.kv(
             {
-                "Category": s.category.title(),
-                "Novelty": s.novelty,
-                "Expires In": s.expiry,
-                "Description": s.description,
-                "Proposed Experiment": s.proposed_next_experiment,
-                "Confidence": f"{s.confidence * 100:.1f}%",
-                "Impact": s.expected_impact,
+                "Category": s["category"].title(),
+                "Novelty": s["novelty"],
+                "Expires In": s["expiry"],
+                "Description": s["description"],
+                "Proposed Experiment": s["proposed_next_experiment"],
+                "Confidence": f"{s['confidence'] * 100:.1f}%",
+                "Impact": s["expected_impact"],
                 "Evidence (top 3)": (
-                    ", ".join(s.evidence_references) if s.evidence_references else "None"
+                    ", ".join(s["evidence_references"]) if s["evidence_references"] else "None"
                 ),
             }
         )
@@ -3033,49 +2900,24 @@ def cmd_receipt(
     output_json: bool = False,
 ) -> None:
     """Inspect durable RoutingReceiptV1 records from ReceiptStore."""
-    from pathlib import Path
+    from verdict.actions.registry import run_action
 
-    from verdict.receipt_store import ReceiptStore
-    from verdict.routing_receipt import attempt_scope, human_summary, load_routing_receipt
-
-    if db_path:
-        db = Path(db_path)
-    else:
-        repo_db = Path.cwd() / ".verdict" / "receipts.db"
-        db = repo_db if repo_db.exists() else (Path.home() / ".verdict" / "receipts.db")
-    # List-all must scan scopes; show/export keep strict scope when a scope is known.
-    store = (
-        ReceiptStore(db, strict_scope=False)
-        if action == "list" and scope is None
-        else ReceiptStore(db, strict_scope=True)
+    result = run_action(
+        "receipt.show",
+        {
+            "action": action,
+            "receipt_id": receipt_id,
+            "attempt_id": attempt_id,
+            "scope": scope,
+            "db_path": db_path,
+        },
     )
+    data = result.data
+    if data.get("error"):
+        raise SystemExit(data["error"])
 
     if action == "list":
-        rows = store.query_receipts(receipt_type="decision", scope=scope, limit=100)
-        items = []
-        for row in rows:
-            if row.parent_receipt_id:
-                continue
-            payload = row.payload
-            if payload.get("schema_version") != "routing-receipt/v1":
-                continue
-            latest = load_routing_receipt(
-                store,
-                receipt_id=row.receipt_id,
-                scope=row.scope,
-                attempt_id=payload.get("attempt_id"),
-            )
-            view = latest.to_dict() if latest is not None else payload
-            items.append(
-                {
-                    "receipt_id": row.receipt_id,
-                    "scope": row.scope,
-                    "attempt_id": view.get("attempt_id"),
-                    "state": view.get("state"),
-                    "decision_digest": view.get("decision_digest"),
-                    "created_at": view.get("created_at"),
-                }
-            )
+        items = data["receipts"]
         if output_json:
             print(json.dumps({"receipts": items}, indent=2, sort_keys=True))
             return
@@ -3100,41 +2942,24 @@ def cmd_receipt(
         return
 
     if action == "show":
-        scope_value = scope
-        if scope_value is None and attempt_id is not None:
-            scope_value = attempt_scope(story_id=None, work_unit_id=None, attempt_id=attempt_id)
-        receipt = load_routing_receipt(
-            store, receipt_id=receipt_id, scope=scope_value, attempt_id=attempt_id
-        )
-        if receipt is None and attempt_id is not None and scope is None:
-            # Scan scopes for the attempt.
-            for row in store.query_receipts(receipt_type="decision", limit=500):
-                if row.parent_receipt_id:
-                    continue
-                if row.idempotency_key == attempt_id or row.payload.get("attempt_id") == attempt_id:
-                    receipt = load_routing_receipt(
-                        store, receipt_id=row.receipt_id, scope=row.scope, attempt_id=attempt_id
-                    )
-                    break
-        if receipt is None:
+        if data.get("status") == "missing":
             raise SystemExit("routing receipt not found")
+        receipt = data["receipt"]
+        summary = data["summary"]
         if output_json:
-            print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(receipt, indent=2, sort_keys=True))
             return
         from verdict import present
 
         present.header("Routing receipt")
-        present.note(human_summary(receipt))
-        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        present.note(summary)
+        print(json.dumps(receipt, indent=2, sort_keys=True))
         return
 
     if action == "export":
-        receipt = load_routing_receipt(
-            store, receipt_id=receipt_id, scope=scope, attempt_id=attempt_id
-        )
-        if receipt is None:
+        if data.get("status") == "missing":
             raise SystemExit("routing receipt not found")
-        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(data["receipt"], indent=2, sort_keys=True))
         return
 
     raise SystemExit(f"unknown receipt action: {action}")
@@ -3142,36 +2967,30 @@ def cmd_receipt(
 
 def cmd_replay(session_id: str, output_json: bool = False) -> None:
     """Replay a recorded execution session from the shared MemoryPlane."""
-    try:
-        from verdict.execution_session import ExecutionSession, ExecutionSessionError
-        from verdict.memory_plane import MemoryPlane
-    except ImportError as exc:
-        message = (
-            "replay is not yet available: verdict.execution_session is still in "
-            f"development ({exc})"
-        )
+    from verdict.actions.registry import run_action
+
+    result = run_action("replay", {"session_id": session_id})
+    data = result.data
+    status = data.get("status")
+    if status == "unavailable":
         if output_json:
-            print(json.dumps({"status": "unavailable", "message": message}, sort_keys=True))
+            print(json.dumps({"status": "unavailable", "message": data["message"]}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Replay session")
-            present.warn("replay", message)
-        raise SystemExit(3) from exc
-    db_path = os.environ.get("VERDICT_MEMORY_DB", str(Path.home() / ".verdict" / "memory.db"))
-    try:
-        session = ExecutionSession.resume(session_id, MemoryPlane(db_path))
-    except ExecutionSessionError as exc:
-        message = f"no recorded session found for id: {session_id} ({exc})"
+            present.warn("replay", data["message"])
+        raise SystemExit(3)
+    if status == "missing":
         if output_json:
-            print(json.dumps({"status": "missing", "message": message}, sort_keys=True))
+            print(json.dumps({"status": "missing", "message": data["message"]}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Replay session")
             present.fail(session_id, "not found")
-        raise SystemExit(1) from exc
-    record = session.to_dict()
+        raise SystemExit(1)
+    record = data["record"]
     if output_json:
         print(json.dumps(record, indent=2, sort_keys=True))
         return
