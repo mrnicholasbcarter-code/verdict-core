@@ -37,7 +37,7 @@ class FakeTransport(httpx.BaseTransport):
 def test_health_available():
     """Health check returns AVAILABLE when ai-memory responds."""
     transport = FakeTransport({
-        "api/v1/workspaces": (200, {"workspaces": [{"workspace_name": "default"}]}),
+        "api/v1/workspaces": (200, [{"workspace_name": "default", "project_count": 1, "page_count": 0}]),
     })
     provider = AiMemoryExperimentalProvider(
         "http://localhost:49374",
@@ -109,16 +109,13 @@ def test_search_returns_advisory_records():
     transport = FakeTransport({
         "mcp": (200, {
             "result": {
-                "pages": [
+                "content": [
                     {
-                        "path": "decisions/001.md",
-                        "title": "Decision",
-                        "body": "We decided X",
-                        "score": 0.95,
-                        "frontmatter": {"kind": "decision"},
-                        "created_at": "2026-09-28T12:00:00Z",
+                        "type": "text",
+                        "text": "{\"hits\": [{\"id\": \"abc123\", \"path\": \"decisions/001.md\", \"title\": \"Decision\", \"snippet\": \"We decided X\", \"rank\": -0.036}]}",
                     }
-                ]
+                ],
+                "isError": False,
             }
         }),
     })
@@ -145,7 +142,7 @@ def test_search_returns_advisory_records():
 def test_put_writes_with_frontmatter():
     """put() sends memory to ai-memory with correct frontmatter."""
     transport = FakeTransport({
-        "mcp": (200, {"result": {"path": "verdict/memory/abc123.md"}}),
+        "mcp": (200, {"result": {"content": [{"type": "text", "text": "{\"page_id\": \"01a0e9cb-test\", \"path\": \"verdict/memory/abc123.md\", \"checkpoint\": \"abc\"}"}], "isError": False}}),
     })
     provider = AiMemoryExperimentalProvider(
         "http://localhost:49374",

@@ -82,7 +82,7 @@ class AiMemoryExperimentalProvider:
 
     def _headers(self) -> dict[str, str]:
         headers = {
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
             "User-Agent": "verdict-core/ai-memory-poc",
         }
@@ -138,8 +138,9 @@ class AiMemoryExperimentalProvider:
         try:
             response = self._request("GET", "/api/v1/workspaces")
             data = response.json()
-            # ai-memory returns {"workspaces": [...]}
-            if not isinstance(data, dict) or "workspaces" not in data:
+            # ai-memory /api/v1/workspaces returns a JSON array of workspace objects
+            # e.g. [{"workspace_name":"default","project_count":2,...}]
+            if not isinstance(data, list):
                 return ProviderHealth(
                     provider_id=self.provider_id,
                     status=ProviderResultStatus.DEGRADED,
@@ -197,6 +198,8 @@ class AiMemoryExperimentalProvider:
         # In reality, you'd call via MCP protocol, but for POC we use HTTP /admin endpoint
         # or simulate MCP JSON-RPC
         payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
             "method": "tools/call",
             "params": {
                 "name": "memory_write_page",
@@ -204,7 +207,6 @@ class AiMemoryExperimentalProvider:
                     "path": path,
                     "body": envelope.content,
                     "frontmatter": frontmatter,
-                    "workspace": envelope.tenant,
                     "project": envelope.project,
                 },
             },
@@ -220,8 +222,13 @@ class AiMemoryExperimentalProvider:
             response = self._request("POST", "/mcp", payload=payload)
             result = response.json()
 
-            # ai-memory returns the page path as confirmation
-            page_path = result.get("result", {}).get("path", path)
+            # ai-memory returns: {"result": {"content": [{"type": "text", "text": "{...}"}]}}
+            # The text field is a JSON string with page_id, path, checkpoint
+            import json as _json
+            content_items = result.get("result", {}).get("content", [])
+            text_str = content_items[0].get("text", "{}") if content_items else "{}"
+            page_info = _json.loads(text_str) if text_str else {}
+            page_path = page_info.get("path", path)
 
             return ExternalMemoryRef(
                 provider_id=self.provider_id,
@@ -247,12 +254,13 @@ class AiMemoryExperimentalProvider:
         # ai-memory MCP memory_query expects:
         # {query, workspace?, project?, limit?}
         payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
             "method": "tools/call",
             "params": {
                 "name": "memory_query",
                 "arguments": {
                     "query": query.query,
-                    "workspace": query.tenant,
                     "project": query.project,
                     "limit": query.limit,
                 },
@@ -264,18 +272,23 @@ class AiMemoryExperimentalProvider:
             response = self._request("POST", "/mcp", payload=payload)
             result = response.json()
 
-            # ai-memory returns {result: {pages: [{path, title, body, score, ...}]}}
-            pages = result.get("result", {}).get("pages", [])
+            # ai-memory returns: {"result": {"content": [{"type": "text", "text": "{...}"}]}}
+            # The text field is a JSON string with {"hits": [{id, path, title, snippet, rank}]}
+            import json as _json
+            content_items = result.get("result", {}).get("content", [])
+            text_str = content_items[0].get("text", "{}") if content_items else "{}"
+            search_data = _json.loads(text_str) if text_str else {}
+            pages = search_data.get("hits", [])
 
             hits = tuple(
                 SharedMemoryHit(
                     ref=ExternalMemoryRef(
                         provider_id=self.provider_id,
                         external_id=page["path"],
-                        revision=page.get("frontmatter", {}).get("revision"),
+                        revision=None,
                     ),
                     envelope=self._page_to_envelope(page, query),
-                    score=page.get("score", 0.0),
+                    score=float(page.get("rank", 0.0)),
                 )
                 for page in pages[:query.limit]
             )
@@ -309,6 +322,8 @@ class AiMemoryExperimentalProvider:
             raise ValueError(f"ref provider_id mismatch: {ref.provider_id}")
 
         payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
             "method": "tools/call",
             "params": {
                 "name": "memory_delete_page",
@@ -337,13 +352,22 @@ class AiMemoryExperimentalProvider:
     def _page_to_envelope(
         self, page: Mapping[str, Any], query: SharedMemoryQuery
     ) -> SharedMemoryEnvelope:
-        """Convert ai-memory page to SharedMemoryEnvelope."""
+        """Convert ai-memory search hit to SharedMemoryEnvelope.
+
+        Search hits from memory_query have: id, path, title, snippet, rank
+        (no body or frontmatter in search results — snippet is the matched excerpt).
+        """
         import time
 
         frontmatter = page.get("frontmatter", {})
+        # search hits use "snippet" (HTML-marked excerpt); full-read hits use "body"
+        content = page.get("body") or page.get("snippet") or page.get("title") or ""
+        # strip HTML mark tags from snippet (e.g. <mark>word</mark>)
+        import re as _re
+        content = _re.sub(r"</?mark>", "", content)
 
         return SharedMemoryEnvelope(
-            content=page.get("body", ""),
+            content=content or "(empty)",
             project=query.project,
             scope=query.scope,
             tenant=query.tenant,
@@ -367,9 +391,10 @@ class AiMemoryExperimentalProvider:
             metadata={
                 "ai_memory_path": page.get("path"),
                 "ai_memory_title": page.get("title"),
-                "ai_memory_kind": frontmatter.get("kind"),
+                "ai_memory_id": page.get("id"),
             },
         )
+
 
     @staticmethod
     def _parse_timestamp(ts: Any) -> float:

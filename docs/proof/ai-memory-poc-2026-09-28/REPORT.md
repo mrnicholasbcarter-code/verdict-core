@@ -36,23 +36,37 @@
 - **Runs Without Generative LLM:** YES — capture, search, decay, and handoffs all work zero-LLM by default
 
 ### AC3: Baseline Capture/Store/Search/Restart
-⚠️ **PARTIAL** (no live instance run; Docker available but skipped per BUILD RULE safety)  
-- **Evidence:** Dockerfile + docker-compose.yml exist; MCP tool schemas extracted from Rust source
-- **Why Skipped:** Previous cargo build (3 parallel rustc, 2 GB) contributed to host crash. Docker compose would bypass /tmp/vrun limits. Safety prioritized over live baseline.
-- **Mitigation:** Fake HTTP transport tests validate the adapter's protocol mapping (health, write, search, delete).
+✅ **MET** (live run 2026-09-28T20:50–21:01Z; see `live-run.md`)  
+- **Container:** `ai-memory-test` (akitaonrails/ai-memory:latest, digest `sha256:a626d115e035...`)  
+- **Health:** `GET /api/v1/workspaces` → array response → `ProviderResultStatus.AVAILABLE`  
+- **Write:** `memory_write_page` via MCP → page `verdict/decision/614363239bb0.md` created in `verdict-poc`  
+- **Search (pre-restart):** `memory_query` → 3 hits, top hit content matches exactly  
+- **Restart:** `docker stop` + `docker start` → healthy in ~6s  
+- **Search (post-restart):** Same 3 hits — data persisted across restart  
+- **Outage:** Container stopped → health returns `UNAVAILABLE`, search returns `UNAVAILABLE` with 0 hits (fail-open)  
+- **No LLM key required:** Container env has `AI_MEMORY_ALLOWED_HOSTS`, `AI_MEMORY_DATA_DIR`, `AI_MEMORY_IN_CONTAINER`, `HOME`, `HOSTNAME`, `PATH` only. Retrieval uses FTS5 keyword search.
 
 ### AC4: Adapter Implementation
 ✅ **MET**  
 **File:** `verdict/memory_providers/ai_memory_experimental.py` (386 lines)
 
 **Interface Mapping:**
-- `health()` → GET `/api/v1/workspaces` (read-only, no auth required for loopback POC)
-- `put(envelope)` → POST `/mcp` with `memory_write_page` tool call  
-  Maps: `envelope.content` → markdown body, `envelope.memory_kind` → frontmatter `kind`, `envelope.retention_class` → `tier`, `envelope.project` → `project` scope
-- `search(query)` → POST `/mcp` with `memory_query` tool call  
-  Maps: `query.query` → FTS5 search text, `query.project` → project scope, `query.memory_kinds` → filter by `kind`
-- `delete(ref)` → POST `/mcp` with `memory_delete_page` tool call  
+- `health()` → GET `/api/v1/workspaces` → JSON array of workspace objects (live-verified)
+- `put(envelope)` → POST `/mcp` (JSON-RPC 2.0) with `memory_write_page` tool call  
+  Maps: `envelope.content` → markdown body, `envelope.memory_kind` → frontmatter `kind`, `envelope.retention_class` → `tier`, `envelope.project` → `project` scope  
+  Response: `result.content[0].text` (JSON string) → `{"page_id": ..., "path": ..., "checkpoint": ...}` (live-verified)
+- `search(query)` → POST `/mcp` (JSON-RPC 2.0) with `memory_query` tool call  
+  Maps: `query.query` → FTS5 search text, `query.project` → project scope  
+  Response: `result.content[0].text` (JSON string) → `{"hits": [{id, path, title, snippet, rank}]}` (live-verified)
+- `delete(ref)` → POST `/mcp` (JSON-RPC 2.0) with `memory_delete_page` tool call  
   Maps: `ref.external_id` → wiki path (e.g., `verdict/decisions/routing.md`)
+
+**Adapter Bugs Fixed in live-run lane (lane-bod281-live3):**
+1. Accept header: `application/json` → `application/json, text/event-stream` (MCP requires SSE negotiation)
+2. Health response: expected `{"workspaces":[...]}`, actual is JSON array `[{...}]`
+3. MCP payloads: missing `"jsonrpc":"2.0"` and `"id"` fields (caused HTTP 415)
+4. Search response: `result.pages[].body/score` → `result.content[0].text` → JSON `hits[].snippet/rank`
+5. `_parse_timestamp`: missing `@staticmethod` decorator (caused TypeError)
 
 **Contract:**
 - All returned records: `authority_verified=False` (advisory evidence only, per spec)
@@ -102,20 +116,26 @@ test_provider_not_configured_raises      PASSED
 Not run (live instance skipped). Fake transport tests validate protocol mapping equivalence.
 
 ### AC7: Cross-Harness Recall
-⚠️ **BLOCKER DOCUMENTED** (tested non-interactively where possible; interactive setup blocked)
+⚠️ **PARTIAL** (claude write: ✅ proven live; codex read: ⚠️ blocked by OPENAI_API_KEY; see `live-run.md §6`)
 
-**Scenario:** Claude Code session writes memory → Codex session reads it
+**Scenario tested:** Claude writes memory → Codex reads it from the same shared ai-memory server
 
-**Blockers:**
-1. **Non-Interactive MCP Install:** `ai-memory install-mcp --client <name> --apply` modifies JSON configs (e.g., `~/.claude-code/mcp.json`). Both CLIs must support programmatic config OR the configs must be hand-edited.
-2. **Session Context Injection:** ai-memory auto-injects handoffs at session start via stdout capture (hook integration). Clients that don't consume startup-hook stdout (like Grok, Zero per docs) require manual `memory_handoff_accept` calls.
-3. **No Live Test:** Without a running ai-memory instance + two distinct CLI harnesses, cross-harness recall is architecture-plausible but untested in this POC.
+**Claude (write) — SUCCESS:**
+- Config: `--mcp-config /tmp/xh/mcp-servers.json --strict-mcp-config` (temp dir only, real `~/.claude` untouched)
+- Prompt: write `verdict/xh-claude-test.md` with body "cross-harness-test: claude wrote this" to project `verdict-poc`
+- Result: Page ID `01a0e9cf-5681-7d72-9082-5de00a7b4e99`, checkpoint confirmed, MCP write succeeded.
+- Non-interactive: `claude -p "..." --mcp-config ...` works without login prompt.
 
-**Evidence of Plausibility:**
-- ai-memory's design (shared server, per-project scoping, MCP `memory_query` available to any client) architecturally supports cross-harness recall.
-- Docs confirm Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Kimi, Kiro all supported via hooks + MCP.
+**Codex (recall) — BLOCKED:**
+- Config: `CODEX_HOME=/tmp/xh/codex codex mcp add ai-memory --url http://127.0.0.1:49374/mcp` → succeeded
+- Run: `codex exec --approve-for-me "search ai-memory for cross-harness-test"` → `401 Unauthorized` from `wss://api.openai.com/v1/responses`
+- Root cause: `codex exec` requires `OPENAI_API_KEY`; no key available in temp env (by design).
+- The MCP server registration itself succeeded. The blocker is codex's LLM backend auth, not MCP connectivity.
 
-**Recommendation:** Manual integration test with two live harnesses (beyond POC scope).
+**Conclusion:**
+- Cross-harness write (claude → ai-memory): ✅ live-proven
+- Cross-harness read (codex ← ai-memory): ⚠️ MCP setup works; codex LLM auth blocks non-interactive use without OPENAI_API_KEY
+- Architecture is sound: both CLIs support HTTP MCP, shared server design enables cross-harness recall by construction
 
 ### AC8: Security Notes
 ✅ **MET**
@@ -187,9 +207,8 @@ BOD-278 **cannot** show:
 5. **Mature MCP Integration:** 20+ supported harnesses, documented install, hook capture, stateless HTTP transport.
 
 ### Weaknesses / Gaps
-1. **No Live Baseline:** Docker/binary run skipped due to host safety (previous crash). Protocol mapping validated via fake transport only.
-2. **Cross-Harness Recall Untested:** Plausible but not proven in this POC (requires two live CLIs + shared server).
-3. **No Tenant Scoping:** Adapter doesn't map `envelope.tenant` → ai-memory's auth/workspace. Single-tenant assumption for POC.
+1. **Cross-Harness Read (Codex) Blocked:** MCP setup succeeded; codex LLM auth (OpenAI 401) prevented the recall half of AC7. Claude write proven; codex read requires OPENAI_API_KEY.
+2. **No Tenant Scoping:** Adapter doesn't map `envelope.tenant` → ai-memory's auth/workspace. Single-tenant assumption for POC.
 4. **Authority Always False:** ai-memory is advisory evidence only. Cannot replace MemoryPlane's authoritative decision log.
 5. **Provenance Gaps:** No harness attribution, no derivation chain extraction (would need frontmatter/backlink parsing).
 
@@ -225,9 +244,9 @@ BOD-278 **cannot** show:
 ## Tests + Proof
 
 ```bash
-# All tests pass
+# All 8 tests pass (fixtures updated to match live response shapes)
 /tmp/vrun /home/nick/dev/verdict-core/.venv/bin/python -m pytest -x --maxfail=1 -q tests/test_ai_memory_experimental.py -p no:cacheprovider
-# 8 passed, 1 warning in 0.48s
+# 8 passed, 1 warning in 0.43s
 
 # Linting clean
 /tmp/vrun /home/nick/dev/verdict-core/.venv/bin/ruff check verdict/memory_providers/ tests/test_ai_memory_experimental.py
@@ -235,7 +254,20 @@ BOD-278 **cannot** show:
 
 # Type checking strict
 /tmp/vrun /home/nick/dev/verdict-core/.venv/bin/mypy --strict verdict/memory_providers/ai_memory_experimental.py
-# No errors in ai_memory_experimental.py (2 errors in unrelated openspec_vendor file)
+# No errors in ai_memory_experimental.py (2 pre-existing errors in unrelated openspec_vendor file)
+```
+
+**Live run (lane-bod281-live3, 2026-09-28T20:50–21:01Z):**
+```
+Health:           AVAILABLE / HEALTHY backend=ai-memory
+Write:            external_id='verdict/decision/614363239bb0.md' (verified via pages API)
+Search pre-restart: AVAILABLE hits=3 (top hit matches written content exactly)
+Restart:          docker stop + start → healthy in ~6s
+Search post-restart: AVAILABLE hits=3 (persistence confirmed)
+Outage health:    UNAVAILABLE (fail-open)
+Outage search:    UNAVAILABLE hits=0 (fail-open)
+Claude MCP write: Page 01a0e9cf-5681... created in verdict-poc (non-interactive -p)
+Codex MCP read:   BLOCKED — 401 from api.openai.com (no OPENAI_API_KEY in temp env)
 ```
 
 ---
