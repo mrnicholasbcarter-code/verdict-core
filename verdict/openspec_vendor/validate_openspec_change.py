@@ -64,7 +64,7 @@ def extract_sections(content: str) -> dict[str, str]:
     sections = {}
     lines = content.split('\n')
     current_heading = None
-    current_body_lines: list[str] = []
+    current_body_lines = []
 
     for line in lines:
         # Check for headings (## level or higher, but not #### scenarios)
@@ -161,7 +161,7 @@ def validate_task_groups(content: str) -> list[ValidationError]:
     lines = content.split('\n')
     task_groups = []
     current_group_heading = None
-    current_group_lines: list[str] = []
+    current_group_lines = []
 
     for line in lines:
         # Match ## N. pattern (task group heading)
