@@ -118,7 +118,8 @@ def presentation_mode(
     no_color = "NO_COLOR" in _env
     ci = bool(_env.get("CI", ""))
     dumb = _env.get("TERM", "") == "dumb"
-    plain = not is_tty or no_color or ci or dumb
+    forced_plain = _env.get("VERDICT_PLAIN", "") == "1"
+    plain = not is_tty or no_color or ci or dumb or forced_plain
 
     if plain:
         width = _resolve_width(_env, _stream, fallback=80)

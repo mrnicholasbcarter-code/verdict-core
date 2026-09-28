@@ -110,6 +110,37 @@ def test_term_dumb_gives_no_color() -> None:
     assert mode.animate is False
 
 
+def test_verdict_plain_forces_plain_on_a_tty() -> None:
+    # VERDICT_PLAIN=1 forced plain output in orchestration plain_mode() before this module.
+    mode = presentation_mode(_FakeTTY(), env={"VERDICT_PLAIN": "1"})
+    assert mode.color is False
+    assert mode.animate is False
+
+
+def test_orchestration_plain_mode_honours_verdict_plain(monkeypatch) -> None:
+    from rich.console import Console
+
+    from verdict.orchestration.tui import plain_mode
+
+    monkeypatch.setenv("VERDICT_PLAIN", "1")
+    for name in ("NO_COLOR", "CI", "TERM"):
+        monkeypatch.delenv(name, raising=False)
+    assert plain_mode(Console(force_terminal=True)) is True
+
+
+def test_orchestration_plain_mode_matches_main_for_forced_terminal(monkeypatch) -> None:
+    # A console forced to be a terminal is not plain when no plain signal is set
+    # (origin/main behaviour: plain_mode checked console.is_terminal).
+    from rich.console import Console
+
+    from verdict.orchestration.tui import plain_mode
+
+    for name in ("NO_COLOR", "CI", "TERM", "VERDICT_PLAIN"):
+        monkeypatch.delenv(name, raising=False)
+    assert plain_mode(Console(force_terminal=True)) is False
+    assert plain_mode(Console(force_terminal=False, file=__import__("io").StringIO())) is True
+
+
 def test_non_tty_gives_no_color() -> None:
     mode = presentation_mode(_FakeNonTTY(), env={})
     assert mode.color is False

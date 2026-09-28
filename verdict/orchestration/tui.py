@@ -921,11 +921,20 @@ def render_text(
 
 
 def plain_mode(console: Console | None = None) -> bool:
-    """Thin alias for :func:`verdict.design.presentation_mode` — kept for back-compat."""
+    """Same fallback rules as :class:`verdict.terminal_ui.TerminalUI`, via :mod:`verdict.design`.
+
+    The console's own terminal detection is authoritative (it honours force_terminal),
+    so the policy is asked about the console, not its underlying file.
+    """
     from verdict.design import presentation_mode as _pm
 
     source = console or Console()
-    return not _pm(source.file).color
+
+    class _ConsoleStream:
+        def isatty(self) -> bool:
+            return source.is_terminal
+
+    return not _pm(_ConsoleStream()).color
 
 
 def read_events(path: Path) -> list[RunEvent]:
