@@ -182,6 +182,99 @@ def _answers_to_signals(answers: dict[str, Any]) -> tuple[dict[str, float], floa
     return signals, max(0.0, min(1.0, mean_conf))
 
 
+# ---------------------------------------------------------------------------
+# Response self-consistency validation (BOD-203)
+# ---------------------------------------------------------------------------
+
+_PROB_TOLERANCE: float = 1e-3
+
+
+def _validate_answers(answers: dict[str, Any]) -> str | None:
+    """Validate Codiv answers for self-consistency before signal conversion.
+
+    Returns None if valid, or a short rejection reason string.
+    Never raises.
+
+    Checks (BOD-203):
+    1. Unknown answer keys (outside _QUESTIONS).
+    2. Each answer has a recognised type matching _QUESTIONS.
+    3. Probability mass for score/choice answers sums to ~1 (tolerance 1e-3).
+    4. No negative probabilities.
+    5. Noul values in [0, 1].
+    6. Contradiction: frontier_worthy > 0.5 with complexity score == 0 (trivial).
+    """
+    known_names = set(_QUESTIONS.keys())
+
+    # 1. Unknown answer keys
+    unknown = set(answers.keys()) - known_names
+    if unknown:
+        return f"unknown answer keys: {sorted(unknown)}"
+
+    # Per-answer checks
+    for name, ans in answers.items():
+        if not isinstance(ans, dict):
+            return f"{name}: answer is not a dict"
+
+        atype = ans.get("type")
+        expected_qdef = _QUESTIONS.get(name)
+
+        # 2. Type must match question definition
+        if expected_qdef is not None:
+            expected_type = expected_qdef.get("type")
+            if atype != expected_type:
+                return f"{name}: type {atype!r} does not match expected {expected_type!r}"
+
+        if atype == "noul":
+            # 5. Noul value in [0, 1]
+            noul_val = ans.get("noul")
+            if noul_val is None:
+                return f"{name}: noul answer missing 'noul' field"
+            try:
+                v = float(noul_val)
+            except (TypeError, ValueError):
+                return f"{name}: noul value not numeric"
+            if v < 0.0 or v > 1.0:
+                return f"{name}: noul value {v} outside [0, 1]"
+
+        elif atype == "score" or atype == "choice":
+            probs = ans.get("probabilities")
+            if isinstance(probs, dict) and probs:
+                # 4. No negative probabilities
+                for pk, pv in probs.items():
+                    try:
+                        fv = float(pv)
+                    except (TypeError, ValueError):
+                        return f"{name}: probability {pk!r} not numeric"
+                    if fv < 0.0:
+                        return f"{name}: negative probability {pk}={fv}"
+
+                # 3. Probability mass ~= 1
+                total = sum(float(pv) for pv in probs.values())
+                if abs(total - 1.0) > _PROB_TOLERANCE:
+                    return f"{name}: probability mass {total} deviates from 1.0"
+
+    # 6. Contradiction: frontier_worthy > 0.5 with complexity trivial (score == 0)
+    fw_ans = answers.get("frontier_worthy")
+    cx_ans = answers.get("complexity")
+    if fw_ans is not None and cx_ans is not None:
+        fw_type = fw_ans.get("type")
+        cx_type = cx_ans.get("type")
+        if fw_type == "noul" and cx_type == "score":
+            try:
+                fw_val = float(fw_ans.get("noul", 0))
+                cx_val = float(cx_ans.get("score", -1))
+            except (TypeError, ValueError):
+                pass  # already caught above
+            else:
+                # frontier_worthy > 0.5 means "yes, requires frontier model"
+                # complexity score == 0 means "trivial"
+                # These contradict by _QUESTIONS definitions.
+                if fw_val > 0.5 and cx_val == 0.0:
+                    return "contradiction: frontier_worthy > 0.5 with complexity trivial"
+
+    return None
+
+
 def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> NormalizedFailure:
     """Normalize HTTP/runtime failure to NormalizedFailure (provider identification / TYPESAFE credentials migration compatible).
 
@@ -403,6 +496,18 @@ class OpenJevSystemOneProvider:
                     )
                     resp_request_id = rh_lower.get("x-typesafe-request-id", request_id)
 
+                    # BOD-203: self-consistency validation before signal conversion
+                    rejection = _validate_answers(answers)
+                    if rejection is not None:
+                        return self._fail(
+                            failure_class=NormalizedFailureClass.INVALID_REQUEST,
+                            request_id=resp_request_id,
+                            purpose=question.purpose,
+                            input_digest=input_digest,
+                            latency_ms=latency_ms,
+                            now=now,
+                        )
+
                     signals, confidence = _answers_to_signals(answers)
 
                     return DecisionSignalSetV1(
@@ -490,10 +595,12 @@ class OpenJevSystemOneProvider:
 __all__ = [
     "DEFAULT_TIMEOUT_MS",
     "PINNED_MODEL",
+    "_PROB_TOLERANCE",
     "_QUESTIONS",
     "_SCORE_LEVELS",
     "OpenJevSystemOneProvider",
     "_answers_to_signals",
+    "_validate_answers",
     "normalize_failure",
     "parse_retry_after",
 ]
