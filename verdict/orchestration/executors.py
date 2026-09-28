@@ -335,20 +335,13 @@ class PrimeHeadlessExecutor:
             pass
 
     @staticmethod
-    def _extract_usage(assistant: dict[str, Any] | None) -> AttemptUsage | None:
-        """Extract token usage from the assistant message, if present."""
-        if assistant is None:
-            return None
-        raw = assistant.get("usage")
-        if not isinstance(raw, dict):
-            return None
+    def _extract_usage_single(raw: dict[str, Any]) -> tuple[int | None, int | None, float | None]:
+        """Parse one usage dict into (input_tokens, output_tokens, cost_usd)."""
         # Accept both input/output (Prime stdout) and prompt_tokens/completion_tokens (OpenAI)
         inp = raw.get("input") if raw.get("input") is not None else raw.get("prompt_tokens")
         out = raw.get("output") if raw.get("output") is not None else raw.get("completion_tokens")
         input_tokens = _as_int(inp)
         output_tokens = _as_int(out)
-        if input_tokens is None and output_tokens is None:
-            return None
         # cost_usd only if explicitly present — never fabricated.
         # Prime reports ``cost`` as a breakdown dict
         # ({"input", "output", "cacheRead", "cacheWrite", "total"}); use its total.
@@ -356,11 +349,71 @@ class PrimeHeadlessExecutor:
         if isinstance(cost_raw, dict):
             cost_raw = cost_raw.get("total")
         cost_usd = _as_float(cost_raw)
+        return input_tokens, output_tokens, cost_usd
+
+    @staticmethod
+    def _extract_usage(
+        messages_or_single: list[dict[str, Any]] | dict[str, Any] | None,
+    ) -> AttemptUsage | None:
+        """Sum token usage over all distinct assistant messages of the attempt.
+
+        Accepts either a list of collected messages (the normal path from
+        ``_interpret`` after ``_collect_messages``) **or** a single message
+        dict / ``None`` for backward compatibility.
+
+        Each assistant turn re-sends the full conversation history, so
+        ``input_tokens`` per turn is independently billed. Summing gives the
+        total tokens *sent/billed* across the attempt — the right economic
+        measure even though earlier turns' context overlaps.
+
+        ``cost_usd`` is summed only when every contributing message reports a
+        cost; otherwise it is ``None`` (never fabricated from partial data).
+        """
+        # Backward compat: single dict or None → wrap in a list.
+        if messages_or_single is None:
+            return None
+        if isinstance(messages_or_single, dict):
+            messages: list[dict[str, Any]] = [messages_or_single]
+        else:
+            messages = messages_or_single
+
+        assistants = [m for m in messages if m.get("role") == "assistant"]
+        # Backward compat: if the list has a single dict without "role"
+        # (legacy callers pass a bare assistant dict), treat it as one message.
+        if not assistants and len(messages) == 1:
+            assistants = messages
+
+        if not assistants:
+            return None
+        total_in: int | None = None
+        total_out: int | None = None
+        total_cost: float | None = None
+        all_have_cost = True
+        turns = 0
+        for msg in assistants:
+            raw = msg.get("usage")
+            if not isinstance(raw, dict):
+                continue
+            inp, out, cost = PrimeHeadlessExecutor._extract_usage_single(raw)
+            if inp is None and out is None:
+                continue
+            turns += 1
+            if inp is not None:
+                total_in = (total_in or 0) + inp
+            if out is not None:
+                total_out = (total_out or 0) + out
+            if cost is not None:
+                total_cost = (total_cost or 0.0) + cost
+            else:
+                all_have_cost = False
+        if total_in is None and total_out is None:
+            return None
         return AttemptUsage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost_usd,
+            input_tokens=total_in,
+            output_tokens=total_out,
+            cost_usd=total_cost if all_have_cost else None,
             tokens_source="prime_stdout",
+            turns=turns if turns > 0 else None,
         )
 
     def _interpret(
@@ -372,7 +425,7 @@ class PrimeHeadlessExecutor:
         for message in messages:
             if message.get("role") == "assistant":
                 assistant = message
-        usage = self._extract_usage(assistant)
+        usage = self._extract_usage(messages)
         if assistant is None:
             if returncode != 0:
                 tail = _sanitize(stderr) or f"exit {returncode} with no assistant message"
