@@ -110,7 +110,8 @@ def test_follow_replay_unknown_routes_no_real_models_claim(tmp_path: Path) -> No
     # Without selection events, should not claim "real models"
     # Should show generic REPLAY label
     assert "REPLAY" in view.goal
-    assert "real models" in view.goal  # Conservative: no routes = assume real
+    assert "real models" not in view.goal  # no executed routes -> no claim
+    assert "fixture" not in view.goal
 
 
 def test_follow_replay_deterministic(tmp_path: Path) -> None:
@@ -237,3 +238,17 @@ def test_replay_from_fixture_events(tmp_path: Path) -> None:
     assert view.goal  # Should have a goal
     assert "REPLAY" in view.goal
     assert "fixture run" in view.goal  # demo-run uses demo-sub/* routes
+
+
+def test_replay_kind_needs_evidence_for_real_models() -> None:
+    from types import SimpleNamespace
+
+    from verdict.orchestration.tui import _replay_kind
+
+    def ev(t: str, route: str) -> SimpleNamespace:
+        return SimpleNamespace(type=t, data={"route_id": route})
+
+    assert _replay_kind([]) == "unknown"
+    assert _replay_kind([ev("node_state", "")]) == "unknown"
+    assert _replay_kind([ev("selection", "kr/claude-haiku-4.5")]) == "real"
+    assert _replay_kind([ev("selection", "kr/x"), ev("dispatch", "demo-sub/atlas")]) == "fixture"
