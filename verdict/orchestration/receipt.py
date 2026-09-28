@@ -260,6 +260,8 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 row["outcome"] = "success" if ok else "failure"
                 if isinstance(data.get("duration_seconds"), int | float):
                     row["duration_seconds"] = float(data["duration_seconds"])
+                if isinstance(data.get("usage"), dict):
+                    row["usage"] = data["usage"]
                 # track route identity (intended vs executed)
                 reported = str(data.get("reported_model") or "")
                 error = str(data.get("error") or "")

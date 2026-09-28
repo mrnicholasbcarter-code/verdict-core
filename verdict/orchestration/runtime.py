@@ -723,6 +723,18 @@ class DagRuntime:
                 error=terminal.error,
                 attempt=run.attempt,
                 fault_injected=terminal.session_ref.startswith("fault-injected"),
+                **(
+                    {
+                        "usage": {
+                            "input_tokens": terminal.usage.input_tokens,
+                            "output_tokens": terminal.usage.output_tokens,
+                            "cost_usd": terminal.usage.cost_usd,
+                            "tokens_source": terminal.usage.tokens_source,
+                        }
+                    }
+                    if terminal.usage is not None
+                    else {}
+                ),
             )
             self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
             if terminal.ok and terminal.output.strip().upper().startswith("RESULT: BLOCKED"):
