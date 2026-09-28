@@ -40,6 +40,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     route_provider,
 )
+from verdict.outcome_records import write_outcome_records
 
 RECEIPT_SCHEMA = "verdict.run-receipt/v1"
 EVENTS_FILE = "events.jsonl"
@@ -507,6 +508,16 @@ def write_run_receipt(run_dir: Path) -> Path:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+    try:
+        write_outcome_records(run_dir, receipt)
+    except OSError as exc:
+        import sys
+
+        print(
+            f"warning: could not write outcome records to"
+            f" {run_dir / 'outcome-records.jsonl'}: {exc}",
+            file=sys.stderr,
+        )
     _fsync_dir(run_dir)
     return target
 

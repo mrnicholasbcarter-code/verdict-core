@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/outcome-record.v1.json",
+  "title": "Outcome record v1",
+  "description": "One node's learning signal extracted from a run receipt (SONA loop).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "node_id",
+    "role",
+    "outcome",
+    "chosen_models",
+    "repairs",
+    "retries",
+    "reroutes",
+    "input_tokens",
+    "output_tokens",
+    "verified_commands"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "node_id": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "implement",
+        "research",
+        "integrate",
+        "review"
+      ]
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "rejected",
+        "cancelled",
+        "timeout"
+      ]
+    },
+    "task_class": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "context_strategy": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "budget_tier": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "chosen_models": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tools_used": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "proof_pass": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "verified_commands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "repairs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "retries": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reroutes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ci_failures": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "latency_seconds": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "input_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "output_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cost_usd": {
+      "type": [
+        "number",
+        "null"
+      ]
+    }
+  }
+}
