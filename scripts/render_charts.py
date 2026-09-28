@@ -34,6 +34,7 @@ CHART_SOURCES = {
     "chart-admission-funnel.svg": ("docs/proof/demo-run/admission.json",),
     "chart-recovery.svg": ("docs/proof/demo-run/receipt.json",),
     "chart-paired-fixture.svg": ("benchmarks/fixtures/legit_paired_savings.json",),
+    "chart-live-savings.svg": ("docs/proof/live-savings-2026-09-28/report.json",),
 }
 
 STAGES = ("DISCOVERED", "ENTITLED", "HEALTHY", "AVAILABLE")
@@ -167,10 +168,79 @@ def paired_fixture() -> None:
     _save(fig, "chart-paired-fixture.svg")
 
 
+def live_savings() -> None:
+    path = ROOT / "docs" / "proof" / "live-savings-2026-09-28" / "report.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    per_task = report["per_task"]
+    summary = report["summary"]
+    # Schema v2 uses cost_eligible_pairs (list of "task/rN" strings)
+    eligible_pairs = set(summary.get("cost_eligible_pairs", []))
+    # Backward compat: v1 used cost_eligible_tasks (list of task ids)
+    eligible_tasks = set(summary.get("cost_eligible_tasks", []))
+
+    names: list[str] = []
+    baseline_costs: list[float] = []
+    verdict_costs: list[float] = []
+    verdict_models: list[str] = []
+
+    for entry in per_task:
+        task_id = entry["task_id"]
+        # Check if any pair for this task is eligible
+        task_eligible = (
+            any(p.startswith(f"{task_id}/") for p in eligible_pairs) or task_id in eligible_tasks
+        )
+        if not task_eligible:
+            continue
+        b_runs = [r for r in entry["runs"] if r["arm"] == "baseline" and r.get("cost_usd")]
+        v_runs = [r for r in entry["runs"] if r["arm"] == "verdict" and r.get("cost_usd")]
+        if not b_runs or not v_runs:
+            continue
+        names.append(entry["task_id"])
+        baseline_costs.append(b_runs[0]["cost_usd"])
+        verdict_costs.append(v_runs[0]["cost_usd"])
+        verdict_models.append(v_runs[0]["model"].split("/")[-1])
+
+    fig, ax = plt.subplots(figsize=(10, 4.0))
+    y = list(range(len(names)))[::-1]
+    ax.barh(
+        [i + 0.18 for i in y],
+        baseline_costs,
+        height=0.34,
+        color=COLORS["drop"],
+        label="baseline (opus-5)",
+    )
+    ax.barh(
+        [i - 0.18 for i in y], verdict_costs, height=0.34, color=COLORS["bar"], label="Verdict arm"
+    )
+    for yi, vc, vm in zip(y, verdict_costs, verdict_models, strict=True):
+        ax.text(vc + 0.001, yi - 0.18, vm, va="center", fontsize=7, color="#555")
+    ax.set_yticks(y, names)
+    ax.set_xlabel("list-price cost per task, USD (observed tokens x published list price)")
+    ax.set_xlim(0, max(baseline_costs) * 1.5)
+    ax.legend(loc="lower right", frameon=False, fontsize=8.5)
+    # Both arms can run the same model on the same prompt; then no routing saving
+    # exists to show, so the title says so instead of printing a percentage.
+    arm_models = {
+        arm: {str(r.get("model")) for e in per_task for r in e["runs"] if r["arm"] == arm}
+        for arm in ("baseline", "verdict")
+    }
+    same = arm_models["baseline"] == arm_models["verdict"]
+    headline = (
+        f"no routing saving measured (both arms on {', '.join(sorted(arm_models['verdict']))})"
+        if same
+        else f"{summary['savings_pct']}% list-price difference over pairs where both arms passed"
+    )
+    ax.set_title(f"Live cost check: {headline}, n={len(names)} tasks", loc="left", fontsize=11)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    _save(fig, "chart-live-savings.svg")
+
+
 def main() -> None:
     admission_funnel()
     recovery()
     paired_fixture()
+    live_savings()
     for name in CHART_SOURCES:
         print(f"wrote docs/assets/{name} ({(ASSETS / name).stat().st_size} bytes)")
 

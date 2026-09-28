@@ -1,0 +1,111 @@
+{
+  "schema_version": "1",
+  "description": "Coding tasks with executable unit-test grading. Includes standalone algorithmic tasks and repo-context tasks that require reading project documents.",
+  "tasks": [
+    {
+      "id": "fizzbuzz",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `fizzbuzz(n: int) -> list[str]` that returns a list of strings for numbers 1 through n. For multiples of 3, use 'Fizz'; multiples of 5, use 'Buzz'; multiples of both, use 'FizzBuzz'; otherwise the number as a string.",
+      "test_file": "test_fizzbuzz.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "flatten",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `flatten(nested: list) -> list` that recursively flattens an arbitrarily nested list. Example: flatten([1, [2, [3, 4], 5], 6]) returns [1, 2, 3, 4, 5, 6]. Non-list items are kept as-is.",
+      "test_file": "test_flatten.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "caesarcipher",
+      "task_class": "simple-code",
+      "prompt": "Write two Python functions: `caesar_encrypt(text: str, shift: int) -> str` and `caesar_decrypt(text: str, shift: int) -> str`. Only shift ASCII letters (a-z, A-Z); leave other characters unchanged. Shift wraps around the alphabet.",
+      "test_file": "test_caesarcipher.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "wordcount",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `word_frequencies(text: str) -> dict[str, int]` that returns a case-insensitive word frequency count. Words are sequences of alphanumeric characters (use re.findall(r'\\\\w+', text.lower())).",
+      "test_file": "test_wordcount.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "matrix_transpose",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `transpose(matrix: list[list]) -> list[list]` that transposes a 2D matrix (list of lists). Example: transpose([[1,2,3],[4,5,6]]) returns [[1,4],[2,5],[3,6]]. Handle empty input.",
+      "test_file": "test_matrix_transpose.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "balanced_parens",
+      "task_class": "medium-code",
+      "prompt": "Write a Python function `is_balanced(s: str) -> bool` that checks whether the string has balanced brackets. Support '()', '[]', '{}'. Ignore all other characters. Example: is_balanced('({[]})') -> True, is_balanced('([)]') -> False.",
+      "test_file": "test_balanced_parens.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "lru_cache",
+      "task_class": "medium-code",
+      "prompt": "Write a Python class `LRUCache` with methods `__init__(self, capacity: int)`, `get(self, key: int) -> int` (returns -1 if not found), and `put(self, key: int, value: int) -> None`. When the cache exceeds capacity, evict the least recently used item. Both get and put count as 'use'.",
+      "test_file": "test_lru_cache.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "roman_numerals",
+      "task_class": "medium-code",
+      "prompt": "Write two Python functions: `to_roman(num: int) -> str` converts an integer (1-3999) to a Roman numeral string, and `from_roman(s: str) -> int` converts a Roman numeral string back to an integer.",
+      "test_file": "test_roman_numerals.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "json_flatten",
+      "task_class": "medium-code",
+      "prompt": "Write a Python function `flatten_json(obj: dict, sep: str = '.') -> dict` that flattens a nested JSON dict using dot-separated keys. Lists should use numeric indices. Example: flatten_json({'a': {'b': 1}, 'c': [2, 3]}) returns {'a.b': 1, 'c.0': 2, 'c.1': 3}.",
+      "test_file": "test_json_flatten.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "binary_search",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `binary_search(arr: list[int], target: int) -> int` that returns the index of target in a sorted list, or -1 if not found. Must run in O(log n) time.",
+      "test_file": "test_binary_search.py",
+      "task_group": "standalone"
+    },
+    {
+      "id": "drop_codes",
+      "task_class": "medium-code",
+      "task_group": "repo-context",
+      "prompt": "You are working in a codebase. Here is a project document:\n\n```\n# ADR-0448 Named drop codes\n\nEvery candidate rejection is a named drop. The four codes are emitted in this\nfixed order:\n\n1. `DROP_CAP_UNKNOWN` - required capability absent from the Core metadata store\n2. `DROP_PASSPORT_STALE_9F` - passport older than the prove-at-rest window\n3. `DROP_CONFIRM_BUDGET_2M` - confirm step exceeded its budget\n4. `DROP_INVENTORY_GHOST` - id present in inventory but absent from health\n\nAn unknown required capability is never a silent skip. It is `DROP_CAP_UNKNOWN`.\n\n```\n\nWrite a Python function `drop_codes() -> list[str]` that returns the four named drop codes from ADR-0448 in the fixed order specified in the document.",
+      "test_file": "test_drop_codes.py"
+    },
+    {
+      "id": "cooldown_sentinel",
+      "task_class": "medium-code",
+      "task_group": "repo-context",
+      "prompt": "You are working in a codebase. Here is a project document:\n\n```\n# ADR-0447 Cooldown accounting for exhausted routes\n\nWhen a route returns an exhaustion signal, Verdict records the cooldown under the\nsentinel `COOLDOWN_SENTINEL_7QX`. The recorded reset window is clamped to\n`4380 minutes` regardless of what the provider reports, because provider cooldown\nstrings are advisory and frequently wrong.\n\nA clamped cooldown is always written to the receipt field `cooldown_clamp_reason`\nwith the literal value `provider_string_untrusted`.\n\n```\n\nWrite a Python function `cooldown_info() -> dict` that returns a dict with keys:\n- `sentinel`: the cooldown sentinel string\n- `clamp_minutes`: the maximum cooldown clamp in minutes (int)\n- `clamp_reason`: the literal clamp reason value\n\nAll values come from the document above.",
+      "test_file": "test_cooldown_sentinel.py"
+    },
+    {
+      "id": "receipt_digest",
+      "task_class": "medium-code",
+      "task_group": "repo-context",
+      "prompt": "You are working in a codebase. Here is a project document:\n\n```\n# Architecture: receipt digest\n\nThe uplift receipt digest is computed as `BLAKE2s-128` over the canonical event log\nand stored in the field `uplift_digest_b2s`. The digest is prefixed with the literal\nmarker `ud1:` so older SHA-256 receipts remain distinguishable.\n\nThe maximum packed file size is `8192 bytes`; a larger file is truncated and flagged\nwith `truncated_by_cap` in the same receipt.\n\n```\n\nWrite a Python function `receipt_digest_info() -> dict` that returns a dict with keys:\n- `algorithm`: the digest algorithm name (str)\n- `prefix`: the digest prefix marker (str)\n- `max_packed_bytes`: the maximum packed file size in bytes (int)\n- `truncated_flag`: the flag name used when a file is truncated (str)\n\nAll values come from the document above.",
+      "test_file": "test_receipt_digest.py"
+    },
+    {
+      "id": "ladder_stages",
+      "task_class": "medium-code",
+      "task_group": "repo-context",
+      "prompt": "You are working in a codebase. Here is a project document:\n\n```\n# Architecture: the six-stage uplift ladder\n\nThe ladder stages, in order, are:\n\n`SEEDED` -> `PROBED` -> `WARRANTED` -> `PACKED` -> `BOUND` -> `SERVED`\n\n`WARRANTED` is the only stage permitted to consult the Core metadata store.\n`BOUND` is the only stage that may assert a completed-with identity, and it does so\nstrictly from the gateway header, never from the echoed body model.\n\n```\n\nWrite two Python functions:\n1. `ladder_stages() -> list[str]` returns the six uplift ladder stage names in order.\n2. `ladder_constraints() -> dict` returns a dict with:\n   - `metadata_stage`: the stage permitted to consult the Core metadata store\n   - `identity_stage`: the stage that may assert a completed-with identity\n\nAll values come from the document above.",
+      "test_file": "test_ladder_stages.py"
+    },
+    {
+      "id": "validate_receipt",
+      "task_class": "medium-code",
+      "task_group": "repo-context",
+      "prompt": "You are working in a codebase. Here are two project documents:\n\nADR-0447:\n```\n# ADR-0447 Cooldown accounting for exhausted routes\n\nWhen a route returns an exhaustion signal, Verdict records the cooldown under the\nsentinel `COOLDOWN_SENTINEL_7QX`. The recorded reset window is clamped to\n`4380 minutes` regardless of what the provider reports, because provider cooldown\nstrings are advisory and frequently wrong.\n\nA clamped cooldown is always written to the receipt field `cooldown_clamp_reason`\nwith the literal value `provider_string_untrusted`.\n\n```\n\nWrite a Python function `validate_cooldown_receipt(receipt: dict) -> bool` that validates a cooldown receipt dict. It must return True only if ALL of the following hold:\n- `receipt['sentinel']` equals the sentinel from ADR-0447\n- `receipt['reset_minutes']` does not exceed the clamp maximum from ADR-0447\n- `receipt.get('cooldown_clamp_reason')` equals the literal clamp reason from ADR-0447\n\nReturn False for any violation or missing field.",
+      "test_file": "test_validate_receipt.py"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+# Pricing page snapshot
+URL: https://www.anthropic.com/pricing
+Fetched: 2026-09-28T14:46:05.388293+00:00
+SHA-256: b3059487de0b25208edac6aee87889e9eac27058260abb2d11f93b687c975e5e
+Page size: 1171368 chars
+
+## Extracted prices
+Opus 5: Input $5.0/MTok, Output $25.0/MTok
+Sonnet 4.5: Input $3.0/MTok, Output $15.0/MTok
+Haiku 4.5: Input $1.0/MTok, Output $5.0/MTok

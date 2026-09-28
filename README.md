@@ -687,15 +687,51 @@ never probed).
 
 ## Cost comparison
 
+**No routing saving measured yet.** A live run on real models found that Verdict's
+offline router chose the same model as the baseline for every task, so the two arms
+cost the same apart from run-to-run token variance.
+
+Setup: fifteen coding tasks (10 standalone + 5 repo-context), each run twice per arm,
+graded by executable unit tests. Both arms sent the same prompt.
+
+- **Baseline arm**: every task sent to `cc/claude-opus-5`.
+- **Verdict arm**: model chosen by `Gate.route(allow_offline=True)`, the CLI catalog path.
+  This path has no live `EligibilityGate`, provider health or quota input, so this run
+  does **not** measure the live admission/eligibility router. It chose `cc/claude-opus-5`
+  for all 15 tasks.
+
+| Measure (list price x observed tokens) | Overall | Standalone (n=10) | Repo-context (n=5) |
+|---|---|---|---|
+| Baseline list-price cost | $0.7668 | $0.6225 | $0.1443 |
+| Verdict list-price cost | $0.8386 | $0.6756 | $0.1631 |
+| (task, repeat) pairs compared | 26 | 20 | 6 |
+
+Same model and same prompt in both arms: the cost difference is token variance between
+runs, not a routing effect. Pass rates were 26/30 (baseline arm) and 30/30 (Verdict arm);
+with identical model and input this is also run-to-run variance, not a Verdict advantage.
+Costs are compared only over (task, repeat) pairs where both arms passed; the four
+excluded pairs are cooldown_sentinel r1/r2 and ladder_stages r1/r2 (baseline failed).
+
+Costs are **not billed amounts**: [published list prices](https://www.anthropic.com/pricing)
+(fetched at run time; page SHA-256 in the proof dir) applied to observed token usage on
+subscription capacity (no invoice). Small n (15 tasks x 2 repeats).
+
+![Live cost check: per-task list-price cost for the baseline arm and the Verdict arm, both on cc/claude-opus-5](docs/assets/chart-live-savings.svg)
+
+<sub>Data: [`docs/proof/live-savings-2026-09-28/report.json`](docs/proof/live-savings-2026-09-28/report.json).
+Observed token usage x published list prices; subscription capacity, no invoice.
+Method: [`scripts/live_savings_bench.py`](scripts/live_savings_bench.py);
+run with `VERDICT_LIVE_SMOKE=1` (opt-in, spends real capacity).</sub>
+
 **Deterministic mock — no provider spend.**
 
 ```bash
 uv run python -m verdict.routing_demo --mock
 ```
 
-The current deterministic mock compares 100 requests using fixed Opus/Sonnet/Haiku price
-estimates against a class-aware route: approximately **$0.16 routed** versus **$0.52 baseline** in the recorded fixture. The implementation computes routed cost, baseline, and
-savings; see [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md) for the baseline definition and live/recorded limitations. These are estimates, not observed invoices.
+The deterministic mock compares 100 requests using fixed price estimates against a
+class-aware route. See [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md)
+for the baseline definition and live/recorded limitations.
 
 ![Paired-savings fixture: stated per-task costs for the direct and Verdict arms of four tasks; one Verdict arm is a cache hit and one is a quality miss, so neither can count as savings](docs/assets/chart-paired-fixture.svg)
 

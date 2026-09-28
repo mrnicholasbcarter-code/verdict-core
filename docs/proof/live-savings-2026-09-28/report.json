@@ -1,0 +1,1302 @@
+{
+  "schema_version": "2",
+  "generated_at": "2026-09-28T15:02:14.551706+00:00",
+  "label": "Measured cost comparison using real model runs, real observed token usage, priced at the provider's published per-token list prices. Verdict arm uses Gate.route() (legacy feed / offline catalog). Subscription capacity; no invoice \u2014 costs are computed, not billed.",
+  "methodology": {
+    "baseline_model": "cc/claude-opus-5",
+    "verdict_routing": "Gate.route() with allow_offline=True (real planner + catalog ranker)",
+    "grading": "unit tests in temp sandbox",
+    "repeats": 2,
+    "eligibility": "per (task, repeat) pair \u2014 both arms must pass",
+    "note": "Small n; two repeats per arm per task."
+  },
+  "pricing_source": {
+    "url": "https://www.anthropic.com/pricing",
+    "page_sha256": "b3059487de0b25208edac6aee87889e9eac27058260abb2d11f93b687c975e5e",
+    "fetched_at": "2026-09-28T14:46:05.388293+00:00"
+  },
+  "token_counter_validation": {
+    "cc/claude-opus-5": {
+      "proportional": true,
+      "short_prompt_tokens": [
+        38,
+        38,
+        39
+      ],
+      "long_prompt_tokens": [
+        5039,
+        5037,
+        5039
+      ],
+      "note": "OK: short_avg=38, long_avg=5038, ratio=131.4x"
+    },
+    "cc/claude-sonnet-4-5-20250929": {
+      "proportional": true,
+      "short_prompt_tokens": [
+        29,
+        28,
+        30
+      ],
+      "long_prompt_tokens": [
+        5028,
+        5028,
+        5030
+      ],
+      "note": "OK: short_avg=29, long_avg=5029, ratio=173.4x"
+    },
+    "cc/claude-haiku-4-5-20251001": {
+      "proportional": true,
+      "short_prompt_tokens": [
+        28,
+        29,
+        28
+      ],
+      "long_prompt_tokens": [
+        5028,
+        5028,
+        5028
+      ],
+      "note": "OK: short_avg=28, long_avg=5028, ratio=177.5x"
+    }
+  },
+  "price_table": {
+    "cc/claude-opus-5": {
+      "input_per_1m": 5.0,
+      "output_per_1m": 25.0,
+      "source_url": "https://www.anthropic.com/pricing",
+      "access_date": "2026-09-28T14:46:05.388293+00:00",
+      "parsed_from": "Opus 5"
+    },
+    "cc/claude-sonnet-4-5-20250929": {
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "source_url": "https://www.anthropic.com/pricing",
+      "access_date": "2026-09-28T14:46:05.388293+00:00",
+      "parsed_from": "Sonnet 4.5"
+    },
+    "cc/claude-haiku-4-5-20251001": {
+      "input_per_1m": 1.0,
+      "output_per_1m": 5.0,
+      "source_url": "https://www.anthropic.com/pricing",
+      "access_date": "2026-09-28T14:46:05.388293+00:00",
+      "parsed_from": "Haiku 4.5"
+    }
+  },
+  "summary": {
+    "total_runs": 60,
+    "baseline_pass_rate": "26/30",
+    "verdict_pass_rate": "30/30",
+    "cost_eligible_pairs": [
+      "balanced_parens/r1",
+      "balanced_parens/r2",
+      "binary_search/r1",
+      "binary_search/r2",
+      "caesarcipher/r1",
+      "caesarcipher/r2",
+      "drop_codes/r1",
+      "drop_codes/r2",
+      "fizzbuzz/r1",
+      "fizzbuzz/r2",
+      "flatten/r1",
+      "flatten/r2",
+      "json_flatten/r1",
+      "json_flatten/r2",
+      "lru_cache/r1",
+      "lru_cache/r2",
+      "matrix_transpose/r1",
+      "matrix_transpose/r2",
+      "receipt_digest/r1",
+      "receipt_digest/r2",
+      "roman_numerals/r1",
+      "roman_numerals/r2",
+      "validate_receipt/r1",
+      "validate_receipt/r2",
+      "wordcount/r1",
+      "wordcount/r2"
+    ],
+    "cost_excluded_pairs": [
+      {
+        "pair": "cooldown_sentinel/r1",
+        "reason": "baseline failed"
+      },
+      {
+        "pair": "cooldown_sentinel/r2",
+        "reason": "baseline failed"
+      },
+      {
+        "pair": "ladder_stages/r1",
+        "reason": "baseline failed"
+      },
+      {
+        "pair": "ladder_stages/r2",
+        "reason": "baseline failed"
+      }
+    ],
+    "baseline_cost_usd": 0.76681,
+    "verdict_cost_usd": 0.838645,
+    "savings_pct": -9.4,
+    "savings_label": "Savings computed only over (task, repeat) pairs where both arms passed, using models with validated token counters and published list prices."
+  },
+  "group_summaries": {
+    "repo-context": {
+      "tasks": [
+        "drop_codes",
+        "cooldown_sentinel",
+        "receipt_digest",
+        "ladder_stages",
+        "validate_receipt"
+      ],
+      "eligible_pairs": 6,
+      "total_pairs": 10,
+      "baseline_cost_usd": 0.1443,
+      "verdict_cost_usd": 0.16308,
+      "savings_pct": -13.0,
+      "baseline_pass_rate": "6/10",
+      "verdict_pass_rate": "10/10"
+    },
+    "standalone": {
+      "tasks": [
+        "fizzbuzz",
+        "flatten",
+        "caesarcipher",
+        "wordcount",
+        "matrix_transpose",
+        "balanced_parens",
+        "lru_cache",
+        "roman_numerals",
+        "json_flatten",
+        "binary_search"
+      ],
+      "eligible_pairs": 20,
+      "total_pairs": 20,
+      "baseline_cost_usd": 0.62251,
+      "verdict_cost_usd": 0.675565,
+      "savings_pct": -8.5,
+      "baseline_pass_rate": "20/20",
+      "verdict_pass_rate": "20/20"
+    }
+  },
+  "failures": [
+    {
+      "task_id": "cooldown_sentinel",
+      "arm": "baseline",
+      "model": "cc/claude-opus-5",
+      "repeat": "1"
+    },
+    {
+      "task_id": "cooldown_sentinel",
+      "arm": "baseline",
+      "model": "cc/claude-opus-5",
+      "repeat": "2"
+    },
+    {
+      "task_id": "ladder_stages",
+      "arm": "baseline",
+      "model": "cc/claude-opus-5",
+      "repeat": "1"
+    },
+    {
+      "task_id": "ladder_stages",
+      "arm": "baseline",
+      "model": "cc/claude-opus-5",
+      "repeat": "2"
+    }
+  ],
+  "per_task": [
+    {
+      "task_id": "balanced_parens",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 138,
+          "completion_tokens": 538,
+          "total_tokens": 676,
+          "latency_ms": 6513.2,
+          "cost_usd": 0.01414
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 137,
+          "completion_tokens": 573,
+          "total_tokens": 710,
+          "latency_ms": 7351.6,
+          "cost_usd": 0.01501,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 138,
+          "completion_tokens": 553,
+          "total_tokens": 691,
+          "latency_ms": 7438.3,
+          "cost_usd": 0.014515
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 136,
+          "completion_tokens": 525,
+          "total_tokens": 661,
+          "latency_ms": 6610.1,
+          "cost_usd": 0.013805,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "binary_search",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 104,
+          "completion_tokens": 925,
+          "total_tokens": 1029,
+          "latency_ms": 12041.4,
+          "cost_usd": 0.023645
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 104,
+          "completion_tokens": 1519,
+          "total_tokens": 1623,
+          "latency_ms": 17601.6,
+          "cost_usd": 0.038495,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 105,
+          "completion_tokens": 941,
+          "total_tokens": 1046,
+          "latency_ms": 12075.9,
+          "cost_usd": 0.02405
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 106,
+          "completion_tokens": 938,
+          "total_tokens": 1044,
+          "latency_ms": 13255.7,
+          "cost_usd": 0.02398,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "caesarcipher",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 146,
+          "completion_tokens": 892,
+          "total_tokens": 1038,
+          "latency_ms": 10270.6,
+          "cost_usd": 0.02303
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 145,
+          "completion_tokens": 1214,
+          "total_tokens": 1359,
+          "latency_ms": 13865.1,
+          "cost_usd": 0.031075,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 144,
+          "completion_tokens": 1238,
+          "total_tokens": 1382,
+          "latency_ms": 14437.8,
+          "cost_usd": 0.03167
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 144,
+          "completion_tokens": 1164,
+          "total_tokens": 1308,
+          "latency_ms": 13817.4,
+          "cost_usd": 0.02982,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "cooldown_sentinel",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": false,
+          "prompt_tokens": 354,
+          "completion_tokens": 150,
+          "total_tokens": 504,
+          "latency_ms": 5179.2,
+          "cost_usd": 0.00552
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 354,
+          "completion_tokens": 656,
+          "total_tokens": 1010,
+          "latency_ms": 9059.5,
+          "cost_usd": 0.01817,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": false,
+          "prompt_tokens": 352,
+          "completion_tokens": 137,
+          "total_tokens": 489,
+          "latency_ms": 4966.3,
+          "cost_usd": 0.005185
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 352,
+          "completion_tokens": 594,
+          "total_tokens": 946,
+          "latency_ms": 7759.9,
+          "cost_usd": 0.01661,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "drop_codes",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 336,
+          "completion_tokens": 667,
+          "total_tokens": 1003,
+          "latency_ms": 10745.1,
+          "cost_usd": 0.018355
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 337,
+          "completion_tokens": 841,
+          "total_tokens": 1178,
+          "latency_ms": 9792.2,
+          "cost_usd": 0.02271,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 335,
+          "completion_tokens": 647,
+          "total_tokens": 982,
+          "latency_ms": 7994.8,
+          "cost_usd": 0.01785
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 336,
+          "completion_tokens": 743,
+          "total_tokens": 1079,
+          "latency_ms": 10389.4,
+          "cost_usd": 0.020255,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "fizzbuzz",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 150,
+          "completion_tokens": 471,
+          "total_tokens": 621,
+          "latency_ms": 5180.2,
+          "cost_usd": 0.012525
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 151,
+          "completion_tokens": 621,
+          "total_tokens": 772,
+          "latency_ms": 7765.5,
+          "cost_usd": 0.01628,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 149,
+          "completion_tokens": 546,
+          "total_tokens": 695,
+          "latency_ms": 5894.2,
+          "cost_usd": 0.014395
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 150,
+          "completion_tokens": 593,
+          "total_tokens": 743,
+          "latency_ms": 6189.6,
+          "cost_usd": 0.015575,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "flatten",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 140,
+          "completion_tokens": 773,
+          "total_tokens": 913,
+          "latency_ms": 10733.0,
+          "cost_usd": 0.020025
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 141,
+          "completion_tokens": 848,
+          "total_tokens": 989,
+          "latency_ms": 10358.1,
+          "cost_usd": 0.021905,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 141,
+          "completion_tokens": 1254,
+          "total_tokens": 1395,
+          "latency_ms": 17040.1,
+          "cost_usd": 0.032055
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 140,
+          "completion_tokens": 1115,
+          "total_tokens": 1255,
+          "latency_ms": 14164.5,
+          "cost_usd": 0.028575,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "json_flatten",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 170,
+          "completion_tokens": 2616,
+          "total_tokens": 2786,
+          "latency_ms": 29835.1,
+          "cost_usd": 0.06625
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 171,
+          "completion_tokens": 2096,
+          "total_tokens": 2267,
+          "latency_ms": 23360.9,
+          "cost_usd": 0.053255,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 172,
+          "completion_tokens": 1937,
+          "total_tokens": 2109,
+          "latency_ms": 52105.3,
+          "cost_usd": 0.049285
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 171,
+          "completion_tokens": 2425,
+          "total_tokens": 2596,
+          "latency_ms": 27120.4,
+          "cost_usd": 0.06148,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "ladder_stages",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": false,
+          "prompt_tokens": 350,
+          "completion_tokens": 119,
+          "total_tokens": 469,
+          "latency_ms": 5363.6,
+          "cost_usd": 0.004725
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 352,
+          "completion_tokens": 585,
+          "total_tokens": 937,
+          "latency_ms": 10918.1,
+          "cost_usd": 0.016385,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": false,
+          "prompt_tokens": 350,
+          "completion_tokens": 57,
+          "total_tokens": 407,
+          "latency_ms": 8515.0,
+          "cost_usd": 0.003175
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 352,
+          "completion_tokens": 304,
+          "total_tokens": 656,
+          "latency_ms": 5303.2,
+          "cost_usd": 0.00936,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "lru_cache",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 152,
+          "completion_tokens": 1905,
+          "total_tokens": 2057,
+          "latency_ms": 21607.7,
+          "cost_usd": 0.048385
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 150,
+          "completion_tokens": 2548,
+          "total_tokens": 2698,
+          "latency_ms": 25876.6,
+          "cost_usd": 0.06445,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 151,
+          "completion_tokens": 2220,
+          "total_tokens": 2371,
+          "latency_ms": 23543.9,
+          "cost_usd": 0.056255
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 151,
+          "completion_tokens": 2098,
+          "total_tokens": 2249,
+          "latency_ms": 23383.3,
+          "cost_usd": 0.053205,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "matrix_transpose",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 139,
+          "completion_tokens": 1012,
+          "total_tokens": 1151,
+          "latency_ms": 11699.1,
+          "cost_usd": 0.025995
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 140,
+          "completion_tokens": 713,
+          "total_tokens": 853,
+          "latency_ms": 8641.8,
+          "cost_usd": 0.018525,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 142,
+          "completion_tokens": 848,
+          "total_tokens": 990,
+          "latency_ms": 9503.8,
+          "cost_usd": 0.02191
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 138,
+          "completion_tokens": 1090,
+          "total_tokens": 1228,
+          "latency_ms": 12474.6,
+          "cost_usd": 0.02794,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "receipt_digest",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 354,
+          "completion_tokens": 565,
+          "total_tokens": 919,
+          "latency_ms": 8103.6,
+          "cost_usd": 0.015895
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 352,
+          "completion_tokens": 755,
+          "total_tokens": 1107,
+          "latency_ms": 9747.8,
+          "cost_usd": 0.020635,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 354,
+          "completion_tokens": 627,
+          "total_tokens": 981,
+          "latency_ms": 8094.2,
+          "cost_usd": 0.017445
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 353,
+          "completion_tokens": 785,
+          "total_tokens": 1138,
+          "latency_ms": 11426.6,
+          "cost_usd": 0.02139,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "roman_numerals",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 118,
+          "completion_tokens": 1920,
+          "total_tokens": 2038,
+          "latency_ms": 51414.9,
+          "cost_usd": 0.04859
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 120,
+          "completion_tokens": 2195,
+          "total_tokens": 2315,
+          "latency_ms": 22146.2,
+          "cost_usd": 0.055475,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 120,
+          "completion_tokens": 2252,
+          "total_tokens": 2372,
+          "latency_ms": 23565.4,
+          "cost_usd": 0.0569
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 120,
+          "completion_tokens": 2325,
+          "total_tokens": 2445,
+          "latency_ms": 24695.7,
+          "cost_usd": 0.058725,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "validate_receipt",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 428,
+          "completion_tokens": 1336,
+          "total_tokens": 1764,
+          "latency_ms": 19181.4,
+          "cost_usd": 0.03554
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 429,
+          "completion_tokens": 1396,
+          "total_tokens": 1825,
+          "latency_ms": 16793.3,
+          "cost_usd": 0.037045,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 428,
+          "completion_tokens": 1483,
+          "total_tokens": 1911,
+          "latency_ms": 19886.4,
+          "cost_usd": 0.039215
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 429,
+          "completion_tokens": 1556,
+          "total_tokens": 1985,
+          "latency_ms": 20471.3,
+          "cost_usd": 0.041045,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "wordcount",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 125,
+          "completion_tokens": 610,
+          "total_tokens": 735,
+          "latency_ms": 10116.3,
+          "cost_usd": 0.015875
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 125,
+          "completion_tokens": 842,
+          "total_tokens": 967,
+          "latency_ms": 10728.2,
+          "cost_usd": 0.021675,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 123,
+          "completion_tokens": 896,
+          "total_tokens": 1019,
+          "latency_ms": 11758.6,
+          "cost_usd": 0.023015
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 123,
+          "completion_tokens": 1028,
+          "total_tokens": 1151,
+          "latency_ms": 12375.8,
+          "cost_usd": 0.026315,
+          "routing_receipt": {
+            "selected_model": "cc/claude-opus-5",
+            "provider": "primary",
+            "tier": 0,
+            "reason": "fallback \u2014 no offload match",
+            "decision": "fallback",
+            "alternatives": [],
+            "task_class": "unknown",
+            "safety_flags": [
+              "legacy_non_authority_selector"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
