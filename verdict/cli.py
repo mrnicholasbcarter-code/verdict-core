@@ -4,9 +4,7 @@ import argparse
 import contextlib
 import json
 import os
-import re
 import sys
-from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
@@ -15,6 +13,10 @@ import yaml
 from rich.console import Console
 from rich.prompt import Prompt
 
+import verdict.actions.helpers as _action_helpers
+
+# BOD-275: canonical implementations extracted from cli.py  ──────────────────
+from verdict.actions.helpers import _CLI_DEFAULT_PROVIDERS as _HELPERS_CLI_DEFAULT_PROVIDERS
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.free_tier_admit import execute_offload_chat, omniroute_endpoint_from_env
@@ -51,56 +53,7 @@ def _print_detection_banner() -> None:
     )
 
 
-def _read_omniroute_token() -> str | None:
-    """Read an explicitly configured OmniRoute token without private-database access."""
-
-    return os.getenv("OMNIROUTE_API_KEY")
-
-
-def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
-    """Make an authenticated request to the explicitly configured local router."""
-    token = _read_omniroute_token()
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    import json
-    import urllib.request
-    from urllib.error import URLError
-
-    base_url = os.getenv("OMNIROUTE_BASE_URL")
-    if not base_url:
-        # OMNIROUTE_BASE_URL is not wired into the environment even when a
-        # gateway is running locally. Fall back to a one-shot health probe of
-        # the known local gateway ports rather than giving up immediately.
-        for candidate_url in ("http://localhost:20128", "http://localhost:20129"):
-            try:
-                health_req = urllib.request.Request(
-                    candidate_url.rstrip("/") + "/api/health",
-                    headers={"Accept": "application/json"},
-                    method="GET",
-                )
-                with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
-                    payload = json.loads(resp.read().decode("utf-8"))
-                    if isinstance(payload, dict) and payload.get("status") == "ok":
-                        base_url = candidate_url
-                        break
-            except (URLError, Exception):
-                continue
-        if not base_url:
-            return None
-    url = base_url.rstrip("/") + "/" + path.lstrip("/")
-
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    if data:
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=5) as response:  # nosec B310
-            return json.loads(response.read().decode("utf-8"))
-    except (URLError, Exception):
-        return None
+import verdict.doctor_diagnostics as _doctor_diag  # noqa: E402
 
 
 def select_from_list(prompt_text: str, options: list[str], default: str | None = None) -> str:
@@ -489,7 +442,7 @@ def cmd_setup(
         to_sync = []
         try:
             # Check existing nodes in OmniRoute
-            existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
+            existing_nodes = _doctor_diag._omniroute_api_request("GET", "/api/provider-nodes")
             existing_urls = set()
             if existing_nodes:
                 items = []
@@ -528,7 +481,9 @@ def cmd_setup(
                             "weight": 100,
                             "enabled": True,
                         }
-                        res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                        res = _doctor_diag._omniroute_api_request(
+                            "POST", "/api/provider-nodes", payload
+                        )
                         if res:
                             ui.status("Node registered", "ok", node_name)
                         else:
@@ -591,7 +546,9 @@ def cmd_setup(
                         "weight": 80,
                         "enabled": True,
                     }
-                    res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                    res = _doctor_diag._omniroute_api_request(
+                        "POST", "/api/provider-nodes", payload
+                    )
                     if res:
                         ui.status("Gemini Free fallback", "ok", "Registered")
                     else:
@@ -604,7 +561,9 @@ def cmd_setup(
                         "weight": 80,
                         "enabled": True,
                     }
-                    res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                    res = _doctor_diag._omniroute_api_request(
+                        "POST", "/api/provider-nodes", payload
+                    )
                     if res:
                         ui.status("OpenRouter Free fallback", "ok", "Registered")
                     else:
@@ -741,48 +700,13 @@ def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
 #: Interactive-CLI default provider set. Used only through the shared bootstrap
 #: contract, which reports it as ``field_sources["providers"] == "default"`` and
 #: refuses it under the production profile.
-_CLI_DEFAULT_PROVIDERS = {"public_ollama": "http://localhost:11434/v1"}
-
-
-def _cli_bootstrap(*, require_authoritative: bool = False) -> Any:
-    """Resolve the CLI provider/gateway bootstrap from the shared contract."""
-    from verdict.provider_bootstrap import resolve_provider_bootstrap
-
-    return resolve_provider_bootstrap(
-        allow_default_providers=True,
-        default_providers=_CLI_DEFAULT_PROVIDERS,
-        require_authoritative=require_authoritative,
-    )
-
-
-def _report_bootstrap_notes(result: Any) -> None:
-    """Print non-fatal bootstrap findings so no default stays silent."""
-    for note in result.notes():
-        if note.code == "config_file_missing":
-            continue
-        print(f"verdict: {note.describe()}", file=sys.stderr)
-
-
-def _build_route_gate(allow_offline: bool = False) -> Gate:
-    """Build the CLI Gate from the shared bootstrap contract (route/compare).
-
-    Configuration failures name the exact field, source and remediation instead
-    of failing later as an empty provider map.
-    """
-    from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
-
-    try:
-        bootstrap = _cli_bootstrap()
-    except BootstrapError as exc:
-        print(describe_bootstrap_failure(exc), file=sys.stderr)
-        raise SystemExit(1) from exc
-    _report_bootstrap_notes(bootstrap)
-    return Gate(
-        primary_model=bootstrap.primary_model,
-        providers=bootstrap.provider_configs(),
-        log_path=bootstrap.log_path,
-        allow_offline=allow_offline,
-    )
+# ---------------------------------------------------------------------------
+# CLI bootstrap + route gate — canonical: verdict.actions.helpers
+# ---------------------------------------------------------------------------
+_CLI_DEFAULT_PROVIDERS = _HELPERS_CLI_DEFAULT_PROVIDERS
+_cli_bootstrap = _action_helpers._cli_bootstrap
+_report_bootstrap_notes = _action_helpers._report_bootstrap_notes
+_build_route_gate = _action_helpers.build_route_gate  # backward-compat alias
 
 
 def _configured_completion_endpoint(
@@ -820,7 +744,7 @@ def _ensure_cli_gateway_ready() -> None:
     from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
 
     try:
-        bootstrap = _cli_bootstrap()
+        bootstrap = _action_helpers._cli_bootstrap()
         outcome = require_gateway_ready(bootstrap, probe=_gateway_probe_for(bootstrap))
     except BootstrapError as exc:
         print(describe_bootstrap_failure(exc), file=sys.stderr)
@@ -880,22 +804,47 @@ def cmd_route(
     catalog/network surface; it must not imply legacy selector escape. API serve
     still forces authority.
     """
-    from verdict.serve_path import CONTEXT_ALLOW_LEGACY
+    from verdict.actions.registry import run_action
 
-    gate = _build_route_gate(allow_offline=allow_offline)
-    # Never couple offline catalog mode to the legacy-selector escape.
     if allow_legacy_selector is None:
         allow_legacy_selector = False
-    context: dict[str, object] = {}
-    if allow_legacy_selector:
-        context[CONTEXT_ALLOW_LEGACY] = True
-    # Do not force CONTEXT_REQUIRE_AUTHORITY here — development/smoke CLI must
-    # still route via the legacy feed path; production/env opt-in fail-closed.
+
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
+    params = {
+        "task": task,
+        "criticality": criticality,
+        "allow_offline": allow_offline,
+        "allow_legacy_selector": allow_legacy_selector,
+        "gate": gate,
+        "terse": terse,
+    }
+    if terse:
+        result = run_action("route", params)
+    else:
+        status_label = (
+            "[bold green]Evaluating static catalog (offline)..."
+            if allow_offline
+            else "[bold green]Evaluating network & heuristics..."
+        )
+        with console.status(status_label, spinner="dots"):
+            result = run_action("route", params)
+
+    data = result.data
+    gate = data["gate"]
+    dec = _execute_cli_decision(gate, task, data["decision"], allow_offline=allow_offline)
+    base_selection = data["selection"]
+    selection = None
+    if base_selection is not None:
+        selection = type(base_selection)(
+            strategy="DIRECT",
+            model=dec.model,
+            reasoning="CLI route/run dispatched one provider completion directly",
+            timestamp=base_selection.timestamp,
+        )
+    transport_ok = dec.transport_outcome in {"sent", "success"}
 
     if terse:
-        dec = gate.route(task, criticality, context=context or None)
-        dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
-        if getattr(dec, "transport_outcome", "not_sent") not in {"sent", "success"}:
+        if not transport_ok:
             error_payload = {
                 "model": getattr(dec, "model", None),
                 "provider": getattr(dec, "provider", None),
@@ -909,23 +858,9 @@ def cmd_route(
         print(dec.model)
         return
 
-    status_label = (
-        "[bold green]Evaluating static catalog (offline)..."
-        if allow_offline
-        else "[bold green]Evaluating network & heuristics..."
-    )
-    with console.status(status_label, spinner="dots"):
-        dec, selection = gate.route_with_strategy(task, criticality, context=context or None)
-        dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
-        selection = type(selection)(
-            strategy="DIRECT",
-            model=dec.model,
-            reasoning="CLI route/run dispatched one provider completion directly",
-            timestamp=selection.timestamp,
-        )
-
     from verdict import present
 
+    assert selection is not None  # non-terse always requests a strategy
     present.header("Routing Decision")
     present.kv(
         {
@@ -943,7 +878,6 @@ def cmd_route(
             "Reason": dec.reason,
         }
     )
-    # Machine-readable StrategySelection record (issue #265).
     payload: dict[str, Any] = {
         "strategy_selection": selection.to_dict(),
         "transport_outcome": dec.transport_outcome,
@@ -956,56 +890,37 @@ def cmd_route(
     if dec.execute_preview:
         payload["execute_preview"] = dec.execute_preview[:500]
     print(json.dumps(payload, sort_keys=True))
-    if dec.transport_outcome not in {"sent", "success"}:
+    if not transport_ok:
         raise SystemExit(1)
 
 
 def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
     """Compare a DIRECT frontier call against the Verdict route (issue #265)."""
-    from verdict.comparison import ComparisonHarness
+    from verdict.actions.registry import run_action
 
-    gate = _build_route_gate(allow_offline=allow_offline)
-    harness = ComparisonHarness(gate=gate)
-    report = harness.compare(task, criticality=criticality)
-    print(json.dumps({"comparison_report": report.to_dict()}, sort_keys=True, indent=2))
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
+    result = run_action(
+        "compare",
+        {"task": task, "criticality": criticality, "allow_offline": allow_offline, "gate": gate},
+    )
+    print(json.dumps(result.data, sort_keys=True, indent=2))
 
 
 def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     """Parse JSONL logs and build analytics."""
     from verdict import present
+    from verdict.actions.registry import run_action
 
-    if not os.path.exists(log_path):
-        present.header("Routing stats")
-        present.warn("log", f"No log file found at {log_path}")
-        return
-
-    tiers: dict[int, int] = {}
-    models: dict[str, int] = {}
-    latencies: list[float] = []
-
-    with open(log_path) as f:
-        for line in f:
-            try:
-                entry = json.loads(line)
-                decision = entry.get("decision")
-                if isinstance(decision, dict):
-                    t = decision.get("tier", 2)
-                    m = decision.get("model", "unknown")
-                    lat = decision.get("latency_ms", 0)
-                else:
-                    t = entry.get("effective_tier", entry.get("tier", 2))
-                    m = entry.get("model_chosen", entry.get("model", "unknown"))
-                    lat = entry.get("latency_ms", 0)
-                tiers[t] = tiers.get(t, 0) + 1
-                models[m] = models.get(m, 0) + 1
-                latencies.append(lat)
-            except json.JSONDecodeError:
-                continue
-
-    total = sum(tiers.values())
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0
-
+    result = run_action("stats", {"log_path": log_path})
+    data = result.data
     present.header("Routing stats")
+    if data.get("missing"):
+        present.warn("log", f"No log file found at {data['log_path']}")
+        return
+    tiers: dict[int, int] = data["tiers"]
+    total = data["total_requests"]
+    avg_latency = data["avg_latency_ms"]
+    top_models = data["top_models"]
     present.table(
         ["Tier", "Count", "Pct"],
         [
@@ -1016,13 +931,7 @@ def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     )
     present.kv({"Total Requests": str(total), "P50 Latency": f"{avg_latency:.2f}ms"})
     present.section("Top Routed Models")
-    present.table(
-        ["Model", "Calls"],
-        [
-            (mod, str(count))
-            for mod, count in sorted(models.items(), key=lambda x: x[1], reverse=True)[:5]
-        ],
-    )
+    present.table(["Model", "Calls"], [(mod, str(count)) for mod, count in top_models])
 
 
 def cmd_benchmark(
@@ -1116,42 +1025,21 @@ def cmd_quickstart(
 def cmd_cost_report() -> None:
     """Calculates and prints the estimated token usage execution cost from historic routing decisions."""
     from verdict import present
+    from verdict.actions.registry import run_action
 
     present.header("Cost and Usage Report")
-
-    log_path = "verdict-decisions.jsonl"
-    if not os.path.exists(log_path):
+    result = run_action("cost-report", {"log_path": "verdict-decisions.jsonl"})
+    data = result.data
+    if data.get("missing"):
         present.warn("log", "No routing telemetry found (Verdict decision log missing).")
         return
-
-    total_requests = 0
-    t0_requests = 0
-
-    with open(log_path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                decision = data.get("decision")
-                if isinstance(decision, dict):
-                    tier = decision.get("tier", 2)
-                else:
-                    tier = data.get("effective_tier", data.get("tier", 2))
-                if tier == 0:
-                    t0_requests += 1
-                total_requests += 1
-            except Exception:
-                pass
-
-    savings = (total_requests - t0_requests) * 0.005
     present.table(
         ["Metric", "Value"],
         [
-            ("Total Routing Requests", str(total_requests)),
-            ("T0 (Critical) Forwarded", str(t0_requests)),
-            ("Offloaded Tasks (T1-T3)", str(total_requests - t0_requests)),
-            ("Estimated Savings vs T0 Only", f"${savings:.2f}"),
+            ("Total Routing Requests", str(data["total_requests"])),
+            ("T0 (Critical) Forwarded", str(data["t0_requests"])),
+            ("Offloaded Tasks (T1-T3)", str(data["offloaded_requests"])),
+            ("Estimated Savings vs T0 Only", f"${data['estimated_savings_usd']:.2f}"),
         ],
         title="Usage Summary",
     )
@@ -1164,20 +1052,24 @@ def cmd_detect(
     offline: bool = False,
 ) -> None:
     """Detect available LLM providers."""
+    from verdict.actions.registry import run_action
+
+    result = run_action("detect", {"offline": offline})
+    data = result.data
+    if data.get("status") == "failed":
+        from verdict import present
+
+        present.header("Provider detection")
+        present.fail("Detection failed", data["error"])
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
     if offline:
-        payload: dict[str, Any] = {
-            "mode": "offline",
-            "network_access": False,
-            "credentials_read": False,
-            "local_providers": [],
-            "cli_providers": [],
-            "centralized_routers": [],
-            "cloud_apis": [],
-            "custom_endpoints": [],
-            "gateways": [],
-        }
+        # For --json / --config, print the offline payload verbatim from data.
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(data, indent=2, sort_keys=True))
         elif output_config:
             print(yaml.dump({"providers": {}}, default_flow_style=False))
         else:
@@ -1188,76 +1080,37 @@ def cmd_detect(
             present.note("Offline mode reports nothing by design. Run `verdict detect` to probe.")
         return
 
-    try:
-        from verdict.provider_detection import (
-            detect_all_providers,
-            format_detection_report,
-            generate_verdict_config,
-            probe_gateways,
+    if output_json:
+        payload = {k: v for k, v in data.items() if not k.startswith("_")}
+        print(json.dumps(payload, indent=2))
+        return
+    if output_config:
+        from verdict.provider_detection import generate_verdict_config
+
+        config = generate_verdict_config(data["_result"])
+        print(yaml.dump(config, default_flow_style=False))
+        return
+
+    from verdict import present
+    from verdict.provider_detection import format_detection_report
+
+    healthy_gateways = data["_healthy_gateways"]
+    present.header("Provider detection")
+    present.note(format_detection_report(data["_result"], verbose=verbose))
+    present.section("Gateways (HTTP-validated)")
+    if healthy_gateways:
+        present.table(
+            ["Gateway", "Identity", "URL", "Port"],
+            [(g.display_name, g.identity, g.url, g.port) for g in healthy_gateways],
         )
-
-        result = detect_all_providers()
-
-        # T018/T019/T020: HTTP-validated gateway detection (TCP + /api/health),
-        # replacing reliance on the TCP-only centralized-router heuristic for
-        # gateway selection purposes.
-        gateways = probe_gateways()
-        healthy_gateways = [g for g in gateways if g.health_ok]
-        no_gateway_message = "No local gateway found on ports 20128, 20129, 20132."
-        multi_gateway_message = (
-            "Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the above to select it."
-        )
-        gateway_message = None
-        if not healthy_gateways:
-            gateway_message = no_gateway_message
-        elif len(healthy_gateways) > 1:
-            gateway_message = multi_gateway_message
-
-        if output_json:
-            print(
-                json.dumps(
-                    {
-                        "local_servers": [p.__dict__ for p in result.local_servers],
-                        "cli_providers": [p.__dict__ for p in result.cli_providers],
-                        "centralized_routers": [p.__dict__ for p in result.centralized_routers],
-                        "cloud_apis": [p.__dict__ for p in result.cloud_apis],
-                        "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
-                        "gateways": [g.__dict__ for g in gateways],
-                        "message": gateway_message,
-                    },
-                    indent=2,
-                )
+        if len(healthy_gateways) > 1:
+            present.warn(
+                "gateway selection",
+                "Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the above to select it.",
             )
-        elif output_config:
-            config = generate_verdict_config(result)
-            print(yaml.dump(config, default_flow_style=False))
-        else:
-            from verdict import present
-
-            present.header("Provider detection")
-            # Keep the established provider report as a note so its detailed
-            # wording remains available while presentation owns the framing.
-            present.note(format_detection_report(result, verbose=verbose))
-            present.section("Gateways (HTTP-validated)")
-            if healthy_gateways:
-                present.table(
-                    ["Gateway", "Identity", "URL", "Port"],
-                    [(g.display_name, g.identity, g.url, g.port) for g in healthy_gateways],
-                )
-                if len(healthy_gateways) > 1:
-                    present.warn("gateway selection", multi_gateway_message)
-            else:
-                present.warn("gateway", no_gateway_message)
-                present.note("To start OmniRoute: npm install -g omniroute && omniroute serve")
-    except Exception as e:
-        from verdict import present
-
-        present.header("Provider detection")
-        present.fail("Detection failed", str(e))
-        import traceback
-
-        traceback.print_exc()
-        sys.exit(1)
+    else:
+        present.warn("gateway", "No local gateway found on ports 20128, 20129, 20132.")
+        present.note("To start OmniRoute: npm install -g omniroute && omniroute serve")
 
 
 def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -> None:
@@ -1743,7 +1596,9 @@ def cmd_autodev_packet_execute(
         if probe_transport is None:
             from verdict.probes import openai_probe_transport
 
-            probe_transport = openai_probe_transport(family_url, api_key=_read_omniroute_token())
+            probe_transport = openai_probe_transport(
+                family_url, api_key=_doctor_diag._read_omniroute_token()
+            )
     canary_state = None
     if canary_path:
         loaded = json.loads(Path(canary_path).expanduser().resolve().read_text(encoding="utf-8"))
@@ -2033,27 +1888,7 @@ def _report_autodev_failure(reason: str, *, output_json: bool) -> None:
         present.fail("decomposition failed", reason)
 
 
-def _probe_result_payload(observation: Any) -> dict[str, Any]:
-    """Convert a probe observation to a credential-safe CLI result."""
-
-    status = str(observation.status)
-    http_status = observation.http_status
-    http_success = isinstance(http_status, int) and 200 <= http_status < 300
-    ok = http_success and status == "ready"
-    return {
-        "model": observation.model_id,
-        "ok": ok,
-        "status": status,
-        "availability_state": observation.availability_state,
-        "http_status": http_status,
-        "latency_ms": observation.latency_ms,
-        "usage_available": observation.usage_available,
-        "prompt_tokens": observation.prompt_tokens,
-        "completion_tokens": observation.completion_tokens,
-        "total_tokens": observation.total_tokens,
-        "error_class": observation.error_class,
-        "error": observation.error,
-    }
+_probe_result_payload = _action_helpers.probe_result_payload
 
 
 def cmd_catalog(
@@ -2070,98 +1905,36 @@ def cmd_catalog(
     allow_live_probe: bool = False,
 ) -> None:
     """Qualify one or both documented OmniRoute catalog projections."""
-    import urllib.request
+    from verdict.actions.registry import run_action
 
-    from verdict.omniroute_catalog import (
-        CATALOG_FETCH_TIMEOUT_SECONDS,
-        CatalogQualificationReport,
-        probe_catalog,
-        qualify_catalog,
-        reconcile_catalog_projections,
-        store_qualification,
+    result = run_action(
+        "catalog",
+        {
+            "base_url": base_url,
+            "management": management,
+            "expected_rows": expected_rows,
+            "freshness_seconds": freshness_seconds,
+            "db_path": db_path,
+            "probe": probe,
+            "probe_limit": probe_limit,
+            "probe_timeout": probe_timeout,
+            "allow_live_probe": allow_live_probe,
+        },
     )
-
-    if probe and not allow_live_probe:
-        message = "catalog live probes require explicit consent; pass --allow-live-probe"
+    data = result.data
+    if data.get("status") == "refused":
         if output_json:
-            print(json.dumps({"error": message, "probes": None}, sort_keys=True))
+            print(json.dumps({"error": data["error"], "probes": None}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Catalog qualification")
-            present.fail("catalog", message)
+            present.fail("catalog", data["error"])
         raise SystemExit(2)
-
-    paths = [
-        (
-            "management" if management else "public",
-            "/api/models/catalog" if management else "/v1/models",
-        )
-    ]
-    if not management:
-        paths.append(("management", "/api/models/catalog"))
-    reports: dict[str, CatalogQualificationReport] = {}
-    payloads: dict[str, bytes] = {}
-    for label, path in paths:
-        source_url = base_url.rstrip("/") + path
-        request = urllib.request.Request(source_url, headers={"Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(  # nosec B310
-                request, timeout=CATALOG_FETCH_TIMEOUT_SECONDS
-            ) as response:
-                payload = response.read()
-        except TimeoutError as exc:
-            del exc
-            reports[label] = CatalogQualificationReport(
-                "unknown", None, ("catalog_fetch_timeout", "TimeoutError")
-            )
-            continue
-        except Exception as exc:
-            reports[label] = CatalogQualificationReport("unknown", None, (type(exc).__name__,))
-            continue
-        payloads[label] = payload
-        reports[label] = qualify_catalog(
-            payload,
-            source_url=source_url,
-            expected_row_count=expected_rows,
-            freshness_seconds=freshness_seconds,
-        )
-    report = reports["management" if management else "public"]
-    reconciliation = None
-    if not management and all(label in reports for label in ("public", "management")):
-        reconciliation = reconcile_catalog_projections(reports["public"], reports["management"])
-    report_payload: dict[str, Any] = report.to_dict()
-    if not management:
-        report_payload["projections"] = {label: value.to_dict() for label, value in reports.items()}
-    probe_summary = None
-    if probe and report.snapshot and report.passed:
-        from verdict.probes import openai_probe_transport
-
-        probe_summary = probe_catalog(
-            payloads["management" if management else "public"],
-            openai_probe_transport(
-                base_url.rstrip("/") + "/v1", api_key=os.getenv("OPENAI_API_KEY")
-            ),
-            limit=probe_limit,
-            timeout_seconds=probe_timeout,
-            live=True,
-            consented=allow_live_probe,
-            provider_name="omniroute",
-        )
-    if db_path:
-        for label, projection in reports.items():
-            if projection.snapshot:
-                store_qualification(
-                    projection,
-                    memory_path=db_path,
-                    probes=probe_summary
-                    if label == ("management" if management else "public")
-                    else None,
-                )
-    if probe_summary:
-        report_payload["probes"] = probe_summary.to_dict()
-    if reconciliation:
-        report_payload["projection_reconciliation"] = reconciliation.to_dict()
+    report_payload = data["report_payload"]
+    report = data["report"]
+    reconciliation = data["reconciliation"]
+    probe_summary = data["probe_summary"]
     if output_json:
         print(json.dumps(report_payload, sort_keys=True))
     else:
@@ -2184,17 +1957,17 @@ def cmd_catalog(
             present.status("projection reconciliation", "ok" if reconciliation.passed else "failed")
         if probe_summary:
             present.note(f"probes: {json.dumps(probe_summary.to_dict(), sort_keys=True)}")
-    if not report.passed or (reconciliation is not None and not reconciliation.passed):
+    if not data["passed"]:
         sys.exit(1)
 
 
 def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
     """Run the SuggestionService to propose evidence-backed improvements."""
     from verdict import present
-    from verdict.suggestions import SuggestionService
+    from verdict.actions.registry import run_action
 
-    svc = SuggestionService(log_path=log_path)
-    suggestions = svc.generate_suggestions()
+    result = run_action("suggest", {"log_path": log_path})
+    suggestions = result.data["suggestions"]
 
     present.header("Verdict Intelligence Suggestions")
     if not suggestions:
@@ -2202,610 +1975,38 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
         return
 
     for s in suggestions:
-        present.section(f"{s.title} ({s.id})")
+        present.section(f"{s['title']} ({s['id']})")
         present.kv(
             {
-                "Category": s.category.title(),
-                "Novelty": s.novelty,
-                "Expires In": s.expiry,
-                "Description": s.description,
-                "Proposed Experiment": s.proposed_next_experiment,
-                "Confidence": f"{s.confidence * 100:.1f}%",
-                "Impact": s.expected_impact,
+                "Category": s["category"].title(),
+                "Novelty": s["novelty"],
+                "Expires In": s["expiry"],
+                "Description": s["description"],
+                "Proposed Experiment": s["proposed_next_experiment"],
+                "Confidence": f"{s['confidence'] * 100:.1f}%",
+                "Impact": s["expected_impact"],
                 "Evidence (top 3)": (
-                    ", ".join(s.evidence_references) if s.evidence_references else "None"
+                    ", ".join(s["evidence_references"]) if s["evidence_references"] else "None"
                 ),
             }
         )
 
 
-_DOCTOR_NETWORK_ERROR_MARKERS = (
-    "rate limit",
-    "http error 429",
-    "urlerror",
-    "timed out",
-    "connection refused",
-    "name or service not known",
+# ---------------------------------------------------------------------------
+# Doctor diagnostics — canonical: verdict.doctor_diagnostics
+# ---------------------------------------------------------------------------
+from verdict.doctor_diagnostics import (  # noqa: E402
+    DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
+    DoctorDiagnostics,  # noqa: F401 — backward-compat alias
+    _collect_doctor_diagnostics,  # noqa: F401 — backward-compat alias
+    _doctor_documentation_preflight_is_network_only_failure,  # noqa: F401
+    _doctor_fix_gateway,  # noqa: F401
+    _doctor_gateway_lifecycle,  # noqa: F401
+    _doctor_progress,
+    _gateway_probe_for,
+    _omniroute_api_request,  # noqa: F401 — backward-compat alias
+    _read_omniroute_token,  # noqa: F401 — backward-compat alias
 )
-
-
-def _doctor_documentation_preflight_is_network_only_failure(report: Any) -> bool:
-    """Return True only when a blocked documentation preflight is explained
-    entirely by a transient third-party network/rate-limit condition.
-
-    The preflight is network-only iff:
-
-    * the local documentation set has no real gaps (``missing == 0``,
-      ``stale == 0`` and ``orphaned == 0``), and
-    * there is at least one error, and every error is a ``resolve`` or
-      ``inventory`` fetch error that carries one of
-      ``_DOCTOR_NETWORK_ERROR_MARKERS``.
-
-    A bare ``HTTP Error 403`` (auth/permission) is NOT network-only; a 403
-    counts only when the same error text also says ``rate limit``. Anything
-    else is a real issue.
-    """
-    if getattr(report, "missing", 0) or getattr(report, "stale", 0):
-        return False
-    if getattr(report, "orphaned", 0):
-        return False
-    errors = tuple(getattr(report, "errors", ()) or ())
-    if not errors:
-        return False
-    for error in errors:
-        parts = error.split(":", 2)
-        if len(parts) < 3 or parts[1] not in {"resolve", "inventory"}:
-            return False
-        lowered = error.lower()
-        if not any(marker in lowered for marker in _DOCTOR_NETWORK_ERROR_MARKERS):
-            return False
-    return True
-
-
-class DoctorDiagnostics:
-    """Result of the single shared ``verdict doctor`` diagnostics collector.
-
-    Both text and ``--json`` modes render this same object, so they always
-    agree on ``issues`` (exit 1 iff non-empty) and ``warnings`` (non-fatal).
-    ``sections`` holds ``(label, state, detail)`` rows for text rendering;
-    ``state`` ``"section"`` / ``"header"`` render a heading, ``"note"`` a dim line.
-    """
-
-    def __init__(self) -> None:
-        self.issues: list[str] = []
-        self.warnings: list[str] = []
-        self.fixed: list[str] = []
-        self.sections: list[tuple[str, str, str]] = []
-        self.capability_report: dict[str, Any] = {}
-        self.documentation_preflight: dict[str, Any] = {}
-        self.shared_memory: Any = None
-        self.config_loaded: bool = False
-        #: Report-only gateway lifecycle state. ``doctor`` never starts a gateway.
-        self.gateway_lifecycle: dict[str, Any] = {}
-
-
-DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
-
-
-def _doctor_progress(message: str) -> None:
-    """Write one doctor progress line to stderr so ``--json`` stdout stays pure."""
-    print(f"  {message}", file=sys.stderr, flush=True)
-
-
-def _doctor_fix_gateway(
-    config: dict[str, Any],
-    config_path: str,
-    sections: list[tuple[str, str, str]],
-    fixed_issues: list[str],
-) -> str | None:
-    """Persist the single healthy local gateway for an old config under --fix.
-
-    Writes ``gateway_url`` into ``verdict.yaml`` and, when the credential
-    store has no ``OMNIROUTE_BASE_URL`` yet, stores the same URL there (a URL,
-    not a secret). The process environment is never mutated. Returns the
-    repaired URL, or ``None`` when nothing was repaired.
-    """
-    from verdict import provider_detection
-    from verdict.credentials_store import CredentialsStore
-
-    try:
-        healthy = [g for g in provider_detection.probe_gateways() if g.health_ok]
-    except Exception as exc:
-        sections.append(("Gateway detection", "warn", str(exc)))
-        return None
-    if len(healthy) != 1:
-        if len(healthy) > 1:
-            sections.append(
-                (
-                    "Gateway detection",
-                    "warn",
-                    "Multiple healthy gateways found; set OMNIROUTE_BASE_URL to choose one.",
-                )
-            )
-        return None
-    url = healthy[0].url
-    config["gateway_url"] = url
-    try:
-        with open(config_path, "w") as f:
-            yaml.safe_dump(config, f, default_flow_style=False)
-    except Exception as exc:
-        sections.append(("Gateway repair failed", "failed", str(exc)))
-        return None
-    sections.append(("Gateway configured", "ok", f"gateway_url: {url}"))
-    fixed_issues.append("No gateway URL configured")
-    try:
-        store = CredentialsStore()
-        if "OMNIROUTE_BASE_URL" not in store.load():
-            store.set("OMNIROUTE_BASE_URL", url)
-            sections.append(("Stored credential", "ok", "OMNIROUTE_BASE_URL"))
-            fixed_issues.append("Required credential OMNIROUTE_BASE_URL is not set")
-    except PermissionError as exc:
-        sections.append(("Credential store", "failed", str(exc)))
-    return url
-
-
-def _gateway_probe_for(bootstrap: Any) -> Any:
-    """Readiness probe carrying the gateway credential, when one is configured.
-
-    A gateway that requires a key answers 401 to an unauthenticated probe, which
-    would be reported as unhealthy: ``doctor`` would call a healthy gateway broken,
-    and ensure would fail closed against it. The key is read by the name the
-    provider binding declares (``api_key_env``), from the exported environment and
-    then the credential store, and is never printed.
-    """
-    from verdict.gateway_lifecycle import authenticated_gateway_probe
-    from verdict.provider_bootstrap import load_credential_store_env
-
-    names = [
-        binding.api_key_env
-        for binding in bootstrap.providers.values()
-        if getattr(binding, "api_key_env", None)
-        and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
-    ]
-    api_key: str | None = None
-    store: dict[str, str] | None = None
-    for name in names:
-        api_key = (os.getenv(str(name)) or "").strip() or None
-        if api_key is None:
-            if store is None:
-                store = load_credential_store_env()
-            api_key = (store.get(str(name)) or "").strip() or None
-        if api_key is not None:
-            break
-    return authenticated_gateway_probe(api_key)
-
-
-def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
-    """Report gateway readiness in ``verdict doctor``. Never starts anything.
-
-    The requirement and URL come from the shared bootstrap contract, and the
-    state comes from ``inspect_gateway``, which probes at most once and never
-    launches, signals or locks. Exit status is unchanged: an unready gateway is
-    already reported by the reachability check above, so this section adds the
-    named state rather than a second failure.
-    """
-    from verdict.gateway_lifecycle import inspect_gateway
-    from verdict.provider_bootstrap import BootstrapError
-
-    try:
-        bootstrap = _cli_bootstrap()
-        outcome = inspect_gateway(bootstrap, probe=_gateway_probe_for(bootstrap))
-    except BootstrapError as exc:
-        diag.gateway_lifecycle = {"state": "unknown", "reason": exc.reason_code}
-        diag.sections.append(("Gateway lifecycle", "warn", exc.reason_code))
-        return
-    diag.gateway_lifecycle = outcome.to_dict()
-    state = "ok" if outcome.ready else "warn"
-    diag.sections.append(("Gateway lifecycle", state, outcome.describe()))
-    if outcome.diagnostic is not None:
-        diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
-
-
-def _collect_doctor_diagnostics(
-    fix: bool,
-    *,
-    interactive: bool,
-    preflight_timeout: float = DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
-    progress: Callable[[str], None] | None = None,
-) -> DoctorDiagnostics:
-    """Run every ``verdict doctor`` check once and return the shared result.
-
-    ``interactive`` controls only whether duplicate OmniRoute nodes may be
-    removed after a confirmation prompt (never in ``--json`` mode, which must
-    keep stdout machine-readable).
-
-    ``preflight_timeout`` bounds the documentation preflight in seconds
-    (``0`` or less means unbounded). ``progress``, when given, receives short
-    status lines before and during the (possibly slow) preflight work.
-    """
-    diag = DoctorDiagnostics()
-    sections = diag.sections
-    issues_found = diag.issues
-    warnings_found = diag.warnings
-    fixed_issues = diag.fixed
-
-    from verdict.capability_bootstrap import doctor_capability_report
-
-    capability_report = doctor_capability_report()
-    diag.capability_report = capability_report
-    capabilities = capability_report.get("capabilities", [])
-    if not isinstance(capabilities, list):
-        capabilities = []
-    covered = sum(
-        1 for item in capabilities if isinstance(item, dict) and item.get("status") == "covered"
-    )
-    total = len(capabilities)
-    sections.append(("Capability coverage", "ok", f"{covered}/{total} covered (bootstrap view)"))
-
-    from verdict.documentation_preflight import run_documentation_preflight
-
-    if progress is not None:
-        progress("checking documentation memory (may take a while)...")
-    deadline_seconds = preflight_timeout if preflight_timeout > 0 else None
-    documentation_report = run_documentation_preflight(
-        fix=fix, progress=progress, deadline_seconds=deadline_seconds
-    )
-    diag.documentation_preflight = documentation_report.to_dict()
-    doc_timed_out = bool(getattr(documentation_report, "timed_out", False))
-    network_only_doc_failure = (
-        not doc_timed_out
-        and not documentation_report.passed
-        and _doctor_documentation_preflight_is_network_only_failure(documentation_report)
-    )
-    doc_state = (
-        "ok" if documentation_report.passed else "warning" if network_only_doc_failure else "failed"
-    )
-    sections.append(
-        (
-            "Documentation preflight",
-            doc_state,
-            f"{documentation_report.status} ({documentation_report.inventory} documents, "
-            f"{documentation_report.ingested} ingested, "
-            f"{documentation_report.stale} stale, "
-            f"{documentation_report.missing} missing)",
-        )
-    )
-    if doc_timed_out:
-        # An incomplete scan never counts as ready or as a transient network
-        # warning: verification did not finish, so it is an unresolved issue.
-        issues_found.append(
-            f"Documentation preflight timed out after {preflight_timeout:g}s before every "
-            "document was checked. Rerun with 'verdict doctor --preflight-timeout 0' "
-            "(unbounded) or a larger value."
-        )
-        issues_found.extend(documentation_report.errors)
-    elif not documentation_report.passed:
-        if network_only_doc_failure:
-            # A rate-limited/unreachable third-party GitHub source with no
-            # local documentation gap is a transient network condition, not
-            # a real problem with this host's routing setup.
-            warnings_found.extend(
-                ["authoritative documentation preflight unreachable", *documentation_report.errors]
-            )
-        else:
-            issues_found.extend(
-                ["authoritative documentation preflight did not pass", *documentation_report.errors]
-            )
-    elif fix and documentation_report.ingested:
-        fixed_issues.append("authoritative documentation preflight repaired")
-
-    # Memory bridge (~/.verdict/memory.db, ./.mcp.json) and shared memory.
-    from verdict.memory_bridge import run_doctor_diagnostics
-
-    memory_report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
-    memory_issues = [str(item) for item in memory_report.get("issues", [])]
-    memory_repaired = [str(item) for item in memory_report.get("repaired", [])]
-    fixed_issues.extend(memory_repaired)
-    # Exit status reflects the state AFTER --fix: drop findings that --fix repaired.
-    repaired_by = {
-        "missing_memory_db": "created_verdict_dir",
-        "missing_memory_db_file": "initialized_memory_db",
-        "missing_mcp_config": "created_mcp_config",
-    }
-    issues_found.extend(
-        issue for issue in memory_issues if repaired_by.get(issue) not in memory_repaired
-    )
-    warnings_found.extend(
-        str(warning)
-        for warning in memory_report.get("warnings", [])
-        if repaired_by.get(str(warning)) not in memory_repaired
-    )
-    shared_memory = memory_report.get("shared_memory") or {}
-
-    # BOD-80 AC 9: when a provider IS configured, run diagnose_shared_memory
-    # with the real health data so unreachable / unwritable / schema_incompatible
-    # surface in the doctor output with named reasons.
-    if isinstance(shared_memory, dict) and shared_memory.get("configured"):
-        from verdict.runtime_certification import diagnose_shared_memory
-
-        sm_diagnosis = diagnose_shared_memory(health_fn=lambda: shared_memory)
-        shared_memory["diagnosis_state"] = sm_diagnosis.state.value
-        shared_memory["diagnosis_reason"] = sm_diagnosis.reason
-        if sm_diagnosis.state.value == "degraded":
-            warnings_found.append(f"shared memory degraded: {sm_diagnosis.reason}")
-
-    diag.shared_memory = shared_memory
-    if isinstance(shared_memory, dict):
-        # Prefer the diagnosis state when available (more specific than discovery state).
-        display_state = str(
-            shared_memory.get("diagnosis_state", shared_memory.get("state", "unknown"))
-        )
-        display_detail = shared_memory.get("diagnosis_reason") or str(
-            shared_memory.get("endpoint") or shared_memory.get("provider_id") or ""
-        )
-        sections.append(("Shared memory", display_state, str(display_detail)))
-
-    # 1. Config Check
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    config_path = os.path.join(config_dir, "verdict.yaml")
-    config = None
-
-    if not os.path.exists(config_path):
-        issues_found.append("Configuration file (verdict.yaml) is missing.")
-    else:
-        try:
-            with open(config_path) as f:
-                config = yaml.safe_load(f) or {}
-        except Exception as exc:
-            issues_found.append(f"Configuration file is corrupted/invalid YAML: {exc}")
-
-    if config is not None and not isinstance(config, dict):
-        issues_found.append("Configuration file verdict.yaml must be a YAML mapping.")
-        config = None
-    diag.config_loaded = bool(config)
-
-    if config is not None:
-        primary_model = config.get("primary_model")
-        if not primary_model:
-            issues_found.append("No primary model configured in verdict.yaml.")
-        else:
-            from verdict.classifier import classify
-
-            tier = classify(primary_model)
-            sections.append(("Configured Primary Model", "ok", f"{primary_model} (Tier-{tier})"))
-
-        providers = config.get("providers", {})
-        if not isinstance(providers, dict):
-            issues_found.append("'providers' section in verdict.yaml is malformed.")
-        else:
-            # Check for secrets inside the config file
-            for name, p_cfg in providers.items():
-                if not isinstance(p_cfg, dict):
-                    continue
-                base_url = p_cfg.get("base_url", "")
-                if "sk-" in base_url or "api_key" in base_url.lower():
-                    issues_found.append(
-                        f"Literal API key detected inside the host URL for provider '{name}'."
-                    )
-
-            # Check duplicate URLs in config
-            urls: dict[str, str] = {}
-            for name, p_cfg in providers.items():
-                if isinstance(p_cfg, dict) and p_cfg.get("base_url"):
-                    url = p_cfg["base_url"].rstrip("/")
-                    if url in urls:
-                        issues_found.append(
-                            f"Duplicate host URL configured in verdict.yaml: provider '{name}' and '{urls[url]}' have identical hosts."
-                        )
-                    else:
-                        urls[url] = name
-
-    # 1b. Config schema version check (T023)
-    if config is not None and "schema_version" not in config:
-        if fix:
-            config["schema_version"] = 1
-            try:
-                with open(config_path, "w") as f:
-                    yaml.safe_dump(config, f, default_flow_style=False)
-                fixed_issues.append("Config written by an older Verdict version")
-            except Exception as exc:
-                issues_found.append(f"Failed to migrate config schema_version: {exc}")
-        else:
-            issues_found.append(
-                "Config written by an older Verdict version. Run 'verdict doctor --fix' to migrate."
-            )
-
-    # 1c. Config filename check (T016)
-    legacy_config_path = os.path.join(config_dir, "config.yaml")
-    if os.path.exists(legacy_config_path):
-        if os.path.exists(config_path):
-            issues_found.append(
-                f"Both {legacy_config_path} and {config_path} exist. "
-                "Remove the unused one to avoid confusion."
-            )
-        else:
-            if fix:
-                try:
-                    os.rename(legacy_config_path, config_path)
-                    sections.append(("Renamed", "ok", f"{legacy_config_path} -> {config_path}"))
-                    fixed_issues.append("Config file is named 'config.yaml'")
-                except Exception as exc:
-                    issues_found.append(f"Failed to rename config.yaml: {exc}")
-            else:
-                issues_found.append(
-                    "Config file is named 'config.yaml' but must be 'verdict.yaml'. "
-                    f"Run: mv {legacy_config_path} {config_path}"
-                )
-
-    # 1d. Gateway reachability check (T015)
-    gateway_url = os.getenv("OMNIROUTE_BASE_URL") or (config.get("gateway_url") if config else None)
-    if not gateway_url and fix and config is not None:
-        # Old-style configs (written before setup persisted gateway_url) have
-        # no gateway at all. --fix repairs this only when exactly one healthy
-        # local gateway answers the health protocol; an ambiguous or absent
-        # gateway is left as an issue for the operator to choose.
-        gateway_url = _doctor_fix_gateway(config, config_path, sections, fixed_issues)
-    if not gateway_url:
-        issues_found.append(
-            "No gateway URL configured. Run 'verdict detect' or set OMNIROUTE_BASE_URL."
-        )
-    else:
-        try:
-            import urllib.request
-            from urllib.error import URLError
-
-            health_req = urllib.request.Request(
-                gateway_url.rstrip("/") + "/api/health",
-                headers={"Accept": "application/json"},
-                method="GET",
-            )
-            with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
-                if resp.status != 200:
-                    raise URLError(f"status {resp.status}")
-        except Exception:
-            issues_found.append(
-                f"Gateway unreachable at {gateway_url}. "
-                "Run 'verdict detect' to find a running gateway."
-            )
-
-    # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
-    _doctor_gateway_lifecycle(diag)
-
-    # 1e. Env var format checks (T017)
-    omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")
-    if omniroute_base_url_env and not re.match(
-        r"^https?://[^/]+(:[0-9]+)?$", omniroute_base_url_env
-    ):
-        issues_found.append(
-            f"OMNIROUTE_BASE_URL has invalid format: '{omniroute_base_url_env}'. "
-            "Expected http://host:port (no trailing slash)."
-        )
-
-    openai_api_key_env = os.getenv("OPENAI_API_KEY")
-    if openai_api_key_env and not openai_api_key_env.startswith("sk-"):
-        issues_found.append("OPENAI_API_KEY appears invalid (expected prefix 'sk-').")
-
-    # 1f. Env var reference note (T024)
-    sections.append(
-        (
-            "Environment reference",
-            "section",
-            "See .env.example in the repository root for the full environment variable reference.",
-        )
-    )
-
-    # 2. OmniRoute nodes check
-    existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
-    if existing_nodes is None:
-        sections.append(
-            (
-                "OmniRoute nodes",
-                "section",
-                "OmniRoute server is not currently running/reachable to check nodes.",
-            )
-        )
-    else:
-        items = []
-        if isinstance(existing_nodes, list):
-            items = existing_nodes
-        elif isinstance(existing_nodes, dict) and "items" in existing_nodes:
-            items = existing_nodes["items"]
-
-        sections.append(
-            ("Connected to OmniRoute", "ok", f"Found {len(items)} configured node endpoints")
-        )
-
-        # Check duplicate nodes in OmniRoute
-        node_urls: dict[str, str] = {}
-        duplicates = []
-        for node in items:
-            if not isinstance(node, dict):
-                continue
-            bd_url = node.get("baseUrl")
-            node_id = node.get("id")
-            if bd_url and node_id:
-                clean_url = bd_url.rstrip("/")
-                if clean_url in node_urls:
-                    duplicates.append(
-                        (node_id, node.get("name") or node_id, bd_url, node_urls[clean_url])
-                    )
-                else:
-                    node_urls[clean_url] = node_id
-
-        if duplicates:
-            sections.append(("Duplicate nodes detected", "section", ""))
-            for node_id, name, _url, original_id in duplicates:
-                sections.append(
-                    (
-                        f"Duplicate node {name}",
-                        "warn",
-                        f"({node_id}) is a duplicate of ({original_id})",
-                    )
-                )
-                issues_found.append(f"Duplicate node '{name}' in OmniRoute configuration.")
-
-            if interactive:
-                try:
-                    if (
-                        Prompt.ask(
-                            "\nWould you like to resolve and delete the duplicate provider nodes?",
-                            default="y",
-                        )
-                        .lower()
-                        .startswith("y")
-                    ):
-                        for node_id, name, _url, _ in duplicates:
-                            res = _omniroute_api_request("DELETE", f"/api/provider-nodes/{node_id}")
-                            if res is not None:
-                                sections.append(
-                                    ("Removed", "ok", f"Removed duplicate node: {name}")
-                                )
-                                fixed_issues.append(f"Removed duplicate node {node_id}")
-                            else:
-                                sections.append(("Removal failed", "failed", f"Node {node_id}"))
-                except (KeyboardInterrupt, EOFError):
-                    pass
-
-        # Check node reachability
-        for node in items:
-            if not isinstance(node, dict):
-                continue
-            url = node.get("baseUrl")
-            name = node.get("name") or node.get("id")
-            if url:
-                import socket
-                from urllib.parse import urlparse
-
-                try:
-                    parsed = urlparse(url)
-                    host = parsed.hostname or "127.0.0.1"
-                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-                    with socket.create_connection((host, port), timeout=1.0):
-                        pass
-                except Exception:
-                    issues_found.append(
-                        f"Configured provider node '{name}' ({url}) is unreachable/offline."
-                    )
-
-    # Credentials check
-    sections.append(("Credentials", "header", ""))
-    from verdict.credentials_registry import CREDENTIALS
-    from verdict.credentials_store import CredentialsStore, get_credential_source
-
-    try:
-        store = CredentialsStore()
-        missing_required = []
-        for cred in CREDENTIALS:
-            source, masked = get_credential_source(cred.env_name, store)
-            if source == "missing" and not cred.optional:
-                missing_required.append(cred)
-                issues_found.append(
-                    f"Required credential {cred.env_name} is not set. "
-                    f"Set with: verdict credentials set {cred.env_name}"
-                )
-            elif source == "missing":
-                sections.append((cred.env_name, "optional", "not set"))
-            else:
-                sections.append((cred.env_name, source, masked))
-
-        if not missing_required:
-            sections.append(("Required credentials", "ok", "all set"))
-    except Exception as e:
-        issues_found.append(f"Credential check failed: {e}")
-
-    return diag
 
 
 def cmd_doctor(
@@ -2837,7 +2038,7 @@ def cmd_doctor(
     ui.header("Doctor")
     # Interactive only for the optional duplicate-node removal prompt; the
     # set of issues/warnings is identical to --json mode.
-    diag = _collect_doctor_diagnostics(
+    diag = _doctor_diag._collect_doctor_diagnostics(
         fix, interactive=True, preflight_timeout=preflight_timeout, progress=_doctor_progress
     )
     ui.doctor(diag.capability_report)
@@ -2982,43 +2183,39 @@ def cmd_inspect(
     model_id: str, catalog: list[ModelInfo] | None = None, output_json: bool = False
 ) -> None:
     """Inspect one model's catalog record and any stored passport evidence."""
-    if catalog is None:
-        catalog = default_model_catalog()
-    matches = [m for m in catalog if m.id == model_id or f"{m.provider}/{m.id}" == model_id]
-    if not matches:
-        message = f"model not found in catalog: {model_id}"
+    from verdict.actions.registry import run_action
+
+    params: dict[str, Any] = {"model_id": model_id}
+    if catalog is not None:
+        params["catalog"] = catalog
+    result = run_action("inspect", params)
+
+    if not result.ok:
         if output_json:
-            print(json.dumps({"error": message}, sort_keys=True))
+            print(json.dumps(result.data, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Model inspect")
-            present.fail(model_id, "not found in catalog")
-        raise SystemExit(1)
-    model = matches[0]
-    payload: dict[str, Any] = {
-        "id": model.id,
-        "provider": model.provider,
-        "tier": model.capability_tier,
-        "context_window": model.context_window,
-        "cost_per_1k": model.cost_per_1k,
-        "capabilities": sorted(model.capabilities),
-        "availability_state": model.availability_state,
-    }
+            present.fail(model_id, result.data.get("error", "unknown error"))
+        raise SystemExit(result.exit_code)
+
+    payload = result.data
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
+
     from verdict import present
 
-    present.header(f"Model inspect  /  {model.id}")
+    present.header(f"Model inspect  /  {model_id}")
     present.kv(
         {
-            "provider": model.provider,
-            "tier": f"T{model.capability_tier}",
-            "context window": model.context_window or "-",
-            "cost per 1k": f"${model.cost_per_1k:.4f}" if model.cost_per_1k else "-",
-            "capabilities": ", ".join(sorted(model.capabilities)) or "-",
-            "availability": model.availability_state,
+            "provider": payload["provider"],
+            "tier": f"T{payload['tier']}",
+            "context window": payload["context_window"] or "-",
+            "cost per 1k": f"${payload['cost_per_1k']:.4f}" if payload["cost_per_1k"] else "-",
+            "capabilities": ", ".join(payload["capabilities"]) or "-",
+            "availability": payload["availability_state"],
         }
     )
 
@@ -3033,49 +2230,24 @@ def cmd_receipt(
     output_json: bool = False,
 ) -> None:
     """Inspect durable RoutingReceiptV1 records from ReceiptStore."""
-    from pathlib import Path
+    from verdict.actions.registry import run_action
 
-    from verdict.receipt_store import ReceiptStore
-    from verdict.routing_receipt import attempt_scope, human_summary, load_routing_receipt
-
-    if db_path:
-        db = Path(db_path)
-    else:
-        repo_db = Path.cwd() / ".verdict" / "receipts.db"
-        db = repo_db if repo_db.exists() else (Path.home() / ".verdict" / "receipts.db")
-    # List-all must scan scopes; show/export keep strict scope when a scope is known.
-    store = (
-        ReceiptStore(db, strict_scope=False)
-        if action == "list" and scope is None
-        else ReceiptStore(db, strict_scope=True)
+    result = run_action(
+        "receipt.show",
+        {
+            "action": action,
+            "receipt_id": receipt_id,
+            "attempt_id": attempt_id,
+            "scope": scope,
+            "db_path": db_path,
+        },
     )
+    data = result.data
+    if data.get("error"):
+        raise SystemExit(data["error"])
 
     if action == "list":
-        rows = store.query_receipts(receipt_type="decision", scope=scope, limit=100)
-        items = []
-        for row in rows:
-            if row.parent_receipt_id:
-                continue
-            payload = row.payload
-            if payload.get("schema_version") != "routing-receipt/v1":
-                continue
-            latest = load_routing_receipt(
-                store,
-                receipt_id=row.receipt_id,
-                scope=row.scope,
-                attempt_id=payload.get("attempt_id"),
-            )
-            view = latest.to_dict() if latest is not None else payload
-            items.append(
-                {
-                    "receipt_id": row.receipt_id,
-                    "scope": row.scope,
-                    "attempt_id": view.get("attempt_id"),
-                    "state": view.get("state"),
-                    "decision_digest": view.get("decision_digest"),
-                    "created_at": view.get("created_at"),
-                }
-            )
+        items = data["receipts"]
         if output_json:
             print(json.dumps({"receipts": items}, indent=2, sort_keys=True))
             return
@@ -3100,41 +2272,24 @@ def cmd_receipt(
         return
 
     if action == "show":
-        scope_value = scope
-        if scope_value is None and attempt_id is not None:
-            scope_value = attempt_scope(story_id=None, work_unit_id=None, attempt_id=attempt_id)
-        receipt = load_routing_receipt(
-            store, receipt_id=receipt_id, scope=scope_value, attempt_id=attempt_id
-        )
-        if receipt is None and attempt_id is not None and scope is None:
-            # Scan scopes for the attempt.
-            for row in store.query_receipts(receipt_type="decision", limit=500):
-                if row.parent_receipt_id:
-                    continue
-                if row.idempotency_key == attempt_id or row.payload.get("attempt_id") == attempt_id:
-                    receipt = load_routing_receipt(
-                        store, receipt_id=row.receipt_id, scope=row.scope, attempt_id=attempt_id
-                    )
-                    break
-        if receipt is None:
+        if data.get("status") == "missing":
             raise SystemExit("routing receipt not found")
+        receipt = data["receipt"]
+        summary = data["summary"]
         if output_json:
-            print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(receipt, indent=2, sort_keys=True))
             return
         from verdict import present
 
         present.header("Routing receipt")
-        present.note(human_summary(receipt))
-        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        present.note(summary)
+        print(json.dumps(receipt, indent=2, sort_keys=True))
         return
 
     if action == "export":
-        receipt = load_routing_receipt(
-            store, receipt_id=receipt_id, scope=scope, attempt_id=attempt_id
-        )
-        if receipt is None:
+        if data.get("status") == "missing":
             raise SystemExit("routing receipt not found")
-        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(data["receipt"], indent=2, sort_keys=True))
         return
 
     raise SystemExit(f"unknown receipt action: {action}")
@@ -3142,36 +2297,30 @@ def cmd_receipt(
 
 def cmd_replay(session_id: str, output_json: bool = False) -> None:
     """Replay a recorded execution session from the shared MemoryPlane."""
-    try:
-        from verdict.execution_session import ExecutionSession, ExecutionSessionError
-        from verdict.memory_plane import MemoryPlane
-    except ImportError as exc:
-        message = (
-            "replay is not yet available: verdict.execution_session is still in "
-            f"development ({exc})"
-        )
+    from verdict.actions.registry import run_action
+
+    result = run_action("replay", {"session_id": session_id})
+    data = result.data
+    status = data.get("status")
+    if status == "unavailable":
         if output_json:
-            print(json.dumps({"status": "unavailable", "message": message}, sort_keys=True))
+            print(json.dumps({"status": "unavailable", "message": data["message"]}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Replay session")
-            present.warn("replay", message)
-        raise SystemExit(3) from exc
-    db_path = os.environ.get("VERDICT_MEMORY_DB", str(Path.home() / ".verdict" / "memory.db"))
-    try:
-        session = ExecutionSession.resume(session_id, MemoryPlane(db_path))
-    except ExecutionSessionError as exc:
-        message = f"no recorded session found for id: {session_id} ({exc})"
+            present.warn("replay", data["message"])
+        raise SystemExit(3)
+    if status == "missing":
         if output_json:
-            print(json.dumps({"status": "missing", "message": message}, sort_keys=True))
+            print(json.dumps({"status": "missing", "message": data["message"]}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Replay session")
             present.fail(session_id, "not found")
-        raise SystemExit(1) from exc
-    record = session.to_dict()
+        raise SystemExit(1)
+    record = data["record"]
     if output_json:
         print(json.dumps(record, indent=2, sort_keys=True))
         return
@@ -3205,7 +2354,7 @@ def cmd_simulate(
     spec = TaskSpec(prompt=task, criticality=criticality)
     forecast = simulate(
         spec,
-        model_catalog=catalog if catalog is not None else default_model_catalog(),
+        model_catalog=catalog if catalog is not None else _action_helpers.default_model_catalog(),
         model_override=model_override,
     )
     if output_json:
@@ -3229,45 +2378,7 @@ def cmd_simulate(
     present.note(forecast.rationale)
 
 
-def default_model_catalog() -> list[ModelInfo]:
-    """Build the default catalog from the configured verdict.yaml and classified tiers."""
-    models: list[ModelInfo] = []
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    config_path = os.path.join(config_dir, "verdict.yaml")
-    raw: dict[str, Any] = {}
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            loaded = yaml.safe_load(f)
-            if isinstance(loaded, dict):
-                raw = loaded
-
-    from verdict.classifier import classify
-
-    primary = str(raw.get("primary_model", DEFAULT_PRIMARY_MODEL))
-    models.append(
-        ModelInfo(
-            id=primary,
-            provider=primary.split("/", 1)[0] if "/" in primary else "unknown",
-            capability_tier=classify(primary),
-            context_window=200_000,
-        )
-    )
-    seen = {primary}
-    providers = raw.get("providers") or {}
-    if isinstance(providers, dict):
-        for name, provider in providers.items():
-            if not isinstance(provider, dict):
-                continue
-            for model_id in provider.get("models") or {}:
-                if model_id in seen:
-                    continue
-                seen.add(model_id)
-                models.append(
-                    ModelInfo(id=model_id, provider=name, capability_tier=classify(model_id))
-                )
-    return models
+default_model_catalog = _action_helpers.default_model_catalog
 
 
 def cmd_memory(args: Any) -> None:

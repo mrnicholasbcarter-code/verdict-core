@@ -4,50 +4,50 @@
 
 | Command | Action | TUI Section | Kind | Status |
 |---------|--------|-------------|------|--------|
-| `autodev` | — | — | — | 🚀 launch: batch automation pipeline; long-running |
-| `autodev-golden-path` | — | — | — | 🚀 launch: golden-path batch pipeline; long-running |
-| `benchmark` | — | — | — | 🚀 launch: benchmark suite; long-running measurement |
+| `autodev` | `autodev.packet.create` | Development | mutation | ✅ action |
+| `autodev-golden-path` | — | Development | launch | 🚀 launch: cmd_autodev_golden_path (golden_path.run_golden_path): three-stage offline autodev acceptance path that edits a repo and runs verification commands; long-running interactive pipeline |
+| `benchmark` | — | Development | launch | 🚀 launch: cmd_benchmark (run_reproducible_benchmarks/run_savings_bench): runs the reproducible or paired-live routing benchmark suite over many scenarios; long-running batch benchmark |
 | `catalog` | `catalog` | Models | read | ✅ action |
-| `certify` | — | — | — | 🔧 machine-only: certification snapshot; batch dev-tool process |
-| `check` | — | — | — | 🔧 machine-only: inline probe wrapper; dev-tool plumbing |
-| `choose` | — | — | — | 🔧 machine-only: legacy model chooser; superseded by route action |
+| `certify` | `certify` | Health | read | ✅ action |
+| `check` | `check` | Configuration | read | ✅ action |
+| `choose` | `choose` | Routing | read | ✅ action |
 | `compare` | `compare` | Routing | read | ✅ action |
-| `compat` | — | — | — | 🔧 machine-only: compatibility scanner; dev-tool |
+| `compat` | `compat.manifest` | Configuration | read | ✅ action |
 | `cost-report` | `cost-report` | Overview | read | ✅ action |
 | `credentials` | `credentials.list` | Configuration | read | ✅ action |
 | `detect` | `detect` | Health | read | ✅ action |
 | `doctor` | `doctor` | Doctor | read | ✅ action |
 | `eligibility` | `eligibility` | Health | read | ✅ action |
-| `failover-proof` | — | — | — | 🔧 machine-only: failover proof generation; batch dev-tool |
-| `harness` | — | — | — | 🔧 machine-only: per-harness lifecycle commands; dev-tool plumbing |
-| `hook` | — | — | — | 🔧 machine-only: hook management endpoint; invoked by harness integrations |
-| `inspect` | — | — | — | 📋 gap: model detail view (BOD-278: context inspect service needed) |
-| `mcp` | — | — | — | 🔧 machine-only: MCP server lifecycle; invoked by other programs, not users |
-| `memory` | — | — | — | 🔧 machine-only: memory-bridge lifecycle; invoked by harness integrations |
-| `metadata` | — | — | — | 🔧 machine-only: metadata sync; batch process invoked by scripts |
+| `failover-proof` | `failover-proof` | Traces | read | ✅ action |
+| `harness` | `harness.claude.status` | Harness | read | ✅ action |
+| `hook` | `hook.status` | Configuration | read | ✅ action |
+| `inspect` | `inspect` | Models | read | ✅ action |
+| `mcp` | `mcp.init` | Configuration | mutation | ✅ action |
+| `memory` | `memory.put` | Memory | mutation | ✅ action |
+| `metadata` | `metadata.show` | Models | read | ✅ action |
 | `models` | `models.list` | Models | read | ✅ action |
-| `openspec` | — | — | — | 🔧 machine-only: spec lifecycle; external tool integration |
-| `orchestrate` | — | — | — | 🚀 launch: long-running orchestration pipeline; launches parallel workers |
-| `plan` | — | — | — | 🔧 machine-only: legacy alias for setup plan |
+| `openspec` | `openspec.admit` | Configuration | mutation | ✅ action |
+| `orchestrate` | — | Orchestration | launch | 🚀 launch: _orchestrate (run_golden_path): plans a WorkGraph, dispatches parallel workers, and writes a signed receipt over minutes to hours; long-running interactive TUI |
+| `plan` | `setup.plan` (alias) | — | alias | 🔗 alias: forwards to setup.plan |
 | `probe` | `probe` | Health | read | ✅ action |
-| `prove-at-rest` | — | — | — | 🚀 launch: long-running monitoring probe; continuous |
-| `quickstart` | — | — | — | 🚀 launch: guided quickstart wizard; interactive session |
+| `prove-at-rest` | `prove-at-rest.status` | Health | read | ✅ action |
+| `quickstart` | — | Setup | launch | 🚀 launch: cmd_quickstart (flagship_demo.run_demo): renders the credential-free flagship walkthrough with staged output meant for a human to read; long-running interactive demo |
 | `receipt` | `receipt.show` | Traces | read | ✅ action |
 | `replay` | `replay` | Traces | read | ✅ action |
-| `resume` | — | — | — | 🚀 launch: story resume pipeline; interactive session |
+| `resume` | `resume` | Development | read | ✅ action |
 | `route` | `route` | Routing | read | ✅ action |
-| `run` | — | — | — | 🔧 machine-only: legacy alias for route |
+| `run` | `route` (alias) | — | alias | 🔗 alias: forwards to route |
 | `run-receipt` | `run-receipt` | Traces | read | ✅ action |
-| `runtime` | — | — | — | 🔧 machine-only: daemon lifecycle management; long-running system process |
-| `serve` | — | — | — | 🔧 machine-only: server/daemon lifecycle; long-running HTTP process |
+| `runtime` | `runtime.status` | Runtime | read | ✅ action |
+| `serve` | — | — | — | 🔧 machine-only: cmd_serve (verdict.api.start_server): runs the FastAPI /v1/route and /v1/chat/completions gateway under uvicorn until stopped; server lifecycle, not an interactive action |
 | `setup` | `setup.plan` | Setup | read | ✅ action |
-| `simulate` | — | — | — | 🚀 launch: simulation run; stateful multi-step session |
+| `simulate` | `simulate` | Routing | read | ✅ action |
 | `stats` | `stats` | Overview | read | ✅ action |
 | `suggest` | `suggest` | Overview | read | ✅ action |
-| `supervise` | — | — | — | 🚀 launch: supervisor wrapper around orchestrate; long-running |
-| `ui` | — | — | — | 🚀 launch: launches Streamlit dashboard; separate process |
-| `uninstall` | — | — | — | 🔧 machine-only: destructive global uninstall; not an interactive action |
-| `watch` | — | — | — | 🚀 launch: live TUI viewer for running orchestrations; interactive |
+| `supervise` | — | Orchestration | launch | 🚀 launch: dispatch (supervise_run): spawns and restarts an orchestrate controller process against a stall and deadline budget; long-running supervisor loop |
+| `ui` | — | Monitoring | launch | 🚀 launch: cmd_ui (launch_dashboard): launches the Streamlit analytics dashboard as a separate long-running web server process for interactive exploration; long-running web UI |
+| `uninstall` | — | — | — | 🔧 machine-only: cmd_uninstall (uninstall_memory_bridge): removes memory bridge hooks, MCP registrations, and optionally purges the .verdict data directory globally; destructive global uninstall |
+| `watch` | — | Orchestration | launch | 🚀 launch: _watch (tui.follow): live-follows a running orchestration's events.jsonl and renders the TUI until the run terminates; long-running interactive view |
 
-**Summary:** 16 actions, 11 launch, 16 machine-only, 1 gaps
+**Summary:** 35 actions, 7 launch, 2 machine-only, 0 gaps
 

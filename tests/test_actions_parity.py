@@ -75,7 +75,9 @@ class TestParityCLIAndTUI:
         mock_diag.shared_memory = {}
         mock_diag.capability_report = {}
 
-        with patch("verdict.cli._collect_doctor_diagnostics", return_value=mock_diag):
+        with patch(
+            "verdict.doctor_diagnostics._collect_doctor_diagnostics", return_value=mock_diag
+        ):
             result = run_action("doctor")
             assert result.ok
             assert result.data["status"] == "ok"
@@ -167,7 +169,7 @@ class TestJSONOutputUnchanged:
                 availability_state="available",
             )
         ]
-        with patch("verdict.cli.default_model_catalog", return_value=mock_catalog):
+        with patch("verdict.actions.helpers.default_model_catalog", return_value=mock_catalog):
             result = run_action("models.list", {"catalog": mock_catalog})
             entry = result.data[0]
             expected_keys = {
@@ -191,7 +193,9 @@ class TestJSONOutputUnchanged:
         mock_diag.shared_memory = {}
         mock_diag.capability_report = {}
 
-        with patch("verdict.cli._collect_doctor_diagnostics", return_value=mock_diag):
+        with patch(
+            "verdict.doctor_diagnostics._collect_doctor_diagnostics", return_value=mock_diag
+        ):
             result = run_action("doctor")
             assert "status" in result.data
             assert "issues" in result.data

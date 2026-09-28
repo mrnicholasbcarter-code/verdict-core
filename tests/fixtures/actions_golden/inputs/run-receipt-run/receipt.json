@@ -1,0 +1,148 @@
+{
+  "claimed_outcome": "BLOCKED",
+  "controller_events": [],
+  "cooldowns": [],
+  "decision_signals": null,
+  "event_count": 45,
+  "events_digest": "sha256:8849928d46058b7de8fc53c72d2400b169b1fda72af571d15b4dba81c951ffbf",
+  "finished_at": "2026-09-28T07:44:41.067979Z",
+  "goal": "Create two test files: tests/test_alpha.py with a passing test_one, and tests/test_beta.py with a passing test_two.",
+  "graph_digest": "sha256:34c681dd8ebd5a99a8be62e2ac7f5b8b5c82f34596c9eb2fef29df0ff81e0b22",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 44
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 40
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 10.29,
+          "executed_model": "kr/claude-haiku-4.5",
+          "fault_injected": false,
+          "intended_route": "kr/claude-haiku-4.5",
+          "outcome": "success",
+          "provider": "kr",
+          "route_id": "kr/claude-haiku-4.5",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 9393,
+            "output_tokens": 44,
+            "tokens_source": "prime_stdout"
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "alpha",
+      "validated_by": [
+        {
+          "command": "pytest tests/test_alpha.py -v",
+          "exit_code": 0,
+          "seq": 22
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 12.39,
+          "executed_model": "kr/claude-haiku-4.5",
+          "failure_category": "ownership_violation",
+          "fault_injected": false,
+          "intended_route": "kr/claude-haiku-4.5",
+          "outcome": "failure",
+          "provider": "kr",
+          "route_id": "kr/claude-haiku-4.5",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 9656,
+            "output_tokens": 25,
+            "tokens_source": "prime_stdout"
+          }
+        },
+        {
+          "attempt": 2,
+          "capacity_class": "subscription",
+          "duration_seconds": 13.83,
+          "executed_model": "kr/claude-sonnet-4",
+          "fault_injected": false,
+          "intended_route": "kr/claude-sonnet-4",
+          "outcome": "success",
+          "provider": "kr",
+          "route_id": "kr/claude-sonnet-4",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 9302,
+            "output_tokens": 102,
+            "tokens_source": "prime_stdout"
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "beta",
+      "validated_by": [
+        {
+          "command": "pytest tests/test_beta.py -v",
+          "exit_code": 0,
+          "seq": 41
+        }
+      ]
+    }
+  ],
+  "outcome": "BLOCKED",
+  "planner_attempts": [],
+  "reason": "review status MISSING (PASS required)",
+  "reassignments": [
+    {
+      "at": "2026-09-28T07:44:26.833415Z",
+      "attempt": 2,
+      "from_route": "kr/claude-haiku-4.5",
+      "node_id": "beta",
+      "reason": "ownership_violation",
+      "seq": 32,
+      "to_route": "kr/claude-sonnet-4"
+    }
+  ],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 2
+  },
+  "review": {
+    "blocking": 0,
+    "reviewer": "",
+    "route_id": "",
+    "status": "MISSING"
+  },
+  "route_identity_summary": {
+    "attempts": 3,
+    "match": 3,
+    "mechanical": 0,
+    "mismatch": 0,
+    "unattested": 0
+  },
+  "run_id": "20260928T074412Z",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-09-28T07:44:12.177150Z",
+  "topology": "PARALLEL_WORK_UNITS"
+}

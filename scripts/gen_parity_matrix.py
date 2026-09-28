@@ -79,16 +79,17 @@ def _walk_parsers() -> list[str]:
 
 def generate() -> str:
     """Generate the parity matrix markdown."""
-    from verdict.actions.registry import GAP, LAUNCH, MACHINE_ONLY, list_actions
+    from verdict.actions.registry import ALIAS, GAP, LAUNCH, MACHINE_ONLY, list_actions
 
     actions = {spec.name: spec for spec in list_actions()}
     action_by_command: dict[str, str] = {}
     for spec in actions.values():
+        # Register the full dotted name (used for dotted leaves like memory.search)
+        action_by_command[spec.name] = spec.name
+        # And the top-level prefix (used for bare leaves like `models`)
         parts = spec.name.split(".")
-        if len(parts) == 2:
+        if len(parts) >= 2:
             action_by_command.setdefault(parts[0], spec.name)
-        else:
-            action_by_command[spec.name] = spec.name
 
     commands = _walk_parsers()
 
@@ -115,11 +116,18 @@ def generate() -> str:
             )
             action_count += 1
         elif cmd in LAUNCH:
-            lines.append(f"| `{cmd}` | — | — | — | 🚀 launch: {LAUNCH[cmd]} |")
+            spec = LAUNCH[cmd]
+            lines.append(f"| `{cmd}` | — | {spec.section} | launch | 🚀 launch: {spec.reason} |")
             launch_count += 1
         elif cmd in MACHINE_ONLY:
             lines.append(f"| `{cmd}` | — | — | — | 🔧 machine-only: {MACHINE_ONLY[cmd]} |")
             machine_count += 1
+        elif cmd in ALIAS:
+            target = ALIAS[cmd]
+            lines.append(
+                f"| `{cmd}` | `{target}` (alias) | — | alias | 🔗 alias: forwards to {target} |"
+            )
+            action_count += 1
         elif cmd in GAP:
             lines.append(f"| `{cmd}` | — | — | — | 📋 gap: {GAP[cmd]} |")
             gap_count += 1

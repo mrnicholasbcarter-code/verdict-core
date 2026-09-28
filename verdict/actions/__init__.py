@@ -1,6 +1,6 @@
 """Verdict action layer — shared CLI + TUI convergence surface."""
 
-from verdict.actions.base import ActionEvent, ActionResult, ActionSink, ActionSpec
+from verdict.actions.base import ActionEvent, ActionResult, ActionSink, ActionSpec, LaunchSpec
 from verdict.actions.registry import (
     GAP,
     LAUNCH,
@@ -19,6 +19,7 @@ __all__ = [
     "ActionResult",
     "ActionSink",
     "ActionSpec",
+    "LaunchSpec",
     "get_action",
     "list_actions",
     "register",

@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "stderr_empty": true,
+  "stdout": "[\n  {\n    \"availability_state\": \"eligible\",\n    \"context_window\": 200000,\n    \"cost_per_1k\": 0.0,\n    \"id\": \"anthropic/claude-opus-5\",\n    \"provider\": \"anthropic\",\n    \"tier\": 0\n  }\n]\n"
+}
