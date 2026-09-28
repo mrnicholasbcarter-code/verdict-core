@@ -186,6 +186,15 @@ LAUNCH: dict[str, LaunchSpec] = {
         entry="verdict.benchmarking:run_reproducible_benchmarks",
         section="Development",
     ),
+    "autodev": LaunchSpec(
+        reason=(
+            "cmd_autodev (autodev_run.run_autodev): decomposes an objective "
+            "into work units, edits the working tree via live models, and "
+            "records the outcome; long-running interactive pipeline"
+        ),
+        entry="verdict.autodev_run:run_autodev",
+        section="Development",
+    ),
     "autodev-golden-path": LaunchSpec(
         reason=(
             "cmd_autodev_golden_path (golden_path.run_golden_path): three-"
@@ -989,6 +998,7 @@ def _register_builtins() -> None:
     """Register the built-in action set at import time."""
     from verdict.actions.extra import (
         _action_autodev_packet_canary,
+        _action_autodev_packet_canary_rollback,
         _action_autodev_packet_compare,
         _action_autodev_packet_create,
         _action_autodev_packet_inspect,
@@ -1561,6 +1571,16 @@ def _register_builtins() -> None:
                 "Development",
             ),
             _action_autodev_packet_canary,
+        ),
+        (
+            ActionSpec(
+                "autodev.packet.canary-rollback",
+                "development",
+                "mutation",
+                "Restore the pre-canary baseline choice",
+                "Development",
+            ),
+            _action_autodev_packet_canary_rollback,
         ),
         # harness family — per subcommand (7 harnesses * status/enable/disable, plus some certify/discover/sync-models/visibility)
         (

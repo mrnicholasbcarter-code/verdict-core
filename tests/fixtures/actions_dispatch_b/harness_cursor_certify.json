@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "cursor",
+    "certify"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  Cursor harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - Cursor certification  UNSUPPORTED\n    not healthy\n  base URL               (none)\n  token environment set  yes   \n\n  Facets\nFacet              Level      \nconfig_import      partial    \nhooks              unsupported\nmcp                partial    \nmodel_selection    partial    \nresume             partial    \nstructured_output  partial    \nsubagents          partial    \ntool_interception  unsupported\n\n  Notes\n  Verdict-managed ~/.cursor/verdict-provider.json + verdict-openai.env\n  Cursor IDE Override OpenAI Base URL may still need UI confirmation (opaque \nstore)\n  Cursor-managed subscription models may bypass custom OpenAI endpoints\n  harness not enabled for Verdict-managed OpenAI path\n\n  Needs owner\n  live enable with secrets (API key paste in Cursor UI / token_env export)\n",
+  "stderr": ""
+}

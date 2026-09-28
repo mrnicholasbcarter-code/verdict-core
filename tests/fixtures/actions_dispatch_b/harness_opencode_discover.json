@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "opencode",
+    "discover"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  OpenCode harness\nautonomous control plane  ·  plan · select · recover · verify · prove\n\n  + OpenCode installation  FOUND\n    /home/nick/.local/bin/opencode\n  config                 /tmp/v275db-h-opencode/.config/opencode/opencode.json (exists: no)\n  managed by Verdict     no                                                                \n  base URL               (none)                                                            \n  pointing at Verdict    no                                                                \n  pointing at OmniRoute  no                                                                \n",
+  "stderr": ""
+}

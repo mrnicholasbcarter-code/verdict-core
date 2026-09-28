@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "prime",
+    "discover"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  Prime Agent harness\nautonomous control plane  ·  plan · select · recover · verify · prove\n\n  + Prime Agent installation  FOUND\n    /home/nick/.local/bin/prime\n  config                 /tmp/v275db-h-prime/.prime/agent/models.json (exists: no)\n  managed by Verdict     no                                                       \n  base URL               (none)                                                   \n  pointing at Verdict    no                                                       \n  pointing at OmniRoute  no                                                       \n",
+  "stderr": ""
+}

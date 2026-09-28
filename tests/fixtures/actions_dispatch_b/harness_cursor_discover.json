@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "cursor",
+    "discover"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  Cursor harness\nautonomous control plane  ·  plan · select · recover · verify · prove\n\n  + Cursor installation  FOUND\n    /home/nick/.local/bin/cursor\n  config                 /tmp/v275db-h-cursor/.cursor/verdict-provider.json (exists: no)\n  managed by Verdict     no                                                             \n  base URL               (none)                                                         \n  pointing at Verdict    no                                                             \n  pointing at OmniRoute  no                                                             \n  settings               (none)                                                         \n  wrapper                (none)                                                         \n",
+  "stderr": ""
+}
