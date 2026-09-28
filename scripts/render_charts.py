@@ -173,7 +173,10 @@ def live_savings() -> None:
     report = json.loads(path.read_text(encoding="utf-8"))
     per_task = report["per_task"]
     summary = report["summary"]
-    eligible = set(summary["cost_eligible_tasks"])
+    # Schema v2 uses cost_eligible_pairs (list of "task/rN" strings)
+    eligible_pairs = set(summary.get("cost_eligible_pairs", []))
+    # Backward compat: v1 used cost_eligible_tasks (list of task ids)
+    eligible_tasks = set(summary.get("cost_eligible_tasks", []))
 
     names: list[str] = []
     baseline_costs: list[float] = []
@@ -181,7 +184,10 @@ def live_savings() -> None:
     verdict_models: list[str] = []
 
     for entry in per_task:
-        if entry["task_id"] not in eligible:
+        task_id = entry["task_id"]
+        # Check if any pair for this task is eligible
+        task_eligible = any(p.startswith(f"{task_id}/") for p in eligible_pairs) or task_id in eligible_tasks
+        if not task_eligible:
             continue
         b_runs = [r for r in entry["runs"] if r["arm"] == "baseline" and r.get("cost_usd")]
         v_runs = [r for r in entry["runs"] if r["arm"] == "verdict" and r.get("cost_usd")]

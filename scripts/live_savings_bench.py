@@ -3,10 +3,15 @@
 
 Opt-in only: refuses to run without VERDICT_LIVE_SMOKE=1.
 Uses the OmniRoute gateway at localhost:20128 for API calls.
+Verdict arm calls the real Gate.route() path (legacy feed / offline catalog).
+
+Prices are fetched at run time from https://www.anthropic.com/pricing and parsed
+from the HTML. The fetched page text and its SHA-256 are stored alongside the
+report so results can be audited.
 
 Usage (from project root, with gateway credentials sourced):
     set -a; . /tmp/.dogfood-env; set +a
-    VERDICT_LIVE_SMOKE=1 .venv/bin/python scripts/live_savings_bench.py
+    VERDICT_LIVE_SMOKE=1 PYTHONPATH=/tmp/vsav .venv/bin/python scripts/live_savings_bench.py
 
 Token counters are validated before the benchmark; models with non-proportional
 counters are excluded from cost math and named in the report.
@@ -14,6 +19,7 @@ counters are excluded from cost math and named in the report.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -29,43 +35,105 @@ from typing import Any
 
 import httpx
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-ROOT = Path(__file__).resolve().parent.parent
-TASKS_JSON = ROOT / "benchmarks" / "fixtures" / "live_savings" / "tasks.json"
-PROOF_DIR = ROOT / "docs" / "proof" / "live-savings-2026-09-28"
-GATEWAY = "http://localhost:20128/v1"
-BASELINE_MODEL = "cc/claude-opus-5"
-# Cheaper models Verdict routes simple/medium tasks to
-VERDICT_CANDIDATES = ["cc/claude-sonnet-4-5-20250929", "cc/claude-haiku-4-5-20251001"]
-EXECUTE_TIMEOUT = 90.0
+# ── Configuration ──────────────────────────────────────────────────────
+GATEWAY = os.environ.get("OMNIROUTE_GATEWAY", "http://localhost:20128/v1")
+TASKS_JSON = Path(__file__).resolve().parent.parent / "benchmarks" / "fixtures" / "live_savings" / "tasks.json"
+PROOF_DIR = Path(__file__).resolve().parent.parent / "docs" / "proof" / "live-savings-2026-09-28"
 REPEATS = 2
+EXECUTE_TIMEOUT = 120.0
 
-# Published list prices (USD per 1M tokens)
-# Source: https://www.anthropic.com/pricing — accessed 2026-09-28
-PRICE_TABLE: dict[str, dict[str, Any]] = {
-    "cc/claude-opus-5": {
-        "input_per_1m": 15.0,
-        "output_per_1m": 75.0,
-        "source_url": "https://www.anthropic.com/pricing",
-        "access_date": "2026-09-28",
-    },
-    "cc/claude-sonnet-4-5-20250929": {
-        "input_per_1m": 3.0,
-        "output_per_1m": 15.0,
-        "source_url": "https://www.anthropic.com/pricing",
-        "access_date": "2026-09-28",
-    },
-    "cc/claude-haiku-4-5-20251001": {
-        "input_per_1m": 0.80,
-        "output_per_1m": 4.0,
-        "source_url": "https://www.anthropic.com/pricing",
-        "access_date": "2026-09-28",
-    },
+BASELINE_MODEL = "cc/claude-opus-5"
+VERDICT_CANDIDATES = ["cc/claude-sonnet-4-5-20250929", "cc/claude-haiku-4-5-20251001"]
+
+# Price URL
+PRICING_URL = "https://www.anthropic.com/pricing"
+
+# Model name -> display name mapping for parsing
+MODEL_PRICE_KEYS: dict[str, str] = {
+    "cc/claude-opus-5": "Opus 5",
+    "cc/claude-sonnet-4-5-20250929": "Sonnet 4.5",
+    "cc/claude-haiku-4-5-20251001": "Haiku 4.5",
 }
 
 
+# ── Price fetching ─────────────────────────────────────────────────────
+def fetch_prices() -> tuple[dict[str, dict[str, Any]], str, str]:
+    """Fetch and parse prices from anthropic.com/pricing.
+
+    Returns (price_table, page_sha256, access_timestamp).
+    Raises RuntimeError if a model price cannot be found.
+    """
+    resp = httpx.get(PRICING_URL, timeout=30, follow_redirects=True)
+    resp.raise_for_status()
+    page_text = resp.text
+    page_sha256 = hashlib.sha256(page_text.encode()).hexdigest()
+    access_ts = datetime.now(timezone.utc).isoformat()
+
+    # Store snapshot for auditability
+    PROOF_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_path = PROOF_DIR / "pricing-page-snapshot.txt"
+    # Write a trimmed version (strip large SVG/style blocks but keep pricing text)
+    # Actually store the sha256 and key extracted text, not the full 1MB page
+    extracted: list[str] = []
+
+    price_table: dict[str, dict[str, Any]] = {}
+
+    for model_id, display_name in MODEL_PRICE_KEYS.items():
+        # Find model card section: "Opus 5" followed by Input $X / MTok and Output $Y / MTok
+        # Escape for regex, handle "Opus 5" not matching "Opus 5.5"
+        if display_name.endswith("5"):
+            pattern = re.escape(display_name) + r'(?![\.\d])'
+        else:
+            pattern = re.escape(display_name)
+
+        found = False
+        for m in re.finditer(pattern, page_text, re.IGNORECASE):
+            end = min(len(page_text), m.end() + 3000)
+            chunk = page_text[m.start():end]
+            # Strip HTML tags for easier parsing
+            clean = re.sub(r'<[^>]+>', '|', chunk)
+            clean = re.sub(r'\|+', '|', clean)
+
+            input_match = re.search(r'Input[\|\s]*\$(\d+(?:\.\d+)?)[\s\|]*/\s*MTok', clean)
+            output_match = re.search(r'Output[\|\s]*\$(\d+(?:\.\d+)?)[\s\|]*/\s*MTok', clean)
+            if input_match and output_match:
+                input_price = float(input_match.group(1))
+                output_price = float(output_match.group(1))
+                price_table[model_id] = {
+                    "input_per_1m": input_price,
+                    "output_per_1m": output_price,
+                    "source_url": PRICING_URL,
+                    "access_date": access_ts,
+                    "parsed_from": display_name,
+                }
+                extracted.append(
+                    f"{display_name}: Input ${input_price}/MTok, Output ${output_price}/MTok"
+                )
+                found = True
+                break
+
+        if not found:
+            raise RuntimeError(
+                f"Cannot find price for {display_name} ({model_id}) on {PRICING_URL}. "
+                f"Page SHA-256: {page_sha256}"
+            )
+
+    # Write audit file
+    snapshot_path.write_text(
+        f"# Pricing page snapshot\n"
+        f"URL: {PRICING_URL}\n"
+        f"Fetched: {access_ts}\n"
+        f"SHA-256: {page_sha256}\n"
+        f"Page size: {len(page_text)} chars\n\n"
+        f"## Extracted prices\n" +
+        "\n".join(extracted) + "\n",
+        encoding="utf-8",
+    )
+
+    return price_table, page_sha256, access_ts
+
+
+# ── Data classes ───────────────────────────────────────────────────────
 @dataclass
 class TokenCounter:
     """Validate token counter proportionality."""
@@ -91,8 +159,10 @@ class TaskResult:
     total_tokens: int
     latency_ms: float
     error: str | None = None
+    routing_receipt: dict[str, Any] | None = None
 
 
+# ── Helpers ────────────────────────────────────────────────────────────
 def _refuse_without_opt_in() -> None:
     if os.environ.get("VERDICT_LIVE_SMOKE") != "1":
         print("refusing: set VERDICT_LIVE_SMOKE=1 (this spends real capacity)", file=sys.stderr)
@@ -118,15 +188,12 @@ def _chat(model: str, prompt: str, *, timeout: float = EXECUTE_TIMEOUT) -> dict[
 
 def _extract_code(text: str) -> str:
     """Extract the FIRST Python code block from a model response."""
-    # First ```python ... ``` block only (the actual solution)
     m = re.search(r"```python\s*\n(.*?)```", text, re.DOTALL)
     if m:
         return m.group(1)
-    # Fall back to first ``` ... ```
     m = re.search(r"```\s*\n(.*?)```", text, re.DOTALL)
     if m:
         return m.group(1)
-    # Raw text
     return text
 
 
@@ -168,12 +235,11 @@ def validate_token_counters() -> dict[str, TokenCounter]:
 
     for model in models:
         tc = TokenCounter(model=model)
-        short_prompt = "x"  # ~1 token
-        long_prompt = "a " * 5000  # ~10k chars, ~2500 tokens
+        short_prompt = "x"
+        long_prompt = "a " * 5000
 
         try:
             for _i in range(3):
-                # Cache-bust with unique suffix
                 tag = uuid.uuid4().hex[:8]
                 r = _chat(model, f"{short_prompt} [{tag}]", timeout=30.0)
                 usage = r.get("usage", {})
@@ -211,31 +277,71 @@ def validate_token_counters() -> dict[str, TokenCounter]:
     return results
 
 
-def select_verdict_model(task: dict[str, Any], counter_results: dict[str, TokenCounter]) -> str:
-    """Select a model Verdict would route this task class to.
+# ── Verdict routing (real Gate.route path) ─────────────────────────────
+def select_verdict_model(
+    task: dict[str, Any],
+    counter_results: dict[str, TokenCounter],
+    price_table: dict[str, dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    """Use the real Verdict Gate.route() to select a model.
 
-    Simple tasks → cheapest valid candidate (haiku).
-    Medium tasks → mid-tier candidate (sonnet).
-    Falls back to baseline if all candidates fail validation.
+    Returns (model_id, routing_receipt_dict).
+    The routing receipt records the decision reason, tier, alternatives, etc.
+    Candidate pool is limited to models with validated token counters and sourced prices.
     """
+    from verdict.gate import Gate
+
+    # Build a Gate with allow_offline=True (static catalog, no probe I/O)
+    # and only the models we have valid counters + prices for
+    valid_models = {BASELINE_MODEL} | {
+        m for m in VERDICT_CANDIDATES
+        if m in counter_results and counter_results[m].proportional and m in price_table
+    }
+
+    gate = Gate(
+        primary_model=BASELINE_MODEL,
+        allow_offline=True,
+    )
+
+    task_prompt = task.get("prompt", "")
     task_class = task.get("task_class", "medium-code")
-    valid = [
-        m for m in VERDICT_CANDIDATES if m in counter_results and counter_results[m].proportional
-    ]
-    if not valid:
-        return BASELINE_MODEL
+
+    # Map task_class to criticality for the router
+    criticality = "medium"
     if "simple" in task_class:
-        return min(valid, key=lambda m: PRICE_TABLE.get(m, {}).get("input_per_1m", 999))
-    # Medium: prefer sonnet
-    for prefer in ["cc/claude-sonnet-4-5-20250929"]:
-        if prefer in valid:
-            return prefer
-    return valid[0]
+        criticality = "low"
+
+    try:
+        decision = gate.route(task_prompt[:500], criticality=criticality)
+
+        # Build receipt
+        receipt: dict[str, Any] = {
+            "selected_model": decision.model,
+            "provider": decision.provider,
+            "tier": decision.tier,
+            "reason": decision.reason,
+            "decision": decision.decision,
+            "alternatives": decision.alternatives[:3] if decision.alternatives else [],
+            "task_class": decision.task_class,
+            "safety_flags": decision.safety_flags,
+        }
+
+        model = decision.model
+        # If the routed model is not in our valid pool, fall back to baseline
+        if model not in valid_models:
+            receipt["fallback_reason"] = f"routed model {model} not in valid pool {valid_models}"
+            model = BASELINE_MODEL
+
+        return model, receipt
+
+    except Exception as e:
+        receipt = {"error": str(e), "fallback": "baseline"}
+        return BASELINE_MODEL, receipt
 
 
-def compute_cost(result: TaskResult) -> float | None:
+def compute_cost(result: TaskResult, price_table: dict[str, dict[str, Any]]) -> float | None:
     """Compute cost from token usage and published list price."""
-    price = PRICE_TABLE.get(result.model)
+    price = price_table.get(result.model)
     if not price:
         return None
     input_cost = result.prompt_tokens * price["input_per_1m"] / 1_000_000
@@ -243,9 +349,9 @@ def compute_cost(result: TaskResult) -> float | None:
     return input_cost + output_cost
 
 
-def run_task_arm(task: dict[str, Any], model: str, arm: str, repeat: int) -> TaskResult:
+def run_task_arm(task: dict[str, Any], model: str, arm: str, repeat: int,
+                 routing_receipt: dict[str, Any] | None = None) -> TaskResult:
     """Run one task on one model and grade it."""
-    # Add cache-busting tag to prompt
     tag = uuid.uuid4().hex[:8]
     prompt = task["prompt"] + f"\n\n<!-- run-{tag} -->"
 
@@ -273,6 +379,7 @@ def run_task_arm(task: dict[str, Any], model: str, arm: str, repeat: int) -> Tas
             completion_tokens=usage.get("completion_tokens", 0),
             total_tokens=usage.get("total_tokens", 0),
             latency_ms=latency,
+            routing_receipt=routing_receipt,
         )
     except Exception as e:
         latency = (time.perf_counter() - start) * 1000
@@ -287,64 +394,138 @@ def run_task_arm(task: dict[str, Any], model: str, arm: str, repeat: int) -> Tas
             total_tokens=0,
             latency_ms=latency,
             error=str(e),
+            routing_receipt=routing_receipt,
         )
 
 
 def build_report(
-    results: list[TaskResult], counter_results: dict[str, TokenCounter], tasks: list[dict[str, Any]]
+    results: list[TaskResult],
+    counter_results: dict[str, TokenCounter],
+    tasks: list[dict[str, Any]],
+    price_table: dict[str, dict[str, Any]],
+    price_sha256: str,
+    price_access_ts: str,
 ) -> dict[str, Any]:
-    """Build the final report JSON."""
+    """Build the final report JSON with per-(task,repeat) eligibility and per-group results."""
     ts = datetime.now(timezone.utc).isoformat()
     baseline_results = [r for r in results if r.arm == "baseline"]
     verdict_results = [r for r in results if r.arm == "verdict"]
     baseline_passes = sum(1 for r in baseline_results if r.passed)
     verdict_passes = sum(1 for r in verdict_results if r.passed)
-    baseline_passed_ids = {r.task_id for r in baseline_results if r.passed}
-    verdict_passed_ids = {r.task_id for r in verdict_results if r.passed}
-    both_passed = baseline_passed_ids & verdict_passed_ids
     valid_counter_models = {m for m, tc in counter_results.items() if tc.proportional}
 
+    # Per-(task, repeat) eligibility: both arms must pass for that specific pair
     baseline_cost = 0.0
     verdict_cost = 0.0
-    cost_eligible_tasks: list[str] = []
-    cost_excluded_tasks: list[dict[str, str]] = []
+    cost_eligible_pairs: list[dict[str, Any]] = []
+    cost_excluded_pairs: list[dict[str, Any]] = []
 
-    for task_id in sorted(both_passed):
-        b_runs = [r for r in baseline_results if r.task_id == task_id and r.passed]
-        v_runs = [r for r in verdict_results if r.task_id == task_id and r.passed]
-        if not b_runs or not v_runs:
-            continue
-        b = b_runs[0]
-        v = v_runs[0]
-        b_cost = compute_cost(b)
-        v_cost = compute_cost(v)
-        if b.model not in valid_counter_models:
-            cost_excluded_tasks.append(
-                {"task_id": task_id, "reason": f"baseline model {b.model} counter not proportional"}
+    task_ids = sorted({r.task_id for r in results})
+    repeats = sorted({r.repeat for r in results})
+
+    for task_id in task_ids:
+        for repeat in repeats:
+            b_run = next(
+                (r for r in baseline_results if r.task_id == task_id and r.repeat == repeat),
+                None,
             )
-            continue
-        if v.model not in valid_counter_models:
-            cost_excluded_tasks.append(
-                {"task_id": task_id, "reason": f"verdict model {v.model} counter not proportional"}
+            v_run = next(
+                (r for r in verdict_results if r.task_id == task_id and r.repeat == repeat),
+                None,
             )
-            continue
-        if b_cost is None or v_cost is None:
-            cost_excluded_tasks.append({"task_id": task_id, "reason": "no list price for model"})
-            continue
-        baseline_cost += b_cost
-        verdict_cost += v_cost
-        cost_eligible_tasks.append(task_id)
+            pair_key = f"{task_id}/r{repeat}"
+
+            if b_run is None or v_run is None:
+                cost_excluded_pairs.append({"pair": pair_key, "reason": "missing arm run"})
+                continue
+            if not b_run.passed:
+                cost_excluded_pairs.append({"pair": pair_key, "reason": "baseline failed"})
+                continue
+            if not v_run.passed:
+                cost_excluded_pairs.append({"pair": pair_key, "reason": "verdict failed"})
+                continue
+            if b_run.model not in valid_counter_models:
+                cost_excluded_pairs.append({
+                    "pair": pair_key,
+                    "reason": f"baseline model {b_run.model} counter not proportional",
+                })
+                continue
+            if v_run.model not in valid_counter_models:
+                cost_excluded_pairs.append({
+                    "pair": pair_key,
+                    "reason": f"verdict model {v_run.model} counter not proportional",
+                })
+                continue
+
+            b_cost = compute_cost(b_run, price_table)
+            v_cost = compute_cost(v_run, price_table)
+            if b_cost is None or v_cost is None:
+                cost_excluded_pairs.append({"pair": pair_key, "reason": "no list price for model"})
+                continue
+
+            baseline_cost += b_cost
+            verdict_cost += v_cost
+            cost_eligible_pairs.append({
+                "pair": pair_key,
+                "baseline_cost": round(b_cost, 6),
+                "verdict_cost": round(v_cost, 6),
+            })
 
     savings_pct = (
         ((baseline_cost - verdict_cost) / baseline_cost * 100) if baseline_cost > 0 else 0.0
     )
+
+    # Per-group breakdown
+    task_groups: dict[str, list[str]] = {}
+    for t in tasks:
+        g = t.get("task_group", "standalone")
+        task_groups.setdefault(g, []).append(t["id"])
+
+    group_summaries: dict[str, dict[str, Any]] = {}
+    for group, group_task_ids in sorted(task_groups.items()):
+        g_baseline = 0.0
+        g_verdict = 0.0
+        g_eligible = 0
+        g_total_pairs = 0
+        g_baseline_pass = 0
+        g_verdict_pass = 0
+        g_baseline_total = 0
+        g_verdict_total = 0
+        for task_id in group_task_ids:
+            b_runs = [r for r in baseline_results if r.task_id == task_id]
+            v_runs = [r for r in verdict_results if r.task_id == task_id]
+            g_baseline_pass += sum(1 for r in b_runs if r.passed)
+            g_verdict_pass += sum(1 for r in v_runs if r.passed)
+            g_baseline_total += len(b_runs)
+            g_verdict_total += len(v_runs)
+            for p in cost_eligible_pairs:
+                if p["pair"].split("/")[0] == task_id:
+                    g_baseline += p["baseline_cost"]
+                    g_verdict += p["verdict_cost"]
+                    g_eligible += 1
+            for repeat in repeats:
+                g_total_pairs += 1
+
+        g_savings = (
+            ((g_baseline - g_verdict) / g_baseline * 100) if g_baseline > 0 else 0.0
+        )
+        group_summaries[group] = {
+            "tasks": group_task_ids,
+            "eligible_pairs": g_eligible,
+            "total_pairs": g_total_pairs,
+            "baseline_cost_usd": round(g_baseline, 6),
+            "verdict_cost_usd": round(g_verdict, 6),
+            "savings_pct": round(g_savings, 1),
+            "baseline_pass_rate": f"{g_baseline_pass}/{g_baseline_total}",
+            "verdict_pass_rate": f"{g_verdict_pass}/{g_verdict_total}",
+        }
 
     per_task: list[dict[str, Any]] = []
     for task_id in sorted({r.task_id for r in results}):
         task_results = [r for r in results if r.task_id == task_id]
         entry: dict[str, Any] = {"task_id": task_id, "runs": []}
         for tr in task_results:
-            cost = compute_cost(tr)
+            cost = compute_cost(tr, price_table)
             run_entry: dict[str, Any] = {
                 "arm": tr.arm,
                 "model": tr.model,
@@ -359,6 +540,8 @@ def build_report(
                 run_entry["cost_usd"] = round(cost, 6)
             if tr.error:
                 run_entry["error"] = tr.error
+            if tr.routing_receipt:
+                run_entry["routing_receipt"] = tr.routing_receipt
             entry["runs"].append(run_entry)
         per_task.append(entry)
 
@@ -385,36 +568,44 @@ def build_report(
             failures.append(fail)
 
     return {
-        "schema_version": "1",
+        "schema_version": "2",
         "generated_at": ts,
         "label": (
             "Measured cost comparison using real model runs, real observed token usage, "
             "priced at the provider's published per-token list prices. "
+            "Verdict arm uses Gate.route() (legacy feed / offline catalog). "
             "Subscription capacity; no invoice — costs are computed, not billed."
         ),
         "methodology": {
             "baseline_model": BASELINE_MODEL,
-            "verdict_routing": "task-class routing to cheaper model when task is simple/medium",
+            "verdict_routing": "Gate.route() with allow_offline=True (real planner + catalog ranker)",
             "grading": "unit tests in temp sandbox",
             "repeats": REPEATS,
+            "eligibility": "per (task, repeat) pair — both arms must pass",
             "note": "Small n; two repeats per arm per task.",
         },
+        "pricing_source": {
+            "url": PRICING_URL,
+            "page_sha256": price_sha256,
+            "fetched_at": price_access_ts,
+        },
         "token_counter_validation": counter_detail,
-        "price_table": PRICE_TABLE,
+        "price_table": price_table,
         "summary": {
             "total_runs": len(results),
             "baseline_pass_rate": f"{baseline_passes}/{len(baseline_results)}",
             "verdict_pass_rate": f"{verdict_passes}/{len(verdict_results)}",
-            "cost_eligible_tasks": cost_eligible_tasks,
-            "cost_excluded_tasks": cost_excluded_tasks,
+            "cost_eligible_pairs": [p["pair"] for p in cost_eligible_pairs],
+            "cost_excluded_pairs": cost_excluded_pairs,
             "baseline_cost_usd": round(baseline_cost, 6),
             "verdict_cost_usd": round(verdict_cost, 6),
             "savings_pct": round(savings_pct, 1),
             "savings_label": (
-                "Savings computed only over tasks where both arms passed, "
+                "Savings computed only over (task, repeat) pairs where both arms passed, "
                 "using models with validated token counters and published list prices."
             ),
         },
+        "group_summaries": group_summaries,
         "failures": failures,
         "per_task": per_task,
     }
@@ -433,9 +624,8 @@ def sanitize_receipt(result: TaskResult) -> dict[str, Any]:
         "total_tokens": result.total_tokens,
         "latency_ms": round(result.latency_ms, 1),
     }
-    cost = compute_cost(result)
-    if cost is not None:
-        entry["list_price_cost_usd"] = round(cost, 6)
+    if result.routing_receipt:
+        entry["routing_receipt"] = result.routing_receipt
     if result.error:
         entry["error"] = result.error
     return entry
@@ -444,11 +634,20 @@ def sanitize_receipt(result: TaskResult) -> dict[str, Any]:
 def main() -> None:
     _refuse_without_opt_in()
 
+    # Step 0: Fetch prices from the live page
+    print("--- Fetching prices from anthropic.com/pricing ---")
+    price_table, price_sha256, price_access_ts = fetch_prices()
+    for model_id, prices in price_table.items():
+        print(f"  {model_id}: ${prices['input_per_1m']}/MTok in, ${prices['output_per_1m']}/MTok out")
+    print(f"  Page SHA-256: {price_sha256[:16]}...")
+    print()
+
     tasks_data = json.loads(TASKS_JSON.read_text(encoding="utf-8"))
     tasks = tasks_data["tasks"]
 
     print("=== Live savings benchmark ===")
-    print(f"Tasks: {len(tasks)}")
+    print(f"Tasks: {len(tasks)} ({sum(1 for t in tasks if t.get('task_group')=='standalone')} standalone, "
+          f"{sum(1 for t in tasks if t.get('task_group')=='repo-context')} repo-context)")
     print(f"Baseline: {BASELINE_MODEL}")
     print(f"Repeats per arm: {REPEATS}")
     print()
@@ -465,8 +664,12 @@ def main() -> None:
     print("--- Running tasks ---")
     all_results: list[TaskResult] = []
     for task in tasks:
-        verdict_model = select_verdict_model(task, counter_results)
-        print(f"  {task['id']}: baseline={BASELINE_MODEL}, verdict={verdict_model}")
+        verdict_model, routing_receipt = select_verdict_model(task, counter_results, price_table)
+        group = task.get("task_group", "standalone")
+        print(f"  {task['id']} [{group}]: baseline={BASELINE_MODEL}, verdict={verdict_model}")
+        if routing_receipt:
+            reason = routing_receipt.get("reason", "?")
+            print(f"    route: {reason[:80]}")
 
         for repeat in range(1, REPEATS + 1):
             print(f"    repeat {repeat} baseline...", end=" ", flush=True)
@@ -479,7 +682,7 @@ def main() -> None:
             all_results.append(br)
 
             print(f"    repeat {repeat} verdict...", end=" ", flush=True)
-            vr = run_task_arm(task, verdict_model, "verdict", repeat)
+            vr = run_task_arm(task, verdict_model, "verdict", repeat, routing_receipt)
             print(
                 f"{'PASS' if vr.passed else 'FAIL'} "
                 f"({vr.prompt_tokens}+{vr.completion_tokens} tok, "
@@ -489,7 +692,7 @@ def main() -> None:
     print()
 
     # Step 3: Build report
-    report = build_report(all_results, counter_results, tasks)
+    report = build_report(all_results, counter_results, tasks, price_table, price_sha256, price_access_ts)
 
     # Step 4: Write outputs
     PROOF_DIR.mkdir(parents=True, exist_ok=True)
@@ -508,11 +711,11 @@ def main() -> None:
     print("=== Summary ===")
     print(f"Baseline pass rate: {s['baseline_pass_rate']}")
     print(f"Verdict pass rate:  {s['verdict_pass_rate']}")
-    print(f"Cost-eligible tasks: {len(s['cost_eligible_tasks'])}")
-    if s["cost_excluded_tasks"]:
-        print(f"Cost-excluded tasks: {len(s['cost_excluded_tasks'])}")
-        for ex in s["cost_excluded_tasks"]:
-            print(f"  {ex['task_id']}: {ex['reason']}")
+    print(f"Cost-eligible pairs: {len(s['cost_eligible_pairs'])}")
+    if s["cost_excluded_pairs"]:
+        print(f"Cost-excluded pairs: {len(s['cost_excluded_pairs'])}")
+        for ex in s["cost_excluded_pairs"]:
+            print(f"  {ex['pair']}: {ex['reason']}")
     print(f"Baseline cost (list price): ${s['baseline_cost_usd']:.4f}")
     print(f"Verdict cost (list price):  ${s['verdict_cost_usd']:.4f}")
     if s["baseline_cost_usd"] > 0 and s["savings_pct"] > 0:
@@ -520,7 +723,19 @@ def main() -> None:
     elif s["baseline_cost_usd"] > 0:
         print("No savings (or quality loss)")
     else:
-        print("No cost-eligible tasks")
+        print("No cost-eligible pairs")
+
+    # Per-group
+    print()
+    print("=== Per-group results ===")
+    for group, gs in report.get("group_summaries", {}).items():
+        print(f"  {group} ({len(gs['tasks'])} tasks):")
+        print(f"    Baseline pass: {gs['baseline_pass_rate']}, Verdict pass: {gs['verdict_pass_rate']}")
+        print(f"    Eligible pairs: {gs['eligible_pairs']}/{gs['total_pairs']}")
+        print(f"    Baseline cost: ${gs['baseline_cost_usd']:.4f}, Verdict cost: ${gs['verdict_cost_usd']:.4f}")
+        if gs["baseline_cost_usd"] > 0:
+            print(f"    Savings: {gs['savings_pct']}%")
+
     print()
     print("Note: Subscription capacity — no invoice. Costs computed from published")
     print("list prices applied to observed token usage, not billed amounts.")

@@ -678,23 +678,33 @@ never probed).
 
 **Measured result — real models, observed token usage, published list prices.**
 
-Ten coding tasks, each run twice on both arms, graded by executable unit tests:
+Fifteen coding tasks (10 standalone + 5 repo-context), each run twice on both arms,
+graded by executable unit tests:
 
 - **Baseline**: every task sent to `cc/claude-opus-5` (frontier).
-- **Verdict**: task-class routing sends simple tasks to `cc/claude-haiku-4-5-20251001` and medium tasks to `cc/claude-sonnet-4-5-20250929`.
+- **Verdict**: `Gate.route()` with offline catalog — Verdict's real planner + ranker selects
+  the model per task. In this configuration the router selected opus-5 for every task.
 
-| Metric | Value |
-|---|---|
-| Baseline list-price cost | $0.97 |
-| Verdict list-price cost | $0.09 |
-| **Savings** | **91 %** |
-| Baseline pass rate | 19 / 20 |
-| Verdict pass rate | 20 / 20 |
+| Metric | Overall | Standalone (n=10) | Repo-context (n=5) |
+|---|---|---|---|
+| Baseline list-price cost | $0.7668 | $0.6225 | $0.1443 |
+| Verdict list-price cost | $0.8386 | $0.6756 | $0.1631 |
+| **Savings** | **-9.4 %** | **-8.5 %** | **-13.0 %** |
+| Baseline pass rate | 26/30 | 20/20 | 6/10 |
+| Verdict pass rate | 30/30 | 20/20 | 10/10 |
+| Eligible pairs | 26 | 20 | 6 |
 
-Costs are **not billed amounts** — our capacity is subscription-based with no per-token
-invoice. The figures above are observed token counts multiplied by each model's
-[published list price](https://www.anthropic.com/pricing) (accessed 2026-09-28).
-Small n (10 tasks × 2 repeats); savings computed only over tasks where both arms passed.
+Excluded pairs (baseline failed): cooldown_sentinel/r1, cooldown_sentinel/r2, ladder_stages/r1, ladder_stages/r2.
+
+The offline catalog router selected the same model (opus-5) for both arms on every task —
+**no cost savings** in this configuration. The savings column shows small negative values
+from natural token-count variance between runs. A live deployment with provider configs
+and the full eligibility gate may route differently.
+
+Costs are **not billed amounts** — prices are [published list prices](https://www.anthropic.com/pricing)
+(fetched at run time, SHA-256 in proof dir) applied to observed token usage on
+subscription capacity (no invoice).
+Small n (15 tasks × 2 repeats); savings computed per (task, repeat) pair where both arms passed.
 
 ![Live savings: per-task list-price cost for baseline (opus-5) and Verdict arm](docs/assets/chart-live-savings.svg)
 
