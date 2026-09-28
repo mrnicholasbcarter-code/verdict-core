@@ -91,7 +91,7 @@ class TestDoctorParity:
 
         with (
             patch("verdict.actions.helpers.collect_doctor_diagnostics") as mock_cdd,
-            patch("verdict.cli._collect_doctor_diagnostics") as mock_cli_cdd,
+            patch("verdict.doctor_diagnostics._collect_doctor_diagnostics") as mock_cli_cdd,
             patch("verdict.runtime_daemons.RuntimeManager") as mock_rm,
             patch("verdict.runtime_health.build_runtime_health_report") as mock_rh,
         ):

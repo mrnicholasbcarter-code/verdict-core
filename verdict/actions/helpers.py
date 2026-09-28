@@ -134,10 +134,9 @@ def collect_doctor_diagnostics(
 ) -> Any:
     """Collect doctor diagnostics using the real diagnostic pipeline.
 
-    This wrapper exists so actions import from here instead of reaching into
-    cli.py internals.
+    The canonical implementation lives in ``verdict.doctor_diagnostics``.
     """
-    from verdict.cli import _collect_doctor_diagnostics
+    from verdict.doctor_diagnostics import _collect_doctor_diagnostics
 
     return _collect_doctor_diagnostics(
         fix, interactive=interactive, preflight_timeout=preflight_timeout, progress=progress
