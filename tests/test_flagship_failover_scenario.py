@@ -25,159 +25,20 @@ production object the run loop mutated).
 
 from __future__ import annotations
 
-import asyncio
 import itertools
-import json
-import subprocess
-from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tests.test_orch_eligibility import FakeProbe, conn
-from tests.test_orch_eligibility import row as inv_row
-from verdict.orchestration.contracts import (
-    NodeKind,
-    RunOutcome,
-    WorkerTerminal,
-    WorkGraph,
-    WorkNode,
+from verdict.orchestration.demo_scenario import (
+    FLAGSHIP_RUN_ID,
+    ROUTE_A,
+    ROUTE_B,
+    run_flagship_scenario,
 )
-from verdict.orchestration.eligibility import EligibilityLadder
-from verdict.orchestration.executors import FaultInjectingExecutor, ScriptedExecutor
 from verdict.orchestration.receipt import verify_run_receipt
-from verdict.orchestration.recovery import FailureIntelligence
-from verdict.orchestration.review import OcrRun, OpenCodeReviewer
-from verdict.orchestration.run import run_golden_path
-from verdict.orchestration.runtime import RuntimePolicy
-
-# ---------------------------------------------------------------------------
-# Fixture inventory: two providers, three routes. Route A is STRICTLY BEST by
-# real ranking (lexicographic tiebreak; same capacity/price/caps).  Route B is
-# second, Route C exists only for the reviewer (different family).
-#
-# Fault is injected ON ROUTE_A (exact route key) so that ONLY when the real
-# ranking selects A does the fault fire.  With a working cooldown the ladder
-# rejects A and picks B; without cooldowns the selector would re-pick A.
-# ---------------------------------------------------------------------------
-
-ROUTE_A = "alpha/model-a"
-ROUTE_B = "beta/model-b"
-ROUTE_C = "gamma/model-c"  # reviewer-only (different family)
-
-INVENTORY = [
-    inv_row(ROUTE_A, owned_by="alpha"),
-    inv_row(ROUTE_B, owned_by="beta"),
-    inv_row(ROUTE_C, owned_by="gamma"),
-]
-CONNECTIONS = [conn("alpha"), conn("beta"), conn("gamma")]
-
-# ---------------------------------------------------------------------------
-# Clean OCR fixture
-# ---------------------------------------------------------------------------
-
-_OCR_CLEAN = (Path(__file__).parent / "fixtures" / "ocr" / "sample-clean.json").read_text()
-
-
-# ---------------------------------------------------------------------------
-# Graph: 2 implement nodes (node-1, node-2) → 1 integrate node
-# ---------------------------------------------------------------------------
-
-
-def _impl_node(nid: str, deps: tuple[str, ...] = ()) -> WorkNode:
-    check = ("sh", "-c", f"test -f {nid}.txt && ! grep -q FAIL {nid}.txt")
-    return WorkNode(
-        node_id=nid,
-        objective=f"write {nid}",
-        kind=NodeKind.IMPLEMENT,
-        depends_on=deps,
-        owned_files=(f"{nid}.txt",),
-        verification_command=check,
-    )
-
-
-GRAPH = WorkGraph(
-    goal="flagship failover test",
-    nodes=(
-        _impl_node("node-1"),
-        _impl_node("node-2"),
-        WorkNode(
-            node_id="integrate",
-            objective="merge and verify",
-            kind=NodeKind.INTEGRATE,
-            depends_on=("node-1", "node-2"),
-            owned_files=(),
-            verification_command=("sh", "-c", "test -f node-1.txt && test -f node-2.txt"),
-            barrier="integration",
-        ),
-    ),
-    max_parallel=2,
-)
-
-
-# ---------------------------------------------------------------------------
-# Scripted worker: writes the owned file on success
-# ---------------------------------------------------------------------------
-
-
-def _worker_script(prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
-    """Deterministic worker: writes <node_id>.txt with the route that produced it."""
-    node_id = cwd.name.rsplit("-a", 1)[0]
-    (cwd / f"{node_id}.txt").write_text(f"{node_id} implemented by {route_id}\n")
-    return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop")
-
-
-# ---------------------------------------------------------------------------
-# OCR CLI stub (same pattern as test_assignment_failover_e2e)
-# ---------------------------------------------------------------------------
-
-
-class OcrCli:
-    """``ocr`` process boundary: clean review, reports the --model it was given."""
-
-    def __init__(self) -> None:
-        self.models: list[str] = []
-
-    def __call__(self, argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> OcrRun:
-        argv = list(argv)
-        if "--version" in argv:
-            return OcrRun(exit_code=0, stdout="open-code-review v1.12.9\n")
-        model = argv[argv.index("--model") + 1]
-        self.models.append(model)
-        payload = json.loads(_OCR_CLEAN)
-        payload["manifest"]["execution"]["model"] = model
-        out = Path(argv[argv.index("--output") + 1])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload))
-        return OcrRun(exit_code=0)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _init_repo(tmp_path: Path) -> Path:
-    root = tmp_path / "repo"
-    root.mkdir()
-    for args in (
-        ["init", "-q", "-b", "main"],
-        ["config", "user.email", "test@test.invalid"],
-        ["config", "user.name", "test"],
-    ):
-        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
-    (root / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True, capture_output=True)
-    return root
-
-
-def _load_events(run_dir: Path) -> list[dict[str, Any]]:
-    events_path = run_dir / "events.jsonl"
-    assert events_path.exists(), f"events.jsonl missing in {run_dir}"
-    return [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
 
 
 def _events_of(
@@ -195,71 +56,14 @@ def _events_of(
         result.append(flat)
     return result
 
-
-class _ScenarioResult:
-    """Bundle the run_dir, events, receipt, and the ladder reference."""
-
-    __slots__ = ("events", "ladder", "receipt", "run_dir")
-
-    def __init__(
-        self,
-        run_dir: Path,
-        events: list[dict[str, Any]],
-        receipt: dict[str, Any],
-        ladder: EligibilityLadder,
-    ):
-        self.run_dir = run_dir
-        self.events = events
-        self.receipt = receipt
-        self.ladder = ladder
-
-
-def _run_scenario(tmp_path: Path, *, monkeypatch: pytest.MonkeyPatch) -> _ScenarioResult:
-    """Execute the flagship failover scenario and return the full result."""
-    repo = _init_repo(tmp_path)
-    runs_root = tmp_path / "runs"
-    runs_root.mkdir()
-    state_path = tmp_path / "ladder-state.json"
-
-    ladder = EligibilityLadder(INVENTORY, CONNECTIONS, FakeProbe(), state_path)
-
-    inner = ScriptedExecutor(_worker_script)
-    # Inject ONE rate_limit fault on ROUTE_A by exact route key.
-    # The ladder will select A first (it is strictly best by lex order);
-    # that attempt fails.  With cooldowns working, A is rejected and B is
-    # selected for the retry.  Without cooldowns, A would be re-picked
-    # (it is best) but is excluded by the tried-set with a DIFFERENT
-    # rejection reason — that is exactly the mutation signal.
-    executor = FaultInjectingExecutor(inner, {ROUTE_A: ["rate_limit"]})
-
-    classifier = FailureIntelligence()
-
-    ocr = OcrCli()
-    reviewer = OpenCodeReviewer(
-        ladder, api_key_env="TEST_OCR_KEY", out_dir=tmp_path / "review", runner=ocr
+def _run_scenario(tmp_path: Path, *, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Execute the shared flagship scenario used by the recording script."""
+    del monkeypatch  # the shared helper isolates and restores its environment
+    return run_flagship_scenario(
+        tmp_path / "runs",
+        workspace_root=tmp_path / "workspace",
+        run_id=FLAGSHIP_RUN_ID,
     )
-    monkeypatch.setenv("TEST_OCR_KEY", "test-key")
-
-    result = asyncio.run(
-        run_golden_path(
-            "flagship failover test",
-            repo=repo,
-            runs_root=runs_root,
-            selector=ladder,
-            executor=executor,
-            classifier=classifier,
-            reviewer=reviewer,
-            graph=GRAPH,
-            policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
-        )
-    )
-
-    assert result.outcome == RunOutcome.COMPLETE.value, (
-        f"run did not COMPLETE: {result.outcome} — {result.reason}"
-    )
-    events = _load_events(result.run_dir)
-    receipt = json.loads((result.run_dir / "receipt.json").read_text())
-    return _ScenarioResult(result.run_dir, events, receipt, ladder)
 
 
 # ===========================================================================
