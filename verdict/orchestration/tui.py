@@ -58,6 +58,11 @@ _STATE_GLYPH: Mapping[NodeState, str] = {
 }
 LADDER: tuple[str, ...] = ("discovered", "entitled", "healthy", "available", "eligible")
 
+# Hard cap for the non-interactive follow() loop when neither max_polls nor
+# stop_when_final provides a natural exit.  Keeps background callers safe even
+# when the caller passes stop_when_final=False and no max_polls.
+_NON_INTERACTIVE_MAX_POLLS: int = 2000
+
 
 def _t(value: object, limit: int = 120) -> str:
     """Sanitized, whitespace-collapsed, length-bounded label."""
@@ -972,7 +977,7 @@ def follow(
     poll_seconds: float = 0.25,
     max_polls: int | None = None,
     start_seq: int = 0,
-    interactive: bool | None = None,
+    interactive: bool = False,
     key_reader: Any | None = None,
     max_iterations: int = 2000,
 ) -> RunView:
@@ -981,12 +986,14 @@ def follow(
     ``start_seq`` skips events from earlier controller lives of a resumed run, so
     a previous ``run_finished`` cannot end (or mislabel) the current live view.
 
-    When ``interactive`` is True (or ``None`` and stdout is a real TTY) the
-    cockpit navigation layer from :mod:`verdict.orchestration.cockpit_nav`
-    takes over: arrow keys / j / k move the selection, Enter opens the node
-    detail panel, ``d`` expands technical details, ``?`` toggles help,
-    ``Esc`` navigates back and ``q`` quits.  Non-TTY / NO_COLOR / CI / dumb
-    terminals keep the legacy output path unchanged.
+    When ``interactive`` is True the cockpit navigation layer from
+    :mod:`verdict.orchestration.cockpit_nav` takes over: arrow keys / j / k
+    move the selection, Enter opens the node detail panel, ``d`` expands
+    technical details, ``?`` toggles help, ``Esc`` navigates back and ``q``
+    quits.  Callers must opt in explicitly; ``follow()`` never auto-detects a
+    TTY and enters the cockpit on its own.  ``verdict watch`` on a real TTY
+    passes ``interactive=True``; background callers (supervise threads, tests)
+    keep the default ``False`` and always use the non-interactive path.
     """
     target = console or Console()
     plain = plain_mode(console)
@@ -996,8 +1003,6 @@ def follow(
     if start_seq:
         seen = sum(1 for e in read_events(events_path) if _event_seq(e) <= start_seq)
 
-    if interactive is None:
-        interactive = (not plain) and bool(getattr(target, "is_terminal", False))
     if interactive:
         # Prime the view with any events already skipped by start_seq so the
         # cockpit's first frame reflects the current state accurately.
@@ -1023,8 +1028,15 @@ def follow(
     )
     if live is not None:
         live.start(refresh=True)
+    # Apply a hard cap when stop_when_final=False and no explicit max_polls is
+    # given, so no caller can hang indefinitely in the non-interactive path.
+    _bound = (
+        max_polls
+        if max_polls is not None
+        else (None if stop_when_final else _NON_INTERACTIVE_MAX_POLLS)
+    )
     try:
-        while max_polls is None or polls < max_polls:
+        while _bound is None or polls < _bound:
             polls += 1
             events = read_events(events_path)
             for event in events[seen:]:
