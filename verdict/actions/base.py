@@ -62,4 +62,19 @@ class _NoOpSink:
         pass
 
 
+@dataclass(frozen=True)
+class LaunchSpec:
+    """Declarative metadata for a LAUNCH registry entry.
+
+    ``entry`` is a ``"pkg.module:function"`` dotted reference to the same
+    Python callable the CLI invokes.  ``reason`` explains why the command is a
+    long-running launch rather than a fast action.  ``section`` is the palette
+    group label (matches PALETTE's first field).
+    """
+
+    reason: str
+    entry: str  # "pkg.module:function"
+    section: str
+
+
 NOOP_SINK: ActionSink = _NoOpSink()
