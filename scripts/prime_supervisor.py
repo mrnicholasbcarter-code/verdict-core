@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -199,14 +200,32 @@ def _multi_story_enabled() -> bool:
     return False
 
 
+_STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
 def _safe_story_dirname(story_id: str) -> str:
-    """Sanitise *story_id* to a filesystem-safe directory name."""
-    return story_id.replace("/", "_").replace("\\", "_").replace("\0", "_")
+    """Validate *story_id* and return it as a directory name.
+
+    Rejects anything that is not 1-64 characters of letters, digits, ``.``,
+    ``_`` or ``-`` starting with a letter or digit. That excludes ``.``,
+    ``..``, empty strings, path separators, NUL and absolute paths, so a
+    story id can never escape ``<state>/stories/``. Invalid ids raise
+    ``ValueError`` instead of being rewritten into a different id.
+    """
+    if not isinstance(story_id, str) or not _STORY_ID_RE.fullmatch(story_id) or ".." in story_id:
+        raise ValueError(
+            f"invalid story id {story_id!r}: use 1-64 of [A-Za-z0-9._-], "
+            "starting with a letter or digit, with no '..'"
+        )
+    return story_id
 
 
 def _story_state_dir(state_dir: Path, story_id: str) -> Path:
     """Per-story state subdirectory: ``<state_dir>/stories/<safe_id>/``."""
-    d = state_dir / "stories" / _safe_story_dirname(story_id)
+    stories = (state_dir / "stories").resolve()
+    d = (stories / _safe_story_dirname(story_id)).resolve()
+    if d.parent != stories:
+        raise ValueError(f"story state dir {d} escapes {stories}")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -1892,6 +1911,11 @@ def main() -> int:
         parser.error("--skip-identity-verify is only allowed when VERDICT_TEST_MODE=1")
     if _multi_story_enabled() and not args.story:
         parser.error("--story is required when VERDICT_MULTI_STORY=on")
+    if _multi_story_enabled() and args.story:
+        try:
+            _safe_story_dirname(args.story)
+        except ValueError as exc:
+            parser.error(str(exc))
     if (
         args.idle_seconds <= 0
         or args.timeout <= 0

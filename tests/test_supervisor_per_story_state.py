@@ -64,23 +64,50 @@ def _git_init(repo: Path) -> None:
 
 
 class TestSafeStoryDirname:
-    """Unit tests for _safe_story_dirname and _story_state_dir helpers."""
+    """Story ids are validated, never rewritten.
 
-    def test_slashes_replaced(self) -> None:
-        m = _load_supervisor()
-        assert m._safe_story_dirname("BOD-157/sub") == "BOD-157_sub"
-
-    def test_backslash_replaced(self) -> None:
-        m = _load_supervisor()
-        assert m._safe_story_dirname("BOD\\157") == "BOD_157"
-
-    def test_null_replaced(self) -> None:
-        m = _load_supervisor()
-        assert m._safe_story_dirname("BOD\x00157") == "BOD_157"
+    Rewriting (for example ``/`` to ``_``) would let two different ids share
+    one state dir (``BOD/157`` and ``BOD_157``) and would let ``..`` or ``.``
+    resolve to the shared root. Invalid ids are rejected instead.
+    """
 
     def test_plain_id_unchanged(self) -> None:
         m = _load_supervisor()
         assert m._safe_story_dirname("BOD-157") == "BOD-157"
+        assert m._safe_story_dirname("bod_273.v2") == "bod_273.v2"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            ".",
+            "..",
+            "../x",
+            "x/..",
+            "/abs",
+            "a/b",
+            "a\\b",
+            "BOD\x00157",
+            ".hidden",
+            "-lead",
+            "a..b",
+            "x" * 65,
+            " BOD-1",
+            "BOD-1 ",
+        ],
+    )
+    def test_invalid_ids_rejected(self, bad: str) -> None:
+        m = _load_supervisor()
+        with pytest.raises(ValueError):
+            m._safe_story_dirname(bad)
+
+    @pytest.mark.parametrize("bad", ["..", ".", "../escape", "/abs"])
+    def test_story_state_dir_never_escapes(self, tmp_path: Path, bad: str) -> None:
+        m = _load_supervisor()
+        with pytest.raises(ValueError):
+            m._story_state_dir(tmp_path, bad)
+        assert not (tmp_path / "checkpoint.json").exists()
+        assert not any(p.name != "stories" for p in tmp_path.iterdir())
 
     def test_story_state_dir_created(self, tmp_path: Path) -> None:
         m = _load_supervisor()
