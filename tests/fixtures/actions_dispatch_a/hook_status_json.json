@@ -1,0 +1,6 @@
+{
+  "stdout": "{\n  \"codex_agents_md\": false,\n  \"claude_md\": true,\n  \"mcp_json\": true,\n  \"memory_db\": false\n}\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "hook status --json"
+}

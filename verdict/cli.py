@@ -1711,92 +1711,81 @@ def cmd_autodev_packet(
     family_b_path: str | None = None,
 ) -> None:
     """Create or inspect a portable packet without granting execution authority."""
+    from verdict.actions.registry import run_action
 
-    from verdict.execution_packet import (
-        ExecutionPacket,
-        ExecutionPacketError,
-        ExecutionPacketStore,
-        UnsupportedSchemaVersionError,
-        schema_refusal_receipt,
-    )
+    action_map = {
+        "create": "autodev.packet.create",
+        "inspect": "autodev.packet.inspect",
+        "validate": "autodev.packet.validate",
+        "resume": "autodev.packet.resume",
+        "compare": "autodev.packet.compare",
+    }
+    action_name = action_map.get(action)
+    if action_name is None:
+        if output_json:
+            print(json.dumps({"error": f"unsupported packet action: {action}"}, sort_keys=True))
+        else:
+            from verdict import present
 
-    path = Path(packet_path).expanduser().resolve()
-    store = ExecutionPacketStore(path.parent)
-    try:
-        if action == "create":
-            if source_path is None:
-                raise ExecutionPacketError("packet create requires --from")
-            source = Path(source_path).expanduser().resolve()
-            payload = json.loads(source.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ExecutionPacketError("packet source JSON must be an object")
-            created = ExecutionPacket.from_dict(payload)
-            store.create(created, path)
-            packet = created
-        elif action in {"inspect", "validate"}:
-            packet = store.validate(path)
-        elif action == "resume":
-            if model is None:
-                raise ExecutionPacketError("packet resume requires --model")
-            packet = store.resume(path, executing_model=model)
-        elif action == "compare":
-            from verdict.autodev_run import AutodevError, compare_family_runs
+            present.header(f"Autodev packet  /  {action}")
+            present.fail("packet", f"unsupported packet action: {action}")
+        raise SystemExit(1)
 
-            if family_a_path is None or family_b_path is None:
-                raise ExecutionPacketError("packet compare requires --a and --b")
-            packet = store.validate(path)
-            family_a = json.loads(Path(family_a_path).expanduser().read_text(encoding="utf-8"))
-            family_b = json.loads(Path(family_b_path).expanduser().read_text(encoding="utf-8"))
-            if not isinstance(family_a, dict) or not isinstance(family_b, dict):
-                raise ExecutionPacketError("family run JSON must be an object")
-            try:
-                data = compare_family_runs(family_a, family_b, packet=packet)
-            except AutodevError as exc:
-                raise ExecutionPacketError(str(exc)) from exc
+    params: dict[str, Any] = {"packet_path": packet_path}
+    if action == "create":
+        params["source_path"] = source_path
+    if action == "resume":
+        params["model"] = model
+    if action == "compare":
+        params["family_a_path"] = family_a_path
+        params["family_b_path"] = family_b_path
+
+    result = run_action(action_name, params)
+
+    if not result.ok:
+        error_str = str(result.data.get("error", ""))
+        # Check if it was an unsupported schema version refusal
+        refusal_keys = {"refusal", "encountered_schema_version", "supported_schema_versions"}
+        if refusal_keys.issubset(result.data.keys()):
             if output_json:
-                print(json.dumps(data, indent=2, sort_keys=True))
+                print(json.dumps(result.data, sort_keys=True))
             else:
                 from verdict import present
 
-                present.header("Autodev packet  /  compare")
-                present.kv(
-                    {
-                        "pair": data["pair_id"],
-                        "parity claimed": data["parity_claimed"],
-                        "unknown facets": len(data["unknown_facets"]),
-                    }
+                present.header(f"Autodev packet  /  {action}")
+                present.fail(
+                    "schema",
+                    f"refused {result.data['encountered_schema_version']!r} — "
+                    f"supported: {', '.join(result.data['supported_schema_versions'])} "
+                    f"(no gateway request issued)",
                 )
-            return
-        else:
-            raise ExecutionPacketError(f"unsupported packet action: {action}")
-    except UnsupportedSchemaVersionError as exc:
-        receipt = schema_refusal_receipt(exc)
+            raise SystemExit(1)
         if output_json:
-            print(json.dumps(receipt, sort_keys=True))
+            print(json.dumps(result.data, sort_keys=True))
         else:
             from verdict import present
 
             present.header(f"Autodev packet  /  {action}")
-            present.fail(
-                "schema",
-                f"refused {receipt['encountered_schema_version']!r} — "
-                f"supported: {', '.join(receipt['supported_schema_versions'])} "
-                f"(no gateway request issued)",
+            present.fail("packet", error_str)
+        raise SystemExit(1)
+
+    data = result.data
+    if action == "compare":
+        if output_json:
+            print(json.dumps(data, indent=2, sort_keys=True))
+        else:
+            from verdict import present
+
+            present.header("Autodev packet  /  compare")
+            present.kv(
+                {
+                    "pair": data.get("pair_id", ""),
+                    "parity claimed": data.get("parity_claimed", ""),
+                    "unknown facets": len(data.get("unknown_facets", [])),
+                }
             )
-        raise SystemExit(1) from exc
-    except (ExecutionPacketError, OSError, ValueError) as exc:
-        if output_json:
-            print(json.dumps({"error": str(exc)}, sort_keys=True))
-        else:
-            from verdict import present
+        return
 
-            present.header(f"Autodev packet  /  {action}")
-            present.fail("packet", str(exc))
-        raise SystemExit(1) from exc
-
-    data = packet.to_dict()
-    if model is not None and action == "resume":
-        data["executing_model"] = model
     if output_json:
         print(json.dumps(data, indent=2, sort_keys=True))
     else:
@@ -1805,10 +1794,10 @@ def cmd_autodev_packet(
         present.header(f"Autodev packet  /  {action}")
         present.kv(
             {
-                "packet": packet.packet_id,
-                "version": f"v{packet.packet_version}",
-                "proof level": packet.proof_level.value,
-                "next safe action": packet.next_safe_action,
+                "packet": data.get("packet_id", ""),
+                "version": f"v{data.get('packet_version', '')}",
+                "proof level": data.get("proof_level", ""),
+                "next safe action": data.get("next_safe_action", ""),
             }
         )
 
@@ -2379,10 +2368,7 @@ default_model_catalog = _action_helpers.default_model_catalog
 
 def cmd_memory(args: Any) -> None:
     """Handle memory subcommands: put, search, export, import, masterdocs, graph."""
-    from verdict.memory_bridge import configure_memory_bridge, detect_available_tools
-    from verdict.memory_graph_adapter import CodeGraphAdapter
-    from verdict.memory_masterdocs_adapter import MasterDocsAdapter
-    from verdict.memory_plane import MemoryPlane, MemoryRecord
+    from verdict.actions.registry import run_action
 
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     sub = getattr(args, "memory_command", None)
@@ -2392,134 +2378,147 @@ def cmd_memory(args: Any) -> None:
         present.header(f"Memory / {sub or 'help'}")
 
     if sub == "docs":
-        from verdict.documentation_preflight import run_documentation_preflight
-
-        docs_report = run_documentation_preflight(
-            repo_root=Path(getattr(args, "repo_root", Path.cwd())),
-            memory_path=Path(db_path),
-            fix=getattr(args, "fix", False),
+        result = run_action(
+            "memory.docs",
+            {
+                "repo_root": str(Path(getattr(args, "repo_root", Path.cwd()))),
+                "db_path": db_path,
+                "fix": getattr(args, "fix", False),
+            },
         )
         if getattr(args, "json", False):
-            print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(result.data, indent=2, sort_keys=True))
         else:
-            present.kv(docs_report.to_dict(), title="Documentation preflight")
-            if not docs_report.passed:
-                present.fail("documentation preflight", "failed")
-        if not docs_report.passed:
+            from verdict import present as _present
+
+            _present.kv(result.data, title="Documentation preflight")
+            if not result.ok:
+                _present.fail("documentation preflight", "failed")
+        if not result.ok:
             raise SystemExit(1)
         return
 
-    plane = MemoryPlane(db_path)
-
     if sub == "put":
-        rec = MemoryRecord(
-            record_id=f"rec_{args.key}",
-            namespace=getattr(args, "namespace", "default"),
-            key=args.key,
-            content=args.content,
-            source=getattr(args, "source", "cli"),
+        result = run_action(
+            "memory.put",
+            {
+                "db_path": db_path,
+                "key": args.key,
+                "content": args.content,
+                "namespace": getattr(args, "namespace", "default"),
+                "source": getattr(args, "source", "cli"),
+            },
         )
-        plane.put(rec)
-        present.ok("Memory record put", f"{rec.key} (ns: {rec.namespace})")
+        from verdict import present as _present
+
+        _present.ok("Memory record put", f"{result.data['key']} (ns: {result.data['namespace']})")
     elif sub == "search":
-        results = plane.search(
-            args.query, namespace=getattr(args, "namespace", None), limit=getattr(args, "limit", 10)
+        result = run_action(
+            "memory.search",
+            {
+                "db_path": db_path,
+                "query": args.query,
+                "namespace": getattr(args, "namespace", None),
+                "limit": getattr(args, "limit", 10),
+            },
         )
-        present.section(f"Found {len(results)} memory record(s):")
-        present.table(
+        from verdict import present as _present
+
+        _present.section(f"Found {result.data['count']} memory record(s):")
+        _present.table(
             ["Namespace", "Key", "Source", "Content"],
-            [(r.namespace, r.key, r.source, r.content[:100]) for r in results],
+            [
+                (r["namespace"], r["key"], r["source"], r["content"][:100])
+                for r in result.data["records"]
+            ],
         )
     elif sub == "export":
-        from verdict.memory_adapters import ImportPolicy, export_manifest
-
-        out = getattr(args, "output", "memory_manifest.json")
-        destination = Path(out).expanduser().resolve()
-        policy = ImportPolicy((destination.parent,))
-        export_report = export_manifest(
-            plane.export_records(),
-            destination,
-            policy=policy,
-            source="memory-plane",
-            adapter_id="local-manifest",
+        result = run_action(
+            "memory.export",
+            {"db_path": db_path, "output": getattr(args, "output", "memory_manifest.json")},
         )
-        if export_report.status != "ok":
-            raise SystemExit("memory manifest export failed: " + "; ".join(export_report.errors))
-        present.ok("Exported memory manifest", f"to {destination}")
-    elif sub == "import":
-        from verdict.memory_adapters import ImportPolicy, import_manifest
+        if not result.ok:
+            raise SystemExit(
+                "memory manifest export failed: " + "; ".join(result.data.get("errors", []))
+            )
+        from verdict import present as _present
 
-        man = args.manifest
-        source = Path(man).expanduser().resolve()
-        policy = ImportPolicy((source.parent,))
-        manifest_records, import_report = import_manifest(source, policy=policy)
-        count = plane.import_records(manifest_records)
-        present.ok(
+        _present.ok("Exported memory manifest", f"to {result.data['destination']}")
+    elif sub == "import":
+        result = run_action("memory.import", {"db_path": db_path, "manifest": args.manifest})
+        if not result.ok:
+            print(
+                "memory manifest import failed: " + result.data.get("error", "unknown error"),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        from verdict import present as _present
+
+        _present.ok(
             "Imported memory records",
-            f"{count[0]} record(s) ({import_report.duplicates} duplicates; "
-            f"manifest {import_report.manifest_hash})",
+            f"{result.data['imported']} record(s) ({result.data['duplicates']} duplicates; "
+            f"manifest {result.data['manifest_hash']})",
         )
     elif sub == "masterdocs":
-        db = getattr(args, "db", "MasterDocsRAG.db")
-        adapter = MasterDocsAdapter()
-        result = adapter.canonicalize_db_records(
-            db,
-            allow_legacy_sqlite=args.allow_legacy_sqlite,
-            limit=getattr(args, "limit", 1000),
-            ingest_timestamp=getattr(args, "ingest_timestamp", None),
+        result = run_action(
+            "memory.masterdocs",
+            {
+                "db_path": db_path,
+                "db": getattr(args, "db", "MasterDocsRAG.db"),
+                "allow_legacy_sqlite": args.allow_legacy_sqlite,
+                "limit": getattr(args, "limit", 1000),
+                "ingest_timestamp": getattr(args, "ingest_timestamp", None),
+                "dry_run": getattr(args, "dry_run", False),
+            },
         )
-        if result.report.status in {"unavailable", "rejected", "empty"}:
-            payload = result.to_dict()
+        payload = result.data
+        if not result.ok:
             if getattr(args, "json", False):
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
-                present.fail("MasterDocs import", str(result.report.status))
-                present.kv(payload["report"])
+                from verdict import present as _present
+
+                _present.fail("MasterDocs import", str(payload.get("report", {}).get("status", "")))
+                _present.kv(payload.get("report", payload))
             raise SystemExit(1)
-        if getattr(args, "dry_run", False):
-            payload = result.to_dict()
-        else:
-            imported_report = adapter.import_result(result, plane)
-            payload = {
-                "report": imported_report.to_dict(),
-                "records": [dict(record) for record in result.records],
-            }
-            if imported_report.status in {"rejected", "partial"} and imported_report.ingested == 0:
-                raise SystemExit(1)
         if getattr(args, "json", False):
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            present.ok("MasterDocs import", str(payload["report"].get("status", "ok")))
-            present.kv(payload["report"])
+            from verdict import present as _present
+
+            _present.ok("MasterDocs import", str(payload.get("report", {}).get("status", "ok")))
+            _present.kv(payload.get("report", payload))
         return
     elif sub == "graph":
-        db = getattr(args, "db", "code_graph.db")
-        graph_adapter = CodeGraphAdapter()
-        graph_rep = graph_adapter.ingest_sqlite(
-            db, plane, allow_legacy_sqlite=args.allow_legacy_sqlite
-        )
-        present.ok("Code graph ingested", f"{graph_rep.records_created} node(s)")
-    elif sub == "setup":
-        report = detect_available_tools()
-        tools_to_config = getattr(args, "tools", None)
-        if not tools_to_config:
-            tools_to_config = list(report.preselected_tools)
-        else:
-            tools_to_config = [t.strip() for t in tools_to_config.split(",") if t.strip()]
-
-        present.kv(
+        result = run_action(
+            "memory.graph",
             {
-                "Detected available AI tools": list(report.preselected_tools),
-                "Configuring memory bridge for": tools_to_config,
+                "db_path": db_path,
+                "db": getattr(args, "db", "code_graph.db"),
+                "allow_legacy_sqlite": args.allow_legacy_sqlite,
+            },
+        )
+        from verdict import present as _present
+
+        _present.ok("Code graph ingested", f"{result.data['records_created']} node(s)")
+    elif sub == "setup":
+        result = run_action(
+            "memory.setup", {"db_path": db_path, "tools": getattr(args, "tools", None)}
+        )
+        from verdict import present as _present
+
+        _present.kv(
+            {
+                "Detected available AI tools": result.data.get("detected_tools", []),
+                "Configuring memory bridge for": result.data.get("detected_tools", []),
             }
         )
-
-        res = configure_memory_bridge(tools_to_config, plane)
-        present.ok("Configured tools", str(res["configured_tools"]))
-        present.ok("Memory database ready", str(res["memory_db_path"]))
-
+        _present.ok("Configured tools", str(result.data.get("configured_tools", "")))
+        _present.ok("Memory database ready", str(result.data.get("memory_db_path", "")))
     else:
-        present.warn("Memory", "Use --help to view memory subcommands.")
+        from verdict import present as _present
+
+        _present.warn("Memory", "Use --help to view memory subcommands.")
 
 
 def cmd_uninstall(purge_data: bool = False) -> None:
@@ -2548,43 +2547,49 @@ def cmd_runtime(
     manager: Any | None = None,
 ) -> None:
     """Inspect or explicitly reconcile canonical global runtime ownership."""
-    from verdict.runtime_daemons import RuntimeManager, RuntimeManagerError
+    from verdict.actions.registry import run_action
 
-    manager = manager or RuntimeManager()
+    action_name = f"runtime.{operation}"
+    params: dict[str, Any] = {}
+    if operation == "reconcile":
+        params["apply"] = apply
+        params["consent"] = consent
+        params["service_ids"] = service_ids
+
     try:
-        if operation == "status":
-            report = manager.status()
-        elif operation == "reconcile":
-            if apply:
-                report = manager.reconcile_apply(
-                    service_ids=service_ids or [spec.service_id for spec in manager.specs],
-                    consent=consent,
-                )
-            else:
-                report = manager.reconcile_plan()
-        elif operation == "explain":
-            from verdict.runtime_health import build_runtime_health_report
-
-            report = build_runtime_health_report(manager.status())
-        else:
-            raise RuntimeManagerError(f"unsupported runtime operation: {operation}")
-    except RuntimeManagerError as exc:
-        payload = {"operation": "runtime", "status": "blocked", "errors": [str(exc)]}
+        result = run_action(action_name, params or None)
+    except KeyError:
+        payload = {
+            "operation": "runtime",
+            "status": "blocked",
+            "errors": [f"unsupported runtime operation: {operation}"],
+        }
         if output_json:
             print(json.dumps(payload, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Runtime")
-            present.fail("Runtime operation blocked", str(exc))
-        raise SystemExit(2) from exc
+            present.fail("Runtime operation blocked", f"unsupported runtime operation: {operation}")
+        raise SystemExit(2) from None
+
+    if not result.ok and result.data.get("error"):
+        payload = {"operation": "runtime", "status": "blocked", "errors": [result.data["error"]]}
+        if output_json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            from verdict import present
+
+            present.header("Runtime")
+            present.fail("Runtime operation blocked", result.data["error"])
+        raise SystemExit(2)
 
     if output_json:
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(result.data, indent=2, sort_keys=True))
     else:
         from verdict import present
 
-        data = report.to_dict()
+        data = result.data
         present.header(f"Runtime  /  {operation}")
         present.kv(
             {key: value for key, value in data.items() if not isinstance(value, (dict, list))}
@@ -2592,10 +2597,10 @@ def cmd_runtime(
         for key, value in data.items():
             if isinstance(value, (dict, list)):
                 present.note(f"{key}: {json.dumps(value, sort_keys=True)}")
-        present.status("runtime", "ok" if report.passed else "failed")
+        present.status("runtime", "ok" if result.ok else "failed")
     if operation == "explain":
         return
-    if not report.passed:
+    if not result.ok:
         raise SystemExit(1)
 
 
@@ -2720,12 +2725,11 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
 
 def cmd_hook(args: Any) -> None:
     """Manage Verdict lifecycle hooks for Codex and Claude Code."""
-
-    from verdict.memory_bridge import configure_memory_bridge
-    from verdict.memory_gate import MemoryGate, MemoryWriteRequest
-    from verdict.memory_plane import MemoryPlane
+    from verdict.actions.registry import run_action
 
     hook_cmd = getattr(args, "hook_command", None)
+    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
+
     if hook_cmd != "claude-gate" and not (
         hook_cmd in {"recall", "configure", "status"} and getattr(args, "json", False)
     ):
@@ -2755,72 +2759,77 @@ def cmd_hook(args: Any) -> None:
                 raise SystemExit(2) from exc
         return
 
-    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
-    plane = MemoryPlane(db_path)
-    gate = MemoryGate(plane)
-
     if hook_cmd == "recall":
-        query = getattr(args, "query", "")
-        limit = getattr(args, "limit", 5)
-        results = plane.search(query, limit=limit)
+        result = run_action(
+            "hook.recall",
+            {
+                "db_path": db_path,
+                "query": getattr(args, "query", ""),
+                "limit": getattr(args, "limit", 5),
+            },
+        )
         if getattr(args, "json", False):
-            print(json.dumps([r.to_dict() for r in results], indent=2))
+            print(json.dumps(result.data["records"], indent=2))
         else:
-            present.section(f"Recall: {len(results)} record(s)")
-            present.table(
+            from verdict import present as _present
+
+            _present.section(f"Recall: {result.data['count']} record(s)")
+            _present.table(
                 ["Namespace", "Key", "Source", "Content"],
-                [(r.namespace, r.key, r.source, r.content[:120]) for r in results],
+                [
+                    (r["namespace"], r["key"], r["source"], r["content"][:120])
+                    for r in result.data["records"]
+                ],
             )
 
     elif hook_cmd == "record":
-        key = getattr(args, "key", "session")
-        value = getattr(args, "value", "")
-        namespace = getattr(args, "namespace", "sessions")
-        source = getattr(args, "source", "cli")
-        req = MemoryWriteRequest(
-            namespace=namespace, key=key, value=value, source=source, authority="agent"
+        result = run_action(
+            "hook.record",
+            {
+                "db_path": db_path,
+                "key": getattr(args, "key", "session"),
+                "value": getattr(args, "value", ""),
+                "namespace": getattr(args, "namespace", "sessions"),
+                "source": getattr(args, "source", "cli"),
+            },
         )
-        write_res = gate.write(req)
-        if write_res.allowed:
-            present.ok("Recorded", f"[{namespace}:{key}]")
+        from verdict import present as _present
+
+        if result.data.get("allowed"):
+            _present.ok(
+                "Recorded",
+                f"[{getattr(args, 'namespace', 'sessions')}:{getattr(args, 'key', 'session')}]",
+            )
         else:
-            present.fail(f"Rejected [{namespace}:{key}]", str(write_res.reason))
+            _present.fail(
+                f"Rejected [{getattr(args, 'namespace', 'sessions')}:{getattr(args, 'key', 'session')}]",
+                str(result.data.get("reason", "")),
+            )
 
     elif hook_cmd == "configure":
-        tools_str = getattr(args, "tools", None)
-        tools = [t.strip() for t in tools_str.split(",")] if tools_str else ["codex", "claude"]
-        res = configure_memory_bridge(selected_tools=tools)
+        result = run_action("hook.configure", {"tools": getattr(args, "tools", None)})
         if getattr(args, "json", False):
-            print(json.dumps(res, indent=2))
+            print(json.dumps(result.data, indent=2))
         else:
-            present.ok("Memory bridge configured.")
-            present.kv({"DB": res["memory_db_path"], "Targets": ", ".join(res["configured_tools"])})
+            from verdict import present as _present
+
+            _present.ok("Memory bridge configured.")
+            _present.kv(
+                {
+                    "DB": result.data["memory_db_path"],
+                    "Targets": ", ".join(result.data["configured_tools"]),
+                }
+            )
 
     elif hook_cmd == "status":
-        codex_agents = Path.home() / ".codex" / "AGENTS.md"
-        claude_md = Path.cwd() / "CLAUDE.md"
-        mcp_file = Path.cwd() / ".mcp.json"
-        status = {
-            "codex_agents_md": codex_agents.exists()
-            and "Verdict Unified Memory Bridge" in codex_agents.read_text(),
-            "claude_md": claude_md.exists()
-            and "Verdict Unified Memory Bridge" in claude_md.read_text(),
-            "mcp_json": False,
-            "memory_db": Path(db_path).exists(),
-        }
-        if mcp_file.exists():
-            try:
-                data = json.loads(mcp_file.read_text())
-                status["mcp_json"] = "verdict-memory" in data.get(
-                    "mcpServers", {}
-                ) or "verdict-core" in data.get("mcpServers", {})
-            except Exception:
-                pass
+        result = run_action("hook.status", {"db_path": db_path})
         if getattr(args, "json", False):
-            print(json.dumps(status, indent=2))
+            print(json.dumps(result.data, indent=2))
         else:
-            for k, v in status.items():
-                present.status(k.replace("_", " "), "ok" if v else "missing")
+            from verdict import present as _present
+
+            for k, v in result.data.items():
+                _present.status(k.replace("_", " "), "ok" if v else "missing")
 
 
 def cmd_mcp(args: Any) -> None:
@@ -2831,35 +2840,28 @@ def cmd_mcp(args: Any) -> None:
 
         run_mcp()
     elif mcp_cmd == "init":
-        from verdict.memory_bridge import configure_memory_bridge
+        from verdict.actions.registry import run_action
 
-        res = configure_memory_bridge(selected_tools=["mcp", "codex", "claude"])
+        result = run_action("mcp.init")
         if getattr(args, "json", False):
-            print(json.dumps(res, indent=2))
+            print(json.dumps(result.data, indent=2))
         else:
             from verdict import present
 
             present.header("MCP / init")
             present.ok("Verdict MCP server initialized across tool environments.")
-            present.kv({"Memory DB": res["memory_db_path"]})
+            present.kv({"Memory DB": result.data["memory_db_path"]})
     elif mcp_cmd == "status":
-        mcp_file = Path.cwd() / ".mcp.json"
-        registered = False
-        if mcp_file.exists():
-            try:
-                data = json.loads(mcp_file.read_text("utf-8"))
-                servers = data.get("mcpServers", {})
-                registered = "verdict-memory" in servers or "verdict-core" in servers
-            except Exception:
-                pass
-        status_info = {"mcp_registered": registered, "mcp_config": str(mcp_file)}
+        from verdict.actions.registry import run_action
+
+        result = run_action("mcp.status")
         if getattr(args, "json", False):
-            print(json.dumps(status_info, indent=2))
+            print(json.dumps(result.data, indent=2))
         else:
             from verdict import present
 
             present.header("MCP / status")
-            if registered:
+            if result.data["mcp_registered"]:
                 present.ok("Verdict MCP server", "is registered in .mcp.json")
             else:
                 present.warn("Verdict MCP server", "is not registered in .mcp.json")
@@ -3836,90 +3838,130 @@ def cmd_prove_at_rest(
     output_json: bool = False,
 ) -> None:
     """Run or inspect the free∩active prove-at-rest daemon."""
-    from verdict.prove_at_rest import (
-        ProveAtRestError,
-        ProveAtRestStore,
-        build_live_daemon,
-        default_state_path,
-    )
-
-    resolved_state = Path(state_path).expanduser() if state_path else default_state_path()
     if prove_command == "status":
-        cycle = ProveAtRestStore(path=resolved_state).read()
-        if cycle is None:
-            payload = {"status": "empty", "state_path": str(resolved_state)}
+        from verdict.actions.registry import run_action
+
+        result = run_action(
+            "prove-at-rest.status", {"state_path": state_path} if state_path else None
+        )
+        data = result.data
+        if data.get("status") == "empty":
             if output_json:
-                print(json.dumps(payload, indent=2, sort_keys=True))
+                print(json.dumps(data, indent=2, sort_keys=True))
             else:
                 from verdict import present
 
                 present.header("Prove at rest")
-                present.warn("prove-at-rest", f"No prove-at-rest state at {resolved_state}")
+                present.warn("prove-at-rest", f"No prove-at-rest state at {data['state_path']}")
             return
-        payload = cycle.to_dict()
-        payload["state_path"] = str(resolved_state)
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(data, indent=2, sort_keys=True))
             return
         from verdict import present
 
-        summary = cycle.summary
         present.header("Prove at rest  /  status")
-        present.kv({"cycle": cycle.cycle_id, "state": resolved_state, **summary})
+        summary = {
+            k: v
+            for k, v in data.items()
+            if k not in {"results", "state_path", "cycle_id"} and not isinstance(v, list)
+        }
+        present.kv(
+            {"cycle": data.get("cycle_id", ""), "state": data.get("state_path", ""), **summary}
+        )
+        results = data.get("results", [])
         present.table(
             ["Status", "Identity", "Reason"],
-            [(item.status, item.identity_id, item.reason or "-") for item in cycle.results],
+            [
+                (item.get("status", ""), item.get("identity_id", ""), item.get("reason") or "-")
+                for item in results
+            ],
         )
         return
 
-    if prove_command in {"once", "daemon"} and not allow_live_probe:
-        message = "live prove-at-rest requires explicit consent; pass --allow-live-probe"
-        if output_json:
-            print(json.dumps({"error": message}, sort_keys=True))
-        else:
-            from verdict import present
-
-            present.header("Prove at rest")
-            present.fail("prove-at-rest", message)
-        raise SystemExit(2)
-
-    try:
-        daemon = build_live_daemon(
-            state_path=resolved_state,
-            base_url=base_url,
-            interval_seconds=interval,
-            probe_timeout_seconds=timeout,
-            allow_live_probe=allow_live_probe,
-        )
-    except ProveAtRestError as exc:
-        message = str(exc)
-        if output_json:
-            print(json.dumps({"error": message}, sort_keys=True))
-        else:
-            from verdict import present
-
-            present.header("Prove at rest")
-            present.fail("prove-at-rest", message)
-        raise SystemExit(2) from exc
-
     if prove_command == "once":
-        cycle = daemon.run_once()
-        payload = cycle.to_dict()
-        payload["state_path"] = str(resolved_state)
+        from verdict.actions.registry import run_action
+
+        params: dict[str, Any] = {
+            "allow_live_probe": allow_live_probe,
+            "interval": interval,
+            "timeout": timeout,
+        }
+        if base_url is not None:
+            params["base_url"] = base_url
+        if state_path is not None:
+            params["state_path"] = state_path
+
+        result = run_action("prove-at-rest.once", params)
+        if not result.ok:
+            err = result.data.get("error", "prove-at-rest failed")
+            if output_json:
+                print(json.dumps({"error": err}, sort_keys=True))
+            else:
+                from verdict import present
+
+                present.header("Prove at rest")
+                present.fail("prove-at-rest", err)
+            raise SystemExit(result.exit_code or 2)
+
+        data = result.data
+        resolved_state = data.get("state_path", state_path or "")
         if output_json:
+            payload = dict(data)
+            payload["state_path"] = resolved_state
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             from verdict import present
 
-            summary = cycle.summary
+            summary = {
+                k: v
+                for k, v in data.items()
+                if k not in {"results", "state_path"} and not isinstance(v, list)
+            }
             present.header("Prove at rest  /  once")
             present.kv({"state": resolved_state, **summary})
-            present.status("prove-at-rest", "failed" if summary.get("failed", 0) else "ok")
-        if cycle.summary.get("failed", 0):
+            present.status(
+                "prove-at-rest", "failed" if data.get("summary", {}).get("failed", 0) else "ok"
+            )
+        if data.get("summary", {}).get("failed", 0):
             raise SystemExit(1)
         return
 
     if prove_command == "daemon":
+        # Daemon stays MACHINE_ONLY — not routed through run_action
+        from verdict.prove_at_rest import ProveAtRestError, build_live_daemon, default_state_path
+
+        resolved_state = Path(state_path).expanduser() if state_path else default_state_path()
+
+        if not allow_live_probe:
+            message = "live prove-at-rest requires explicit consent; pass --allow-live-probe"
+            if output_json:
+                print(json.dumps({"error": message}, sort_keys=True))
+            else:
+                from verdict import present
+
+                present.header("Prove at rest")
+                present.fail("prove-at-rest", message)
+            raise SystemExit(2)
+
+        try:
+            daemon = build_live_daemon(
+                state_path=resolved_state,
+                base_url=base_url,
+                interval_seconds=interval,
+                probe_timeout_seconds=timeout,
+                allow_live_probe=allow_live_probe,
+            )
+        except ProveAtRestError as exc:
+            message = str(exc)
+            if output_json:
+                print(json.dumps({"error": message}, sort_keys=True))
+            else:
+                from verdict import present
+
+                present.header("Prove at rest")
+                present.fail("prove-at-rest", message)
+            raise SystemExit(2) from exc
+
         from verdict import present
 
         if not output_json:

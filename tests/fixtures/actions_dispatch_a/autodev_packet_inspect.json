@@ -1,0 +1,6 @@
+{
+  "stdout": "\nVERDICT  /  Autodev packet  /  inspect\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  packet            packet-headroom-unknown  \n  version           v1                       \n  proof level       source-only              \n  next safe action  Run the focused red test.\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "autodev packet inspect --packet <HOME>/test_packet.json"
+}
