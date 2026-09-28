@@ -67,43 +67,151 @@ def run_action(
 
 
 # ---------------------------------------------------------------------------
-# Three-bucket classification
+# Per-subcommand classification (top-level + dotted leaves)
 # ---------------------------------------------------------------------------
+#
+# Every reason string is written "<handler_name>: <what it does>; <why bucket>".
+# The <handler_name> is the function argparse dispatch actually calls for that
+# leaf, resolvable via verdict/commands/dispatch.py or the parser defaults.
+#
+# MACHINE_ONLY is restricted to three kinds only:
+#   (a) server/daemon lifecycle (serve, a daemon start/stop),
+#   (b) a programmatic endpoint invoked by other programs (hook handler a
+#       harness calls, an MCP stdio server),
+#   (c) destructive global uninstall.
+#
+# ALIAS entries map a compatibility command to the action it forwards to; the
+# CLI alias goes through the same action, the palette lists the target once,
+# and the test verifies the alias reaches the same action as its target.
+#
+# LaunchSpec.entry MUST NOT point into verdict.cli, verdict.commands or
+# verdict.orchestration.cli (that would make the TUI depend on the CLI layer).
+# Each LaunchSpec.entry points at a domain function the CLI handler calls.
 
 MACHINE_ONLY: dict[str, str] = {
-    "serve": "long-running HTTP API server daemon providing OpenAI-compatible routing gateway lifecycle managed by systemd or docker",
-    "mcp": "Model Context Protocol server daemon lifecycle management invoked programmatically by editor integrations not end users",
-    "hook": "git hook event capture endpoints for commit and push actions invoked by version control not users",
-    "uninstall": "destructive global uninstall operation removing all verdict state configuration and credentials with no rollback",
-    "memory": "memory-bridge daemon process lifecycle for harness integration context persistence invoked programmatically not by users",
-    "runtime": "system daemon lifecycle reconciliation managing long-running background service processes and their canonical ownership",
-    "certify": "batch certification evidence generator producing provider detection snapshots invoked by automation pipelines not users",
-    "check": "configuration validation wrapper around probe infrastructure invoked by continuous integration pipelines not users",
-    "choose": "legacy model selector command superseded by route action retained only for backward compatibility with existing scripts",
-    "compat": "OpenAPI compatibility scanner batch tool analyzing gateway conformance invoked by integration test automation not users",
-    "failover-proof": "batch failover proof generator producing cryptographic evidence of provider fallback invoked by test automation not users",
-    "harness": "per-harness adapter daemon lifecycle configuring editor integration endpoints invoked by setup automation not users",
-    "metadata": "model metadata sync daemon fetching provider catalogs on schedule invoked by background automation not users",
-    "openspec": "OpenAPI specification admission daemon managing gateway spec validation lifecycle invoked by integration tools not users",
-    "plan": "legacy setup plan command aliasing setup.plan action retained for backward compatibility with existing automation scripts",
-    "run": "legacy routing command aliasing route action retained for backward compatibility with existing scripts and documentation",
+    "serve": (
+        "cmd_serve (verdict.api.start_server): runs the FastAPI /v1/route "
+        "and /v1/chat/completions gateway under uvicorn until stopped; "
+        "server lifecycle, not an interactive action"
+    ),
+    "mcp.serve": (
+        "cmd_mcp (mcp_server.main): stdio Model Context Protocol server "
+        "consumed by editor integrations over stdin/stdout; "
+        "programmatic endpoint, not an interactive action"
+    ),
+    "hook.claude-gate": (
+        "cmd_hook: catalog-qualification gate invoked by a Claude Code "
+        "PreToolUse hook script per LLM tool call; "
+        "programmatic endpoint, not an interactive action"
+    ),
+    "prove-at-rest.daemon": (
+        "cmd_prove_at_rest (build_live_daemon.run_forever): continuous "
+        "prove-at-rest probe loop that runs until SIGINT; "
+        "daemon lifecycle, not an interactive action"
+    ),
+    "uninstall": (
+        "cmd_uninstall (uninstall_memory_bridge): removes memory bridge "
+        "hooks, MCP registrations, and optionally purges the .verdict "
+        "data directory globally; destructive global uninstall"
+    ),
+}
+
+ALIAS: dict[str, str] = {
+    # command -> target action name
+    "run": "route",
+    "plan": "setup.plan",
 }
 
 LAUNCH: dict[str, LaunchSpec] = {
-    "orchestrate": LaunchSpec(reason="long-running orchestration pipeline with parallel worker coordination and receipt generation", entry="verdict.orchestration.cli:_orchestrate", section="Orchestration"),
-    "supervise": LaunchSpec(reason="supervisor wrapper coordinating orchestration runs with health monitoring and recovery", entry="verdict.orchestration.supervisor:dispatch", section="Orchestration"),
-    "watch": LaunchSpec(reason="live terminal interface displaying real-time orchestration progress and worker status", entry="verdict.orchestration.cli:_watch", section="Orchestration"),
-    "benchmark": LaunchSpec(reason="long-running benchmark suite measuring routing decision quality across multiple scenarios", entry="verdict.cli:cmd_benchmark", section="Development"),
-    "autodev": LaunchSpec(reason="batch automation pipeline orchestrating multiple development tasks with shadow execution tracking", entry="verdict.cli:cmd_autodev_packet_shadow", section="Development"),
-    "autodev-golden-path": LaunchSpec(reason="golden-path validation pipeline executing reference implementation scenarios end-to-end", entry="verdict.cli:cmd_autodev_golden_path", section="Development"),
-    "ui": LaunchSpec(reason="launches Streamlit dashboard as separate long-running web server process for interactive exploration", entry="verdict.dashboard:main", section="Monitoring"),
-    "prove-at-rest": LaunchSpec(reason="continuous background monitoring daemon executing periodic liveness probes against configured gateways", entry="verdict.cli:cmd_prove_at_rest", section="Monitoring"),
-    "quickstart": LaunchSpec(reason="interactive guided setup wizard walking user through credential and gateway configuration", entry="verdict.cli:cmd_quickstart", section="Setup"),
-    "simulate": LaunchSpec(reason="stateful multi-step routing simulation maintaining conversation state across decisions", entry="verdict.cli:cmd_simulate", section="Development"),
-    "resume": LaunchSpec(reason="interactive story resume pipeline reconstructing and continuing interrupted work from checkpoint", entry="verdict.cli:cmd_resume", section="Development"),
+    "orchestrate": LaunchSpec(
+        reason=(
+            "_orchestrate (run_golden_path): plans a WorkGraph, dispatches "
+            "parallel workers, and writes a signed receipt over minutes to "
+            "hours; long-running interactive TUI"
+        ),
+        entry="verdict.orchestration.run:run_golden_path",
+        section="Orchestration",
+    ),
+    "watch": LaunchSpec(
+        reason=(
+            "_watch (tui.follow): live-follows a running orchestration's "
+            "events.jsonl and renders the TUI until the run terminates; "
+            "long-running interactive view"
+        ),
+        entry="verdict.orchestration.tui:follow",
+        section="Orchestration",
+    ),
+    "supervise": LaunchSpec(
+        reason=(
+            "dispatch (supervise_run): spawns and restarts an orchestrate "
+            "controller process against a stall and deadline budget; "
+            "long-running supervisor loop"
+        ),
+        entry="verdict.actions.launch:supervise_run",
+        section="Orchestration",
+    ),
+    "setup": LaunchSpec(
+        reason=(
+            "cmd_setup (present_bootstrap): interactive capability "
+            "bootstrap wizard that prompts for consent and applies "
+            "provider/gateway/harness enablement; interactive setup wizard"
+        ),
+        entry="verdict.setup_presentation:present_bootstrap",
+        section="Setup",
+    ),
+    "ui": LaunchSpec(
+        reason=(
+            "cmd_ui (launch_dashboard): launches the Streamlit analytics "
+            "dashboard as a separate long-running web server process for "
+            "interactive exploration; long-running web UI"
+        ),
+        entry="verdict.actions.launch:launch_dashboard",
+        section="Monitoring",
+    ),
+    "quickstart": LaunchSpec(
+        reason=(
+            "cmd_quickstart (flagship_demo.run_demo): renders the "
+            "credential-free flagship walkthrough with staged output "
+            "meant for a human to read; long-running interactive demo"
+        ),
+        entry="verdict.flagship_demo:run_demo",
+        section="Setup",
+    ),
+    "benchmark": LaunchSpec(
+        reason=(
+            "cmd_benchmark (run_reproducible_benchmarks/run_savings_bench): "
+            "runs the reproducible or paired-live routing benchmark suite "
+            "over many scenarios; long-running batch benchmark"
+        ),
+        entry="verdict.benchmarking:run_reproducible_benchmarks",
+        section="Development",
+    ),
+    "autodev-golden-path": LaunchSpec(
+        reason=(
+            "cmd_autodev_golden_path (golden_path.run_golden_path): three-"
+            "stage offline autodev acceptance path that edits a repo and "
+            "runs verification commands; long-running interactive pipeline"
+        ),
+        entry="verdict.golden_path:run_golden_path",
+        section="Development",
+    ),
+    "autodev.packet.execute": LaunchSpec(
+        reason=(
+            "cmd_autodev_packet_execute (run_packet_autodev): executes an "
+            "admitted autodev packet against a live route, edits the "
+            "working tree, and writes receipts; long-running interactive "
+            "pipeline"
+        ),
+        entry="verdict.autodev_run:run_packet_autodev",
+        section="Development",
+    ),
 }
 
-GAP: dict[str, str] = {}  # No gaps currently; all commands are classified
+# All ACTION classifications are inferred from _register_builtins() below.
+# Every leaf that is not in MACHINE_ONLY, ALIAS, or LAUNCH must be a registered
+# action; the exclusion test enforces that invariant across the argparse tree.
+
+GAP: dict[str, str] = {}  # No gaps currently; every leaf is classified.
 
 # ---------------------------------------------------------------------------
 # Built-in action implementations (lazy-import to avoid import-time overhead)
@@ -643,7 +751,59 @@ def _action_replay(**kwargs: Any) -> ActionResult:
 
 def _register_builtins() -> None:
     """Register the built-in action set at import time."""
-    from verdict.actions.extra import _action_inspect
+    from verdict.actions.extra import (
+        _action_autodev_packet_canary,
+        _action_autodev_packet_compare,
+        _action_autodev_packet_create,
+        _action_autodev_packet_inspect,
+        _action_autodev_packet_resume,
+        _action_autodev_packet_shadow,
+        _action_autodev_packet_validate,
+        _action_certify,
+        _action_check,
+        _action_choose,
+        _action_compat_check,
+        _action_compat_manifest,
+        _action_credentials_test,
+        _action_failover_proof,
+        _action_harness_certify,
+        _action_harness_disable,
+        _action_harness_discover,
+        _action_harness_enable,
+        _action_harness_prime_sync_models,
+        _action_harness_prime_visibility,
+        _action_harness_status,
+        _action_hook_configure,
+        _action_hook_recall,
+        _action_hook_record,
+        _action_hook_status,
+        _action_inspect,
+        _action_mcp_init,
+        _action_mcp_status,
+        _action_memory_docs,
+        _action_memory_export,
+        _action_memory_graph,
+        _action_memory_import,
+        _action_memory_masterdocs,
+        _action_memory_put,
+        _action_memory_search,
+        _action_memory_setup,
+        _action_metadata_lookup,
+        _action_metadata_refresh,
+        _action_metadata_show,
+        _action_openspec_admit,
+        _action_prove_at_rest_once,
+        _action_prove_at_rest_status,
+        _action_receipt_export,
+        _action_receipt_list,
+        _action_resume,
+        _action_runtime_explain,
+        _action_runtime_reconcile,
+        _action_runtime_status,
+        _action_setup_credentials,
+        _action_setup_plan_scoped,
+        _action_simulate,
+    )
 
     _specs: list[tuple[ActionSpec, Callable[..., ActionResult]]] = [
         (
@@ -676,11 +836,7 @@ def _register_builtins() -> None:
         ),
         (
             ActionSpec(
-                "receipt.show",
-                "traces",
-                "read",
-                "Show/verify an orchestration run receipt",
-                "Traces",
+                "receipt.show", "traces", "read", "Show/verify a routing decision receipt", "Traces"
             ),
             _action_receipt_show,
         ),
@@ -725,6 +881,16 @@ def _register_builtins() -> None:
                 "Configuration",
             ),
             _action_credentials_unset,
+        ),
+        (
+            ActionSpec(
+                "credentials.test",
+                "credentials",
+                "read",
+                "Run the live check for one credential",
+                "Configuration",
+            ),
+            _action_credentials_test,
         ),
         # --- NEW actions (F3) ---
         (
@@ -776,6 +942,684 @@ def _register_builtins() -> None:
         (
             ActionSpec("inspect", "models", "read", "Inspect one model's catalog record", "Models"),
             _action_inspect,
+        ),
+        # --- ACTIONs reclassified from earlier MACHINE_ONLY (F5) ---
+        (
+            ActionSpec(
+                "check",
+                "configuration",
+                "read",
+                "Validate the verdict.yaml config file",
+                "Configuration",
+            ),
+            _action_check,
+        ),
+        (
+            ActionSpec(
+                "choose", "routing", "read", "Select an eligible execution target", "Routing"
+            ),
+            _action_choose,
+        ),
+        (
+            ActionSpec(
+                "certify", "health", "read", "Emit a runtime certification report", "Health"
+            ),
+            _action_certify,
+        ),
+        (
+            ActionSpec(
+                "simulate",
+                "routing",
+                "read",
+                "Forecast tokens, cost, risk, and expected model",
+                "Routing",
+            ),
+            _action_simulate,
+        ),
+        (
+            ActionSpec(
+                "resume",
+                "routing",
+                "read",
+                "Reconstruct durable resume state for a story",
+                "Development",
+            ),
+            _action_resume,
+        ),
+        (
+            ActionSpec(
+                "failover-proof",
+                "traces",
+                "read",
+                "Run the offline forced-failover proof",
+                "Traces",
+            ),
+            _action_failover_proof,
+        ),
+        (
+            ActionSpec(
+                "setup.credentials",
+                "setup",
+                "mutation",
+                "Prompt for and store missing required credentials",
+                "Setup",
+            ),
+            _action_setup_credentials,
+        ),
+        (
+            ActionSpec(
+                "setup.intelligence",
+                "setup",
+                "read",
+                "Scoped setup plan for intelligence bootstrap",
+                "Setup",
+            ),
+            _action_setup_plan_scoped,
+        ),
+        (
+            ActionSpec(
+                "setup.gateways",
+                "setup",
+                "read",
+                "Scoped setup plan for gateway bootstrap",
+                "Setup",
+            ),
+            _action_setup_plan_scoped,
+        ),
+        (
+            ActionSpec(
+                "setup.harnesses",
+                "setup",
+                "read",
+                "Scoped setup plan for harness bootstrap",
+                "Setup",
+            ),
+            _action_setup_plan_scoped,
+        ),
+        # compat family
+        (
+            ActionSpec(
+                "compat.manifest",
+                "configuration",
+                "read",
+                "Publish the cross-repo compatibility manifest",
+                "Configuration",
+            ),
+            _action_compat_manifest,
+        ),
+        (
+            ActionSpec(
+                "compat.check",
+                "configuration",
+                "read",
+                "Check declared compatibility against verdict-core contracts",
+                "Configuration",
+            ),
+            _action_compat_check,
+        ),
+        # memory family (per subcommand)
+        (
+            ActionSpec("memory.put", "memory", "mutation", "Put a record into memory", "Memory"),
+            _action_memory_put,
+        ),
+        (
+            ActionSpec("memory.search", "memory", "read", "Search memory records", "Memory"),
+            _action_memory_search,
+        ),
+        (
+            ActionSpec("memory.export", "memory", "read", "Export memory manifest", "Memory"),
+            _action_memory_export,
+        ),
+        (
+            ActionSpec("memory.import", "memory", "mutation", "Import a memory manifest", "Memory"),
+            _action_memory_import,
+        ),
+        (
+            ActionSpec(
+                "memory.masterdocs",
+                "memory",
+                "mutation",
+                "Canonicalize MasterDocs database",
+                "Memory",
+            ),
+            _action_memory_masterdocs,
+        ),
+        (
+            ActionSpec(
+                "memory.graph", "memory", "mutation", "Ingest code review graph database", "Memory"
+            ),
+            _action_memory_graph,
+        ),
+        (
+            ActionSpec(
+                "memory.docs",
+                "memory",
+                "read",
+                "Run documentation preflight over the repo",
+                "Memory",
+            ),
+            _action_memory_docs,
+        ),
+        (
+            ActionSpec(
+                "memory.setup",
+                "memory",
+                "mutation",
+                "Configure the memory bridge across tools",
+                "Memory",
+            ),
+            _action_memory_setup,
+        ),
+        # mcp family (per subcommand)
+        (
+            ActionSpec(
+                "mcp.init",
+                "configuration",
+                "mutation",
+                "Configure the memory bridge for MCP-aware tools",
+                "Configuration",
+            ),
+            _action_mcp_init,
+        ),
+        (
+            ActionSpec(
+                "mcp.status",
+                "configuration",
+                "read",
+                "Check whether the Verdict MCP server is registered",
+                "Configuration",
+            ),
+            _action_mcp_status,
+        ),
+        # hook family (per subcommand; claude-gate is MACHINE_ONLY above)
+        (
+            ActionSpec(
+                "hook.status",
+                "configuration",
+                "read",
+                "Show hook configuration status",
+                "Configuration",
+            ),
+            _action_hook_status,
+        ),
+        (
+            ActionSpec(
+                "hook.configure",
+                "configuration",
+                "mutation",
+                "Configure Verdict lifecycle hooks",
+                "Configuration",
+            ),
+            _action_hook_configure,
+        ),
+        (
+            ActionSpec(
+                "hook.recall", "memory", "read", "Recall memory records for a hook query", "Memory"
+            ),
+            _action_hook_recall,
+        ),
+        (
+            ActionSpec(
+                "hook.record", "memory", "mutation", "Record a memory event from a hook", "Memory"
+            ),
+            _action_hook_record,
+        ),
+        # runtime family (per subcommand)
+        (
+            ActionSpec(
+                "runtime.status", "runtime", "read", "Report runtime ownership status", "Runtime"
+            ),
+            _action_runtime_status,
+        ),
+        (
+            ActionSpec(
+                "runtime.explain", "runtime", "read", "Explain runtime health rollups", "Runtime"
+            ),
+            _action_runtime_explain,
+        ),
+        (
+            ActionSpec(
+                "runtime.reconcile",
+                "runtime",
+                "mutation",
+                "Plan or apply canonical runtime reconciliation",
+                "Runtime",
+            ),
+            _action_runtime_reconcile,
+        ),
+        # prove-at-rest family (daemon is MACHINE_ONLY)
+        (
+            ActionSpec(
+                "prove-at-rest.status",
+                "health",
+                "read",
+                "Show the latest persisted prove-at-rest state",
+                "Health",
+            ),
+            _action_prove_at_rest_status,
+        ),
+        (
+            ActionSpec(
+                "prove-at-rest.once",
+                "health",
+                "read",
+                "Run one prove-at-rest cycle and exit",
+                "Health",
+            ),
+            _action_prove_at_rest_once,
+        ),
+        # metadata family (per subcommand)
+        (
+            ActionSpec(
+                "metadata.show", "models", "read", "Show the current model metadata store", "Models"
+            ),
+            _action_metadata_show,
+        ),
+        (
+            ActionSpec(
+                "metadata.lookup",
+                "models",
+                "read",
+                "Look up an OmniRoute id in the metadata store",
+                "Models",
+            ),
+            _action_metadata_lookup,
+        ),
+        (
+            ActionSpec(
+                "metadata.refresh",
+                "models",
+                "mutation",
+                "Refresh the Core metadata store from sources",
+                "Models",
+            ),
+            _action_metadata_refresh,
+        ),
+        # receipt family (per subcommand)
+        (
+            ActionSpec("receipt.list", "traces", "read", "List routing receipts", "Traces"),
+            _action_receipt_list,
+        ),
+        (
+            ActionSpec("receipt.export", "traces", "read", "Export routing receipts", "Traces"),
+            _action_receipt_export,
+        ),
+        # openspec family
+        (
+            ActionSpec(
+                "openspec.admit",
+                "configuration",
+                "mutation",
+                "Validate and admit a significant OpenSpec change",
+                "Configuration",
+            ),
+            _action_openspec_admit,
+        ),
+        # autodev packet family (execute is LAUNCH)
+        (
+            ActionSpec(
+                "autodev.packet.create",
+                "development",
+                "mutation",
+                "Create a portable autodev packet",
+                "Development",
+            ),
+            _action_autodev_packet_create,
+        ),
+        (
+            ActionSpec(
+                "autodev.packet.inspect",
+                "development",
+                "read",
+                "Inspect an autodev packet",
+                "Development",
+            ),
+            _action_autodev_packet_inspect,
+        ),
+        (
+            ActionSpec(
+                "autodev.packet.validate",
+                "development",
+                "read",
+                "Validate an autodev packet",
+                "Development",
+            ),
+            _action_autodev_packet_validate,
+        ),
+        (
+            ActionSpec(
+                "autodev.packet.resume",
+                "development",
+                "read",
+                "Prepare an autodev packet resume payload",
+                "Development",
+            ),
+            _action_autodev_packet_resume,
+        ),
+        (
+            ActionSpec(
+                "autodev.packet.compare",
+                "development",
+                "read",
+                "Compare two family runs against a packet",
+                "Development",
+            ),
+            _action_autodev_packet_compare,
+        ),
+        (
+            ActionSpec(
+                "autodev.packet.shadow",
+                "development",
+                "read",
+                "Report shadow-learning statistics for an episodes fixture",
+                "Development",
+            ),
+            _action_autodev_packet_shadow,
+        ),
+        (
+            ActionSpec(
+                "autodev.packet.canary",
+                "development",
+                "read",
+                "Apply or roll back a shadow canary choice",
+                "Development",
+            ),
+            _action_autodev_packet_canary,
+        ),
+        # harness family — per subcommand (7 harnesses * status/enable/disable, plus some certify/discover/sync-models/visibility)
+        (
+            ActionSpec(
+                "harness.claude.status", "harness", "read", "Show Claude harness status", "Harness"
+            ),
+            _action_harness_status,
+        ),
+        (
+            ActionSpec(
+                "harness.claude.enable",
+                "harness",
+                "mutation",
+                "Enable the Claude harness",
+                "Harness",
+            ),
+            _action_harness_enable,
+        ),
+        (
+            ActionSpec(
+                "harness.claude.disable",
+                "harness",
+                "mutation",
+                "Disable the Claude harness",
+                "Harness",
+            ),
+            _action_harness_disable,
+        ),
+        (
+            ActionSpec(
+                "harness.claude.certify",
+                "harness",
+                "read",
+                "Certify Claude harness readiness",
+                "Harness",
+            ),
+            _action_harness_certify,
+        ),
+        (
+            ActionSpec(
+                "harness.claude.discover",
+                "harness",
+                "read",
+                "Discover Claude harness installations",
+                "Harness",
+            ),
+            _action_harness_discover,
+        ),
+        (
+            ActionSpec(
+                "harness.cline.status", "harness", "read", "Show Cline harness status", "Harness"
+            ),
+            _action_harness_status,
+        ),
+        (
+            ActionSpec(
+                "harness.cline.enable", "harness", "mutation", "Enable the Cline harness", "Harness"
+            ),
+            _action_harness_enable,
+        ),
+        (
+            ActionSpec(
+                "harness.cline.disable",
+                "harness",
+                "mutation",
+                "Disable the Cline harness",
+                "Harness",
+            ),
+            _action_harness_disable,
+        ),
+        (
+            ActionSpec(
+                "harness.cline.certify",
+                "harness",
+                "read",
+                "Certify Cline harness readiness",
+                "Harness",
+            ),
+            _action_harness_certify,
+        ),
+        (
+            ActionSpec(
+                "harness.cline.discover",
+                "harness",
+                "read",
+                "Discover Cline harness installations",
+                "Harness",
+            ),
+            _action_harness_discover,
+        ),
+        (
+            ActionSpec(
+                "harness.codex.status", "harness", "read", "Show Codex harness status", "Harness"
+            ),
+            _action_harness_status,
+        ),
+        (
+            ActionSpec(
+                "harness.codex.enable", "harness", "mutation", "Enable the Codex harness", "Harness"
+            ),
+            _action_harness_enable,
+        ),
+        (
+            ActionSpec(
+                "harness.codex.disable",
+                "harness",
+                "mutation",
+                "Disable the Codex harness",
+                "Harness",
+            ),
+            _action_harness_disable,
+        ),
+        (
+            ActionSpec(
+                "harness.cursor.status", "harness", "read", "Show Cursor harness status", "Harness"
+            ),
+            _action_harness_status,
+        ),
+        (
+            ActionSpec(
+                "harness.cursor.enable",
+                "harness",
+                "mutation",
+                "Enable the Cursor harness",
+                "Harness",
+            ),
+            _action_harness_enable,
+        ),
+        (
+            ActionSpec(
+                "harness.cursor.disable",
+                "harness",
+                "mutation",
+                "Disable the Cursor harness",
+                "Harness",
+            ),
+            _action_harness_disable,
+        ),
+        (
+            ActionSpec(
+                "harness.cursor.certify",
+                "harness",
+                "read",
+                "Certify Cursor harness readiness",
+                "Harness",
+            ),
+            _action_harness_certify,
+        ),
+        (
+            ActionSpec(
+                "harness.cursor.discover",
+                "harness",
+                "read",
+                "Discover Cursor harness installations",
+                "Harness",
+            ),
+            _action_harness_discover,
+        ),
+        (
+            ActionSpec(
+                "harness.hermes.status", "harness", "read", "Show Hermes harness status", "Harness"
+            ),
+            _action_harness_status,
+        ),
+        (
+            ActionSpec(
+                "harness.hermes.enable",
+                "harness",
+                "mutation",
+                "Enable the Hermes harness",
+                "Harness",
+            ),
+            _action_harness_enable,
+        ),
+        (
+            ActionSpec(
+                "harness.hermes.disable",
+                "harness",
+                "mutation",
+                "Disable the Hermes harness",
+                "Harness",
+            ),
+            _action_harness_disable,
+        ),
+        (
+            ActionSpec(
+                "harness.opencode.status",
+                "harness",
+                "read",
+                "Show OpenCode harness status",
+                "Harness",
+            ),
+            _action_harness_status,
+        ),
+        (
+            ActionSpec(
+                "harness.opencode.enable",
+                "harness",
+                "mutation",
+                "Enable the OpenCode harness",
+                "Harness",
+            ),
+            _action_harness_enable,
+        ),
+        (
+            ActionSpec(
+                "harness.opencode.disable",
+                "harness",
+                "mutation",
+                "Disable the OpenCode harness",
+                "Harness",
+            ),
+            _action_harness_disable,
+        ),
+        (
+            ActionSpec(
+                "harness.opencode.certify",
+                "harness",
+                "read",
+                "Certify OpenCode harness readiness",
+                "Harness",
+            ),
+            _action_harness_certify,
+        ),
+        (
+            ActionSpec(
+                "harness.opencode.discover",
+                "harness",
+                "read",
+                "Discover OpenCode harness installations",
+                "Harness",
+            ),
+            _action_harness_discover,
+        ),
+        (
+            ActionSpec(
+                "harness.prime.status", "harness", "read", "Show Prime harness status", "Harness"
+            ),
+            _action_harness_status,
+        ),
+        (
+            ActionSpec(
+                "harness.prime.enable", "harness", "mutation", "Enable the Prime harness", "Harness"
+            ),
+            _action_harness_enable,
+        ),
+        (
+            ActionSpec(
+                "harness.prime.disable",
+                "harness",
+                "mutation",
+                "Disable the Prime harness",
+                "Harness",
+            ),
+            _action_harness_disable,
+        ),
+        (
+            ActionSpec(
+                "harness.prime.certify",
+                "harness",
+                "read",
+                "Certify Prime harness readiness",
+                "Harness",
+            ),
+            _action_harness_certify,
+        ),
+        (
+            ActionSpec(
+                "harness.prime.discover",
+                "harness",
+                "read",
+                "Discover Prime harness installations",
+                "Harness",
+            ),
+            _action_harness_discover,
+        ),
+        (
+            ActionSpec(
+                "harness.prime.sync-models",
+                "harness",
+                "mutation",
+                "Sync Prime model registry with live inventory",
+                "Harness",
+            ),
+            _action_harness_prime_sync_models,
+        ),
+        (
+            ActionSpec(
+                "harness.prime.visibility",
+                "harness",
+                "read",
+                "Compare Prime visibility with live inventory",
+                "Harness",
+            ),
+            _action_harness_prime_visibility,
         ),
     ]
     for spec, fn in _specs:
