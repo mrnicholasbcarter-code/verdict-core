@@ -17,6 +17,7 @@ from verdict.decision_signals.contracts import (
 )
 from verdict.gateway_adapter_runtime import AdapterFailureSignal, NormalizedFailure
 from verdict.gateway_adapters import NormalizedFailureClass
+from verdict.subagent_selection import is_context_length_error
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -275,11 +276,16 @@ def _validate_answers(answers: dict[str, Any]) -> str | None:
     return None
 
 
-def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> NormalizedFailure:
+def normalize_failure(
+    signal: AdapterFailureSignal, *, now: datetime, body_text: str = ""
+) -> NormalizedFailure:
     """Normalize HTTP/runtime failure to NormalizedFailure (provider identification / TYPESAFE credentials migration compatible).
 
     Error shape: {"detail": {"error_type": "...", "message": "..."}}
     The code field on AdapterFailureSignal carries the error_type value.
+
+    Args:
+        body_text: Raw response body (used for context-length detection on 400/413).
     """
     status = signal.status_code
     cooldown_seconds: float | None = None
@@ -308,6 +314,9 @@ def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> Normali
     elif status == 529:
         failure_class = NormalizedFailureClass.OVERLOADED
         cooldown_seconds = parse_retry_after(signal.retry_after, now=now)
+    elif status in {400, 413} and is_context_length_error(body_text):
+        # Context/prompt too large — no cooldown, not retryable with same input.
+        failure_class = NormalizedFailureClass.CONTEXT_LENGTH
     elif status and 400 <= status < 500:
         failure_class = NormalizedFailureClass.INVALID_REQUEST
     elif status and 500 <= status < 600:
@@ -321,6 +330,7 @@ def normalize_failure(signal: AdapterFailureSignal, *, now: datetime) -> Normali
         NormalizedFailureClass.QUOTA,
         NormalizedFailureClass.INVALID_REQUEST,
         NormalizedFailureClass.CAPABILITY,
+        NormalizedFailureClass.CONTEXT_LENGTH,
     }
 
     return NormalizedFailure(
@@ -557,7 +567,10 @@ class OpenJevSystemOneProvider:
             fail_sig = AdapterFailureSignal(
                 code=code, status_code=status, retry_after=retry_after_val
             )
-            normalized = normalize_failure(fail_sig, now=now)
+            body_str = (
+                body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body)
+            )
+            normalized = normalize_failure(fail_sig, now=now, body_text=body_str)
 
             return self._fail(
                 failure_class=normalized.failure_class,
