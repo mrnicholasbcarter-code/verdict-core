@@ -62,6 +62,65 @@ PROGRESS_FILE = "progress.json"
 _CONNECTION_FIELDS = ("provider", "authType", "isActive", "testStatus", "backoffLevel")
 _PLAN_FIELDS = ("plan", "subscriptionTier", "tier", "organizationType", "organizationRateLimitTier")
 
+# ---------------------------------------------------------------------------
+# BOD-203 AC3: OpenJev context_need → advisory context budget
+# ---------------------------------------------------------------------------
+
+# STEP thresholds matching the 3-level context_need scale in openjev.py:
+#   score 0 → 0.0 ("self-contained"), score 1 → 0.5 ("needs some context"),
+#   score 2 → 1.0 ("heavy context required").
+# Boundaries at midpoints between adjacent normalised levels.
+_CONTEXT_NEED_TIERS: tuple[tuple[float, float], ...] = (
+    (0.25, 0.5),  # context_need < 0.25  → "self-contained"  → 50 % budget
+    (0.75, 0.75),  # context_need < 0.75  → "needs some context" → 75 % budget
+    (float("inf"), 1.0),  # context_need >= 0.75 → "heavy context required" → 100 % budget
+)
+
+# Minimum confidence for the signal set to be actionable (matches advisory.py).
+_CONTEXT_BUDGET_MIN_CONFIDENCE = 0.6
+
+
+def _context_need_advisory_budget(
+    signals_data: dict[str, Any] | None, *, confidence: float, policy: RuntimePolicy
+) -> tuple[int, str]:
+    """Map a context_need signal to an advisory context budget.
+
+    Returns ``(advisory_budget_bytes, tier_label)``.  Falls back to the
+    baseline budget when the signal is missing, invalid, or low-confidence.
+    """
+    baseline = policy.context_budget_bytes
+    if signals_data is None:
+        return baseline, "baseline:no_signals"
+    if confidence < _CONTEXT_BUDGET_MIN_CONFIDENCE:
+        return baseline, "baseline:low_confidence"
+
+    raw = signals_data.get("context_need")
+    if raw is None or not isinstance(raw, (int, float)):
+        return baseline, "baseline:missing_context_need"
+
+    need = float(raw)
+    if not (0.0 <= need <= 1.0):
+        return baseline, "baseline:invalid_context_need"
+
+    # STEP function over the tier table
+    for threshold, fraction in _CONTEXT_NEED_TIERS:
+        if need < threshold:
+            budget = int(fraction * baseline)
+            break
+    else:
+        budget = baseline  # defensive: should not reach here
+
+    # Clamp to [min_context_budget_bytes, context_budget_bytes]
+    budget = max(policy.min_context_budget_bytes, min(budget, baseline))
+    tier = (
+        "self_contained"
+        if need < 0.25
+        else "needs_some_context"
+        if need < 0.75
+        else "heavy_context_required"
+    )
+    return budget, tier
+
 
 _RISK_ORDER: Mapping[str, int] = {"low": 0, "medium": 1, "high": 2}
 
@@ -649,6 +708,61 @@ async def run_golden_path(
             runtime.nodes[node_id].state = NodeState.VALIDATED
             runtime.nodes[node_id].commit = commit
             runtime.nodes[node_id].route_id = route_id
+
+    # ------------------------------------------------------------------
+    # BOD-203 AC3: advisory context budget from OpenJev context_need
+    # ------------------------------------------------------------------
+    # Collect signals in orchestrate() (independent of plan_with_failover's
+    # own collection) so the budget advisory is available for node dispatch.
+    _advisory_ctx: dict[str, Any] | None = None
+    try:
+        from verdict.decision_signals.shadow import get_signals_mode, should_collect_signals
+
+        _signals_mode = get_signals_mode()
+        if decision_signal_provider is not None and should_collect_signals():
+            from verdict.decision_signals.contracts import DecisionQuestionV1
+
+            _q = DecisionQuestionV1(
+                purpose="context_budget_advisory",
+                task_summary=goal[:500],
+                complexity_hints={"max_parallel": policy.max_parallel},
+            )
+            _sig_set = decision_signal_provider.signals(_q, now=datetime.now(timezone.utc))
+            _sig_dict = _sig_set.to_dict()
+            _sig_signals = _sig_dict.get("signals")
+            _sig_confidence = float(_sig_dict.get("confidence", 0.0))
+            _sig_failure = _sig_dict.get("failure_class")
+
+            advisory_budget, tier = _context_need_advisory_budget(
+                _sig_signals if _sig_failure is None else None,
+                confidence=_sig_confidence,
+                policy=policy,
+            )
+            applied = _signals_mode == "ADVISORY" and tier.startswith(
+                ("self_contained", "needs_some_context", "heavy_context_required")
+            )
+
+            if applied:
+                # ADVISORY mode: set initial context_budget on every non-resumed node.
+                # Nodes that already have a budget (e.g. from _repack) are not overwritten.
+                for nr in runtime.nodes.values():
+                    if nr.state != NodeState.VALIDATED and nr.context_budget == 0:
+                        nr.context_budget = advisory_budget
+
+            _advisory_ctx = {
+                "advisory_context_budget_bytes": advisory_budget,
+                "baseline_context_budget_bytes": policy.context_budget_bytes,
+                "applied": applied,
+                "tier": tier,
+                "context_need": (_sig_signals.get("context_need") if _sig_signals else None),
+                "confidence": _sig_confidence,
+                "mode": _signals_mode,
+            }
+            events.emit("decision_signals_context_budget", **_advisory_ctx)
+    except Exception:
+        # BOD-203: advisory budget failure must never break the run.
+        pass
+
     result = await runtime.run()
     try:
         receipt_path = write_run_receipt(run_dir)
