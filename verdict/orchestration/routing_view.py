@@ -432,7 +432,10 @@ def routing_view_from_inventory(
     * ``max_capability_tier``: int - default 3
 
     The ladder is called with ``evaluate`` (no probing) unless ``probe=True``,
-    in which case ``select`` is used (max_probes_per_select=8).
+    in which case ``select`` is used with the real ``openai_health_probe``
+    (same probe that ``verdict eligibility --probe`` uses).  When
+    ``probe=False`` the probe callable is a stub that raises on invocation
+    so health results are never silently fabricated.
 
     Pass ``inventory=InventorySource(rows=..., connections=...)`` to bypass the
     live OmniRoute fetch (useful for offline analysis and testing).
@@ -463,14 +466,37 @@ def routing_view_from_inventory(
         max_capability_tier=int(task_profile.get("max_capability_tier", 3)),
     )
 
-    def _null_probe(route_id: str) -> HealthResult:
-        return HealthResult(healthy=True, category="")
+    if probe:
+        # Wire the same real health probe that `verdict eligibility --probe` uses.
+        from verdict.subagent_selection import LaunchCandidate, openai_health_probe
+
+        _raw_probe = openai_health_probe(
+            gateway.rstrip("/") + "/v1", api_key=api_key, timeout_seconds=30
+        )
+
+        def _real_probe(route_id: str) -> HealthResult:
+            return _raw_probe(
+                LaunchCandidate(route_id, route_id, frozenset(), 0, 0.0, 0.0, False, False, 0, 0)
+            )
+
+        probe_fn = _real_probe
+    else:
+        # evaluate() never invokes the probe callable; supply a stub that
+        # would loudly fail if it were called so we can never silently
+        # fabricate health results.
+        def _no_probe(route_id: str) -> HealthResult:
+            raise AssertionError(
+                "probe callable invoked with probe=False; "
+                "this is a bug in routing_view_from_inventory"
+            )
+
+        probe_fn = _no_probe
 
     with tempfile.TemporaryDirectory() as _td:
         sp = state_path or Path(_td) / "elig_state.json"
 
         ladder = EligibilityLadder(
-            inventory_rows=inventory_rows, connections=connections, probe=_null_probe, state_path=sp
+            inventory_rows=inventory_rows, connections=connections, probe=probe_fn, state_path=sp
         )
         now = datetime.now(timezone.utc)
         if probe:

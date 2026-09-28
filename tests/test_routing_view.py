@@ -367,6 +367,64 @@ class TestInventoryMode:
         e = view.evaluations[0]
         assert e.funnel["DISCOVERED"] >= 1
 
+    def test_probe_false_never_invokes_probe(self, tmp_path: Path) -> None:
+        """With probe=False the probe callable is never invoked (evaluate path)."""
+        from verdict.orchestration.eligibility import EligibilityLadder
+
+        rows = [_inv_row("kr/claude-opus")]
+        conns = [_inv_conn("kr")]
+
+        def _bomb_probe(route_id: str) -> HealthResult:
+            raise AssertionError("probe was called with probe=False")
+
+        ladder = EligibilityLadder(
+            inventory_rows=rows,
+            connections=conns,
+            probe=_bomb_probe,
+            state_path=tmp_path / "elig.json",
+        )
+        # evaluate() must complete without calling _bomb_probe
+        verdicts = ladder.evaluate(TaskRequirements(), now=datetime.now(timezone.utc))
+        assert len(verdicts) >= 1
+
+    def test_probe_false_candidates_show_unprobed(self, tmp_path: Path) -> None:
+        """probe=False candidates report reached=ENTITLED and reason 'unprobed',
+        never HEALTHY (health was not observed)."""
+        rows = [_inv_row("kr/claude-opus"), _inv_row("kr/claude-sonnet")]
+        conns = [_inv_conn("kr")]
+        view = routing_view_from_inventory(
+            {},
+            inventory=InventorySource(rows=rows, connections=conns),
+            state_path=tmp_path / "elig.json",
+        )
+        e = view.evaluations[0]
+        # No route should be selected (no probing -> no route reaches SELECTED)
+        assert e.selected_route is None
+        # Every candidate that passed discovery+entitlement should show
+        # reached=ENTITLED (stopped before HEALTHY) and reason=unprobed.
+        for c in e.candidates:
+            if c.reached is not None and c.reached not in ("DISCOVERED",):
+                assert c.reached == "ENTITLED", (
+                    f"{c.route_id} reached={c.reached}; expected ENTITLED without probing"
+                )
+                assert c.rejection_reason == "unprobed", (
+                    f"{c.route_id} reason={c.rejection_reason}; expected 'unprobed'"
+                )
+
+    def test_probe_false_funnel_no_healthy(self, tmp_path: Path) -> None:
+        """Without probing, no route reaches HEALTHY so the funnel count is 0."""
+        rows = [_inv_row("kr/claude-opus")]
+        conns = [_inv_conn("kr")]
+        view = routing_view_from_inventory(
+            {},
+            inventory=InventorySource(rows=rows, connections=conns),
+            state_path=tmp_path / "elig.json",
+        )
+        e = view.evaluations[0]
+        assert e.funnel["HEALTHY"] == 0, (
+            f"HEALTHY funnel count should be 0 without probing, got {e.funnel['HEALTHY']}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 6. Deterministic JSON
