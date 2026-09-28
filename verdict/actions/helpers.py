@@ -135,18 +135,7 @@ def collect_doctor_diagnostics(
     """Collect doctor diagnostics using the real diagnostic pipeline.
 
     The canonical implementation lives in ``verdict.doctor_diagnostics``.
-    Resolved through ``verdict.cli`` when loaded, so that monkeypatch on
-    ``cli._collect_doctor_diagnostics`` still intercepts.
     """
-    import sys as _sys
-
-    _cli = _sys.modules.get("verdict.cli")
-    if _cli is not None:
-        _fn = getattr(_cli, "_collect_doctor_diagnostics", None)
-        if _fn is not None:
-            return _fn(
-                fix, interactive=interactive, preflight_timeout=preflight_timeout, progress=progress
-            )
     from verdict.doctor_diagnostics import _collect_doctor_diagnostics
 
     return _collect_doctor_diagnostics(

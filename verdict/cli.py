@@ -13,13 +13,10 @@ import yaml
 from rich.console import Console
 from rich.prompt import Prompt
 
+import verdict.actions.helpers as _action_helpers
+
 # BOD-275: canonical implementations extracted from cli.py  ──────────────────
 from verdict.actions.helpers import _CLI_DEFAULT_PROVIDERS as _HELPERS_CLI_DEFAULT_PROVIDERS
-from verdict.actions.helpers import _cli_bootstrap as _helpers_cli_bootstrap
-from verdict.actions.helpers import _report_bootstrap_notes as _helpers_report_bootstrap_notes
-from verdict.actions.helpers import build_route_gate as _helpers_build_route_gate
-from verdict.actions.helpers import default_model_catalog as _helpers_default_model_catalog
-from verdict.actions.helpers import probe_result_payload as _helpers_probe_result_payload
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.free_tier_admit import execute_offload_chat, omniroute_endpoint_from_env
@@ -56,56 +53,7 @@ def _print_detection_banner() -> None:
     )
 
 
-def _read_omniroute_token() -> str | None:
-    """Read an explicitly configured OmniRoute token without private-database access."""
-
-    return os.getenv("OMNIROUTE_API_KEY")
-
-
-def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
-    """Make an authenticated request to the explicitly configured local router."""
-    token = _read_omniroute_token()
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    import json
-    import urllib.request
-    from urllib.error import URLError
-
-    base_url = os.getenv("OMNIROUTE_BASE_URL")
-    if not base_url:
-        # OMNIROUTE_BASE_URL is not wired into the environment even when a
-        # gateway is running locally. Fall back to a one-shot health probe of
-        # the known local gateway ports rather than giving up immediately.
-        for candidate_url in ("http://localhost:20128", "http://localhost:20129"):
-            try:
-                health_req = urllib.request.Request(
-                    candidate_url.rstrip("/") + "/api/health",
-                    headers={"Accept": "application/json"},
-                    method="GET",
-                )
-                with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
-                    payload = json.loads(resp.read().decode("utf-8"))
-                    if isinstance(payload, dict) and payload.get("status") == "ok":
-                        base_url = candidate_url
-                        break
-            except (URLError, Exception):
-                continue
-        if not base_url:
-            return None
-    url = base_url.rstrip("/") + "/" + path.lstrip("/")
-
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    if data:
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=5) as response:  # nosec B310
-            return json.loads(response.read().decode("utf-8"))
-    except (URLError, Exception):
-        return None
+import verdict.doctor_diagnostics as _doctor_diag  # noqa: E402
 
 
 def select_from_list(prompt_text: str, options: list[str], default: str | None = None) -> str:
@@ -494,7 +442,7 @@ def cmd_setup(
         to_sync = []
         try:
             # Check existing nodes in OmniRoute
-            existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
+            existing_nodes = _doctor_diag._omniroute_api_request("GET", "/api/provider-nodes")
             existing_urls = set()
             if existing_nodes:
                 items = []
@@ -533,7 +481,9 @@ def cmd_setup(
                             "weight": 100,
                             "enabled": True,
                         }
-                        res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                        res = _doctor_diag._omniroute_api_request(
+                            "POST", "/api/provider-nodes", payload
+                        )
                         if res:
                             ui.status("Node registered", "ok", node_name)
                         else:
@@ -596,7 +546,9 @@ def cmd_setup(
                         "weight": 80,
                         "enabled": True,
                     }
-                    res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                    res = _doctor_diag._omniroute_api_request(
+                        "POST", "/api/provider-nodes", payload
+                    )
                     if res:
                         ui.status("Gemini Free fallback", "ok", "Registered")
                     else:
@@ -609,7 +561,9 @@ def cmd_setup(
                         "weight": 80,
                         "enabled": True,
                     }
-                    res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                    res = _doctor_diag._omniroute_api_request(
+                        "POST", "/api/provider-nodes", payload
+                    )
                     if res:
                         ui.status("OpenRouter Free fallback", "ok", "Registered")
                     else:
@@ -750,9 +704,9 @@ def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
 # CLI bootstrap + route gate — canonical: verdict.actions.helpers
 # ---------------------------------------------------------------------------
 _CLI_DEFAULT_PROVIDERS = _HELPERS_CLI_DEFAULT_PROVIDERS
-_cli_bootstrap = _helpers_cli_bootstrap
-_report_bootstrap_notes = _helpers_report_bootstrap_notes
-_build_route_gate = _helpers_build_route_gate
+_cli_bootstrap = _action_helpers._cli_bootstrap
+_report_bootstrap_notes = _action_helpers._report_bootstrap_notes
+_build_route_gate = _action_helpers.build_route_gate  # backward-compat alias
 
 
 def _configured_completion_endpoint(
@@ -790,7 +744,7 @@ def _ensure_cli_gateway_ready() -> None:
     from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
 
     try:
-        bootstrap = _cli_bootstrap()
+        bootstrap = _action_helpers._cli_bootstrap()
         outcome = require_gateway_ready(bootstrap, probe=_gateway_probe_for(bootstrap))
     except BootstrapError as exc:
         print(describe_bootstrap_failure(exc), file=sys.stderr)
@@ -852,7 +806,7 @@ def cmd_route(
     """
     from verdict.serve_path import CONTEXT_ALLOW_LEGACY
 
-    gate = _build_route_gate(allow_offline=allow_offline)
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
     # Never couple offline catalog mode to the legacy-selector escape.
     if allow_legacy_selector is None:
         allow_legacy_selector = False
@@ -934,7 +888,7 @@ def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = Fa
     """Compare a DIRECT frontier call against the Verdict route (issue #265)."""
     from verdict.comparison import ComparisonHarness
 
-    gate = _build_route_gate(allow_offline=allow_offline)
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
     harness = ComparisonHarness(gate=gate)
     report = harness.compare(task, criticality=criticality)
     print(json.dumps({"comparison_report": report.to_dict()}, sort_keys=True, indent=2))
@@ -1713,7 +1667,9 @@ def cmd_autodev_packet_execute(
         if probe_transport is None:
             from verdict.probes import openai_probe_transport
 
-            probe_transport = openai_probe_transport(family_url, api_key=_read_omniroute_token())
+            probe_transport = openai_probe_transport(
+                family_url, api_key=_doctor_diag._read_omniroute_token()
+            )
     canary_state = None
     if canary_path:
         loaded = json.loads(Path(canary_path).expanduser().resolve().read_text(encoding="utf-8"))
@@ -2003,7 +1959,7 @@ def _report_autodev_failure(reason: str, *, output_json: bool) -> None:
         present.fail("decomposition failed", reason)
 
 
-_probe_result_payload = _helpers_probe_result_payload
+_probe_result_payload = _action_helpers.probe_result_payload
 
 
 def cmd_catalog(
@@ -2175,12 +2131,14 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
 from verdict.doctor_diagnostics import (  # noqa: E402
     DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
     DoctorDiagnostics,  # noqa: F401 — backward-compat alias
-    _collect_doctor_diagnostics,
+    _collect_doctor_diagnostics,  # noqa: F401 — backward-compat alias
     _doctor_documentation_preflight_is_network_only_failure,  # noqa: F401
     _doctor_fix_gateway,  # noqa: F401
     _doctor_gateway_lifecycle,  # noqa: F401
     _doctor_progress,
     _gateway_probe_for,
+    _omniroute_api_request,  # noqa: F401 — backward-compat alias
+    _read_omniroute_token,  # noqa: F401 — backward-compat alias
 )
 
 
@@ -2213,7 +2171,7 @@ def cmd_doctor(
     ui.header("Doctor")
     # Interactive only for the optional duplicate-node removal prompt; the
     # set of issues/warnings is identical to --json mode.
-    diag = _collect_doctor_diagnostics(
+    diag = _doctor_diag._collect_doctor_diagnostics(
         fix, interactive=True, preflight_timeout=preflight_timeout, progress=_doctor_progress
     )
     ui.doctor(diag.capability_report)
@@ -2359,7 +2317,7 @@ def cmd_inspect(
 ) -> None:
     """Inspect one model's catalog record and any stored passport evidence."""
     if catalog is None:
-        catalog = default_model_catalog()
+        catalog = _action_helpers.default_model_catalog()
     matches = [m for m in catalog if m.id == model_id or f"{m.provider}/{m.id}" == model_id]
     if not matches:
         message = f"model not found in catalog: {model_id}"
@@ -2581,7 +2539,7 @@ def cmd_simulate(
     spec = TaskSpec(prompt=task, criticality=criticality)
     forecast = simulate(
         spec,
-        model_catalog=catalog if catalog is not None else default_model_catalog(),
+        model_catalog=catalog if catalog is not None else _action_helpers.default_model_catalog(),
         model_override=model_override,
     )
     if output_json:
@@ -2605,7 +2563,7 @@ def cmd_simulate(
     present.note(forecast.rationale)
 
 
-default_model_catalog = _helpers_default_model_catalog
+default_model_catalog = _action_helpers.default_model_catalog
 
 
 def cmd_memory(args: Any) -> None:

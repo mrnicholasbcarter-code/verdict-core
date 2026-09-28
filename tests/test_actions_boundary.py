@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -117,7 +117,9 @@ class TestDoctorJsonUnchanged:
         from verdict.actions.registry import run_action
 
         mock_diag = self._make_mock_diag()
-        monkeypatch.setattr("verdict.cli._collect_doctor_diagnostics", lambda *a, **kw: mock_diag)
+        monkeypatch.setattr(
+            "verdict.doctor_diagnostics._collect_doctor_diagnostics", lambda *a, **kw: mock_diag
+        )
         result = run_action("doctor", {"fix": False})
         assert result.ok
         data = result.data
@@ -137,3 +139,113 @@ class TestDoctorJsonUnchanged:
         assert data["issues"] == []
         assert data["warnings"] == ["test-warning"]
         assert data["repaired"] == ["test-fix"]
+
+
+class TestNoCliStringReferences:
+    """AST scan: verdict/actions/** and verdict/doctor_diagnostics.py must not reference
+    'verdict.cli' or 'verdict.commands' as strings or via sys.modules subscripts."""
+
+    FORBIDDEN = ("verdict.cli", "verdict.commands")
+    SCAN_PATHS: ClassVar[list[Path]] = [
+        ROOT / "verdict" / "actions",
+        ROOT / "verdict" / "doctor_diagnostics.py",
+    ]
+
+    @staticmethod
+    def _collect_files() -> list[Path]:
+        files: list[Path] = []
+        for p in TestNoCliStringReferences.SCAN_PATHS:
+            if p.is_dir():
+                files.extend(sorted(p.rglob("*.py")))
+            elif p.is_file():
+                files.append(p)
+        return files
+
+    @staticmethod
+    def _scan_for_cli_strings(filepath: Path) -> list[str]:
+        """Find string constants or sys.modules subscripts referencing verdict.cli."""
+        source = filepath.read_text()
+        tree = ast.parse(source, filename=str(filepath))
+        violations: list[str] = []
+        rel = filepath.relative_to(ROOT)
+        for node in ast.walk(tree):
+            # Check string constants
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                for forbidden in TestNoCliStringReferences.FORBIDDEN:
+                    if forbidden in node.value:
+                        violations.append(
+                            f"{rel}:{node.lineno} string constant contains '{forbidden}'"
+                        )
+            # Check sys.modules['verdict.cli'] subscripts
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id in ("sys", "_sys")
+                and node.value.attr == "modules"
+                and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)
+            ):
+                for forbidden in TestNoCliStringReferences.FORBIDDEN:
+                    if forbidden in node.slice.value:
+                        violations.append(
+                            f"{rel}:{node.lineno} sys.modules subscript references '{forbidden}'"
+                        )
+            # Check Import/ImportFrom
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    for forbidden in TestNoCliStringReferences.FORBIDDEN:
+                        if alias.name == forbidden or alias.name.startswith(forbidden + "."):
+                            violations.append(f"{rel}:{node.lineno} imports {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for forbidden in TestNoCliStringReferences.FORBIDDEN:
+                    if module == forbidden or module.startswith(forbidden + "."):
+                        violations.append(f"{rel}:{node.lineno} imports from {module}")
+        return violations
+
+    def test_no_cli_references_in_actions_and_doctor_diagnostics(self) -> None:
+        """No file under verdict/actions/ or verdict/doctor_diagnostics.py references verdict.cli."""
+        violations: list[str] = []
+        for filepath in self._collect_files():
+            violations.extend(self._scan_for_cli_strings(filepath))
+        assert violations == [], "\n".join(violations)
+
+
+class TestDoctorActionIndependentOfCli:
+    """Behaviour test: run_action('doctor') must not call cli's copy of _collect_doctor_diagnostics."""
+
+    def test_doctor_action_ignores_cli_copy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With verdict.cli imported and its _collect_doctor_diagnostics replaced by a
+        function that raises, run_action('doctor') still works — it uses the canonical
+        implementation in verdict.doctor_diagnostics, not the cli's copy."""
+        # Ensure verdict.cli is imported so sys.modules['verdict.cli'] is populated
+        import verdict.cli  # noqa: F401
+        from verdict.actions.registry import run_action
+        from verdict.doctor_diagnostics import DoctorDiagnostics
+
+        # Replace cli's copy with one that raises
+        def _boom(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("Must not call cli._collect_doctor_diagnostics")
+
+        monkeypatch.setattr("verdict.cli._collect_doctor_diagnostics", _boom)
+
+        # Build a realistic mock diag
+        diag = DoctorDiagnostics()
+        diag.sections.append(("Gateway", "ok", "healthy"))
+        diag.issues.clear()
+        diag.warnings.clear()
+        diag.fixed.clear()
+        diag.documentation_preflight = {"status": "ok"}
+        diag.gateway_lifecycle = {"state": "ready"}
+        diag.shared_memory = {}
+        diag.capability_report = {"capabilities": []}
+
+        # Patch the canonical implementation
+        monkeypatch.setattr(
+            "verdict.doctor_diagnostics._collect_doctor_diagnostics", lambda *a, **kw: diag
+        )
+
+        result = run_action("doctor", {"fix": False})
+        assert result.ok
+        assert result.data["status"] == "ok"

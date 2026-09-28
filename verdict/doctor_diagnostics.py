@@ -276,15 +276,7 @@ def _collect_doctor_diagnostics(
     (``0`` or less means unbounded). ``progress``, when given, receives short
     status lines before and during the (possibly slow) preflight work.
     """
-    # Lazy import: resolve through verdict.cli for monkeypatch compatibility.
-    # Tests set ``monkeypatch.setattr(cli, '_omniroute_api_request', ...)``.
-    import sys as _sys
-
-    _cli_mod = _sys.modules.get("verdict.cli")
-    if _cli_mod is not None:
-        _omniroute_api_req = getattr(_cli_mod, "_omniroute_api_request", _omniroute_api_request)
-    else:
-        _omniroute_api_req = _omniroute_api_request
+    _omniroute_api_req = _omniroute_api_request
 
     diag = DoctorDiagnostics()
     sections = diag.sections
