@@ -406,6 +406,15 @@ class DagRuntime:
             _post: dict[str, int] = getattr(self.selector, "last_select_stats", {})
             if _post:
                 counts = {**counts, **_post}
+            # BOD-277: per-route eligibility verdicts for trace drill-down.
+            _rejections = _build_rejections(considered)
+            _selected_route = choice.route_id if choice is not None else None
+            _cands, _cands_omitted = _build_candidates(considered, _selected_route)
+            _evidence: dict[str, Any] = {
+                "rejections": _rejections,
+                "candidates": _cands,
+                "candidates_omitted": _cands_omitted,
+            }
             if choice is None:
                 # Check if we can wait for a short cooldown to expire
                 earliest_cooldown: datetime | None = None
@@ -442,7 +451,7 @@ class DagRuntime:
 
                 # Otherwise, fail closed as before
                 run.reason = "no eligible model: " + _explain_exhaustion(considered)
-                self.events.emit("eligibility", node_id, **counts, selected=None)
+                self.events.emit("eligibility", node_id, **counts, **_evidence, selected=None)
                 self._set(run, NodeState.BLOCKED, reason=run.reason)
                 self.events.emit(
                     "failure",
@@ -465,6 +474,7 @@ class DagRuntime:
                     "eligibility",
                     node_id,
                     **counts,
+                    **_evidence,
                     selected=None,
                     revoked=choice.route_id,
                     reason=f"pre-dispatch recheck: {blocker} cooling",
@@ -491,6 +501,7 @@ class DagRuntime:
                 "eligibility",
                 node_id,
                 **counts,
+                **_evidence,
                 selected=choice.route_id,
                 capacity_class=choice.capacity_class.value,
                 rank=choice.rank,
@@ -742,6 +753,7 @@ class DagRuntime:
                     prompt_bytes=prompt_bytes,
                     truncated="[truncated" in prompt.lower(),
                     budget_bytes=budget,
+                    sources=_hydrate_sources(node.required_context, worktree, budget),
                 )
                 terminal = await self._execute(prompt, run.route_id, worktree)
             finally:
@@ -1156,3 +1168,85 @@ def _ladder_counts(verdicts: Sequence[Any]) -> dict[str, int]:
         "available": counts["available"],
         "eligible": counts["task_eligible"],
     }
+
+
+_MAX_CANDIDATES = 25
+
+
+def _build_rejections(verdicts: Sequence[Any]) -> dict[str, dict[str, int]]:
+    """Aggregate rejection counts by stage and reason over all considered routes."""
+    rejections: dict[str, dict[str, int]] = {}
+    for v in verdicts:
+        stage = getattr(v, "failed_stage", None)
+        if stage is None:
+            continue
+        stage_key = stage.value if hasattr(stage, "value") else str(stage)
+        reason = getattr(v, "reason", "") or "unknown"
+        bucket = rejections.setdefault(stage_key, {})
+        bucket[reason] = bucket.get(reason, 0) + 1
+    return rejections
+
+
+def _build_candidates(
+    verdicts: Sequence[Any], selected_route: str | None
+) -> tuple[list[dict[str, Any]], int]:
+    """Build at most _MAX_CANDIDATES candidate dicts; selected route always included.
+
+    Returns ``(candidates_list, omitted_count)``.
+    """
+    total = len(verdicts)
+    if total == 0:
+        return [], 0
+
+    selected_verdict: dict[str, Any] | None = None
+    others: list[dict[str, Any]] = []
+
+    for v in verdicts:
+        d = v.to_dict() if hasattr(v, "to_dict") else {"route_id": str(getattr(v, "route_id", ""))}
+        rid = d.get("route_id", "")
+        if selected_route and rid == selected_route and selected_verdict is None:
+            selected_verdict = d
+        else:
+            others.append(d)
+
+    budget = _MAX_CANDIDATES - (1 if selected_verdict else 0)
+    kept = others[:budget]
+    result = [selected_verdict, *kept] if selected_verdict else kept[:_MAX_CANDIDATES]
+    omitted = total - len(result)
+    return result, omitted
+
+
+def _hydrate_sources(
+    required_context: Sequence[str], worktree: Path, budget_bytes: int
+) -> list[dict[str, Any]]:
+    """Build per-source entries from the same data hydrate_node_prompt uses."""
+    sources: list[dict[str, Any]] = []
+    remaining = budget_bytes
+    for rel in required_context:
+        entry: dict[str, Any] = {"path": str(rel)}
+        path = worktree / rel
+        try:
+            size = path.stat().st_size
+        except OSError:
+            entry["bytes"] = 0
+            entry["included"] = False
+            entry["truncated_at"] = None
+            entry["reason"] = "unreadable"
+            sources.append(entry)
+            continue
+        entry["bytes"] = size
+        if remaining <= 0:
+            entry["included"] = False
+            entry["truncated_at"] = None
+            entry["reason"] = "budget_exhausted"
+        elif size > remaining:
+            entry["included"] = True
+            entry["truncated_at"] = remaining
+            entry["reason"] = "truncated"
+        else:
+            entry["included"] = True
+            entry["truncated_at"] = None
+            entry["reason"] = None
+        remaining -= min(size, max(remaining, 0))
+        sources.append(entry)
+    return sources
