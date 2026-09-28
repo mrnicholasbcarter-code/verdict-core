@@ -38,7 +38,10 @@ def _seed_plane(db_path: str) -> None:
 def main() -> int:
     import verdict.cli as _cli
 
-    tmp_db = tempfile.mktemp(suffix=".db", prefix="verdict_replay_golden_")
+    # mkstemp creates the file atomically (no predictable-name race); the store opens it.
+    fd, tmp_db = tempfile.mkstemp(suffix=".db", prefix="verdict_replay_golden_")
+    os.close(fd)
+    os.unlink(tmp_db)  # the memory store creates a fresh SQLite file at this unique path
     _seed_plane(tmp_db)
     try:
         os.environ["VERDICT_MEMORY_DB"] = tmp_db
