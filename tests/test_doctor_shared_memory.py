@@ -122,13 +122,14 @@ def test_doctor_shared_memory_unreachable(
 
 
 # ---------------------------------------------------------------------------
-# (b) Unwritable provider
+# (b) Auth failed provider (BOD-273 new reason)
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_shared_memory_unwritable(
+def test_doctor_shared_memory_auth_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Verify auth_failed status maps to auth_failed reason (not unwritable)."""
     _base_healthy_fixture(tmp_path, monkeypatch)
     _mock_shared_memory_report(
         monkeypatch,
@@ -145,12 +146,43 @@ def test_doctor_shared_memory_unwritable(
     report = _run_doctor_json(monkeypatch, capsys)
     sm = report["shared_memory"]
     assert sm["diagnosis_state"] == "degraded"
+    assert sm["diagnosis_reason"].startswith("auth_failed:")
+    assert "auth_failed" in sm["diagnosis_reason"]
+    assert any("auth_failed" in w for w in report["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# (c) Unwritable provider (real write-permission failures)
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_shared_memory_unwritable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify degraded status maps to unwritable reason."""
+    _base_healthy_fixture(tmp_path, monkeypatch)
+    _mock_shared_memory_report(
+        monkeypatch,
+        {
+            "provider_id": "mcp-memory-service",
+            "configured": True,
+            "installed": True,
+            "endpoint": "http://localhost:9999",
+            "status": "degraded",
+            "state": "degraded",
+            "message": "write permission denied",
+        },
+    )
+    report = _run_doctor_json(monkeypatch, capsys)
+    sm = report["shared_memory"]
+    assert sm["diagnosis_state"] == "degraded"
+    assert sm["diagnosis_reason"].startswith("unwritable:")
     assert "unwritable" in sm["diagnosis_reason"]
     assert any("unwritable" in w for w in report["warnings"])
 
 
 # ---------------------------------------------------------------------------
-# (c) Schema-incompatible provider
+# (d) Schema-incompatible provider
 # ---------------------------------------------------------------------------
 
 
@@ -178,7 +210,7 @@ def test_doctor_shared_memory_schema_incompatible(
 
 
 # ---------------------------------------------------------------------------
-# (d) Healthy provider
+# (e) Healthy provider
 # ---------------------------------------------------------------------------
 
 
@@ -207,7 +239,7 @@ def test_doctor_shared_memory_healthy(
 
 
 # ---------------------------------------------------------------------------
-# (e) Not configured
+# (f) Not configured
 # ---------------------------------------------------------------------------
 
 
