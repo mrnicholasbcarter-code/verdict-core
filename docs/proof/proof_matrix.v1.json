@@ -492,6 +492,181 @@
       "verification": "pytest -q tests/test_launch_gates.py tests/security/ tests/privacy/",
       "public_wording": "The repository defines and enforces a non-advisory security and privacy launch gate in CI, backed by tests.",
       "gap": "The dynamic (DAST) scan step and full tagged-release run of the gate have not been executed and verified outside CI; only the static/unit evidence above has been locally confirmed."
+    },
+    {
+      "id": "PM-016",
+      "area": "bounded failover",
+      "requirement": "Supervisor detects stalled workers, kills the generation, resumes validated nodes, and re-executes only abandoned nodes.",
+      "status": "verified",
+      "evidence": [
+        {
+          "path": "verdict/orchestration/recovery.py",
+          "locator": "reroute_on_failure and cooldown logic",
+          "kind": "implementation"
+        },
+        {
+          "path": "verdict/orchestration/supervisor.py",
+          "locator": "Supervisor stall detection and restart",
+          "kind": "implementation"
+        },
+        {
+          "path": "docs/proof/live-controller-run/README.md",
+          "locator": "live failover narrative",
+          "kind": "documentation"
+        },
+        {
+          "path": "docs/proof/live-controller-run/events.jsonl",
+          "locator": "STALLED and RESUMED events",
+          "kind": "evidence"
+        },
+        {
+          "path": "docs/proof/live-controller-run/receipt.json",
+          "locator": "completion receipt with digest",
+          "kind": "evidence"
+        },
+        {
+          "path": "tests/test_assignment_failover_e2e.py",
+          "locator": "test_provider_quota_failover_to_independent_review",
+          "kind": "test"
+        }
+      ],
+      "verification": "pytest -q tests/test_assignment_failover_e2e.py tests/test_orch_recovery.py",
+      "public_wording": "Supervisor-driven bounded failover resumes validated work and re-executes only stalled nodes.",
+      "gap": "Live evidence is from a single two-node graph; larger topologies are not yet exercised."
+    },
+    {
+      "id": "PM-017",
+      "area": "context coverage contract",
+      "requirement": "Context packs track required facts; unsatisfied facts force partial status and are named in the pack state.",
+      "status": "verified",
+      "evidence": [
+        {
+          "path": "verdict/free_tier_admit.py",
+          "locator": "CheapPathContextPack and _check_fact_satisfaction",
+          "kind": "implementation"
+        },
+        {
+          "path": "verdict/pack_state.py",
+          "locator": "classify_pack_state with required_facts",
+          "kind": "implementation"
+        },
+        {
+          "path": "tests/test_bod272_coverage_contract.py",
+          "locator": "test_partial_when_required_fact_unsatisfied",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_bod272_coverage_contract.py",
+          "locator": "test_missing_fact_yields_partial_with_named_unsatisfied",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_bod272_coverage_contract.py",
+          "locator": "test_ac_proof_packed_as_mandatory_units",
+          "kind": "test"
+        }
+      ],
+      "verification": "pytest -q tests/test_bod272_coverage_contract.py",
+      "public_wording": "Context coverage contracts enforce named required-fact satisfaction before hydrated status is granted.",
+      "gap": "Fact satisfaction uses substring matching; semantic equivalence is not checked."
+    },
+    {
+      "id": "PM-018",
+      "area": "multi-story admission",
+      "requirement": "Governor flag serializes overlapping-footprint stories, defers beyond cap, and excludes manual-label nodes.",
+      "status": "verified",
+      "evidence": [
+        {
+          "path": "tests/test_supervisor_governor_flag.py",
+          "locator": "TestDisjointFootprintsAdmit",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_supervisor_governor_flag.py",
+          "locator": "TestSameFileSerialized",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_supervisor_governor_flag.py",
+          "locator": "TestGovernorCapDefers",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_supervisor_governor_flag.py",
+          "locator": "TestManualLabelExcluded",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_worker_admission_authority.py",
+          "locator": "test_worker_admission_can_require_measured_usage_evidence",
+          "kind": "test"
+        }
+      ],
+      "verification": "pytest -q tests/test_supervisor_governor_flag.py tests/test_worker_admission_authority.py",
+      "public_wording": "Multi-story admission serializes file-overlapping work and respects concurrency caps.",
+      "gap": "Governor tests use synthetic footprints; real file-overlap detection depends on planner accuracy."
+    },
+    {
+      "id": "PM-019",
+      "area": "outcome records",
+      "requirement": "Execution outcomes record cost, tokens, status, and digest; spend aggregation refuses duplicate request IDs.",
+      "status": "verified",
+      "evidence": [
+        {
+          "path": "verdict/outcome_records.py",
+          "locator": "OutcomeRecord and cost fields",
+          "kind": "implementation"
+        },
+        {
+          "path": "tests/test_outcome_records.py",
+          "locator": "TestLiveReceipt",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_outcome_records.py",
+          "locator": "TestReceiptDigestIntegrity",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_outcome_log.py",
+          "locator": "test_measured_spend_refuses_to_multiply_a_reused_request_id",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_outcome_log.py",
+          "locator": "test_measured_spend_sums_every_billed_attempt_not_just_the_final_one",
+          "kind": "test"
+        }
+      ],
+      "verification": "pytest -q tests/test_outcome_records.py tests/test_outcome_log.py",
+      "public_wording": "Outcome records capture per-attempt cost and tokens with digest integrity; spend aggregation is idempotent.",
+      "gap": "Cost values depend on gateway-reported headers; no independent billing cross-check exists."
+    },
+    {
+      "id": "PM-020",
+      "area": "dynamic assignment",
+      "requirement": "Provider quota or context-length failures trigger same-node reroute with cooldown; pool exhaustion fails closed.",
+      "status": "verified",
+      "evidence": [
+        {
+          "path": "verdict/orchestration/recovery.py",
+          "locator": "reroute_on_failure and pool-exhaustion FAIL_CLOSED",
+          "kind": "implementation"
+        },
+        {
+          "path": "tests/test_assignment_failover_e2e.py",
+          "locator": "test_provider_quota_failover_to_independent_review",
+          "kind": "test"
+        },
+        {
+          "path": "tests/test_assignment_failover_e2e.py",
+          "locator": "test_context_length_400_is_request_scoped",
+          "kind": "test"
+        }
+      ],
+      "verification": "pytest -q tests/test_assignment_failover_e2e.py",
+      "public_wording": "Dynamic assignment reroutes on provider quota or context-length failures and fails closed on pool exhaustion.",
+      "gap": "Reroute tests use mocked providers; live multi-provider failover chains are not yet exercised."
     }
   ]
 }
