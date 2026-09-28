@@ -4,7 +4,7 @@
   "problems": [
     "unexpected schema None",
     "events_digest mismatch: events.jsonl changed after receipt was written",
-    "cannot rebuild receipt: cannot read graph.json: [Errno 2] No such file or directory: '/tmp/v275b/tests/fixtures/actions_cli_wiring_baselines/runs/run-fake/graph.json'"
+    "cannot rebuild receipt: cannot read graph.json: [Errno 2] No such file or directory: '<FIXROOT>/runs/run-fake/graph.json'"
   ],
   "receipt": {
     "run_id": "run-fake",

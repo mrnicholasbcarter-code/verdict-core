@@ -278,7 +278,11 @@ def _action_certify(**kwargs: Any) -> ActionResult:
 
 
 def _action_choose(**kwargs: Any) -> ActionResult:
-    """Select an eligible execution target for Prime dispatch."""
+    """Select an eligible execution target for Prime dispatch.
+
+    On ChooserError the payload mirrors the legacy ``cmd_choose`` contract so the
+    CLI can render (and JSON callers keep) the same shape as origin/main.
+    """
     from verdict.chooser import ChooserError, choose_route, load_candidates_json
 
     task_class: str = kwargs["task_class"]
@@ -290,13 +294,23 @@ def _action_choose(**kwargs: Any) -> ActionResult:
     try:
         candidates_tuple = load_candidates_json(candidates_json) if candidates_json else ()
         decision = choose_route(
-            candidates_tuple,
-            task_class=task_class,
-            requires=requires,
-            explicit_model=model,
+            candidates_tuple, task_class=task_class, requires=requires, explicit_model=model
         )
     except ChooserError as exc:
-        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
+        payload: dict[str, Any] = {
+            "task_class": task_class,
+            "protected": task_class
+            in {"architecture", "orchestration", "hard-debug", "final-review"},
+            "selected": None,
+            "reason": exc.reason,
+            "error": str(exc),
+            "exclusions": list(exc.exclusions),
+            "policy_version": "chooser-policy/v1",
+            "ranker_version": "chooser-ranker/v1",
+            "explicit_model": model,
+            "selected_because": f"failed because {exc.reason}",
+        }
+        return ActionResult(data=payload, ok=False, exit_code=1)
     return ActionResult(data=decision.to_dict())
 
 
@@ -505,7 +519,11 @@ def _action_hook_status(**kwargs: Any) -> ActionResult:
     from verdict.memory_bridge import detect_available_tools
 
     report = detect_available_tools()
-    return ActionResult(data={"available_tools": report.to_dict() if hasattr(report, "to_dict") else report.__dict__})
+    return ActionResult(
+        data={
+            "available_tools": report.to_dict() if hasattr(report, "to_dict") else report.__dict__
+        }
+    )
 
 
 def _action_hook_configure(**kwargs: Any) -> ActionResult:
@@ -732,10 +750,21 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
         )
     except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
+    resolved_store = str(
+        Path(store_path).expanduser()
+        if store_path
+        else Path.home() / ".verdict" / "model-metadata.json"
+    )
     return ActionResult(
         data={
+            "schema_version": snapshot.schema_version,
+            "refreshed_at": snapshot.refreshed_at,
             "record_count": len(snapshot.records),
+            "drop_count": len(snapshot.drops),
+            "conflict_count": len(snapshot.conflicts),
             "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
+            "mapping": snapshot.mapping,
+            "store": resolved_store,
         }
     )
 

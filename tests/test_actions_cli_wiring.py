@@ -56,6 +56,7 @@ _LAT_RE = re.compile(r"Latency\s+\d+(?:\.\d+)?ms")
 def _normalize(text: str) -> str:
     text = _ISO_RE.sub("<ISO>", text)
     text = _LAT_RE.sub("Latency N.Nms", text)
+    text = text.replace(str(FIX), "<FIXROOT>")
     return text
 
 
@@ -232,16 +233,17 @@ _BYTE_EQUAL_CASES = [
     "name,argv,rel_cwd", _BYTE_EQUAL_CASES, ids=[c[0] for c in _BYTE_EQUAL_CASES]
 )
 def test_stdout_is_byte_equal(name: str, argv: list[str], rel_cwd: str, tmp_path: Path) -> None:
-    """Baseline stdout must be preserved byte-for-byte."""
+    """Baseline stdout must be preserved byte-for-byte (after FIXROOT normalization)."""
     home = tmp_path / "home"
     home.mkdir()
     cwd = FIX / rel_cwd
     rc, out = _run(argv, cwd)
     expected = (BASELINES / f"{name}.out").read_text()
     exp_rc = int((BASELINES / f"{name}.rc").read_text())
-    # Some handlers embed a home path in output; substitute a matching HOME.
+    # Baselines store the FIX absolute path as <FIXROOT> so tests are
+    # worktree-independent (issue: PR-branch worktrees embed /tmp/v275b*).
     assert rc == exp_rc, f"exit code drift for {name}"
-    assert out == expected, f"stdout drift for {name}"
+    assert _normalize(out) == _normalize(expected), f"stdout drift for {name}"
 
 
 def test_route_offline_stdout_matches_after_isotimestamp_normalization(tmp_path: Path) -> None:
@@ -295,7 +297,7 @@ def test_run_receipt_stdout_matches(tmp_path: Path) -> None:
         exp_out = (BASELINES / f"{name}.out").read_text()
         exp_rc = int((BASELINES / f"{name}.rc").read_text())
         assert rc == exp_rc, name
-        assert out == exp_out, name
+        assert _normalize(out) == _normalize(exp_out), name
 
 
 # ---------------------------------------------------------------------------

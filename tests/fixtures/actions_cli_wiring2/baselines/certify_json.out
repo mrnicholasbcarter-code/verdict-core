@@ -1,0 +1,12 @@
+{
+  "certified_at": "2026-09-28T20:12:54.342067Z",
+  "components": [],
+  "conflicts": [],
+  "expires_at": "2026-09-28T20:17:54.342067Z",
+  "memory_authority": null,
+  "premium_probes_used": 0,
+  "probes_used": 0,
+  "purpose": "evidence",
+  "schema_version": "1",
+  "ttl_seconds": 300
+}
