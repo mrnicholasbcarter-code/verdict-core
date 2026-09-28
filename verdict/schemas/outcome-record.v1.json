@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/schemas/outcome-record.v1.json",
+  "$id": "https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/verdict/schemas/outcome-record.v1.json",
   "title": "Outcome record v1",
   "description": "One node's learning signal extracted from a run receipt (SONA loop).",
   "type": "object",

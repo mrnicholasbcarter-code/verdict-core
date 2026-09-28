@@ -8,9 +8,10 @@ upstream, network boundary, provider policy, and retention controls.
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for sensitive vulnerabilities. Report concerns
-through GitHub private vulnerability reporting if enabled, or contact the
-maintainers privately with:
+Please do not open a public issue for sensitive vulnerabilities.
+
+GitHub private vulnerability reporting is currently **disabled** for this repository.
+Until it is enabled, report concerns directly to the maintainers with:
 
 - Affected version or commit.
 - Reproduction steps.

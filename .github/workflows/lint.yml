@@ -25,3 +25,9 @@ jobs:
         run: mypy verdict --strict
       - name: Check documentation links
         run: python scripts/check_doc_links.py
+      - name: Ensure no verdict.dev references
+        run: |
+          if git grep -n 'verdict.dev'; then
+            echo "Error: Found 'verdict.dev' references (BOD-254). Use github.com/mrnicholasbcarter-code/verdict-core instead."
+            exit 1
+          fi

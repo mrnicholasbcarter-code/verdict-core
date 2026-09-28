@@ -33,7 +33,9 @@
 
 ### Security Vulnerabilities
 **Do not** report security issues in public issues.
-Report via [GitHub Security Advisories](https://github.com/mrnicholasbcarter-code/verdict-core/security/advisories/new).
+
+GitHub private vulnerability reporting is currently **disabled** for this repository.
+See [SECURITY.md](SECURITY.md) for reporting instructions.
 
 ### Bug Reports
 Use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml).
