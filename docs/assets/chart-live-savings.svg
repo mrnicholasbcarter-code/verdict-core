@@ -491,7 +491,7 @@ L 659.332813 243.318281
     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #555555" x="228.655077" y="232.471261" transform="rotate(-0 228.655077 232.471261)">claude-opus-5</text>
    </g>
    <g id="text_33">
-    <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: start" x="101.332813" y="15.558281" transform="rotate(-0 101.332813 15.558281)">Live savings: -9.4% reduction (26/30 baseline / 30/30 verdict pass rate, n=13)</text>
+    <text style="font-size: 11px; font-family: 'DejaVu Sans'; text-anchor: start" x="101.332813" y="15.558281" transform="rotate(-0 101.332813 15.558281)">Live cost check: no routing saving measured (both arms on cc/claude-opus-5), n=13 tasks</text>
    </g>
    <g id="legend_1">
     <g id="patch_31">

@@ -218,13 +218,19 @@ def live_savings() -> None:
     ax.set_xlabel("list-price cost per task, USD (observed tokens x published list price)")
     ax.set_xlim(0, max(baseline_costs) * 1.5)
     ax.legend(loc="lower right", frameon=False, fontsize=8.5)
-    savings = summary["savings_pct"]
-    ax.set_title(
-        f"Live savings: {savings}% reduction "
-        f"({summary['baseline_pass_rate']} baseline / {summary['verdict_pass_rate']} verdict pass rate, n={len(names)})",
-        loc="left",
-        fontsize=11,
+    # Both arms can run the same model on the same prompt; then no routing saving
+    # exists to show, so the title says so instead of printing a percentage.
+    arm_models = {
+        arm: {str(r.get("model")) for e in per_task for r in e["runs"] if r["arm"] == arm}
+        for arm in ("baseline", "verdict")
+    }
+    same = arm_models["baseline"] == arm_models["verdict"]
+    headline = (
+        f"no routing saving measured (both arms on {', '.join(sorted(arm_models['verdict']))})"
+        if same
+        else f"{summary['savings_pct']}% list-price difference over pairs where both arms passed"
     )
+    ax.set_title(f"Live cost check: {headline}, n={len(names)} tasks", loc="left", fontsize=11)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     _save(fig, "chart-live-savings.svg")
