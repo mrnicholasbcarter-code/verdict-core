@@ -25,3 +25,10 @@ jobs:
         run: mypy verdict --strict
       - name: Check documentation links
         run: python scripts/check_doc_links.py
+      - name: Ensure no retired-domain references (BOD-254)
+        run: |
+          # Pattern is split so this workflow file does not match itself.
+          if git grep -n -E "verdict""\.""dev"; then
+            echo "Error: retired domain reference found (BOD-254). Use github.com/mrnicholasbcarter-code/verdict-core instead."
+            exit 1
+          fi

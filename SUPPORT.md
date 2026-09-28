@@ -33,7 +33,10 @@
 
 ### Security Vulnerabilities
 **Do not** report security issues in public issues.
-Report via [GitHub Security Advisories](https://github.com/mrnicholasbcarter-code/verdict-core/security/advisories/new).
+
+Report privately through GitHub's
+[private vulnerability reporting](https://github.com/mrnicholasbcarter-code/verdict-core/security/advisories/new).
+See [SECURITY.md](SECURITY.md) for what to include.
 
 ### Bug Reports
 Use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml).
