@@ -730,8 +730,15 @@ def diagnose_shared_memory(
             reason=f"schema_incompatible: {report.get('message', status_raw)}",
         )
 
-    # Unwritable — provider reports degraded or auth failure
-    if status_raw in {"degraded", "auth_failed"}:
+    # Auth failed — provider reports authentication failure
+    if status_raw == "auth_failed":
+        return SharedMemoryDiagnosis(
+            state=CertificationState.DEGRADED,
+            reason=f"auth_failed: {report.get('message', status_raw)}",
+        )
+
+    # Unwritable — provider reports degraded (permission/capacity issues)
+    if status_raw == "degraded":
         return SharedMemoryDiagnosis(
             state=CertificationState.DEGRADED,
             reason=f"unwritable: {report.get('message', status_raw)}",
