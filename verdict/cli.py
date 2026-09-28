@@ -1706,15 +1706,12 @@ def cmd_autodev_packet_execute(
 
 def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) -> None:
     """Dump an advisory shadow-learning JSON report. Does not call EligibilityGate."""
-    from verdict.autodev_run import shadow_learning_report
+    from verdict.actions.registry import run_action
 
-    payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if isinstance(payload, dict) and "episodes" in payload:
-        episodes = payload["episodes"]
-    else:
-        episodes = payload
-    if not isinstance(episodes, list):
-        message = "shadow episodes JSON must be a list or an object with episodes"
+    result = run_action("autodev.packet.shadow", {"episodes_path": episodes_path})
+    data = result.data
+    if not result.ok:
+        message = str(data.get("error", "autodev.packet.shadow failed"))
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
@@ -1722,16 +1719,15 @@ def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) 
 
             present.header("Autodev packet  /  shadow")
             present.fail("episodes", message)
-        raise SystemExit(1)
-    report = shadow_learning_report(episodes)
-    print(json.dumps(report, indent=2, sort_keys=True))
+        raise SystemExit(result.exit_code or 1)
+    print(json.dumps(data, indent=2, sort_keys=True))
 
 
 def cmd_autodev_packet_canary(
     episodes_path: str, admitted_path: str, *, output_json: bool = False
 ) -> None:
     """Dump an explicit bounded canary choice. Does not call EligibilityGate."""
-    from verdict.autodev_run import apply_shadow_canary, shadow_learning_report
+    from verdict.actions.registry import run_action
 
     if not episodes_path or not admitted_path:
         message = "canary apply requires --episodes and --admitted"
@@ -1743,14 +1739,12 @@ def cmd_autodev_packet_canary(
             present.header("Autodev packet  /  canary")
             present.fail("inputs", message)
         raise SystemExit(1)
-    payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if isinstance(payload, dict) and "episodes" in payload:
-        episodes = payload["episodes"]
-    else:
-        episodes = payload
-    admitted = json.loads(Path(admitted_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if not isinstance(episodes, list) or not isinstance(admitted, list):
-        message = "canary requires an episodes list and an admitted identity list"
+    result = run_action(
+        "autodev.packet.canary", {"episodes_path": episodes_path, "admitted_path": admitted_path}
+    )
+    data = result.data
+    if not result.ok:
+        message = str(data.get("error", "autodev.packet.canary failed"))
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
@@ -1758,13 +1752,8 @@ def cmd_autodev_packet_canary(
 
             present.header("Autodev packet  /  canary")
             present.fail("inputs", message)
-        raise SystemExit(1)
-    report = shadow_learning_report(episodes)
-    print(
-        json.dumps(
-            apply_shadow_canary([str(item) for item in admitted], report), indent=2, sort_keys=True
-        )
-    )
+        raise SystemExit(result.exit_code or 1)
+    print(json.dumps(data, indent=2, sort_keys=True))
 
 
 def cmd_autodev_packet_canary_rollback(state_path: str, *, output_json: bool = False) -> None:

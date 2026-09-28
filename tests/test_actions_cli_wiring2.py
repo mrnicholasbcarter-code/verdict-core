@@ -383,3 +383,35 @@ def test_stdout_matches_baseline(name: str, argv: list[str], rel_cwd: str) -> No
         except json.JSONDecodeError:
             pass
     assert _normalize(out) == _normalize(expected), f"stdout drift for {name}"
+
+
+def test_cmd_autodev_packet_shadow_reaches_run_action(tmp_path: Path) -> None:
+    import contextlib
+    import importlib
+
+    episodes = tmp_path / "episodes.json"
+    episodes.write_text("[]")
+    cli = importlib.import_module("verdict.cli")
+    real = __import__("verdict.actions.registry", fromlist=["run_action"]).run_action
+    with patch("verdict.actions.registry.run_action", wraps=real) as spy:
+        with contextlib.suppress((SystemExit, Exception)):
+            cli.cmd_autodev_packet_shadow(str(episodes), output_json=True)
+        called = [c.args[0] for c in spy.call_args_list]
+        assert "autodev.packet.shadow" in called
+
+
+def test_cmd_autodev_packet_canary_reaches_run_action(tmp_path: Path) -> None:
+    import contextlib
+    import importlib
+
+    episodes = tmp_path / "episodes.json"
+    episodes.write_text("[]")
+    admitted = tmp_path / "admitted.json"
+    admitted.write_text("[]")
+    cli = importlib.import_module("verdict.cli")
+    real = __import__("verdict.actions.registry", fromlist=["run_action"]).run_action
+    with patch("verdict.actions.registry.run_action", wraps=real) as spy:
+        with contextlib.suppress((SystemExit, Exception)):
+            cli.cmd_autodev_packet_canary(str(episodes), str(admitted), output_json=True)
+        called = [c.args[0] for c in spy.call_args_list]
+        assert "autodev.packet.canary" in called
