@@ -455,13 +455,43 @@ def _action_memory_import(**kwargs: Any) -> ActionResult:
 
 
 def _action_memory_masterdocs(**kwargs: Any) -> ActionResult:
-    """Delegate to MasterDocsAdapter; the CLI handler renders the actual output."""
-    return ActionResult(data={"status": "delegated", "surface": "memory.masterdocs"})
+    """Canonicalize a MasterDocs database and optionally import into memory plane."""
+    from verdict.memory_masterdocs_adapter import MasterDocsAdapter
+
+    adapter = MasterDocsAdapter()
+    db = kwargs.get("db", "MasterDocsRAG.db")
+    allow_legacy_sqlite = kwargs.get("allow_legacy_sqlite", False)
+    limit = kwargs.get("limit", 1000)
+    ingest_timestamp = kwargs.get("ingest_timestamp")
+    dry_run = kwargs.get("dry_run", False)
+
+    result = adapter.canonicalize_db_records(
+        db, allow_legacy_sqlite=allow_legacy_sqlite, limit=limit, ingest_timestamp=ingest_timestamp
+    )
+    if result.report.status in {"unavailable", "rejected", "empty"}:
+        return ActionResult(data=result.to_dict(), ok=False, exit_code=1)
+    if dry_run:
+        return ActionResult(data=result.to_dict())
+    plane = _memory_plane(kwargs)
+    imported_report = adapter.import_result(result, plane)
+    payload = {
+        "report": imported_report.to_dict(),
+        "records": [dict(record) for record in result.records],
+    }
+    ok = not (imported_report.status in {"rejected", "partial"} and imported_report.ingested == 0)
+    return ActionResult(data=payload, ok=ok, exit_code=0 if ok else 1)
 
 
 def _action_memory_graph(**kwargs: Any) -> ActionResult:
-    """Delegate to CodeGraphAdapter; the CLI handler renders the actual output."""
-    return ActionResult(data={"status": "delegated", "surface": "memory.graph"})
+    """Ingest a code-graph SQLite database into the memory plane."""
+    from verdict.memory_graph_adapter import CodeGraphAdapter
+
+    plane = _memory_plane(kwargs)
+    db = kwargs.get("db", "code_graph.db")
+    allow_legacy_sqlite = kwargs.get("allow_legacy_sqlite", False)
+    graph_adapter = CodeGraphAdapter()
+    graph_rep = graph_adapter.ingest_sqlite(db, plane, allow_legacy_sqlite=allow_legacy_sqlite)
+    return ActionResult(data={"records_created": graph_rep.records_created})
 
 
 def _action_memory_docs(**kwargs: Any) -> ActionResult:
@@ -478,11 +508,17 @@ def _action_memory_docs(**kwargs: Any) -> ActionResult:
 
 
 def _action_memory_setup(**kwargs: Any) -> ActionResult:
-    from verdict.memory_bridge import configure_memory_bridge
+    from verdict.memory_bridge import configure_memory_bridge, detect_available_tools
 
-    tools = kwargs.get("tools") or ["codex", "claude"]
-    res = configure_memory_bridge(selected_tools=list(tools))
-    return ActionResult(data=res)
+    tools_raw = kwargs.get("tools")
+    if tools_raw:
+        tools_to_config = [t.strip() for t in tools_raw.split(",") if t.strip()]
+    else:
+        report = detect_available_tools()
+        tools_to_config = list(report.preselected_tools)
+    plane = _memory_plane(kwargs)
+    res = configure_memory_bridge(tools_to_config, plane)
+    return ActionResult(data={"detected_tools": tools_to_config, **res})
 
 
 # ---------------------------------------------------------------------------
@@ -516,14 +552,27 @@ def _action_mcp_status(**kwargs: Any) -> ActionResult:
 
 
 def _action_hook_status(**kwargs: Any) -> ActionResult:
-    from verdict.memory_bridge import detect_available_tools
-
-    report = detect_available_tools()
-    return ActionResult(
-        data={
-            "available_tools": report.to_dict() if hasattr(report, "to_dict") else report.__dict__
-        }
-    )
+    db_path = kwargs.get("db_path") or str(Path.home() / ".verdict" / "memory.db")
+    codex_agents = Path.home() / ".codex" / "AGENTS.md"
+    claude_md = Path.cwd() / "CLAUDE.md"
+    mcp_file = Path.cwd() / ".mcp.json"
+    status: dict[str, bool] = {
+        "codex_agents_md": codex_agents.exists()
+        and "Verdict Unified Memory Bridge" in codex_agents.read_text(),
+        "claude_md": claude_md.exists()
+        and "Verdict Unified Memory Bridge" in claude_md.read_text(),
+        "mcp_json": False,
+        "memory_db": Path(db_path).exists(),
+    }
+    if mcp_file.exists():
+        try:
+            data = json.loads(mcp_file.read_text())
+            status["mcp_json"] = "verdict-memory" in data.get(
+                "mcpServers", {}
+            ) or "verdict-core" in data.get("mcpServers", {})
+        except Exception:
+            pass
+    return ActionResult(data=status)
 
 
 def _action_hook_configure(**kwargs: Any) -> ActionResult:
@@ -858,7 +907,13 @@ def _action_openspec_admit(**kwargs: Any) -> ActionResult:
 
 
 def _action_autodev_packet_create(**kwargs: Any) -> ActionResult:
-    from verdict.execution_packet import ExecutionPacket, ExecutionPacketError, ExecutionPacketStore
+    from verdict.execution_packet import (
+        ExecutionPacket,
+        ExecutionPacketError,
+        ExecutionPacketStore,
+        UnsupportedSchemaVersionError,
+        schema_refusal_receipt,
+    )
 
     packet_path = Path(kwargs["packet_path"]).expanduser().resolve()
     source_path = kwargs.get("source_path")
@@ -868,19 +923,32 @@ def _action_autodev_packet_create(**kwargs: Any) -> ActionResult:
         )
     try:
         payload = json.loads(Path(source_path).expanduser().read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return ActionResult(
+                data={"error": "packet source JSON must be an object"}, ok=False, exit_code=1
+            )
         packet = ExecutionPacket.from_dict(payload)
         ExecutionPacketStore(packet_path.parent).create(packet, packet_path)
+    except UnsupportedSchemaVersionError as exc:
+        return ActionResult(data=schema_refusal_receipt(exc), ok=False, exit_code=1)
     except (ExecutionPacketError, OSError, ValueError) as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
     return ActionResult(data=packet.to_dict())
 
 
 def _action_autodev_packet_inspect(**kwargs: Any) -> ActionResult:
-    from verdict.execution_packet import ExecutionPacketError, ExecutionPacketStore
+    from verdict.execution_packet import (
+        ExecutionPacketError,
+        ExecutionPacketStore,
+        UnsupportedSchemaVersionError,
+        schema_refusal_receipt,
+    )
 
     packet_path = Path(kwargs["packet_path"]).expanduser().resolve()
     try:
         packet = ExecutionPacketStore(packet_path.parent).validate(packet_path)
+    except UnsupportedSchemaVersionError as exc:
+        return ActionResult(data=schema_refusal_receipt(exc), ok=False, exit_code=1)
     except (ExecutionPacketError, OSError, ValueError) as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
     return ActionResult(data=packet.to_dict())
@@ -891,7 +959,12 @@ def _action_autodev_packet_validate(**kwargs: Any) -> ActionResult:
 
 
 def _action_autodev_packet_resume(**kwargs: Any) -> ActionResult:
-    from verdict.execution_packet import ExecutionPacketError, ExecutionPacketStore
+    from verdict.execution_packet import (
+        ExecutionPacketError,
+        ExecutionPacketStore,
+        UnsupportedSchemaVersionError,
+        schema_refusal_receipt,
+    )
 
     packet_path = Path(kwargs["packet_path"]).expanduser().resolve()
     model = kwargs.get("model")
@@ -899,6 +972,8 @@ def _action_autodev_packet_resume(**kwargs: Any) -> ActionResult:
         return ActionResult(data={"error": "packet resume requires model"}, ok=False, exit_code=1)
     try:
         packet = ExecutionPacketStore(packet_path.parent).resume(packet_path, executing_model=model)
+    except UnsupportedSchemaVersionError as exc:
+        return ActionResult(data=schema_refusal_receipt(exc), ok=False, exit_code=1)
     except (ExecutionPacketError, OSError, ValueError) as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
     payload = packet.to_dict()

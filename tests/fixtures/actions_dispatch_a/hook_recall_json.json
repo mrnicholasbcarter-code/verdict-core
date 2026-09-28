@@ -1,0 +1,6 @@
+{
+  "stdout": "[]\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "hook recall test_query --json"
+}

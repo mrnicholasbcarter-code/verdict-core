@@ -1,0 +1,6 @@
+{
+  "stdout": "\nVERDICT  /  Memory / put\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  + Memory record put  OK\n    test_key (ns: default)\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "memory put test_key test_content"
+}

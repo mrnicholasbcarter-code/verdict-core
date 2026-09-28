@@ -1,0 +1,6 @@
+{
+  "stdout": "\nVERDICT  /  Memory / setup\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  Detected available AI tools    ['codex', 'omniroute', 'github']\n  Configuring memory bridge for  ['codex', 'omniroute', 'github']\n  + Configured tools  OK\n    ['codex']\n  + Memory database ready  OK\n    /tmp/v275da-baseline-home/.verdict/memory.db\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "memory setup"
+}

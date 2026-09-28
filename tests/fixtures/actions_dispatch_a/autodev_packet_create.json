@@ -1,0 +1,6 @@
+{
+  "stdout": "\nVERDICT  /  Autodev packet  /  create\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  ! packet  FAILED\n    execution_packet missing field(s): ['checkpoint_refs', 'context_refs', \n'decisions', 'failure_history', 'receipt_refs', 'route_attempts', 'tasks', \n'transitions']\n",
+  "stderr": "",
+  "exit_code": 1,
+  "command": "autodev packet create --packet /tmp/v275da-baseline-home/test_packet.json --from /tmp/v275da-baseline-home/test_packet_source.json"
+}
