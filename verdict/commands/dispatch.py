@@ -359,7 +359,14 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             output_json=args.json,
         )
     elif args.command == "models":
-        legacy.cmd_models(output_json=args.json)
+        legacy.cmd_models(
+            output_json=args.json,
+            provider=getattr(args, "provider", None),
+            search=getattr(args, "search", None),
+            capability=getattr(args, "capability", None),
+            limit=getattr(args, "limit", 0),
+            show_all=getattr(args, "show_all", False),
+        )
     elif args.command == "inspect":
         legacy.cmd_inspect(args.model_id, output_json=args.json)
     elif args.command == "receipt":

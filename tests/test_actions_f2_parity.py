@@ -57,7 +57,7 @@ class TestModelsListParity:
         catalog = _mock_catalog()
         ok, data = run_palette_action("models.list", {"catalog": catalog})
         assert ok
-        assert data[0]["id"] == "test-model"
+        assert data["models"][0]["id"] == "test-model"
 
     def test_both_produce_equal_data(self) -> None:
         """Both paths produce identical ActionResult.data."""

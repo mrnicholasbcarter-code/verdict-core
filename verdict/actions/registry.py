@@ -219,22 +219,97 @@ GAP: dict[str, str] = {}  # No gaps currently; every leaf is classified.
 
 
 def _action_models_list(**kwargs: Any) -> ActionResult:
-    """List the qualified model catalog."""
-    from verdict.actions.helpers import default_model_catalog
-    from verdict.models import ModelInfo
+    """List the authoritative model inventory from the live gateway + metadata store.
 
-    catalog: list[ModelInfo] = kwargs.get("catalog") or default_model_catalog()
-    data = [
-        {
-            "id": m.id,
-            "provider": m.provider,
-            "tier": m.capability_tier,
-            "context_window": m.context_window,
-            "cost_per_1k": m.cost_per_1k,
-            "availability_state": m.availability_state,
-        }
-        for m in catalog
-    ]
+    Sources the qualified OmniRoute catalog joined with the metadata store (the
+    same sources ``verdict catalog`` and ``verdict eligibility`` use), plus
+    configured primary/config models marked as such.  Falls back to config-only
+    when the gateway is unreachable.
+
+    Accepts filter kwargs: ``provider``, ``search``, ``capability``, ``limit``,
+    ``show_all``.  Filtering happens on the in-memory snapshot.
+    """
+    from verdict.actions.helpers import inventory_model_catalog
+
+    # Allow tests to inject a pre-built catalog (same escape hatch as before).
+    injected: list[dict[str, Any]] | None = kwargs.get("catalog_rows")
+    # Legacy compat: old callers pass "catalog" as a list of ModelInfo objects.
+    legacy_catalog = kwargs.get("catalog")
+    if legacy_catalog is not None and injected is None:
+        injected = [
+            {
+                "id": getattr(m, "id", ""),
+                "provider": getattr(m, "provider", "unknown"),
+                "capability_tier": f"T{getattr(m, 'capability_tier', '?')}",
+                "context_window": getattr(m, "context_window", None),
+                "tools_support": None,
+                "structured_output": None,
+                "input_cost_per_million": None,
+                "output_cost_per_million": None,
+                "source": "config",
+                "freshness": None,
+            }
+            for m in legacy_catalog
+        ]
+    if injected is not None:
+        rows = injected
+        inventory_error: str | None = None
+    else:
+        rows, inventory_error = inventory_model_catalog()
+
+    # Apply filters (all optional).
+    provider_filter: str = (kwargs.get("provider") or "").strip().lower()
+    search_filter: str = (kwargs.get("search") or "").strip().lower()
+    capability_filter: str = (kwargs.get("capability") or "").strip().lower()
+    limit: int = int(kwargs.get("limit") or 0)
+    show_all: bool = bool(kwargs.get("show_all", False))
+
+    filtered = rows
+    if provider_filter:
+        filtered = [r for r in filtered if provider_filter in str(r.get("provider", "")).lower()]
+    if search_filter:
+        filtered = [r for r in filtered if search_filter in str(r.get("id", "")).lower()]
+    if capability_filter:
+        filtered = [
+            r for r in filtered
+            if capability_filter in str(r.get("capability_tier", "")).lower()
+            or (capability_filter == "tools" and r.get("tools_support") is True)
+            or (capability_filter == "structured" and r.get("structured_output") is True)
+            or (capability_filter == "reasoning" and r.get("capability_tier", "").lower() == "reasoning")
+        ]
+
+    # Sort: configured models first, then by provider + id.
+    def _sort_key(r: dict[str, Any]) -> tuple[int, str, str]:
+        source_order = 0 if r.get("source") == "config" else 1
+        return (source_order, str(r.get("provider", "")), str(r.get("id", "")))
+
+    filtered.sort(key=_sort_key)
+
+    # Summary stats from the FULL (unfiltered) set.
+    provider_counts: dict[str, int] = {}
+    for r in rows:
+        p = str(r.get("provider", "unknown"))
+        provider_counts[p] = provider_counts.get(p, 0) + 1
+
+    freshness = rows[0].get("freshness") if rows else None
+
+    # Apply limit (default 40 unless --all).
+    total_filtered = len(filtered)
+    if not show_all and limit <= 0:
+        limit = 40
+    if limit > 0 and not show_all:
+        filtered = filtered[:limit]
+
+    data: dict[str, Any] = {
+        "models": filtered,
+        "total": len(rows),
+        "total_filtered": total_filtered,
+        "shown": len(filtered),
+        "provider_counts": provider_counts,
+        "freshness": freshness,
+        "source": "config_only" if inventory_error else "inventory",
+        "inventory_error": inventory_error,
+    }
     return ActionResult(data=data)
 
 
