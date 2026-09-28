@@ -1134,7 +1134,7 @@ def _action_autodev_packet_canary_rollback(**kwargs: Any) -> ActionResult:
 
 
 def _action_harness_prime_visibility(**kwargs: Any) -> ActionResult:
-    from verdict.orchestration.cli import prime_visibility_report
+    from verdict.orchestration.eligibility_report import prime_visibility_report
     from verdict.orchestration.run import fetch_inventory, resolve_api_key
 
     gateway = str(kwargs.get("gateway", "http://127.0.0.1:20128")).rstrip("/")

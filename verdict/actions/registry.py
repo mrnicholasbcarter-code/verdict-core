@@ -459,12 +459,12 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
     """Evaluate the DISCOVERED→SELECTED eligibility ladder."""
     from datetime import datetime, timezone
 
-    from verdict.orchestration.cli import (
+    from verdict.orchestration.contracts import TaskRequirements
+    from verdict.orchestration.eligibility_report import (
         build_selector,
         eligibility_payload,
         parse_provider_families,
     )
-    from verdict.orchestration.contracts import TaskRequirements
 
     gateway: str = kwargs.get("gateway", "http://localhost:20128/v1")
     scope: str = kwargs.get("scope", "all")
