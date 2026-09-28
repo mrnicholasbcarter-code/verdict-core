@@ -584,7 +584,7 @@ class TestLoadRecords:
             # Check optional fields have defaults
             assert r.retries == 0
             assert r.escalations == 0
-            assert r.total_cost_usd == 0.0
+            assert r.total_cost_usd is None
             assert r.time_to_green_s is None
             assert r.signal_latency_ms is None
         finally:

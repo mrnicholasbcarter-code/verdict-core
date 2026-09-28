@@ -253,10 +253,10 @@ class TestAC6PerCategoryCost:
         r = CalibrationRecord.from_dict(raw)
         assert r.context_cost_usd == 0.15
         assert r.tool_cost_usd == 0.25
-        assert r.retry_cost_usd == 0.0  # default
+        assert r.retry_cost_usd is None  # default when key absent
 
     def test_from_dict_without_costs(self) -> None:
-        """Legacy JSONL without cost fields -> zero defaults."""
+        """Legacy JSONL without cost fields -> None defaults."""
         raw = {
             "task_id": "t1",
             "task_class": "bounded_implementation",
@@ -270,7 +270,7 @@ class TestAC6PerCategoryCost:
             "first_pass": True,
         }
         r = CalibrationRecord.from_dict(raw)
-        assert r.context_cost_usd == 0.0
+        assert r.context_cost_usd is None
 
     def test_evaluate_aggregates_per_category_costs(self) -> None:
         records = [

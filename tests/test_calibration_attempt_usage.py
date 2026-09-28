@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from verdict.decision_signals.calibration import CalibrationRecord, load_records
+from verdict.decision_signals.calibration import CalibrationRecord, evaluate, load_records
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "build_calibration_records.py"
 _spec = importlib.util.spec_from_file_location("build_calibration_records", _SCRIPT)
@@ -317,12 +317,12 @@ class TestOldEventsWithoutUsage:
         assert record is not None
         assert record["total_input_tokens"] is None
         assert record["total_output_tokens"] is None
-        assert record["total_cost_usd"] == 0.0  # fallback
+        assert record["total_cost_usd"] is None
         assert record["attempts_with_usage"] == 0
         assert record["attempts_without_usage"] == 2
 
     def test_mixed_cost_reporting(self) -> None:
-        """One attempt has cost, one doesn't -> total_cost_usd is None (falls back to 0.0 in record)."""
+        """One attempt has cost, one doesn't -> total_cost_usd is None (unknown)."""
         receipt = _make_receipt(
             [
                 _make_node(
@@ -340,7 +340,139 @@ class TestOldEventsWithoutUsage:
         )
         record, _ = build_record("mixed-cost", receipt)
         assert record is not None
-        # total_cost_usd is None from usage sum -> record stores 0.0 (safe default)
-        assert record["total_cost_usd"] == 0.0
+        # total_cost_usd is None: not every attempt reported cost
+        assert record["total_cost_usd"] is None
         assert record["total_input_tokens"] == 300
         assert record["attempts_with_usage"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: unknown cost propagation through evaluate()
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownCostPropagation:
+    """Verify that unknown cost (None) is never silently treated as zero."""
+
+    @staticmethod
+    def _record(
+        task_id: str,
+        *,
+        verified: bool = True,
+        total_cost_usd: float | None = None,
+        role: str | None = None,
+    ) -> CalibrationRecord:
+        return CalibrationRecord(
+            task_id=task_id,
+            task_class="bounded_implementation",
+            frontier_worthy=0.8,
+            confidence=0.9,
+            security_sensitive=0.1,
+            frontier_needed=True,
+            security_relevant=False,
+            planner_was_frontier=True,
+            verified=verified,
+            first_pass=True,
+            total_cost_usd=total_cost_usd,
+            role=role,
+        )
+
+    def test_mixed_cost_record_has_none(self) -> None:
+        """build_record passes None through; CalibrationRecord accepts it."""
+        receipt = _make_receipt(
+            [
+                _make_node(
+                    "n1",
+                    [
+                        _make_attempt(
+                            1, usage={"input_tokens": 100, "output_tokens": 10, "cost_usd": 0.5}
+                        ),
+                        _make_attempt(2, usage={"input_tokens": 200, "output_tokens": 20}),
+                    ],
+                )
+            ],
+            topology="SOLO",
+            outcome="COMPLETE",
+        )
+        record_dict, _ = build_record("mixed", receipt)
+        assert record_dict is not None
+        assert record_dict["total_cost_usd"] is None
+        cr = CalibrationRecord.from_dict(record_dict)
+        assert cr.total_cost_usd is None
+
+    def test_evaluate_excludes_unknown_from_cost_sums(self) -> None:
+        """Records with unknown cost are excluded from cost aggregation."""
+        records = [
+            self._record("t1", total_cost_usd=1.0),
+            self._record("t2", total_cost_usd=None),  # unknown
+            self._record("t3", total_cost_usd=2.0),
+        ]
+        report = evaluate(records)
+        # Only t1 + t3 contribute to cost
+        assert report.total_cost_usd == pytest.approx(3.0)
+        assert report.cost_known_count == 2
+        assert report.cost_unknown_count == 1
+        # cost_per_verified_completion uses only known-cost verified records
+        assert report.cost_per_verified_completion == pytest.approx(1.5)
+
+    def test_all_unknown_cost_yields_none(self) -> None:
+        """All records with unknown cost -> total_cost_usd None, stays SHADOW."""
+        records = [self._record("t1", total_cost_usd=None), self._record("t2", total_cost_usd=None)]
+        report = evaluate(records)
+        assert report.total_cost_usd is None
+        assert report.cost_per_verified_completion is None
+        assert report.cost_known_count == 0
+        assert report.cost_unknown_count == 2
+
+    def test_old_records_with_explicit_zero_load_as_zero(self) -> None:
+        """Old JSONL with total_cost_usd: 0.0 loads as 0.0, not reinterpreted."""
+        raw = {
+            "task_id": "legacy",
+            "task_class": "bounded_implementation",
+            "frontier_worthy": None,
+            "confidence": None,
+            "security_sensitive": None,
+            "frontier_needed": False,
+            "security_relevant": False,
+            "planner_was_frontier": False,
+            "verified": True,
+            "first_pass": True,
+            "total_cost_usd": 0.0,
+        }
+        cr = CalibrationRecord.from_dict(raw)
+        assert cr.total_cost_usd == 0.0  # explicit zero preserved
+
+    def test_old_records_without_cost_key_get_none(self) -> None:
+        """Old JSONL missing total_cost_usd key -> None default."""
+        raw = {
+            "task_id": "ancient",
+            "task_class": "bounded_implementation",
+            "frontier_worthy": None,
+            "confidence": None,
+            "security_sensitive": None,
+            "frontier_needed": False,
+            "security_relevant": False,
+            "planner_was_frontier": False,
+            "verified": True,
+            "first_pass": True,
+        }
+        cr = CalibrationRecord.from_dict(raw)
+        assert cr.total_cost_usd is None
+
+    def test_per_role_unknown_cost(self) -> None:
+        """Per-role slices with all-unknown cost report None cost."""
+        records = [
+            self._record("t1", total_cost_usd=None, role="implementation_worker"),
+            self._record("t2", total_cost_usd=None, role="implementation_worker"),
+            self._record("t3", total_cost_usd=1.5, role="independent_reviewer"),
+        ]
+        report = evaluate(records)
+        impl_slice = report.per_role["implementation_worker"]
+        assert impl_slice["total_cost_usd"] is None
+        assert impl_slice["cost_known_count"] == 0
+        assert impl_slice["cost_unknown_count"] == 2
+        assert impl_slice["cost_per_verified_completion"] is None
+
+        review_slice = report.per_role["independent_reviewer"]
+        assert review_slice["total_cost_usd"] == pytest.approx(1.5)
+        assert review_slice["cost_known_count"] == 1

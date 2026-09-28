@@ -289,7 +289,7 @@ def build_record(run_id: str, receipt: dict[str, Any]) -> tuple[dict[str, Any] |
         "first_pass": first_pass,
         "retries": retries,
         "escalations": escalations,
-        "total_cost_usd": usage["total_cost_usd"] if usage["total_cost_usd"] is not None else 0.0,
+        "total_cost_usd": usage["total_cost_usd"],
         "time_to_green_s": time_to_green,
         "signal_latency_ms": signal_latency_ms,
         "total_input_tokens": usage["total_input_tokens"],
