@@ -67,17 +67,22 @@ class CalibrationRecord:
     first_pass: bool
     retries: int = 0
     escalations: int = 0
-    total_cost_usd: float = 0.0
+    total_cost_usd: float | None = None
     time_to_green_s: float | None = None
     signal_latency_ms: int | None = None
     # AC5 -- orchestration role (optional; None = legacy record without role)
     role: str | None = None
-    # AC6 -- per-category cost breakdown (optional, default 0)
-    context_cost_usd: float = 0.0
-    tool_cost_usd: float = 0.0
-    retry_cost_usd: float = 0.0
-    verification_cost_usd: float = 0.0
-    escalation_cost_usd: float = 0.0
+    # AC6 -- per-category cost breakdown (optional; None = unknown)
+    context_cost_usd: float | None = None
+    tool_cost_usd: float | None = None
+    retry_cost_usd: float | None = None
+    verification_cost_usd: float | None = None
+    escalation_cost_usd: float | None = None
+    # AC6 -- real per-attempt token usage (BOD-203)
+    total_input_tokens: int | None = None
+    total_output_tokens: int | None = None
+    attempts_with_usage: int = 0
+    attempts_without_usage: int = 0
 
     def __post_init__(self) -> None:
         if self.role is not None and self.role not in ROLES:
@@ -116,18 +121,20 @@ class CalibrationReport:
     first_pass_rate: float | None = None
     mean_retries: float | None = None
     mean_escalations: float | None = None
-    total_cost_usd: float = 0.0
+    total_cost_usd: float | None = None
+    cost_known_count: int = 0
+    cost_unknown_count: int = 0
     median_time_to_green_s: float | None = None
     mean_signal_latency_ms: float | None = None
     false_negatives: list[str] = field(default_factory=list)
     recommended_state: str = "SHADOW"
     recommendation_reasons: list[str] = field(default_factory=list)
-    # AC6 -- per-category cost totals
-    context_cost_usd: float = 0.0
-    tool_cost_usd: float = 0.0
-    retry_cost_usd: float = 0.0
-    verification_cost_usd: float = 0.0
-    escalation_cost_usd: float = 0.0
+    # AC6 -- per-category cost totals (None = no records with known cost)
+    context_cost_usd: float | None = None
+    tool_cost_usd: float | None = None
+    retry_cost_usd: float | None = None
+    verification_cost_usd: float | None = None
+    escalation_cost_usd: float | None = None
     cost_per_verified_completion: float | None = None
     # AC7 -- per-role breakdown (role -> sub-report dict)
     per_role: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -236,12 +243,32 @@ def _evaluate_slice(
     )
 
     verified_count = sum(r.verified for r in records)
-    total_cost = round(sum(r.total_cost_usd for r in records), 6)
-    context_cost = round(sum(r.context_cost_usd for r in records), 6)
-    tool_cost = round(sum(r.tool_cost_usd for r in records), 6)
-    retry_cost = round(sum(r.retry_cost_usd for r in records), 6)
-    verification_cost = round(sum(r.verification_cost_usd for r in records), 6)
-    escalation_cost = round(sum(r.escalation_cost_usd for r in records), 6)
+
+    # Cost sums: only include records with known cost (not None).
+    cost_known = [r for r in records if r.total_cost_usd is not None]
+    cost_unknown_count = len(records) - len(cost_known)
+    cost_known_count = len(cost_known)
+
+    _cost_vals = [r.total_cost_usd for r in cost_known if r.total_cost_usd is not None]
+    total_cost: float | None = round(sum(_cost_vals), 6) if _cost_vals else None
+    context_cost: float | None = (
+        round(sum(r.context_cost_usd or 0.0 for r in cost_known), 6) if cost_known else None
+    )
+    tool_cost: float | None = (
+        round(sum(r.tool_cost_usd or 0.0 for r in cost_known), 6) if cost_known else None
+    )
+    retry_cost: float | None = (
+        round(sum(r.retry_cost_usd or 0.0 for r in cost_known), 6) if cost_known else None
+    )
+    verification_cost: float | None = (
+        round(sum(r.verification_cost_usd or 0.0 for r in cost_known), 6) if cost_known else None
+    )
+    escalation_cost: float | None = (
+        round(sum(r.escalation_cost_usd or 0.0 for r in cost_known), 6) if cost_known else None
+    )
+
+    # cost_per_verified_completion: only meaningful when cost is known
+    verified_with_cost = sum(1 for r in cost_known if r.verified)
 
     return {
         "records": len(records),
@@ -259,13 +286,17 @@ def _evaluate_slice(
         "mean_retries": _mean([float(r.retries) for r in records]),
         "mean_escalations": _mean([float(r.escalations) for r in records]),
         "total_cost_usd": total_cost,
+        "cost_known_count": cost_known_count,
+        "cost_unknown_count": cost_unknown_count,
         "context_cost_usd": context_cost,
         "tool_cost_usd": tool_cost,
         "retry_cost_usd": retry_cost,
         "verification_cost_usd": verification_cost,
         "escalation_cost_usd": escalation_cost,
         "cost_per_verified_completion": (
-            round(total_cost / verified_count, 6) if verified_count else None
+            round(total_cost / verified_with_cost, 6)
+            if total_cost is not None and verified_with_cost
+            else None
         ),
         "median_time_to_green_s": _median(
             [r.time_to_green_s for r in records if r.time_to_green_s is not None]
@@ -321,6 +352,8 @@ def evaluate(
         mean_retries=m["mean_retries"],
         mean_escalations=m["mean_escalations"],
         total_cost_usd=m["total_cost_usd"],
+        cost_known_count=m["cost_known_count"],
+        cost_unknown_count=m["cost_unknown_count"],
         median_time_to_green_s=m["median_time_to_green_s"],
         mean_signal_latency_ms=m["mean_signal_latency_ms"],
         false_negatives=m["false_negatives"],
@@ -357,6 +390,9 @@ def evaluate(
             security_fn_rate=role_m["security_fn_rate"],
             brier=role_m["brier"],
             calibration_error=role_m["calibration_error"],
+            total_cost_usd=role_m["total_cost_usd"],
+            cost_known_count=role_m["cost_known_count"],
+            cost_unknown_count=role_m["cost_unknown_count"],
         )
         report.per_role_recommendations[role] = recommend(role_report)
 
@@ -421,14 +457,18 @@ def render_markdown(report: CalibrationReport) -> str:
         f"- verified: {fmt(report.verified_rate)}; first pass: {fmt(report.first_pass_rate)}",
         f"- mean retries: {fmt(report.mean_retries, pct=False)}; "
         f"mean escalations: {fmt(report.mean_escalations, pct=False)}",
-        f"- total cost: ${report.total_cost_usd:.4f}; "
+        f"- total cost: "
+        f"{'$' + f'{report.total_cost_usd:.4f}' if report.total_cost_usd is not None else 'unknown'}; "
         f"median time-to-green: {report.median_time_to_green_s}",
+        f"- cost known: {report.cost_known_count}; cost unknown: {report.cost_unknown_count}",
         f"- cost per verified completion: "
         f"{'$' + fmt(report.cost_per_verified_completion, pct=False) if report.cost_per_verified_completion is not None else 'n/a'}",
-        f"- cost breakdown: context=${report.context_cost_usd:.4f}, "
-        f"tool=${report.tool_cost_usd:.4f}, retry=${report.retry_cost_usd:.4f}, "
-        f"verification=${report.verification_cost_usd:.4f}, "
-        f"escalation=${report.escalation_cost_usd:.4f}",
+        f"- cost breakdown: "
+        f"context={'$' + f'{report.context_cost_usd:.4f}' if report.context_cost_usd is not None else 'unknown'}, "
+        f"tool={'$' + f'{report.tool_cost_usd:.4f}' if report.tool_cost_usd is not None else 'unknown'}, "
+        f"retry={'$' + f'{report.retry_cost_usd:.4f}' if report.retry_cost_usd is not None else 'unknown'}, "
+        f"verification={'$' + f'{report.verification_cost_usd:.4f}' if report.verification_cost_usd is not None else 'unknown'}, "
+        f"escalation={'$' + f'{report.escalation_cost_usd:.4f}' if report.escalation_cost_usd is not None else 'unknown'}",
         f"- recommended state: **{report.recommended_state}**",
     ]
     lines += [f"  - {reason}" for reason in report.recommendation_reasons]
@@ -443,6 +483,16 @@ def render_markdown(report: CalibrationReport) -> str:
             rec_state, rec_reasons = report.per_role_recommendations.get(
                 role, ("SHADOW", ["no recommendation computed"])
             )
+
+            def _cost_fmt(v: float | None) -> str:
+                return f"${v:.4f}" if v is not None else "unknown"
+
+            rm_total = _cost_fmt(rm.get("total_cost_usd"))
+            rm_cpv = (
+                "$" + fmt(rm.get("cost_per_verified_completion"), pct=False)
+                if rm.get("cost_per_verified_completion") is not None
+                else "n/a"
+            )
             lines += [
                 f"### {role}",
                 "",
@@ -451,13 +501,16 @@ def render_markdown(report: CalibrationReport) -> str:
                 f"- security FN rate: {fmt(rm.get('security_fn_rate'))}",
                 f"- verified: {fmt(rm.get('verified_rate'))}; "
                 f"first pass: {fmt(rm.get('first_pass_rate'))}",
-                f"- total cost: ${rm.get('total_cost_usd', 0):.4f}; "
-                f"cost/verified: {'$' + fmt(rm.get('cost_per_verified_completion'), pct=False) if rm.get('cost_per_verified_completion') is not None else 'n/a'}",
-                f"- cost breakdown: context=${rm.get('context_cost_usd', 0):.4f}, "
-                f"tool=${rm.get('tool_cost_usd', 0):.4f}, "
-                f"retry=${rm.get('retry_cost_usd', 0):.4f}, "
-                f"verification=${rm.get('verification_cost_usd', 0):.4f}, "
-                f"escalation=${rm.get('escalation_cost_usd', 0):.4f}",
+                f"- total cost: {rm_total}; "
+                f"cost known: {rm.get('cost_known_count', 0)}; "
+                f"cost unknown: {rm.get('cost_unknown_count', 0)}; "
+                f"cost/verified: {rm_cpv}",
+                f"- cost breakdown: "
+                f"context={_cost_fmt(rm.get('context_cost_usd'))}, "
+                f"tool={_cost_fmt(rm.get('tool_cost_usd'))}, "
+                f"retry={_cost_fmt(rm.get('retry_cost_usd'))}, "
+                f"verification={_cost_fmt(rm.get('verification_cost_usd'))}, "
+                f"escalation={_cost_fmt(rm.get('escalation_cost_usd'))}",
                 f"- recommended state: **{rec_state}**",
             ]
             lines += [f"  - {r}" for r in rec_reasons]
