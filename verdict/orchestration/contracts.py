@@ -83,6 +83,7 @@ class Topology(str, Enum):
 class RunOutcome(str, Enum):
     COMPLETE = "COMPLETE"
     BLOCKED = "BLOCKED"
+    CANCELLED = "CANCELLED"
 
 
 def _norm_path(value: str) -> str:
@@ -317,7 +318,13 @@ class CapacityClass(str, Enum):
 
 @dataclass(frozen=True)
 class RouteVerdict:
-    """Why one route did or did not reach a given ladder stage."""
+    """Why one route did or did not reach a given ladder stage.
+
+    The optional fields under BOD-277 (``rank_components`` and the
+    capability/price columns) expose values the real ranking already uses.
+    They are additive: unknown values are ``None`` (never ``0`` or ``"available"``
+    defaults). Existing keys on ``to_dict`` are unchanged.
+    """
 
     route_id: str
     provider: str
@@ -328,9 +335,21 @@ class RouteVerdict:
     plan_label: str = ""  # sanitized account plan label, e.g. "claude_max"
     cooldown_until: str | None = None  # ISO-8601 UTC
     rank: int | None = None
+    # BOD-277: authoritative rank inputs (populated when the real selector ran).
+    # Keys mirror EligibilityLadder._rank_key exactly:
+    # ``capacity_order`` (int), ``slack`` (int), ``price`` (float | None),
+    # ``provider_pref`` (int), ``load`` (int), ``fit`` (int), ``route_id`` (str).
+    # ``price`` is None when the inventory has no explicit pricing (unknown).
+    rank_components: Mapping[str, Any] | None = None
+    # Capability facts the assessment already has. Missing = None (UNKNOWN).
+    capability_tier: int | None = None
+    context_window: int | None = None
+    supports_tools: bool | None = None
+    supports_structured_output: bool | None = None
+    price: float | None = None  # marginal metered price per 1M tokens; None = unknown
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "route_id": self.route_id,
             "provider": self.provider,
             "reached": self.reached.value if self.reached else None,
@@ -341,6 +360,22 @@ class RouteVerdict:
             "cooldown_until": self.cooldown_until,
             "rank": self.rank,
         }
+        # BOD-277 additive keys: emitted only when a value is known, so
+        # existing consumers see the pre-BOD-277 shape when the ladder did
+        # not compute rank components (e.g. failed before ranking).
+        if self.rank_components is not None:
+            data["rank_components"] = dict(self.rank_components)
+        if self.capability_tier is not None:
+            data["capability_tier"] = self.capability_tier
+        if self.context_window is not None:
+            data["context_window"] = self.context_window
+        if self.supports_tools is not None:
+            data["supports_tools"] = self.supports_tools
+        if self.supports_structured_output is not None:
+            data["supports_structured_output"] = self.supports_structured_output
+        if self.price is not None:
+            data["price"] = self.price
+        return data
 
 
 @dataclass(frozen=True)
@@ -457,6 +492,7 @@ EVENT_TYPES = frozenset(
         "repack",  # BOD-272: context budget shrunk after a context-length overflow
         "rehydrate",  # BOD-272: same-route retry with failing verification evidence
         "decision_signals_context_budget",  # BOD-203 AC3: advisory context budget
+        "control",  # BOD-276: external run/node control requests + acknowledgements
         "run_finished",
     }
 )
