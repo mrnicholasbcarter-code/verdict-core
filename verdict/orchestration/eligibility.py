@@ -190,6 +190,7 @@ class EligibilityLadder:
         self._max_probes = max_probes_per_select
         self._state: dict[str, dict[str, dict[str, Any]]] = self._load_state()
         self._last_verdicts: tuple[RouteVerdict, ...] = ()
+        self._last_select_stats: dict[str, int] = {}
         # Canonical admitted set: a route it excludes fails before any ladder
         # stage, ranking or probe. The ladder can only narrow it further.
         self._admitted = admitted
@@ -517,6 +518,15 @@ class EligibilityLadder:
         self._last_verdicts = verdicts
         return verdicts
 
+    @property
+    def last_select_stats(self) -> dict[str, int]:
+        """Post-probe statistics from the most recent :meth:`select` call.
+
+        Keys: ``probed``, ``stale``, ``healthy_after_probe``,
+        ``eligible_after_probe``.  Empty dict before the first call.
+        """
+        return dict(self._last_select_stats)
+
     def select(
         self, requirements: TaskRequirements, *, now: datetime
     ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
@@ -585,7 +595,28 @@ class EligibilityLadder:
             else:
                 verdicts.append(a.verdict(rank=ranks.get(a.route_id)))
         self._last_verdicts = tuple(verdicts)
-        return selected, tuple(verdicts)
+        final_verdicts = tuple(verdicts)
+        # Compute post-probe stats for callers that need them (e.g. event emitters).
+        # Stale count comes from pre-probe assessments (RouteVerdict has no health field).
+        stale = sum(1 for a in assessments if a.health == "stale")
+        healthy_after = sum(
+            1
+            for v in final_verdicts
+            if v.reached is not None
+            and v.reached.value in ("HEALTHY", "AVAILABLE", "TASK_ELIGIBLE", "SELECTED")
+        )
+        eligible_after = sum(
+            1
+            for v in final_verdicts
+            if v.reached is not None and v.reached.value in ("TASK_ELIGIBLE", "SELECTED")
+        )
+        self._last_select_stats = {
+            "probed": probes_used,
+            "stale": stale,
+            "healthy_after_probe": healthy_after,
+            "eligible_after_probe": eligible_after,
+        }
+        return selected, final_verdicts
 
     def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
         """Rank order, but round-robin across providers within each capacity class.

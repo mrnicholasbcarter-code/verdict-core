@@ -545,6 +545,11 @@ class ModelSelector(Protocol):
         """Every discovered route with its ladder verdict; SELECTED-capable ones ranked."""
         ...
 
+    @property
+    def last_select_stats(self) -> dict[str, int]:
+        """Post-probe statistics from the most recent select() call."""
+        ...
+
     def select(
         self, requirements: TaskRequirements, *, now: datetime
     ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
