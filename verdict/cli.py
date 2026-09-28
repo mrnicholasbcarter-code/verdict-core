@@ -2446,6 +2446,12 @@ def cmd_memory(args: Any) -> None:
         _present.ok("Exported memory manifest", f"to {result.data['destination']}")
     elif sub == "import":
         result = run_action("memory.import", {"db_path": db_path, "manifest": args.manifest})
+        if not result.ok:
+            print(
+                "memory manifest import failed: " + result.data.get("error", "unknown error"),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         from verdict import present as _present
 
         _present.ok(

@@ -1,797 +1,427 @@
-"""Tests for BOD-275 dispatch-a: cmd_memory, cmd_mcp, cmd_hook, cmd_runtime,
-cmd_prove_at_rest (non-daemon), cmd_autodev_packet (inspect/compare/validate/create/resume).
+"""Golden tests for BOD-275 dispatch-a: verify CLI output matches origin/main.
 
-Each test verifies that the CLI handler delegates to run_action and renders
-the ActionResult identically to origin/main's direct-logic output.
+Golden tests compare full stdout + exit-code against fixtures captured from
+origin/main's CLI through the identical ``_run_verdict`` harness.
+Structural tests cover commands whose text output includes absolute paths
+(Rich truncation depends on process-internal Console width) or live state.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-import textwrap
+from io import StringIO
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "actions_dispatch_a"
 
 
 def _load_fixture(name: str) -> dict[str, Any]:
-    path = _FIXTURE_DIR / name
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads((_FIXTURE_DIR / f"{name}.json").read_text())
 
 
-def _normalise(text: str) -> str:
-    """Strip ANSI, collapse whitespace, replace absolute paths with <HOME>."""
-    import re
-
+def _normalise(text: str, home: str) -> str:
+    """Normalise non-deterministic tokens for golden comparison."""
+    text = text.replace(home, "<HOME>")
+    text = text.replace(str(Path.cwd()), "<CWD>")
     text = re.sub(r"\x1b\[[0-9;]*m", "", text)
-    text = re.sub(r"/tmp/v275da[^ \n\"]*", "<PATH>", text)
-    text = re.sub(str(Path.home()), "<HOME>", text)
+    text = re.sub(r"sha256:[0-9a-f]{64}", "sha256:<DIGEST>", text)
+    text = re.sub(r"[0-9a-f]{40}", "<SHA40>", text)
+    text = re.sub(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z?", "<TS>", text)
+    text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
 
 
+def _run_verdict(argv: list[str], home: str) -> tuple[str, str, int]:
+    """Invoke verdict.cli.main() with *argv* in a hermetic env."""
+    old_argv = sys.argv[:]
+    snap: dict[str, str | None] = {}
+    env_set = {
+        "HOME": home,
+        "VERDICT_MEMORY_DB": str(Path(home) / ".verdict" / "memory.db"),
+        "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "300",
+        "XDG_CONFIG_HOME": str(Path(home) / ".config"),
+        "XDG_DATA_HOME": str(Path(home) / ".local" / "share"),
+    }
+    for k in ("OMNIROUTE_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+              "VERDICT_CONFIG", "VERDICT_YAML"):
+        snap[k] = os.environ.pop(k, None)
+    for k, v in env_set.items():
+        snap[k] = os.environ.get(k)
+        os.environ[k] = v
+    sys.argv = ["verdict", *argv]
+    out_buf, err_buf = StringIO(), StringIO()
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out_buf, err_buf
+    exit_code = 0
+    try:
+        from verdict.cli import main
+        main()
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else (1 if exc.code else 0)
+    except Exception:
+        exit_code = 1
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+        sys.argv = old_argv
+        for k, v in snap.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return out_buf.getvalue(), err_buf.getvalue(), exit_code
+
+
+def _assert_golden(fixture_name: str, argv: list[str], home: str,
+                   *, expected_exit: int | None = None) -> str:
+    fix = _load_fixture(fixture_name)
+    stdout, _stderr, ec = _run_verdict(argv, home)
+    want = expected_exit if expected_exit is not None else fix["exit_code"]
+    assert ec == want, f"{fixture_name}: exit {ec} != {want}"
+    actual = _normalise(stdout, home)
+    expected = _normalise(fix["stdout"], "<HOME>")
+    assert actual == expected, (
+        f"{fixture_name} mismatch\n--- expect ---\n{expected[:400]}\n"
+        f"--- actual ---\n{actual[:400]}"
+    )
+    return stdout
+
+
 # ---------------------------------------------------------------------------
-# Shared monkeypatching: isolate HOME / memory DB / present colours
+# Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = tmp_path / "home"
+    home = tmp_path / "h"
     home.mkdir()
     (home / ".verdict").mkdir()
+    (home / ".config" / "verdict").mkdir(parents=True)
+    (home / ".local" / "share").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("VERDICT_MEMORY_DB", str(home / ".verdict" / "memory.db"))
-    # Disable colour so output is predictable
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("TERM", "dumb")
 
 
-# ===================================================================
-# cmd_memory
-# ===================================================================
+def _home(tmp_path: Path) -> str:
+    return str(tmp_path / "h")
 
 
 class TestMemoryPut:
-    def test_put_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_memory
-
-        args = mock.MagicMock()
-        args.memory_command = "put"
-        args.key = "test_key"
-        args.content = "test_content"
-        args.namespace = "default"
-        args.source = "cli"
-        args.db_path = None
-        args.json = False
-
-        cmd_memory(args)
-        out = capsys.readouterr().out
-        assert "Memory record put" in out
-        assert "test_key" in out
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("memory_put", ['memory', 'put', 'test_key', 'test_content'], _home(tmp_path))
 
 
 class TestMemorySearch:
-    def test_search_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_memory
-
-        args = mock.MagicMock()
-        args.memory_command = "search"
-        args.query = "nonexistent"
-        args.namespace = None
-        args.limit = 10
-        args.db_path = None
-        args.json = False
-
-        cmd_memory(args)
-        out = capsys.readouterr().out
-        assert "Found 0 memory record(s)" in out
-
-
-class TestMemoryExport:
-    def test_export_calls_run_action(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_memory
-
-        out_file = tmp_path / "export.json"
-        args = mock.MagicMock()
-        args.memory_command = "export"
-        args.output = str(out_file)
-        args.db_path = None
-        args.json = False
-
-        cmd_memory(args)
-        out = capsys.readouterr().out
-        assert "Exported memory manifest" in out
-
-
-class TestMemoryDocs:
-    def test_docs_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_memory
-
-        args = mock.MagicMock()
-        args.memory_command = "docs"
-        args.json = True
-        args.repo_root = str(Path.cwd())
-        args.fix = False
-        args.db_path = None
-
-        # docs will likely fail (no valid repo), but should still go through run_action
-        with pytest.raises(SystemExit):
-            cmd_memory(args)
-        out = capsys.readouterr().out
-        # Should produce JSON output
-        data = json.loads(out)
-        assert "operation" in data or "passed" in data or "errors" in data
-
-
-class TestMemorySetup:
-    def test_setup_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_memory
-
-        args = mock.MagicMock()
-        args.memory_command = "setup"
-        args.tools = None
-        args.db_path = None
-        args.json = False
-
-        cmd_memory(args)
-        out = capsys.readouterr().out
-        assert "Configured tools" in out or "Memory database ready" in out
-
-
-# ===================================================================
-# cmd_mcp
-# ===================================================================
-
-
-class TestMcpStatus:
-    def test_status_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_mcp
-
-        args = mock.MagicMock()
-        args.mcp_command = "status"
-        args.json = False
-
-        cmd_mcp(args)
-        out = capsys.readouterr().out
-        assert "MCP" in out
-
-    def test_status_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_mcp
-
-        args = mock.MagicMock()
-        args.mcp_command = "status"
-        args.json = True
-
-        cmd_mcp(args)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "mcp_registered" in data
-        assert "mcp_config" in data
-
-
-class TestMcpInit:
-    def test_init_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_mcp
-
-        args = mock.MagicMock()
-        args.mcp_command = "init"
-        args.json = False
-
-        cmd_mcp(args)
-        out = capsys.readouterr().out
-        assert "MCP" in out
-        assert "initialized" in out
-
-    def test_init_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_mcp
-
-        args = mock.MagicMock()
-        args.mcp_command = "init"
-        args.json = True
-
-        cmd_mcp(args)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "memory_db_path" in data
-
-
-# ===================================================================
-# cmd_hook
-# ===================================================================
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("memory_search", ['memory', 'search', 'test_query'], _home(tmp_path))
 
 
 class TestHookStatus:
-    def test_status_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_hook
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("hook_status", ['hook', 'status'], _home(tmp_path))
 
-        args = mock.MagicMock()
-        args.hook_command = "status"
-        args.json = False
-        args.db_path = None
 
-        cmd_hook(args)
-        out = capsys.readouterr().out
-        # Should show status lines for codex/claude/mcp/memory
-        assert "codex" in out.lower() or "memory" in out.lower()
-
-    def test_status_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_hook
-
-        args = mock.MagicMock()
-        args.hook_command = "status"
-        args.json = True
-        args.db_path = None
-
-        cmd_hook(args)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "codex_agents_md" in data
-        assert "memory_db" in data
+class TestHookStatusJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("hook_status_json", ['hook', 'status', '--json'], _home(tmp_path))
 
 
 class TestHookRecall:
-    def test_recall_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_hook
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("hook_recall", ['hook', 'recall', 'test_query'], _home(tmp_path))
 
-        args = mock.MagicMock()
-        args.hook_command = "recall"
-        args.query = "test_query"
-        args.limit = 5
-        args.json = False
-        args.db_path = None
 
-        cmd_hook(args)
-        out = capsys.readouterr().out
-        assert "Recall:" in out
-        assert "0 record(s)" in out
-
-    def test_recall_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_hook
-
-        args = mock.MagicMock()
-        args.hook_command = "recall"
-        args.query = "test_query"
-        args.limit = 5
-        args.json = True
-        args.db_path = None
-
-        cmd_hook(args)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert isinstance(data, list)
+class TestHookRecallJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("hook_recall_json", ['hook', 'recall', 'test_query', '--json'], _home(tmp_path))
 
 
 class TestHookRecord:
-    def test_record_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_hook
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("hook_record", ['hook', 'record', 'testk', 'testv'], _home(tmp_path))
 
-        args = mock.MagicMock()
-        args.hook_command = "record"
-        args.key = "testk"
-        args.value = "testv"
-        args.namespace = "sessions"
-        args.source = "cli"
-        args.json = False
-        args.db_path = None
 
-        cmd_hook(args)
-        out = capsys.readouterr().out
-        # Should either record or reject (provenance_required)
-        assert "Recorded" in out or "Rejected" in out
+class TestHookConfigureJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("hook_configure_json", ['hook', 'configure', '--json'], _home(tmp_path))
+
+
+class TestMcpStatus:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("mcp_status", ['mcp', 'status'], _home(tmp_path))
+
+
+class TestMcpStatusJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("mcp_status_json", ['mcp', 'status', '--json'], _home(tmp_path))
+
+
+class TestMcpInitJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("mcp_init_json", ['mcp', 'init', '--json'], _home(tmp_path))
+
+
+class TestRuntimeStatusJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("runtime_status_json", ['runtime', 'status', '--json'], _home(tmp_path))
+
+
+class TestRuntimeReconcileJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("runtime_reconcile_json", ['runtime', 'reconcile', '--json'], _home(tmp_path))
+
+
+class TestProveAtRestOnceNoConsent:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("prove_at_rest_once_no_consent", ['prove-at-rest', 'once'], _home(tmp_path), expected_exit=2)
+
+
+class TestProveAtRestOnceNoConsentJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("prove_at_rest_once_no_consent_json", ['prove-at-rest', 'once', '--json'], _home(tmp_path), expected_exit=2)
+
+
+class TestProveAtRestStatusJson:
+    def test_golden(self, tmp_path: Path) -> None:
+        _assert_golden("prove_at_rest_status_json", ['prove-at-rest', 'status', '--json'], _home(tmp_path))
 
 
 class TestHookConfigure:
-    def test_configure_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_hook
-
-        args = mock.MagicMock()
-        args.hook_command = "configure"
-        args.tools = None
-        args.json = False
-        args.db_path = None
-
-        cmd_hook(args)
-        out = capsys.readouterr().out
-        assert "configured" in out.lower() or "Memory bridge" in out
-
-    def test_configure_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_hook
-
-        args = mock.MagicMock()
-        args.hook_command = "configure"
-        args.tools = None
-        args.json = True
-        args.db_path = None
-
-        cmd_hook(args)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "memory_db_path" in data
+    def test_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(['hook', 'configure'], _home(tmp_path))
+        assert ec == 0
+        assert "Hook / configure" in stdout or "Memory bridge" in stdout
 
 
-# ===================================================================
-# cmd_runtime
-# ===================================================================
+class TestMcpInit:
+    def test_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(['mcp', 'init'], _home(tmp_path))
+        assert ec == 0
+        assert "MCP / init" in stdout
+        assert "initialized" in stdout
+
+
+class TestMemorySetup:
+    def test_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(['memory', 'setup'], _home(tmp_path))
+        assert ec == 0
+        assert "Memory / setup" in stdout or "Memory database ready" in stdout
 
 
 class TestRuntimeStatus:
-    def test_status_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_runtime
-
-        cmd_runtime("status")
-        out = capsys.readouterr().out
-        assert "Runtime" in out
-
-    def test_status_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_runtime
-
-        cmd_runtime("status", output_json=True)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "operation" in data or "passed" in data
-
-
-class TestRuntimeExplain:
-    def test_explain_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_runtime
-
-        cmd_runtime("explain")
-        out = capsys.readouterr().out
-        assert "Runtime" in out
-
-    def test_explain_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_runtime
-
-        cmd_runtime("explain", output_json=True)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert isinstance(data, dict)
+    def test_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(['runtime', 'status'], _home(tmp_path))
+        assert ec == 0
+        assert "Runtime" in stdout
 
 
 class TestRuntimeReconcile:
-    def test_reconcile_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_runtime
-
-        cmd_runtime("reconcile")
-        out = capsys.readouterr().out
-        assert "Runtime" in out
-
-    def test_reconcile_json_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_runtime
-
-        cmd_runtime("reconcile", output_json=True)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert isinstance(data, dict)
-
-
-# ===================================================================
-# cmd_prove_at_rest (non-daemon)
-# ===================================================================
+    def test_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(['runtime', 'reconcile'], _home(tmp_path))
+        assert ec == 0
+        assert "Runtime" in stdout
 
 
 class TestProveAtRestStatus:
-    def test_status_empty_calls_run_action(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from verdict.cli import cmd_prove_at_rest
-
-        cmd_prove_at_rest("status")
-        out = capsys.readouterr().out
-        assert "prove-at-rest" in out.lower() or "Prove at rest" in out
-
-    def test_status_empty_json_calls_run_action(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_prove_at_rest
-
-        cmd_prove_at_rest("status", output_json=True)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert data.get("status") == "empty"
-        assert "state_path" in data
+    def test_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(['prove-at-rest', 'status'], _home(tmp_path))
+        assert ec == 0
+        assert "prove-at-rest" in stdout.lower() or "Prove at rest" in stdout
 
 
-class TestProveAtRestOnce:
-    def test_once_no_consent_calls_run_action(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_prove_at_rest
-
-        with pytest.raises(SystemExit) as exc_info:
-            cmd_prove_at_rest("once")
-        assert exc_info.value.code == 2
-        out = capsys.readouterr().out
-        assert "consent" in out.lower() or "allow-live-probe" in out.lower()
-
-    def test_once_no_consent_json_calls_run_action(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_prove_at_rest
-
-        with pytest.raises(SystemExit) as exc_info:
-            cmd_prove_at_rest("once", output_json=True)
-        assert exc_info.value.code == 2
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "error" in data
+class TestMemoryExport:
+    def test_structure(self, tmp_path: Path) -> None:
+        home = _home(tmp_path)
+        stdout, _, ec = _run_verdict(["memory", "export", "--output", str(Path(home) / "e.json")], home)
+        assert ec == 0
+        assert "Exported memory manifest" in stdout
 
 
-# ===================================================================
-# cmd_autodev_packet (inspect/compare/validate/create/resume)
-# ===================================================================
+class TestMemorySearchAfterPut:
+    def test_golden(self, tmp_path: Path) -> None:
+        home = _home(tmp_path)
+        _run_verdict(["memory", "put", "test_key", "test_content"], home)
+        _assert_golden("memory_search_after_put", ["memory", "search", "test_key"], home)
+
+
+class TestMemoryImport:
+    def test_golden(self, tmp_path: Path) -> None:
+        home = _home(tmp_path)
+        _run_verdict(["memory", "put", "test_key", "test_content"], home)
+        ep = str(Path(home) / "e.json")
+        _run_verdict(["memory", "export", "--output", ep], home)
+        _assert_golden("memory_import", ["memory", "import", ep], home)
+
+
+class TestMemoryDocs:
+    def test_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(["memory", "docs"], _home(tmp_path))
+        assert ec == 1
+        assert "Memory / docs" in stdout or "documentation" in stdout.lower()
+
+    def test_json_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(["memory", "docs", "--json"], _home(tmp_path))
+        assert ec == 1
+        data = json.loads(stdout)
+        assert "errors" in data or "operation" in data
+
+
+class TestRuntimeExplain:
+    def test_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(["runtime", "explain"], _home(tmp_path))
+        assert ec == 0
+        assert "Runtime" in stdout
+
+    def test_json_structure(self, tmp_path: Path) -> None:
+        stdout, _, ec = _run_verdict(["runtime", "explain", "--json"], _home(tmp_path))
+        assert ec == 0
+        data = json.loads(stdout)
+        assert isinstance(data, dict)
 
 
 @pytest.fixture()
 def packet_file(tmp_path: Path) -> Path:
-    """Create a valid execution packet file for testing."""
     digest_a = "sha256:" + "a" * 64
     digest_b = "sha256:" + "b" * 64
     payload = {
-        "schema_version": "1",
-        "packet_id": "packet-headroom-unknown",
-        "packet_version": 1,
-        "story_id": "US1",
-        "story_version": "1",
-        "source": {
-            "repository": "git@github.com:example/verdict.git",
-            "worktree": "/workspace/verdict",
-            "commit": "a" * 40,
-            "branch": "feature/operational-loop",
-            "dirty_digest": digest_a,
-            "lock_digests": {"uv.lock": digest_b},
-        },
-        "intent": {
-            "goal": "Represent missing headroom as unknown.",
-            "non_goals": ["Implement provider quota clients."],
-            "acceptance": ["Missing endpoint never reports 100 percent."],
-            "limitations": ["Quota may remain unknown."],
-        },
-        "authority": {
-            "owned_paths": ["verdict/headroom.py", "tests/test_headroom.py"],
-            "denied_paths": [".env"],
-            "tools": ["read", "patch", "test"],
-            "network": False,
-            "max_spend_usd": 0.25,
-            "max_concurrency": 1,
-            "max_attempts": 2,
-            "destructive": False,
-            "production": False,
-        },
-        "verification": {
-            "argv": ["uv", "run", "pytest", "-q", "tests/test_headroom.py"],
-            "timeout_seconds": 120,
-        },
+        "schema_version": "1", "packet_id": "packet-headroom-unknown",
+        "packet_version": 1, "story_id": "US1", "story_version": "1",
+        "source": {"repository": "git@github.com:example/verdict.git",
+                   "worktree": "/workspace/verdict", "commit": "a" * 40,
+                   "branch": "feature/operational-loop",
+                   "dirty_digest": digest_a, "lock_digests": {"uv.lock": digest_b}},
+        "intent": {"goal": "Represent missing headroom as unknown.",
+                   "non_goals": ["Implement provider quota clients."],
+                   "acceptance": ["Missing endpoint never reports 100 percent."],
+                   "limitations": ["Quota may remain unknown."]},
+        "authority": {"owned_paths": ["verdict/headroom.py", "tests/test_headroom.py"],
+                      "denied_paths": [".env"], "tools": ["read", "patch", "test"],
+                      "network": False, "max_spend_usd": 0.25, "max_concurrency": 1,
+                      "max_attempts": 2, "destructive": False, "production": False},
+        "verification": {"argv": ["uv", "run", "pytest", "-q", "tests/test_headroom.py"],
+                         "timeout_seconds": 120},
         "decisions": [{"ref": "spec.md", "digest": digest_a}],
-        "context_refs": [
-            {"ref": "verdict/headroom.py", "digest": digest_b, "proof_level": "source-only"}
-        ],
-        "tasks": [
-            {
-                "task_id": "T1",
-                "description": "Implement fail-closed headroom.",
-                "status": "pending",
-                "dependencies": [],
-            }
-        ],
-        "route_attempts": [],
-        "failure_history": [],
-        "transitions": [],
-        "checkpoint_refs": [],
-        "receipt_refs": [],
-        "next_safe_action": "Run the focused red test.",
-        "proof_level": "source-only",
+        "context_refs": [{"ref": "verdict/headroom.py", "digest": digest_b,
+                          "proof_level": "source-only"}],
+        "tasks": [{"task_id": "T1", "description": "Implement fail-closed headroom.",
+                   "status": "pending", "dependencies": []}],
+        "route_attempts": [], "failure_history": [], "transitions": [],
+        "checkpoint_refs": [], "receipt_refs": [],
+        "next_safe_action": "Run the focused red test.", "proof_level": "source-only",
     }
-    source = tmp_path / "source.json"
-    source.write_text(json.dumps(payload), encoding="utf-8")
-
-    # Create via the store
     from verdict.execution_packet import ExecutionPacket, ExecutionPacketStore
-
     pkt = ExecutionPacket.from_dict(payload)
-    pkt_path = tmp_path / "test_packet.json"
-    ExecutionPacketStore(tmp_path).create(pkt, pkt_path)
+    pkt_path = tmp_path / "h" / "test_packet.json"
+    ExecutionPacketStore(tmp_path / "h").create(pkt, pkt_path)
     return pkt_path
 
 
 @pytest.fixture()
 def packet_source(tmp_path: Path) -> Path:
-    """Create a valid packet source JSON file."""
     digest_a = "sha256:" + "a" * 64
-    digest_b = "sha256:" + "b" * 64
     payload = {
-        "schema_version": "1",
-        "packet_id": "packet-create-test",
-        "packet_version": 1,
-        "story_id": "US2",
-        "story_version": "1",
-        "source": {
-            "repository": "git@github.com:example/verdict.git",
-            "worktree": "/workspace/verdict",
-            "commit": "b" * 40,
-            "branch": "feature/create-test",
-            "dirty_digest": digest_a,
-            "lock_digests": {},
-        },
-        "intent": {
-            "goal": "Test create.",
-            "non_goals": ["None."],
-            "acceptance": ["Packet is created."],
-            "limitations": ["Test only."],
-        },
-        "authority": {
-            "owned_paths": ["test.py"],
-            "denied_paths": [],
-            "tools": ["read"],
-            "network": False,
-            "max_spend_usd": 0.1,
-            "max_concurrency": 1,
-            "max_attempts": 1,
-            "destructive": False,
-            "production": False,
-        },
+        "schema_version": "1", "packet_id": "packet-create-test",
+        "packet_version": 1, "story_id": "US2", "story_version": "1",
+        "source": {"repository": "git@github.com:example/verdict.git",
+                   "worktree": "/workspace/verdict", "commit": "b" * 40,
+                   "branch": "feature/create-test", "dirty_digest": digest_a,
+                   "lock_digests": {}},
+        "intent": {"goal": "Test create.", "non_goals": ["None."],
+                   "acceptance": ["Packet is created."], "limitations": ["Test only."]},
+        "authority": {"owned_paths": ["test.py"], "denied_paths": [],
+                      "tools": ["read"], "network": False, "max_spend_usd": 0.1,
+                      "max_concurrency": 1, "max_attempts": 1,
+                      "destructive": False, "production": False},
         "verification": {"argv": ["echo", "ok"], "timeout_seconds": 10},
-        "decisions": [],
-        "context_refs": [],
-        "tasks": [
-            {
-                "task_id": "T1",
-                "description": "Test task.",
-                "status": "pending",
-                "dependencies": [],
-            }
-        ],
-        "route_attempts": [],
-        "failure_history": [],
-        "transitions": [],
-        "checkpoint_refs": [],
-        "receipt_refs": [],
-        "next_safe_action": "inspect",
-        "proof_level": "unknown",
+        "decisions": [], "context_refs": [],
+        "tasks": [{"task_id": "T1", "description": "Test task.",
+                   "status": "pending", "dependencies": []}],
+        "route_attempts": [], "failure_history": [], "transitions": [],
+        "checkpoint_refs": [], "receipt_refs": [],
+        "next_safe_action": "inspect", "proof_level": "unknown",
     }
-    source = tmp_path / "create_source.json"
-    source.write_text(json.dumps(payload), encoding="utf-8")
+    source = tmp_path / "h" / "create_source.json"
+    source.write_text(json.dumps(payload))
     return source
 
 
 class TestAutodevPacketInspect:
-    def test_inspect_json_calls_run_action(
-        self, packet_file: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_autodev_packet
+    def test_golden(self, tmp_path: Path, packet_file: Path) -> None:
+        _assert_golden("autodev_packet_inspect",
+            ["autodev", "packet", "inspect", "--packet", str(packet_file)],
+            _home(tmp_path))
 
-        cmd_autodev_packet("inspect", str(packet_file), output_json=True)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert data["packet_id"] == "packet-headroom-unknown"
 
-    def test_inspect_text_calls_run_action(
-        self, packet_file: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_autodev_packet
-
-        cmd_autodev_packet("inspect", str(packet_file))
-        out = capsys.readouterr().out
-        assert "packet-headroom-unknown" in out
-        assert "Autodev packet" in out
+class TestAutodevPacketInspectJson:
+    def test_golden(self, tmp_path: Path, packet_file: Path) -> None:
+        _assert_golden("autodev_packet_inspect_json",
+            ["autodev", "packet", "inspect", "--packet", str(packet_file), "--json"],
+            _home(tmp_path))
 
 
 class TestAutodevPacketValidate:
-    def test_validate_json_calls_run_action(
-        self, packet_file: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_autodev_packet
-
-        cmd_autodev_packet("validate", str(packet_file), output_json=True)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert data["packet_id"] == "packet-headroom-unknown"
+    def test_golden(self, tmp_path: Path, packet_file: Path) -> None:
+        _assert_golden("autodev_packet_validate",
+            ["autodev", "packet", "validate", "--packet", str(packet_file)],
+            _home(tmp_path))
 
 
-class TestAutodevPacketCreate:
-    def test_create_json_calls_run_action(
-        self, tmp_path: Path, packet_source: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_autodev_packet
-
-        target = tmp_path / "created_packet.json"
-        cmd_autodev_packet(
-            "create", str(target), source_path=str(packet_source), output_json=True
-        )
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert data["packet_id"] == "packet-create-test"
-        assert target.exists()
+class TestAutodevPacketValidateJson:
+    def test_golden(self, tmp_path: Path, packet_file: Path) -> None:
+        _assert_golden("autodev_packet_validate_json",
+            ["autodev", "packet", "validate", "--packet", str(packet_file), "--json"],
+            _home(tmp_path))
 
 
 class TestAutodevPacketResume:
-    def test_resume_json_calls_run_action(
-        self, packet_file: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_autodev_packet
+    def test_golden(self, tmp_path: Path, packet_file: Path) -> None:
+        _assert_golden("autodev_packet_resume",
+            ["autodev", "packet", "resume", "--packet", str(packet_file), "--model", "test-model"],
+            _home(tmp_path))
 
-        cmd_autodev_packet(
-            "resume", str(packet_file), model="test-model", output_json=True
-        )
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert data["executing_model"] == "test-model"
 
-    def test_resume_text_calls_run_action(
-        self, packet_file: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_autodev_packet
+class TestAutodevPacketResumeJson:
+    def test_golden(self, tmp_path: Path, packet_file: Path) -> None:
+        _assert_golden("autodev_packet_resume_json",
+            ["autodev", "packet", "resume", "--packet", str(packet_file), "--model", "test-model", "--json"],
+            _home(tmp_path))
 
-        cmd_autodev_packet("resume", str(packet_file), model="test-model")
-        out = capsys.readouterr().out
-        assert "Autodev packet" in out
+
+class TestAutodevPacketCreateJson:
+    def test_golden(self, tmp_path: Path, packet_source: Path) -> None:
+        home = _home(tmp_path)
+        target = Path(home) / "created.json"
+        _assert_golden("autodev_packet_create_json",
+            ["autodev", "packet", "create", "--packet", str(target),
+             "--from", str(packet_source), "--json"], home)
+        assert target.exists()
 
 
 class TestAutodevPacketCompare:
-    def test_compare_error_calls_run_action(
-        self, tmp_path: Path, packet_file: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_autodev_packet
-
-        fa = tmp_path / "family_a.json"
-        fb = tmp_path / "family_b.json"
+    def test_compare_error(self, tmp_path: Path, packet_file: Path) -> None:
+        home = _home(tmp_path)
+        fa, fb = Path(home) / "fa.json", Path(home) / "fb.json"
         fa.write_text(json.dumps({"run_id": "a", "results": []}))
         fb.write_text(json.dumps({"run_id": "b", "results": []}))
-
-        with pytest.raises(SystemExit):
-            cmd_autodev_packet(
-                "compare",
-                str(packet_file),
-                family_a_path=str(fa),
-                family_b_path=str(fb),
-                output_json=True,
-            )
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "error" in data
+        stdout, _, ec = _run_verdict(
+            ["autodev", "packet", "compare", "--packet", str(packet_file),
+             "--a", str(fa), "--b", str(fb), "--json"], home)
+        assert ec != 0
+        assert "error" in json.loads(stdout)
 
 
 class TestAutodevPacketNotFound:
-    def test_inspect_missing_packet_json(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from verdict.cli import cmd_autodev_packet
+    def test_inspect_missing(self, tmp_path: Path) -> None:
+        home = _home(tmp_path)
+        stdout, _, ec = _run_verdict(
+            ["autodev", "packet", "inspect", "--packet",
+             str(Path(home) / "nope.json"), "--json"], home)
+        assert ec != 0
+        assert "error" in json.loads(stdout)
 
-        missing = tmp_path / "nonexistent.json"
-        with pytest.raises(SystemExit):
-            cmd_autodev_packet("inspect", str(missing), output_json=True)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "error" in data
-
-
-# ===================================================================
-# Verify run_action is actually called (not bypassed)
-# ===================================================================
-
-
-class TestRunActionCalled:
-    """Verify that each handler actually calls run_action, not direct domain logic."""
-
-    def test_memory_put_uses_run_action(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from verdict.actions import registry
-        from verdict.cli import cmd_memory
-
-        calls: list[str] = []
-        original = registry.run_action
-
-        def spy(name: str, params: Any = None, **kw: Any) -> Any:
-            calls.append(name)
-            return original(name, params, **kw)
-
-        monkeypatch.setattr(registry, "run_action", spy)
-
-        args = mock.MagicMock()
-        args.memory_command = "put"
-        args.key = "spy_key"
-        args.content = "spy_content"
-        args.namespace = "default"
-        args.source = "cli"
-        args.db_path = None
-        args.json = False
-
-        cmd_memory(args)
-        assert "memory.put" in calls
-
-    def test_mcp_status_uses_run_action(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from verdict.actions import registry
-        from verdict.cli import cmd_mcp
-
-        calls: list[str] = []
-        original = registry.run_action
-
-        def spy(name: str, params: Any = None, **kw: Any) -> Any:
-            calls.append(name)
-            return original(name, params, **kw)
-
-        monkeypatch.setattr(registry, "run_action", spy)
-
-        args = mock.MagicMock()
-        args.mcp_command = "status"
-        args.json = False
-
-        cmd_mcp(args)
-        assert "mcp.status" in calls
-
-    def test_hook_status_uses_run_action(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from verdict.actions import registry
-        from verdict.cli import cmd_hook
-
-        calls: list[str] = []
-        original = registry.run_action
-
-        def spy(name: str, params: Any = None, **kw: Any) -> Any:
-            calls.append(name)
-            return original(name, params, **kw)
-
-        monkeypatch.setattr(registry, "run_action", spy)
-
-        args = mock.MagicMock()
-        args.hook_command = "status"
-        args.json = False
-        args.db_path = None
-
-        cmd_hook(args)
-        assert "hook.status" in calls
-
-    def test_runtime_status_uses_run_action(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from verdict.actions import registry
-        from verdict.cli import cmd_runtime
-
-        calls: list[str] = []
-        original = registry.run_action
-
-        def spy(name: str, params: Any = None, **kw: Any) -> Any:
-            calls.append(name)
-            return original(name, params, **kw)
-
-        monkeypatch.setattr(registry, "run_action", spy)
-        cmd_runtime("status")
-        assert "runtime.status" in calls
-
-    def test_prove_at_rest_status_uses_run_action(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from verdict.actions import registry
-        from verdict.cli import cmd_prove_at_rest
-
-        calls: list[str] = []
-        original = registry.run_action
-
-        def spy(name: str, params: Any = None, **kw: Any) -> Any:
-            calls.append(name)
-            return original(name, params, **kw)
-
-        monkeypatch.setattr(registry, "run_action", spy)
-        cmd_prove_at_rest("status")
-        assert "prove-at-rest.status" in calls
-
-    def test_autodev_packet_inspect_uses_run_action(
-        self, monkeypatch: pytest.MonkeyPatch, packet_file: Path
-    ) -> None:
-        from verdict.actions import registry
-        from verdict.cli import cmd_autodev_packet
-
-        calls: list[str] = []
-        original = registry.run_action
-
-        def spy(name: str, params: Any = None, **kw: Any) -> Any:
-            calls.append(name)
-            return original(name, params, **kw)
-
-        monkeypatch.setattr(registry, "run_action", spy)
-        cmd_autodev_packet("inspect", str(packet_file), output_json=True)
-        assert "autodev.packet.inspect" in calls

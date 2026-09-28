@@ -1,5 +1,5 @@
 {
-  "stdout": "\nVERDICT  /  MCP / init\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  + Verdict MCP server initialized across tool environments.  OK\n  Memory DB  /tmp/v275da-baseline-home/.verdict/memory.db\n",
+  "stdout": "\nVERDICT  /  MCP / init\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  + Verdict MCP server initialized across tool environments.  OK\n  Memory DB  <HOME>/.verdict/memory.db\n",
   "stderr": "",
   "exit_code": 0,
   "command": "mcp init"

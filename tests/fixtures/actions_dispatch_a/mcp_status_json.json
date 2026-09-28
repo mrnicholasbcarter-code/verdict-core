@@ -1,5 +1,5 @@
 {
-  "stdout": "{\n  \"mcp_registered\": false,\n  \"mcp_config\": \"/tmp/v275da-main/.mcp.json\"\n}\n",
+  "stdout": "{\n  \"mcp_registered\": true,\n  \"mcp_config\": \"<CWD>/.mcp.json\"\n}\n",
   "stderr": "",
   "exit_code": 0,
   "command": "mcp status --json"

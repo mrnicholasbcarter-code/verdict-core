@@ -1,5 +1,5 @@
 {
-  "stdout": "{\n  \"state_path\": \"/tmp/v275da-baseline-home/.verdict/prove-at-rest/state.json\",\n  \"status\": \"empty\"\n}\n",
+  "stdout": "{\n  \"state_path\": \"<HOME>/.verdict/prove-at-rest/state.json\",\n  \"status\": \"empty\"\n}\n",
   "stderr": "",
   "exit_code": 0,
   "command": "prove-at-rest status --json"

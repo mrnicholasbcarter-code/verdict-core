@@ -1,6 +1,6 @@
 {
-  "stdout": "\nVERDICT  /  Memory / export\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  + Exported memory manifest  OK\n    to /tmp/v275da-baseline-home/mem_export.json\n",
+  "stdout": "\nVERDICT  /  Memory / export\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  + Exported memory manifest  OK\n    to <HOME>/e.json\n",
   "stderr": "",
   "exit_code": 0,
-  "command": "memory export --output /tmp/v275da-baseline-home/mem_export.json"
+  "command": "memory export --output <HOME>/e.json"
 }
