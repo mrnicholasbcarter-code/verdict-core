@@ -83,7 +83,12 @@ def test_each_chart_has_existing_source_data_and_a_labelled_caption() -> None:
         if f"docs/assets/{chart}" in text:
             caption = text.split(f"docs/assets/{chart})", 1)[1].split("</sub>", 1)[0]
             assert any(rel in caption for rel in data_files), f"{chart} caption omits its data"
-            assert "Fixture" in caption or "fixture" in caption, f"{chart} caption not labelled"
+            assert (
+                "Fixture" in caption
+                or "fixture" in caption
+                or "Observed" in caption
+                or "observed" in caption
+            ), f"{chart} caption not labelled"
     embedded = set(re.findall(r"docs/assets/(chart-[\w-]+\.svg)", text))
     assert embedded <= set(sources), f"README embeds charts with no declared source: {embedded}"
 

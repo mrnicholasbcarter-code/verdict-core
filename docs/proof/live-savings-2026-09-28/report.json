@@ -1,0 +1,598 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-09-28T13:52:42.273868+00:00",
+  "label": "Measured cost comparison using real model runs, real observed token usage, priced at the provider's published per-token list prices. Subscription capacity; no invoice \u2014 costs are computed, not billed.",
+  "methodology": {
+    "baseline_model": "cc/claude-opus-5",
+    "verdict_routing": "task-class routing to cheaper model when task is simple/medium",
+    "grading": "unit tests in temp sandbox",
+    "repeats": 2,
+    "note": "Small n; two repeats per arm per task."
+  },
+  "token_counter_validation": {
+    "cc/claude-opus-5": {
+      "proportional": true,
+      "short_prompt_tokens": [
+        38,
+        38,
+        37
+      ],
+      "long_prompt_tokens": [
+        5039,
+        5040,
+        5038
+      ],
+      "note": "OK: short_avg=38, long_avg=5039, ratio=133.8x"
+    },
+    "cc/claude-sonnet-4-5-20250929": {
+      "proportional": true,
+      "short_prompt_tokens": [
+        31,
+        31,
+        30
+      ],
+      "long_prompt_tokens": [
+        5029,
+        5030,
+        5030
+      ],
+      "note": "OK: short_avg=31, long_avg=5030, ratio=164.0x"
+    },
+    "cc/claude-haiku-4-5-20251001": {
+      "proportional": true,
+      "short_prompt_tokens": [
+        28,
+        29,
+        28
+      ],
+      "long_prompt_tokens": [
+        5028,
+        5029,
+        5028
+      ],
+      "note": "OK: short_avg=28, long_avg=5028, ratio=177.5x"
+    }
+  },
+  "price_table": {
+    "cc/claude-opus-5": {
+      "input_per_1m": 15.0,
+      "output_per_1m": 75.0,
+      "source_url": "https://www.anthropic.com/pricing",
+      "access_date": "2026-09-28"
+    },
+    "cc/claude-sonnet-4-5-20250929": {
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "source_url": "https://www.anthropic.com/pricing",
+      "access_date": "2026-09-28"
+    },
+    "cc/claude-haiku-4-5-20251001": {
+      "input_per_1m": 0.8,
+      "output_per_1m": 4.0,
+      "source_url": "https://www.anthropic.com/pricing",
+      "access_date": "2026-09-28"
+    }
+  },
+  "summary": {
+    "total_runs": 40,
+    "baseline_pass_rate": "19/20",
+    "verdict_pass_rate": "20/20",
+    "cost_eligible_tasks": [
+      "balanced_parens",
+      "binary_search",
+      "caesarcipher",
+      "fizzbuzz",
+      "flatten",
+      "json_flatten",
+      "lru_cache",
+      "matrix_transpose",
+      "roman_numerals",
+      "wordcount"
+    ],
+    "cost_excluded_tasks": [],
+    "baseline_cost_usd": 0.969615,
+    "verdict_cost_usd": 0.086474,
+    "savings_pct": 91.1,
+    "savings_label": "Savings computed only over tasks where both arms passed, using models with validated token counters and published list prices."
+  },
+  "failures": [
+    {
+      "task_id": "json_flatten",
+      "arm": "baseline",
+      "model": "cc/claude-opus-5",
+      "repeat": "2"
+    }
+  ],
+  "per_task": [
+    {
+      "task_id": "balanced_parens",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 138,
+          "completion_tokens": 557,
+          "total_tokens": 695,
+          "latency_ms": 6802.9,
+          "cost_usd": 0.043845
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-sonnet-4-5-20250929",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 95,
+          "completion_tokens": 771,
+          "total_tokens": 866,
+          "latency_ms": 9931.9,
+          "cost_usd": 0.01185
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 137,
+          "completion_tokens": 561,
+          "total_tokens": 698,
+          "latency_ms": 6961.5,
+          "cost_usd": 0.04413
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-sonnet-4-5-20250929",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 97,
+          "completion_tokens": 749,
+          "total_tokens": 846,
+          "latency_ms": 10614.0,
+          "cost_usd": 0.011526
+        }
+      ]
+    },
+    {
+      "task_id": "binary_search",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 105,
+          "completion_tokens": 866,
+          "total_tokens": 971,
+          "latency_ms": 11410.6,
+          "cost_usd": 0.066525
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 83,
+          "completion_tokens": 675,
+          "total_tokens": 758,
+          "latency_ms": 5196.7,
+          "cost_usd": 0.002766
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 106,
+          "completion_tokens": 770,
+          "total_tokens": 876,
+          "latency_ms": 9259.1,
+          "cost_usd": 0.05934
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 81,
+          "completion_tokens": 675,
+          "total_tokens": 756,
+          "latency_ms": 4313.0,
+          "cost_usd": 0.002765
+        }
+      ]
+    },
+    {
+      "task_id": "caesarcipher",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 144,
+          "completion_tokens": 922,
+          "total_tokens": 1066,
+          "latency_ms": 10875.0,
+          "cost_usd": 0.07131
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 94,
+          "completion_tokens": 707,
+          "total_tokens": 801,
+          "latency_ms": 5372.6,
+          "cost_usd": 0.002903
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 142,
+          "completion_tokens": 848,
+          "total_tokens": 990,
+          "latency_ms": 9548.3,
+          "cost_usd": 0.06573
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 96,
+          "completion_tokens": 699,
+          "total_tokens": 795,
+          "latency_ms": 5867.5,
+          "cost_usd": 0.002873
+        }
+      ]
+    },
+    {
+      "task_id": "fizzbuzz",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 152,
+          "completion_tokens": 517,
+          "total_tokens": 669,
+          "latency_ms": 6197.7,
+          "cost_usd": 0.041055
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 111,
+          "completion_tokens": 507,
+          "total_tokens": 618,
+          "latency_ms": 3695.0,
+          "cost_usd": 0.002117
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 148,
+          "completion_tokens": 559,
+          "total_tokens": 707,
+          "latency_ms": 6623.9,
+          "cost_usd": 0.044145
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 110,
+          "completion_tokens": 507,
+          "total_tokens": 617,
+          "latency_ms": 3101.9,
+          "cost_usd": 0.002116
+        }
+      ]
+    },
+    {
+      "task_id": "flatten",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 140,
+          "completion_tokens": 905,
+          "total_tokens": 1045,
+          "latency_ms": 11848.2,
+          "cost_usd": 0.069975
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 108,
+          "completion_tokens": 592,
+          "total_tokens": 700,
+          "latency_ms": 4621.0,
+          "cost_usd": 0.002454
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 142,
+          "completion_tokens": 772,
+          "total_tokens": 914,
+          "latency_ms": 10787.7,
+          "cost_usd": 0.06003
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 108,
+          "completion_tokens": 581,
+          "total_tokens": 689,
+          "latency_ms": 4660.6,
+          "cost_usd": 0.00241
+        }
+      ]
+    },
+    {
+      "task_id": "json_flatten",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 171,
+          "completion_tokens": 2606,
+          "total_tokens": 2777,
+          "latency_ms": 29244.9,
+          "cost_usd": 0.198015
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-sonnet-4-5-20250929",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 125,
+          "completion_tokens": 1059,
+          "total_tokens": 1184,
+          "latency_ms": 16072.0,
+          "cost_usd": 0.01626
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": false,
+          "prompt_tokens": 170,
+          "completion_tokens": 1565,
+          "total_tokens": 1735,
+          "latency_ms": 18667.8,
+          "cost_usd": 0.119925
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-sonnet-4-5-20250929",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 126,
+          "completion_tokens": 957,
+          "total_tokens": 1083,
+          "latency_ms": 11578.7,
+          "cost_usd": 0.014733
+        }
+      ]
+    },
+    {
+      "task_id": "lru_cache",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 150,
+          "completion_tokens": 2491,
+          "total_tokens": 2641,
+          "latency_ms": 24134.7,
+          "cost_usd": 0.189075
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-sonnet-4-5-20250929",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 117,
+          "completion_tokens": 1480,
+          "total_tokens": 1597,
+          "latency_ms": 18198.6,
+          "cost_usd": 0.022551
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 150,
+          "completion_tokens": 2083,
+          "total_tokens": 2233,
+          "latency_ms": 21478.2,
+          "cost_usd": 0.158475
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-sonnet-4-5-20250929",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 118,
+          "completion_tokens": 1415,
+          "total_tokens": 1533,
+          "latency_ms": 17673.0,
+          "cost_usd": 0.021579
+        }
+      ]
+    },
+    {
+      "task_id": "matrix_transpose",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 138,
+          "completion_tokens": 1064,
+          "total_tokens": 1202,
+          "latency_ms": 17128.5,
+          "cost_usd": 0.08187
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 100,
+          "completion_tokens": 619,
+          "total_tokens": 719,
+          "latency_ms": 4824.3,
+          "cost_usd": 0.002556
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 138,
+          "completion_tokens": 995,
+          "total_tokens": 1133,
+          "latency_ms": 12366.3,
+          "cost_usd": 0.076695
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 97,
+          "completion_tokens": 1316,
+          "total_tokens": 1413,
+          "latency_ms": 6848.2,
+          "cost_usd": 0.005342
+        }
+      ]
+    },
+    {
+      "task_id": "roman_numerals",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 119,
+          "completion_tokens": 2006,
+          "total_tokens": 2125,
+          "latency_ms": 23476.4,
+          "cost_usd": 0.152235
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-sonnet-4-5-20250929",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 87,
+          "completion_tokens": 1324,
+          "total_tokens": 1411,
+          "latency_ms": 18121.0,
+          "cost_usd": 0.020121
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 120,
+          "completion_tokens": 2426,
+          "total_tokens": 2546,
+          "latency_ms": 26183.1,
+          "cost_usd": 0.18375
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-sonnet-4-5-20250929",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 89,
+          "completion_tokens": 1255,
+          "total_tokens": 1344,
+          "latency_ms": 18325.4,
+          "cost_usd": 0.019092
+        }
+      ]
+    },
+    {
+      "task_id": "wordcount",
+      "runs": [
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 124,
+          "completion_tokens": 718,
+          "total_tokens": 842,
+          "latency_ms": 9358.3,
+          "cost_usd": 0.05571
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 1,
+          "passed": true,
+          "prompt_tokens": 94,
+          "completion_tokens": 705,
+          "total_tokens": 799,
+          "latency_ms": 5578.9,
+          "cost_usd": 0.002895
+        },
+        {
+          "arm": "baseline",
+          "model": "cc/claude-opus-5",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 123,
+          "completion_tokens": 864,
+          "total_tokens": 987,
+          "latency_ms": 14331.0,
+          "cost_usd": 0.066645
+        },
+        {
+          "arm": "verdict",
+          "model": "cc/claude-haiku-4-5-20251001",
+          "repeat": 2,
+          "passed": true,
+          "prompt_tokens": 91,
+          "completion_tokens": 677,
+          "total_tokens": 768,
+          "latency_ms": 5390.3,
+          "cost_usd": 0.002781
+        }
+      ]
+    }
+  ]
+}

@@ -676,15 +676,42 @@ never probed).
 
 ## Cost comparison
 
+**Measured result — real models, observed token usage, published list prices.**
+
+Ten coding tasks, each run twice on both arms, graded by executable unit tests:
+
+- **Baseline**: every task sent to `cc/claude-opus-5` (frontier).
+- **Verdict**: task-class routing sends simple tasks to `cc/claude-haiku-4-5-20251001` and medium tasks to `cc/claude-sonnet-4-5-20250929`.
+
+| Metric | Value |
+|---|---|
+| Baseline list-price cost | $0.97 |
+| Verdict list-price cost | $0.09 |
+| **Savings** | **91 %** |
+| Baseline pass rate | 19 / 20 |
+| Verdict pass rate | 20 / 20 |
+
+Costs are **not billed amounts** — our capacity is subscription-based with no per-token
+invoice. The figures above are observed token counts multiplied by each model's
+[published list price](https://www.anthropic.com/pricing) (accessed 2026-09-28).
+Small n (10 tasks × 2 repeats); savings computed only over tasks where both arms passed.
+
+![Live savings: per-task list-price cost for baseline (opus-5) and Verdict arm](docs/assets/chart-live-savings.svg)
+
+<sub>Data: [`docs/proof/live-savings-2026-09-28/report.json`](docs/proof/live-savings-2026-09-28/report.json).
+Observed token usage × published list prices; subscription capacity, no invoice.
+See [`scripts/live_savings_bench.py`](scripts/live_savings_bench.py) for methodology;
+run with `VERDICT_LIVE_SMOKE=1` (opt-in, spends real capacity).</sub>
+
 **Deterministic mock — no provider spend.**
 
 ```bash
 uv run python -m verdict.routing_demo --mock
 ```
 
-The current deterministic mock compares 100 requests using fixed Opus/Sonnet/Haiku price
-estimates against a class-aware route: approximately **$0.16 routed** versus **$0.52 baseline** in the recorded fixture. The implementation computes routed cost, baseline, and
-savings; see [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md) for the baseline definition and live/recorded limitations. These are estimates, not observed invoices.
+The deterministic mock compares 100 requests using fixed price estimates against a
+class-aware route. See [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md)
+for the baseline definition and live/recorded limitations.
 
 ![Paired-savings fixture: stated per-task costs for the direct and Verdict arms of four tasks; one Verdict arm is a cache hit and one is a quality miss, so neither can count as savings](docs/assets/chart-paired-fixture.svg)
 

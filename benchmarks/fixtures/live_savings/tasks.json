@@ -1,0 +1,66 @@
+{
+  "schema_version": "1",
+  "description": "Small, realistic coding tasks with executable unit-test grading. Designed so a strong frontier model can succeed without Verdict context (no pack-dependent answers).",
+  "tasks": [
+    {
+      "id": "fizzbuzz",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `fizzbuzz(n: int) -> list[str]` that returns a list of strings for numbers 1 through n. For multiples of 3, use 'Fizz'; multiples of 5, use 'Buzz'; multiples of both, use 'FizzBuzz'; otherwise the number as a string.",
+      "test_file": "test_fizzbuzz.py"
+    },
+    {
+      "id": "flatten",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `flatten(nested: list) -> list` that recursively flattens an arbitrarily nested list. Example: flatten([1, [2, [3, 4], 5], 6]) returns [1, 2, 3, 4, 5, 6]. Non-list items are kept as-is.",
+      "test_file": "test_flatten.py"
+    },
+    {
+      "id": "caesarcipher",
+      "task_class": "simple-code",
+      "prompt": "Write two Python functions: `caesar_encrypt(text: str, shift: int) -> str` and `caesar_decrypt(text: str, shift: int) -> str`. Only shift ASCII letters (a-z, A-Z); leave other characters unchanged. Shift wraps around the alphabet.",
+      "test_file": "test_caesarcipher.py"
+    },
+    {
+      "id": "wordcount",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `word_frequencies(text: str) -> dict[str, int]` that returns a case-insensitive word frequency count. Words are sequences of alphanumeric characters (use re.findall(r'\\\\w+', text.lower())).",
+      "test_file": "test_wordcount.py"
+    },
+    {
+      "id": "matrix_transpose",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `transpose(matrix: list[list]) -> list[list]` that transposes a 2D matrix (list of lists). Example: transpose([[1,2,3],[4,5,6]]) returns [[1,4],[2,5],[3,6]]. Handle empty input.",
+      "test_file": "test_matrix_transpose.py"
+    },
+    {
+      "id": "balanced_parens",
+      "task_class": "medium-code",
+      "prompt": "Write a Python function `is_balanced(s: str) -> bool` that checks whether the string has balanced brackets. Support '()', '[]', '{}'. Ignore all other characters. Example: is_balanced('({[]})') -> True, is_balanced('([)]') -> False.",
+      "test_file": "test_balanced_parens.py"
+    },
+    {
+      "id": "lru_cache",
+      "task_class": "medium-code",
+      "prompt": "Write a Python class `LRUCache` with methods `__init__(self, capacity: int)`, `get(self, key: int) -> int` (returns -1 if not found), and `put(self, key: int, value: int) -> None`. When the cache exceeds capacity, evict the least recently used item. Both get and put count as 'use'.",
+      "test_file": "test_lru_cache.py"
+    },
+    {
+      "id": "roman_numerals",
+      "task_class": "medium-code",
+      "prompt": "Write two Python functions: `to_roman(num: int) -> str` converts an integer (1-3999) to a Roman numeral string, and `from_roman(s: str) -> int` converts a Roman numeral string back to an integer.",
+      "test_file": "test_roman_numerals.py"
+    },
+    {
+      "id": "json_flatten",
+      "task_class": "medium-code",
+      "prompt": "Write a Python function `flatten_json(obj: dict, sep: str = '.') -> dict` that flattens a nested JSON dict using dot-separated keys. Lists should use numeric indices. Example: flatten_json({'a': {'b': 1}, 'c': [2, 3]}) returns {'a.b': 1, 'c.0': 2, 'c.1': 3}.",
+      "test_file": "test_json_flatten.py"
+    },
+    {
+      "id": "binary_search",
+      "task_class": "simple-code",
+      "prompt": "Write a Python function `binary_search(arr: list[int], target: int) -> int` that returns the index of target in a sorted list, or -1 if not found. Must run in O(log n) time.",
+      "test_file": "test_binary_search.py"
+    }
+  ]
+}
