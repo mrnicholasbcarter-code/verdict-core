@@ -4,20 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
-from verdict.orchestration.contracts import (
-    AttemptUsage,
-    RunEvent,
-    WorkerTerminal,
-)
+from verdict.orchestration.contracts import AttemptUsage, RunEvent, WorkerTerminal
 from verdict.orchestration.executors import DirectGatewayExecutor
 from verdict.orchestration.recovery import FailureIntelligence
-from verdict.orchestration.tui import RunView
+from verdict.orchestration.tui import RunView, render_text
 
 
 # --------------------------------------------------------------------------- helpers
@@ -26,7 +23,9 @@ from verdict.orchestration.tui import RunView
 class FakeTransport(httpx.AsyncBaseTransport):
     """Return a scripted httpx.Response for testing."""
 
-    def __init__(self, status: int, body: dict[str, Any] | str, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, status: int, body: dict[str, Any] | str, headers: dict[str, str] | None = None
+    ) -> None:
         self._status = status
         self._body = json.dumps(body) if isinstance(body, dict) else body
         self._headers = headers or {}
@@ -72,17 +71,9 @@ def _ok_response(text: str = "Hello world", model: str = "cc/claude-sonnet-5") -
         "object": "chat.completion",
         "model": model,
         "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop",
-            }
+            {"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}
         ],
-        "usage": {
-            "prompt_tokens": 10,
-            "completion_tokens": 20,
-            "total_tokens": 30,
-        },
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
     }
 
 
@@ -125,9 +116,7 @@ async def test_empty_output_rejected(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_diff_applies(tmp_path: Path) -> None:
     """A valid unified diff in the response text is accepted (text returned as-is)."""
-    diff = (
-        "--- a/hello.py\n+++ b/hello.py\n@@ -1 +1 @@\n-print('old')\n+print('new')\n"
-    )
+    diff = "--- a/hello.py\n+++ b/hello.py\n@@ -1 +1 @@\n-print('old')\n+print('new')\n"
     body = _ok_response(diff)
     transport = FakeTransport(200, body)
     exe = _make_executor(transport)
@@ -236,8 +225,7 @@ async def test_malformed_response(tmp_path: Path) -> None:
     class RawTransport(httpx.AsyncBaseTransport):
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             return httpx.Response(
-                status_code=200, content=b"not json at all",
-                headers={"content-type": "text/plain"},
+                status_code=200, content=b"not json at all", headers={"content-type": "text/plain"}
             )
 
     exe = _make_executor(RawTransport())
@@ -288,38 +276,110 @@ async def test_no_usage_when_missing(tmp_path: Path) -> None:
 def _make_events(executor_label: str) -> list[dict[str, Any]]:
     """Build a minimal set of events that exercises every RunView section."""
     return [
-        {"seq": 0, "at": "2026-09-28T12:00:00Z", "type": "run_started",
-         "node_id": "", "data": {"goal": "test goal", "controller_route": f"omniroute/{executor_label}"}},
-        {"seq": 1, "at": "2026-09-28T12:00:01Z", "type": "understand",
-         "node_id": "", "data": {"task_profile": "test", "risk": "low"}},
-        {"seq": 2, "at": "2026-09-28T12:00:02Z", "type": "plan_started",
-         "node_id": "", "data": {}},
-        {"seq": 3, "at": "2026-09-28T12:00:03Z", "type": "plan_ready",
-         "node_id": "", "data": {"topology": "linear", "rationale": ["simple task"],
-                                  "nodes": [{"node_id": "node-1", "objective": "do X", "kind": "implement"}],
-                                  "layers": [["node-1"]]}},
-        {"seq": 4, "at": "2026-09-28T12:00:04Z", "type": "hydrate",
-         "node_id": "", "data": {"context_sources": ["repo"], "byte_budget": 10000}},
-        {"seq": 5, "at": "2026-09-28T12:00:05Z", "type": "topology",
-         "node_id": "", "data": {"topology": "linear", "max_parallel": 1}},
-        {"seq": 6, "at": "2026-09-28T12:00:06Z", "type": "eligibility",
-         "node_id": "", "data": {"stats": {"discovered": 5, "selected": 1}}},
-        {"seq": 7, "at": "2026-09-28T12:00:07Z", "type": "selection",
-         "node_id": "node-1", "data": {"route": f"{executor_label}/model-a"}},
-        {"seq": 8, "at": "2026-09-28T12:00:08Z", "type": "node_state",
-         "node_id": "node-1", "data": {"state": "DISPATCHED"}},
-        {"seq": 9, "at": "2026-09-28T12:00:09Z", "type": "dispatch",
-         "node_id": "node-1", "data": {"route": f"{executor_label}/model-a", "attempt": 1}},
-        {"seq": 10, "at": "2026-09-28T12:00:10Z", "type": "node_state",
-         "node_id": "node-1", "data": {"state": "RUNNING"}},
-        {"seq": 11, "at": "2026-09-28T12:00:15Z", "type": "terminal",
-         "node_id": "node-1", "data": {"ok": True, "model": f"{executor_label}/model-a"}},
-        {"seq": 12, "at": "2026-09-28T12:00:16Z", "type": "node_state",
-         "node_id": "node-1", "data": {"state": "TERMINAL_SUCCESS"}},
-        {"seq": 13, "at": "2026-09-28T12:00:17Z", "type": "verify",
-         "node_id": "", "data": {"ok": True, "label": "lint", "detail": "passed"}},
-        {"seq": 14, "at": "2026-09-28T12:00:18Z", "type": "run_finished",
-         "node_id": "", "data": {"outcome": "COMPLETE", "reason": "all nodes validated"}},
+        {
+            "seq": 0,
+            "at": "2026-09-28T12:00:00Z",
+            "type": "run_started",
+            "node_id": "",
+            "data": {"goal": "test goal", "controller_route": f"omniroute/{executor_label}"},
+        },
+        {
+            "seq": 1,
+            "at": "2026-09-28T12:00:01Z",
+            "type": "understand",
+            "node_id": "",
+            "data": {"task_profile": "test", "risk": "low"},
+        },
+        {"seq": 2, "at": "2026-09-28T12:00:02Z", "type": "plan_started", "node_id": "", "data": {}},
+        {
+            "seq": 3,
+            "at": "2026-09-28T12:00:03Z",
+            "type": "plan_ready",
+            "node_id": "",
+            "data": {
+                "topology": "linear",
+                "rationale": ["simple task"],
+                "nodes": [{"node_id": "node-1", "objective": "do X", "kind": "implement"}],
+                "layers": [["node-1"]],
+            },
+        },
+        {
+            "seq": 4,
+            "at": "2026-09-28T12:00:04Z",
+            "type": "hydrate",
+            "node_id": "",
+            "data": {"context_sources": ["repo"], "byte_budget": 10000},
+        },
+        {
+            "seq": 5,
+            "at": "2026-09-28T12:00:05Z",
+            "type": "topology",
+            "node_id": "",
+            "data": {"topology": "linear", "max_parallel": 1},
+        },
+        {
+            "seq": 6,
+            "at": "2026-09-28T12:00:06Z",
+            "type": "eligibility",
+            "node_id": "",
+            "data": {"stats": {"discovered": 5, "selected": 1}},
+        },
+        {
+            "seq": 7,
+            "at": "2026-09-28T12:00:07Z",
+            "type": "selection",
+            "node_id": "node-1",
+            "data": {"route": f"{executor_label}/model-a"},
+        },
+        {
+            "seq": 8,
+            "at": "2026-09-28T12:00:08Z",
+            "type": "node_state",
+            "node_id": "node-1",
+            "data": {"state": "DISPATCHED"},
+        },
+        {
+            "seq": 9,
+            "at": "2026-09-28T12:00:09Z",
+            "type": "dispatch",
+            "node_id": "node-1",
+            "data": {"route": f"{executor_label}/model-a", "attempt": 1},
+        },
+        {
+            "seq": 10,
+            "at": "2026-09-28T12:00:10Z",
+            "type": "node_state",
+            "node_id": "node-1",
+            "data": {"state": "RUNNING"},
+        },
+        {
+            "seq": 11,
+            "at": "2026-09-28T12:00:15Z",
+            "type": "terminal",
+            "node_id": "node-1",
+            "data": {"ok": True, "model": f"{executor_label}/model-a"},
+        },
+        {
+            "seq": 12,
+            "at": "2026-09-28T12:00:16Z",
+            "type": "node_state",
+            "node_id": "node-1",
+            "data": {"state": "TERMINAL_SUCCESS"},
+        },
+        {
+            "seq": 13,
+            "at": "2026-09-28T12:00:17Z",
+            "type": "verify",
+            "node_id": "",
+            "data": {"ok": True, "label": "lint", "detail": "passed"},
+        },
+        {
+            "seq": 14,
+            "at": "2026-09-28T12:00:18Z",
+            "type": "run_finished",
+            "node_id": "",
+            "data": {"outcome": "COMPLETE", "reason": "all nodes validated"},
+        },
     ]
 
 
@@ -339,12 +399,12 @@ def test_run_view_same_sections_both_executors() -> None:
     assert prime_view.event_count == gateway_view.event_count
 
     # The render function should produce the same section keys
-    from verdict.orchestration.tui import render_text
     prime_text = render_text(prime_events)
     gateway_text = render_text(gateway_events)
 
     # Extract section headers (lines that are section titles)
     import re
+
     section_re = re.compile(r"^[A-Z][A-Z /]+$", re.MULTILINE)
     prime_sections = section_re.findall(prime_text)
     gateway_sections = section_re.findall(gateway_text)
@@ -352,3 +412,72 @@ def test_run_view_same_sections_both_executors() -> None:
     assert prime_sections == gateway_sections, (
         f"Section structure differs: {prime_sections} vs {gateway_sections}"
     )
+
+
+PROOF_DIR = (
+    Path(__file__).resolve().parent.parent / "docs" / "proof" / "harness-independence-2026-09-28"
+)
+
+
+def _load_events(run_dir: Path) -> list[dict]:
+    events = []
+    with open(run_dir / "events.jsonl") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                events.append(json.loads(line))
+    return events
+
+
+def _load_receipt(run_dir: Path) -> dict:
+    with open(run_dir / "receipt.json") as f:
+        return json.load(f)
+
+
+def test_proof_runs_same_view_sections() -> None:
+    """Both committed proof runs render the same RunView section headers."""
+    prime_dir = PROOF_DIR / "prime-run"
+    gateway_dir = PROOF_DIR / "direct-gateway-run"
+
+    assert prime_dir.exists(), f"Missing {prime_dir}"
+    assert gateway_dir.exists(), f"Missing {gateway_dir}"
+
+    prime_events = _load_events(prime_dir)
+    gateway_events = _load_events(gateway_dir)
+
+    prime_view = RunView.from_events(prime_events)
+    gateway_view = RunView.from_events(gateway_events)
+
+    # Both should have a goal, understand data, and events
+    assert prime_view.goal, "prime run has no goal"
+    assert gateway_view.goal, "gateway run has no goal"
+    assert prime_view.event_count > 0
+    assert gateway_view.event_count > 0
+
+    # Render both and compare section headers
+    prime_text = render_text(prime_events)
+    gateway_text = render_text(gateway_events)
+
+    section_re = re.compile(r"^[A-Z][A-Z /]+$", re.MULTILINE)
+    prime_sections = section_re.findall(prime_text)
+    gateway_sections = section_re.findall(gateway_text)
+
+    assert prime_sections == gateway_sections, (
+        f"Section structure differs:\nprime: {prime_sections}\ngateway: {gateway_sections}"
+    )
+
+
+def test_proof_receipts_same_schema() -> None:
+    """Both committed receipts use the same schema."""
+    prime_receipt = _load_receipt(PROOF_DIR / "prime-run")
+    gateway_receipt = _load_receipt(PROOF_DIR / "direct-gateway-run")
+
+    assert prime_receipt["schema"] == gateway_receipt["schema"]
+    assert prime_receipt["schema"] == "verdict.run-receipt/v1"
+
+    # Both should have standard receipt fields
+    for receipt in [prime_receipt, gateway_receipt]:
+        assert "run_id" in receipt
+        assert "started_at" in receipt
+        assert "topology" in receipt
+        assert "events_digest" in receipt

@@ -1,0 +1,253 @@
+{
+  "claimed_outcome": "BLOCKED",
+  "controller_events": [
+    {
+      "at": "2026-09-28T18:45:16.360522Z",
+      "detail": "plan produced",
+      "node_id": "",
+      "route_id": "cc/claude-haiku-4-5-20251001",
+      "seq": 6,
+      "state": "HEALTHY"
+    }
+  ],
+  "cooldowns": [],
+  "decision_signals": [
+    {
+      "actual_decision": {
+        "capacity_class": "subscription",
+        "frontier_planner_invoked": true,
+        "provider": "claude",
+        "route_id": "cc/claude-haiku-4-5-20251001"
+      },
+      "at": "2026-09-28T18:45:16.361459Z",
+      "mode": "SHADOW",
+      "node_id": "",
+      "seq": 7,
+      "signals": {
+        "confidence": 0.922834951044617,
+        "failure_class": null,
+        "input_digest": "fb79ae1f586f01c1efdddbc31ac583ec4cb82ab8976c4c799fe56bf0fd762901",
+        "latency_ms": 1198,
+        "mode": "SHADOW",
+        "model": "openjev-0.1",
+        "observed_at": "2026-09-28T18:44:58.182630Z",
+        "provider": "openjev",
+        "purpose": "frontier_planning",
+        "request_id": "req_244e292586c7ca0acb6eb55a91d2358e",
+        "schema_version": "decision-signals/v1",
+        "signals": {
+          "ambiguity": 0.0003378661197133287,
+          "complexity": 0.0007709188796769847,
+          "context_need": 0.015821424295279846,
+          "decomposability": 0.9997699190366909,
+          "frontier_worthy": 0.0001387049710134026,
+          "security_sensitive": 1.5281992799810836e-06,
+          "verification_strength": 0.42386511708069313
+        },
+        "usage": {
+          "input_tokens": 303,
+          "output_tokens": 0
+        },
+        "version": "openjev-0.1"
+      }
+    }
+  ],
+  "event_count": 79,
+  "events_digest": "sha256:ac21ca0c7637f6760af67e3bdc6578e26df571c4c5042232745a490ccd278237",
+  "finished_at": "2026-09-28T18:45:42.394338Z",
+  "goal": "Add a docstring to the greet function in hello.py",
+  "graph_digest": "sha256:5e6b1c5c756126be6e257e198987f379de648c98a9e39b144dbadc14f908be49",
+  "integration": {
+    "barriers": [
+      {
+        "name": "no_change",
+        "ok": true,
+        "seq": 71
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 70
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 7.01,
+          "executed_model": "claude-sonnet-4-5-20250929",
+          "failure_category": "verification_failed",
+          "fault_injected": false,
+          "intended_route": "cc/claude-sonnet-4-5-20250929",
+          "outcome": "failure",
+          "provider": "cc",
+          "route_id": "cc/claude-sonnet-4-5-20250929",
+          "route_identity": "mismatch",
+          "usage": {
+            "cost_usd": null,
+            "input_tokens": 265,
+            "output_tokens": 499,
+            "tokens_source": "http_response",
+            "turns": 1
+          }
+        },
+        {
+          "attempt": 2,
+          "capacity_class": "subscription",
+          "duration_seconds": 7.09,
+          "executed_model": "claude-sonnet-4-5-20250929",
+          "failure_category": "verification_failed",
+          "fault_injected": false,
+          "intended_route": "cc/claude-sonnet-4-5-20250929",
+          "outcome": "failure",
+          "provider": "cc",
+          "route_id": "cc/claude-sonnet-4-5-20250929",
+          "route_identity": "mismatch",
+          "usage": {
+            "cost_usd": null,
+            "input_tokens": 373,
+            "output_tokens": 441,
+            "tokens_source": "http_response",
+            "turns": 1
+          }
+        },
+        {
+          "attempt": 3,
+          "capacity_class": "subscription",
+          "duration_seconds": 4.19,
+          "executed_model": "claude-sonnet-4-6",
+          "failure_category": "verification_failed",
+          "fault_injected": false,
+          "intended_route": "cc/claude-sonnet-4-6",
+          "outcome": "failure",
+          "provider": "cc",
+          "route_id": "cc/claude-sonnet-4-6",
+          "route_identity": "mismatch",
+          "usage": {
+            "cost_usd": null,
+            "input_tokens": 374,
+            "output_tokens": 306,
+            "tokens_source": "http_response",
+            "turns": 1
+          }
+        },
+        {
+          "attempt": 4,
+          "capacity_class": "subscription",
+          "duration_seconds": 4.3,
+          "executed_model": "claude-sonnet-4-6",
+          "failure_category": "pool_exhausted",
+          "fault_injected": false,
+          "intended_route": "cc/claude-sonnet-4-6",
+          "outcome": "failure",
+          "provider": "cc",
+          "route_id": "cc/claude-sonnet-4-6",
+          "route_identity": "mismatch",
+          "usage": {
+            "cost_usd": null,
+            "input_tokens": 374,
+            "output_tokens": 324,
+            "tokens_source": "http_response",
+            "turns": 1
+          }
+        }
+      ],
+      "final_state": "BLOCKED",
+      "kind": "implement",
+      "node_id": "add-greet-docstring",
+      "validated_by": []
+    },
+    {
+      "attempts": [],
+      "final_state": "BLOCKED",
+      "kind": "integrate",
+      "node_id": "integrate",
+      "validated_by": []
+    }
+  ],
+  "outcome": "BLOCKED",
+  "planner_attempts": [
+    {
+      "at": "2026-09-28T18:45:00.542780Z",
+      "attempt": 1,
+      "capacity_class": "subscription",
+      "provider": "claude",
+      "route_id": "cc/claude-haiku-4-5-20251001",
+      "seq": 3
+    },
+    {
+      "at": "2026-09-28T18:45:09.320098Z",
+      "attempt": 2,
+      "budget": 7,
+      "reason": "parse_plan: node[0]: acceptance must be a list",
+      "route_id": "cc/claude-haiku-4-5-20251001",
+      "seq": 4
+    },
+    {
+      "at": "2026-09-28T18:45:16.358960Z",
+      "attempt": 2,
+      "budget": 7,
+      "error": "",
+      "ok": true,
+      "route_id": "cc/claude-haiku-4-5-20251001",
+      "seq": 5
+    }
+  ],
+  "reason": "node add-greet-docstring not VALIDATED (final_state=BLOCKED)",
+  "reassignments": [
+    {
+      "at": "2026-09-28T18:45:24.846676Z",
+      "attempt": 2,
+      "from_route": "cc/claude-sonnet-4-5-20250929",
+      "node_id": "add-greet-docstring",
+      "reason": "verification_failed",
+      "seq": 29,
+      "to_route": "cc/claude-sonnet-4-5-20250929"
+    },
+    {
+      "at": "2026-09-28T18:45:33.728393Z",
+      "attempt": 3,
+      "from_route": "cc/claude-sonnet-4-5-20250929",
+      "node_id": "add-greet-docstring",
+      "reason": "verification_failed",
+      "seq": 45,
+      "to_route": "cc/claude-sonnet-4-6"
+    },
+    {
+      "at": "2026-09-28T18:45:38.015683Z",
+      "attempt": 4,
+      "from_route": "cc/claude-sonnet-4-6",
+      "node_id": "add-greet-docstring",
+      "reason": "verification_failed",
+      "seq": 62,
+      "to_route": "cc/claude-sonnet-4-6"
+    }
+  ],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 1
+  },
+  "review": {
+    "blocking": 0,
+    "reviewer": "",
+    "route_id": "",
+    "status": "MISSING"
+  },
+  "route_identity_summary": {
+    "attempts": 4,
+    "match": 0,
+    "mechanical": 0,
+    "mismatch": 4,
+    "unattested": 0
+  },
+  "run_id": "20260928T184458Z",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-09-28T18:44:58.180815Z",
+  "topology": "WORKER_CRITIC"
+}
