@@ -8,6 +8,7 @@ rejected, unknown kinds rejected, and duplicate request idempotency.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -615,3 +616,91 @@ async def test_cancel_node_running_state(repo: Path, tmp_path: Path) -> None:
     cancel_events = [e for e in control_events if e.get("kind") == "cancel_node"]
     # At minimum the control was accepted or the node already finished
     assert len(cancel_events) >= 0  # Non-crash guarantee
+
+
+
+@pytest.mark.asyncio
+async def test_prime_headless_executor_kills_subprocess_on_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PrimeHeadlessExecutor MUST kill its subprocess when its task is cancelled.
+
+    A cancelled run must not leak a paid model call. BOD-276 blocker #3.
+    Mirrors the real create_subprocess_exec path with `sleep 60`.
+    """
+    import os
+    import signal as _signal
+
+    from verdict.orchestration import executors as ex_mod
+    from verdict.orchestration.executors import PrimeHeadlessExecutor
+
+    # Bypass the prime-agent launch dir prep and one-shot policy check;
+    # only the cancel-kills-subprocess branch is under test here.
+    monkeypatch.setattr(
+        ex_mod,
+        "prepare_launch_agent_dir",
+        lambda dest, source=None: type("_L", (), {"path": dest})(),
+    )
+    monkeypatch.setattr(ex_mod, "default_prime_agent_dir", lambda env: Path("/tmp"))
+    monkeypatch.setattr(ex_mod, "effective_prime_settings", lambda cwd, config_dir: {})
+    monkeypatch.setattr(ex_mod, "prime_retry_policy_problems", lambda settings: [])
+
+    class _SleepExecutor(PrimeHeadlessExecutor):
+        def _command(self, prompt: str, route_id: str, cwd: Path) -> list[str]:
+            return ["/bin/sh", "-c", "sleep 60"]
+
+    exe = _SleepExecutor()
+
+    async def _launch() -> None:
+        await exe.run(
+            prompt="",
+            route_id="kr/test-model",
+            cwd=tmp_path,
+            timeout_seconds=60.0,
+        )
+
+    task = asyncio.create_task(_launch())
+    # Give the subprocess time to spawn
+    await asyncio.sleep(0.5)
+
+    # Collect child PIDs of THIS process before cancel
+    my_pid = os.getpid()
+    child_pids: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text().split(") ")[-1].split()
+            ppid = int(stat[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        if ppid == my_pid:
+            child_pids.append(int(entry.name))
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    async def _still_alive() -> list[int]:
+        alive: list[int] = []
+        for pid in child_pids:
+            try:
+                os.kill(pid, 0)
+                alive.append(pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+        return alive
+
+    deadline = asyncio.get_event_loop().time() + 5.0
+    alive: list[int] = list(child_pids)
+    while asyncio.get_event_loop().time() < deadline:
+        alive = await _still_alive()
+        if not alive:
+            break
+        await asyncio.sleep(0.1)
+
+    if alive:
+        for pid in alive:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, _signal.SIGKILL)
+    assert alive == [], f"cancelled executor leaked subprocess(es): {alive}"

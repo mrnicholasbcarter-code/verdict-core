@@ -458,6 +458,7 @@ EVENT_TYPES = frozenset(
         "repack",  # BOD-272: context budget shrunk after a context-length overflow
         "rehydrate",  # BOD-272: same-route retry with failing verification evidence
         "decision_signals_context_budget",  # BOD-203 AC3: advisory context budget
+        "control",  # BOD-276: external run/node control requests + acknowledgements
         "run_finished",
     }
 )
