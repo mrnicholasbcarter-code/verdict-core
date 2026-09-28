@@ -5,6 +5,6 @@
     "status"
   ],
   "exit_code": 0,
-  "stdout": "\nVERDICT  /  Hermes harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - Hermes harness  WARNING\n    not configured\n  provider           (none)                                  \n  base URL           (none)                                  \n  model              (none)                                  \n  token environment  LLMGATE_AUTH_TOKEN (set: yes)           \n  config             /tmp/v275db-h-hermes/.hermes/config.yaml\n",
+  "stdout": "\nVERDICT  /  Hermes harness\nautonomous control plane  ·  plan · select · recover · verify · prove\n\n  - Hermes harness  WARNING\n    not configured\n  provider           (none)                                  \n  base URL           (none)                                  \n  model              (none)                                  \n  token environment  LLMGATE_AUTH_TOKEN (set: yes)           \n  config             /tmp/v275db-h-hermes/.hermes/config.yaml\n",
   "stderr": ""
 }

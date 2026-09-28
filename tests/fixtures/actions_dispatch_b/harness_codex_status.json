@@ -5,6 +5,6 @@
     "status"
   ],
   "exit_code": 0,
-  "stdout": "\nVERDICT  /  Codex harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - Codex harness  WARNING\n    not configured\n  provider           (none)                                \n  base URL           (none)                                \n  token environment  LLMGATE_AUTH_TOKEN (set: yes)         \n  config             /tmp/v275db-h-codex/.codex/config.toml\n",
+  "stdout": "\nVERDICT  /  Codex harness\nautonomous control plane  ·  plan · select · recover · verify · prove\n\n  - Codex harness  WARNING\n    not configured\n  provider           (none)                                \n  base URL           (none)                                \n  token environment  LLMGATE_AUTH_TOKEN (set: yes)         \n  config             /tmp/v275db-h-codex/.codex/config.toml\n",
   "stderr": ""
 }

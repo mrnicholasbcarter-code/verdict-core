@@ -15,16 +15,15 @@ import json
 import os
 import re
 import sys
-import tempfile
 from io import StringIO
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, call, patch
+from typing import Any, ClassVar
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from verdict.actions.base import ActionResult
-from verdict.actions.registry import LAUNCH, GAP, MACHINE_ONLY, get_action, list_actions, run_action
+from verdict.actions.registry import LAUNCH, get_action, list_actions, run_action
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -151,9 +150,8 @@ class _HarnessHandlerRouting:
             self.handler_fn("no-such-command", **self.handler_kwargs)
 
     def test_action_failure_exits(self) -> None:
-        with patch("verdict.actions.registry.run_action", return_value=self._fail_result()):
-            with pytest.raises(SystemExit):
-                self.handler_fn("status", **self.handler_kwargs)
+        with patch("verdict.actions.registry.run_action", return_value=self._fail_result()), pytest.raises(SystemExit):
+            self.handler_fn("status", **self.handler_kwargs)
 
 
 class _HarnessHandlerWithCertifyDiscover(_HarnessHandlerRouting):
@@ -263,128 +261,102 @@ class TestHarnessClineRouting(_HarnessHandlerWithCertifyDiscover):
 
 
 class TestHarnessStatusParity:
-    """Status sub-commands produce structurally identical output to origin/main.
+    """Status/discover sub-commands produce byte-identical output to origin/main.
 
-    Byte-for-byte comparison of path and token-env-set fields is suppressed
-    because those are env-sensitive (config_path varies by HOME, token_env_set
-    depends on whether the env var is exported in the test environment).
-    We compare: exit code, header line, and the set of key labels in the kv block.
+    Capture runs in a subprocess with a fully-controlled environment:
+      HOME=/tmp/v275db-h-<harness>, XDG_CONFIG_HOME=..., LLMGATE_AUTH_TOKEN set,
+      all other harness token env vars absent, COLUMNS=100, TERM=dumb, CI=1.
+    The only placeholder substitution is the fixed HOME path -> "<HOME>".
+    No in-process sys.modules mutation; no environment contamination of later tests.
     """
 
-    def _key_labels(self, text: str) -> set[str]:
-        """Extract key labels from a present.kv block."""
-        labels = set()
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped and not stripped.startswith("VERDICT") and "  " in stripped:
-                label = stripped.split("  ")[0].strip()
-                if label:
-                    labels.add(label)
-        return labels
+    # Env vars whose presence/absence affects token_env_set and config paths.
+    _DELETE_VARS: ClassVar[list[str]] = ['OPENAI_API_KEY', 'CLAUDE_CONFIG_DIR', 'CLAUDE_HOME', 'CLINE_HOME', 'CLINE_DATA_DIR', 'CODEX_HOME', 'CURSOR_HOME', 'HERMES_HOME', 'OPENCODE_CONFIG', 'PRIME_AGENT_HOME', 'PRIME_HOME']
+
+    # Small script run in each subprocess.
+    _RUNNER = """
+import sys, os
+sys.path.insert(0, sys.argv[1])
+harness, command = sys.argv[2], sys.argv[3]
+import verdict.cli as cli
+fn = getattr(cli, f"cmd_harness_{harness}")
+try:
+    fn(command)
+except SystemExit as exc:
+    sys.exit(exc.code if isinstance(exc.code, int) else 0)
+"""
+
+    def _hermetic_env(self, harness: str) -> dict[str, str]:
+        env: dict[str, str] = {}
+        for key in ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL"):
+            if key in os.environ:
+                env[key] = os.environ[key]
+        env["HOME"] = f"/tmp/v275db-h-{harness}"
+        env["XDG_CONFIG_HOME"] = f"/tmp/v275db-h-{harness}/.config"
+        env["LLMGATE_AUTH_TOKEN"] = "test-token-hermetic"
+        env["COLUMNS"] = "100"
+        env["TERM"] = "dumb"
+        env["CI"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        return env
+
+    def _normalize(self, text: str, harness: str) -> str:
+        text = _strip_ansi(text)
+        text = text.replace(f"/tmp/v275db-h-{harness}", "<HOME>")
+        return text
+
+    def _run(self, harness: str, command: str) -> tuple[str, int]:
+        import subprocess
+        worktree = str(Path(__file__).parent.parent)
+        result = subprocess.run(
+            [sys.executable, "-c", self._RUNNER, worktree, harness, command],
+            env=self._hermetic_env(harness),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.stdout, result.returncode
 
     @pytest.mark.parametrize("harness", [
         "codex", "hermes", "claude", "cursor", "prime", "opencode", "cline"
     ])
-    def test_status_exit_code_matches_fixture(self, harness: str, tmp_path: Path) -> None:
+    def test_status_matches_fixture(self, harness: str) -> None:
+        """stdout + exit_code are byte-identical to the hermetic fixture."""
         fixture = _load_fixture(f"harness_{harness}_status")
-        env_patch = {
-            "HOME": str(tmp_path),
-            "XDG_CONFIG_HOME": str(tmp_path / ".config"),
-        }
-        with patch.dict(os.environ, env_patch):
-            from verdict import cli as verdict_cli
-            handler = getattr(verdict_cli, f"cmd_harness_{harness}")
-            out, code = _capture(handler, "status")
-        assert code == fixture["exit_code"], f"{harness} status: exit code mismatch"
-
-    @pytest.mark.parametrize("harness", [
-        "codex", "hermes", "claude", "cursor", "prime", "opencode", "cline"
-    ])
-    def test_status_header_matches_fixture(self, harness: str, tmp_path: Path) -> None:
-        fixture = _load_fixture(f"harness_{harness}_status")
-        env_patch = {
-            "HOME": str(tmp_path),
-            "XDG_CONFIG_HOME": str(tmp_path / ".config"),
-        }
-        with patch.dict(os.environ, env_patch):
-            from verdict import cli as verdict_cli
-            handler = getattr(verdict_cli, f"cmd_harness_{harness}")
-            out, code = _capture(handler, "status")
-        got = _strip_ansi(out)
-        expected = _strip_ansi(fixture["stdout"])
-        # Check same header section is present
-        for keyword in ["harness", "VERDICT"]:
-            if keyword.lower() in expected.lower():
-                assert keyword.lower() in got.lower(), (
-                    f"{harness} status: missing '{keyword}' in output"
-                )
-
-    @pytest.mark.parametrize("harness", [
-        "codex", "hermes", "claude", "cursor", "prime", "opencode", "cline"
-    ])
-    def test_status_key_labels_match_fixture(self, harness: str, tmp_path: Path) -> None:
-        """The kv key labels in the status output match the fixture exactly."""
-        fixture = _load_fixture(f"harness_{harness}_status")
-        env_patch = {
-            "HOME": str(tmp_path),
-            "XDG_CONFIG_HOME": str(tmp_path / ".config"),
-        }
-        with patch.dict(os.environ, env_patch):
-            from verdict import cli as verdict_cli
-            handler = getattr(verdict_cli, f"cmd_harness_{harness}")
-            out, code = _capture(handler, "status")
-        got_labels = self._key_labels(_strip_ansi(out))
-        expected_labels = self._key_labels(_strip_ansi(fixture["stdout"]))
-        assert got_labels == expected_labels, (
-            f"{harness} status: key labels mismatch\ngot={sorted(got_labels)}\n"
-            f"expected={sorted(expected_labels)}"
+        got_out, got_code = self._run(harness, "status")
+        assert got_code == fixture["exit_code"], (
+            f"{harness} status: exit code {got_code} != {fixture['exit_code']}"
+        )
+        got_norm = self._normalize(got_out, harness)
+        exp_norm = self._normalize(fixture["stdout"], harness)
+        assert got_norm == exp_norm, (
+            f"{harness} status: stdout mismatch\n"
+            f"GOT:\n{got_norm!r}\n"
+            f"EXP:\n{exp_norm!r}"
         )
 
     @pytest.mark.parametrize("harness", [
         "claude", "cursor", "prime", "opencode", "cline"
     ])
-    def test_discover_exit_code_matches_fixture(self, harness: str, tmp_path: Path) -> None:
+    def test_discover_matches_fixture(self, harness: str) -> None:
+        """stdout + exit_code are byte-identical to the hermetic fixture."""
         fixture = _load_fixture(f"harness_{harness}_discover")
-        env_patch = {
-            "HOME": str(tmp_path),
-            "XDG_CONFIG_HOME": str(tmp_path / ".config"),
-        }
-        with patch.dict(os.environ, env_patch):
-            from verdict import cli as verdict_cli
-            handler = getattr(verdict_cli, f"cmd_harness_{harness}")
-            out, code = _capture(handler, "discover")
-        assert code == fixture["exit_code"], f"{harness} discover: exit code mismatch"
-
-    @pytest.mark.parametrize("harness", [
-        "claude", "cursor", "prime", "opencode", "cline"
-    ])
-    def test_discover_key_labels_match_fixture(self, harness: str, tmp_path: Path) -> None:
-        fixture = _load_fixture(f"harness_{harness}_discover")
-        env_patch = {
-            "HOME": str(tmp_path),
-            "XDG_CONFIG_HOME": str(tmp_path / ".config"),
-        }
-        with patch.dict(os.environ, env_patch):
-            from verdict import cli as verdict_cli
-            handler = getattr(verdict_cli, f"cmd_harness_{harness}")
-            out, code = _capture(handler, "discover")
-        got_labels = self._key_labels(_strip_ansi(out))
-        expected_labels = self._key_labels(_strip_ansi(fixture["stdout"]))
-        assert got_labels == expected_labels, (
-            f"{harness} discover: key labels mismatch\ngot={sorted(got_labels)}\n"
-            f"expected={sorted(expected_labels)}"
+        got_out, got_code = self._run(harness, "discover")
+        assert got_code == fixture["exit_code"], (
+            f"{harness} discover: exit code {got_code} != {fixture['exit_code']}"
         )
-
-
-# ---------------------------------------------------------------------------
-# cmd_setup_credentials: credential write goes through credentials.set action
-# ---------------------------------------------------------------------------
+        got_norm = self._normalize(got_out, harness)
+        exp_norm = self._normalize(fixture["stdout"], harness)
+        assert got_norm == exp_norm, (
+            f"{harness} discover: stdout mismatch\n"
+            f"GOT:\n{got_norm!r}\n"
+            f"EXP:\n{exp_norm!r}"
+        )
 
 
 class TestSetupCredentials:
     def test_credential_write_uses_run_action(self, tmp_path: Path) -> None:
         """When a user enters a value, write goes through credentials.set action."""
-        from verdict.credentials_registry import CREDENTIALS
         from verdict.credentials_store import CredentialsStore
 
         # Fake a missing required credential
@@ -458,7 +430,6 @@ class TestCanaryRollback:
 
     def test_rollback_action_impl(self, tmp_path: Path) -> None:
         """The action itself returns baseline as chosen."""
-        state = {"baseline": "model-a", "chosen": "model-b"}
         result = run_action(
             "autodev.packet.canary-rollback",
             {"state_path": str(tmp_path / "s.json")},  # will fail — test via direct call
