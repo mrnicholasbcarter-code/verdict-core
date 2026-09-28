@@ -167,6 +167,93 @@ CONTROLLER_SELECTION_FACTORY: Any | None = None
 # Last production bundle used by resolve (compiled prompt artifacts).
 _LAST_PRODUCTION_SELECTION_BUNDLE: Any | None = None
 
+# ---------------------------------------------------------------------------
+# Multi-story admission flag (BOD-157 / ADR-037)
+# ---------------------------------------------------------------------------
+# Test injection point: override to supply a custom evaluator.
+# Signature: (story_id, labels, deps, main_sha, footprint, admission_state, config, pressure)
+#            -> AdmissionDecision
+ADMISSION_EVALUATOR: Any | None = None
+
+_MULTI_STORY_ENV = "VERDICT_MULTI_STORY"
+
+
+def _multi_story_enabled() -> bool:
+    """Return True only when VERDICT_MULTI_STORY is explicitly 'on'.
+
+    Unknown/invalid values are treated as OFF with a warning log line.
+    """
+    raw = os.environ.get(_MULTI_STORY_ENV, "").strip().lower()
+    if raw == "on":
+        return True
+    if raw and raw != "off":
+        print(
+            json.dumps(
+                {
+                    "warning": "VERDICT_MULTI_STORY has unrecognised value; treating as OFF",
+                    "value": os.environ.get(_MULTI_STORY_ENV, ""),
+                }
+            ),
+            flush=True,
+        )
+    return False
+
+
+def _check_admission(repo: Path, state: Path) -> dict[str, Any] | None:
+    """Run the BOD-157 admission pipeline when the multi-story flag is on.
+
+    Returns ``None`` when the flag is off (no-op — single-story flock).
+    Returns ``{"admit": True/False, ...}`` when the flag is on.
+    """
+    if not _multi_story_enabled():
+        return None
+    # Import lazily so flag-off has zero import cost.
+    from verdict.orchestration.story_footprint import StoryFootprintV1
+    from verdict.orchestration.supervisor_admission import (
+        AdmissionState,
+        SupervisorGovernorConfig,
+        evaluate_admission,
+    )
+
+    # If an external evaluator is injected (tests), delegate to it.
+    if ADMISSION_EVALUATOR is not None:
+        return ADMISSION_EVALUATOR(repo=repo, state=state)
+
+    # Production path: conservative defaults.
+    # Story metadata is not yet available from the supervisor's issue tracking;
+    # use unknown/empty values which fail closed (WAIT/SERIALIZE/DEFER).
+    global _ADMISSION_STATE
+    config = SupervisorGovernorConfig()
+    if _ADMISSION_STATE is None:
+        _ADMISSION_STATE = AdmissionState()
+    admission_state = _ADMISSION_STATE
+    main_sha = (
+        subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], timeout=10)
+        .decode()
+        .strip()
+    )
+
+    # Until the supervisor has story metadata plumbing, use fail-closed defaults:
+    # - no labels → not EXCLUDED
+    # - no deps → READY (per ready_gate)
+    # - unknown footprint → SERIALIZE (per story_footprint)
+    result = evaluate_admission(
+        story_id=f"supervisor-{state.name}",
+        labels=frozenset(),
+        deps=[],
+        main_sha=main_sha,
+        footprint=StoryFootprintV1(story_id=f"supervisor-{state.name}"),
+        admission_state=admission_state,
+        config=config,
+    )
+    return result.to_dict()
+
+
+# Global admission state — shared across supervisor invocations in-process.
+# Lazily initialised on first flag-on check to avoid importing governor
+# modules when the feature is off.
+_ADMISSION_STATE: Any = None
+
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1951,6 +2038,24 @@ def main() -> int:
                 for previous in sorted(sessions_root.glob("*")) if sessions_root.is_dir() else []:
                     if previous.is_dir() and not previous.is_symlink():
                         stop_owned_daemon(args.prime, previous)
+                # BOD-157: multi-story admission gate (ADR-037).
+                # When VERDICT_MULTI_STORY=on, the 3-gate pipeline
+                # (ready → collide → governor) must ADMIT before the
+                # story starts.  Flag off (default) → single-story flock,
+                # identical to origin/main.
+                admission_decision = _check_admission(repo, state)
+                if admission_decision is not None and not admission_decision["admit"]:
+                    print(json.dumps({"admission": "rejected", **admission_decision}), flush=True)
+                    atomic_json(
+                        state / "supervisor.json",
+                        {
+                            "status": "DEFERRED",
+                            "reason": admission_decision["reason"],
+                            "reason_code": admission_decision["reason_code"],
+                            "observed_at": time.time(),
+                        },
+                    )
+                    return 0
                 return recover(attempt, state, args.max_restarts)
             except (
                 ControllerLaunchError,
