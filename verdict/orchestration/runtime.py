@@ -734,6 +734,7 @@ class DagRuntime:
                             "output_tokens": terminal.usage.output_tokens,
                             "cost_usd": terminal.usage.cost_usd,
                             "tokens_source": terminal.usage.tokens_source,
+                            "turns": terminal.usage.turns,
                         }
                     }
                     if terminal.usage is not None
@@ -801,6 +802,7 @@ class DagRuntime:
                     "output_tokens": terminal.usage.output_tokens,
                     "cost_usd": terminal.usage.cost_usd,
                     "tokens_source": terminal.usage.tokens_source,
+                    "turns": terminal.usage.turns,
                 }
             (directory / f"{node_id}-a{attempt}.json").write_text(json.dumps(record, indent=1))
         except OSError:

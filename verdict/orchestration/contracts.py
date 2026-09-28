@@ -370,12 +370,20 @@ class TaskRequirements:
 
 @dataclass(frozen=True)
 class AttemptUsage:
-    """Observed token usage (and optional cost) for one worker attempt."""
+    """Observed token usage (and optional cost) for one worker attempt.
+
+    When a worker uses tools it makes several assistant turns. Each turn
+    re-sends the full conversation history, so ``input_tokens`` across turns
+    are independently billed (not double-counted context). Summing them gives
+    the total tokens *sent* over the attempt, which is the right measure of
+    economic cost even though earlier turns' context overlaps.
+    """
 
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None  # None unless actually reported; never fabricated
     tokens_source: str | None = None  # e.g. "prime_stdout", "http_header"
+    turns: int | None = None  # count of distinct assistant messages summed
 
 
 @dataclass(frozen=True)
