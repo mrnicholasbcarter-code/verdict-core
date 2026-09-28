@@ -25,6 +25,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from verdict.orchestration.contracts import AttemptUsage, WorkerExecutor, WorkerTerminal
 from verdict.orchestration.prime_settings import (
     PRIME_AGENT_DIR_ENV,
@@ -35,7 +37,7 @@ from verdict.orchestration.prime_settings import (
     prime_retry_policy_problems,
 )
 
-__all__ = ["FaultInjectingExecutor", "PrimeHeadlessExecutor", "ScriptedExecutor"]
+__all__ = ["DirectGatewayExecutor", "FaultInjectingExecutor", "PrimeHeadlessExecutor", "ScriptedExecutor"]
 
 _STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -601,3 +603,157 @@ class ScriptedExecutor:
         if isinstance(result, WorkerTerminal):
             return result
         return await result
+
+
+# ---------------------------------------------------------------- direct gateway
+
+
+class DirectGatewayExecutor:
+    """Run one prompt on one exact OmniRoute route via direct HTTP — no Prime harness.
+
+    Text-only nodes (research/review/plan) return the model's text content.
+    Implement-type nodes request a unified diff for owned files, apply it with
+    ``git apply --check`` then ``git apply`` inside the node worktree, and fail
+    closed with a named error if it does not apply or touches files outside
+    ``owned_files``.
+
+    Failures (4xx/5xx/timeout/empty) are mapped to :class:`WorkerTerminal`
+    fields compatible with the recovery classifier so that failover works
+    unchanged.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:20128",
+        api_key: str | None = None,
+        timeout_connect: float = 10.0,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.timeout_connect = timeout_connect
+
+    def _headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {"content-type": "application/json"}
+        if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        started = time.monotonic()
+        url = f"{self.base_url}/v1/chat/completions"
+        payload = {
+            "model": route_id,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                resp = await client.post(url, json=payload, headers=self._headers())
+        except httpx.TimeoutException:
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error="timeout",
+                duration_seconds=time.monotonic() - started,
+            )
+        except (httpx.TransportError, OSError) as exc:
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error=f"transport: {_sanitize(str(exc), 200)}",
+                duration_seconds=time.monotonic() - started,
+            )
+        duration = time.monotonic() - started
+        return self._interpret(resp, route_id=route_id, duration=duration)
+
+    @staticmethod
+    def _interpret(
+        resp: httpx.Response, *, route_id: str, duration: float
+    ) -> WorkerTerminal:
+        """Map an OpenAI-compatible chat/completions response to WorkerTerminal."""
+        if resp.status_code >= 400:
+            error_text = _sanitize(resp.text, 400)
+            retry_after: float | None = None
+            raw_retry = resp.headers.get("retry-after")
+            if raw_retry:
+                with contextlib.suppress(ValueError):
+                    retry_after = float(raw_retry)
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error=error_text,
+                status_code=resp.status_code,
+                retry_after_seconds=retry_after,
+                duration_seconds=duration,
+            )
+        try:
+            body = resp.json()
+        except (ValueError, TypeError):
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error=f"malformed: {_sanitize(resp.text, 200)}",
+                duration_seconds=duration,
+            )
+        choices = body.get("choices") or []
+        if not choices:
+            return WorkerTerminal(
+                ok=False,
+                model=route_id,
+                error="empty_output",
+                duration_seconds=duration,
+            )
+        choice = choices[0]
+        message = choice.get("message", {})
+        text = message.get("content", "")
+        finish = choice.get("finish_reason", "")
+        stop_reason = "end_turn" if finish in {"stop", "end_turn"} else finish
+
+        # Extract usage
+        raw_usage = body.get("usage")
+        usage: AttemptUsage | None = None
+        if isinstance(raw_usage, dict):
+            inp = raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens")
+            out = raw_usage.get("completion_tokens") or raw_usage.get("output_tokens")
+            cost = raw_usage.get("cost")
+            if inp is not None or out is not None:
+                usage = AttemptUsage(
+                    input_tokens=int(inp) if inp is not None else None,
+                    output_tokens=int(out) if out is not None else None,
+                    cost_usd=float(cost) if cost is not None else None,
+                    tokens_source="http_response",
+                    turns=1,
+                )
+
+        reported_model = body.get("model", route_id)
+
+        if stop_reason not in {"end_turn", "stop", ""}:
+            return WorkerTerminal(
+                ok=False,
+                model=reported_model,
+                stop_reason=stop_reason,
+                error="no_final_answer",
+                duration_seconds=duration,
+                usage=usage,
+            )
+
+        if not text.strip():
+            return WorkerTerminal(
+                ok=False,
+                model=reported_model,
+                error="empty_output",
+                duration_seconds=duration,
+                usage=usage,
+            )
+
+        return WorkerTerminal(
+            ok=True,
+            output=text,
+            model=reported_model,
+            stop_reason=stop_reason or "end_turn",
+            duration_seconds=duration,
+            session_ref=f"direct-gateway:{body.get('id', '')}",
+            usage=usage,
+        )

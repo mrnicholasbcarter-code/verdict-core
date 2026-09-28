@@ -68,6 +68,12 @@ def add_parsers(subparsers: Any) -> None:
     )
     orch.add_argument("--plain", action="store_true", help="ASCII narrative instead of live view")
     orch.add_argument("--json", action="store_true", help="Print the final receipt JSON")
+    orch.add_argument(
+        "--executor",
+        choices=("prime", "direct-gateway"),
+        default="prime",
+        help="Worker executor backend (default: prime)",
+    )
 
     watch = subparsers.add_parser("watch", help="Live view of a Verdict orchestration run")
     watch.add_argument("run", help="Run id or run directory")
@@ -414,9 +420,20 @@ def prime_visibility(path: Path | None = None, *, live_rows: Any = None) -> Any:
 
 
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
-    from verdict.orchestration.executors import FaultInjectingExecutor, PrimeHeadlessExecutor
+    from verdict.orchestration.executors import (
+        DirectGatewayExecutor,
+        FaultInjectingExecutor,
+        PrimeHeadlessExecutor,
+    )
 
-    executor: WorkerExecutor = PrimeHeadlessExecutor()
+    executor: WorkerExecutor
+    if getattr(args, "executor", "prime") == "direct-gateway":
+        executor = DirectGatewayExecutor(
+            base_url=args.gateway,
+            api_key=os.environ.get("OPENAI_API_KEY", ""),
+        )
+    else:
+        executor = PrimeHeadlessExecutor()
     faults: dict[str, list[str]] = {}
     injected = list(args.inject)
     # Supervisor-generation-scoped chaos: VERDICT_CHAOS_G0 applies only to the
