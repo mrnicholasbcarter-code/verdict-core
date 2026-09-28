@@ -1,0 +1,40 @@
+{
+  "artifacts": {},
+  "attempts": {},
+  "bound_passport_key": null,
+  "checkpoints": [
+    {
+      "created_at": 0.0,
+      "reason": "created",
+      "record_id": "session-f3golden-bod275:ckpt:1",
+      "seq": 1,
+      "state": "checkpointed"
+    }
+  ],
+  "completed_steps": [],
+  "created_at": 0.0,
+  "current_step": "step-1",
+  "failure_log": [],
+  "model_id": "kr/claude-sonnet-5-thinking",
+  "schema_version": "1",
+  "session_id": "session-f3golden-bod275",
+  "state": "created",
+  "steps": [
+    {
+      "name": "analyze",
+      "started_at": 0.0,
+      "status": "pending",
+      "step_id": "step-1"
+    },
+    {
+      "name": "implement",
+      "started_at": 0.0,
+      "status": "pending",
+      "step_id": "step-2"
+    }
+  ],
+  "task_spec": {
+    "task": "write unit tests for verdict router"
+  },
+  "updated_at": 0.0
+}

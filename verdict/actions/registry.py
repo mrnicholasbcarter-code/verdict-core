@@ -312,7 +312,10 @@ def _action_probe(**kwargs: Any) -> ActionResult:
     is_injected = transport is not None
     if not is_injected and not allow_live_probe:
         return ActionResult(
-            data={"error": "live probes require explicit consent; pass --allow-live-probe"},
+            data={
+                "diagnostics": None,
+                "error": "live probes require explicit consent; pass --allow-live-probe",
+            },
             ok=False,
             exit_code=2,
         )

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "stderr_empty": true,
+  "stdout": "{\"message\": \"no recorded session found for id: missing-session (no checkpoint found for session 'missing-session')\", \"status\": \"missing\"}\n"
+}

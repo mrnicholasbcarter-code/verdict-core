@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "stderr_empty": true,
+  "stdout": "{\n  \"artifacts\": {},\n  \"attempts\": {},\n  \"bound_passport_key\": null,\n  \"checkpoints\": [\n    {\n      \"created_at\": 0.0,\n      \"reason\": \"created\",\n      \"record_id\": \"session-f3golden-bod275:ckpt:1\",\n      \"seq\": 1,\n      \"state\": \"checkpointed\"\n    }\n  ],\n  \"completed_steps\": [],\n  \"created_at\": 0.0,\n  \"current_step\": \"step-1\",\n  \"failure_log\": [],\n  \"model_id\": \"kr/claude-sonnet-5-thinking\",\n  \"schema_version\": \"1\",\n  \"session_id\": \"session-f3golden-bod275\",\n  \"state\": \"created\",\n  \"steps\": [\n    {\n      \"name\": \"analyze\",\n      \"started_at\": 0.0,\n      \"status\": \"pending\",\n      \"step_id\": \"step-1\"\n    },\n    {\n      \"name\": \"implement\",\n      \"started_at\": 0.0,\n      \"status\": \"pending\",\n      \"step_id\": \"step-2\"\n    }\n  ],\n  \"task_spec\": {\n    \"task\": \"write unit tests for verdict router\"\n  },\n  \"updated_at\": 0.0\n}\n"
+}
