@@ -15,6 +15,7 @@ Controller survival (minimal demo-safe slice):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -816,6 +817,9 @@ async def run_golden_path(
             state="VERDICT_OVERRIDE",
             detail=f"runtime={result.outcome.value} receipt={outcome}: {reason}",
         )
+        # Rewrite receipt so events_digest covers the VERDICT_OVERRIDE event.
+        with contextlib.suppress(Exception):
+            receipt_path = write_run_receipt(run_dir)
     _otel_root.end()
     return GoldenRunResult(
         run_dir, outcome, reason if outcome != "COMPLETE" else result.reason, receipt_path
