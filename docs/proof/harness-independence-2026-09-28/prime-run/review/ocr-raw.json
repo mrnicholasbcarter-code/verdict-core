@@ -1,0 +1,77 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "verdict-omniroute",
+    "model": "kr/gpt-5.6-terra"
+  },
+  "message": "Review complete: 0 finding(s) across 1 selected item(s).",
+  "summary": {
+    "files_reviewed": 1,
+    "comments": 0,
+    "total_tokens": 1488,
+    "input_tokens": 1488,
+    "output_tokens": 0,
+    "elapsed": "2s"
+  },
+  "tool_calls": {
+    "total": 0,
+    "by_tool": {},
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [],
+  "groups": [
+    {
+      "label": "tests/__init__.py",
+      "files": [
+        "tests/__init__.py"
+      ]
+    }
+  ],
+  "session_id": "c7294ef2-dffb-4711-9267-9f7636cfc98c",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "c7294ef2-dffb-4711-9267-9f7636cfc98c",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {},
+    "input": {
+      "mode": "range",
+      "requested_from": "75a303463cfaef019eee01cd51a4af05a5b69e91",
+      "requested_head": "12b381434b6fac0df32ea2923e5eaa373e06559c",
+      "resolved_base": "75a303463cfaef019eee01cd51a4af05a5b69e91",
+      "resolved_head": "12b381434b6fac0df32ea2923e5eaa373e06559c",
+      "exact_range": "75a303463cfaef019eee01cd51a4af05a5b69e91..12b381434b6fac0df32ea2923e5eaa373e06559c",
+      "source_artifact_sha256": "50c8f321b1c53da12625b7395b22dc47a42e05482253dbf2e88fd394ca8e37f5"
+    },
+    "execution": {
+      "ocr_version": "v1.12.9",
+      "provider": "verdict-omniroute",
+      "model": "kr/gpt-5.6-terra",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "9f33647a25a002db1b7770ce092ffab8b77ef98379e262871a243afd75f798d9",
+      "runtime_config_sha256": "94156565c956ca00819383e7987beb108004d3038b0ecb3e8e3025fef6e18b02"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "d631abad496270833002f3b2062f7ae6d638bdef230dd29bc2615ee0e47e2bf5",
+          "path": "tests/__init__.py",
+          "fingerprint": "710f7c314038b7c39b516d95fe1fd8c9406561221556537dcd454c2311e30622"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "d631abad496270833002f3b2062f7ae6d638bdef230dd29bc2615ee0e47e2bf5",
+          "path": "tests/__init__.py",
+          "fingerprint": "710f7c314038b7c39b516d95fe1fd8c9406561221556537dcd454c2311e30622"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 2145
+  }
+}

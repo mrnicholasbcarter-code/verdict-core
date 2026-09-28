@@ -622,6 +622,13 @@ class DirectGatewayExecutor:
     unchanged.
     """
 
+    _OWNED_FILES_RE = re.compile(r"^OWNED_FILES:\s*(.+)$", re.MULTILINE)
+    _DIFF_FENCE_RE = re.compile(
+        r"```(?:diff|patch)\n(.*?)```", re.DOTALL
+    )
+    # Match --- a/path and +++ b/path lines in unified diffs
+    _DIFF_PATH_RE = re.compile(r"^[-+]{3}\s+[ab]/(.+)$", re.MULTILINE)
+
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:20128",
@@ -638,14 +645,159 @@ class DirectGatewayExecutor:
             headers["authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    @staticmethod
+    def _parse_owned_files(prompt: str) -> list[str]:
+        """Extract the OWNED_FILES list from a hydrated node prompt."""
+        m = DirectGatewayExecutor._OWNED_FILES_RE.search(prompt)
+        if not m:
+            return []
+        raw = m.group(1).strip()
+        if raw == "(none)":
+            return []
+        return [f.strip() for f in raw.split(",") if f.strip()]
+
+    @staticmethod
+    def _extract_diff(text: str) -> str | None:
+        """Extract a unified diff from model output (fenced or raw)."""
+        # Try fenced ```diff ... ``` first
+        m = DirectGatewayExecutor._DIFF_FENCE_RE.search(text)
+        if m:
+            return m.group(1).strip()
+        # Fallback: look for raw unified diff (starts with --- or diff --git)
+        lines = text.split("\n")
+        diff_lines: list[str] = []
+        in_diff = False
+        for line in lines:
+            if line.startswith("diff --git ") or (
+                line.startswith("--- ") and not in_diff
+            ):
+                in_diff = True
+            if in_diff:
+                diff_lines.append(line)
+        if diff_lines:
+            return "\n".join(diff_lines)
+        return None
+
+    @staticmethod
+    def _validate_diff_paths(
+        diff_text: str, owned_files: list[str]
+    ) -> str | None:
+        """Return an error string if the diff touches files outside owned_files."""
+        paths = DirectGatewayExecutor._DIFF_PATH_RE.findall(diff_text)
+        owned_set = set(owned_files)
+        for p in paths:
+            # Reject absolute paths
+            if p.startswith("/"):
+                return f"absolute path in diff: {p}"
+            # Reject path traversal
+            if ".." in p.split("/"):
+                return f"path traversal in diff: {p}"
+            # /dev/null is allowed (new file creation or deletion)
+            if p == "dev/null":
+                continue
+            if p not in owned_set:
+                return f"path outside owned_files: {p}"
+        return None
+
+    @staticmethod
+    def _augment_prompt_for_diff(
+        prompt: str, owned_files: list[str], cwd: Path,
+        budget_bytes: int = 60_000,
+    ) -> str:
+        """Append diff-mode instructions and current file contents to the prompt."""
+        parts: list[str] = [prompt]
+        # Replace the generic RULES block's edit instruction with diff-specific one
+        parts.append("")
+        parts.append("OUTPUT_FORMAT: unified diff")
+        parts.append("You MUST output your changes as a single unified diff (git diff format).")
+        parts.append("Wrap the diff in a ```diff fenced code block.")
+        parts.append("The diff must use a/ and b/ prefixes (standard git diff format).")
+        parts.append("Only modify files listed in OWNED_FILES. Never include paths outside them.")
+        parts.append("Do NOT output any other file contents or edits outside the diff block.")
+        parts.append("")
+        parts.append("CURRENT FILE CONTENTS (for reference):")
+        remaining = budget_bytes
+        for rel in owned_files:
+            path = cwd / rel
+            if not path.exists():
+                parts.append(f"--- {rel} (does not exist yet — new file) ---")
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                parts.append(f"--- {rel} (unreadable: {exc}) ---")
+                continue
+            keep = min(len(data), remaining)
+            if keep <= 0:
+                parts.append(f"--- {rel} (omitted: budget exhausted) ---")
+                continue
+            text = data[:keep].decode("utf-8", errors="replace")
+            parts.append(f"--- {rel} ---")
+            parts.append(text)
+            if keep < len(data):
+                parts.append(f"[TRUNCATED: {len(data) - keep} bytes omitted]")
+            remaining -= keep
+        return "\n".join(parts)
+
+    async def _apply_diff(
+        self, diff_text: str, cwd: Path
+    ) -> tuple[bool, str]:
+        """Run git apply --check then git apply. Returns (ok, error_detail)."""
+        # Write diff to a temp file
+        diff_path = cwd / ".verdict-pending.patch"
+        try:
+            diff_path.write_text(diff_text + "\n", encoding="utf-8")
+        except OSError as exc:
+            return False, f"cannot write patch file: {exc}"
+        try:
+            # --check first (dry run)
+            proc = await asyncio.create_subprocess_exec(
+                "git", "apply", "--check", str(diff_path),
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode != 0:
+                tail = stderr.decode("utf-8", errors="replace")[-300:]
+                return False, f"git apply --check failed: {tail}"
+            # Apply for real
+            proc = await asyncio.create_subprocess_exec(
+                "git", "apply", str(diff_path),
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode != 0:
+                tail = stderr.decode("utf-8", errors="replace")[-300:]
+                return False, f"git apply failed: {tail}"
+            return True, ""
+        except asyncio.TimeoutError:
+            return False, "git apply timed out"
+        except OSError as exc:
+            return False, f"git apply error: {exc}"
+        finally:
+            diff_path.unlink(missing_ok=True)
+
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         started = time.monotonic()
+        owned_files = self._parse_owned_files(prompt)
+        is_implement = bool(owned_files)
+
+        # For implement nodes, augment the prompt to request a unified diff
+        effective_prompt = prompt
+        if is_implement:
+            effective_prompt = self._augment_prompt_for_diff(
+                prompt, owned_files, cwd
+            )
+
         url = f"{self.base_url}/v1/chat/completions"
         payload = {
             "model": route_id,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": effective_prompt}],
             "stream": False,
         }
         try:
@@ -666,7 +818,54 @@ class DirectGatewayExecutor:
                 duration_seconds=time.monotonic() - started,
             )
         duration = time.monotonic() - started
-        return self._interpret(resp, route_id=route_id, duration=duration)
+
+        # Parse the HTTP response into a WorkerTerminal
+        terminal = self._interpret(resp, route_id=route_id, duration=duration)
+
+        # For non-implement nodes or failed HTTP, return as-is
+        if not is_implement or not terminal.ok:
+            return terminal
+
+        # --- Implement node: extract, validate, and apply the diff ---
+        diff_text = self._extract_diff(terminal.output)
+        if diff_text is None:
+            return WorkerTerminal(
+                ok=False,
+                output=terminal.output,
+                model=terminal.model,
+                error="diff_rejected: no unified diff found in model output",
+                duration_seconds=terminal.duration_seconds,
+                session_ref=terminal.session_ref,
+                usage=terminal.usage,
+            )
+
+        # Validate paths
+        path_error = self._validate_diff_paths(diff_text, owned_files)
+        if path_error is not None:
+            return WorkerTerminal(
+                ok=False,
+                output=terminal.output,
+                model=terminal.model,
+                error=f"diff_rejected: {path_error}",
+                duration_seconds=terminal.duration_seconds,
+                session_ref=terminal.session_ref,
+                usage=terminal.usage,
+            )
+
+        # Apply the diff
+        applied, apply_error = await self._apply_diff(diff_text, cwd)
+        if not applied:
+            return WorkerTerminal(
+                ok=False,
+                output=terminal.output,
+                model=terminal.model,
+                error=f"diff_apply_failed: {apply_error}",
+                duration_seconds=terminal.duration_seconds,
+                session_ref=terminal.session_ref,
+                usage=terminal.usage,
+            )
+
+        return terminal
 
     @staticmethod
     def _interpret(

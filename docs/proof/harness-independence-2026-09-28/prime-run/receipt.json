@@ -1,83 +1,87 @@
 {
-  "claimed_outcome": "BLOCKED",
+  "claimed_outcome": "COMPLETE",
   "controller_events": [
     {
-      "at": "2026-09-28T18:47:39.773089Z",
+      "at": "2026-09-28T19:13:11.476665Z",
       "detail": "plan produced",
       "node_id": "",
-      "route_id": "cc/claude-haiku-4-5-20251001",
-      "seq": 4,
+      "route_id": "kr/claude-haiku-4.5",
+      "seq": 6,
       "state": "HEALTHY"
-    }
-  ],
-  "cooldowns": [
+    },
     {
-      "at": "2026-09-28T18:48:54.539152Z",
-      "category": "no_final_answer",
-      "key": "cc/claude-sonnet-4-5-20250929",
-      "node_id": "add-greet-docstring",
-      "scope": "route",
-      "seq": 30,
-      "until": "2026-09-28T18:53:54+00:00"
+      "at": "2026-09-28T19:15:45.603392Z",
+      "excluded_families": [
+        "claude"
+      ],
+      "excluded_routes": [
+        "kr/claude-sonnet-4"
+      ],
+      "level": "family",
+      "node_id": "",
+      "reviewer_route": "kr/gpt-5.6-terra",
+      "seq": 44,
+      "state": "REVIEW_INDEPENDENCE"
     }
   ],
+  "cooldowns": [],
   "decision_signals": [
     {
       "actual_decision": {
         "capacity_class": "subscription",
         "frontier_planner_invoked": true,
-        "provider": "claude",
-        "route_id": "cc/claude-haiku-4-5-20251001"
+        "provider": "kiro",
+        "route_id": "kr/claude-haiku-4.5"
       },
-      "at": "2026-09-28T18:47:39.779785Z",
+      "at": "2026-09-28T19:13:11.477737Z",
       "mode": "SHADOW",
       "node_id": "",
-      "seq": 5,
+      "seq": 7,
       "signals": {
-        "confidence": 0.9175913564360216,
+        "confidence": 0.3855820381840585,
         "failure_class": null,
-        "input_digest": "fb79ae1f586f01c1efdddbc31ac583ec4cb82ab8976c4c799fe56bf0fd762901",
-        "latency_ms": 474,
+        "input_digest": "034fa72d2e7fa121612450b64e0fb2b4ccf51e6a0c1b55beb58980d69d7c405e",
+        "latency_ms": 958,
         "mode": "SHADOW",
         "model": "openjev-0.1",
-        "observed_at": "2026-09-28T18:46:22.870560Z",
+        "observed_at": "2026-09-28T19:12:41.386569Z",
         "provider": "openjev",
         "purpose": "frontier_planning",
-        "request_id": "req_168b020882f11eb3a4fd3a355dffac04",
+        "request_id": "req_c05e1aa10f15f4d46007dc2815a8aa16",
         "schema_version": "decision-signals/v1",
         "signals": {
-          "ambiguity": 0.00023534603604011,
-          "complexity": 0.0010425891497307987,
-          "context_need": 0.015621640287244054,
-          "decomposability": 0.9996896633326813,
-          "frontier_worthy": 0.00022935285070220803,
-          "security_sensitive": 5.310205219377875e-07,
-          "verification_strength": 0.40959724945733117
+          "ambiguity": 0.3306355242639333,
+          "complexity": 0.5306242388837968,
+          "context_need": 0.18812575927011155,
+          "decomposability": 0.9201178205859992,
+          "frontier_worthy": 0.4518344299085973,
+          "security_sensitive": 0.006280680052192803,
+          "verification_strength": 0.5190578626579441
         },
         "usage": {
-          "input_tokens": 303,
+          "input_tokens": 292,
           "output_tokens": 0
         },
         "version": "openjev-0.1"
       }
     }
   ],
-  "event_count": 55,
-  "events_digest": "sha256:c7f854405d1cf4f0fd9da6b625c65071f7d4149376de4aa5c8040b6569642983",
-  "finished_at": "2026-09-28T18:49:15.821452Z",
-  "goal": "Add a docstring to the greet function in hello.py",
-  "graph_digest": "sha256:fea4a83e6e43525522e93ff46fa226c950a07ff1455687799f49ac3fddda7267",
+  "event_count": 47,
+  "events_digest": "sha256:ee8122305524a43dbaeac433b714bdc8c8e6a8cfc98b560e02b28c276a377585",
+  "finished_at": "2026-09-28T19:15:45.606277Z",
+  "goal": "test",
+  "graph_digest": "sha256:12c383938ca124e956a48b0979a2ff01c1f25da8a90430dc007a635f51ec83b2",
   "integration": {
     "barriers": [
       {
         "name": "integration",
         "ok": true,
-        "seq": 54
+        "seq": 43
       },
       {
         "name": "ownership",
         "ok": true,
-        "seq": 42
+        "seq": 31
       }
     ],
     "missing": [],
@@ -89,31 +93,31 @@
         {
           "attempt": 1,
           "capacity_class": "subscription",
-          "duration_seconds": 23.93,
-          "executed_model": "cc/claude-sonnet-4-5-20250929",
+          "duration_seconds": 59.05,
+          "executed_model": "kr/claude-sonnet-4",
           "fault_injected": false,
-          "intended_route": "cc/claude-sonnet-4-5-20250929",
+          "intended_route": "kr/claude-sonnet-4",
           "outcome": "success",
-          "provider": "cc",
-          "route_id": "cc/claude-sonnet-4-5-20250929",
+          "provider": "kr",
+          "route_id": "kr/claude-sonnet-4",
           "route_identity": "match",
           "usage": {
             "cost_usd": 0.0,
-            "input_tokens": 29,
-            "output_tokens": 417,
+            "input_tokens": 48283,
+            "output_tokens": 576,
             "tokens_source": "prime_stdout",
-            "turns": 1
+            "turns": 4
           }
         }
       ],
       "final_state": "VALIDATED",
       "kind": "research",
-      "node_id": "examine-greet-func",
+      "node_id": "discover-test-scope",
       "validated_by": [
         {
           "command": "(none: non-code node)",
           "exit_code": 0,
-          "seq": 18
+          "seq": 20
         }
       ]
     },
@@ -122,51 +126,31 @@
         {
           "attempt": 1,
           "capacity_class": "subscription",
-          "duration_seconds": 48.39,
-          "executed_model": "cc/claude-sonnet-4-5-20250929",
-          "failure_category": "no_final_answer",
+          "duration_seconds": 89.79,
+          "executed_model": "kr/claude-sonnet-4",
           "fault_injected": false,
-          "intended_route": "cc/claude-sonnet-4-5-20250929",
-          "outcome": "failure",
-          "provider": "cc",
-          "route_id": "cc/claude-sonnet-4-5-20250929",
-          "route_identity": "unattested",
-          "usage": {
-            "cost_usd": 0.0,
-            "input_tokens": 147,
-            "output_tokens": 398,
-            "tokens_source": "prime_stdout",
-            "turns": 2
-          }
-        },
-        {
-          "attempt": 2,
-          "capacity_class": "subscription",
-          "duration_seconds": 19.51,
-          "executed_model": "cc/claude-sonnet-4-6",
-          "fault_injected": false,
-          "intended_route": "cc/claude-sonnet-4-6",
+          "intended_route": "kr/claude-sonnet-4",
           "outcome": "success",
-          "provider": "cc",
-          "route_id": "cc/claude-sonnet-4-6",
+          "provider": "kr",
+          "route_id": "kr/claude-sonnet-4",
           "route_identity": "match",
           "usage": {
             "cost_usd": 0.0,
-            "input_tokens": 107,
-            "output_tokens": 465,
+            "input_tokens": 15396,
+            "output_tokens": 399,
             "tokens_source": "prime_stdout",
-            "turns": 2
+            "turns": 1
           }
         }
       ],
       "final_state": "VALIDATED",
       "kind": "implement",
-      "node_id": "add-greet-docstring",
+      "node_id": "create-test-suite",
       "validated_by": [
         {
-          "command": "python -c import hello; assert hello.greet.__doc__ and len(hello.greet.__doc__.strip()) > 0, 'Docstring missing or empty'",
+          "command": "python -m pytest tests/test_core.py -v",
           "exit_code": 0,
-          "seq": 43
+          "seq": 32
         }
       ]
     },
@@ -187,59 +171,75 @@
       ],
       "final_state": "VALIDATED",
       "kind": "integrate",
-      "node_id": "verify-docstring-added",
+      "node_id": "run-full-test-suite",
       "validated_by": [
         {
-          "command": "python -c import hello; assert callable(hello.greet), 'greet not callable'; assert hello.greet.__doc__ and len(hello.greet.__doc__.strip()) > 0, 'docstring missing'",
+          "command": "python -m pytest tests/ -v --tb=short",
           "exit_code": 0,
-          "seq": 50
+          "seq": 39
         }
       ]
     }
   ],
-  "outcome": "BLOCKED",
+  "outcome": "COMPLETE",
   "planner_attempts": [
     {
-      "at": "2026-09-28T18:46:24.205472Z",
+      "at": "2026-09-28T19:12:43.493839Z",
       "attempt": 1,
       "capacity_class": "subscription",
-      "provider": "claude",
-      "route_id": "cc/claude-haiku-4-5-20251001",
+      "provider": "kiro",
+      "route_id": "kr/claude-haiku-4.5",
       "seq": 3
-    }
-  ],
-  "reason": "review status MISSING (PASS required)",
-  "reassignments": [
+    },
     {
-      "at": "2026-09-28T18:48:55.957601Z",
+      "at": "2026-09-28T19:12:59.913108Z",
       "attempt": 2,
-      "from_route": "cc/claude-sonnet-4-5-20250929",
-      "node_id": "add-greet-docstring",
-      "reason": "no_final_answer",
-      "seq": 34,
-      "to_route": "cc/claude-sonnet-4-6"
+      "budget": 7,
+      "reason": "parse_plan: node[0]: acceptance must be a list",
+      "route_id": "kr/claude-haiku-4.5",
+      "seq": 4
+    },
+    {
+      "at": "2026-09-28T19:13:11.472645Z",
+      "attempt": 2,
+      "budget": 7,
+      "error": "",
+      "ok": true,
+      "route_id": "kr/claude-haiku-4.5",
+      "seq": 5
     }
   ],
+  "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
+  "reassignments": [],
   "retry_budget": {
     "max_attempts_per_node": 4,
     "max_cooldown_wait_seconds": 120.0,
-    "max_parallel": 1
+    "max_parallel": 3
   },
   "review": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "category": "",
+        "duration_seconds": 2.217,
+        "route_id": "kr/gpt-5.6-terra",
+        "status": "PASS"
+      }
+    ],
     "blocking": 0,
-    "reviewer": "",
-    "route_id": "",
-    "status": "MISSING"
+    "reviewer": "open-code-review v1.12.9",
+    "route_id": "kr/gpt-5.6-terra",
+    "status": "PASS"
   },
   "route_identity_summary": {
-    "attempts": 4,
+    "attempts": 3,
     "match": 2,
     "mechanical": 1,
     "mismatch": 0,
-    "unattested": 1
+    "unattested": 0
   },
-  "run_id": "20260928T184622Z",
+  "run_id": "20260928T191241Z",
   "schema": "verdict.run-receipt/v1",
-  "started_at": "2026-09-28T18:46:22.863543Z",
+  "started_at": "2026-09-28T19:12:41.384907Z",
   "topology": "WORKER_CRITIC"
 }

@@ -1,13 +1,27 @@
 {
-  "claimed_outcome": "BLOCKED",
+  "claimed_outcome": "COMPLETE",
   "controller_events": [
     {
-      "at": "2026-09-28T18:45:16.360522Z",
+      "at": "2026-09-28T19:11:57.416329Z",
       "detail": "plan produced",
       "node_id": "",
-      "route_id": "cc/claude-haiku-4-5-20251001",
+      "route_id": "kr/claude-haiku-4.5",
       "seq": 6,
       "state": "HEALTHY"
+    },
+    {
+      "at": "2026-09-28T19:12:08.235513Z",
+      "excluded_families": [
+        "claude"
+      ],
+      "excluded_routes": [
+        "kr/claude-sonnet-4"
+      ],
+      "level": "family",
+      "node_id": "",
+      "reviewer_route": "kr/gpt-5.6-terra",
+      "seq": 33,
+      "state": "REVIEW_INDEPENDENCE"
     }
   ],
   "cooldowns": [],
@@ -16,58 +30,58 @@
       "actual_decision": {
         "capacity_class": "subscription",
         "frontier_planner_invoked": true,
-        "provider": "claude",
-        "route_id": "cc/claude-haiku-4-5-20251001"
+        "provider": "kiro",
+        "route_id": "kr/claude-haiku-4.5"
       },
-      "at": "2026-09-28T18:45:16.361459Z",
+      "at": "2026-09-28T19:11:57.417044Z",
       "mode": "SHADOW",
       "node_id": "",
       "seq": 7,
       "signals": {
-        "confidence": 0.922834951044617,
+        "confidence": 0.3730442679209244,
         "failure_class": null,
-        "input_digest": "fb79ae1f586f01c1efdddbc31ac583ec4cb82ab8976c4c799fe56bf0fd762901",
-        "latency_ms": 1198,
+        "input_digest": "034fa72d2e7fa121612450b64e0fb2b4ccf51e6a0c1b55beb58980d69d7c405e",
+        "latency_ms": 806,
         "mode": "SHADOW",
         "model": "openjev-0.1",
-        "observed_at": "2026-09-28T18:44:58.182630Z",
+        "observed_at": "2026-09-28T19:11:42.507943Z",
         "provider": "openjev",
         "purpose": "frontier_planning",
-        "request_id": "req_244e292586c7ca0acb6eb55a91d2358e",
+        "request_id": "req_0f2430dd69ee878f3b9e40a6947cf4b5",
         "schema_version": "decision-signals/v1",
         "signals": {
-          "ambiguity": 0.0003378661197133287,
-          "complexity": 0.0007709188796769847,
-          "context_need": 0.015821424295279846,
-          "decomposability": 0.9997699190366909,
-          "frontier_worthy": 0.0001387049710134026,
-          "security_sensitive": 1.5281992799810836e-06,
-          "verification_strength": 0.42386511708069313
+          "ambiguity": 0.36687922087930014,
+          "complexity": 0.5491488539943362,
+          "context_need": 0.22104158652811023,
+          "decomposability": 0.9196796704722666,
+          "frontier_worthy": 0.5242589096965394,
+          "security_sensitive": 0.010826643167613297,
+          "verification_strength": 0.5237808459050626
         },
         "usage": {
-          "input_tokens": 303,
+          "input_tokens": 292,
           "output_tokens": 0
         },
         "version": "openjev-0.1"
       }
     }
   ],
-  "event_count": 79,
-  "events_digest": "sha256:ac21ca0c7637f6760af67e3bdc6578e26df571c4c5042232745a490ccd278237",
-  "finished_at": "2026-09-28T18:45:42.394338Z",
-  "goal": "Add a docstring to the greet function in hello.py",
-  "graph_digest": "sha256:5e6b1c5c756126be6e257e198987f379de648c98a9e39b144dbadc14f908be49",
+  "event_count": 36,
+  "events_digest": "sha256:872e49155a95f8c57a671dbe17ecb9f9e25658199e8682273368b364e26014b6",
+  "finished_at": "2026-09-28T19:12:08.239989Z",
+  "goal": "test",
+  "graph_digest": "sha256:2aef988d5846c523b6fbad6ca67bd4cdabe16817edb640bc0d7c9234fa03c78e",
   "integration": {
     "barriers": [
       {
-        "name": "no_change",
+        "name": "integration",
         "ok": true,
-        "seq": 71
+        "seq": 32
       },
       {
         "name": "ownership",
         "ok": true,
-        "seq": 70
+        "seq": 20
       }
     ],
     "missing": [],
@@ -79,175 +93,121 @@
         {
           "attempt": 1,
           "capacity_class": "subscription",
-          "duration_seconds": 7.01,
-          "executed_model": "claude-sonnet-4-5-20250929",
-          "failure_category": "verification_failed",
+          "duration_seconds": 6.06,
+          "executed_model": "claude-sonnet-4",
           "fault_injected": false,
-          "intended_route": "cc/claude-sonnet-4-5-20250929",
-          "outcome": "failure",
-          "provider": "cc",
-          "route_id": "cc/claude-sonnet-4-5-20250929",
+          "intended_route": "kr/claude-sonnet-4",
+          "outcome": "success",
+          "provider": "kr",
+          "route_id": "kr/claude-sonnet-4",
           "route_identity": "mismatch",
           "usage": {
             "cost_usd": null,
-            "input_tokens": 265,
-            "output_tokens": 499,
-            "tokens_source": "http_response",
-            "turns": 1
-          }
-        },
-        {
-          "attempt": 2,
-          "capacity_class": "subscription",
-          "duration_seconds": 7.09,
-          "executed_model": "claude-sonnet-4-5-20250929",
-          "failure_category": "verification_failed",
-          "fault_injected": false,
-          "intended_route": "cc/claude-sonnet-4-5-20250929",
-          "outcome": "failure",
-          "provider": "cc",
-          "route_id": "cc/claude-sonnet-4-5-20250929",
-          "route_identity": "mismatch",
-          "usage": {
-            "cost_usd": null,
-            "input_tokens": 373,
-            "output_tokens": 441,
-            "tokens_source": "http_response",
-            "turns": 1
-          }
-        },
-        {
-          "attempt": 3,
-          "capacity_class": "subscription",
-          "duration_seconds": 4.19,
-          "executed_model": "claude-sonnet-4-6",
-          "failure_category": "verification_failed",
-          "fault_injected": false,
-          "intended_route": "cc/claude-sonnet-4-6",
-          "outcome": "failure",
-          "provider": "cc",
-          "route_id": "cc/claude-sonnet-4-6",
-          "route_identity": "mismatch",
-          "usage": {
-            "cost_usd": null,
-            "input_tokens": 374,
-            "output_tokens": 306,
-            "tokens_source": "http_response",
-            "turns": 1
-          }
-        },
-        {
-          "attempt": 4,
-          "capacity_class": "subscription",
-          "duration_seconds": 4.3,
-          "executed_model": "claude-sonnet-4-6",
-          "failure_category": "pool_exhausted",
-          "fault_injected": false,
-          "intended_route": "cc/claude-sonnet-4-6",
-          "outcome": "failure",
-          "provider": "cc",
-          "route_id": "cc/claude-sonnet-4-6",
-          "route_identity": "mismatch",
-          "usage": {
-            "cost_usd": null,
-            "input_tokens": 374,
-            "output_tokens": 324,
+            "input_tokens": 4721,
+            "output_tokens": 482,
             "tokens_source": "http_response",
             "turns": 1
           }
         }
       ],
-      "final_state": "BLOCKED",
+      "final_state": "VALIDATED",
       "kind": "implement",
-      "node_id": "add-greet-docstring",
-      "validated_by": []
+      "node_id": "setup-test-framework",
+      "validated_by": [
+        {
+          "command": "python -m pytest tests/ -v",
+          "exit_code": 0,
+          "seq": 21
+        }
+      ]
     },
     {
-      "attempts": [],
-      "final_state": "BLOCKED",
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "unknown",
+          "duration_seconds": 0.0,
+          "executed_model": "(mechanical merge)",
+          "fault_injected": false,
+          "intended_route": "",
+          "outcome": "success",
+          "provider": "",
+          "route_id": "",
+          "route_identity": "mechanical"
+        }
+      ],
+      "final_state": "VALIDATED",
       "kind": "integrate",
-      "node_id": "integrate",
-      "validated_by": []
+      "node_id": "integrate-tests",
+      "validated_by": [
+        {
+          "command": "python -m pytest tests/ -v",
+          "exit_code": 0,
+          "seq": 28
+        }
+      ]
     }
   ],
-  "outcome": "BLOCKED",
+  "outcome": "COMPLETE",
   "planner_attempts": [
     {
-      "at": "2026-09-28T18:45:00.542780Z",
+      "at": "2026-09-28T19:11:44.149742Z",
       "attempt": 1,
       "capacity_class": "subscription",
-      "provider": "claude",
-      "route_id": "cc/claude-haiku-4-5-20251001",
+      "provider": "kiro",
+      "route_id": "kr/claude-haiku-4.5",
       "seq": 3
     },
     {
-      "at": "2026-09-28T18:45:09.320098Z",
+      "at": "2026-09-28T19:11:52.058232Z",
       "attempt": 2,
       "budget": 7,
       "reason": "parse_plan: node[0]: acceptance must be a list",
-      "route_id": "cc/claude-haiku-4-5-20251001",
+      "route_id": "kr/claude-haiku-4.5",
       "seq": 4
     },
     {
-      "at": "2026-09-28T18:45:16.358960Z",
+      "at": "2026-09-28T19:11:57.414244Z",
       "attempt": 2,
       "budget": 7,
       "error": "",
       "ok": true,
-      "route_id": "cc/claude-haiku-4-5-20251001",
+      "route_id": "kr/claude-haiku-4.5",
       "seq": 5
     }
   ],
-  "reason": "node add-greet-docstring not VALIDATED (final_state=BLOCKED)",
-  "reassignments": [
-    {
-      "at": "2026-09-28T18:45:24.846676Z",
-      "attempt": 2,
-      "from_route": "cc/claude-sonnet-4-5-20250929",
-      "node_id": "add-greet-docstring",
-      "reason": "verification_failed",
-      "seq": 29,
-      "to_route": "cc/claude-sonnet-4-5-20250929"
-    },
-    {
-      "at": "2026-09-28T18:45:33.728393Z",
-      "attempt": 3,
-      "from_route": "cc/claude-sonnet-4-5-20250929",
-      "node_id": "add-greet-docstring",
-      "reason": "verification_failed",
-      "seq": 45,
-      "to_route": "cc/claude-sonnet-4-6"
-    },
-    {
-      "at": "2026-09-28T18:45:38.015683Z",
-      "attempt": 4,
-      "from_route": "cc/claude-sonnet-4-6",
-      "node_id": "add-greet-docstring",
-      "reason": "verification_failed",
-      "seq": 62,
-      "to_route": "cc/claude-sonnet-4-6"
-    }
-  ],
+  "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
+  "reassignments": [],
   "retry_budget": {
     "max_attempts_per_node": 4,
     "max_cooldown_wait_seconds": 120.0,
-    "max_parallel": 1
+    "max_parallel": 3
   },
   "review": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "category": "",
+        "duration_seconds": 2.061,
+        "route_id": "kr/gpt-5.6-terra",
+        "status": "PASS"
+      }
+    ],
     "blocking": 0,
-    "reviewer": "",
-    "route_id": "",
-    "status": "MISSING"
+    "reviewer": "open-code-review v1.12.9",
+    "route_id": "kr/gpt-5.6-terra",
+    "status": "PASS"
   },
   "route_identity_summary": {
-    "attempts": 4,
+    "attempts": 2,
     "match": 0,
-    "mechanical": 0,
-    "mismatch": 4,
+    "mechanical": 1,
+    "mismatch": 1,
     "unattested": 0
   },
-  "run_id": "20260928T184458Z",
+  "route_identity_warning": "One or more successful attempts reported a model different from the intended route",
+  "run_id": "20260928T191142Z",
   "schema": "verdict.run-receipt/v1",
-  "started_at": "2026-09-28T18:44:58.180815Z",
+  "started_at": "2026-09-28T19:11:42.503801Z",
   "topology": "WORKER_CRITIC"
 }
