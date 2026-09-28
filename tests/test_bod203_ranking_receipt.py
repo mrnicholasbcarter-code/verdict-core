@@ -15,6 +15,7 @@ Verifies:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -22,6 +23,7 @@ from verdict.contracts import RoutingDecisionContract
 from verdict.decision_signals.advisory import InfluenceRecord, advise_order
 from verdict.decision_signals.contracts import DecisionSignalSetV1
 from verdict.gateway_adapters import NormalizedFailureClass
+from verdict.models import RoutingDecision
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -382,3 +384,96 @@ class TestContractAdaptiveInfluence:
         d = contract.to_dict()
         assert d["adaptive_influence"]["advice_changed"] is False
         assert d["adaptive_influence"]["profile"] == "skipped:protected"
+
+
+class TestRoutingDecisionAdaptiveInfluenceField:
+    """BOD-203 AC2 fix: adaptive_influence is a proper declared field on RoutingDecision."""
+
+    def _sample_receipt(self) -> dict[str, Any]:
+        return {
+            "applied": True,
+            "profile": "economy",
+            "reason": "advisory_economy",
+            "baseline_first": "cheap-model",
+            "advised_first": "cheap-model",
+            "signals_digest": "abc123",
+            "baseline_order": ["cheap-model", "big-model"],
+            "advised_order": ["cheap-model", "big-model"],
+            "signal_confidence": 0.85,
+            "signal_version": "v1",
+            "advice_changed": False,
+        }
+
+    def test_field_declared_on_dataclass(self) -> None:
+        """adaptive_influence is a declared dataclass field, not injected."""
+        import dataclasses
+
+        field_names = {f.name for f in dataclasses.fields(RoutingDecision)}
+        assert "adaptive_influence" in field_names
+
+    def test_default_is_none(self) -> None:
+        """Default value is None (backward compat)."""
+        dec = RoutingDecision(model="m", provider="p", tier=1, reason="r")
+        assert dec.adaptive_influence is None
+
+    def test_constructor_accepts_adaptive_influence(self) -> None:
+        """Can pass adaptive_influence in the constructor."""
+        receipt = self._sample_receipt()
+        dec = RoutingDecision(
+            model="m", provider="p", tier=1, reason="r", adaptive_influence=receipt
+        )
+        assert dec.adaptive_influence is receipt
+
+    def test_asdict_includes_adaptive_influence(self) -> None:
+        """dataclasses.asdict() serializes the declared field."""
+        import dataclasses
+
+        receipt = self._sample_receipt()
+        dec = RoutingDecision(
+            model="m", provider="p", tier=1, reason="r", adaptive_influence=receipt
+        )
+        d = dataclasses.asdict(dec)
+        assert "adaptive_influence" in d
+        assert d["adaptive_influence"]["applied"] is True
+        assert d["adaptive_influence"]["baseline_order"] == ["cheap-model", "big-model"]
+
+    def test_asdict_none_when_unset(self) -> None:
+        """asdict() includes adaptive_influence=None when not set."""
+        import dataclasses
+
+        dec = RoutingDecision(model="m", provider="p", tier=1, reason="r")
+        d = dataclasses.asdict(dec)
+        assert "adaptive_influence" in d
+        assert d["adaptive_influence"] is None
+
+    def test_replace_preserves_adaptive_influence(self) -> None:
+        """dataclasses.replace() carries adaptive_influence to the new instance."""
+        import dataclasses
+
+        receipt = self._sample_receipt()
+        dec = RoutingDecision(
+            model="m", provider="p", tier=1, reason="r", adaptive_influence=receipt
+        )
+        dec2 = dataclasses.replace(dec, transport_outcome="success")
+        assert dec2.adaptive_influence is receipt
+        assert dec2.transport_outcome == "success"
+
+    def test_replace_can_override_adaptive_influence(self) -> None:
+        """dataclasses.replace() can explicitly override adaptive_influence."""
+        import dataclasses
+
+        receipt = self._sample_receipt()
+        dec = RoutingDecision(
+            model="m", provider="p", tier=1, reason="r", adaptive_influence=receipt
+        )
+        dec2 = dataclasses.replace(dec, adaptive_influence=None)
+        assert dec2.adaptive_influence is None
+
+    def test_dict_spread_includes_adaptive_influence(self) -> None:
+        """__dict__ spread includes adaptive_influence (no TypeError on re-construct)."""
+        receipt = self._sample_receipt()
+        dec = RoutingDecision(
+            model="m", provider="p", tier=1, reason="r", adaptive_influence=receipt
+        )
+        dec2 = RoutingDecision(**dec.__dict__)
+        assert dec2.adaptive_influence is receipt

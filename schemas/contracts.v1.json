@@ -613,7 +613,21 @@
           "type": "string"
         },
         "adaptive_influence": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "applied": { "type": "boolean" },
+            "profile": { "type": "string" },
+            "reason": { "type": "string" },
+            "baseline_first": { "type": ["string", "null"] },
+            "advised_first": { "type": ["string", "null"] },
+            "signals_digest": { "type": ["string", "null"] },
+            "baseline_order": { "type": "array", "items": { "type": "string" } },
+            "advised_order": { "type": "array", "items": { "type": "string" } },
+            "signal_confidence": { "type": "number" },
+            "signal_version": { "type": "string" },
+            "advice_changed": { "type": "boolean" }
+          },
+          "additionalProperties": true
         },
         "fallback_plan": {
           "type": "array",

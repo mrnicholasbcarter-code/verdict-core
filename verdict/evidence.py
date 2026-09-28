@@ -344,6 +344,9 @@ def build_routing_decision_contract(
             "escalated": decision.escalated,
             "escalation_reason": redact_text(decision.escalation_reason or ""),
             "request_features": feature_snapshot,
+            **(
+                decision.adaptive_influence if isinstance(decision.adaptive_influence, dict) else {}
+            ),
         },
         "fallback_plan": [],
         "correlation_id": cid,

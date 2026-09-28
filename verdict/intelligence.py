@@ -671,15 +671,6 @@ class IntelligenceService:
             )
 
         elapsed = (time.time() - start_t) * 1000
-        dec = RoutingDecision(
-            **{
-                **dec.__dict__,
-                "latency_ms": elapsed,
-                "logged": bool(self.log_path),
-                "request_id": request_id or dec.request_id,
-            }
-        )
-
         # BOD-203 AC2: attach ranking receipt to the decision.
         # When advisory was skipped entirely (no advise_order call), build a
         # skip receipt so callers always find a receipt when advisory was attempted.
@@ -703,10 +694,16 @@ class IntelligenceService:
                 "signal_version": "",
                 "advice_changed": False,
             }
-        # Attach as adaptive_influence on the frozen dataclass so downstream
-        # RoutingDecisionContract.from_legacy picks it up into the typed field.
-        if _ranking_receipt is not None:
-            object.__setattr__(dec, "adaptive_influence", _ranking_receipt)
+
+        dec = RoutingDecision(
+            **{
+                **dec.__dict__,
+                "latency_ms": elapsed,
+                "logged": bool(self.log_path),
+                "request_id": request_id or dec.request_id,
+                "adaptive_influence": _ranking_receipt,
+            }
+        )
 
         if self.log_path:
             log_decision(self.log_path, task_str, req_tier, dec, self.log_full_task)
