@@ -520,7 +520,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
     viewer = None
     if not args.json:
         viewer = threading.Thread(
-            target=lambda: follow(events_path, stop_when_final=True, start_seq=prior_seq),
+            # Background progress view: never interactive (it must not read stdin
+            # or change terminal mode while the orchestration loop runs).
+            target=lambda: follow(
+                events_path, stop_when_final=True, start_seq=prior_seq, interactive=False
+            ),
             daemon=True,
         )
         viewer.start()
@@ -570,7 +574,11 @@ def _watch(args: argparse.Namespace) -> int:
     if args.replay:
         view = follow_replay(events, speed=args.speed)
         return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
-    view = follow(events, stop_when_final=True)
+    from verdict.design import presentation_mode
+
+    mode = presentation_mode(stream=sys.stdout)
+    interactive = sys.stdin.isatty() and sys.stdout.isatty() and mode.animate
+    view = follow(events, stop_when_final=True, interactive=interactive)
     return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
 
 

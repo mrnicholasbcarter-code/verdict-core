@@ -58,6 +58,11 @@ _STATE_GLYPH: Mapping[NodeState, str] = {
 }
 LADDER: tuple[str, ...] = ("discovered", "entitled", "healthy", "available", "eligible")
 
+# Hard cap for the non-interactive follow() loop when neither max_polls nor
+# stop_when_final provides a natural exit.  Keeps background callers safe even
+# when the caller passes stop_when_final=False and no max_polls.
+_NON_INTERACTIVE_MAX_POLLS: int = 2000
+
 
 def _t(value: object, limit: int = 120) -> str:
     """Sanitized, whitespace-collapsed, length-bounded label."""
@@ -972,18 +977,50 @@ def follow(
     poll_seconds: float = 0.25,
     max_polls: int | None = None,
     start_seq: int = 0,
+    interactive: bool = False,
+    key_reader: Any | None = None,
+    max_iterations: int = 2000,
 ) -> RunView:
     """Live-tail a JSONL events file; plain mode prints one narrative line per event.
 
     ``start_seq`` skips events from earlier controller lives of a resumed run, so
     a previous ``run_finished`` cannot end (or mislabel) the current live view.
+
+    When ``interactive`` is True the cockpit navigation layer from
+    :mod:`verdict.orchestration.cockpit_nav` takes over: arrow keys / j / k
+    move the selection, Enter opens the node detail panel, ``d`` expands
+    technical details, ``?`` toggles help, ``Esc`` navigates back and ``q``
+    quits.  Callers must opt in explicitly; ``follow()`` never auto-detects a
+    TTY and enters the cockpit on its own.  ``verdict watch`` on a real TTY
+    passes ``interactive=True``; background callers (supervise threads, tests)
+    keep the default ``False`` and always use the non-interactive path.
     """
     target = console or Console()
     plain = plain_mode(console)
     width = target.width or 100
-    view, seen, polls = RunView(), 0, 0
+    view: RunView = RunView()
+    seen, polls = 0, 0
     if start_seq:
         seen = sum(1 for e in read_events(events_path) if _event_seq(e) <= start_seq)
+
+    if interactive:
+        # Prime the view with any events already skipped by start_seq so the
+        # cockpit's first frame reflects the current state accurately.
+        if seen:
+            for evt in read_events(events_path)[:seen]:
+                view.apply(evt)
+        return _run_interactive_cockpit(
+            events_path,
+            view=view,
+            seen=seen,
+            console=target,
+            plain=plain,
+            key_reader=key_reader,
+            poll_seconds=max(0.0, poll_seconds),
+            max_iterations=max_iterations,
+            stop_when_final=stop_when_final,
+        )
+
     live = (
         None
         if plain
@@ -991,8 +1028,15 @@ def follow(
     )
     if live is not None:
         live.start(refresh=True)
+    # Apply a hard cap when stop_when_final=False and no explicit max_polls is
+    # given, so no caller can hang indefinitely in the non-interactive path.
+    _bound = (
+        max_polls
+        if max_polls is not None
+        else (None if stop_when_final else _NON_INTERACTIVE_MAX_POLLS)
+    )
     try:
-        while max_polls is None or polls < max_polls:
+        while _bound is None or polls < _bound:
             polls += 1
             events = read_events(events_path)
             for event in events[seen:]:
@@ -1008,6 +1052,56 @@ def follow(
     finally:
         if live is not None:
             live.stop()
+    return view
+
+
+def _run_interactive_cockpit(
+    events_path: Path,
+    *,
+    view: RunView,
+    seen: int,
+    console: Console,
+    plain: bool,
+    key_reader: Any | None,
+    poll_seconds: float,
+    max_iterations: int,
+    stop_when_final: bool,
+) -> RunView:
+    """Drive :func:`cockpit_nav.run_cockpit` against the live events file.
+
+    ``seen`` is the number of events already applied to ``view`` (used to
+    skip a previous controller life via ``start_seq``).
+    """
+    from verdict.orchestration.cockpit_nav import _RealKeyReader, run_cockpit
+    from verdict.orchestration.tui import render as _render
+
+    reader = key_reader
+    if reader is None:
+        # Real TTY reader; ScriptedKeyReader is chosen by tests explicitly.
+        reader = _RealKeyReader()
+
+    # ``events_source`` returns the tail after ``seen``; the cockpit applies
+    # the delta.  We recompute the full events list each poll from disk and
+    # only replay the events the cockpit has not seen yet.
+    already: list[RunEvent] = list(read_events(events_path))[:seen]
+
+    def _source() -> list[RunEvent]:
+        return already + list(read_events(events_path))[seen:]
+
+    def _render_dashboard(v: Any, width: int, plain_flag: bool) -> Any:
+        return _render(v, width=width, plain=plain_flag)
+
+    run_cockpit(
+        view=view,
+        events_source=_source,
+        render_dashboard=_render_dashboard,
+        console=console,
+        key_reader=reader,
+        plain=plain,
+        poll_seconds=poll_seconds,
+        max_iterations=max_iterations,
+        stop_when_final=stop_when_final,
+    )
     return view
 
 
