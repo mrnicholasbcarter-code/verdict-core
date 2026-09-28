@@ -1,11 +1,11 @@
-"""Tests for SONA outcome records (BOD-90 / BOD-203).
+"""Tests for outcome records (BOD-90 / BOD-203).
 
 Covers:
 - build from live4_calibration receipt fixture (alpha success, beta 2 attempts + 1 reroute)
 - synthetic cancelled and fail-closed runs → negative records
 - unknown cost → None
 - schema parity between dataclass and JSON schema
-- receipt digest still verifies after sona-outcomes.jsonl sidecar is written
+- receipt digest still verifies after outcome-records.jsonl sidecar is written
 """
 
 from __future__ import annotations
@@ -17,10 +17,15 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
-from verdict.sona import SONA_FILE, SONAOutcomeRecord, build_sona_records, write_sona_outcomes
+from verdict.outcome_records import (
+    OUTCOME_RECORDS_FILE,
+    OutcomeRecord,
+    build_outcome_records,
+    write_outcome_records,
+)
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "live4_calibration"
-SCHEMA_PATH = Path(__file__).parents[1] / "verdict" / "schemas" / "sona-outcome.v1.json"
+SCHEMA_PATH = Path(__file__).parents[1] / "verdict" / "schemas" / "outcome-record.v1.json"
 
 
 @pytest.fixture()
@@ -29,7 +34,7 @@ def live_receipt() -> dict[str, Any]:
 
 
 @pytest.fixture()
-def sona_schema() -> dict[str, Any]:
+def outcome_schema() -> dict[str, Any]:
     return json.loads(SCHEMA_PATH.read_text())
 
 
@@ -40,11 +45,11 @@ class TestLiveReceipt:
     """Build SONA records from the live4_calibration receipt."""
 
     def test_record_count(self, live_receipt: dict[str, Any]) -> None:
-        records = build_sona_records(live_receipt)
+        records = build_outcome_records(live_receipt)
         assert len(records) == 2  # alpha + beta
 
     def test_alpha_record(self, live_receipt: dict[str, Any]) -> None:
-        records = build_sona_records(live_receipt)
+        records = build_outcome_records(live_receipt)
         alpha = next(r for r in records if r.node_id == "alpha")
         assert alpha.outcome == "accepted"
         assert alpha.role == "implement"
@@ -58,7 +63,7 @@ class TestLiveReceipt:
         assert len(alpha.verified_commands) == 1
 
     def test_beta_record(self, live_receipt: dict[str, Any]) -> None:
-        records = build_sona_records(live_receipt)
+        records = build_outcome_records(live_receipt)
         beta = next(r for r in records if r.node_id == "beta")
         assert beta.outcome == "accepted"
         assert beta.role == "implement"
@@ -74,13 +79,13 @@ class TestLiveReceipt:
 
     def test_beta_cost_zero_from_provider(self, live_receipt: dict[str, Any]) -> None:
         """Fixture reports cost_usd=0.0 from provider — accepted as real zero."""
-        records = build_sona_records(live_receipt)
+        records = build_outcome_records(live_receipt)
         beta = next(r for r in records if r.node_id == "beta")
         # Both attempts report cost_usd=0.0 — that is a real provider value
         assert beta.cost_usd == 0.0
 
     def test_run_id_propagated(self, live_receipt: dict[str, Any]) -> None:
-        records = build_sona_records(live_receipt)
+        records = build_outcome_records(live_receipt)
         for r in records:
             assert r.run_id == live_receipt["run_id"]
 
@@ -109,7 +114,7 @@ class TestNegativeRecords:
         receipt = _minimal_receipt(
             [{"node_id": "n1", "kind": "implement", "final_state": "PLANNED", "attempts": []}]
         )
-        records = build_sona_records(receipt)
+        records = build_outcome_records(receipt)
         assert len(records) == 1
         assert records[0].outcome == "cancelled"
         assert records[0].proof_pass is None
@@ -132,7 +137,7 @@ class TestNegativeRecords:
                 }
             ]
         )
-        records = build_sona_records(receipt)
+        records = build_outcome_records(receipt)
         assert len(records) == 1
         assert records[0].outcome == "timeout"
         assert records[0].input_tokens == 100
@@ -156,7 +161,7 @@ class TestNegativeRecords:
                 }
             ]
         )
-        records = build_sona_records(receipt)
+        records = build_outcome_records(receipt)
         assert len(records) == 1
         assert records[0].outcome == "rejected"
         assert records[0].proof_pass is False
@@ -174,7 +179,7 @@ class TestNegativeRecords:
                 }
             ]
         )
-        records = build_sona_records(receipt)
+        records = build_outcome_records(receipt)
         assert records[0].outcome == "rejected"
         assert records[0].role == "review"
 
@@ -203,7 +208,7 @@ class TestCostHandling:
                 }
             ]
         )
-        records = build_sona_records(receipt)
+        records = build_outcome_records(receipt)
         assert records[0].cost_usd is None
 
     def test_partial_cost_returns_none(self) -> None:
@@ -230,7 +235,7 @@ class TestCostHandling:
                 }
             ]
         )
-        records = build_sona_records(receipt)
+        records = build_outcome_records(receipt)
         assert records[0].cost_usd is None
 
     def test_all_costs_present_returns_sum(self) -> None:
@@ -257,14 +262,14 @@ class TestCostHandling:
                 }
             ]
         )
-        records = build_sona_records(receipt)
+        records = build_outcome_records(receipt)
         assert records[0].cost_usd == pytest.approx(0.03)
 
     def test_no_attempts_cost_none(self) -> None:
         receipt = _minimal_receipt(
             [{"node_id": "n1", "kind": "implement", "final_state": "PLANNED", "attempts": []}]
         )
-        records = build_sona_records(receipt)
+        records = build_outcome_records(receipt)
         assert records[0].cost_usd is None
 
 
@@ -272,36 +277,36 @@ class TestCostHandling:
 
 
 class TestSchemaParity:
-    """JSON schema matches SONAOutcomeRecord dataclass fields."""
+    """JSON schema matches OutcomeRecord dataclass fields."""
 
-    def test_schema_valid(self, sona_schema: dict[str, Any]) -> None:
-        Draft202012Validator.check_schema(sona_schema)
+    def test_schema_valid(self, outcome_schema: dict[str, Any]) -> None:
+        Draft202012Validator.check_schema(outcome_schema)
 
-    def test_dataclass_fields_match_schema(self, sona_schema: dict[str, Any]) -> None:
+    def test_dataclass_fields_match_schema(self, outcome_schema: dict[str, Any]) -> None:
         import dataclasses
 
-        dc_fields = {f.name for f in dataclasses.fields(SONAOutcomeRecord)}
-        schema_props = set(sona_schema["properties"].keys())
+        dc_fields = {f.name for f in dataclasses.fields(OutcomeRecord)}
+        schema_props = set(outcome_schema["properties"].keys())
         assert dc_fields == schema_props, (
             f"mismatch: dataclass-only={dc_fields - schema_props}, "
             f"schema-only={schema_props - dc_fields}"
         )
 
     def test_record_validates_against_schema(
-        self, live_receipt: dict[str, Any], sona_schema: dict[str, Any]
+        self, live_receipt: dict[str, Any], outcome_schema: dict[str, Any]
     ) -> None:
-        validator = Draft202012Validator(sona_schema)
-        records = build_sona_records(live_receipt)
+        validator = Draft202012Validator(outcome_schema)
+        records = build_outcome_records(live_receipt)
         for record in records:
             errors = list(validator.iter_errors(record.to_dict()))
             assert not errors, f"{record.node_id}: {errors}"
 
-    def test_negative_record_validates(self, sona_schema: dict[str, Any]) -> None:
+    def test_negative_record_validates(self, outcome_schema: dict[str, Any]) -> None:
         receipt = _minimal_receipt(
             [{"node_id": "n1", "kind": "implement", "final_state": "PLANNED", "attempts": []}]
         )
-        records = build_sona_records(receipt)
-        validator = Draft202012Validator(sona_schema)
+        records = build_outcome_records(receipt)
+        validator = Draft202012Validator(outcome_schema)
         errors = list(validator.iter_errors(records[0].to_dict()))
         assert not errors, errors
 
@@ -349,7 +354,7 @@ class TestReceiptDigestIntegrity:
         log.emit("barrier", node_id="a", name="int", ok=True)
         log.emit("run_finished", outcome="COMPLETE", reason="done")
 
-        # write_run_receipt now also writes sona-outcomes.jsonl
+        # write_run_receipt now also writes outcome-records.jsonl
         receipt_path = write_run_receipt(run_dir)
         assert receipt_path.exists()
 
@@ -357,10 +362,10 @@ class TestReceiptDigestIntegrity:
         problems = verify_run_receipt(run_dir)
         assert problems == [], f"receipt verification failed: {problems}"
 
-        # Confirm sona file was written
-        sona_path = run_dir / SONA_FILE
-        assert sona_path.exists()
-        lines = sona_path.read_text().strip().split("\n")
+        # Confirm outcome-records file was written
+        outcome_path = run_dir / OUTCOME_RECORDS_FILE
+        assert outcome_path.exists()
+        lines = outcome_path.read_text().strip().split("\n")
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["run_id"] == "sidecar-test"
@@ -374,10 +379,10 @@ class TestReceiptDigestIntegrity:
 
         with tempfile.TemporaryDirectory() as td:
             run_dir = Path(td)
-            write_sona_outcomes(run_dir, live_receipt)
+            write_outcome_records(run_dir, live_receipt)
 
-            expected = build_sona_records(live_receipt)
-            lines = (run_dir / SONA_FILE).read_text().strip().split("\n")
+            expected = build_outcome_records(live_receipt)
+            lines = (run_dir / OUTCOME_RECORDS_FILE).read_text().strip().split("\n")
             assert len(lines) == len(expected)
             for line, exp in zip(lines, expected, strict=True):
                 got = json.loads(line)

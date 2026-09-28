@@ -1,11 +1,12 @@
-"""SONA outcome records derived from orchestration receipts.
+"""Outcome records derived from orchestration run receipts.
 
-Each node in a completed run produces one ``SONAOutcomeRecord``.  Cancelled,
+SONA is the learning loop these records feed.  Each node in a completed
+run produces one ``OutcomeRecord``.  Cancelled,
 timed-out and fail-closed nodes produce **negative** records (outcome !=
 ``accepted``) so the learning pipeline never silently drops failures.
 
-``build_sona_records`` is called once by ``write_run_receipt`` and persisted as
-``sona-outcomes.jsonl`` beside the run's event log.
+``build_outcome_records`` is called once by ``write_run_receipt`` and persisted as
+``outcome-records.jsonl`` beside the run's event log.
 """
 
 from __future__ import annotations
@@ -15,12 +16,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-SONA_FILE = "sona-outcomes.jsonl"
+OUTCOME_RECORDS_FILE = "outcome-records.jsonl"
 
 
 @dataclass(frozen=True)
-class SONAOutcomeRecord:
-    """One node's learning signal extracted from a run receipt."""
+class OutcomeRecord:
+    """One node's learning signal extracted from a run receipt (SONA loop)."""
 
     run_id: str
     node_id: str
@@ -121,8 +122,8 @@ def _sum_usage(attempts: list[dict[str, Any]]) -> tuple[int, int, float | None]:
     return inp, out, final_cost
 
 
-def build_sona_records(receipt: dict[str, Any]) -> list[SONAOutcomeRecord]:
-    """Build one ``SONAOutcomeRecord`` per node from a run receipt.
+def build_outcome_records(receipt: dict[str, Any]) -> list[OutcomeRecord]:
+    """Build one ``OutcomeRecord`` per node from a run receipt.
 
     Cancelled, timed-out and fail-closed nodes produce **negative** records.
     """
@@ -137,7 +138,7 @@ def build_sona_records(receipt: dict[str, Any]) -> list[SONAOutcomeRecord]:
         if nid:
             reroutes_by_node[nid] = reroutes_by_node.get(nid, 0) + 1
 
-    records: list[SONAOutcomeRecord] = []
+    records: list[OutcomeRecord] = []
     for node in receipt.get("nodes") or []:
         node_id: str = str(node.get("node_id", ""))
         kind: str = str(node.get("kind", ""))
@@ -182,7 +183,7 @@ def build_sona_records(receipt: dict[str, Any]) -> list[SONAOutcomeRecord]:
         inp, out, cost = _sum_usage(attempts)
 
         records.append(
-            SONAOutcomeRecord(
+            OutcomeRecord(
                 run_id=run_id,
                 node_id=node_id,
                 role=kind,
@@ -208,10 +209,10 @@ def build_sona_records(receipt: dict[str, Any]) -> list[SONAOutcomeRecord]:
     return records
 
 
-def write_sona_outcomes(run_dir: Path, receipt: dict[str, Any]) -> Path:
-    """Write ``sona-outcomes.jsonl`` beside the run's event log."""
-    records = build_sona_records(receipt)
-    target = run_dir / SONA_FILE
+def write_outcome_records(run_dir: Path, receipt: dict[str, Any]) -> Path:
+    """Write ``outcome-records.jsonl`` beside the run's event log."""
+    records = build_outcome_records(receipt)
+    target = run_dir / OUTCOME_RECORDS_FILE
     lines = [json.dumps(r.to_dict(), sort_keys=True, separators=(",", ":")) for r in records]
     target.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return target

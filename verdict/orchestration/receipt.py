@@ -40,7 +40,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     route_provider,
 )
-from verdict.sona import write_sona_outcomes
+from verdict.outcome_records import write_outcome_records
 
 RECEIPT_SCHEMA = "verdict.run-receipt/v1"
 EVENTS_FILE = "events.jsonl"
@@ -508,7 +508,7 @@ def write_run_receipt(run_dir: Path) -> Path:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    write_sona_outcomes(run_dir, receipt)
+    write_outcome_records(run_dir, receipt)
     _fsync_dir(run_dir)
     return target
 
