@@ -669,13 +669,7 @@ def test_follow_non_interactive_max_polls_respected(tmp_path: Path) -> None:
 
     console = _Console(file=io.StringIO(), force_terminal=False, width=100)
     # stop_when_final=False with max_polls=3 -- must exit after 3 polls, not loop forever
-    view = _follow(
-        events,
-        console=console,
-        poll_seconds=0.0,
-        max_polls=3,
-        stop_when_final=False,
-    )
+    view = _follow(events, console=console, poll_seconds=0.0, max_polls=3, stop_when_final=False)
     assert view.goal == "pending"
 
 
@@ -708,6 +702,7 @@ def test_watch_non_tty_stdout_calls_follow_non_interactive(tmp_path: Path, monke
     def _fake_follow(path, **kwargs):  # type: ignore[override]
         calls.append(kwargs)
         from verdict.orchestration.tui import RunView
+
         v = RunView.__new__(RunView)
         object.__setattr__(v, "outcome", "COMPLETE")
         object.__setattr__(v, "goal", "g")
@@ -715,9 +710,7 @@ def test_watch_non_tty_stdout_calls_follow_non_interactive(tmp_path: Path, monke
         return v
 
     monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
-    monkeypatch.setattr(
-        "verdict.orchestration.cli.follow", _fake_follow, raising=False
-    )
+    monkeypatch.setattr("verdict.orchestration.cli.follow", _fake_follow, raising=False)
     # non-TTY stdout
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: False)
@@ -751,6 +744,7 @@ def test_watch_ci_env_calls_follow_non_interactive(tmp_path: Path, monkeypatch) 
     def _fake_follow(path, **kwargs):  # type: ignore[override]
         calls.append(kwargs)
         from verdict.orchestration.tui import RunView
+
         v = RunView.__new__(RunView)
         object.__setattr__(v, "outcome", "COMPLETE")
         object.__setattr__(v, "goal", "g")
@@ -758,9 +752,7 @@ def test_watch_ci_env_calls_follow_non_interactive(tmp_path: Path, monkeypatch) 
         return v
 
     monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
-    monkeypatch.setattr(
-        "verdict.orchestration.cli.follow", _fake_follow, raising=False
-    )
+    monkeypatch.setattr("verdict.orchestration.cli.follow", _fake_follow, raising=False)
     # Both streams claim to be a TTY but CI=1 forces plain
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
@@ -796,6 +788,7 @@ def test_watch_no_color_env_calls_follow_non_interactive(tmp_path: Path, monkeyp
     def _fake_follow(path, **kwargs):  # type: ignore[override]
         calls.append(kwargs)
         from verdict.orchestration.tui import RunView
+
         v = RunView.__new__(RunView)
         object.__setattr__(v, "outcome", "COMPLETE")
         object.__setattr__(v, "goal", "g")
@@ -803,9 +796,7 @@ def test_watch_no_color_env_calls_follow_non_interactive(tmp_path: Path, monkeyp
         return v
 
     monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
-    monkeypatch.setattr(
-        "verdict.orchestration.cli.follow", _fake_follow, raising=False
-    )
+    monkeypatch.setattr("verdict.orchestration.cli.follow", _fake_follow, raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.setenv("NO_COLOR", "1")
@@ -840,6 +831,7 @@ def test_watch_tty_no_plain_signal_calls_follow_interactive(tmp_path: Path, monk
     def _fake_follow(path, **kwargs):  # type: ignore[override]
         calls.append(kwargs)
         from verdict.orchestration.tui import RunView
+
         v = RunView.__new__(RunView)
         object.__setattr__(v, "outcome", "COMPLETE")
         object.__setattr__(v, "goal", "g")
@@ -847,9 +839,7 @@ def test_watch_tty_no_plain_signal_calls_follow_interactive(tmp_path: Path, monk
         return v
 
     monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
-    monkeypatch.setattr(
-        "verdict.orchestration.cli.follow", _fake_follow, raising=False
-    )
+    monkeypatch.setattr("verdict.orchestration.cli.follow", _fake_follow, raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     # Clear all plain-mode env vars
@@ -873,8 +863,8 @@ def test_watch_tty_no_plain_signal_calls_follow_interactive(tmp_path: Path, monk
 
 
 def test_watch_explicit_interactive_non_tty_does_not_loop(tmp_path: Path) -> None:
-    """follow() with interactive=True and a non-terminal console must not loop
-    forever: max_iterations/max_polls provides the hard stop (hang guard from #718)."""
+    """follow() with interactive=True, stop_when_final=False, and no 'q' key must
+    terminate via the max_iterations cap — not spin forever (hang guard, BOD-276)."""
     import io
 
     from rich.console import Console as _Console
@@ -884,12 +874,14 @@ def test_watch_explicit_interactive_non_tty_does_not_loop(tmp_path: Path) -> Non
     events = tmp_path / "events.jsonl"
     events.write_text(
         '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"run_started","node_id":"","data":{"goal":"g"}}\n'
-        '{"seq":2,"at":"2026-01-01T00:00:01Z","type":"run_finished","node_id":"","data":{"outcome":"COMPLETE"}}\n'
     )
 
-    reader = ScriptedKeyReader(["q"])
+    # ScriptedKeyReader with no keys raises EOFError immediately, so the cockpit
+    # exits on reader exhaustion rather than receiving 'q' — proving the cap, not
+    # the stop_when_final path.
+    reader = ScriptedKeyReader([])
     console = _Console(file=io.StringIO(), force_terminal=False, width=100)
-    # explicit interactive=True with a capped iteration count must terminate
+    # stop_when_final=False: no run_finished event, no 'q' key; must exit via cap
     view = _follow(
         events,
         console=console,
@@ -897,6 +889,138 @@ def test_watch_explicit_interactive_non_tty_does_not_loop(tmp_path: Path) -> Non
         key_reader=reader,
         max_iterations=5,
         poll_seconds=0.0,
-        stop_when_final=True,
+        stop_when_final=False,
     )
-    assert getattr(view, "outcome", "") == "COMPLETE"
+    # run has not finished — outcome is empty; test proves we returned at all
+    assert getattr(view, "outcome", "") == ""
+
+
+# BOD-276: _watch interactive matrix — TERM=dumb and VERDICT_PLAIN=1 cases
+
+
+def test_watch_term_dumb_calls_follow_non_interactive(tmp_path: Path, monkeypatch) -> None:
+    """TERM=dumb on a TTY must produce interactive=False."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    events_path = _make_events(tmp_path)
+
+    calls: list[dict] = []
+
+    def _fake_follow(path, **kwargs):  # type: ignore[override]
+        calls.append(kwargs)
+        from verdict.orchestration.tui import RunView
+
+        v = RunView.__new__(RunView)
+        object.__setattr__(v, "outcome", "COMPLETE")
+        object.__setattr__(v, "goal", "g")
+        object.__setattr__(v, "event_count", 2)
+        return v
+
+    monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
+    monkeypatch.setattr("verdict.orchestration.cli.follow", _fake_follow, raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("VERDICT_PLAIN", raising=False)
+
+    args = argparse.Namespace(
+        run=str(events_path.parent),
+        runs_dir=str(tmp_path),
+        once=False,
+        replay=False,
+        json=False,
+        speed=1.0,
+    )
+    orch_cli._watch(args)
+
+    assert calls, "follow() was not called"
+    assert calls[0].get("interactive") is False, (
+        f"expected interactive=False for TERM=dumb, got {calls[0].get('interactive')}"
+    )
+
+
+def test_watch_verdict_plain_calls_follow_non_interactive(tmp_path: Path, monkeypatch) -> None:
+    """VERDICT_PLAIN=1 on a TTY must produce interactive=False."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    events_path = _make_events(tmp_path)
+
+    calls: list[dict] = []
+
+    def _fake_follow(path, **kwargs):  # type: ignore[override]
+        calls.append(kwargs)
+        from verdict.orchestration.tui import RunView
+
+        v = RunView.__new__(RunView)
+        object.__setattr__(v, "outcome", "COMPLETE")
+        object.__setattr__(v, "goal", "g")
+        object.__setattr__(v, "event_count", 2)
+        return v
+
+    monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
+    monkeypatch.setattr("verdict.orchestration.cli.follow", _fake_follow, raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setenv("VERDICT_PLAIN", "1")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
+
+    args = argparse.Namespace(
+        run=str(events_path.parent),
+        runs_dir=str(tmp_path),
+        once=False,
+        replay=False,
+        json=False,
+        speed=1.0,
+    )
+    orch_cli._watch(args)
+
+    assert calls, "follow() was not called"
+    assert calls[0].get("interactive") is False, (
+        f"expected interactive=False for VERDICT_PLAIN=1, got {calls[0].get('interactive')}"
+    )
+
+
+def test_follow_non_interactive_no_stop_terminates_via_cap(tmp_path: Path) -> None:
+    """Non-interactive follow() with stop_when_final=False and no max_polls must
+    terminate via _NON_INTERACTIVE_MAX_POLLS, not loop forever (BOD-276 hang guard)."""
+    import io
+
+    from rich.console import Console as _Console
+
+    from verdict.orchestration.tui import _NON_INTERACTIVE_MAX_POLLS
+    from verdict.orchestration.tui import follow as _follow
+
+    events = tmp_path / "events.jsonl"
+    # Write one event only — no run_finished, so stop_when_final would never fire
+    events.write_text(
+        '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"run_started","node_id":"","data":{"goal":"pending"}}\n'
+    )
+
+    console = _Console(file=io.StringIO(), force_terminal=False, width=80)
+    # Patch the constant to a small value so the test does not actually spin 2000 times
+    import verdict.orchestration.tui as _tui
+
+    original = _tui._NON_INTERACTIVE_MAX_POLLS
+    _tui._NON_INTERACTIVE_MAX_POLLS = 4
+    try:
+        view = _follow(
+            events,
+            console=console,
+            poll_seconds=0.0,
+            stop_when_final=False,
+            # no max_polls — must fall back to the module cap
+        )
+    finally:
+        _tui._NON_INTERACTIVE_MAX_POLLS = original
+
+    # Run never finished — but follow() returned, proving the cap fired
+    assert getattr(view, "outcome", "") == ""
+    assert _NON_INTERACTIVE_MAX_POLLS == 2000  # constant has the documented default

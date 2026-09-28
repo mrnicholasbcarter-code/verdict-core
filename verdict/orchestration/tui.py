@@ -58,6 +58,11 @@ _STATE_GLYPH: Mapping[NodeState, str] = {
 }
 LADDER: tuple[str, ...] = ("discovered", "entitled", "healthy", "available", "eligible")
 
+# Hard cap for the non-interactive follow() loop when neither max_polls nor
+# stop_when_final provides a natural exit.  Keeps background callers safe even
+# when the caller passes stop_when_final=False and no max_polls.
+_NON_INTERACTIVE_MAX_POLLS: int = 2000
+
 
 def _t(value: object, limit: int = 120) -> str:
     """Sanitized, whitespace-collapsed, length-bounded label."""
@@ -1023,8 +1028,15 @@ def follow(
     )
     if live is not None:
         live.start(refresh=True)
+    # Apply a hard cap when stop_when_final=False and no explicit max_polls is
+    # given, so no caller can hang indefinitely in the non-interactive path.
+    _bound = (
+        max_polls
+        if max_polls is not None
+        else (None if stop_when_final else _NON_INTERACTIVE_MAX_POLLS)
+    )
     try:
-        while max_polls is None or polls < max_polls:
+        while _bound is None or polls < _bound:
             polls += 1
             events = read_events(events_path)
             for event in events[seen:]:
