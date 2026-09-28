@@ -10,6 +10,7 @@ import httpx
 from verdict.capability_passports import RouteIdentity
 from verdict.models import RoutingDecision
 from verdict.policy import Policy, PolicyCandidate
+from verdict.subagent_selection import is_context_length_error
 
 if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
@@ -94,9 +95,18 @@ def retryable_transport_status(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429} or status_code >= 500
 
 
-def retryable_response_status(status_code: int, *, compatibility_applied: bool) -> bool:
-    """Allow ordinary transient retries but stop deterministic compatibility 4xx errors."""
+def retryable_response_status(
+    status_code: int, *, compatibility_applied: bool, body: str = ""
+) -> bool:
+    """Allow ordinary transient retries but stop deterministic compatibility 4xx errors.
 
+    Context-length overflow (400/413 with a recognised marker in *body*) is
+    retryable to a **different** model only.  ``build_attempts`` already
+    de-duplicates models, so allowing the retry here is safe — the next
+    attempt will always be a distinct model.
+    """
+    if status_code in {400, 413} and is_context_length_error(body):
+        return True
     if compatibility_applied and status_code in {400, 404, 422}:
         return False
     return retryable_transport_status(status_code)
@@ -106,13 +116,22 @@ def retryable_exception(error: BaseException) -> bool:
     return isinstance(error, (httpx.TimeoutException, httpx.NetworkError, ConnectionError, OSError))
 
 
-def failure_class(status_code: int | None = None, error: BaseException | None = None) -> str:
+def failure_class(
+    status_code: int | None = None, error: BaseException | None = None, *, body: str = ""
+) -> str:
     if error is not None:
         if isinstance(error, httpx.TimeoutException):
             return "transport_timeout"
         if isinstance(error, (httpx.NetworkError, ConnectionError, OSError)):
             return "transport_connection"
+        # Context-length errors may surface as exceptions with status embedded.
+        error_text = str(error)
+        if is_context_length_error(error_text):
+            return "context_length_overflow"
         return "transport_error"
+    # Context-length overflow is request-scoped; not a provider/model defect.
+    if status_code in {400, 413} and is_context_length_error(body):
+        return "context_length_overflow"
     if status_code in {401, 403}:
         return "auth_failure"
     if status_code in {408, 409, 425, 429}:
