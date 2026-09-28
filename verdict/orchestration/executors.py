@@ -38,7 +38,12 @@ from verdict.orchestration.prime_settings import (
     prime_retry_policy_problems,
 )
 
-__all__ = ["DirectGatewayExecutor", "FaultInjectingExecutor", "PrimeHeadlessExecutor", "ScriptedExecutor"]
+__all__ = [
+    "DirectGatewayExecutor",
+    "FaultInjectingExecutor",
+    "PrimeHeadlessExecutor",
+    "ScriptedExecutor",
+]
 
 _STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -624,9 +629,7 @@ class DirectGatewayExecutor:
     """
 
     _OWNED_FILES_RE = re.compile(r"^OWNED_FILES:\s*(.+)$", re.MULTILINE)
-    _DIFF_FENCE_RE = re.compile(
-        r"```(?:diff|patch)\n(.*?)```", re.DOTALL
-    )
+    _DIFF_FENCE_RE = re.compile(r"```(?:diff|patch)\n(.*?)```", re.DOTALL)
     # Match --- a/path and +++ b/path lines in unified diffs
     _DIFF_PATH_RE = re.compile(r"^[-+]{3}\s+[ab]/(.+)$", re.MULTILINE)
 
@@ -669,9 +672,7 @@ class DirectGatewayExecutor:
         diff_lines: list[str] = []
         in_diff = False
         for line in lines:
-            if line.startswith("diff --git ") or (
-                line.startswith("--- ") and not in_diff
-            ):
+            if line.startswith("diff --git ") or (line.startswith("--- ") and not in_diff):
                 in_diff = True
             if in_diff:
                 diff_lines.append(line)
@@ -680,9 +681,7 @@ class DirectGatewayExecutor:
         return None
 
     @staticmethod
-    def _validate_diff_paths(
-        diff_text: str, owned_files: list[str]
-    ) -> str | None:
+    def _validate_diff_paths(diff_text: str, owned_files: list[str]) -> str | None:
         """Return an error string if the diff touches files outside owned_files."""
         paths = DirectGatewayExecutor._DIFF_PATH_RE.findall(diff_text)
         owned_set = set(owned_files)
@@ -706,7 +705,7 @@ class DirectGatewayExecutor:
         # Strip leading a/ or b/ prefix (standard git diff format)
         for prefix in ("a/", "b/"):
             if p.startswith(prefix):
-                p = p[len(prefix):]
+                p = p[len(prefix) :]
                 break
         normed = posixpath.normpath(p)
         # Reject empty, absolute, traversal, .git paths
@@ -722,10 +721,7 @@ class DirectGatewayExecutor:
         return normed
 
     async def _validate_diff_security(
-        self,
-        diff_text: str,
-        owned_files: list[str],
-        cwd: Path,
+        self, diff_text: str, owned_files: list[str], cwd: Path
     ) -> str | None:
         """Use git to discover ALL paths a patch touches; reject unsafe ops.
 
@@ -745,14 +741,15 @@ class DirectGatewayExecutor:
         try:
             # --- Step 1: git apply --summary to detect dangerous operations ---
             proc = await asyncio.create_subprocess_exec(
-                "git", "apply", "--summary", str(diff_path),
+                "git",
+                "apply",
+                "--summary",
+                str(diff_path),
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=15
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
             summary = stdout.decode("utf-8", errors="replace")
             # --summary outputs lines like:
             #   rename owned.py => evil.py (100%)
@@ -786,14 +783,16 @@ class DirectGatewayExecutor:
 
             # --- Step 2: git apply --numstat -z to collect ALL touched paths ---
             proc = await asyncio.create_subprocess_exec(
-                "git", "apply", "--numstat", "-z", str(diff_path),
+                "git",
+                "apply",
+                "--numstat",
+                "-z",
+                str(diff_path),
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=15
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
             if proc.returncode != 0:
                 err_msg = stderr.decode("utf-8", errors="replace")[-300:]
                 return f"diff_rejected: git cannot parse patch: {err_msg}"
@@ -849,8 +848,7 @@ class DirectGatewayExecutor:
 
     @staticmethod
     def _augment_prompt_for_diff(
-        prompt: str, owned_files: list[str], cwd: Path,
-        budget_bytes: int = 60_000,
+        prompt: str, owned_files: list[str], cwd: Path, budget_bytes: int = 60_000
     ) -> str:
         """Append diff-mode instructions and current file contents to the prompt."""
         parts: list[str] = [prompt]
@@ -887,9 +885,7 @@ class DirectGatewayExecutor:
             remaining -= keep
         return "\n".join(parts)
 
-    async def _apply_diff(
-        self, diff_text: str, cwd: Path
-    ) -> tuple[bool, str]:
+    async def _apply_diff(self, diff_text: str, cwd: Path) -> tuple[bool, str]:
         """Run git apply --check then git apply. Returns (ok, error_detail)."""
         # Write diff to a temp file
         diff_path = cwd / ".verdict-pending.patch"
@@ -900,7 +896,10 @@ class DirectGatewayExecutor:
         try:
             # --check first (dry run)
             proc = await asyncio.create_subprocess_exec(
-                "git", "apply", "--check", str(diff_path),
+                "git",
+                "apply",
+                "--check",
+                str(diff_path),
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -911,7 +910,10 @@ class DirectGatewayExecutor:
                 return False, f"git apply --check failed: {tail}"
             # Apply for real
             proc = await asyncio.create_subprocess_exec(
-                "git", "apply", "--whitespace=nowarn", str(diff_path),
+                "git",
+                "apply",
+                "--whitespace=nowarn",
+                str(diff_path),
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -938,9 +940,7 @@ class DirectGatewayExecutor:
         # For implement nodes, augment the prompt to request a unified diff
         effective_prompt = prompt
         if is_implement:
-            effective_prompt = self._augment_prompt_for_diff(
-                prompt, owned_files, cwd
-            )
+            effective_prompt = self._augment_prompt_for_diff(prompt, owned_files, cwd)
 
         url = f"{self.base_url}/v1/chat/completions"
         payload = {
@@ -988,15 +988,15 @@ class DirectGatewayExecutor:
             )
 
         # Primary security gate: git-based path + operation validation
-        security_error = await self._validate_diff_security(
-            diff_text, owned_files, cwd
-        )
+        security_error = await self._validate_diff_security(diff_text, owned_files, cwd)
         if security_error is not None:
             return WorkerTerminal(
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
-                error=security_error if security_error.startswith("diff_rejected:") else f"diff_rejected: {security_error}",
+                error=security_error
+                if security_error.startswith("diff_rejected:")
+                else f"diff_rejected: {security_error}",
                 duration_seconds=terminal.duration_seconds,
                 session_ref=terminal.session_ref,
                 usage=terminal.usage,
@@ -1031,9 +1031,7 @@ class DirectGatewayExecutor:
         return terminal
 
     @staticmethod
-    def _interpret(
-        resp: httpx.Response, *, route_id: str, duration: float
-    ) -> WorkerTerminal:
+    def _interpret(resp: httpx.Response, *, route_id: str, duration: float) -> WorkerTerminal:
         """Map an OpenAI-compatible chat/completions response to WorkerTerminal."""
         if resp.status_code >= 400:
             error_text = _sanitize(resp.text, 400)
@@ -1062,10 +1060,7 @@ class DirectGatewayExecutor:
         choices = body.get("choices") or []
         if not choices:
             return WorkerTerminal(
-                ok=False,
-                model=route_id,
-                error="empty_output",
-                duration_seconds=duration,
+                ok=False, model=route_id, error="empty_output", duration_seconds=duration
             )
         choice = choices[0]
         message = choice.get("message", {})

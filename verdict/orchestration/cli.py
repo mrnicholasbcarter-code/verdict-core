@@ -429,8 +429,7 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
     executor: WorkerExecutor
     if getattr(args, "executor", "prime") == "direct-gateway":
         executor = DirectGatewayExecutor(
-            base_url=args.gateway,
-            api_key=os.environ.get("OPENAI_API_KEY", ""),
+            base_url=args.gateway, api_key=os.environ.get("OPENAI_API_KEY", "")
         )
     else:
         executor = PrimeHeadlessExecutor()

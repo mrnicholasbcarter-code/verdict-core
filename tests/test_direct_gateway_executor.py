@@ -67,16 +67,19 @@ def _ok_response(text: str = "Hello world", model: str = "cc/claude-sonnet-5") -
 
 def _init_git_repo(path: Path) -> None:
     """Create a minimal git repo with an initial commit."""
-    subprocess.run(["git", "init", "-b", "main"], cwd=str(path), check=True,
-                    capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(path),
-                    check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(path),
-                    check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=str(path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=str(path),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=str(path), check=True, capture_output=True
+    )
     (path / ".gitkeep").write_text("")
     subprocess.run(["git", "add", "."], cwd=str(path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=str(path), check=True,
-                    capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(path), check=True, capture_output=True)
 
 
 def _text_node_prompt(text: str = "Summarize the codebase") -> str:
@@ -100,8 +103,12 @@ def _implement_prompt(owned_files: list[str]) -> str:
 
 
 async def _run_with_transport(
-    exe: DirectGatewayExecutor, transport: FakeTransport,
-    prompt: str, route_id: str, cwd: Path, timeout: float = 30
+    exe: DirectGatewayExecutor,
+    transport: FakeTransport,
+    prompt: str,
+    route_id: str,
+    cwd: Path,
+    timeout: float = 30,
 ) -> WorkerTerminal:
     """Run executor.run() using a fake transport instead of real HTTP."""
     with patch("httpx.AsyncClient") as mock_cls:
@@ -157,10 +164,10 @@ async def test_diff_applies_and_changes_file(tmp_path: Path) -> None:
     """Valid diff for an owned file is applied and changes the file on disk."""
     _init_git_repo(tmp_path)
     (tmp_path / "hello.py").write_text("print('old')\n")
-    subprocess.run(["git", "add", "hello.py"], cwd=str(tmp_path), check=True,
-                    capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add hello"], cwd=str(tmp_path), check=True,
-                    capture_output=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add hello"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     diff_text = (
         "```diff\n"
@@ -191,8 +198,9 @@ async def test_diff_non_owned_file_rejected(tmp_path: Path) -> None:
     (tmp_path / "hello.py").write_text("print('old')\n")
     (tmp_path / "secret.py").write_text("secret = True\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init files"], cwd=str(tmp_path), check=True,
-                    capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init files"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     # Diff tries to modify secret.py but only hello.py is owned
     diff_text = (
@@ -222,8 +230,9 @@ async def test_path_traversal_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "hello.py").write_text("x\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True,
-                    capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     diff_text = (
         "```diff\n"
@@ -250,8 +259,9 @@ async def test_malformed_diff_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "hello.py").write_text("x\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True,
-                    capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     # No diff at all in the output
     transport = FakeTransport(200, _ok_response("I made some changes to hello.py\nRESULT: DONE"))
@@ -270,8 +280,9 @@ async def test_fenced_and_unfenced_diff_extraction(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "hello.py").write_text("print('old')\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True,
-                    capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     # Unfenced diff (raw)
     raw_diff = (
@@ -298,18 +309,11 @@ async def test_absolute_path_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "hello.py").write_text("x\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True,
-                    capture_output=True)
-
-    diff_text = (
-        "```diff\n"
-        "--- a//etc/passwd\n"
-        "+++ b//etc/passwd\n"
-        "@@ -1 +1 @@\n"
-        "-root\n"
-        "+hacked\n"
-        "```"
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True
     )
+
+    diff_text = "```diff\n--- a//etc/passwd\n+++ b//etc/passwd\n@@ -1 +1 @@\n-root\n+hacked\n```"
     transport = FakeTransport(200, _ok_response(diff_text))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
     prompt = _implement_prompt(["hello.py"])
@@ -448,9 +452,7 @@ async def test_no_usage_when_missing(tmp_path: Path) -> None:
 
 def test_parse_owned_files_basic() -> None:
     prompt = "OWNED_FILES: src/main.py, tests/test_main.py"
-    assert DirectGatewayExecutor._parse_owned_files(prompt) == [
-        "src/main.py", "tests/test_main.py"
-    ]
+    assert DirectGatewayExecutor._parse_owned_files(prompt) == ["src/main.py", "tests/test_main.py"]
 
 
 def test_parse_owned_files_none() -> None:
@@ -521,64 +523,107 @@ def _make_events(executor_label: str) -> list[dict[str, Any]]:
     """Build a minimal set of events that exercises every RunView section."""
     return [
         {
-            "seq": 0, "at": "2026-09-28T12:00:00Z", "type": "run_started", "node_id": "",
+            "seq": 0,
+            "at": "2026-09-28T12:00:00Z",
+            "type": "run_started",
+            "node_id": "",
             "data": {"goal": "test goal", "controller_route": f"omniroute/{executor_label}"},
         },
         {
-            "seq": 1, "at": "2026-09-28T12:00:01Z", "type": "understand", "node_id": "",
+            "seq": 1,
+            "at": "2026-09-28T12:00:01Z",
+            "type": "understand",
+            "node_id": "",
             "data": {"task_profile": "test", "risk": "low"},
         },
         {"seq": 2, "at": "2026-09-28T12:00:02Z", "type": "plan_started", "node_id": "", "data": {}},
         {
-            "seq": 3, "at": "2026-09-28T12:00:03Z", "type": "plan_ready", "node_id": "",
+            "seq": 3,
+            "at": "2026-09-28T12:00:03Z",
+            "type": "plan_ready",
+            "node_id": "",
             "data": {
-                "topology": "linear", "rationale": ["simple task"],
+                "topology": "linear",
+                "rationale": ["simple task"],
                 "nodes": [{"node_id": "node-1", "objective": "do X", "kind": "implement"}],
                 "layers": [["node-1"]],
             },
         },
         {
-            "seq": 4, "at": "2026-09-28T12:00:04Z", "type": "hydrate", "node_id": "",
+            "seq": 4,
+            "at": "2026-09-28T12:00:04Z",
+            "type": "hydrate",
+            "node_id": "",
             "data": {"context_sources": ["repo"], "byte_budget": 10000},
         },
         {
-            "seq": 5, "at": "2026-09-28T12:00:05Z", "type": "topology", "node_id": "",
+            "seq": 5,
+            "at": "2026-09-28T12:00:05Z",
+            "type": "topology",
+            "node_id": "",
             "data": {"topology": "linear", "max_parallel": 1},
         },
         {
-            "seq": 6, "at": "2026-09-28T12:00:06Z", "type": "eligibility", "node_id": "",
+            "seq": 6,
+            "at": "2026-09-28T12:00:06Z",
+            "type": "eligibility",
+            "node_id": "",
             "data": {"stats": {"discovered": 5, "selected": 1}},
         },
         {
-            "seq": 7, "at": "2026-09-28T12:00:07Z", "type": "selection", "node_id": "node-1",
+            "seq": 7,
+            "at": "2026-09-28T12:00:07Z",
+            "type": "selection",
+            "node_id": "node-1",
             "data": {"route": f"{executor_label}/model-a"},
         },
         {
-            "seq": 8, "at": "2026-09-28T12:00:08Z", "type": "node_state", "node_id": "node-1",
+            "seq": 8,
+            "at": "2026-09-28T12:00:08Z",
+            "type": "node_state",
+            "node_id": "node-1",
             "data": {"state": "DISPATCHED"},
         },
         {
-            "seq": 9, "at": "2026-09-28T12:00:09Z", "type": "dispatch", "node_id": "node-1",
+            "seq": 9,
+            "at": "2026-09-28T12:00:09Z",
+            "type": "dispatch",
+            "node_id": "node-1",
             "data": {"route": f"{executor_label}/model-a", "attempt": 1},
         },
         {
-            "seq": 10, "at": "2026-09-28T12:00:10Z", "type": "node_state", "node_id": "node-1",
+            "seq": 10,
+            "at": "2026-09-28T12:00:10Z",
+            "type": "node_state",
+            "node_id": "node-1",
             "data": {"state": "RUNNING"},
         },
         {
-            "seq": 11, "at": "2026-09-28T12:00:15Z", "type": "terminal", "node_id": "node-1",
+            "seq": 11,
+            "at": "2026-09-28T12:00:15Z",
+            "type": "terminal",
+            "node_id": "node-1",
             "data": {"ok": True, "model": f"{executor_label}/model-a"},
         },
         {
-            "seq": 12, "at": "2026-09-28T12:00:16Z", "type": "node_state", "node_id": "node-1",
+            "seq": 12,
+            "at": "2026-09-28T12:00:16Z",
+            "type": "node_state",
+            "node_id": "node-1",
             "data": {"state": "TERMINAL_SUCCESS"},
         },
         {
-            "seq": 13, "at": "2026-09-28T12:00:17Z", "type": "verify", "node_id": "",
+            "seq": 13,
+            "at": "2026-09-28T12:00:17Z",
+            "type": "verify",
+            "node_id": "",
             "data": {"ok": True, "label": "lint", "detail": "passed"},
         },
         {
-            "seq": 14, "at": "2026-09-28T12:00:18Z", "type": "run_finished", "node_id": "",
+            "seq": 14,
+            "at": "2026-09-28T12:00:18Z",
+            "type": "run_finished",
+            "node_id": "",
             "data": {"outcome": "COMPLETE", "reason": "all nodes validated"},
         },
     ]
@@ -727,7 +772,9 @@ async def test_security_rename_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("print('hello')\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     rename_response = (
         "```diff\n"
@@ -739,8 +786,9 @@ async def test_security_rename_rejected(tmp_path: Path) -> None:
     )
     transport = FakeTransport(200, _ok_response(rename_response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "rename diff must be rejected"
     assert "diff_rejected" in (result.error or "")
     assert not (tmp_path / "injected.py").exists(), "rename must NOT be applied"
@@ -753,7 +801,9 @@ async def test_security_copy_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("print('hello')\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     copy_response = (
         "```diff\n"
@@ -765,8 +815,9 @@ async def test_security_copy_rejected(tmp_path: Path) -> None:
     )
     transport = FakeTransport(200, _ok_response(copy_response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "copy diff must be rejected"
     assert "diff_rejected" in (result.error or "")
     assert not (tmp_path / "evil.py").exists(), "copy must NOT be applied"
@@ -778,7 +829,9 @@ async def test_security_mode_only_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("print('hello')\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     mode_response = (
         "```diff\n"
@@ -789,8 +842,9 @@ async def test_security_mode_only_rejected(tmp_path: Path) -> None:
     )
     transport = FakeTransport(200, _ok_response(mode_response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "mode-only diff must be rejected"
     assert "diff_rejected" in (result.error or "")
 
@@ -801,7 +855,9 @@ async def test_security_symlink_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("print('hello')\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     symlink_response = (
         "```diff\n"
@@ -816,8 +872,9 @@ async def test_security_symlink_rejected(tmp_path: Path) -> None:
     )
     transport = FakeTransport(200, _ok_response(symlink_response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "symlink creation must be rejected"
     assert "diff_rejected" in (result.error or "")
 
@@ -828,7 +885,9 @@ async def test_security_binary_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("print('hello')\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     binary_response = (
         "```diff\n"
@@ -840,8 +899,9 @@ async def test_security_binary_rejected(tmp_path: Path) -> None:
     )
     transport = FakeTransport(200, _ok_response(binary_response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "binary patch must be rejected"
     assert "diff_rejected" in (result.error or "")
 
@@ -852,7 +912,9 @@ async def test_security_deletion_rejected(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("print('hello')\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     delete_response = (
         "```diff\n"
@@ -866,8 +928,9 @@ async def test_security_deletion_rejected(tmp_path: Path) -> None:
     )
     transport = FakeTransport(200, _ok_response(delete_response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "deletion must be rejected"
     assert "diff_rejected" in (result.error or "")
     assert (tmp_path / "owned.py").exists(), "owned.py must NOT be deleted"
@@ -879,7 +942,9 @@ async def test_security_src_owned_dst_not_owned_rejected(tmp_path: Path) -> None
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("old\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     # Rename with modification: owned.py -> evil.py
     response = (
@@ -897,8 +962,9 @@ async def test_security_src_owned_dst_not_owned_rejected(tmp_path: Path) -> None
     )
     transport = FakeTransport(200, _ok_response(response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "rename-with-modify to unowned path must be rejected"
     assert "diff_rejected" in (result.error or "")
 
@@ -909,7 +975,9 @@ async def test_security_diff_header_path_mismatch_rejected(tmp_path: Path) -> No
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("old\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     # Copy with content: copies from owned to unowned
     response = (
@@ -927,8 +995,9 @@ async def test_security_diff_header_path_mismatch_rejected(tmp_path: Path) -> No
     )
     transport = FakeTransport(200, _ok_response(response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "copy to unowned path must be rejected"
     assert "diff_rejected" in (result.error or "")
 
@@ -939,7 +1008,9 @@ async def test_security_dotslash_double_slash_normalisation(tmp_path: Path) -> N
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("old\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     # Try to create a file via sneaky path normalisation
     response = (
@@ -954,8 +1025,9 @@ async def test_security_dotslash_double_slash_normalisation(tmp_path: Path) -> N
     )
     transport = FakeTransport(200, _ok_response(response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert not result.ok, "normalised path outside owned_files must be rejected"
     assert "diff_rejected" in (result.error or "")
 
@@ -966,7 +1038,9 @@ async def test_security_legitimate_diff_still_applies(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     (tmp_path / "owned.py").write_text("old\n")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True
+    )
 
     response = (
         "```diff\n"
@@ -980,7 +1054,8 @@ async def test_security_legitimate_diff_still_applies(tmp_path: Path) -> None:
     )
     transport = FakeTransport(200, _ok_response(response))
     exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
-    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
-                                        "cc/test", tmp_path)
+    result = await _run_with_transport(
+        exe, transport, _implement_prompt(["owned.py"]), "cc/test", tmp_path
+    )
     assert result.ok, f"legitimate diff must succeed, got error: {result.error}"
     assert (tmp_path / "owned.py").read_text() == "new\n"
