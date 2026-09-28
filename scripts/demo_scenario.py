@@ -26,9 +26,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("runs_dir", type=Path, help="directory that will contain the run")
     parser.add_argument(
-        "--run-id",
-        default=FLAGSHIP_RUN_ID,
-        help=f"run directory name (default: {FLAGSHIP_RUN_ID})",
+        "--run-id", default=FLAGSHIP_RUN_ID, help=f"run directory name (default: {FLAGSHIP_RUN_ID})"
     )
     return parser.parse_args()
 
@@ -39,11 +37,7 @@ def main() -> int:
     args = _parse_args()
     workspace = Path(tempfile.mkdtemp(prefix="verdict-offline-demo-"))
     try:
-        result = run_flagship_scenario(
-            args.runs_dir,
-            workspace_root=workspace,
-            run_id=args.run_id,
-        )
+        result = run_flagship_scenario(args.runs_dir, workspace_root=workspace, run_id=args.run_id)
         print(result.run_dir.resolve())
     finally:
         shutil.rmtree(workspace, ignore_errors=True)

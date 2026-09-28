@@ -164,7 +164,12 @@ def _init_repo(workspace_root: Path) -> Path:
         subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
     (root / "README.md").write_text("Offline flagship scenario workspace.\n")
     subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "initialize offline scenario"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "initialize offline scenario"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     return root
 
 
@@ -177,10 +182,7 @@ def _load_events(run_dir: Path) -> list[dict[str, Any]]:
 
 
 def run_flagship_scenario(
-    runs_root: Path,
-    *,
-    workspace_root: Path,
-    run_id: str = FLAGSHIP_RUN_ID,
+    runs_root: Path, *, workspace_root: Path, run_id: str = FLAGSHIP_RUN_ID
 ) -> FlagshipScenarioResult:
     """Run the offline flagship through ``run_golden_path`` and return its artifacts.
 
@@ -200,15 +202,9 @@ def run_flagship_scenario(
     workspace_root.mkdir(parents=True, exist_ok=True)
     repo = _init_repo(workspace_root)
     ladder = EligibilityLadder(
-        INVENTORY,
-        CONNECTIONS,
-        _HealthyProbe(),
-        workspace_root / "ladder-state.json",
+        INVENTORY, CONNECTIONS, _HealthyProbe(), workspace_root / "ladder-state.json"
     )
-    executor = FaultInjectingExecutor(
-        ScriptedExecutor(_worker_script),
-        {ROUTE_A: ["rate_limit"]},
-    )
+    executor = FaultInjectingExecutor(ScriptedExecutor(_worker_script), {ROUTE_A: ["rate_limit"]})
     reviewer = OpenCodeReviewer(
         ladder,
         api_key_env=_OFFLINE_OCR_ENV,

@@ -56,13 +56,12 @@ def _events_of(
         result.append(flat)
     return result
 
+
 def _run_scenario(tmp_path: Path, *, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Execute the shared flagship scenario used by the recording script."""
     del monkeypatch  # the shared helper isolates and restores its environment
     return run_flagship_scenario(
-        tmp_path / "runs",
-        workspace_root=tmp_path / "workspace",
-        run_id=FLAGSHIP_RUN_ID,
+        tmp_path / "runs", workspace_root=tmp_path / "workspace", run_id=FLAGSHIP_RUN_ID
     )
 
 
