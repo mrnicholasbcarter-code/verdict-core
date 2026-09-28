@@ -699,12 +699,12 @@ def test_palette_real_action_integration_config_show(tmp_path: Path) -> None:
         # (path, providers structure, etc.)
         assert len(rendered) > 100, "Expected substantial rendered output from real action"
         # Should contain config-related content (path or structure)
-        assert (
-            "verdict" in rendered.lower()
-            or "config" in rendered.lower()
-            or "providers" in rendered.lower()
-            or str(tmp_path) in rendered
-        )
+        # Real fields of the config.show ActionResult are rendered ...
+        # (The table may elide long values such as the tmp path at this width.)
+        assert "exists" in rendered and "True" in rendered
+        assert "openai" in rendered
+        # ... and the credential in the config file is never shown.
+        assert "test-key-12345" not in rendered
 
 
 def test_launch_entry_keyboard_interrupt_returns_to_palette(tmp_path: Path) -> None:
@@ -766,3 +766,32 @@ def test_terminal_restore_structure_present(
     # Verify KeyboardInterrupt is caught during action execution
     assert "except KeyboardInterrupt:" in source
     assert 'ok, data = False, {"error": "cancelled"}' in source
+
+
+def test_config_show_action_redacts_secrets(tmp_path, monkeypatch) -> None:
+    """config.show must not return credentials held in verdict.yaml (CLI --json and TUI)."""
+    from verdict.actions import run_action
+
+    cfg = tmp_path / "verdict"
+    cfg.mkdir()
+    (cfg / "verdict.yaml").write_text(
+        "providers:\n  openai:\n    api_key: sk-live-abc\n    base_url: https://x\n"
+        "auth:\n  token: tok-1\n  password: pw-1\n  client_secret: cs-1\n"
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    res = run_action("config.show")
+    flat = repr(res.data)
+    for secret in ("sk-live-abc", "tok-1", "pw-1", "cs-1"):
+        assert secret not in flat
+    assert res.data["config"]["providers"]["openai"]["base_url"] == "https://x"
+
+
+def test_config_show_parse_error_does_not_echo_file_content(tmp_path, monkeypatch) -> None:
+    from verdict.actions import run_action
+
+    cfg = tmp_path / "verdict"
+    cfg.mkdir()
+    (cfg / "verdict.yaml").write_text("api_key: sk-live-abc\n  bad: [indent\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    res = run_action("config.show")
+    assert "sk-live-abc" not in repr(res.data)

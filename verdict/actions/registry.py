@@ -327,9 +327,13 @@ def _action_config_show(**kwargs: Any) -> ActionResult:
         try:
             import yaml
 
-            data["config"] = yaml.safe_load(config_file.read_text()) or {}
+            from verdict.contracts import redact_contract_secrets
+
+            # Config files can hold credentials (api_key, token, password, *_secret):
+            # never return them to the CLI or the TUI.
+            data["config"] = redact_contract_secrets(yaml.safe_load(config_file.read_text()) or {})
         except Exception as exc:
-            data["config_error"] = str(exc)
+            data["config_error"] = type(exc).__name__
     return ActionResult(data=data)
 
 
