@@ -136,8 +136,10 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
         - kind is one of: implement, research, integrate, review.
         - depends_on, owned_files, required_context, acceptance, required_capabilities
           are lists of strings.
-        - verification_command is a list of strings (an argv list), for example
-          ["python3", "-m", "pytest", "-q", "tests/test_x.py"].
+        - verification_command is a list of strings (an argv list). Use "python"
+          as argv[0] for Python verification commands (e.g.
+          ["python", "-m", "pytest", "-q", "tests/test_x.py"]); the runtime
+          resolves it to the active interpreter when needed.
         - required_capabilities uses ONLY model features from: tools, reasoning,
           vision, structured_output (Verdict selects the model; describe work
           in "objective"/"acceptance", not here).
