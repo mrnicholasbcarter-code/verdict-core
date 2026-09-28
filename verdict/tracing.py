@@ -133,20 +133,24 @@ class _TracerState:
             return self._tracer
         self._initialised = True
         try:
-            from opentelemetry import trace
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-not-found]
-                OTLPSpanExporter,
-            )
-            from opentelemetry.sdk.resources import Resource  # type: ignore[import-not-found]
-            from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-not-found]
-            from opentelemetry.sdk.trace.export import (  # type: ignore[import-not-found]
-                BatchSpanProcessor,
-            )
+            # importlib keeps mypy --strict clean whether or not the optional
+            # `tracing` extra is installed (no type: ignore needed either way).
+            import importlib
 
-            resource = Resource.create({"service.name": "verdict-orchestration"})
-            provider = TracerProvider(resource=resource)
-            exporter = OTLPSpanExporter()  # reads OTEL_EXPORTER_OTLP_ENDPOINT
-            provider.add_span_processor(BatchSpanProcessor(exporter))
+            trace = importlib.import_module("opentelemetry.trace")
+            otlp_span_exporter_cls = importlib.import_module(
+                "opentelemetry.exporter.otlp.proto.grpc.trace_exporter"
+            ).OTLPSpanExporter
+            resource_cls = importlib.import_module("opentelemetry.sdk.resources").Resource
+            tracer_provider_cls = importlib.import_module("opentelemetry.sdk.trace").TracerProvider
+            batch_span_processor_cls = importlib.import_module(
+                "opentelemetry.sdk.trace.export"
+            ).BatchSpanProcessor
+
+            resource = resource_cls.create({"service.name": "verdict-orchestration"})
+            provider = tracer_provider_cls(resource=resource)
+            exporter = otlp_span_exporter_cls()  # reads OTEL_EXPORTER_OTLP_ENDPOINT
+            provider.add_span_processor(batch_span_processor_cls(exporter))
             trace.set_tracer_provider(provider)
             self._tracer = trace.get_tracer("verdict.tracing")
         except Exception:
