@@ -7,20 +7,13 @@ Tests run against synthetic events only (no network, no repo I/O, no re-hydratio
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from verdict.orchestration.context_view import _SCHEMA_VERSION, ContextView, context_view
 from verdict.orchestration.contracts import RunEvent
-from verdict.orchestration.context_view import (
-    ContextView,
-    NodeContextView,
-    SourceEntry,
-    _SCHEMA_VERSION,
-    context_view,
-)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,11 +28,7 @@ def _seq() -> int:
     return _SEQ
 
 
-def _ev(
-    type: str,
-    node_id: str = "n1",
-    **data: Any,
-) -> RunEvent:
+def _ev(type: str, node_id: str = "n1", **data: Any) -> RunEvent:
     return RunEvent(seq=_seq(), at="2026-09-28T14:00:00Z", type=type, node_id=node_id, data=data)
 
 
@@ -81,6 +70,7 @@ def _src(
 # Budget pressure
 # ---------------------------------------------------------------------------
 
+
 class TestBudgetPressure:
     def test_under_budget(self) -> None:
         ev = _hydrate(budget_bytes=60_000, prompt_bytes=30_000)
@@ -100,7 +90,10 @@ class TestBudgetPressure:
 
     def test_missing_budget_bytes_gives_none(self) -> None:
         ev = RunEvent(
-            seq=_seq(), at="2026-09-28T14:00:00Z", type="hydrate", node_id="n2",
+            seq=_seq(),
+            at="2026-09-28T14:00:00Z",
+            type="hydrate",
+            node_id="n2",
             data={"prompt_bytes": 5000, "context_files": []},
         )
         view = context_view([ev])
@@ -108,7 +101,10 @@ class TestBudgetPressure:
 
     def test_missing_prompt_bytes_gives_none(self) -> None:
         ev = RunEvent(
-            seq=_seq(), at="2026-09-28T14:00:00Z", type="hydrate", node_id="n3",
+            seq=_seq(),
+            at="2026-09-28T14:00:00Z",
+            type="hydrate",
+            node_id="n3",
             data={"budget_bytes": 60_000, "context_files": []},
         )
         view = context_view([ev])
@@ -116,7 +112,10 @@ class TestBudgetPressure:
 
     def test_zero_budget_gives_none(self) -> None:
         ev = RunEvent(
-            seq=_seq(), at="2026-09-28T14:00:00Z", type="hydrate", node_id="n4",
+            seq=_seq(),
+            at="2026-09-28T14:00:00Z",
+            type="hydrate",
+            node_id="n4",
             data={"budget_bytes": 0, "prompt_bytes": 5000, "context_files": []},
         )
         view = context_view([ev])
@@ -126,6 +125,7 @@ class TestBudgetPressure:
 # ---------------------------------------------------------------------------
 # Source states
 # ---------------------------------------------------------------------------
+
 
 class TestSourceStates:
     def test_included_source(self) -> None:
@@ -195,6 +195,7 @@ class TestSourceStates:
 # Totals by state
 # ---------------------------------------------------------------------------
 
+
 class TestTotalsByState:
     def test_totals_computed(self) -> None:
         srcs = [
@@ -218,6 +219,7 @@ class TestTotalsByState:
 # ---------------------------------------------------------------------------
 # Missing optional metrics -> None / unknown
 # ---------------------------------------------------------------------------
+
 
 class TestMissingMetrics:
     def test_missing_sources_field_gives_none(self) -> None:
@@ -259,11 +261,15 @@ class TestMissingMetrics:
 # Legacy events without sources
 # ---------------------------------------------------------------------------
 
+
 class TestLegacyEvents:
     def test_legacy_event_no_crash(self) -> None:
         """Events from before #711 have no 'sources' field — view must say unknown, not empty."""
         ev = RunEvent(
-            seq=_seq(), at="2026-09-28T14:09:15Z", type="hydrate", node_id="research",
+            seq=_seq(),
+            at="2026-09-28T14:09:15Z",
+            type="hydrate",
+            node_id="research",
             data={
                 "budget_bytes": 60_000,
                 "context_files": ["file1.md", "file2.md"],
@@ -275,13 +281,21 @@ class TestLegacyEvents:
         node = view.nodes[0]
         assert node.node_id == "research"
         assert node.budget_bytes == 60_000
-        assert node.sources is None          # unknown, NOT []
+        assert node.sources is None  # unknown, NOT []
         assert node.totals_by_state is None  # unknown
 
     def test_legacy_event_budget_pressure_still_computable(self) -> None:
         ev = RunEvent(
-            seq=_seq(), at="2026-09-28T14:09:15Z", type="hydrate", node_id="fix",
-            data={"budget_bytes": 60_000, "prompt_bytes": 2463, "context_files": [], "truncated": False},
+            seq=_seq(),
+            at="2026-09-28T14:09:15Z",
+            type="hydrate",
+            node_id="fix",
+            data={
+                "budget_bytes": 60_000,
+                "prompt_bytes": 2463,
+                "context_files": [],
+                "truncated": False,
+            },
         )
         view = context_view([ev])
         assert view.nodes[0].budget_pressure is not None
@@ -289,6 +303,7 @@ class TestLegacyEvents:
     def test_dogfood_run_dir(self, tmp_path: Path) -> None:
         """Replay the dogfood events.jsonl (pre-#711, no sources) — succeeds, sources=None."""
         import shutil
+
         dogfood = Path(__file__).parent.parent / "docs/proof/dogfood-bod-273-2026-09-28"
         if not dogfood.exists():
             pytest.skip("dogfood run dir not present")
@@ -304,6 +319,7 @@ class TestLegacyEvents:
     def test_replay_deterministic(self, tmp_path: Path) -> None:
         """Building the view from the same events.jsonl gives identical JSON twice."""
         import shutil
+
         dogfood = Path(__file__).parent.parent / "docs/proof/dogfood-bod-273-2026-09-28"
         if not dogfood.exists():
             pytest.skip("dogfood run dir not present")
@@ -317,6 +333,7 @@ class TestLegacyEvents:
 # ---------------------------------------------------------------------------
 # Redaction
 # ---------------------------------------------------------------------------
+
 
 class TestRedaction:
     def test_no_source_content_in_output(self) -> None:
@@ -347,12 +364,13 @@ class TestRedaction:
         assert "sk-abc123secretkey" not in reason
 
     def test_to_dict_no_secrets(self) -> None:
-        srcs = [_src("a.py", 500, included=True)]
+        srcs = [_src("a.py", 500, included=True, reason="api_key=sk-abc123secretkey")]
         ev = _hydrate(sources=srcs)
         view = context_view([ev])
         d = view.to_dict()
         raw = json.dumps(d)
-        # No real secret values — just confirm to_dict runs and returns expected keys
+        # The serialised view must not carry a credential from a recorded reason.
+        assert "sk-abc123secretkey" not in raw
         assert "schema_version" in d
         assert "nodes" in d
 
@@ -360,6 +378,7 @@ class TestRedaction:
 # ---------------------------------------------------------------------------
 # Deterministic JSON (machine-readable)
 # ---------------------------------------------------------------------------
+
 
 class TestMachineReadable:
     def test_to_dict_stable_keys(self) -> None:
@@ -371,8 +390,12 @@ class TestMachineReadable:
         assert isinstance(d["nodes"], list)
         node_d = d["nodes"][0]
         assert set(node_d.keys()) == {
-            "node_id", "budget_bytes", "sources", "prompt_bytes",
-            "totals_by_state", "budget_pressure",
+            "node_id",
+            "budget_bytes",
+            "sources",
+            "prompt_bytes",
+            "totals_by_state",
+            "budget_pressure",
         }
 
     def test_to_json_sorted_keys(self) -> None:
@@ -414,6 +437,7 @@ class TestMachineReadable:
 # Replay consistency / run_dir loading
 # ---------------------------------------------------------------------------
 
+
 class TestRunDirLoading:
     def _write_events(self, run_dir: Path, events: list[RunEvent]) -> None:
         (run_dir / "events.jsonl").parent.mkdir(parents=True, exist_ok=True)
@@ -442,11 +466,20 @@ class TestRunDirLoading:
 
     def test_rehydrate_supersedes_hydrate(self) -> None:
         """Last hydrate/rehydrate per node_id wins."""
-        h1 = _hydrate(node_id="n", budget_bytes=60_000, prompt_bytes=1000, sources=[_src("a.py", 100)])
+        h1 = _hydrate(
+            node_id="n", budget_bytes=60_000, prompt_bytes=1000, sources=[_src("a.py", 100)]
+        )
         h2 = RunEvent(
-            seq=_seq(), at="2026-09-28T15:00:00Z", type="rehydrate", node_id="n",
-            data={"budget_bytes": 30_000, "prompt_bytes": 2000, "context_files": [],
-                  "sources": [_src("a.py", 200)]},
+            seq=_seq(),
+            at="2026-09-28T15:00:00Z",
+            type="rehydrate",
+            node_id="n",
+            data={
+                "budget_bytes": 30_000,
+                "prompt_bytes": 2000,
+                "context_files": [],
+                "sources": [_src("a.py", 200)],
+            },
         )
         view = context_view([h1, h2])
         assert len(view.nodes) == 1
@@ -455,8 +488,12 @@ class TestRunDirLoading:
 
     def test_multiple_nodes(self) -> None:
         evs = [
-            _hydrate(node_id="n1", budget_bytes=60_000, prompt_bytes=5000, sources=[_src("a.py", 100)]),
-            _hydrate(node_id="n2", budget_bytes=40_000, prompt_bytes=20_000, sources=[_src("b.py", 500)]),
+            _hydrate(
+                node_id="n1", budget_bytes=60_000, prompt_bytes=5000, sources=[_src("a.py", 100)]
+            ),
+            _hydrate(
+                node_id="n2", budget_bytes=40_000, prompt_bytes=20_000, sources=[_src("b.py", 500)]
+            ),
         ]
         view = context_view(evs)
         assert len(view.nodes) == 2

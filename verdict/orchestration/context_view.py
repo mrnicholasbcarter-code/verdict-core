@@ -22,14 +22,7 @@ from verdict.orchestration.receipt import EventLog
 # Public types
 # ---------------------------------------------------------------------------
 
-SourceState = Literal[
-    "included",
-    "excluded",
-    "truncated",
-    "deduplicated",
-    "compressed",
-    "unknown",
-]
+SourceState = Literal["included", "excluded", "truncated", "deduplicated", "compressed", "unknown"]
 
 _SCHEMA_VERSION = "1"
 
@@ -75,11 +68,7 @@ class NodeContextView:
             "budget_pressure": self.budget_pressure,
             "node_id": self.node_id,
             "prompt_bytes": self.prompt_bytes,
-            "sources": (
-                None
-                if self.sources is None
-                else [s.to_dict() for s in self.sources]
-            ),
+            "sources": (None if self.sources is None else [s.to_dict() for s in self.sources]),
             "totals_by_state": self.totals_by_state,
         }
 
@@ -93,9 +82,7 @@ class ContextView:
     nodes: list[NodeContextView]
 
     # index for O(1) node lookup
-    _by_node: dict[str, NodeContextView] = field(
-        default_factory=dict, repr=False, compare=False
-    )
+    _by_node: dict[str, NodeContextView] = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self._by_node = {n.node_id: n for n in self.nodes}
@@ -117,6 +104,7 @@ class ContextView:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _state_from_raw(entry: Mapping[str, Any]) -> SourceState:
     """Derive SourceState from a raw sources dict entry produced by _hydrate_sources."""
@@ -176,9 +164,7 @@ def _totals_by_state(sources: list[SourceEntry]) -> dict[str, int]:
     return dict(sorted(totals.items()))
 
 
-def _budget_pressure(
-    prompt_bytes: int | None, budget_bytes: int | None
-) -> float | None:
+def _budget_pressure(prompt_bytes: int | None, budget_bytes: int | None) -> float | None:
     if prompt_bytes is None or budget_bytes is None or budget_bytes == 0:
         return None
     return round(prompt_bytes / budget_bytes, 6)
@@ -220,9 +206,8 @@ def _node_view_from_event(event: RunEvent) -> NodeContextView:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def context_view(
-    events: Iterable[RunEvent] | Path | str,
-) -> ContextView:
+
+def context_view(events: Iterable[RunEvent] | Path | str) -> ContextView:
     """Build a :class:`ContextView` from *events* or a run directory path.
 
     Parameters
@@ -261,8 +246,4 @@ def context_view(
 
     nodes = [_node_view_from_event(ev) for ev in last_hydrate.values()]
 
-    return ContextView(
-        schema_version=_SCHEMA_VERSION,
-        run_id=run_id,
-        nodes=nodes,
-    )
+    return ContextView(schema_version=_SCHEMA_VERSION, run_id=run_id, nodes=nodes)
