@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import re
 import signal
@@ -102,6 +103,27 @@ def _text_of(message: Mapping[str, Any]) -> str:
         if isinstance(block, dict) and block.get("type") == "text":
             parts.append(str(block.get("text", "")))
     return "".join(parts)
+
+
+def _as_int(value: Any) -> int | None:
+    """Best-effort int for a reported token count; never raises."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    """Best-effort float for a reported cost; never raises, rejects NaN/inf."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 class PrimeHeadlessExecutor:
@@ -254,13 +276,17 @@ class PrimeHeadlessExecutor:
         # Accept both input/output (Prime stdout) and prompt_tokens/completion_tokens (OpenAI)
         inp = raw.get("input") if raw.get("input") is not None else raw.get("prompt_tokens")
         out = raw.get("output") if raw.get("output") is not None else raw.get("completion_tokens")
-        input_tokens = int(inp) if inp is not None else None
-        output_tokens = int(out) if out is not None else None
+        input_tokens = _as_int(inp)
+        output_tokens = _as_int(out)
         if input_tokens is None and output_tokens is None:
             return None
-        # cost_usd only if explicitly present — never fabricated
+        # cost_usd only if explicitly present — never fabricated.
+        # Prime reports ``cost`` as a breakdown dict
+        # ({"input", "output", "cacheRead", "cacheWrite", "total"}); use its total.
         cost_raw = raw.get("cost_usd") if raw.get("cost_usd") is not None else raw.get("cost")
-        cost_usd = float(cost_raw) if cost_raw is not None else None
+        if isinstance(cost_raw, dict):
+            cost_raw = cost_raw.get("total")
+        cost_usd = _as_float(cost_raw)
         return AttemptUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
