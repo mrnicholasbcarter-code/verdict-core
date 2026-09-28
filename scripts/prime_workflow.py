@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fcntl
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -387,6 +389,50 @@ def check_bundle(
     return proof, head, packet
 
 
+def merge_guard(state_dir: Path, timeout: float, command: list[str]) -> int:
+    """Acquire the integration lock, run *command*, and exit with its code.
+
+    Fail-closed: if the lock cannot be acquired within *timeout* seconds,
+    exit non-zero WITHOUT running the command.
+    """
+    lock_path = state_dir / "integration.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    acquired = False
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    print(
+                        f"merge-guard: failed to acquire integration lock "
+                        f"within {timeout}s \u2014 aborting without running command",
+                        file=sys.stderr,
+                    )
+                    return 1
+                time.sleep(0.05)
+
+        # Write holder info (matches supervisor_admission.py convention).
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        info = json.dumps({"pid": os.getpid(), "acquired_at": time.time()})
+        os.write(fd, info.encode())
+        os.fsync(fd)
+
+        result = subprocess.run(command)
+        return result.returncode
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -404,8 +450,25 @@ def main() -> int:
     lease.add_argument("--state-dir", type=Path, required=True)
     status = sub.add_parser("status", help="Print supervisor, checkpoint, lease and proof state")
     status.add_argument("--state-dir", type=Path, required=True)
+    mg = sub.add_parser(
+        "merge-guard", help="Acquire the integration lock, run a command, release the lock"
+    )
+    mg.add_argument("--state-dir", type=Path, default=None)
+    mg.add_argument("--repo", type=Path, default=Path.cwd())
+    mg.add_argument(
+        "--timeout", type=float, default=900.0, help="Seconds to wait for the lock (default: 900)"
+    )
+    mg.add_argument("cmd", nargs=argparse.REMAINDER, metavar="command...")
     args = parser.parse_args()
     try:
+        if args.command == "merge-guard":
+            cmd_list = args.cmd
+            if cmd_list and cmd_list[0] == "--":
+                cmd_list = cmd_list[1:]
+            if not cmd_list:
+                parser.error("merge-guard requires a command after --")
+            sd = args.state_dir if args.state_dir else default_state_dir(args.repo)
+            return merge_guard(sd, args.timeout, cmd_list)
         if args.command == "lease-reap":
             reaped = supersede_stale_leases(args.state_dir, now=time.time())
             print(json.dumps({"reaped_stale_leases": reaped}))
