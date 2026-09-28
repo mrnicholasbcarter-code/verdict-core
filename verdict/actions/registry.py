@@ -6,6 +6,7 @@ logic lives here.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -59,50 +60,43 @@ def run_action(
 
 
 # ---------------------------------------------------------------------------
-# MACHINE_ONLY — defensible exceptions with reasons
+# Three-bucket classification
 # ---------------------------------------------------------------------------
 
 MACHINE_ONLY: dict[str, str] = {
-    "serve": "long-running server process; not an action",
-    "mcp": "MCP server lifecycle; not an interactive action",
-    "hook": "hook management; dev-tool plumbing",
-    "ui": "launches Streamlit subprocess; not an in-process action",
-    "harness": "per-harness lifecycle commands; multiple subcommands, dev-tool",
-    "autodev": "batch automation pipeline; subprocess-heavy",
-    "autodev-golden-path": "golden-path batch pipeline; not interactive",
-    "runtime": "daemon lifecycle management; long-running",
-    "uninstall": "destructive global uninstall; not a TUI action",
-    "memory": "memory-bridge lifecycle; harness-specific",
+    "serve": "server/daemon lifecycle; long-running HTTP process",
+    "mcp": "MCP server lifecycle; invoked by other programs, not users",
+    "hook": "hook management endpoint; invoked by harness integrations",
+    "uninstall": "destructive global uninstall; not an interactive action",
+    "memory": "memory-bridge lifecycle; invoked by harness integrations",
+    "runtime": "daemon lifecycle management; long-running system process",
+    "certify": "certification snapshot; batch dev-tool process",
+    "check": "inline probe wrapper; dev-tool plumbing",
+    "choose": "legacy model chooser; superseded by route action",
     "compat": "compatibility scanner; dev-tool",
+    "failover-proof": "failover proof generation; batch dev-tool",
+    "harness": "per-harness lifecycle commands; dev-tool plumbing",
+    "metadata": "metadata sync; batch process invoked by scripts",
     "openspec": "spec lifecycle; external tool integration",
-    "resume": "story resume pipeline; subprocess-heavy",
-    "prove-at-rest": "long-running monitoring probe; not interactive",
-    "failover-proof": "failover proof generation; batch process",
-    "cost-report": "cost report; computation-heavy",
-    "metadata": "metadata sync; batch process",
-    "benchmark": "benchmark suite; long-running",
-    "certify": "certification snapshot; batch process",
-    "suggest": "suggestion engine; analysis-heavy (620L inline)",
-    "compare": "dual-route comparison; could be future action",
-    "simulate": "simulation run; stateful",
-    "replay": "replay viewer; needs full TUI",
-    "stats": "statistics computation from log file",
-    "plan": "planner invocation; stateful",
-    "run": "legacy run command; use orchestrate",
-    "choose": "model chooser; legacy",
-    "inspect": "model inspect; legacy",
-    "catalog": "OmniRoute catalog dump; network-heavy",
-    "detect": "provider detection; network scan",
-    "quickstart": "guided quickstart wizard; interactive subprocess",
-    "check": "inline check; quick probe wrapper",
+    "plan": "legacy alias for setup plan",
+    "run": "legacy alias for route",
+}
+
+LAUNCH: dict[str, str] = {
     "orchestrate": "long-running orchestration pipeline; launches parallel workers",
     "supervise": "supervisor wrapper around orchestrate; long-running",
     "watch": "live TUI viewer for running orchestrations; interactive",
-    "run-receipt": "orchestration receipt; use receipt.show action for routing receipts",
-    "sync-models": "metadata sync for orchestration; batch process",
-    "visibility": "supervisor visibility report; dev-tool",
+    "benchmark": "benchmark suite; long-running measurement",
+    "autodev": "batch automation pipeline; long-running",
+    "autodev-golden-path": "golden-path batch pipeline; long-running",
+    "ui": "launches Streamlit dashboard; separate process",
+    "prove-at-rest": "long-running monitoring probe; continuous",
+    "quickstart": "guided quickstart wizard; interactive session",
+    "simulate": "simulation run; stateful multi-step session",
+    "resume": "story resume pipeline; interactive session",
 }
 
+GAP: dict[str, str] = {"inspect": "model detail view (BOD-278: context inspect service needed)"}
 
 # ---------------------------------------------------------------------------
 # Built-in action implementations (lazy-import to avoid import-time overhead)
@@ -111,7 +105,7 @@ MACHINE_ONLY: dict[str, str] = {
 
 def _action_models_list(**kwargs: Any) -> ActionResult:
     """List the qualified model catalog."""
-    from verdict.cli import default_model_catalog
+    from verdict.actions.helpers import default_model_catalog
     from verdict.models import ModelInfo
 
     catalog: list[ModelInfo] = kwargs.get("catalog") or default_model_catalog()
@@ -135,9 +129,9 @@ def _action_route(**kwargs: Any) -> ActionResult:
     criticality: str = kwargs.get("criticality", "medium")
     allow_offline: bool = kwargs.get("allow_offline", False)
 
-    from verdict.cli import _build_route_gate
+    from verdict.actions.helpers import build_route_gate
 
-    gate = _build_route_gate(allow_offline=allow_offline)
+    gate = build_route_gate(allow_offline=allow_offline)
     dec, selection = gate.route_with_strategy(task, criticality)
 
     data = {
@@ -159,11 +153,11 @@ def _action_route(**kwargs: Any) -> ActionResult:
 
 def _action_doctor(**kwargs: Any) -> ActionResult:
     """Scan Verdict setup and connections."""
-    from verdict.cli import _collect_doctor_diagnostics
+    from verdict.actions.helpers import collect_doctor_diagnostics
 
     preflight_timeout: float = kwargs.get("preflight_timeout", 120.0)
     fix: bool = kwargs.get("fix", False)
-    diag = _collect_doctor_diagnostics(fix, interactive=False, preflight_timeout=preflight_timeout)
+    diag = collect_doctor_diagnostics(fix, interactive=False, preflight_timeout=preflight_timeout)
 
     data: dict[str, Any] = {
         "status": "issues_found" if diag.issues else "ok",
@@ -195,7 +189,7 @@ def _action_probe(**kwargs: Any) -> ActionResult:
     is_injected = transport is not None
     if not is_injected and not allow_live_probe:
         return ActionResult(
-            data={"error": "live probes require explicit consent; pass allow_live_probe=True"},
+            data={"error": "live probes require explicit consent; pass --allow-live-probe"},
             ok=False,
             exit_code=2,
         )
@@ -216,9 +210,9 @@ def _action_probe(**kwargs: Any) -> ActionResult:
         provider=provider_name,
     )
 
-    from verdict.cli import _probe_result_payload
+    from verdict.actions.helpers import probe_result_payload
 
-    results = [_probe_result_payload(obs) for obs in run.observations]
+    results = [probe_result_payload(obs) for obs in run.observations]
     data = {"diagnostics": run.diagnostics.to_dict(), "results": results}
     all_ok = all(e.get("ok") for e in results)
     return ActionResult(data=data, ok=all_ok, exit_code=0 if all_ok else 1)
@@ -398,6 +392,244 @@ def _action_credentials_unset(**kwargs: Any) -> ActionResult:
 
 
 # ---------------------------------------------------------------------------
+# NEW actions (F3)
+# ---------------------------------------------------------------------------
+
+
+def _action_run_receipt(**kwargs: Any) -> ActionResult:
+    """Verify an orchestration receipt — the proof surface."""
+    import json as _json
+    from pathlib import Path
+
+    from verdict.orchestration.receipt import completion_verdict, verify_run_receipt
+
+    run_dir_str: str = kwargs["run_dir"]
+    runs_dir: str = kwargs.get("runs_dir", ".verdict/runs")
+
+    run_path = Path(run_dir_str)
+    if not run_path.is_absolute():
+        run_path = Path(runs_dir) / run_dir_str
+    receipt_path = run_path / "receipt.json"
+    if not receipt_path.exists():
+        return ActionResult(data={"error": f"no receipt at {receipt_path}"}, ok=False, exit_code=2)
+    receipt = _json.loads(receipt_path.read_text())
+    problems = verify_run_receipt(run_path)
+    outcome, reason = completion_verdict(receipt)
+
+    events_path = run_path / "events.jsonl"
+    traces: list[dict[str, Any]] = []
+    if events_path.exists():
+        for line in events_path.read_text().splitlines()[:100]:
+            with contextlib.suppress(ValueError):
+                traces.append(_json.loads(line))
+
+    data = {
+        "outcome": outcome,
+        "reason": reason,
+        "problems": problems,
+        "receipt": receipt,
+        "trace_count": len(traces),
+        "traces_preview": traces[:10],
+    }
+    return ActionResult(
+        data=data,
+        ok=(outcome == "COMPLETE" and not problems),
+        exit_code=0 if (outcome == "COMPLETE" and not problems) else 1,
+    )
+
+
+def _action_compare(**kwargs: Any) -> ActionResult:
+    """Compare dual-route results for a task."""
+    from verdict.actions.helpers import build_route_gate
+
+    task: str = kwargs["task"]
+    criticality: str = kwargs.get("criticality", "medium")
+    allow_offline: bool = kwargs.get("allow_offline", False)
+
+    gate = build_route_gate(allow_offline=allow_offline)
+    dec_a, sel_a = gate.route_with_strategy(task, criticality)
+    dec_b, sel_b = gate.route_with_strategy(task, criticality)
+    data = {
+        "task": task,
+        "route_a": {"model": dec_a.model, "provider": dec_a.provider, "strategy": sel_a.strategy},
+        "route_b": {"model": dec_b.model, "provider": dec_b.provider, "strategy": sel_b.strategy},
+        "match": dec_a.model == dec_b.model,
+    }
+    return ActionResult(data=data)
+
+
+def _action_catalog(**kwargs: Any) -> ActionResult:
+    """Dump the OmniRoute catalog."""
+    import json as _json
+    import urllib.request
+
+    base_url: str = kwargs.get("base_url", "http://localhost:20128/v1")
+    timeout: float = kwargs.get("timeout", 30.0)
+
+    try:
+        req = urllib.request.Request(base_url.rstrip("/") + "/models")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
+            body = _json.loads(resp.read(64 * 1024 * 1024))
+        models = body.get("data", [])
+        data = {
+            "count": len(models),
+            "models": [{"id": m.get("id"), "owned_by": m.get("owned_by")} for m in models],
+        }
+        return ActionResult(data=data)
+    except Exception as exc:
+        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
+
+
+def _action_detect(**kwargs: Any) -> ActionResult:
+    """Detect reachable providers."""
+    _verbose: bool = kwargs.get("verbose", False)  # reserved for future use
+    offline: bool = kwargs.get("offline", False)
+
+    if offline:
+        data: dict[str, Any] = {
+            "mode": "offline",
+            "network_access": False,
+            "local_providers": [],
+            "cli_providers": [],
+            "centralized_routers": [],
+            "cloud_apis": [],
+            "custom_endpoints": [],
+            "gateways": [],
+        }
+        return ActionResult(data=data)
+
+    try:
+        from verdict.provider_detection import detect_all_providers, probe_gateways
+
+        result = detect_all_providers()
+        gateways = probe_gateways()
+        data = {
+            "local_servers": [p.__dict__ for p in result.local_servers],
+            "cli_providers": [p.__dict__ for p in result.cli_providers],
+            "centralized_routers": [p.__dict__ for p in result.centralized_routers],
+            "cloud_apis": [p.__dict__ for p in result.cloud_apis],
+            "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
+            "gateways": [g.__dict__ for g in gateways],
+        }
+        return ActionResult(data=data)
+    except Exception as exc:
+        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
+
+
+def _action_stats(**kwargs: Any) -> ActionResult:
+    """Statistics from the routing decision log."""
+    import json as _json
+    from pathlib import Path
+
+    log_path: str = kwargs.get("log_path", "verdict-decisions.jsonl")
+    path = Path(log_path)
+    if not path.exists():
+        return ActionResult(data={"error": f"log not found: {log_path}"}, ok=False, exit_code=1)
+
+    entries: list[dict[str, Any]] = []
+    for line in path.read_text().splitlines():
+        try:
+            entries.append(_json.loads(line))
+        except ValueError:
+            continue
+    models: dict[str, int] = {}
+    for e in entries:
+        m = e.get("model", "unknown")
+        models[m] = models.get(m, 0) + 1
+    data = {
+        "total_decisions": len(entries),
+        "unique_models": len(models),
+        "model_counts": dict(sorted(models.items(), key=lambda x: -x[1])),
+    }
+    return ActionResult(data=data)
+
+
+def _action_suggest(**kwargs: Any) -> ActionResult:
+    """Suggestions based on routing decision history."""
+    import json as _json
+    from pathlib import Path
+
+    log_path: str = kwargs.get("log_path", "verdict-decisions.jsonl")
+    path = Path(log_path)
+    if not path.exists():
+        return ActionResult(data={"error": f"log not found: {log_path}"}, ok=False, exit_code=1)
+
+    entries: list[dict[str, Any]] = []
+    for line in path.read_text().splitlines():
+        try:
+            entries.append(_json.loads(line))
+        except ValueError:
+            continue
+    suggestions: list[str] = []
+    models: dict[str, int] = {}
+    for e in entries:
+        m = e.get("model", "unknown")
+        models[m] = models.get(m, 0) + 1
+    if len(models) == 1:
+        suggestions.append("Only one model in use — consider adding alternatives for resilience")
+    if len(entries) > 100:
+        suggestions.append(f"{len(entries)} decisions logged — review for cost optimization")
+    data = {
+        "total_decisions": len(entries),
+        "suggestions": suggestions,
+        "model_distribution": dict(sorted(models.items(), key=lambda x: -x[1])),
+    }
+    return ActionResult(data=data)
+
+
+def _action_cost_report(**kwargs: Any) -> ActionResult:
+    """Generate a cost report from routing decisions."""
+    import json as _json
+    from pathlib import Path
+
+    log_path: str = kwargs.get("log_path", "verdict-decisions.jsonl")
+    path = Path(log_path)
+    if not path.exists():
+        return ActionResult(data={"error": f"log not found: {log_path}"}, ok=False, exit_code=1)
+
+    entries: list[dict[str, Any]] = []
+    for line in path.read_text().splitlines():
+        try:
+            entries.append(_json.loads(line))
+        except ValueError:
+            continue
+    total_cost = sum(e.get("cost", 0.0) for e in entries)
+    by_model: dict[str, float] = {}
+    for e in entries:
+        m = e.get("model", "unknown")
+        by_model[m] = by_model.get(m, 0.0) + e.get("cost", 0.0)
+    data = {
+        "total_cost": total_cost,
+        "decisions": len(entries),
+        "cost_by_model": dict(sorted(by_model.items(), key=lambda x: -x[1])),
+    }
+    return ActionResult(data=data)
+
+
+def _action_replay(**kwargs: Any) -> ActionResult:
+    """Replay a routing decision session."""
+    import json as _json
+    from pathlib import Path
+
+    session_id: str = kwargs["session_id"]
+    log_path: str = kwargs.get("log_path", "verdict-decisions.jsonl")
+    path = Path(log_path)
+    if not path.exists():
+        return ActionResult(data={"error": f"log not found: {log_path}"}, ok=False, exit_code=1)
+
+    matching: list[dict[str, Any]] = []
+    for line in path.read_text().splitlines():
+        try:
+            entry = _json.loads(line)
+            if entry.get("session_id") == session_id or entry.get("request_id") == session_id:
+                matching.append(entry)
+        except ValueError:
+            continue
+    data = {"session_id": session_id, "entries": matching, "count": len(matching)}
+    return ActionResult(data=data, ok=bool(matching), exit_code=0 if matching else 1)
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -484,6 +716,53 @@ def _register_builtins() -> None:
                 "Configuration",
             ),
             _action_credentials_unset,
+        ),
+        # --- NEW actions (F3) ---
+        (
+            ActionSpec(
+                "run-receipt",
+                "traces",
+                "read",
+                "Verify an orchestration receipt (proof surface)",
+                "Traces",
+            ),
+            _action_run_receipt,
+        ),
+        (
+            ActionSpec(
+                "compare", "routing", "read", "Compare dual-route results for a task", "Routing"
+            ),
+            _action_compare,
+        ),
+        (
+            ActionSpec("catalog", "models", "read", "OmniRoute catalog dump", "Models"),
+            _action_catalog,
+        ),
+        (
+            ActionSpec("detect", "providers", "read", "Detect reachable providers", "Health"),
+            _action_detect,
+        ),
+        (
+            ActionSpec(
+                "stats", "overview", "read", "Statistics from routing decision log", "Overview"
+            ),
+            _action_stats,
+        ),
+        (
+            ActionSpec(
+                "suggest", "overview", "read", "Suggestions from routing history", "Overview"
+            ),
+            _action_suggest,
+        ),
+        (
+            ActionSpec(
+                "cost-report", "overview", "read", "Cost report from routing decisions", "Overview"
+            ),
+            _action_cost_report,
+        ),
+        (
+            ActionSpec("replay", "traces", "read", "Replay a routing decision session", "Traces"),
+            _action_replay,
         ),
     ]
     for spec, fn in _specs:

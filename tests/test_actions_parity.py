@@ -304,12 +304,13 @@ class TestNoSubprocess:
 class TestMatrixFreshness:
     """Every CLI command has an action or MACHINE_ONLY entry (no gaps)."""
 
-    def test_no_gaps_in_matrix(self) -> None:
-        """Regenerate matrix and verify zero gaps."""
+    def test_no_unintentional_gaps_in_matrix(self) -> None:
+        """Regenerate matrix and verify zero unintentional gaps."""
         from scripts.gen_parity_matrix import generate
 
         content = generate()
-        assert "⚠️ gap" not in content, f"parity matrix has gaps:\n{content}"
+        # Only ⚠️ gap is unintentional; 📋 gap is intentional (documented BOD)
+        assert "⚠️ gap" not in content, f"parity matrix has unintentional gaps:\n{content}"
 
     def test_every_action_registered(self) -> None:
         """All actions referenced in the matrix are actually registered."""

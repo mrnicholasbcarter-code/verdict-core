@@ -45,8 +45,9 @@ PALETTE: tuple[tuple[str, str, str, str], ...] = (
     ("Runs", "orchestrate", "goal -> DAG -> parallel workers -> review -> receipt", ""),
     ("Runs", "supervise", "run orchestrate under a stall/quota-aware supervisor", ""),
     ("Runs", "watch", "live view of a run (or --once for a snapshot)", ""),
-    ("Traces", "run-receipt", "verify a run receipt and show per-node attempts", "receipt.show"),
-    ("Traces", "receipt", "inspect routing receipts (RoutingReceiptV1)", ""),
+    ("Traces", "run-receipt", "verify an orchestration receipt (proof surface)", "run-receipt"),
+    ("Traces", "receipt", "inspect routing receipts (RoutingReceiptV1)", "receipt.show"),
+    ("Traces", "replay", "replay a routing decision session", "replay"),
     (
         "Health",
         "eligibility",
@@ -54,10 +55,15 @@ PALETTE: tuple[tuple[str, str, str, str], ...] = (
         "eligibility",
     ),
     ("Health", "probe", "one-token liveness probes", "probe"),
+    ("Health", "detect", "detect reachable providers", "detect"),
     ("Models", "models", "local model catalog view", "models.list"),
+    ("Models", "catalog", "OmniRoute catalog dump", "catalog"),
     ("Routing", "route", "route one task through the gate", "route"),
+    ("Routing", "compare", "compare dual-route results", "compare"),
+    ("Overview", "stats", "statistics from routing decision log", "stats"),
+    ("Overview", "suggest", "suggestions from routing history", "suggest"),
+    ("Overview", "cost-report", "cost report from routing decisions", "cost-report"),
     ("Configuration", "credentials", "manage stored credentials", "credentials.list"),
-    ("Configuration", "config", "view current configuration", "config.show"),
     ("Setup", "doctor", "health of gateways, harnesses, memory, docs", "doctor"),
     ("Setup", "setup", "plan or apply capability bootstrap", "setup.plan"),
     ("Setup", "quickstart", "credential-free deterministic demo", ""),
@@ -243,6 +249,94 @@ def run_palette_action(action_name: str, params: dict[str, Any] | None = None) -
     return result.ok, result.data
 
 
+def _interactive_palette(target: Console, state: HomeState) -> int:
+    """Minimal keyboard selector: arrow/number selection + enter runs the action.
+
+    TTY only. Non-TTY, NO_COLOR, CI environments skip this entirely.
+    """
+    import termios
+    import tty
+
+    entries = palette_actions()
+    if not entries:
+        return 0
+
+    selected = 0
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+
+    def _render_selector() -> None:
+        target.print()
+        target.print(Text("ACTION PALETTE", style=TOKENS["SECONDARY"]))
+        target.print(
+            Text("↑/↓ or number to select, Enter to run, q to quit", style=TOKENS["MUTED"])
+        )
+        target.print()
+        for i, (section, cmd, desc, _action) in enumerate(entries):
+            marker = "▸ " if i == selected else "  "
+            style = TOKENS["PRIMARY"] if i == selected else ""
+            line = f"{marker}{i + 1:2d}. [{section}] {cmd} — {desc}"
+            target.print(Text(line, style=style))
+        target.print()
+
+    try:
+        tty.setraw(fd)
+        # Show selector
+        tty.setcbreak(fd)  # cbreak not raw for signal handling
+        target.print()
+
+        running = True
+        while running:
+            # Render
+            _render_selector()
+
+            # Read key
+            ch = sys.stdin.read(1)
+            if ch == "q" or ch == "Q":
+                target.print(Text("quit", style=TOKENS["MUTED"]))
+                return 0
+            elif ch == "\r" or ch == "\n":
+                # Run selected action
+                _section, cmd, _desc, action_name = entries[selected]
+                target.print(Text(f"Running: {cmd} ({action_name})", style=TOKENS["SUCCESS"]))
+                target.print()
+                ok, data = run_palette_action(action_name)
+                if ok:
+                    if isinstance(data, list):
+                        for item in data[:20]:
+                            target.print(f"  {item}")
+                    elif isinstance(data, dict):
+                        import json as _json
+
+                        target.print(_json.dumps(data, indent=2, default=str)[:2000])
+                    else:
+                        target.print(str(data)[:2000])
+                    target.print(Text("✓ ok", style=TOKENS["SUCCESS"]))
+                else:
+                    target.print(Text(f"✗ error: {data}", style=TOKENS["ERROR"]))
+                target.print()
+                target.print(Text("Press any key to continue, q to quit", style=TOKENS["MUTED"]))
+                ch2 = sys.stdin.read(1)
+                if ch2 == "q" or ch2 == "Q":
+                    return 0
+            elif ch == "\x1b":
+                # Escape sequence (arrow keys)
+                seq = sys.stdin.read(2)
+                if seq == "[A":  # Up
+                    selected = max(0, selected - 1)
+                elif seq == "[B":  # Down
+                    selected = min(len(entries) - 1, selected + 1)
+            elif ch.isdigit():
+                num = int(ch)
+                if 1 <= num <= len(entries):
+                    selected = num - 1
+    except (KeyboardInterrupt, EOFError):
+        return 0
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return 0
+
+
 def run_home(
     *,
     console: Console | None = None,
@@ -250,6 +344,7 @@ def run_home(
     runs_roots: Sequence[Path] | None = None,
     animate: bool | None = None,
     probe: bool = True,
+    interactive: bool | None = None,
 ) -> int:
     target = console or Console()
     plain = _plain(target)
@@ -282,6 +377,19 @@ def run_home(
                 live.update(render_home(state, plain=False, width=width, reveal=step))
                 time.sleep(0.012)
     target.print(render_home(state, plain=plain, width=width))
+    # F4: interactive palette — TTY only; non-TTY/NO_COLOR/CI unchanged.
+    want_interactive = (
+        interactive
+        if interactive is not None
+        else (
+            target.is_terminal
+            and not plain
+            and not os.getenv("CI")
+            and "NO_COLOR" not in os.environ
+        )
+    )
+    if want_interactive:
+        return _interactive_palette(target, state)
     return 0
 
 

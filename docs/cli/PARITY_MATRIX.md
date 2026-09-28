@@ -4,50 +4,50 @@
 
 | Command | Action | TUI Section | Kind | Status |
 |---------|--------|-------------|------|--------|
-| `autodev` | — | — | — | 🔧 machine-only: batch automation pipeline; subprocess-heavy |
-| `autodev-golden-path` | — | — | — | 🔧 machine-only: golden-path batch pipeline; not interactive |
-| `benchmark` | — | — | — | 🔧 machine-only: benchmark suite; long-running |
-| `catalog` | — | — | — | 🔧 machine-only: OmniRoute catalog dump; network-heavy |
-| `certify` | — | — | — | 🔧 machine-only: certification snapshot; batch process |
-| `check` | — | — | — | 🔧 machine-only: inline check; quick probe wrapper |
-| `choose` | — | — | — | 🔧 machine-only: model chooser; legacy |
-| `compare` | — | — | — | 🔧 machine-only: dual-route comparison; could be future action |
+| `autodev` | — | — | — | 🚀 launch: batch automation pipeline; long-running |
+| `autodev-golden-path` | — | — | — | 🚀 launch: golden-path batch pipeline; long-running |
+| `benchmark` | — | — | — | 🚀 launch: benchmark suite; long-running measurement |
+| `catalog` | `catalog` | Models | read | ✅ action |
+| `certify` | — | — | — | 🔧 machine-only: certification snapshot; batch dev-tool process |
+| `check` | — | — | — | 🔧 machine-only: inline probe wrapper; dev-tool plumbing |
+| `choose` | — | — | — | 🔧 machine-only: legacy model chooser; superseded by route action |
+| `compare` | `compare` | Routing | read | ✅ action |
 | `compat` | — | — | — | 🔧 machine-only: compatibility scanner; dev-tool |
-| `cost-report` | — | — | — | 🔧 machine-only: cost report; computation-heavy |
+| `cost-report` | `cost-report` | Overview | read | ✅ action |
 | `credentials` | `credentials.list` | Configuration | read | ✅ action |
-| `detect` | — | — | — | 🔧 machine-only: provider detection; network scan |
+| `detect` | `detect` | Health | read | ✅ action |
 | `doctor` | `doctor` | Doctor | read | ✅ action |
 | `eligibility` | `eligibility` | Health | read | ✅ action |
-| `failover-proof` | — | — | — | 🔧 machine-only: failover proof generation; batch process |
-| `harness` | — | — | — | 🔧 machine-only: per-harness lifecycle commands; multiple subcommands, dev-tool |
-| `hook` | — | — | — | 🔧 machine-only: hook management; dev-tool plumbing |
-| `inspect` | — | — | — | 🔧 machine-only: model inspect; legacy |
-| `mcp` | — | — | — | 🔧 machine-only: MCP server lifecycle; not an interactive action |
-| `memory` | — | — | — | 🔧 machine-only: memory-bridge lifecycle; harness-specific |
-| `metadata` | — | — | — | 🔧 machine-only: metadata sync; batch process |
+| `failover-proof` | — | — | — | 🔧 machine-only: failover proof generation; batch dev-tool |
+| `harness` | — | — | — | 🔧 machine-only: per-harness lifecycle commands; dev-tool plumbing |
+| `hook` | — | — | — | 🔧 machine-only: hook management endpoint; invoked by harness integrations |
+| `inspect` | — | — | — | 📋 gap: model detail view (BOD-278: context inspect service needed) |
+| `mcp` | — | — | — | 🔧 machine-only: MCP server lifecycle; invoked by other programs, not users |
+| `memory` | — | — | — | 🔧 machine-only: memory-bridge lifecycle; invoked by harness integrations |
+| `metadata` | — | — | — | 🔧 machine-only: metadata sync; batch process invoked by scripts |
 | `models` | `models.list` | Models | read | ✅ action |
 | `openspec` | — | — | — | 🔧 machine-only: spec lifecycle; external tool integration |
-| `orchestrate` | — | — | — | 🔧 machine-only: long-running orchestration pipeline; launches parallel workers |
-| `plan` | — | — | — | 🔧 machine-only: planner invocation; stateful |
+| `orchestrate` | — | — | — | 🚀 launch: long-running orchestration pipeline; launches parallel workers |
+| `plan` | — | — | — | 🔧 machine-only: legacy alias for setup plan |
 | `probe` | `probe` | Health | read | ✅ action |
-| `prove-at-rest` | — | — | — | 🔧 machine-only: long-running monitoring probe; not interactive |
-| `quickstart` | — | — | — | 🔧 machine-only: guided quickstart wizard; interactive subprocess |
+| `prove-at-rest` | — | — | — | 🚀 launch: long-running monitoring probe; continuous |
+| `quickstart` | — | — | — | 🚀 launch: guided quickstart wizard; interactive session |
 | `receipt` | `receipt.show` | Traces | read | ✅ action |
-| `replay` | — | — | — | 🔧 machine-only: replay viewer; needs full TUI |
-| `resume` | — | — | — | 🔧 machine-only: story resume pipeline; subprocess-heavy |
+| `replay` | `replay` | Traces | read | ✅ action |
+| `resume` | — | — | — | 🚀 launch: story resume pipeline; interactive session |
 | `route` | `route` | Routing | read | ✅ action |
-| `run` | — | — | — | 🔧 machine-only: legacy run command; use orchestrate |
-| `run-receipt` | — | — | — | 🔧 machine-only: orchestration receipt; use receipt.show action for routing receipts |
-| `runtime` | — | — | — | 🔧 machine-only: daemon lifecycle management; long-running |
-| `serve` | — | — | — | 🔧 machine-only: long-running server process; not an action |
+| `run` | — | — | — | 🔧 machine-only: legacy alias for route |
+| `run-receipt` | `run-receipt` | Traces | read | ✅ action |
+| `runtime` | — | — | — | 🔧 machine-only: daemon lifecycle management; long-running system process |
+| `serve` | — | — | — | 🔧 machine-only: server/daemon lifecycle; long-running HTTP process |
 | `setup` | `setup.plan` | Setup | read | ✅ action |
-| `simulate` | — | — | — | 🔧 machine-only: simulation run; stateful |
-| `stats` | — | — | — | 🔧 machine-only: statistics computation from log file |
-| `suggest` | — | — | — | 🔧 machine-only: suggestion engine; analysis-heavy (620L inline) |
-| `supervise` | — | — | — | 🔧 machine-only: supervisor wrapper around orchestrate; long-running |
-| `ui` | — | — | — | 🔧 machine-only: launches Streamlit subprocess; not an in-process action |
-| `uninstall` | — | — | — | 🔧 machine-only: destructive global uninstall; not a TUI action |
-| `watch` | — | — | — | 🔧 machine-only: live TUI viewer for running orchestrations; interactive |
+| `simulate` | — | — | — | 🚀 launch: simulation run; stateful multi-step session |
+| `stats` | `stats` | Overview | read | ✅ action |
+| `suggest` | `suggest` | Overview | read | ✅ action |
+| `supervise` | — | — | — | 🚀 launch: supervisor wrapper around orchestrate; long-running |
+| `ui` | — | — | — | 🚀 launch: launches Streamlit dashboard; separate process |
+| `uninstall` | — | — | — | 🔧 machine-only: destructive global uninstall; not an interactive action |
+| `watch` | — | — | — | 🚀 launch: live TUI viewer for running orchestrations; interactive |
 
-**Summary:** 8 actions, 36 machine-only, 0 gaps
+**Summary:** 16 actions, 11 launch, 16 machine-only, 1 gaps
 

@@ -1,9 +1,19 @@
-"""Shared action layer — the ONLY place CLI and TUI meet domain services."""
+"""Verdict action layer — shared CLI + TUI convergence surface."""
 
 from verdict.actions.base import ActionEvent, ActionResult, ActionSink, ActionSpec
-from verdict.actions.registry import MACHINE_ONLY, get_action, list_actions, run_action
+from verdict.actions.registry import (
+    GAP,
+    LAUNCH,
+    MACHINE_ONLY,
+    get_action,
+    list_actions,
+    register,
+    run_action,
+)
 
 __all__ = [
+    "GAP",
+    "LAUNCH",
     "MACHINE_ONLY",
     "ActionEvent",
     "ActionResult",
@@ -11,5 +21,6 @@ __all__ = [
     "ActionSpec",
     "get_action",
     "list_actions",
+    "register",
     "run_action",
 ]

@@ -31,9 +31,6 @@ def _walk_parsers() -> list[str]:
     parser = argparse.ArgumentParser()
     subs = parser.add_subparsers(dest="command")
 
-    # Same order as cli.main() — note: parsers_models internally calls
-    # orchestration.cli.add_parsers(), so orchestration subcommands are
-    # already registered after this loop.
     for registrar in (
         parsers_setup,
         parsers_credentials,
@@ -46,14 +43,11 @@ def _walk_parsers() -> list[str]:
     ):
         registrar.register(subs)
 
-    # Collect already-registered names from the subparsers action
     registered: set[str] = set()
-    # subs is an _SubParsersAction; walk the parent parser's actions
     for action in parser._subparsers._group_actions:
         if isinstance(action, argparse._SubParsersAction):
             registered.update(action.choices.keys())
 
-    # Dispatch-only commands (no dedicated parsers_* file)
     dispatch_only = [
         "compare",
         "suggest",
@@ -85,16 +79,13 @@ def _walk_parsers() -> list[str]:
 
 def generate() -> str:
     """Generate the parity matrix markdown."""
-    from verdict.actions.registry import MACHINE_ONLY, list_actions
+    from verdict.actions.registry import GAP, LAUNCH, MACHINE_ONLY, list_actions
 
     actions = {spec.name: spec for spec in list_actions()}
-    # Build reverse map: CLI command -> action name
     action_by_command: dict[str, str] = {}
     for spec in actions.values():
-        # Map family.subcommand or bare name to CLI command
         parts = spec.name.split(".")
         if len(parts) == 2:
-            # e.g. "models.list" -> "models", "credentials.set" -> "credentials"
             action_by_command.setdefault(parts[0], spec.name)
         else:
             action_by_command[spec.name] = spec.name
@@ -111,6 +102,7 @@ def generate() -> str:
     ]
 
     action_count = 0
+    launch_count = 0
     machine_count = 0
     gap_count = 0
 
@@ -122,9 +114,15 @@ def generate() -> str:
                 f"| `{cmd}` | `{spec.name}` | {spec.tui_section} | {spec.kind} | ✅ action |"
             )
             action_count += 1
+        elif cmd in LAUNCH:
+            lines.append(f"| `{cmd}` | — | — | — | 🚀 launch: {LAUNCH[cmd]} |")
+            launch_count += 1
         elif cmd in MACHINE_ONLY:
             lines.append(f"| `{cmd}` | — | — | — | 🔧 machine-only: {MACHINE_ONLY[cmd]} |")
             machine_count += 1
+        elif cmd in GAP:
+            lines.append(f"| `{cmd}` | — | — | — | 📋 gap: {GAP[cmd]} |")
+            gap_count += 1
         else:
             lines.append(f"| `{cmd}` | — | — | — | ⚠️ gap |")
             gap_count += 1
@@ -132,7 +130,8 @@ def generate() -> str:
     lines.extend(
         [
             "",
-            f"**Summary:** {action_count} actions, {machine_count} machine-only, {gap_count} gaps",
+            f"**Summary:** {action_count} actions, {launch_count} launch,"
+            f" {machine_count} machine-only, {gap_count} gaps",
             "",
         ]
     )

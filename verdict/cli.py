@@ -695,16 +695,15 @@ def cmd_setup_plan(
     from verdict.setup_plan import build_setup_plan
 
     if not recommended and scope == "all":
-        from verdict.shared_memory import discover_shared_memory_setup
+        from verdict.actions.registry import run_action
 
-        plan = build_setup_plan().to_dict()
-        plan["shared_memory"] = discover_shared_memory_setup()
+        result = run_action("setup.plan")
         if output_json:
-            print(json.dumps(plan, indent=2, sort_keys=True))
+            print(json.dumps(result.data, indent=2, sort_keys=True))
             return
         ui = TerminalUI(console)
         ui.header("Setup plan")
-        ui.plan(plan)
+        ui.plan(result.data)
         ui.panel("Review complete", "No changes made. This plan does not probe services.")
         return
 
@@ -1312,11 +1311,19 @@ def cmd_probe(
     Sends the fixed, no-user-data probe payload (max_tokens=1) so a model can be
     confirmed live before it is assigned real work (e.g. a subagent).
     """
-    from verdict.probes import ProbePolicy, ProbeRunner, _redact
+    from verdict.actions.registry import run_action
 
-    is_injected = transport is not None
-    if not is_injected and not allow_live_probe:
-        message = "live probes require explicit consent; pass --allow-live-probe"
+    params: dict[str, Any] = {
+        "models": models,
+        "base_url": base_url,
+        "timeout": timeout,
+        "allow_live_probe": allow_live_probe,
+    }
+    if transport is not None:
+        params["transport"] = transport
+    result = run_action("probe", params)
+    if not result.ok and result.exit_code == 2:
+        message = result.data.get("error", "live probes require consent")
         if output_json:
             print(json.dumps({"error": message, "diagnostics": None}, sort_keys=True))
         else:
@@ -1325,26 +1332,17 @@ def cmd_probe(
             present.header("Probe")
             present.fail("probe", message)
         raise SystemExit(2)
-    if transport is None:
-        from verdict.probes import openai_probe_transport
-
-        transport = openai_probe_transport(base_url, api_key=os.getenv("OPENAI_API_KEY"))
-    provider_name = "fixture" if is_injected else "omniroute"
-    run = ProbeRunner(ProbePolicy(timeout_seconds=timeout)).run_with_diagnostics(
-        models,
-        transport,
-        live=not is_injected,
-        consented=allow_live_probe if not is_injected else False,
-        provider=provider_name,
-    )
-    results = [_probe_result_payload(observation) for observation in run.observations]
 
     if output_json:
-        print(json.dumps({"diagnostics": run.diagnostics.to_dict(), "results": results}, indent=2))
+        print(json.dumps(result.data, indent=2))
+        if not result.ok:
+            raise SystemExit(1)
         return
 
     from verdict import present
+    from verdict.probes import _redact
 
+    results = result.data.get("results", [])
     present.header(f"Probe  /  {_redact(base_url)}")
     present.table(
         ["Model", "Status", "HTTP", "Latency (ms)"],
@@ -1358,7 +1356,7 @@ def cmd_probe(
             for entry in results
         ],
     )
-    if not all(e.get("ok") for e in results):
+    if not result.ok:
         sys.exit(1)
 
 
@@ -2823,29 +2821,15 @@ def cmd_doctor(
     stdout stays pure JSON.
     """
     if output_json:
+        from verdict.actions.registry import run_action
         from verdict.runtime_daemons import RuntimeManager
         from verdict.runtime_health import build_runtime_health_report
 
-        diag = _collect_doctor_diagnostics(
-            fix, interactive=False, preflight_timeout=preflight_timeout
-        )
-        report: dict[str, Any] = {
-            "status": "issues_found" if diag.issues else "ok",
-            "issues": diag.issues,
-            "warnings": diag.warnings,
-            "repaired": diag.fixed,
-            "sections": [
-                {"label": label, "state": state, "detail": detail}
-                for label, state, detail in diag.sections
-            ],
-            "documentation_preflight": diag.documentation_preflight,
-            "gateway_lifecycle": diag.gateway_lifecycle,
-            "shared_memory": diag.shared_memory,
-            "capability_bootstrap": diag.capability_report,
-            "runtime_health": build_runtime_health_report(RuntimeManager().status()).to_dict(),
-        }
+        result = run_action("doctor", {"fix": fix, "preflight_timeout": preflight_timeout})
+        report: dict[str, Any] = dict(result.data)
+        report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
-        if diag.issues:
+        if not result.ok:
             raise SystemExit(1)
         return
 
@@ -2963,46 +2947,35 @@ def cmd_choose(
 
 def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False) -> None:
     """List the qualified model catalog used for routing and simulation."""
-    if catalog is None:
-        catalog = default_model_catalog()
+    from verdict.actions.registry import run_action
+
+    params: dict[str, Any] = {}
+    if catalog is not None:
+        params["catalog"] = catalog
+    result = run_action("models.list", params or None)
     if output_json:
-        print(
-            json.dumps(
-                [
-                    {
-                        "id": m.id,
-                        "provider": m.provider,
-                        "tier": m.capability_tier,
-                        "context_window": m.context_window,
-                        "cost_per_1k": m.cost_per_1k,
-                        "availability_state": m.availability_state,
-                    }
-                    for m in catalog
-                ],
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print(json.dumps(result.data, indent=2, sort_keys=True))
         return
     from verdict import present
 
     present.header("Model catalog")
+    entries = result.data if isinstance(result.data, list) else []
     present.table(
         ["ID", "Provider", "Tier", "Context", "Cost/1k", "State"],
         [
             (
-                m.id,
-                m.provider,
-                f"T{m.capability_tier}",
-                str(m.context_window) if m.context_window > 0 else "-",
-                f"${m.cost_per_1k:.4f}" if m.cost_per_1k else "-",
-                m.availability_state,
+                str(m.get("id", "")),
+                str(m.get("provider", "")),
+                f"T{m.get('tier', '?')}",
+                str(m.get("context_window", "-")),
+                f"${m.get('cost_per_1k', 0):.4f}" if m.get("cost_per_1k") else "-",
+                str(m.get("availability_state", "")),
             )
-            for m in catalog
+            for m in entries
         ],
         empty="catalog is empty",
     )
-    present.note(f"{len(catalog)} model(s). Live eligibility: verdict eligibility --probe")
+    present.note(f"{len(entries)} model(s). Live eligibility: verdict eligibility --probe")
 
 
 def cmd_inspect(
@@ -3822,28 +3795,11 @@ def _stdout_is_tty() -> bool:
 
 def cmd_credentials_list(*, output_json: bool = False) -> None:
     """List all registered credentials with their source and masked value."""
-    import json
+    from verdict.actions.registry import run_action
 
-    from verdict.credentials_registry import CREDENTIALS
-    from verdict.credentials_store import CredentialsStore, get_credential_source
-
-    store = CredentialsStore()
-
-    results = []
-    for cred in CREDENTIALS:
-        source, masked = get_credential_source(cred.env_name, store)
-        results.append(
-            {
-                "name": cred.env_name,
-                "source": source,
-                "value": masked,
-                "purpose": cred.purpose,
-                "optional": cred.optional,
-            }
-        )
-
+    result = run_action("credentials.list")
     if output_json:
-        print(json.dumps(results, indent=2))
+        print(json.dumps(result.data, indent=2))
         return
 
     # Terminal output
@@ -3852,7 +3808,7 @@ def cmd_credentials_list(*, output_json: bool = False) -> None:
     ui = TerminalUI()
 
     ui.header("Credentials")
-    for item in results:
+    for item in result.data:
         ui.status(str(item["name"]), str(item["source"]), str(item["value"]))
 
 
@@ -3861,58 +3817,36 @@ def cmd_credentials_set(
 ) -> None:
     """Set a credential in the store."""
     import getpass
-    import sys
 
-    from verdict.credentials_registry import get_credential
-    from verdict.credentials_store import CredentialsStore
+    from verdict.actions.registry import run_action
 
-    # Check if registered
-    cred = get_credential(name)
-    if cred is None and not force_unregistered:
-        from verdict.terminal_ui import TerminalUI
-
-        ui = TerminalUI()
-        ui.panel(
-            "Unknown credential",
-            f"{name} is not in the registry. Use --force-unregistered to set anyway.",
-            tone="WARNING",
-        )
-        raise SystemExit(1)
-
-    # Read value
+    # Read value (I/O must happen before the action call)
     if from_stdin:
         value = sys.stdin.read().strip()
     else:
         prompt_text = f"Enter value for {name}: "
         value = getpass.getpass(prompt_text)
 
-    if not value:
-        from verdict.terminal_ui import TerminalUI
-
-        ui = TerminalUI()
-        ui.panel("Empty value", "Credential value cannot be empty.", tone="WARNING")
-        raise SystemExit(1)
-
-    # Store it
-    store = CredentialsStore()
-    store.set(name, value)
-
+    result = run_action(
+        "credentials.set", {"name": name, "value": value, "force_unregistered": force_unregistered}
+    )
     from verdict.terminal_ui import TerminalUI
 
     ui = TerminalUI()
+    if not result.ok:
+        ui.panel("Credential error", str(result.data.get("error", "")), tone="WARNING")
+        raise SystemExit(result.exit_code)
     ui.status(name, "set", "in credential store")
 
 
 def cmd_credentials_unset(*, name: str) -> None:
     """Remove a credential from the store."""
-    from verdict.credentials_store import CredentialsStore
+    from verdict.actions.registry import run_action
     from verdict.terminal_ui import TerminalUI
 
-    store = CredentialsStore()
-    removed = store.unset(name)
-
+    result = run_action("credentials.unset", {"name": name})
     ui = TerminalUI()
-    if removed:
+    if result.data.get("status") == "removed":
         ui.status(name, "removed", "from credential store")
     else:
         ui.panel("Not found", f"{name} was not in the credential store.", tone="WARNING")
