@@ -308,6 +308,20 @@ def certify(
         "resume": "partial",
         "tool_interception": "partial" if report.gate_hook_present else "unsupported",
         "structured_output": "unsupported",
+        # Lifecycle matrix facets (BOD-80 parity)
+        "session_start": "partial",  # file:memory_bridge._install_claude_hooks SessionStart — local plane only
+        "before_first_turn": "partial",  # file:memory_bridge._install_claude_hooks UserPromptSubmit recall — local plane
+        "tool_pre_post": "unsupported",  # no native tool pre/post hooks in Claude adapter
+        "edit_event": "partial"
+        if report.gate_hook_present
+        else "unsupported",  # file:memory_bridge._install_claude_hooks
+        "compaction_yield": "partial"
+        if report.gate_hook_present
+        else "unsupported",  # file:memory_bridge._install_claude_hooks
+        "verification_result": "unsupported",  # no verification hook wired in Claude adapter
+        "session_end": "unsupported",  # no SessionEnd hook in Claude adapter
+        "sync_async_semantics": "partial",  # shell command hooks are sync; outbox mirror async
+        "mutation_capability": "partial",  # file:memory_bridge.MemoryGate.write via hook commands
     }
     notes: list[str] = [
         "OpenAI-compatible path via env.OPENAI_BASE_URL → Verdict :8000",
