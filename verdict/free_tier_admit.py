@@ -354,6 +354,7 @@ def build_cheap_path_context_pack(
     mcp_root: Path | str | None = None,
     acceptance_criteria: Sequence[str] = (),
     proof_criteria: Sequence[str] = (),
+    verification_commands: Sequence[Sequence[str]] = (),
     errors: Sequence[str] = (),
     memory_path: Path | str | None = None,
     use_context_fabric: bool = False,
@@ -399,7 +400,9 @@ def build_cheap_path_context_pack(
     )
     # Coverage-contract: derive required facts and pack criteria as mandatory
     # instruction units so they are carried to the model and satisfiable.
-    required_facts = _derive_required_facts(acceptance_criteria, proof_criteria)
+    required_facts = _derive_required_facts(
+        acceptance_criteria, proof_criteria, verification_commands
+    )
     criteria_slots: list[ContextPackSlot] = []
     if acceptance_criteria:
         criteria_slots.append(
@@ -423,6 +426,23 @@ def build_cheap_path_context_pack(
                 source_uri="urn:verdict:source:proof_criteria",
             )
         )
+    if verification_commands:
+        vc_lines = [
+            f"- verification_command:{' '.join(cmd)}"
+            for cmd in verification_commands
+            if cmd and " ".join(cmd).strip()
+        ]
+        if vc_lines:
+            criteria_slots.append(
+                ContextPackSlot(
+                    slot_type="instructions",
+                    key="verification_commands",
+                    content="\n".join(vc_lines),
+                    source="cheap_path",
+                    created_at=0.0,
+                    source_uri="urn:verdict:source:verification_commands",
+                )
+            )
     slots = (task_slot, *criteria_slots, *(extra_slots or ()))
     units: list[ContextUnit] = []
     for slot in slots:
