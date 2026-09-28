@@ -723,6 +723,12 @@ Observed token usage x published list prices; subscription capacity, no invoice.
 Method: [`scripts/live_savings_bench.py`](scripts/live_savings_bench.py);
 run with `VERDICT_LIVE_SMOKE=1` (opt-in, spends real capacity).</sub>
 
+**Deterministic mock — no provider spend.**
+
+```bash
+uv run python -m verdict.routing_demo --mock
+```
+
 The deterministic mock compares 100 requests using fixed price estimates against a
 class-aware route. See [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md)
 for the baseline definition and live/recorded limitations.
