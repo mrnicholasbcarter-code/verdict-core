@@ -10,7 +10,6 @@ non-TTY) is ASCII only and emits no colour.
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -26,6 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from verdict.design import GLYPHS as GLYPHS  # re-export for local callers
 from verdict.orchestration.contracts import NodeState, RunEvent
 from verdict.terminal_ui import TOKENS, clean
 
@@ -44,15 +44,7 @@ STAGES: tuple[str, ...] = (
     "REVIEW",
 )
 
-# glyph key -> (rich glyph, ascii glyph, design token)
-GLYPHS: Mapping[str, tuple[str, str, str]] = {
-    "running": ("\u25cf", "*", "PRIMARY"),
-    "validated": ("\u2713", "+", "SUCCESS"),
-    "failed": ("\u2717", "x", "ERROR"),
-    "reassigned": ("\u21bb", "~", "WARNING"),
-    "planned": ("\u25cc", "o", "MUTED"),
-    "blocked": ("\u25a0", "#", "ERROR"),
-}
+
 _STATE_GLYPH: Mapping[NodeState, str] = {
     NodeState.PLANNED: "planned",
     NodeState.ADMITTED: "planned",
@@ -929,15 +921,20 @@ def render_text(
 
 
 def plain_mode(console: Console | None = None) -> bool:
-    """Same fallback rules as :class:`verdict.terminal_ui.TerminalUI`."""
+    """Same fallback rules as :class:`verdict.terminal_ui.TerminalUI`, via :mod:`verdict.design`.
+
+    The console's own terminal detection is authoritative (it honours force_terminal),
+    so the policy is asked about the console, not its underlying file.
+    """
+    from verdict.design import presentation_mode as _pm
+
     source = console or Console()
-    return (
-        not source.is_terminal
-        or "NO_COLOR" in os.environ
-        or os.getenv("TERM") == "dumb"
-        or bool(os.getenv("CI"))
-        or os.getenv("VERDICT_PLAIN") == "1"
-    )
+
+    class _ConsoleStream:
+        def isatty(self) -> bool:
+            return source.is_terminal
+
+    return not _pm(_ConsoleStream()).color
 
 
 def read_events(path: Path) -> list[RunEvent]:
