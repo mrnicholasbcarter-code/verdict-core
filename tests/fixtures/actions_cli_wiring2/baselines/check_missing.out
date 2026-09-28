@@ -1,0 +1,6 @@
+
+VERDICT  /  Configuration check
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+  ! Configuration file (verdict.yaml) is missing  FAILED
+    at /tmp/tmpvx9_ikl7/home/.config/verdict/verdict.yaml.

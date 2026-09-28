@@ -5,9 +5,9 @@ import contextlib
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import yaml
 from rich.console import Console
@@ -36,7 +36,7 @@ from verdict.harness_opencode import DEFAULT_BASE_URL as OPENCODE_HARNESS_DEFAUL
 from verdict.harness_opencode import DEFAULT_TOKEN_ENV as OPENCODE_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_prime import DEFAULT_BASE_URL as PRIME_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_prime import DEFAULT_TOKEN_ENV as PRIME_HARNESS_DEFAULT_TOKEN_ENV
-from verdict.models import ModelInfo, ProviderConfig, TaskSpec
+from verdict.models import ModelInfo, ProviderConfig
 from verdict.patch_executor import DEFAULT_BASE_URL
 from verdict.terminal_ui import TerminalUI
 
@@ -1116,32 +1116,12 @@ def cmd_detect(
 def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -> None:
     """Emit a runtime certification report (evidence only, JSON).
 
-    Reads DetectedSnapshot fixtures from ``--from`` when provided. Does not
-    perform live network probes or mutate setup/doctor state (capability bootstrap).
+    Delegates to the ``certify`` action; the CLI only formats/prints.
     """
-    from verdict.runtime_certification import ComponentKind, DetectedSnapshot, certify_runtime
+    from verdict.actions.registry import run_action
 
-    snapshots: list[DetectedSnapshot] = []
-    if snapshot_path:
-        payload = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
-        raw_items = payload.get("snapshots", payload if isinstance(payload, list) else [])
-        for item in raw_items:
-            snapshots.append(
-                DetectedSnapshot(
-                    component_id=item["component_id"],
-                    kind=ComponentKind(item["kind"]),
-                    identity=item["identity"],
-                    source=item["source"],
-                    health_claim=item.get("health_claim", "unknown"),
-                    version=item.get("version"),
-                    capabilities=frozenset(item.get("capabilities", [])),
-                    requires_probe=bool(item.get("requires_probe", False)),
-                    evidence=item.get("evidence", {}),
-                    models=tuple(item.get("models", ())),
-                )
-            )
-    report = certify_runtime(snapshots=tuple(snapshots))
-    encoded = json.dumps(report.to_dict(), indent=2, sort_keys=True)
+    result = run_action("certify", {"snapshot_path": snapshot_path})
+    encoded = json.dumps(result.data, indent=2, sort_keys=True)
     if output_json:
         print(encoded)
     else:
@@ -1149,6 +1129,8 @@ def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -
 
         present.header("Runtime certification")
         present.note(encoded)
+    if result.exit_code:
+        sys.exit(result.exit_code)
 
 
 def cmd_probe(
@@ -1650,15 +1632,12 @@ def cmd_autodev_packet_execute(
 
 def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) -> None:
     """Dump an advisory shadow-learning JSON report. Does not call EligibilityGate."""
-    from verdict.autodev_run import shadow_learning_report
+    from verdict.actions.registry import run_action
 
-    payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if isinstance(payload, dict) and "episodes" in payload:
-        episodes = payload["episodes"]
-    else:
-        episodes = payload
-    if not isinstance(episodes, list):
-        message = "shadow episodes JSON must be a list or an object with episodes"
+    result = run_action("autodev.packet.shadow", {"episodes_path": episodes_path})
+    data = result.data
+    if not result.ok:
+        message = str(data.get("error", "autodev.packet.shadow failed"))
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
@@ -1666,16 +1645,15 @@ def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) 
 
             present.header("Autodev packet  /  shadow")
             present.fail("episodes", message)
-        raise SystemExit(1)
-    report = shadow_learning_report(episodes)
-    print(json.dumps(report, indent=2, sort_keys=True))
+        raise SystemExit(result.exit_code or 1)
+    print(json.dumps(data, indent=2, sort_keys=True))
 
 
 def cmd_autodev_packet_canary(
     episodes_path: str, admitted_path: str, *, output_json: bool = False
 ) -> None:
     """Dump an explicit bounded canary choice. Does not call EligibilityGate."""
-    from verdict.autodev_run import apply_shadow_canary, shadow_learning_report
+    from verdict.actions.registry import run_action
 
     if not episodes_path or not admitted_path:
         message = "canary apply requires --episodes and --admitted"
@@ -1687,14 +1665,12 @@ def cmd_autodev_packet_canary(
             present.header("Autodev packet  /  canary")
             present.fail("inputs", message)
         raise SystemExit(1)
-    payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if isinstance(payload, dict) and "episodes" in payload:
-        episodes = payload["episodes"]
-    else:
-        episodes = payload
-    admitted = json.loads(Path(admitted_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if not isinstance(episodes, list) or not isinstance(admitted, list):
-        message = "canary requires an episodes list and an admitted identity list"
+    result = run_action(
+        "autodev.packet.canary", {"episodes_path": episodes_path, "admitted_path": admitted_path}
+    )
+    data = result.data
+    if not result.ok:
+        message = str(data.get("error", "autodev.packet.canary failed"))
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
@@ -1702,13 +1678,8 @@ def cmd_autodev_packet_canary(
 
             present.header("Autodev packet  /  canary")
             present.fail("inputs", message)
-        raise SystemExit(1)
-    report = shadow_learning_report(episodes)
-    print(
-        json.dumps(
-            apply_shadow_canary([str(item) for item in admitted], report), indent=2, sort_keys=True
-        )
-    )
+        raise SystemExit(result.exit_code or 1)
+    print(json.dumps(data, indent=2, sort_keys=True))
 
 
 def cmd_autodev_packet_canary_rollback(state_path: str, *, output_json: bool = False) -> None:
@@ -2084,6 +2055,36 @@ def cmd_plan(output_json: bool = False) -> None:
     cmd_setup_plan(output_json=output_json)
 
 
+def _render_choose_summary(data: dict[str, Any]) -> str:
+    """Mirror ``verdict.chooser.human_summary`` for a decision returned as a dict."""
+    lines: list[str] = []
+    selected = data.get("selected")
+    if selected is None:
+        lines.append(f"no eligible target ({data.get('reason', 'unknown')})")
+    else:
+        lines.append(
+            f"selected {selected['gateway']}/{selected['provider']}/"
+            f"{selected['resource_pool']}/{selected['model']}"
+        )
+        if data.get("selected_because"):
+            lines.append(str(data["selected_because"]))
+    fallbacks = data.get("ranked_fallbacks") or []
+    if fallbacks:
+        top = fallbacks[0]
+        lines.append(
+            "top fallback: "
+            f"{top['gateway']}/{top['provider']}/{top['resource_pool']}/{top['model']}"
+        )
+    exclusions = data.get("exclusions") or []
+    if exclusions:
+        reasons = ", ".join(
+            f"{item.get('model', '?')} ({item.get('reason', 'excluded')})"
+            for item in exclusions[:3]
+        )
+        lines.append(f"excluded: {reasons}")
+    return "\n".join(lines)
+
+
 def cmd_choose(
     *,
     task_class: str,
@@ -2093,7 +2094,7 @@ def cmd_choose(
     output_json: bool = False,
 ) -> None:
     """Select an eligible execution target for Prime dispatch."""
-    from verdict.chooser import ChooserError, choose_route, human_summary, load_candidates_json
+    from verdict.actions.registry import run_action
 
     if not candidates_json:
         print(
@@ -2101,49 +2102,41 @@ def cmd_choose(
             file=sys.stderr,
         )
         sys.exit(2)
-    required = tuple(part.strip() for part in requires.split(",") if part.strip())
-    try:
-        candidates = load_candidates_json(candidates_json)
-        receipt = choose_route(
-            candidates, task_class=task_class, requires=required, explicit_model=model
-        )
-    except ChooserError as exc:
-        payload = {
+    result = run_action(
+        "choose",
+        {
             "task_class": task_class,
-            "protected": task_class
-            in {"architecture", "orchestration", "hard-debug", "final-review"},
-            "selected": None,
-            "reason": exc.reason,
-            "error": str(exc),
-            "exclusions": list(exc.exclusions),
-            "policy_version": "chooser-policy/v1",
-            "ranker_version": "chooser-ranker/v1",
-            "explicit_model": model,
-            "selected_because": f"failed because {exc.reason}",
-        }
+            "requires": requires,
+            "model": model,
+            "candidates_json": candidates_json,
+        },
+    )
+    if not result.ok:
+        payload = result.data
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Choose route")
-            present.fail(task_class, exc.reason)
-            if exc.exclusions:
+            present.fail(task_class, payload.get("reason", "unknown"))
+            exclusions = payload.get("exclusions") or []
+            if exclusions:
                 present.note(
                     "excluded: "
                     + ", ".join(
                         f"{item.get('model', '?')} ({item.get('reason', 'excluded')})"
-                        for item in exc.exclusions[:3]
+                        for item in exclusions[:3]
                     )
                 )
-        sys.exit(1)
+        sys.exit(result.exit_code or 1)
     if output_json:
-        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(result.data, indent=2, sort_keys=True))
         return
     from verdict import present
 
     present.header("Choose route")
-    present.note(human_summary(receipt))
+    present.note(_render_choose_summary(result.data))
 
 
 def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False) -> None:
@@ -2349,16 +2342,19 @@ def cmd_simulate(
     passports: dict[str, Any] | None = None,
 ) -> None:
     """Forecast tokens, cost, risk, and the expected model before any paid call."""
-    from verdict.simulator import simulate
+    from verdict.actions.registry import run_action
 
-    spec = TaskSpec(prompt=task, criticality=criticality)
-    forecast = simulate(
-        spec,
-        model_catalog=catalog if catalog is not None else _action_helpers.default_model_catalog(),
-        model_override=model_override,
-    )
+    params: dict[str, Any] = {
+        "task": task,
+        "criticality": criticality,
+        "model_override": model_override,
+    }
+    if catalog is not None:
+        params["catalog"] = catalog
+    result = run_action("simulate", params)
+    data = result.data
     if output_json:
-        print(json.dumps(forecast.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True))
         return
     from verdict import present
 
@@ -2366,16 +2362,16 @@ def cmd_simulate(
     present.table(
         ["Metric", "Value"],
         [
-            ("Model", f"{forecast.model} ({forecast.provider}, T{forecast.tier})"),
-            ("Prompt tokens", str(forecast.prompt_tokens)),
-            ("Completion tokens", str(forecast.completion_tokens)),
-            ("Total tokens", str(forecast.total_tokens)),
-            ("Est. cost", f"${forecast.cost_usd:.6f}"),
-            ("Risk score", f"{forecast.risk_score} / 100"),
-            ("Capacity confidence", f"{forecast.capacity_confidence:.2f}"),
+            ("Model", f"{data['model']} ({data['provider']}, T{data['tier']})"),
+            ("Prompt tokens", str(data["prompt_tokens"])),
+            ("Completion tokens", str(data["completion_tokens"])),
+            ("Total tokens", str(data["total_tokens"])),
+            ("Est. cost", f"${data['cost_usd']:.6f}"),
+            ("Risk score", f"{data['risk_score']} / 100"),
+            ("Capacity confidence", f"{data['capacity_confidence']:.2f}"),
         ],
     )
-    present.note(forecast.rationale)
+    present.note(data["rationale"])
 
 
 default_model_catalog = _action_helpers.default_model_catalog
@@ -2604,66 +2600,57 @@ def cmd_runtime(
 
 
 def cmd_check() -> None:
-    """Validate the Verdict configuration file and print status."""
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    config_path = os.path.join(config_dir, "verdict.yaml")
+    """Validate the Verdict configuration file and print status.
+
+    Delegates the validation to the ``check`` action; the CLI renders the
+    result via ``present.*`` (behaviour on ``origin/main`` is the contract).
+    """
     from verdict import present
+    from verdict.actions.registry import run_action
+
+    result = run_action("check")
+    data = result.data
+    config_path = str(data.get("config_path", ""))
+    status = str(data.get("status", ""))
+    issues = list(data.get("issues", []))
 
     present.header("Configuration check")
 
-    if not os.path.exists(config_path):
+    if status == "missing":
         present.fail("Configuration file (verdict.yaml) is missing", f"at {config_path}.")
         sys.exit(1)
-
-    try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
-    except Exception as exc:
-        present.fail("Configuration file is corrupted/invalid YAML", str(exc))
+    if status == "invalid":
+        present.fail("Configuration file is corrupted/invalid YAML", str(data.get("error", "")))
         sys.exit(1)
 
-    has_issue = False
-
-    primary_model = config.get("primary_model")
+    primary_model = data.get("primary_model")
     if not primary_model:
         present.fail("No primary model configured in verdict.yaml.")
-        has_issue = True
     else:
         from verdict.classifier import classify
 
-        tier = classify(primary_model)
+        tier = classify(str(primary_model))
         present.ok("Configured Primary Model", f"{primary_model} (Tier-{tier})")
 
-    providers = config.get("providers", {})
-    if not isinstance(providers, dict):
-        present.fail("'providers' section in verdict.yaml is malformed.")
-        has_issue = True
-    else:
-        urls: dict[str, str] = {}
-        for name, p_cfg in providers.items():
-            if not isinstance(p_cfg, dict):
-                present.fail(f"Provider '{name}' config is not a dictionary.")
-                has_issue = True
-                continue
-            base_url = p_cfg.get("base_url", "")
-            if "sk-" in base_url or "api_key" in base_url.lower():
-                present.fail(f"Literal API key detected inside host URL for provider '{name}'.")
-                has_issue = True
+    for issue in issues:
+        if issue == "no_primary_model":
+            continue  # already emitted above
+        if issue == "providers_not_dict":
+            present.fail("'providers' section in verdict.yaml is malformed.")
+        elif issue.startswith("provider_not_dict:"):
+            _, provider = issue.split(":", 1)
+            present.fail(f"Provider '{provider}' config is not a dictionary.")
+        elif issue.startswith("api_key_in_url:"):
+            _, provider = issue.split(":", 1)
+            present.fail(f"Literal API key detected inside host URL for provider '{provider}'.")
+        elif issue.startswith("duplicate_host:"):
+            _, provider, other = issue.split(":", 2)
+            present.fail(
+                "Duplicate host URL configured in verdict.yaml",
+                f"provider '{provider}' and '{other}' have identical hosts.",
+            )
 
-            if base_url:
-                url = base_url.rstrip("/")
-                if url in urls:
-                    present.fail(
-                        "Duplicate host URL configured in verdict.yaml",
-                        f"provider '{name}' and '{urls[url]}' have identical hosts: {url}",
-                    )
-                    has_issue = True
-                else:
-                    urls[url] = name
-
-    if has_issue:
+    if issues:
         present.fail("Config validation failed with issues.")
         sys.exit(1)
 
@@ -2676,49 +2663,27 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
     Fails closed: a missing declaration or a hash mismatch against the current
     verdict-core contracts blocks (exit 1) rather than assuming compatibility.
     """
-    from verdict.compatibility_manifest import build_compatibility_manifest, check_compatibility
+    from verdict.actions.registry import run_action
 
     if compat_command == "manifest":
-        manifest = build_compatibility_manifest()
+        result = run_action("compat.manifest")
+        data = result.data
         if output_json:
-            print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(data, indent=2, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Compatibility manifest")
-            present.kv({"schema": manifest.schema_version, "manifest hash": manifest.manifest_hash})
-            present.table(["Contract", "Digest"], sorted(manifest.contracts.items()))
+            present.kv({"schema": data["schema_version"], "manifest hash": data["manifest_hash"]})
+            present.table(["Contract", "Digest"], sorted(data.get("contracts", {}).items()))
+        if result.exit_code:
+            sys.exit(result.exit_code)
         return
 
     if compat_command == "check":
-
-        def _fail(reason: str) -> NoReturn:
-            if output_json:
-                print(json.dumps({"allowed": False, "reason": reason}, indent=2))
-            else:
-                from verdict import present
-
-                present.header("Compatibility check")
-                present.fail("compatibility", f"{reason} (failing closed)")
-            sys.exit(1)
-
-        if not os.path.exists(declared or ""):
-            _fail(f"Declared manifest file not found: {declared}")
-
-        try:
-            with open(declared) as f:  # type: ignore[arg-type]
-                declared_raw = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            _fail(f"Declared manifest is invalid JSON: {exc}")
-
-        declared_contracts = (
-            declared_raw.get("contracts") if isinstance(declared_raw, dict) else None
-        )
-        if not isinstance(declared_contracts, dict):
-            _fail("Declared manifest missing 'contracts' object.")
-
-        result = check_compatibility(declared_contracts)
-        if result.allowed:
+        result = run_action("compat.check", {"declared": declared})
+        data = result.data
+        if result.ok:
             if output_json:
                 print(json.dumps({"allowed": True, "reason": None}, indent=2))
             else:
@@ -2728,24 +2693,24 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
                 present.ok("compatibility", "matches the current verdict-core contracts")
             return
 
+        reason = str(data.get("reason", "unknown"))
+        mismatched = list(data.get("mismatched_contracts") or [])
         if output_json:
-            print(
-                json.dumps(
-                    {
-                        "allowed": False,
-                        "reason": result.reason,
-                        "mismatched_contracts": list(result.mismatched_contracts),
-                    },
-                    indent=2,
-                )
-            )
+            payload: dict[str, Any] = {"allowed": False, "reason": reason}
+            if mismatched:
+                payload["mismatched_contracts"] = mismatched
+            print(json.dumps(payload, indent=2))
         else:
             from verdict import present
 
             present.header("Compatibility check")
-            present.fail("compatibility", str(result.reason))
-            present.table(["Mismatched contract"], [(n,) for n in result.mismatched_contracts])
-        sys.exit(1)
+            if not mismatched:
+                # File / JSON errors follow the historical "failing closed" prefix.
+                present.fail("compatibility", f"{reason} (failing closed)")
+            else:
+                present.fail("compatibility", reason)
+                present.table(["Mismatched contract"], [(n,) for n in mismatched])
+        sys.exit(result.exit_code or 1)
 
     from verdict import present
 
@@ -2964,46 +2929,42 @@ def cmd_credentials_unset(*, name: str) -> None:
 
 
 def cmd_credentials_test(*, name: str) -> None:
-    """Test a credential with its live check."""
-    import os
+    """Test a credential with its live check.
 
-    from verdict.credentials_registry import get_credential
-    from verdict.credentials_store import CredentialsStore
+    Delegates the live check to the ``credentials.test`` action; the CLI only
+    renders the ``ActionResult`` via ``TerminalUI`` (parity with ``origin/main``).
+    """
+    from verdict.actions.registry import run_action
     from verdict.terminal_ui import TerminalUI
 
     ui = TerminalUI()
+    result = run_action("credentials.test", {"name": name})
+    data = result.data
+    status = str(data.get("status", ""))
+    message = str(data.get("message", ""))
 
-    cred = get_credential(name)
-    if cred is None:
+    if status == "unknown":
         ui.panel("Unknown credential", f"{name} is not in the registry.", tone="WARNING")
-        raise SystemExit(1)
-
-    if cred.live_check is None:
+        raise SystemExit(result.exit_code or 1)
+    if status == "no_check":
         ui.panel("No live check", f"{name} has no live check defined.", tone="INFO")
         return
-
-    # Get the value
-    store = CredentialsStore()
-    store.load_into_env()
-
-    value = os.environ.get(name)
-    if not value:
+    if status == "missing":
         ui.panel("Missing", f"{name} is not set in env or store.", tone="WARNING")
-        raise SystemExit(1)
+        raise SystemExit(result.exit_code or 1)
+    if status == "error":
+        ui.panel("Check error", message, tone="ERROR")
+        raise SystemExit(result.exit_code or 1)
 
-    # Run the check
+    # ok / failed
+    if result.ok:
+        # Preserve origin/main sequencing: a "testing" line then the result.
+        ui.status(name, "testing", "...")
+        ui.status(name, "ok", message)
+        return
     ui.status(name, "testing", "...")
-
-    try:
-        success, message = cred.live_check(value)
-        if success:
-            ui.status(name, "ok", message)
-        else:
-            ui.status(name, "failed", message)
-            raise SystemExit(1)
-    except Exception as e:
-        ui.panel("Check error", str(e), tone="ERROR")
-        raise SystemExit(1) from None
+    ui.status(name, "failed", message)
+    raise SystemExit(result.exit_code or 1)
 
 
 def main() -> None:
@@ -3062,23 +3023,29 @@ def cmd_resume(
     ``gh`` PR discovery. Does not read proprietary chat history. ``--with`` records
     a launcher stub only.
     """
-    from verdict.resume import resume_story
-    from verdict.worktree_registry import WorktreeRegistryError
+    from verdict.actions.registry import run_action
 
     target = Path(repo) if repo is not None else Path.cwd()
-    try:
-        payload = resume_story(
-            target, story, with_harness=with_harness, create_if_missing=create_if_missing
-        )
-    except WorktreeRegistryError as exc:
+    result = run_action(
+        "resume",
+        {
+            "story": story,
+            "repo": target,
+            "with_harness": with_harness,
+            "create_if_missing": create_if_missing,
+        },
+    )
+    if not result.ok:
+        err = result.data.get("error", "resume failed")
         if output_json:
-            print(json.dumps({"error": str(exc), "story": story}, sort_keys=True))
+            print(json.dumps({"error": err, "story": story}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Resume")
-            present.fail("resume", str(exc))
-        raise SystemExit(1) from exc
+            present.fail("resume", err)
+        raise SystemExit(result.exit_code or 1)
+    payload: dict[str, Any] = dict(result.data)
 
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -3995,20 +3962,10 @@ def cmd_prove_at_rest(
 
 def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:
     """Run the offline forced-failover and replay proof, persisting the session."""
-    from verdict.failover_replay_proof import run_forced_failover_proof
-    from verdict.memory_plane import MemoryPlane
+    from verdict.actions.registry import run_action
 
-    with MemoryPlane(memory_path) as plane:
-        proof = run_forced_failover_proof(plane)
-    payload = {
-        "session_id": proof.mission_id,
-        "initial_model": "provider-a/model-a",
-        "replacement_model": proof.replacement_model,
-        "failure_status": 429,
-        "completed_steps": list(proof.completed_stages),
-        "event_sequence": [e.to_dict() for e in proof.events],
-        "replay_digest": proof.digest,
-    }
+    result = run_action("failover-proof", {"memory_path": memory_path})
+    payload = result.data
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -4018,13 +3975,15 @@ def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:
         present.ok("proof", "completed")
         present.kv(
             {
-                "Session ID": proof.mission_id,
-                "Initial model": "provider-a/model-a",
-                "Replacement model": proof.replacement_model,
-                "Completed steps": str(list(proof.completed_stages)),
-                "Digest": proof.digest,
+                "Session ID": payload["session_id"],
+                "Initial model": payload["initial_model"],
+                "Replacement model": payload["replacement_model"],
+                "Completed steps": str(payload["completed_steps"]),
+                "Digest": payload["replay_digest"],
             }
         )
+    if result.exit_code:
+        sys.exit(result.exit_code)
 
 
 def _metadata_json_file(path: str | Path | None) -> Any | None:
@@ -4078,56 +4037,32 @@ def cmd_metadata_refresh(
     now: datetime | None = None,
 ) -> None:
     """Refresh the Core metadata store from files (offline) or public HTTPS."""
-    from verdict.metadata import ModelMetadataError, file_transport, refresh_metadata
+    from verdict.actions.registry import run_action
 
-    offline = any(
-        path is not None for path in (models_dev_api_file, models_dev_models_file, litellm_file)
-    )
-    clock = now or datetime.now(timezone.utc)
-    try:
-        transport = (
-            file_transport(
-                models_dev_api=_metadata_json_file(models_dev_api_file),
-                models_dev_models=_metadata_json_file(models_dev_models_file),
-                litellm=_metadata_json_file(litellm_file),
-                fetched_at=clock.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            )
-            if offline
-            else None
-        )
-        snapshot = refresh_metadata(
-            transport=transport,
-            mapping_path=mapping_path,
-            store_path=store_path,
-            include_p1=include_p1,
-            now=clock,
-            persist=True,
-        )
-    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+    params: dict[str, Any] = {
+        "store_path": store_path,
+        "mapping_path": mapping_path,
+        "models_dev_api_file": models_dev_api_file,
+        "models_dev_models_file": models_dev_models_file,
+        "litellm_file": litellm_file,
+        "include_p1": include_p1,
+    }
+    if now is not None:
+        params["now"] = now
+    result = run_action("metadata.refresh", params)
+    data = result.data
+    if not result.ok:
+        err = str(data.get("error", "metadata refresh failed"))
         if output_json:
-            print(json.dumps({"error": str(exc)}, sort_keys=True))
+            print(json.dumps({"error": err}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Metadata  /  refresh")
-            present.fail("metadata refresh", str(exc))
-        raise SystemExit(1) from exc
-    report = {
-        "schema_version": snapshot.schema_version,
-        "refreshed_at": snapshot.refreshed_at,
-        "record_count": len(snapshot.records),
-        "drop_count": len(snapshot.drops),
-        "conflict_count": len(snapshot.conflicts),
-        "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
-        "mapping": snapshot.mapping,
-        "store": str(
-            Path(store_path).expanduser()
-            if store_path
-            else Path.home() / ".verdict" / "model-metadata.json"
-        ),
-    }
+            present.fail("metadata refresh", err)
+        raise SystemExit(result.exit_code or 1)
     if output_json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True))
         return
     from verdict import present
 
@@ -4135,48 +4070,45 @@ def cmd_metadata_refresh(
     present.ok("Core metadata store refreshed")
     present.kv(
         {
-            "records": report["record_count"],
-            "mapping drops": report["drop_count"],
-            "store": report["store"],
+            "records": data["record_count"],
+            "mapping drops": data["drop_count"],
+            "store": data["store"],
         }
     )
+    sources = data.get("sources") or {}
     present.table(
         ["Source", "Status", "Reason"],
-        [(name, status.status, status.reason or "-") for name, status in snapshot.sources.items()],
+        [
+            (name, status.get("status", "?"), status.get("reason") or "-")
+            for name, status in sources.items()
+        ],
     )
 
 
 def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool = False) -> None:
-    from verdict.metadata import ModelMetadataError, default_store_path, load_store
+    from verdict.actions.registry import run_action
 
-    resolved = Path(store_path).expanduser() if store_path else default_store_path()
-    try:
-        snapshot = load_store(resolved)
-    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+    result = run_action("metadata.show", {"store_path": store_path})
+    data = result.data
+    if not result.ok:
+        err = str(data.get("error", "metadata show failed"))
+        store_ref = str(data.get("store", ""))
         if output_json:
-            print(json.dumps({"error": str(exc), "store": str(resolved)}, sort_keys=True))
+            print(json.dumps({"error": err, "store": store_ref}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Metadata  /  show")
-            present.fail("metadata", str(exc))
-        raise SystemExit(1) from exc
-    payload = {
-        "store": str(resolved),
-        "schema_version": snapshot.schema_version,
-        "refreshed_at": snapshot.refreshed_at,
-        "record_count": len(snapshot.records),
-        "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
-        "drops": [item.to_dict() for item in snapshot.drops],
-    }
+            present.fail("metadata", err)
+        raise SystemExit(result.exit_code or 1)
     if output_json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True))
         return
     from verdict import present
 
     present.header("Metadata  /  show")
     present.kv(
-        {"refreshed": snapshot.refreshed_at, "records": len(snapshot.records), "store": resolved}
+        {"refreshed": data["refreshed_at"], "records": data["record_count"], "store": data["store"]}
     )
 
 
@@ -4188,52 +4120,51 @@ def cmd_metadata_lookup(
     required: tuple[str, ...] = (),
     output_json: bool = False,
 ) -> None:
-    from verdict.metadata import (
-        ModelMetadataError,
-        default_store_path,
-        load_identity_map,
-        load_store,
-        lookup_omniroute_id,
-    )
+    from verdict.actions.registry import run_action
 
-    resolved = Path(store_path).expanduser() if store_path else default_store_path()
-    try:
-        snapshot = load_store(resolved)
-        mapping = load_identity_map(mapping_path)
-        found = lookup_omniroute_id(snapshot, omniroute_id, required=required, identity_map=mapping)
-    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+    params: dict[str, Any] = {
+        "omniroute_id": omniroute_id,
+        "store_path": store_path,
+        "mapping_path": mapping_path,
+        "requires": ",".join(required) if required else "",
+    }
+    result = run_action("metadata.lookup", params)
+    data = result.data
+    if not result.ok:
+        err = str(data.get("error", "metadata lookup failed"))
         if output_json:
-            print(json.dumps({"error": str(exc)}, sort_keys=True))
+            print(json.dumps({"error": err}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Metadata  /  lookup")
-            present.fail("metadata lookup", str(exc))
-        raise SystemExit(1) from exc
-    payload = found.to_dict()
+            present.fail("metadata lookup", err)
+        raise SystemExit(result.exit_code or 1)
     if output_json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True))
         return
     from verdict import present
 
     present.header("Metadata  /  lookup")
-    if found.drop is not None:
-        present.warn("named drop", f"{found.drop.reason}: {omniroute_id}")
-        if found.drop.detail:
-            present.note(found.drop.detail)
+    drop = data.get("drop")
+    if drop is not None:
+        present.warn("named drop", f"{drop.get('reason', '?')}: {omniroute_id}")
+        if drop.get("detail"):
+            present.note(str(drop["detail"]))
         return
-    assert found.record is not None
-    present.ok("mapped", f"{omniroute_id} → {found.record.id}")
+    record = data.get("record") or {}
+    present.ok("mapped", f"{omniroute_id} → {record.get('id', '?')}")
+    provenance = data.get("provenance") or {}
     present.table(
         ["Source", "Version"],
         [
             (
                 name,
-                cited.get("source", "")
+                str(cited.get("source", ""))
                 + " "
                 + str(cited.get("version") or cited.get("fetched_at") or ""),
             )
-            for name, cited in found.provenance_for_receipt().items()
+            for name, cited in provenance.items()
         ],
     )
 
