@@ -59,29 +59,112 @@ class TestCollectMessages:
         assert len(result) == 1
         assert result[0]["role"] == "assistant"
 
-    def test_dedup_same_assistant(self) -> None:
-        """Same assistant content via message_end, turn_end, agent_end → counted once."""
+    def test_message_start_ignored(self) -> None:
+        """message_start events are streaming partials and must not be collected."""
+        values: list[Any] = [
+            {"type": "message_start", "message": {"role": "assistant", "content": "partial"}},
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": "final",
+                    "responseId": "r1",
+                    "usage": {"input": 10},
+                },
+            },
+        ]
+        result = _collect_messages(values)
+        assert len(result) == 1
+        assert result[0]["content"] == "final"
+
+    def test_message_update_ignored(self) -> None:
+        """message_update events (streaming deltas) must not be collected."""
+        values: list[Any] = [
+            {
+                "type": "message_update",
+                "message": {"role": "assistant", "content": "streaming delta"},
+                "assistantMessageEvent": {"type": "text_delta"},
+            },
+            {
+                "type": "message_update",
+                "message": {"role": "assistant", "content": "another delta"},
+                "assistantMessageEvent": {"type": "toolcall_delta"},
+            },
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": "complete",
+                    "responseId": "r1",
+                    "usage": {"input": 20},
+                },
+            },
+        ]
+        result = _collect_messages(values)
+        assert len(result) == 1
+        assert result[0]["content"] == "complete"
+
+    def test_dedup_same_assistant_by_response_id(self) -> None:
+        """Same assistant via message_end, turn_end, agent_end (shared responseId) → one."""
         content = [{"type": "text", "text": "hello"}]
+        rid = "chatcmpl-123"
         values: list[Any] = [
             {
                 "type": "message_end",
-                "message": {"role": "assistant", "content": content, "usage": {"input": 5}},
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "responseId": rid,
+                    "usage": {"input": 5},
+                },
             },
             {
                 "type": "turn_end",
-                "message": {"role": "assistant", "content": content, "usage": {"input": 5}},
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "responseId": rid,
+                    "usage": {"input": 5},
+                },
             },
-            {"messages": [{"role": "assistant", "content": content, "usage": {"input": 5}}]},
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": content,
+                        "responseId": rid,
+                        "usage": {"input": 5},
+                    }
+                ]
+            },
         ]
         result = _collect_messages(values)
         assistant_msgs = [m for m in result if m.get("role") == "assistant"]
         assert len(assistant_msgs) == 1, f"Expected 1 assistant, got {len(assistant_msgs)}"
 
+    def test_dedup_same_assistant_by_timestamp_role(self) -> None:
+        """Same assistant via message_end + agent_end (shared timestamp, no responseId) → one."""
+        content = [{"type": "text", "text": "hello"}]
+        ts = 1790576556633
+        values: list[Any] = [
+            {
+                "type": "message_end",
+                "message": {"role": "assistant", "content": content, "timestamp": ts},
+            },
+            {"messages": [{"role": "assistant", "content": content, "timestamp": ts}]},
+        ]
+        result = _collect_messages(values)
+        assistant_msgs = [m for m in result if m.get("role") == "assistant"]
+        assert len(assistant_msgs) == 1
+
     def test_different_roles_not_deduped(self) -> None:
         """Different roles with same content remain separate."""
         values: list[Any] = [
-            {"type": "message_end", "message": {"role": "user", "content": "x"}},
-            {"type": "message_end", "message": {"role": "assistant", "content": "x"}},
+            {"type": "message_end", "message": {"role": "user", "content": "x", "timestamp": 1}},
+            {
+                "type": "message_end",
+                "message": {"role": "assistant", "content": "x", "timestamp": 2},
+            },
         ]
         result = _collect_messages(values)
         assert len(result) == 2
@@ -260,3 +343,168 @@ class TestUsageMissingDiagnostic:
 
         assert "usage" in usage_kwargs
         assert "usage_missing" not in usage_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Bug (a): usage preserved when only one copy has it
+# ---------------------------------------------------------------------------
+
+
+class TestUsageMergeAcrossCopies:
+    """Merge rule: latest copy wins fields, but earlier usage is preserved."""
+
+    def test_usage_kept_when_only_message_end_has_it(self) -> None:
+        """message_end has usage, agent_end copy does not → usage preserved."""
+        rid = "chatcmpl-999"
+        values: list[Any] = [
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": "hello",
+                    "responseId": rid,
+                    "usage": {"input": 100, "output": 50},
+                },
+            },
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": "hello",
+                        "responseId": rid,
+                        # no usage on agent_end copy
+                    }
+                ]
+            },
+        ]
+        result = _collect_messages(values)
+        assistants = [m for m in result if m.get("role") == "assistant"]
+        assert len(assistants) == 1
+        assert assistants[0]["usage"]["input"] == 100
+        assert assistants[0]["usage"]["output"] == 50
+
+    def test_usage_kept_when_only_agent_end_has_it(self) -> None:
+        """agent_end has usage, message_end copy does not → usage preserved."""
+        rid = "chatcmpl-888"
+        values: list[Any] = [
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": "hello",
+                    "responseId": rid,
+                    # no usage on message_end copy
+                },
+            },
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": "hello",
+                        "responseId": rid,
+                        "usage": {"input": 200, "output": 80},
+                    }
+                ]
+            },
+        ]
+        result = _collect_messages(values)
+        assistants = [m for m in result if m.get("role") == "assistant"]
+        assert len(assistants) == 1
+        assert assistants[0]["usage"]["input"] == 200
+
+
+# ---------------------------------------------------------------------------
+# Bug (b): identical long content but different responseId → kept separate
+# ---------------------------------------------------------------------------
+
+
+class TestLongContentDifferentId:
+    """Two messages with identical long content but different responseId stay separate."""
+
+    def test_same_long_content_different_response_id(self) -> None:
+        long_content = "x" * 2000  # well beyond old 512-char truncation
+        values: list[Any] = [
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": long_content,
+                    "responseId": "chatcmpl-AAA",
+                    "usage": {"input": 100},
+                },
+            },
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": long_content,
+                    "responseId": "chatcmpl-BBB",
+                    "usage": {"input": 200},
+                },
+            },
+        ]
+        result = _collect_messages(values)
+        assistants = [m for m in result if m.get("role") == "assistant"]
+        assert len(assistants) == 2, f"Expected 2, got {len(assistants)}"
+        assert assistants[0]["usage"]["input"] == 100
+        assert assistants[1]["usage"]["input"] == 200
+
+
+# ---------------------------------------------------------------------------
+# No responseId and no timestamp → no dedup (treated as distinct)
+# ---------------------------------------------------------------------------
+
+
+class TestNoIdentityNoDedup:
+    """Messages with neither responseId nor timestamp are never merged."""
+
+    def test_no_id_no_timestamp_stays_distinct(self) -> None:
+        values: list[Any] = [
+            {"type": "message_end", "message": {"role": "assistant", "content": "alpha"}},
+            {"type": "message_end", "message": {"role": "assistant", "content": "alpha"}},
+        ]
+        result = _collect_messages(values)
+        assistants = [m for m in result if m.get("role") == "assistant"]
+        assert len(assistants) == 2, "Without identity, messages must not be merged"
+
+
+# ---------------------------------------------------------------------------
+# Parity: _interpret picks the same final assistant as origin/main on both fixtures
+# ---------------------------------------------------------------------------
+
+
+class TestFixtureParity:
+    """Chosen final assistant message matches origin/main for real fixtures."""
+
+    def _last_assistant(self, fixture: str) -> dict[str, Any]:
+        stdout = _load_fixture(fixture)
+        from verdict.orchestration.executors import _iter_json_values
+
+        values, _ = _iter_json_values(stdout)
+        messages = _collect_messages(values)
+        assistants = [m for m in messages if m.get("role") == "assistant"]
+        assert assistants, f"No assistant in {fixture}"
+        return assistants[-1]
+
+    def test_single_turn_parity(self) -> None:
+        last = self._last_assistant("single_turn.jsonl")
+        # single_turn has one assistant with responseId chatcmpl-1790576557343
+        assert last.get("responseId") == "chatcmpl-1790576557343"
+        assert "usage" in last
+
+    def test_multi_turn_parity(self) -> None:
+        last = self._last_assistant("multi_turn.jsonl")
+        # multi_turn has two assistants; last is chatcmpl-1790576681884
+        assert last.get("responseId") == "chatcmpl-1790576681884"
+        assert "usage" in last
+
+    def test_multi_turn_both_assistants_present(self) -> None:
+        stdout = _load_fixture("multi_turn.jsonl")
+        from verdict.orchestration.executors import _iter_json_values
+
+        values, _ = _iter_json_values(stdout)
+        messages = _collect_messages(values)
+        assistants = [m for m in messages if m.get("role") == "assistant"]
+        assert len(assistants) == 2, f"Expected 2 assistants, got {len(assistants)}"
+        ids = [m.get("responseId") for m in assistants]
+        assert ids == ["chatcmpl-1790576680714", "chatcmpl-1790576681884"]
