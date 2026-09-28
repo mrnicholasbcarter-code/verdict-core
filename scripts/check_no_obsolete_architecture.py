@@ -18,7 +18,6 @@ FORBIDDEN_EXACT = frozenset(
     {
         "hivemind.py",
         "hive_workspace.py",
-        "sona.py",
         "neural.py",
         "swarm.py",
         "lifecycle_controller.py",
