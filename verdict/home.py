@@ -39,18 +39,28 @@ TAGLINE = "autonomous control plane  ·  plan · select · recover · verify · 
 
 # Grouped command palette: (group, command, one-line purpose). Kept in sync with
 # the parser by tests (every entry must be a registered subcommand).
-PALETTE: tuple[tuple[str, str, str], ...] = (
-    ("Run", "orchestrate", "goal -> DAG -> parallel workers -> review -> receipt"),
-    ("Run", "supervise", "run orchestrate under a stall/quota-aware supervisor"),
-    ("Run", "watch", "live view of a run (or --once for a snapshot)"),
-    ("Evidence", "run-receipt", "verify a run receipt and show per-node attempts"),
-    ("Evidence", "receipt", "inspect routing receipts (RoutingReceiptV1)"),
-    ("Models", "eligibility", "DISCOVERED > ENTITLED > HEALTHY > AVAILABLE > ELIGIBLE"),
-    ("Models", "models", "local model catalog view"),
-    ("Models", "route", "route one task through the gate"),
-    ("Setup", "doctor", "health of gateways, harnesses, memory, docs"),
-    ("Setup", "setup", "plan or apply capability bootstrap"),
-    ("Setup", "quickstart", "credential-free deterministic demo"),
+# TUI section → action name mapping. Commands with an action name invoke
+# run_action() in-process; others remain CLI-only launch hints.
+PALETTE: tuple[tuple[str, str, str, str], ...] = (
+    ("Runs", "orchestrate", "goal -> DAG -> parallel workers -> review -> receipt", ""),
+    ("Runs", "supervise", "run orchestrate under a stall/quota-aware supervisor", ""),
+    ("Runs", "watch", "live view of a run (or --once for a snapshot)", ""),
+    ("Traces", "run-receipt", "verify a run receipt and show per-node attempts", "receipt.show"),
+    ("Traces", "receipt", "inspect routing receipts (RoutingReceiptV1)", ""),
+    (
+        "Health",
+        "eligibility",
+        "DISCOVERED > ENTITLED > HEALTHY > AVAILABLE > ELIGIBLE",
+        "eligibility",
+    ),
+    ("Health", "probe", "one-token liveness probes", "probe"),
+    ("Models", "models", "local model catalog view", "models.list"),
+    ("Routing", "route", "route one task through the gate", "route"),
+    ("Configuration", "credentials", "manage stored credentials", "credentials.list"),
+    ("Configuration", "config", "view current configuration", "config.show"),
+    ("Setup", "doctor", "health of gateways, harnesses, memory, docs", "doctor"),
+    ("Setup", "setup", "plan or apply capability bootstrap", "setup.plan"),
+    ("Setup", "quickstart", "credential-free deterministic demo", ""),
 )
 
 
@@ -194,7 +204,7 @@ def render_home(
     for name in ("", "command", "what it does"):
         palette.add_column(name)
     last = ""
-    for group, command, purpose in PALETTE:
+    for group, command, purpose, _action in PALETTE:
         palette.add_row(
             Text(group if group != last else ""), Text(f"verdict {command}"), Text(purpose)
         )
@@ -215,6 +225,22 @@ def render_home(
         )
     )
     return Group(*blocks)
+
+
+def palette_actions() -> list[tuple[str, str, str, str]]:
+    """Return palette entries that have a mapped action name (non-empty 4th field)."""
+    return [(section, cmd, desc, action) for section, cmd, desc, action in PALETTE if action]
+
+
+def run_palette_action(action_name: str, params: dict[str, Any] | None = None) -> tuple[bool, Any]:
+    """Run a palette action in-process via the shared action layer.
+
+    Returns ``(ok, data)`` — the caller decides presentation.
+    """
+    from verdict.actions import run_action
+
+    result = run_action(action_name, params)
+    return result.ok, result.data
 
 
 def run_home(
