@@ -657,9 +657,7 @@ async def run_golden_path(
                         task_summary=goal[:500],
                         complexity_hints={"max_parallel": policy.max_parallel},
                     )
-                    _sig_set = decision_signal_provider.signals(
-                        _q, now=datetime.now(timezone.utc)
-                    )
+                    _sig_set = decision_signal_provider.signals(_q, now=datetime.now(timezone.utc))
                     _run_signals_data = _sig_set.to_dict()
                 except Exception:
                     pass  # provider failure must never break the run
