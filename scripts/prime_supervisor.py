@@ -2107,6 +2107,16 @@ def main() -> int:
         return result
 
     try:
+        # ------------------------------------------------------------------
+        # BOD-157 lock strategy:
+        #   Flag ON  — supervisor.lock covers setup + admission only; released
+        #              before recover().  Per-story lock (acquired inside
+        #              _check_admission while supervisor.lock is held) protects
+        #              the story run.  Integration lock covers merge/rebase.
+        #   Flag OFF — supervisor.lock wraps the entire run including
+        #              recover(), identical to origin/main.
+        # ------------------------------------------------------------------
+        multi_story = _multi_story_enabled()
         with acquire_lock(state / "supervisor.lock"):
             try:
                 # Fence stale writers first: a four-hour-old lease must not survive a restart.
@@ -2136,11 +2146,9 @@ def main() -> int:
                         },
                     )
                     return 0
-                try:
+                # Flag OFF: recover() inside supervisor.lock (origin/main parity).
+                if not multi_story:
                     return recover(attempt, state, args.max_restarts)
-                finally:
-                    if story_lock is not None:
-                        story_lock.release()
             except (
                 ControllerLaunchError,
                 ValueError,
@@ -2163,6 +2171,14 @@ def main() -> int:
                     },
                 )
                 raise
+        # supervisor.lock released here.
+        # Flag ON: recover() outside supervisor.lock; per-story lock held.
+        assert multi_story, "should only reach here with multi_story=True"
+        try:
+            return recover(attempt, state, args.max_restarts)
+        finally:
+            if story_lock is not None:
+                story_lock.release()
     except (
         ControllerLaunchError,
         ValueError,
