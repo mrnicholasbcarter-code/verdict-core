@@ -62,15 +62,41 @@ class EventSink(Protocol):
 Runner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, str]]]
 
 
+def _resolve_verify_argv(argv: Sequence[str]) -> tuple[list[str], str]:
+    """Resolve interpreter for verification commands; return (resolved_argv, resolved_argv0).
+
+    When ``argv[0]`` is ``"python"`` or ``"python3"`` and that name is not
+    found on ``PATH``, substitute ``sys.executable`` (the interpreter running
+    Verdict itself).  Any other ``argv[0]`` is returned unchanged.
+
+    Returns ``(resolved_argv, resolved_argv0)`` where *resolved_argv0* is the
+    original value when no substitution was made, or the resolved path when it
+    was.  The caller should record *resolved_argv0* in the verify event so the
+    substitution is visible in the run log.
+    """
+    import shutil
+    import sys
+
+    resolved: list[str] = list(argv)
+    resolved_argv0 = ""
+    if argv and argv[0] in {"python", "python3"} and shutil.which(argv[0]) is None:
+        resolved[0] = sys.executable
+        resolved_argv0 = sys.executable
+    return resolved, resolved_argv0
+
+
 async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
     """Run argv without a shell; kill the process group on timeout."""
-    process = await asyncio.create_subprocess_exec(
-        *argv,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except (FileNotFoundError, PermissionError) as exc:
+        return 127, f"verification command not found: {argv[0]}: {exc}"
     try:
         out, _ = await asyncio.wait_for(process.communicate(), timeout)
     except asyncio.TimeoutError:
@@ -597,10 +623,14 @@ class DagRuntime:
         try:
             ok = True
             if node.verification_command:
+                resolved, resolved_argv0 = _resolve_verify_argv(node.verification_command)
                 code, out = await self.runner(
-                    node.verification_command, worktree, self.policy.verify_timeout_seconds
+                    resolved, worktree, self.policy.verify_timeout_seconds
                 )
                 ok = code == 0
+                verify_extra: dict[str, Any] = {}
+                if resolved_argv0:
+                    verify_extra["resolved_argv0"] = resolved_argv0
                 self.events.emit(
                     "verify",
                     node.node_id,
@@ -608,6 +638,7 @@ class DagRuntime:
                     exit_code=code,
                     command=" ".join(node.verification_command),
                     tail=out[-600:],
+                    **verify_extra,
                 )
             self.events.emit(
                 "barrier",
@@ -934,9 +965,11 @@ class DagRuntime:
                     detail="no file changes; accepted only if verification passes",
                 )
         if node.verification_command:
-            code, out = await self.runner(
-                node.verification_command, worktree, self.policy.verify_timeout_seconds
-            )
+            resolved, resolved_argv0 = _resolve_verify_argv(node.verification_command)
+            code, out = await self.runner(resolved, worktree, self.policy.verify_timeout_seconds)
+            verify_extra: dict[str, Any] = {}
+            if resolved_argv0:
+                verify_extra["resolved_argv0"] = resolved_argv0
             self.events.emit(
                 "verify",
                 node.node_id,
@@ -944,6 +977,7 @@ class DagRuntime:
                 exit_code=code,
                 command=" ".join(node.verification_command),
                 tail=out[-600:],
+                **verify_extra,
             )
             if code != 0:
                 return f"verification_failed: exit {code}: {out[-300:]}"
