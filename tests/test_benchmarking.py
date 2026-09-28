@@ -27,12 +27,20 @@ def test_reproducible_benchmark_report_is_deterministic_in_structure(tmp_path: P
     report_a = run_reproducible_benchmarks(DEFAULT_FIXTURE_PATH)
     report_b = run_reproducible_benchmarks(DEFAULT_FIXTURE_PATH)
 
+    # Exclude timing-dependent fields from structural comparison.
+    # "generated_at" varies by wall-clock; "benchmarks" contains per-sample
+    # nanosecond timings; metrics.thresholds_passed derives from p95 vs a
+    # nanosecond ceiling, so it can flip between runs on the same machine.
     comparable_keys = {
         key: report_a[key] for key in report_a if key not in {"generated_at", "benchmarks"}
     }
     comparable_keys_b = {
         key: report_b[key] for key in report_b if key not in {"generated_at", "benchmarks"}
     }
+    # metrics.thresholds_passed is observational (timing-dependent), like latency_ms.
+    # Strip it so the comparison covers only deterministic structure.
+    for d in (comparable_keys, comparable_keys_b):
+        d["metrics"] = {k: v for k, v in d["metrics"].items() if k != "thresholds_passed"}
     assert comparable_keys == comparable_keys_b
 
     benchmark_names_a = [item["name"] for item in report_a["benchmarks"]]
