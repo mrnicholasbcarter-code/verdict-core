@@ -67,21 +67,13 @@ def _inventory_patches(
     stack = ExitStack()
 
     if isinstance(rows, Exception):
-        stack.enter_context(
-            patch("verdict.orchestration.run.fetch_inventory", side_effect=rows)
-        )
+        stack.enter_context(patch("verdict.orchestration.run.fetch_inventory", side_effect=rows))
     elif rows is not None:
-        stack.enter_context(
-            patch("verdict.orchestration.run.fetch_inventory", return_value=rows)
-        )
+        stack.enter_context(patch("verdict.orchestration.run.fetch_inventory", return_value=rows))
     else:
-        stack.enter_context(
-            patch("verdict.orchestration.run.fetch_inventory", return_value=[])
-        )
+        stack.enter_context(patch("verdict.orchestration.run.fetch_inventory", return_value=[]))
 
-    stack.enter_context(
-        patch("verdict.orchestration.run.resolve_api_key", return_value=None)
-    )
+    stack.enter_context(patch("verdict.orchestration.run.resolve_api_key", return_value=None))
 
     if metadata_error:
         stack.enter_context(
@@ -91,9 +83,7 @@ def _inventory_patches(
         mock_snapshot = MagicMock()
         mock_snapshot.index_omniroute.return_value = metadata_index or {}
         mock_snapshot.refreshed_at = metadata_refreshed
-        stack.enter_context(
-            patch("verdict.metadata.store.load_store", return_value=mock_snapshot)
-        )
+        stack.enter_context(patch("verdict.metadata.store.load_store", return_value=mock_snapshot))
 
     return stack
 
@@ -117,10 +107,7 @@ class TestInventoryPresent:
         for row in rows[:10]:
             metadata_index[row["id"]] = _make_metadata_record(row["id"])
 
-        with _inventory_patches(
-            rows=rows,
-            metadata_index=metadata_index,
-        ):
+        with _inventory_patches(rows=rows, metadata_index=metadata_index):
             result = _run_action({"show_all": True})
 
         data = result.data
@@ -136,10 +123,7 @@ class TestInventoryPresent:
         rows = [{"id": "kr/claude-sonnet-5", "object": "model"}]
         record = _make_metadata_record("kr/claude-sonnet-5", tools=True, context=200000)
 
-        with _inventory_patches(
-            rows=rows,
-            metadata_index={"kr/claude-sonnet-5": record},
-        ):
+        with _inventory_patches(rows=rows, metadata_index={"kr/claude-sonnet-5": record}):
             result = _run_action({"show_all": True})
 
         models = result.data["models"]
@@ -158,10 +142,7 @@ class TestInventoryPresent:
 
 class TestGatewayUnreachable:
     def test_config_only_fallback(self) -> None:
-        with _inventory_patches(
-            rows=ConnectionError("refused"),
-            metadata_error=True,
-        ):
+        with _inventory_patches(rows=ConnectionError("refused"), metadata_error=True):
             result = _run_action()
 
         data = result.data
@@ -240,9 +221,11 @@ class TestNoProbes:
     def test_no_probes_called(self) -> None:
         """models.list must never call any probe function."""
         rows = _make_inventory_rows(5)
-        with _inventory_patches(rows=rows, metadata_error=True), patch(
-            "verdict.probes.openai_probe_transport",
-            side_effect=AssertionError("probe called!"),
+        with (
+            _inventory_patches(rows=rows, metadata_error=True),
+            patch(
+                "verdict.probes.openai_probe_transport", side_effect=AssertionError("probe called!")
+            ),
         ):
             result = _run_action()
             assert result.data["total"] >= 5

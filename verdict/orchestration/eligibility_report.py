@@ -21,7 +21,6 @@ def parse_provider_families(values: list[str] | tuple[str, ...]) -> tuple[str, .
     return tuple(sorted(f for f in found if f))
 
 
-
 def _state_dir() -> Path:
     return Path(os.environ.get("VERDICT_HOME", Path.home() / ".verdict"))
 

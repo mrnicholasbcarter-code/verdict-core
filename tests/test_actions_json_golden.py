@@ -662,10 +662,16 @@ def test_receipt_show_valid_json_golden() -> None:
     db = _receipt_db_path()
     result = _sp.run(
         [
-            sys.executable, "-m", "verdict",
-            "receipt", "show", _RECEIPT_ID,
-            "--db", db,
-            "--scope", _RECEIPT_SCOPE,
+            sys.executable,
+            "-m",
+            "verdict",
+            "receipt",
+            "show",
+            _RECEIPT_ID,
+            "--db",
+            db,
+            "--scope",
+            _RECEIPT_SCOPE,
             "--json",
         ],
         cwd=_clean_workdir(),

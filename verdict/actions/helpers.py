@@ -198,9 +198,16 @@ def inventory_model_catalog() -> tuple[list[dict[str, Any]], str | None]:
         rows: list[dict[str, Any]] = []
         for m in config_catalog:
             rec = metadata_index.get(m.id)
-            rows.append(_enrich_row(m.id, m.provider, rec, source="config",
-                                    classify_fn=classify,
-                                    freshness=metadata_freshness))
+            rows.append(
+                _enrich_row(
+                    m.id,
+                    m.provider,
+                    rec,
+                    source="config",
+                    classify_fn=classify,
+                    freshness=metadata_freshness,
+                )
+            )
         return rows, inventory_error
 
     # --- 5. Join inventory rows with metadata ------------------------------
@@ -210,9 +217,16 @@ def inventory_model_catalog() -> tuple[list[dict[str, Any]], str | None]:
     for m in config_catalog:
         seen.add(m.id)
         rec = metadata_index.get(m.id)
-        rows.append(_enrich_row(m.id, m.provider, rec, source="config",
-                                classify_fn=classify,
-                                freshness=metadata_freshness))
+        rows.append(
+            _enrich_row(
+                m.id,
+                m.provider,
+                rec,
+                source="config",
+                classify_fn=classify,
+                freshness=metadata_freshness,
+            )
+        )
 
     for raw in raw_rows:
         model_id = str(raw.get("id", ""))
@@ -221,9 +235,16 @@ def inventory_model_catalog() -> tuple[list[dict[str, Any]], str | None]:
         seen.add(model_id)
         provider = model_id.split("/", 1)[0] if "/" in model_id else "unknown"
         rec = metadata_index.get(model_id)
-        rows.append(_enrich_row(model_id, provider, rec, source="inventory",
-                                classify_fn=classify,
-                                freshness=metadata_freshness))
+        rows.append(
+            _enrich_row(
+                model_id,
+                provider,
+                rec,
+                source="inventory",
+                classify_fn=classify,
+                freshness=metadata_freshness,
+            )
+        )
 
     return rows, None
 

@@ -7,9 +7,9 @@ from datetime import timedelta
 from pathlib import Path
 
 from tests.test_orch_eligibility import NOW, REQ, FakeProbe, by_route, conn, make_ladder, row
-from verdict.orchestration.cli import prime_visibility
 from verdict.orchestration.contracts import EligibilityStage
 from verdict.orchestration.eligibility import EligibilityLadder
+from verdict.orchestration.eligibility_report import prime_visibility
 from verdict.subagent_selection import HealthResult, classify_probe_status
 
 PAYMENT = HealthResult(healthy=False, category="payment_required", status_code=402)

@@ -206,6 +206,7 @@ def test_eligibility_command_passes_task_requirements_into_admission(
         raise StopError
 
     import verdict.orchestration.eligibility_report as elig_report
+
     monkeypatch.setattr(elig_report, "build_selector", fake_build)
     args = argparse.Namespace(
         gateway="http://127.0.0.1:1",

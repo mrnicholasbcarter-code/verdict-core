@@ -280,11 +280,15 @@ def _action_models_list(**kwargs: Any) -> ActionResult:
         filtered = [r for r in filtered if search_filter in str(r.get("id", "")).lower()]
     if capability_filter:
         filtered = [
-            r for r in filtered
+            r
+            for r in filtered
             if capability_filter in str(r.get("capability_tier", "")).lower()
             or (capability_filter == "tools" and r.get("tools_support") is True)
             or (capability_filter == "structured" and r.get("structured_output") is True)
-            or (capability_filter == "reasoning" and r.get("capability_tier", "").lower() == "reasoning")
+            or (
+                capability_filter == "reasoning"
+                and r.get("capability_tier", "").lower() == "reasoning"
+            )
         ]
 
     # Sort: configured models first, then by provider + id.

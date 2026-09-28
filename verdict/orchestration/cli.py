@@ -17,10 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.orchestration.contracts import WorkerExecutor
-from verdict.orchestration.eligibility_report import (
-    build_selector,
-    prime_visibility_report,
-)
+from verdict.orchestration.eligibility_report import build_selector, prime_visibility_report
 from verdict.orchestration.runtime import RuntimePolicy
 
 DEFAULT_RUNS = Path(".verdict") / "runs"
@@ -261,7 +258,6 @@ def _prime_visibility(args: argparse.Namespace) -> int:
     lines.append("  status: " + ("in sync" if report["in_sync"] else "DRIFT"))
     print("\n".join(lines))
     return 0 if report["in_sync"] else 1
-
 
 
 def _executor(args: argparse.Namespace) -> WorkerExecutor:

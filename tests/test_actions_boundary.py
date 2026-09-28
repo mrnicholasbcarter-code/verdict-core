@@ -46,7 +46,11 @@ class TestActionsBoundary:
         violations: list[str] = []
         for filepath in self._collect_action_files():
             for lineno, target in self._extract_imports(filepath):
-                if target in ("verdict.cli", "verdict.commands", "verdict.orchestration.cli") or target.startswith(
+                if target in (
+                    "verdict.cli",
+                    "verdict.commands",
+                    "verdict.orchestration.cli",
+                ) or target.startswith(
                     ("verdict.cli.", "verdict.commands.", "verdict.orchestration.cli.")
                 ):
                     rel = filepath.relative_to(ROOT)

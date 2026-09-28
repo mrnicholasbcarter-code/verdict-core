@@ -327,13 +327,31 @@ class TestDoctorParity:
 
 
 class TestModelsListParity:
-    """models.list: domain = verdict.actions.helpers.default_model_catalog"""
+    """models.list: domain = verdict.actions.helpers.inventory_model_catalog
+
+    The models-inventory lane changed models.list to return a dict summary
+    (``{models, total, total_filtered, shown, ...}``) sourced from the live
+    inventory helper instead of the raw catalog list.
+    """
 
     def test_parity(self) -> None:
-        fake_catalog = [FakeModelInfo()]
-        spy = DomainSpy(return_value=fake_catalog)
+        fake_rows = [
+            {
+                "id": "fake-model",
+                "provider": "fake",
+                "capability_tier": "T3",
+                "context_window": 4096,
+                "tools_support": None,
+                "structured_output": None,
+                "input_cost_per_million": None,
+                "output_cost_per_million": None,
+                "source": "config",
+                "freshness": None,
+            }
+        ]
+        spy = DomainSpy(return_value=(fake_rows, None))
 
-        with patch("verdict.actions.helpers.default_model_catalog", spy):
+        with patch("verdict.actions.helpers.inventory_model_catalog", spy):
             _rc, _stdout = run_cli("models", "--json")
             cli_count = spy.call_count
             assert cli_count >= 1, f"CLI did not call domain: count={cli_count}"
@@ -343,9 +361,10 @@ class TestModelsListParity:
             tui_count = spy.call_count - cli_count
             assert tui_count >= 1, f"TUI did not call domain: count={tui_count}"
 
-        # Both produce the same data shape
-        assert isinstance(data, list)
-        assert data[0]["id"] == "fake-model"
+        # The action now returns a dict summary, not a flat list.
+        assert isinstance(data, dict), f"expected dict, got {type(data).__name__}"
+        assert "models" in data
+        assert data["models"][0]["id"] == "fake-model"
 
 
 class TestInspectParity:
@@ -686,7 +705,12 @@ class TestRunReceiptParity:
 
 
 class TestEligibilityParity:
-    """eligibility: domain = verdict.orchestration.cli.build_selector"""
+    """eligibility: domain = verdict.orchestration.eligibility_report.build_selector
+
+    The orch-boundary lane moved ``build_selector`` and ``eligibility_payload``
+    from ``verdict.orchestration.cli`` to ``verdict.orchestration.eligibility_report``.
+    The action imports from the domain module, so the spy targets must match.
+    """
 
     def test_parity(self) -> None:
         fake_selector = MagicMock()
@@ -699,8 +723,8 @@ class TestEligibilityParity:
         )
 
         with (
-            patch("verdict.orchestration.cli.build_selector", spy),
-            patch("verdict.orchestration.cli.eligibility_payload", fake_payload),
+            patch("verdict.orchestration.eligibility_report.build_selector", spy),
+            patch("verdict.orchestration.eligibility_report.eligibility_payload", fake_payload),
         ):
             _ok, _data = run_tui("eligibility", {"gateway": "http://fake:20128", "scope": "all"})
             assert spy.call_count >= 1

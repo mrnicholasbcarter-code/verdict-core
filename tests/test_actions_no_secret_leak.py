@@ -17,6 +17,7 @@ Test strategy:
 3. Assert no planted secret in ActionResult.data AND in rendered output
 4. POSITIVE CONTROL: Assert the action actually read the planted source
 """
+
 import json
 from io import StringIO
 
@@ -74,10 +75,9 @@ providers:
 
     # Plant credentials store
     creds_file = verdict_dir / "credentials.jsonl"
-    creds_file.write_text(json.dumps({
-        "provider": "test-creds",
-        "key": PLANTED_SECRETS["creds_store_key"]
-    }) + "\n")
+    creds_file.write_text(
+        json.dumps({"provider": "test-creds", "key": PLANTED_SECRETS["creds_store_key"]}) + "\n"
+    )
 
     # Plant env vars
     monkeypatch.setenv("OMNIROUTE_API_KEY", PLANTED_SECRETS["env_omniroute"])
@@ -94,10 +94,15 @@ Authorization: {PLANTED_SECRETS["log_auth_header"]}
 
     # Plant memory record
     memory_file = verdict_dir / "memory.jsonl"
-    memory_file.write_text(json.dumps({
-        "id": "test-memory-planted",
-        "content": f"Config: api_key={PLANTED_SECRETS['memory_api_key']}"
-    }) + "\n")
+    memory_file.write_text(
+        json.dumps(
+            {
+                "id": "test-memory-planted",
+                "content": f"Config: api_key={PLANTED_SECRETS['memory_api_key']}",
+            }
+        )
+        + "\n"
+    )
 
     # Plant hook config
     hooks_yaml = config_dir / "hooks.yaml"
@@ -109,24 +114,26 @@ hooks:
 
     # Plant MCP config
     mcp_json = config_dir / "mcp.json"
-    mcp_json.write_text(json.dumps({
-        "servers": {
-            "test-server": {
-                "token": PLANTED_SECRETS["mcp_token"]
-            }
-        }
-    }))
+    mcp_json.write_text(
+        json.dumps({"servers": {"test-server": {"token": PLANTED_SECRETS["mcp_token"]}}})
+    )
 
     # Plant receipt with Authorization header
     receipt_file = verdict_dir / "receipts" / "test-receipt.json"
     receipt_file.parent.mkdir(exist_ok=True)
-    receipt_file.write_text(json.dumps({
-        "id": "test-receipt-planted",
-        "events": [{
-            "type": "http_request",
-            "headers": {"Authorization": PLANTED_SECRETS["receipt_auth_header"]}
-        }]
-    }))
+    receipt_file.write_text(
+        json.dumps(
+            {
+                "id": "test-receipt-planted",
+                "events": [
+                    {
+                        "type": "http_request",
+                        "headers": {"Authorization": PLANTED_SECRETS["receipt_auth_header"]},
+                    }
+                ],
+            }
+        )
+    )
 
     return {"home": home, "verdict_dir": verdict_dir, "config_dir": config_dir}
 
@@ -137,9 +144,7 @@ def assert_no_secret_leak(result: ActionResult, action_name: str) -> None:
 
     # Check data repr
     for name, secret in PLANTED_SECRETS.items():
-        assert secret not in data_repr, (
-            f"LEAK in {action_name}: {name} found in ActionResult.data"
-        )
+        assert secret not in data_repr, f"LEAK in {action_name}: {name} found in ActionResult.data"
 
     # Check rendered output (palette RENDER path)
     string_buf = StringIO()
@@ -158,6 +163,7 @@ def assert_no_secret_leak(result: ActionResult, action_name: str) -> None:
 # ============================================================================
 # EXISTING TESTS (enhanced with positive controls + render path)
 # ============================================================================
+
 
 def test_config_show_no_leak(planted_environment):
     """config.show: already has redact_contract_secrets()."""
@@ -226,7 +232,9 @@ def test_mcp_status_no_leak(planted_environment):
     mcp_json = planted_environment["config_dir"] / "mcp.json"
     assert mcp_json.exists(), "Planted mcp.json should exist"
     if isinstance(result.data, dict) and "servers" in result.data:
-        assert "test-server" in result.data.get("servers", {}), "mcp.status should find planted test-server"
+        assert "test-server" in result.data.get("servers", {}), (
+            "mcp.status should find planted test-server"
+        )
 
 
 def test_memory_docs_no_leak(planted_environment):
@@ -353,6 +361,7 @@ def test_worker_status_no_leak(planted_environment):
 # NEW TESTS (controller review requirement #4)
 # ============================================================================
 
+
 def test_receipt_show_no_leak(planted_environment):
     """receipt.show: shows full receipt including event log - verify Authorization header not leaked."""
     # VACUOUS: action does not exist in current action registry
@@ -363,9 +372,11 @@ def test_route_no_leak(planted_environment):
     """route: VACUOUS - requires gate mock."""
     pass
 
+
 def test_compare_no_leak(planted_environment):
     """compare: VACUOUS - requires gate mock."""
     pass
+
 
 def test_probe_no_leak(planted_environment):
     """probe: VACUOUS - requires live transport mock."""
@@ -374,12 +385,14 @@ def test_probe_no_leak(planted_environment):
     # Marking VACUOUS until we understand the exact probe implementation
     pass
 
+
 def test_credentials_test_no_leak(planted_environment):
     """credentials.test: VACUOUS - requires provider client mock."""
     # Controller requirement: fake provider client, verify credentials not echoed
     # This would require mocking credential store internals
     # Marking VACUOUS until we understand the exact credentials.test path
     pass
+
 
 @pytest.mark.parametrize("harness", ["prime", "cursor", "cline", "claude", "windsurf"])
 def test_harness_status_no_leak(planted_environment, harness):
@@ -388,10 +401,9 @@ def test_harness_status_no_leak(planted_environment, harness):
     harness_config_dir = planted_environment["home"] / ".config" / harness
     harness_config_dir.mkdir(parents=True, exist_ok=True)
     config_file = harness_config_dir / "config.json"
-    config_file.write_text(json.dumps({
-        "api_key": PLANTED_SECRETS["yaml_api_key"],
-        "workspace": "test"
-    }))
+    config_file.write_text(
+        json.dumps({"api_key": PLANTED_SECRETS["yaml_api_key"], "workspace": "test"})
+    )
 
     result = run_action(f"harness.{harness}.status")
     assert_no_secret_leak(result, f"harness.{harness}.status")
@@ -425,12 +437,17 @@ def test_cost_report_no_leak(planted_environment):
     """cost-report: aggregates usage, may read logs but should not leak auth headers."""
     # Plant cost ledger
     ledger_file = planted_environment["verdict_dir"] / "cost-ledger.jsonl"
-    ledger_file.write_text(json.dumps({
-        "timestamp": "2024-01-01T12:00:00Z",
-        "model_id": "test/model",
-        "cost_usd": 0.001,
-        "request_headers": {"Authorization": PLANTED_SECRETS["log_auth_header"]}
-    }) + "\n")
+    ledger_file.write_text(
+        json.dumps(
+            {
+                "timestamp": "2024-01-01T12:00:00Z",
+                "model_id": "test/model",
+                "cost_usd": 0.001,
+                "request_headers": {"Authorization": PLANTED_SECRETS["log_auth_header"]},
+            }
+        )
+        + "\n"
+    )
 
     result = run_action("cost-report")
     assert_no_secret_leak(result, "cost-report")

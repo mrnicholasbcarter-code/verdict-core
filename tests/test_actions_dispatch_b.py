@@ -120,27 +120,46 @@ class _HarnessHandlerRouting:
         return ActionResult(data={"error": msg}, ok=False, exit_code=1)
 
     def test_status_routes_to_action(self) -> None:
-        with patch("verdict.actions.registry.run_action", return_value=self._ok_result({
-            "enabled": False, "config_exists": False, "provider": None, "base_url": None,
-            "token_env": "TOKEN", "token_env_set": False, "config_path": "/tmp/cfg",
-        })) as m:
+        with patch(
+            "verdict.actions.registry.run_action",
+            return_value=self._ok_result(
+                {
+                    "enabled": False,
+                    "config_exists": False,
+                    "provider": None,
+                    "base_url": None,
+                    "token_env": "TOKEN",
+                    "token_env_set": False,
+                    "config_path": "/tmp/cfg",
+                }
+            ),
+        ) as m:
             self.handler_fn("status", **self.handler_kwargs)
         m.assert_called_once()
         assert m.call_args[0][0] == f"harness.{self.harness}.status"
 
     def test_enable_routes_to_action(self) -> None:
-        with patch("verdict.actions.registry.run_action", return_value=self._ok_result({
-            "base_url": "http://x", "token_env": "T", "created_backup": False,
-            "config_path": "/tmp/cfg", "backup_path": "/tmp/bak",
-        })) as m:
+        with patch(
+            "verdict.actions.registry.run_action",
+            return_value=self._ok_result(
+                {
+                    "base_url": "http://x",
+                    "token_env": "T",
+                    "created_backup": False,
+                    "config_path": "/tmp/cfg",
+                    "backup_path": "/tmp/bak",
+                }
+            ),
+        ) as m:
             self.handler_fn("enable", **self.handler_kwargs)
         m.assert_called_once()
         assert m.call_args[0][0] == f"harness.{self.harness}.enable"
 
     def test_disable_routes_to_action(self) -> None:
-        with patch("verdict.actions.registry.run_action", return_value=self._ok_result({
-            "harness": self.harness, "status": "disabled",
-        })) as m:
+        with patch(
+            "verdict.actions.registry.run_action",
+            return_value=self._ok_result({"harness": self.harness, "status": "disabled"}),
+        ) as m:
             self.handler_fn("disable", **self.handler_kwargs)
         m.assert_called_once()
         assert m.call_args[0][0] == f"harness.{self.harness}.disable"
@@ -150,27 +169,49 @@ class _HarnessHandlerRouting:
             self.handler_fn("no-such-command", **self.handler_kwargs)
 
     def test_action_failure_exits(self) -> None:
-        with patch("verdict.actions.registry.run_action", return_value=self._fail_result()), pytest.raises(SystemExit):
+        with (
+            patch("verdict.actions.registry.run_action", return_value=self._fail_result()),
+            pytest.raises(SystemExit),
+        ):
             self.handler_fn("status", **self.handler_kwargs)
 
 
 class _HarnessHandlerWithCertifyDiscover(_HarnessHandlerRouting):
     def test_certify_routes_to_action(self) -> None:
-        with patch("verdict.actions.registry.run_action", return_value=self._ok_result({
-            "overall": "ok", "healthy": True, "base_url": "http://x",
-            "token_env_set": True, "facets": {}, "notes": [], "needs_owner": [],
-        })) as m:
+        with patch(
+            "verdict.actions.registry.run_action",
+            return_value=self._ok_result(
+                {
+                    "overall": "ok",
+                    "healthy": True,
+                    "base_url": "http://x",
+                    "token_env_set": True,
+                    "facets": {},
+                    "notes": [],
+                    "needs_owner": [],
+                }
+            ),
+        ) as m:
             self.handler_fn("certify", **self.handler_kwargs)
         m.assert_called_once()
         assert m.call_args[0][0] == f"harness.{self.harness}.certify"
 
     def test_discover_routes_to_action(self) -> None:
-        with patch("verdict.actions.registry.run_action", return_value=self._ok_result({
-            "installed": False, "binary_path": None, "config_path": "/tmp/cfg",
-            "config_exists": False, "managed_by_verdict": False,
-            "base_url": None, "pointing_at_verdict": False,
-            "pointing_at_omniroute": False,
-        })) as m:
+        with patch(
+            "verdict.actions.registry.run_action",
+            return_value=self._ok_result(
+                {
+                    "installed": False,
+                    "binary_path": None,
+                    "config_path": "/tmp/cfg",
+                    "config_exists": False,
+                    "managed_by_verdict": False,
+                    "base_url": None,
+                    "pointing_at_verdict": False,
+                    "pointing_at_omniroute": False,
+                }
+            ),
+        ) as m:
             self.handler_fn("discover", **self.handler_kwargs)
         m.assert_called_once()
         assert m.call_args[0][0] == f"harness.{self.harness}.discover"
@@ -178,12 +219,16 @@ class _HarnessHandlerWithCertifyDiscover(_HarnessHandlerRouting):
 
 # Concrete subclasses
 
+
 class TestHarnessCodexRouting(_HarnessHandlerRouting):
     harness = "codex"
+
     @property
     def handler_fn(self) -> Any:  # type: ignore[override]
         from verdict import cli
+
         return cli.cmd_harness_codex
+
     @property
     def handler_kwargs(self) -> dict[str, Any]:  # type: ignore[override]
         return {}
@@ -191,10 +236,13 @@ class TestHarnessCodexRouting(_HarnessHandlerRouting):
 
 class TestHarnessHermesRouting(_HarnessHandlerRouting):
     harness = "hermes"
+
     @property
     def handler_fn(self) -> Any:  # type: ignore[override]
         from verdict import cli
+
         return cli.cmd_harness_hermes
+
     @property
     def handler_kwargs(self) -> dict[str, Any]:  # type: ignore[override]
         return {}
@@ -202,10 +250,13 @@ class TestHarnessHermesRouting(_HarnessHandlerRouting):
 
 class TestHarnessClaudeRouting(_HarnessHandlerWithCertifyDiscover):
     harness = "claude"
+
     @property
     def handler_fn(self) -> Any:  # type: ignore[override]
         from verdict import cli
+
         return cli.cmd_harness_claude
+
     @property
     def handler_kwargs(self) -> dict[str, Any]:  # type: ignore[override]
         return {}
@@ -213,10 +264,13 @@ class TestHarnessClaudeRouting(_HarnessHandlerWithCertifyDiscover):
 
 class TestHarnessCursorRouting(_HarnessHandlerWithCertifyDiscover):
     harness = "cursor"
+
     @property
     def handler_fn(self) -> Any:  # type: ignore[override]
         from verdict import cli
+
         return cli.cmd_harness_cursor
+
     @property
     def handler_kwargs(self) -> dict[str, Any]:  # type: ignore[override]
         return {}
@@ -224,10 +278,13 @@ class TestHarnessCursorRouting(_HarnessHandlerWithCertifyDiscover):
 
 class TestHarnessPrimeRouting(_HarnessHandlerWithCertifyDiscover):
     harness = "prime"
+
     @property
     def handler_fn(self) -> Any:  # type: ignore[override]
         from verdict import cli
+
         return cli.cmd_harness_prime
+
     @property
     def handler_kwargs(self) -> dict[str, Any]:  # type: ignore[override]
         return {}
@@ -235,10 +292,13 @@ class TestHarnessPrimeRouting(_HarnessHandlerWithCertifyDiscover):
 
 class TestHarnessOpenCodeRouting(_HarnessHandlerWithCertifyDiscover):
     harness = "opencode"
+
     @property
     def handler_fn(self) -> Any:  # type: ignore[override]
         from verdict import cli
+
         return cli.cmd_harness_opencode
+
     @property
     def handler_kwargs(self) -> dict[str, Any]:  # type: ignore[override]
         return {}
@@ -246,10 +306,13 @@ class TestHarnessOpenCodeRouting(_HarnessHandlerWithCertifyDiscover):
 
 class TestHarnessClineRouting(_HarnessHandlerWithCertifyDiscover):
     harness = "cline"
+
     @property
     def handler_fn(self) -> Any:  # type: ignore[override]
         from verdict import cli
+
         return cli.cmd_harness_cline
+
     @property
     def handler_kwargs(self) -> dict[str, Any]:  # type: ignore[override]
         return {}
@@ -271,7 +334,19 @@ class TestHarnessStatusParity:
     """
 
     # Env vars whose presence/absence affects token_env_set and config paths.
-    _DELETE_VARS: ClassVar[list[str]] = ['OPENAI_API_KEY', 'CLAUDE_CONFIG_DIR', 'CLAUDE_HOME', 'CLINE_HOME', 'CLINE_DATA_DIR', 'CODEX_HOME', 'CURSOR_HOME', 'HERMES_HOME', 'OPENCODE_CONFIG', 'PRIME_AGENT_HOME', 'PRIME_HOME']
+    _DELETE_VARS: ClassVar[list[str]] = [
+        "OPENAI_API_KEY",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_HOME",
+        "CLINE_HOME",
+        "CLINE_DATA_DIR",
+        "CODEX_HOME",
+        "CURSOR_HOME",
+        "HERMES_HOME",
+        "OPENCODE_CONFIG",
+        "PRIME_AGENT_HOME",
+        "PRIME_HOME",
+    ]
 
     # Small script run in each subprocess.
     _RUNNER = """
@@ -307,6 +382,7 @@ except SystemExit as exc:
 
     def _run(self, harness: str, command: str) -> tuple[str, int]:
         import subprocess
+
         worktree = str(Path(__file__).parent.parent)
         result = subprocess.run(
             [sys.executable, "-c", self._RUNNER, worktree, harness, command],
@@ -317,9 +393,9 @@ except SystemExit as exc:
         )
         return result.stdout, result.returncode
 
-    @pytest.mark.parametrize("harness", [
-        "codex", "hermes", "claude", "cursor", "prime", "opencode", "cline"
-    ])
+    @pytest.mark.parametrize(
+        "harness", ["codex", "hermes", "claude", "cursor", "prime", "opencode", "cline"]
+    )
     def test_status_matches_fixture(self, harness: str) -> None:
         """stdout + exit_code are byte-identical to the hermetic fixture."""
         fixture = _load_fixture(f"harness_{harness}_status")
@@ -330,14 +406,10 @@ except SystemExit as exc:
         got_norm = self._normalize(got_out, harness)
         exp_norm = self._normalize(fixture["stdout"], harness)
         assert got_norm == exp_norm, (
-            f"{harness} status: stdout mismatch\n"
-            f"GOT:\n{got_norm!r}\n"
-            f"EXP:\n{exp_norm!r}"
+            f"{harness} status: stdout mismatch\nGOT:\n{got_norm!r}\nEXP:\n{exp_norm!r}"
         )
 
-    @pytest.mark.parametrize("harness", [
-        "claude", "cursor", "prime", "opencode", "cline"
-    ])
+    @pytest.mark.parametrize("harness", ["claude", "cursor", "prime", "opencode", "cline"])
     def test_discover_matches_fixture(self, harness: str) -> None:
         """stdout + exit_code are byte-identical to the hermetic fixture."""
         fixture = _load_fixture(f"harness_{harness}_discover")
@@ -348,9 +420,7 @@ except SystemExit as exc:
         got_norm = self._normalize(got_out, harness)
         exp_norm = self._normalize(fixture["stdout"], harness)
         assert got_norm == exp_norm, (
-            f"{harness} discover: stdout mismatch\n"
-            f"GOT:\n{got_norm!r}\n"
-            f"EXP:\n{exp_norm!r}"
+            f"{harness} discover: stdout mismatch\nGOT:\n{got_norm!r}\nEXP:\n{exp_norm!r}"
         )
 
 
@@ -379,6 +449,7 @@ class TestSetupCredentials:
             patch.dict(os.environ, {"HOME": str(tmp_path)}),
         ):
             from verdict import cli
+
             cli.cmd_setup_credentials(non_interactive=False)
 
         mock_run.assert_called_once_with(
@@ -401,6 +472,7 @@ class TestSetupCredentials:
             patch.dict(os.environ, {"HOME": str(tmp_path)}),
         ):
             from verdict import cli
+
             cli.cmd_setup_credentials(non_interactive=True)
 
         mock_run.assert_not_called()
@@ -422,6 +494,7 @@ class TestCanaryRollback:
         )
         with patch("verdict.actions.registry.run_action", return_value=ok_result) as mock_run:
             from verdict import cli
+
             cli.cmd_autodev_packet_canary_rollback(str(state_file))
 
         mock_run.assert_called_once()
@@ -462,30 +535,43 @@ class TestCanaryRollback:
 class TestHarnessEnableDisableTmpHome:
     """enable/disable must not touch the real home directory."""
 
-    @pytest.mark.parametrize("harness,extra_kwargs", [
-        ("codex", {}),
-        ("hermes", {}),
-        ("claude", {}),
-        ("cursor", {}),
-        ("prime", {}),
-        ("opencode", {}),
-        ("cline", {}),
-    ])
+    @pytest.mark.parametrize(
+        "harness,extra_kwargs",
+        [
+            ("codex", {}),
+            ("hermes", {}),
+            ("claude", {}),
+            ("cursor", {}),
+            ("prime", {}),
+            ("opencode", {}),
+            ("cline", {}),
+        ],
+    )
     def test_enable_uses_tmp_home(
         self, harness: str, extra_kwargs: dict[str, Any], tmp_path: Path
     ) -> None:
         """Enable does not write to the real home; all file I/O goes through action."""
         real_home = Path.home()
-        with patch("verdict.actions.registry.run_action", return_value=ActionResult(
-            data={
-                "base_url": "http://x", "token_env": "T", "created_backup": False,
-                "config_path": str(tmp_path / "cfg"), "backup_path": str(tmp_path / "bak"),
-                "integration": "verdict", "model": "test-model",
-                "providers_json_path": None, "settings_path": None, "ui_steps": None,
-            },
-            ok=True,
-        )) as mock_run:
+        with patch(
+            "verdict.actions.registry.run_action",
+            return_value=ActionResult(
+                data={
+                    "base_url": "http://x",
+                    "token_env": "T",
+                    "created_backup": False,
+                    "config_path": str(tmp_path / "cfg"),
+                    "backup_path": str(tmp_path / "bak"),
+                    "integration": "verdict",
+                    "model": "test-model",
+                    "providers_json_path": None,
+                    "settings_path": None,
+                    "ui_steps": None,
+                },
+                ok=True,
+            ),
+        ) as mock_run:
             from verdict import cli
+
             handler = getattr(cli, f"cmd_harness_{harness}")
             handler("enable", **extra_kwargs)
         # real home was not touched

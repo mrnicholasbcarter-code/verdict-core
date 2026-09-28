@@ -1,4 +1,5 @@
 """Probe golden capture shim — injects a deterministic fake transport."""
+
 from __future__ import annotations
 
 import sys
@@ -13,7 +14,9 @@ class _FakeTransport:
         return {
             "status_code": 200,
             "body": {
-                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+                ],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
                 "model": model_id,
             },
@@ -28,7 +31,7 @@ def _fake_action_probe(**kwargs: Any) -> Any:
     models: list[str] = kwargs["models"]
     timeout: float = kwargs.get("timeout", 20.0)
     run = ProbeRunner(ProbePolicy(timeout_seconds=timeout)).run_with_diagnostics(
-        models, _FakeTransport(), live=False, consented=False, provider="fixture",
+        models, _FakeTransport(), live=False, consented=False, provider="fixture"
     )
     results = [probe_result_payload(obs) for obs in run.observations]
     data = {"diagnostics": run.diagnostics.to_dict(), "results": results}

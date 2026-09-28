@@ -1,4 +1,5 @@
 """Replay golden capture shim — seeds MemoryPlane from a static fixture."""
+
 from __future__ import annotations
 
 import contextlib
@@ -11,7 +12,10 @@ from pathlib import Path
 # tests/helpers/ -> parents[1] = tests/ -> fixtures/actions_golden/inputs/
 _FIXTURE = (
     Path(__file__).resolve().parents[1]
-    / "fixtures" / "actions_golden" / "inputs" / "replay-session.json"
+    / "fixtures"
+    / "actions_golden"
+    / "inputs"
+    / "replay-session.json"
 )
 _SESSION_ID = "session-f3golden-bod275"
 
