@@ -93,3 +93,4 @@
 | PM-020 | dynamic assignment | Dynamic assignment reroutes on provider quota or context-length failures and fails closed on pool exhaustion. | `verdict/orchestration/recovery.py` | reroute_on_failure and pool-exhaustion FAIL_CLOSED | implementation | `pytest -q tests/test_assignment_failover_e2e.py` | verified |
 | | | | `tests/test_assignment_failover_e2e.py` | test_provider_quota_failover_to_independent_review | test | | |
 | | | | `tests/test_assignment_failover_e2e.py` | test_context_length_400_is_request_scoped | test | | |
+| | | | `tests/test_failover_matrix_e2e.py` | test_pool_exhaustion_fails_closed_without_using_the_controller | test | | |
