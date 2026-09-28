@@ -308,9 +308,8 @@ def _call_launch_entry(entry: str, params: dict[str, Any]) -> tuple[bool, Any]:
         return False, {"error": f"{func_name!r} not found in {module_path!r}"}
     try:
         result = func(**params)
-    except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else 1
-        return code == 0, {"exit_code": code}
+    except (KeyboardInterrupt, SystemExit):
+        raise  # re-raise to outer handler
     except Exception as exc:
         return False, {"error": str(exc)}
     # Normalise result to (ok, data)
@@ -570,7 +569,7 @@ def _interactive_palette(
 
         running = True
         _iter_count = 0
-        _max_iters = 1000  # safety cap — prevents runaway loops in tests
+        _max_iters = 10000  # safety cap — prevents runaway loops in tests
         while running and _iter_count < _max_iters:
             _iter_count += 1
             _render_selector()
@@ -609,26 +608,44 @@ def _interactive_palette(
                         return 0
                     continue
 
-                if kind == "action":
-                    ok, data = run_palette_action(ref, params if params else None)
-                else:
-                    # LAUNCH: call entry in-process via importlib
-                    from verdict.actions.registry import LAUNCH
+                # Restore terminal to cooked mode for action execution
+                if key_reader is None and fd is not None and old_settings is not None:
+                    import contextlib
+                    import termios
 
-                    launch_val = LAUNCH.get(cmd)
-                    if launch_val is None:
-                        ok, data = False, {"error": f"no LAUNCH entry for {cmd!r}"}
-                    elif hasattr(launch_val, "entry"):
-                        # LaunchSpec shape (lane E)
-                        ok, data = _call_launch_entry(launch_val.entry, params or {})
+                    with contextlib.suppress(Exception):
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+                try:
+                    if kind == "action":
+                        ok, data = run_palette_action(ref, params if params else None)
                     else:
-                        # Pre-lane-E: LAUNCH value is a plain string (reason)
-                        ok, data = (
-                            False,
-                            {
-                                "error": f"{cmd!r} is a long-running launch ({launch_val}); run it directly in your terminal"
-                            },
-                        )
+                        # LAUNCH: call entry in-process via importlib
+                        from verdict.actions.registry import LAUNCH
+
+                        launch_val = LAUNCH.get(cmd)
+                        if launch_val is None:
+                            ok, data = False, {"error": f"no LAUNCH entry for {cmd!r}"}
+                        elif hasattr(launch_val, "entry"):
+                            # LaunchSpec shape (lane E)
+                            ok, data = _call_launch_entry(launch_val.entry, params or {})
+                        else:
+                            # Pre-lane-E: LAUNCH value is a plain string (reason)
+                            ok, data = (
+                                False,
+                                {
+                                    "error": f"{cmd!r} is a long-running launch ({launch_val}); run it directly in your terminal"
+                                },
+                            )
+                except KeyboardInterrupt:
+                    ok, data = False, {"error": "cancelled"}
+                finally:
+                    # Re-enter cbreak mode
+                    if key_reader is None and fd is not None:
+                        import tty
+
+                        with contextlib.suppress(Exception):
+                            tty.setcbreak(fd)
 
                 _render_action_result(tui, ok, data, width=width)
                 target.print()
@@ -662,6 +679,10 @@ def _interactive_palette(
     except (KeyboardInterrupt, EOFError):
         return 0
     finally:
+        if _iter_count >= _max_iters:
+            target.print(
+                Text("Safety iteration cap reached; exiting palette.", style=TOKENS["WARNING"])
+            )
         if key_reader is None and fd is not None and old_settings is not None:
             import contextlib
             import termios
