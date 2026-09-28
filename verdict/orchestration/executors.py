@@ -297,6 +297,15 @@ class PrimeHeadlessExecutor:
                 error="timeout",
                 duration_seconds=time.monotonic() - started,
             )
+        except asyncio.CancelledError:
+            # BOD-276: cancel_node/cancel_run cancels this task; kill the
+            # subprocess (and its process group) before propagating so a
+            # cancelled run leaves no paid model calls running.
+            with contextlib.suppress(BaseException):
+                await self._kill_group(proc)
+            with contextlib.suppress(Exception):
+                launch_config.cleanup()
+            raise
         duration = time.monotonic() - started
         launch_config.cleanup()
         return self._interpret(
