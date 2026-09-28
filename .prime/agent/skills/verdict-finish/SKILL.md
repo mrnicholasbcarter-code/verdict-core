@@ -25,9 +25,12 @@ invalidate proof/review/CI and require revalidation. Never trust a stale checkpo
    not green. Require all required results and the repo's stricter checks policy; failing,
    pending, cancelled or stale results block CI_GREEN. Detect new pushes and reset validation.
 4. Apply current repo merge authority and branch protection. Verify mergeability and approved
-   exact head immediately before merging, use head-matched merge, and re-fetch the resulting
-   GitHub merge state/commit. If authorization is absent, persist an actionable approval need;
-   do not repeatedly ask where authorization already exists. Only observed merge enters MERGED.
+   exact head immediately before merging. Wrap the head-matched merge command in
+   `scripts/prime_workflow.py merge-guard -- <merge-command>` so that concurrent stories
+   serialise through the integration lock. The guard is safe to use unconditionally: with a
+   single story the lock is always free and adds no delay. Re-fetch the resulting GitHub merge
+   state/commit. If authorization is absent, persist an actionable approval need; do not
+   repeatedly ask where authorization already exists. Only observed merge enters MERGED.
 5. Fetch main. Verify the merge commit is an ancestor of fetched origin/main, then verify the
    intended behavior on an isolated clean main checkout at the observed SHA. Record commands,
    results and that SHA; CI on the feature branch alone is insufficient. Main failure stays
