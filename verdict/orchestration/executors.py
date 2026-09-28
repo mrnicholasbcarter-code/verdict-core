@@ -77,19 +77,88 @@ def _iter_json_values(stdout: str) -> tuple[list[Any], bool]:
     return values, bool(values)
 
 
+_STREAMING_TYPES = frozenset({"message_start", "message_update"})
+
+
 def _collect_messages(values: list[Any]) -> list[dict[str, Any]]:
-    """Find message dicts in parsed JSON values (tolerant of extra keys)."""
-    messages: list[dict[str, Any]] = []
+    """Collect message dicts from parsed Prime JSON-lines output.
+
+    Only collects from **final** events:
+
+    * ``agent_end`` → ``"messages"`` (plural list)
+    * ``message_end`` / ``turn_end`` → ``"message"`` (singular dict)
+    * Top-level dicts with ``"role"`` (no ``type`` field) and bare lists
+
+    ``message_start`` and ``message_update`` are **ignored** — they carry
+    streaming partials that must not compete with final copies.
+
+    Deduplication identity:
+
+    * ``responseId`` when present on the message dict
+    * ``(timestamp, role)`` when both are present but ``responseId`` is not
+    * Otherwise no dedup — the message is treated as distinct
+
+    Merge rule: fields from the latest final copy win, but if that copy
+    lacks ``usage`` and an earlier copy has it the earlier usage is kept.
+    First-appearance order by identity is preserved.
+    """
+
+    raw: list[dict[str, Any]] = []
     for value in values:
         if isinstance(value, dict):
+            evt_type = value.get("type")
+            if evt_type in _STREAMING_TYPES:
+                continue  # skip partials
             inner = value.get("messages")
             if isinstance(inner, list):
-                messages.extend(m for m in inner if isinstance(m, dict))
-            elif "role" in value:
-                messages.append(value)
+                raw.extend(m for m in inner if isinstance(m, dict))
+            else:
+                msg = value.get("message")
+                if isinstance(msg, dict) and "role" in msg:
+                    raw.append(msg)
+                elif "role" in value and evt_type is None:
+                    # bare message dict (no Prime event wrapper)
+                    raw.append(value)
         elif isinstance(value, list):
-            messages.extend(m for m in value if isinstance(m, dict) and "role" in m)
-    return messages
+            raw.extend(m for m in value if isinstance(m, dict) and "role" in m)
+
+    # --- identity-based merge ------------------------------------------------
+    # Order: dict keyed by identity → list of copies in appearance order.
+    # Messages with no usable identity get a unique sentinel so they are never
+    # merged with anything else.
+    _no_id_counter = 0
+    order: dict[Any, list[dict[str, Any]]] = {}
+    appearance: list[Any] = []  # first-seen identity order
+    for msg in raw:
+        rid = msg.get("responseId")
+        if rid is not None:
+            key: Any = ("rid", rid)
+        else:
+            ts = msg.get("timestamp")
+            role = msg.get("role")
+            if ts is not None and role is not None:
+                key = ("ts", ts, role)
+            else:
+                key = ("_no_id", _no_id_counter)
+                _no_id_counter += 1
+        if key not in order:
+            order[key] = []
+            appearance.append(key)
+        order[key].append(msg)
+
+    # Merge each group: last copy wins fields; preserve earlier usage if the
+    # last copy lacks it.
+    merged: list[dict[str, Any]] = []
+    for key in appearance:
+        copies = order[key]
+        final = dict(copies[-1])  # shallow copy of latest
+        if "usage" not in final or final.get("usage") is None:
+            for earlier in reversed(copies[:-1]):
+                if "usage" in earlier and earlier["usage"] is not None:
+                    final["usage"] = earlier["usage"]
+                    break
+        merged.append(final)
+    return merged
 
 
 def _text_of(message: Mapping[str, Any]) -> str:
