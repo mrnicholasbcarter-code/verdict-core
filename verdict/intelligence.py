@@ -583,6 +583,7 @@ class IntelligenceService:
         # Override best_model with the first advisory-ordered candidate from the
         # valid set (the set that actually passed select_best_model's tier/state
         # filter).  Membership is never changed; advisory only reorders.
+        _ranking_receipt: dict[str, Any] | None = None
         if _advisory_signals is not None and best_model is not None and final_tier != 0:
             try:
                 from verdict.decision_signals.advisory import advise_order
@@ -609,6 +610,8 @@ class IntelligenceService:
                 _advisory_influence_flags.append(f"advisory:{_prof}")
                 if _b1:
                     _advisory_influence_flags.append(f"advisory_baseline:{_b1}")
+                # BOD-203 AC2: build ranking receipt from InfluenceRecord
+                _ranking_receipt = _influence.to_receipt_dict()
             except Exception:
                 _advisory_influence_flags.append("advisory:skipped:apply_error")
 
@@ -676,6 +679,35 @@ class IntelligenceService:
                 "request_id": request_id or dec.request_id,
             }
         )
+
+        # BOD-203 AC2: attach ranking receipt to the decision.
+        # When advisory was skipped entirely (no advise_order call), build a
+        # skip receipt so callers always find a receipt when advisory was attempted.
+        if _ranking_receipt is None and _advisory_influence_flags:
+            # Derive skip reason from the first advisory flag
+            _skip_reason = "unknown"
+            for _af in _advisory_influence_flags:
+                if _af.startswith("advisory:skipped:"):
+                    _skip_reason = _af.removeprefix("advisory:skipped:")
+                    break
+            _ranking_receipt = {
+                "applied": False,
+                "profile": f"skipped:{_skip_reason}",
+                "reason": _skip_reason,
+                "baseline_first": None,
+                "advised_first": None,
+                "signals_digest": None,
+                "baseline_order": [],
+                "advised_order": [],
+                "signal_confidence": 0.0,
+                "signal_version": "",
+                "advice_changed": False,
+            }
+        # Attach as adaptive_influence on the frozen dataclass so downstream
+        # RoutingDecisionContract.from_legacy picks it up into the typed field.
+        if _ranking_receipt is not None:
+            object.__setattr__(dec, "adaptive_influence", _ranking_receipt)
+
         if self.log_path:
             log_decision(self.log_path, task_str, req_tier, dec, self.log_full_task)
 

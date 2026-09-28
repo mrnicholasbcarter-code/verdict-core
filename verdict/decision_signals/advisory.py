@@ -67,7 +67,11 @@ def _mode_from_env() -> str:
 
 @dataclass(frozen=True)
 class InfluenceRecord:
-    """Evidence of advisory reordering for one route call."""
+    """Evidence of advisory reordering for one route call.
+
+    BOD-203 AC2: ranking receipt carries full baseline/advised order,
+    signal confidence/version, and whether advice changed the first choice.
+    """
 
     applied: bool
     """True when a reorder was actually applied (profile economy or strength)."""
@@ -81,6 +85,33 @@ class InfluenceRecord:
     """ID of the first candidate after advisory, or None when empty / skipped."""
     signals_digest: str | None
     """input_digest from the signal set, or None when no signals used."""
+    # BOD-203 AC2 extensions
+    baseline_order: tuple[str, ...] = ()
+    """Full candidate ID list in baseline (pre-advisory) order."""
+    advised_order: tuple[str, ...] = ()
+    """Full candidate ID list in advised (post-advisory) order."""
+    signal_confidence: float = 0.0
+    """Confidence scalar from the signal set (0.0 when absent)."""
+    signal_version: str = ""
+    """Provider/signal version string (empty when absent)."""
+    advice_changed: bool = False
+    """True when advisory changed the first-choice candidate."""
+
+    def to_receipt_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible ranking-receipt dict (BOD-203 AC2)."""
+        return {
+            "applied": self.applied,
+            "profile": self.profile,
+            "reason": self.reason,
+            "baseline_first": self.baseline_first,
+            "advised_first": self.advised_first,
+            "signals_digest": self.signals_digest,
+            "baseline_order": list(self.baseline_order),
+            "advised_order": list(self.advised_order),
+            "signal_confidence": self.signal_confidence,
+            "signal_version": self.signal_version,
+            "advice_changed": self.advice_changed,
+        }
 
 
 def _signals_digest(signals: DecisionSignalSetV1 | None) -> str | None:
@@ -127,6 +158,10 @@ def advise_order(
         else float(os.environ.get("VERDICT_ADVISORY_MIN_CONFIDENCE", str(_DEFAULT_MIN_CONFIDENCE)))
     )
 
+    _baseline_ids = tuple(getattr(m, "id", "") for m in candidates)
+    _sig_confidence = getattr(signals, "confidence", 0.0) if signals is not None else 0.0
+    _sig_version = getattr(signals, "version", "") if signals is not None else ""
+
     def _skip(reason: str, profile: str = "skipped") -> tuple[list[Any], InfluenceRecord]:
         return list(candidates), InfluenceRecord(
             applied=False,
@@ -135,6 +170,11 @@ def advise_order(
             baseline_first=baseline_first,
             advised_first=baseline_first,
             signals_digest=_signals_digest(signals),
+            baseline_order=_baseline_ids,
+            advised_order=_baseline_ids,
+            signal_confidence=_sig_confidence,
+            signal_version=_sig_version,
+            advice_changed=False,
         )
 
     # --- hard skip guards ------------------------------------------------
@@ -171,6 +211,11 @@ def advise_order(
             baseline_first=baseline_first,
             advised_first=baseline_first,
             signals_digest=_signals_digest(signals),
+            baseline_order=_baseline_ids,
+            advised_order=_baseline_ids,
+            signal_confidence=_sig_confidence,
+            signal_version=_sig_version,
+            advice_changed=False,
         )
 
     if not candidates:
@@ -181,6 +226,11 @@ def advise_order(
             baseline_first=None,
             advised_first=None,
             signals_digest=_signals_digest(signals),
+            baseline_order=(),
+            advised_order=(),
+            signal_confidence=_sig_confidence,
+            signal_version=_sig_version,
+            advice_changed=False,
         )
 
     # --- reorder ---------------------------------------------------------
@@ -221,6 +271,7 @@ def advise_order(
 
     advised_first = getattr(ordered[0], "id", None) if ordered else None
     applied = advised_first != baseline_first or ordered != candidates
+    _advised_ids = tuple(getattr(m, "id", "") for m in ordered)
 
     return ordered, InfluenceRecord(
         applied=applied,
@@ -229,6 +280,11 @@ def advise_order(
         baseline_first=baseline_first,
         advised_first=advised_first,
         signals_digest=_signals_digest(signals),
+        baseline_order=_baseline_ids,
+        advised_order=_advised_ids,
+        signal_confidence=_sig_confidence,
+        signal_version=_sig_version,
+        advice_changed=(baseline_first != advised_first),
     )
 
 
