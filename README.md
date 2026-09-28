@@ -139,11 +139,11 @@ Each claim links to the code that does it and a test that checks it, at this com
 
 **One admitted set, narrowed but never widened.** `admit()` builds the admitted set from live inventory,
 provider connections and runtime evidence. A missing input fails closed, and there is no catalog-only
-fallback ([`verdict/admission.py:637`](verdict/admission.py#L637)). The set cannot be built any other way
-([`:345`](verdict/admission.py#L345)). Scope, provider family and the active controller can only narrow it
+fallback ([`verdict/admission.py:940`](verdict/admission.py#L940)). The set cannot be built any other way
+([`:389`](verdict/admission.py#L389)). Scope, provider family and the active controller can only narrow it
 ([`verdict/orchestration/cli.py:219-227`](verdict/orchestration/cli.py#L219-L227)). The ladder raises
 `AdmissionBypassError` if it ever picks a route outside the set
-([`verdict/orchestration/eligibility.py:446-449`](verdict/orchestration/eligibility.py#L446-L449)).
+([`verdict/orchestration/eligibility.py:207`](verdict/orchestration/eligibility.py#L207)).
 Tests: [`tests/test_admission.py`](tests/test_admission.py), [`tests/test_orchestration_admission.py`](tests/test_orchestration_admission.py).
 
 **Per-node assignment, paid-for and free capacity first.** Every node runs the eligibility ladder
@@ -151,44 +151,44 @@ Tests: [`tests/test_admission.py`](tests/test_admission.py), [`tests/test_orches
 the reason for each candidate. The ladder ranks by capacity class first: subscription, then free, then
 metered, then unknown ([`verdict/orchestration/eligibility.py:30-35`](verdict/orchestration/eligibility.py#L30-L35)).
 Within a class it ranks by provider preference, then by current load, then by task fit
-([`:371-378`](verdict/orchestration/eligibility.py#L371-L378)). Capacity class comes from account evidence,
+([`:478`](verdict/orchestration/eligibility.py#L478)). Capacity class comes from account evidence,
 never from a model name. Probes go round-robin across providers within a class, so one failing provider
-cannot use up the probe budget ([`:478-494`](verdict/orchestration/eligibility.py#L478-L494)).
+cannot use up the probe budget ([`:539-621`](verdict/orchestration/eligibility.py#L539-L621)).
 Test: [`tests/test_orch_eligibility.py`](tests/test_orch_eligibility.py).
 
 **Cheaper-first on the single-route path is a runtime assertion.** `RouteSelection` raises in its own
 constructor when a paid identity was chosen while a cheaper kept candidate existed
 ([`verdict/live_routing.py:85-93`](verdict/live_routing.py#L85-L93)). For low-criticality `verdict route`
 calls, `_offload_free_tier` admits only concrete **free-tier ∩ active-provider** identities and fails closed
-on an empty intersection ([`verdict/intelligence.py:1001`](verdict/intelligence.py#L1001),
+on an empty intersection ([`verdict/intelligence.py:1030`](verdict/intelligence.py#L1030),
 [`verdict/free_tier_admit.py`](verdict/free_tier_admit.py)). Test: [`tests/test_free_tier_admit.py`](tests/test_free_tier_admit.py).
 
 **Recovery by reassignment, with a hard stop.** `FailureIntelligence` maps each failure to a category, an
 action, a cooldown and a scope: route or provider
-([`verdict/orchestration/recovery.py:133`](verdict/orchestration/recovery.py#L133)). Each failure resolves to
+([`verdict/orchestration/recovery.py:148`](verdict/orchestration/recovery.py#L148)). Each failure resolves to
 exactly one outcome. `RETRY_INFRA` retries the same route after a gateway-local shed. `BLOCK` stops with
 `non-recoverable: <category>`. Every other failure reassigns the same node to the next admitted route and
 emits a `reassign` event ([`verdict/orchestration/runtime.py:430-451`](verdict/orchestration/runtime.py#L430-L451)).
 After `max_attempts_per_node` (4), or with no admitted route left, the node ends in `pool_exhausted` /
-`FAIL_CLOSED` ([`:342-356`](verdict/orchestration/runtime.py#L342-L356)). Tests:
+`FAIL_CLOSED` ([`:361-371`](verdict/orchestration/runtime.py#L361-L371)). Tests:
 [`tests/test_orch_recovery.py`](tests/test_orch_recovery.py), [`tests/test_orch_runtime.py`](tests/test_orch_runtime.py).
 
 **Relay retries stay inside the admitted set.** The OpenAI-compatible relay tries an alternative only when
 the decision marked it admitted, and only when the live admitted set (if wired) also holds it. If the
 selected model is outside the live set, the relay makes no attempt
-([`verdict/relay.py:133-155`](verdict/relay.py#L133-L155)). Test: [`tests/test_relay_admission.py`](tests/test_relay_admission.py).
+([`verdict/relay.py:152-170`](verdict/relay.py#L152-L170)). Test: [`tests/test_relay_admission.py`](tests/test_relay_admission.py).
 
 **Independent review.** The reviewer must not be any route that wrote code in the run. It should also be
 from a different model family; if no other family has capacity, route-level independence is used and
-recorded ([`verdict/orchestration/runtime.py:806-821`](verdict/orchestration/runtime.py#L806-L821)). A
+recorded ([`verdict/orchestration/runtime.py:989-1014`](verdict/orchestration/runtime.py#L989-L1014)). A
 non-zero exit, a timeout or output that does not parse all become `ERROR`, never `PASS`
 ([`verdict/orchestration/review.py:1-19`](verdict/orchestration/review.py#L1-L19)).
 Tests: [`tests/test_orch_review.py`](tests/test_orch_review.py), [`tests/test_orch_resume.py`](tests/test_orch_resume.py).
 
 **Tamper-evident receipts.** The receipt stores the SHA-256 of `events.jsonl`
 ([`verdict/orchestration/receipt.py:173`](verdict/orchestration/receipt.py#L173),
-[`:444`](verdict/orchestration/receipt.py#L444)). Verification recomputes it and rebuilds every other field
-from the same log ([`:481-508`](verdict/orchestration/receipt.py#L481-L508)).
+[`:476`](verdict/orchestration/receipt.py#L476)). Verification recomputes it and rebuilds every other field
+from the same log ([`:525`](verdict/orchestration/receipt.py#L525)).
 Tests: [`tests/test_orch_receipt.py`](tests/test_orch_receipt.py), [`tests/test_readme_assets.py`](tests/test_readme_assets.py)
 (verifies the committed demo run).
 
@@ -575,7 +575,7 @@ described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#admission-boundary).
 | Independent review step, reviewer excluded from implementers | Yes — [`verdict/orchestration/review.py`](verdict/orchestration/review.py) | Not part of the gateway's job |
 | Fallback / retry chains across providers | **Bounded, admitted-only.** The relay tries at most 3 gate-admitted alternatives on a retryable failure ([`verdict/relay.py`](verdict/relay.py) `build_attempts`, ADR-016); orchestration recovery reassigns within the node's eligible pool ([`verdict/orchestration/recovery.py`](verdict/orchestration/recovery.py)). There is no configured static fallback chain, and an excluded model is never tried | Yes — configurable fallback chains are a core gateway feature |
 | Load balancing across providers | No request-level load balancing. The orchestration selector spreads probes round-robin across providers within a capacity tier and caps concurrent nodes per route | Yes — also a core gateway feature |
-| OpenTelemetry tracing | **Not yet.** No OTel integration exists in this repo at this commit | Common |
+| OpenTelemetry tracing | **Optional.** `verdict[tracing]` + `VERDICT_TRACING=1` enables OTLP span export. No prompts or secrets attached. | Common |
 | Multi-provider inventory / transport | Delegated to OmniRoute (`verdict/omniroute.py`) — Verdict is transport-and-inventory-agnostic on purpose, not a from-scratch gateway | This is the gateway's primary job |
 
 **Three explicit non-goals, stated rather than left ambiguous:**
@@ -584,8 +584,8 @@ described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#admission-boundary).
   the relay tries at most 3 admitted alternatives when the request is safe to retry, and
   [`verdict/orchestration/recovery.py`](verdict/orchestration/recovery.py) reassigns within the
   same node's eligible pool. Verdict does not walk a configured list of providers hoping one answers.
-- **No OpenTelemetry yet.** There is no tracing integration in this repository at this
-  commit. If you need distributed tracing across a request's lifetime, instrument the caller.
+- **OpenTelemetry is optional.** Install `verdict[tracing]` and set `VERDICT_TRACING=1`.
+  See `verdict/tracing.py`.
 - **OmniRoute is transport and inventory only — not a metadata source of truth.**
   [`verdict/omniroute.py`](verdict/omniroute.py) provides `/v1/models` and
   `/v1/chat/completions`. Capability, context-window, and pricing truth come from Verdict's
@@ -790,6 +790,7 @@ Six verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embedd
 | ADR index (36 numbered records) | [`docs/adr/README.md`](docs/adr/README.md) |
 | Full CLI reference | [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) |
 | User journey | [`docs/USER_JOURNEY.md`](docs/USER_JOURNEY.md) |
+| Proof-carrying decision plane case study | [`docs/portfolio/VERDICT_PROOF_CASE_STUDY.md`](docs/portfolio/VERDICT_PROOF_CASE_STUDY.md) |
 | Unknown ≠ healthy (fail-closed drops) | [`docs/guides/unknown-not-healthy.md`](docs/guides/unknown-not-healthy.md) |
 | vs LiteLLM / OpenRouter / Portkey | [`docs/guides/comparison.md`](docs/guides/comparison.md) |
 | Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
@@ -808,7 +809,7 @@ Six verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embedd
   RuVector, SONA, hivemind, or swarm dispatch describe architecture that is no longer in Core.
 - **Receipt integrity is cryptographic over event logs, not over LLM outputs.** The review
   step catches output problems; the receipt proves the run was not altered after the fact.
-- **No static fallback chains (retries stay inside the admitted set); no OpenTelemetry yet.** See
+- **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict[tracing]`).** See
   [How Verdict differs](#how-verdict-differs).
 - **Version 0.3.0, active development.** Contracts, schemas, and receipt formats are
   versioned. Breaking changes require an ADR.
