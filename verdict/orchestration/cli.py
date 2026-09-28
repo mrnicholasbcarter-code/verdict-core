@@ -73,6 +73,14 @@ def add_parsers(subparsers: Any) -> None:
     watch.add_argument("run", help="Run id or run directory")
     watch.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     watch.add_argument("--once", action="store_true", help="Render the current state and exit")
+    watch.add_argument(
+        "--replay",
+        action="store_true",
+        help="Replay mode: drive TUI from completed run's events.jsonl with timing",
+    )
+    watch.add_argument(
+        "--speed", type=float, default=1.0, help="Replay speed multiplier (default: 1.0)"
+    )
 
     rec = subparsers.add_parser("run-receipt", help="Show and verify an orchestration run receipt")
     rec.add_argument("run", help="Run id or run directory")
@@ -531,7 +539,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
 
 
 def _watch(args: argparse.Namespace) -> int:
-    from verdict.orchestration.tui import follow, render_text
+    from verdict.orchestration.tui import follow, follow_replay, render_text
 
     run_dir = _resolve_run(args.run, args.runs_dir)
     events = run_dir / "events.jsonl"
@@ -543,6 +551,9 @@ def _watch(args: argparse.Namespace) -> int:
         plain = not sys.stdout.isatty() or "NO_COLOR" in os.environ
         print(render_text(rows, width=110, plain=plain))
         return 0
+    if args.replay:
+        view = follow_replay(events, speed=args.speed)
+        return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
     view = follow(events, stop_when_final=True)
     return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
 
@@ -702,3 +713,12 @@ def _eligibility(args: argparse.Namespace) -> int:
         return 0
     _page(render_eligibility_text(payload), no_pager=bool(getattr(args, "no_pager", False)))
     return 0
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(prog="verdict orchestration")
+    subparsers = parser.add_subparsers(dest="command")
+    add_parsers(subparsers)
+    args = parser.parse_args()
+    code = dispatch(args)
+    sys.exit(code or 0)

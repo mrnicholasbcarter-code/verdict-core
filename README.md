@@ -80,6 +80,14 @@ uv run python -m verdict quickstart --non-interactive --dry-run
 
 ## Demo: goal to receipt
 
+**Real-model run replay: visual TUI walkthrough** (kr/* workers, controller failover, independent review PASS)
+
+![TUI replay of live-controller-run](docs/assets/demo-tui.svg)
+
+<sub>Replay of the recorded real-model run [`docs/proof/live-controller-run`](docs/proof/live-controller-run), sped up; recorded with [`scripts/record_tui_demo.py`](scripts/record_tui_demo.py). You can run this yourself: `verdict watch docs/proof/live-controller-run --replay --speed 20`</sub>
+
+---
+
 **Fixture run. Credential-free, deterministic, no model calls, no network.**
 
 ```bash
@@ -132,6 +140,7 @@ integrity: OK (events digest verified)
 <sub>Data: [`docs/proof/demo-run/receipt.json`](docs/proof/demo-run/receipt.json), the demo run receipt. Fixture data with injected faults.</sub>
 
 To regenerate the run, the cast and the charts, see [Regenerating the demo assets](#regenerating-the-demo-assets).
+
 
 ## What it does
 
@@ -615,6 +624,8 @@ All assets come from committed code and committed data. None of the tools below 
 | [`docs/proof/demo-run/`](docs/proof/demo-run) | ~35 KB | fixture inventory in `scripts/demo_orchestrate.py` | `python scripts/demo_orchestrate.py --out docs/proof/demo-run` |
 | [`docs/assets/demo.cast`](docs/assets/demo.cast) | ~12 KB | the demo run above, recorded in a pty | `python scripts/record_demo.py` (stdlib only; also rewrites `docs/proof/demo-run/`) |
 | [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~500 KB | `demo.cast` | `npx -y svg-term-cli@2.1.1 --in docs/assets/demo.cast --out docs/assets/demo.svg --window --width 110 --height 34` |
+| [`docs/assets/demo-tui.cast`](docs/assets/demo-tui.cast) | ~1.2 MB | [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (real-model run) | `python scripts/record_tui_demo.py` |
+| [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~2 MB | `demo-tui.cast` | `npx -y svg-term-cli@2.1.1 --in docs/assets/demo-tui.cast --out docs/assets/demo-tui.svg --window --width 110 --height 34` |
 | `docs/assets/chart-*.svg` | ~10 KB each | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
 
 The recording's typing and line pacing are synthetic. Its text is the real output of each command.
