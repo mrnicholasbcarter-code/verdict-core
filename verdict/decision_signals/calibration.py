@@ -78,6 +78,11 @@ class CalibrationRecord:
     retry_cost_usd: float = 0.0
     verification_cost_usd: float = 0.0
     escalation_cost_usd: float = 0.0
+    # AC6 -- real per-attempt token usage (BOD-203)
+    total_input_tokens: int | None = None
+    total_output_tokens: int | None = None
+    attempts_with_usage: int = 0
+    attempts_without_usage: int = 0
 
     def __post_init__(self) -> None:
         if self.role is not None and self.role not in ROLES:
