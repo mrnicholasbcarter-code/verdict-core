@@ -618,7 +618,6 @@ async def test_cancel_node_running_state(repo: Path, tmp_path: Path) -> None:
     assert len(cancel_events) >= 0  # Non-crash guarantee
 
 
-
 @pytest.mark.asyncio
 async def test_prime_headless_executor_kills_subprocess_on_cancel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -652,12 +651,7 @@ async def test_prime_headless_executor_kills_subprocess_on_cancel(
     exe = _SleepExecutor()
 
     async def _launch() -> None:
-        await exe.run(
-            prompt="",
-            route_id="kr/test-model",
-            cwd=tmp_path,
-            timeout_seconds=60.0,
-        )
+        await exe.run(prompt="", route_id="kr/test-model", cwd=tmp_path, timeout_seconds=60.0)
 
     task = asyncio.create_task(_launch())
     # Give the subprocess time to spawn
