@@ -17,6 +17,7 @@ import contextlib
 import json
 import math
 import os
+import posixpath
 import re
 import signal
 import tempfile
@@ -700,6 +701,153 @@ class DirectGatewayExecutor:
         return None
 
     @staticmethod
+    def _normalize_path(p: str) -> str | None:
+        """Normalize a diff path; return None if invalid."""
+        # Strip leading a/ or b/ prefix (standard git diff format)
+        for prefix in ("a/", "b/"):
+            if p.startswith(prefix):
+                p = p[len(prefix):]
+                break
+        normed = posixpath.normpath(p)
+        # Reject empty, absolute, traversal, .git paths
+        if not normed or normed == ".":
+            return None
+        if normed.startswith("/"):
+            return None
+        parts = normed.split("/")
+        if ".." in parts:
+            return None
+        if parts[0] == ".git" or ".git" in parts:
+            return None
+        return normed
+
+    async def _validate_diff_security(
+        self,
+        diff_text: str,
+        owned_files: list[str],
+        cwd: Path,
+    ) -> str | None:
+        """Use git to discover ALL paths a patch touches; reject unsafe ops.
+
+        Returns an error string if the diff is unsafe, None if safe.
+        This is the primary security gate — the regex-based
+        ``_validate_diff_paths`` is kept as defence in depth.
+        """
+        owned_set = {posixpath.normpath(f) for f in owned_files}
+
+        # Write the diff to a temp file for git commands
+        diff_path = cwd / ".verdict-validate.patch"
+        try:
+            diff_path.write_text(diff_text + "\n", encoding="utf-8")
+        except OSError as exc:
+            return f"cannot write patch for validation: {exc}"
+
+        try:
+            # --- Step 1: git apply --summary to detect dangerous operations ---
+            proc = await asyncio.create_subprocess_exec(
+                "git", "apply", "--summary", str(diff_path),
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=15
+            )
+            summary = stdout.decode("utf-8", errors="replace")
+            # --summary outputs lines like:
+            #   rename owned.py => evil.py (100%)
+            #   copy owned.py => evil.py (100%)
+            #   mode change 100644 => 100755 file.py
+            #   create mode 100644 file.py
+            #   delete mode 100644 file.py
+            #   create mode 120000 link (symlink)
+            #   create mode 160000 sub  (submodule)
+            for line in summary.splitlines():
+                line_lower = line.strip().lower()
+                if line_lower.startswith("rename "):
+                    return f"diff_rejected: rename operation not allowed: {line.strip()}"
+                if line_lower.startswith("copy "):
+                    return f"diff_rejected: copy operation not allowed: {line.strip()}"
+                if "mode change" in line_lower:
+                    return f"diff_rejected: mode change not allowed: {line.strip()}"
+                # Symlink: mode 120000
+                if "120000" in line:
+                    return f"diff_rejected: symlink creation not allowed: {line.strip()}"
+                # Submodule: mode 160000
+                if "160000" in line:
+                    return f"diff_rejected: submodule entry not allowed: {line.strip()}"
+                # Deletion
+                if line_lower.startswith("delete "):
+                    return f"diff_rejected: file deletion not allowed: {line.strip()}"
+
+            # --- Step 1b: reject binary patches ---
+            if "GIT binary patch" in diff_text or "Binary files " in diff_text:
+                return "diff_rejected: binary content not allowed"
+
+            # --- Step 2: git apply --numstat -z to collect ALL touched paths ---
+            proc = await asyncio.create_subprocess_exec(
+                "git", "apply", "--numstat", "-z", str(diff_path),
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=15
+            )
+            if proc.returncode != 0:
+                err_msg = stderr.decode("utf-8", errors="replace")[-300:]
+                return f"diff_rejected: git cannot parse patch: {err_msg}"
+
+            raw = stdout.decode("utf-8", errors="replace")
+            # --numstat -z output: records separated by NUL.
+            # Each record: "added\tdeleted\tpath" for normal files,
+            # or "added\tdeleted\t" + NUL + "from" + NUL + "to" for renames.
+            # Split on NUL and process.
+            parts = [p for p in raw.split("\0") if p.strip()]
+            touched_paths: list[str] = []
+            for part in parts:
+                if "\t" in part:
+                    # "added\tdeleted\tpath" — extract path after last tab
+                    fields = part.split("\t")
+                    if len(fields) >= 3 and fields[2]:
+                        touched_paths.append(fields[2])
+                else:
+                    # Standalone path (rename/copy source or dest)
+                    touched_paths.append(part)
+
+            # Also parse diff --git headers for rename/copy source/dest
+            # (belt-and-suspenders: catches cases --numstat might miss)
+            for line in diff_text.splitlines():
+                if line.startswith("rename from ") or line.startswith("rename to "):
+                    p = line.split(" ", 2)[-1].strip()
+                    touched_paths.append(p)
+                if line.startswith("copy from ") or line.startswith("copy to "):
+                    p = line.split(" ", 2)[-1].strip()
+                    touched_paths.append(p)
+
+            # Normalize and validate every path
+            for raw_path in touched_paths:
+                normed = self._normalize_path(raw_path)
+                if normed is None:
+                    return f"diff_rejected: invalid path: {raw_path!r}"
+                if normed not in owned_set:
+                    return f"diff_rejected: path outside owned_files: {normed}"
+
+            # If numstat returned NO paths but the diff has content,
+            # that's suspicious (could be mode-only or other exotic format)
+            if not touched_paths and diff_text.strip() and "diff --git " in diff_text:
+                return "diff_rejected: patch touches no files (mode-only or exotic format)"
+
+        except asyncio.TimeoutError:
+            return "diff_rejected: git validation timed out"
+        except OSError as exc:
+            return f"diff_rejected: git validation error: {exc}"
+        finally:
+            diff_path.unlink(missing_ok=True)
+
+        return None
+
+    @staticmethod
     def _augment_prompt_for_diff(
         prompt: str, owned_files: list[str], cwd: Path,
         budget_bytes: int = 60_000,
@@ -763,7 +911,7 @@ class DirectGatewayExecutor:
                 return False, f"git apply --check failed: {tail}"
             # Apply for real
             proc = await asyncio.create_subprocess_exec(
-                "git", "apply", str(diff_path),
+                "git", "apply", "--whitespace=nowarn", str(diff_path),
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -839,7 +987,22 @@ class DirectGatewayExecutor:
                 usage=terminal.usage,
             )
 
-        # Validate paths
+        # Primary security gate: git-based path + operation validation
+        security_error = await self._validate_diff_security(
+            diff_text, owned_files, cwd
+        )
+        if security_error is not None:
+            return WorkerTerminal(
+                ok=False,
+                output=terminal.output,
+                model=terminal.model,
+                error=security_error if security_error.startswith("diff_rejected:") else f"diff_rejected: {security_error}",
+                duration_seconds=terminal.duration_seconds,
+                session_ref=terminal.session_ref,
+                usage=terminal.usage,
+            )
+
+        # Defence in depth: regex-based path check
         path_error = self._validate_diff_paths(diff_text, owned_files)
         if path_error is not None:
             return WorkerTerminal(

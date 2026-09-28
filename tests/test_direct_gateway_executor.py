@@ -241,7 +241,7 @@ async def test_path_traversal_rejected(tmp_path: Path) -> None:
 
     assert not result.ok
     assert "diff_rejected" in result.error
-    assert "path traversal" in result.error
+    assert "path traversal" in result.error or "invalid path" in result.error
 
 
 @pytest.mark.asyncio
@@ -317,7 +317,7 @@ async def test_absolute_path_rejected(tmp_path: Path) -> None:
 
     assert not result.ok
     assert "diff_rejected" in result.error
-    assert "absolute path" in result.error
+    assert "absolute path" in result.error or "invalid path" in result.error
 
 
 # --------------------------------------------------------------------------- error classification
@@ -714,3 +714,273 @@ def test_proof_runs_both_complete() -> None:
         assert finished[-1]["data"]["outcome"] == "COMPLETE", (
             f"{run_dir.name} outcome: {finished[-1]['data']['outcome']}"
         )
+
+
+# --------------------------------------------------------------------------- adversarial security tests
+# Verify that DirectGatewayExecutor rejects dangerous diff operations:
+# rename, copy, mode-only, symlink, binary, deletion, path escape.
+
+
+@pytest.mark.asyncio
+async def test_security_rename_rejected(tmp_path: Path) -> None:
+    """Rename-only diff must be rejected — not silently applied."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    rename_response = (
+        "```diff\n"
+        "diff --git a/owned.py b/injected.py\n"
+        "similarity index 100%\n"
+        "rename from owned.py\n"
+        "rename to injected.py\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(rename_response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "rename diff must be rejected"
+    assert "diff_rejected" in (result.error or "")
+    assert not (tmp_path / "injected.py").exists(), "rename must NOT be applied"
+    assert (tmp_path / "owned.py").exists(), "owned.py must still exist"
+
+
+@pytest.mark.asyncio
+async def test_security_copy_rejected(tmp_path: Path) -> None:
+    """Copy-only diff must be rejected — not silently applied."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    copy_response = (
+        "```diff\n"
+        "diff --git a/owned.py b/evil.py\n"
+        "similarity index 100%\n"
+        "copy from owned.py\n"
+        "copy to evil.py\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(copy_response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "copy diff must be rejected"
+    assert "diff_rejected" in (result.error or "")
+    assert not (tmp_path / "evil.py").exists(), "copy must NOT be applied"
+
+
+@pytest.mark.asyncio
+async def test_security_mode_only_rejected(tmp_path: Path) -> None:
+    """Mode-only diff (chmod) must be rejected."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    mode_response = (
+        "```diff\n"
+        "diff --git a/owned.py b/owned.py\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(mode_response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "mode-only diff must be rejected"
+    assert "diff_rejected" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_security_symlink_rejected(tmp_path: Path) -> None:
+    """Symlink creation diff (mode 120000) must be rejected."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    symlink_response = (
+        "```diff\n"
+        "diff --git a/link.py b/link.py\n"
+        "new file mode 120000\n"
+        "--- /dev/null\n"
+        "+++ b/link.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+/etc/passwd\n"
+        "\\ No newline at end of file\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(symlink_response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "symlink creation must be rejected"
+    assert "diff_rejected" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_security_binary_rejected(tmp_path: Path) -> None:
+    """Binary patch must be rejected."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    binary_response = (
+        "```diff\n"
+        "diff --git a/owned.py b/owned.py\n"
+        "GIT binary patch\n"
+        "literal 4\n"
+        "Lc${Nk0000400IC2\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(binary_response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "binary patch must be rejected"
+    assert "diff_rejected" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_security_deletion_rejected(tmp_path: Path) -> None:
+    """File deletion diff must be rejected (current nodes don't allow deletions)."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    delete_response = (
+        "```diff\n"
+        "diff --git a/owned.py b/owned.py\n"
+        "deleted file mode 100644\n"
+        "--- a/owned.py\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-print('hello')\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(delete_response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "deletion must be rejected"
+    assert "diff_rejected" in (result.error or "")
+    assert (tmp_path / "owned.py").exists(), "owned.py must NOT be deleted"
+
+
+@pytest.mark.asyncio
+async def test_security_src_owned_dst_not_owned_rejected(tmp_path: Path) -> None:
+    """Diff with --- owned but +++ not-owned must be rejected."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("old\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    # Rename with modification: owned.py -> evil.py
+    response = (
+        "```diff\n"
+        "diff --git a/owned.py b/evil.py\n"
+        "similarity index 50%\n"
+        "rename from owned.py\n"
+        "rename to evil.py\n"
+        "--- a/owned.py\n"
+        "+++ b/evil.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "rename-with-modify to unowned path must be rejected"
+    assert "diff_rejected" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_security_diff_header_path_mismatch_rejected(tmp_path: Path) -> None:
+    """diff --git a/x b/y where y is not owned must be rejected (even with matching +++ line)."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("old\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    # Copy with content: copies from owned to unowned
+    response = (
+        "```diff\n"
+        "diff --git a/owned.py b/unowned.py\n"
+        "similarity index 50%\n"
+        "copy from owned.py\n"
+        "copy to unowned.py\n"
+        "--- a/owned.py\n"
+        "+++ b/unowned.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "copy to unowned path must be rejected"
+    assert "diff_rejected" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_security_dotslash_double_slash_normalisation(tmp_path: Path) -> None:
+    """Paths with ./ or // that normalise outside owned_files must be rejected."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("old\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    # Try to create a file via sneaky path normalisation
+    response = (
+        "```diff\n"
+        "diff --git a/./owned.py b/./subdir/../evil.py\n"
+        "--- a/./owned.py\n"
+        "+++ b/./subdir/../evil.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+pwned\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert not result.ok, "normalised path outside owned_files must be rejected"
+    assert "diff_rejected" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_security_legitimate_diff_still_applies(tmp_path: Path) -> None:
+    """A normal modify-only diff of owned files must still succeed."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "owned.py").write_text("old\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add"], cwd=str(tmp_path), check=True, capture_output=True)
+
+    response = (
+        "```diff\n"
+        "diff --git a/owned.py b/owned.py\n"
+        "--- a/owned.py\n"
+        "+++ b/owned.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "```\nRESULT: DONE"
+    )
+    transport = FakeTransport(200, _ok_response(response))
+    exe = DirectGatewayExecutor(base_url="http://fake:20128", api_key="k")
+    result = await _run_with_transport(exe, transport, _implement_prompt(["owned.py"]),
+                                        "cc/test", tmp_path)
+    assert result.ok, f"legitimate diff must succeed, got error: {result.error}"
+    assert (tmp_path / "owned.py").read_text() == "new\n"
