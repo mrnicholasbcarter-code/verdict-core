@@ -18,8 +18,10 @@ from verdict.runtime_certification import (
     ParityLevel,
     ProbeBudget,
     RuntimeCertificationError,
+    SharedMemoryDiagnosis,
     certify_runtime,
     classify_memory_mcps,
+    diagnose_shared_memory,
     harness_parity_from_evidence,
     register_detector,
     reset_detectors,
@@ -415,3 +417,115 @@ def test_cli_certify_json_from_fixture(tmp_path: Path, capsys: pytest.CaptureFix
     assert payload["purpose"] == "evidence"
     assert payload["components"][0]["component_id"] == "serena"
     assert "sk-" not in json.dumps(payload).lower()
+
+
+# ---------------------------------------------------------------------------
+# Degraded shared-memory surface (BOD-80 AC 8)
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorReportsDegradedSharedMemory:
+    """diagnose_shared_memory reports DEGRADED with a named reason."""
+
+    def test_unreachable(self) -> None:
+        """Store cannot be contacted → DEGRADED / unreachable."""
+
+        def _unreachable() -> dict[str, str]:
+            return {"status": "unavailable", "message": "connection refused"}
+
+        diag = diagnose_shared_memory(health_fn=_unreachable)
+        assert diag.state is CertificationState.DEGRADED
+        assert "unreachable" in diag.reason
+
+    def test_unreachable_via_exception(self) -> None:
+        """health_fn raises → DEGRADED / unreachable."""
+
+        def _raises() -> dict[str, str]:
+            raise ConnectionError("host down")
+
+        diag = diagnose_shared_memory(health_fn=_raises)
+        assert diag.state is CertificationState.DEGRADED
+        assert "unreachable" in diag.reason
+        assert "ConnectionError" in diag.reason
+
+    def test_unreachable_timeout(self) -> None:
+        """Store times out → DEGRADED / unreachable."""
+
+        def _timeout() -> dict[str, str]:
+            return {"status": "timeout", "message": "read timed out"}
+
+        diag = diagnose_shared_memory(health_fn=_timeout)
+        assert diag.state is CertificationState.DEGRADED
+        assert "unreachable" in diag.reason
+
+    def test_unwritable(self) -> None:
+        """Store responds but rejects writes → DEGRADED / unwritable."""
+
+        def _unwritable() -> dict[str, str]:
+            return {"status": "auth_failed", "message": "token expired"}
+
+        diag = diagnose_shared_memory(health_fn=_unwritable)
+        assert diag.state is CertificationState.DEGRADED
+        assert "unwritable" in diag.reason
+
+    def test_unwritable_degraded_status(self) -> None:
+        """Provider reports degraded → DEGRADED / unwritable."""
+
+        def _degraded() -> dict[str, str]:
+            return {"status": "degraded", "message": "disk full"}
+
+        diag = diagnose_shared_memory(health_fn=_degraded)
+        assert diag.state is CertificationState.DEGRADED
+        assert "unwritable" in diag.reason
+
+    def test_schema_incompatible(self) -> None:
+        """Store schema mismatch → DEGRADED / schema_incompatible."""
+
+        def _incompatible() -> dict[str, str]:
+            return {"status": "incompatible", "message": "schema v99 unsupported"}
+
+        diag = diagnose_shared_memory(health_fn=_incompatible)
+        assert diag.state is CertificationState.DEGRADED
+        assert "schema_incompatible" in diag.reason
+
+    def test_schema_incompatible_via_state(self) -> None:
+        """State field reports incompatible → DEGRADED / schema_incompatible."""
+
+        def _state_incompat() -> dict[str, str]:
+            return {"status": "available", "state": "incompatible", "message": "wrong version"}
+
+        diag = diagnose_shared_memory(health_fn=_state_incompat)
+        assert diag.state is CertificationState.DEGRADED
+        assert "schema_incompatible" in diag.reason
+
+    def test_schema_incompatible_malformed(self) -> None:
+        """Malformed status → DEGRADED / schema_incompatible."""
+
+        def _malformed() -> dict[str, str]:
+            return {"status": "malformed", "message": "unexpected payload"}
+
+        diag = diagnose_shared_memory(health_fn=_malformed)
+        assert diag.state is CertificationState.DEGRADED
+        assert "schema_incompatible" in diag.reason
+
+    def test_healthy_returns_ready(self) -> None:
+        """Healthy store → READY."""
+
+        def _healthy() -> dict[str, str]:
+            return {"status": "available", "state": "healthy"}
+
+        diag = diagnose_shared_memory(health_fn=_healthy)
+        assert diag.state is CertificationState.READY
+        assert diag.reason == "ok"
+
+    def test_no_provider_returns_ready(self) -> None:
+        """No provider configured → READY (nothing to degrade)."""
+        diag = diagnose_shared_memory(health_fn=None)
+        assert diag.state is CertificationState.READY
+
+    def test_to_dict_shape(self) -> None:
+        diag = SharedMemoryDiagnosis(
+            state=CertificationState.DEGRADED, reason="unreachable: timeout"
+        )
+        d = diag.to_dict()
+        assert d == {"state": "degraded", "reason": "unreachable: timeout"}

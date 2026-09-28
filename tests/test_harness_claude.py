@@ -148,6 +148,36 @@ def test_certify_is_partial_without_live_token(
     assert SECRET not in format_certify(report)
 
 
+def test_enable_is_idempotent(tmp_path: Path) -> None:
+    """Enable twice: config bytes identical, backup not overwritten or duplicated."""
+    claude_home = _claude_home(tmp_path)
+    config = claude_home / "settings.json"
+    config.write_text(ORIGINAL_SETTINGS, encoding="utf-8")
+
+    # Run 1
+    r1 = enable(claude_home=claude_home, health_check=_healthy)
+    assert r1.created_backup is True
+    config_after_1 = config.read_bytes()
+    backup_after_1 = r1.backup_path.read_bytes()
+    backup_stat_1 = r1.backup_path.stat()
+
+    # Run 2
+    r2 = enable(claude_home=claude_home, health_check=_healthy)
+    assert r2.created_backup is False
+    config_after_2 = config.read_bytes()
+    backup_after_2 = r2.backup_path.read_bytes()
+    backup_stat_2 = r2.backup_path.stat()
+
+    # Config must be byte-identical after both runs
+    assert config_after_1 == config_after_2
+
+    # Backup must be unchanged (original content, not overwritten)
+    assert backup_after_1 == backup_after_2
+    assert backup_after_1 == ORIGINAL_SETTINGS.encode()
+    # mtime unchanged → backup was not rewritten
+    assert backup_stat_1.st_mtime_ns == backup_stat_2.st_mtime_ns
+
+
 def test_cli_help_lists_claude_commands(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
