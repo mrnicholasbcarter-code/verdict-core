@@ -30,7 +30,11 @@ LIVE = Path("docs/proof/live-controller-run/events.jsonl")
 
 
 def _load_live_events() -> list[RunEvent]:
-    return [RunEvent.from_dict(json.loads(line)) for line in LIVE.read_text().splitlines() if line.strip()]
+    return [
+        RunEvent.from_dict(json.loads(line))
+        for line in LIVE.read_text().splitlines()
+        if line.strip()
+    ]
 
 
 def _event(seq: int, kind: str, node: str = "", **data: object) -> RunEvent:
@@ -135,11 +139,27 @@ def test_transition_chain_collapsed_on_failure_cooldown_reassign() -> None:
             _event(1, "run_started", goal="g"),
             _event(2, "selection", "n1", route_id="cc/haiku", provider="cc", attempt=1),
             _event(3, "node_state", "n1", state="RUNNING", route_id="cc/haiku"),
-            _event(4, "failure", "n1", category="quota_exhausted", action="REROUTE",
-                   route_id="cc/haiku", evidence="429 quota"),
-            _event(5, "cooldown", "n1", key="cc", scope="provider", category="quota", until="later"),
-            _event(6, "reassign", "n1", from_route="cc/haiku", to_route="kr/haiku", reason="quota",
-                   attempt=2),
+            _event(
+                4,
+                "failure",
+                "n1",
+                category="quota_exhausted",
+                action="REROUTE",
+                route_id="cc/haiku",
+                evidence="429 quota",
+            ),
+            _event(
+                5, "cooldown", "n1", key="cc", scope="provider", category="quota", until="later"
+            ),
+            _event(
+                6,
+                "reassign",
+                "n1",
+                from_route="cc/haiku",
+                to_route="kr/haiku",
+                reason="quota",
+                attempt=2,
+            ),
             _event(7, "node_state", "n1", state="RUNNING", route_id="kr/haiku", attempt=2),
         ]
     )
@@ -174,8 +194,16 @@ def test_identity_reports_mismatch_from_terminal_events() -> None:
         _event(1, "run_started", goal="g"),
         _event(2, "selection", "n1", route_id="cc/haiku", provider="cc", attempt=1),
         _event(3, "node_state", "n1", state="RUNNING", route_id="cc/haiku"),
-        _event(4, "terminal", "n1", route_id="cc/haiku", reported_model="cc/haiku-4.5",
-               session_ref="s123", ok=True, duration_seconds=1.0),
+        _event(
+            4,
+            "terminal",
+            "n1",
+            route_id="cc/haiku",
+            reported_model="cc/haiku-4.5",
+            session_ref="s123",
+            ok=True,
+            duration_seconds=1.0,
+        ),
     ]
     view = RunView.from_events(events)
     ident = identity_for(view, events, "n1")
@@ -213,8 +241,15 @@ def test_detail_panel_collapsed_hides_technical() -> None:
         _event(1, "run_started", goal="g"),
         _event(2, "selection", "n1", route_id="cc/haiku", attempt=1),
         _event(3, "node_state", "n1", state="RUNNING", route_id="cc/haiku"),
-        _event(4, "failure", "n1", category="quota_exhausted", action="REROUTE",
-               route_id="cc/haiku", evidence="429 quota-hard"),
+        _event(
+            4,
+            "failure",
+            "n1",
+            category="quota_exhausted",
+            action="REROUTE",
+            route_id="cc/haiku",
+            evidence="429 quota-hard",
+        ),
     ]
     view = RunView.from_events(events)
     state = CockpitState()
@@ -230,8 +265,15 @@ def test_detail_panel_collapsed_hides_technical() -> None:
 def test_detail_panel_expanded_shows_technical() -> None:
     events = [
         _event(1, "selection", "n1", route_id="cc/haiku", attempt=1),
-        _event(2, "failure", "n1", category="quota_exhausted", action="REROUTE",
-               route_id="cc/haiku", evidence="429 quota-hard"),
+        _event(
+            2,
+            "failure",
+            "n1",
+            category="quota_exhausted",
+            action="REROUTE",
+            route_id="cc/haiku",
+            evidence="429 quota-hard",
+        ),
     ]
     view = RunView.from_events(events)
     state = CockpitState()
@@ -261,8 +303,9 @@ def test_no_color_renders_without_ansi_escapes() -> None:
     events = [
         _event(1, "run_started", goal="g"),
         _event(2, "selection", "n1", route_id="cc/haiku", attempt=1),
-        _event(3, "failure", "n1", category="quota_exhausted", action="REROUTE",
-               route_id="cc/haiku"),
+        _event(
+            3, "failure", "n1", category="quota_exhausted", action="REROUTE", route_id="cc/haiku"
+        ),
     ]
     view = RunView.from_events(events)
     state = CockpitState()
@@ -282,7 +325,9 @@ def test_narrow_terminal_does_not_crash() -> None:
     events = [
         _event(1, "run_started", goal="g"),
         _event(2, "selection", "n1", route_id="cc/haiku-4.5-super-long-name", attempt=1),
-        _event(3, "failure", "n1", category="quota_exhausted", route_id="cc/haiku-4.5-super-long-name"),
+        _event(
+            3, "failure", "n1", category="quota_exhausted", route_id="cc/haiku-4.5-super-long-name"
+        ),
     ]
     view = RunView.from_events(events)
     state = CockpitState()
@@ -303,12 +348,27 @@ def test_narrow_terminal_does_not_crash() -> None:
 def test_run_cockpit_selection_and_quit(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     rows = [
-        {"seq": 1, "at": "2026-01-01T00:00:01Z", "type": "run_started", "node_id": "",
-         "data": {"goal": "g"}},
-        {"seq": 2, "at": "2026-01-01T00:00:02Z", "type": "node_state", "node_id": "n1",
-         "data": {"state": "RUNNING", "route_id": "cc/haiku"}},
-        {"seq": 3, "at": "2026-01-01T00:00:03Z", "type": "node_state", "node_id": "n2",
-         "data": {"state": "RUNNING", "route_id": "kr/haiku"}},
+        {
+            "seq": 1,
+            "at": "2026-01-01T00:00:01Z",
+            "type": "run_started",
+            "node_id": "",
+            "data": {"goal": "g"},
+        },
+        {
+            "seq": 2,
+            "at": "2026-01-01T00:00:02Z",
+            "type": "node_state",
+            "node_id": "n1",
+            "data": {"state": "RUNNING", "route_id": "cc/haiku"},
+        },
+        {
+            "seq": 3,
+            "at": "2026-01-01T00:00:03Z",
+            "type": "node_state",
+            "node_id": "n2",
+            "data": {"state": "RUNNING", "route_id": "kr/haiku"},
+        },
     ]
     events_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     view = RunView()
@@ -417,8 +477,13 @@ def test_run_cockpit_terminal_restore_on_exception(tmp_path: Path) -> None:
 def test_burst_events_apply_without_dropping_state(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     burst = [
-        {"seq": i, "at": f"2026-01-01T00:00:{i:02d}Z", "type": "node_state",
-         "node_id": f"n{i}", "data": {"state": "RUNNING"}}
+        {
+            "seq": i,
+            "at": f"2026-01-01T00:00:{i:02d}Z",
+            "type": "node_state",
+            "node_id": f"n{i}",
+            "data": {"state": "RUNNING"},
+        }
         for i in range(1, 21)
     ]
     events_path.write_text("\n".join(json.dumps(r) for r in burst) + "\n")
@@ -454,9 +519,7 @@ def test_burst_events_apply_without_dropping_state(tmp_path: Path) -> None:
 def test_live_controller_events_replay_through_cockpit(tmp_path: Path) -> None:
     events = _load_live_events()
     events_path = tmp_path / "events.jsonl"
-    events_path.write_text(
-        "\n".join(json.dumps(_event_to_row(e)) for e in events) + "\n"
-    )
+    events_path.write_text("\n".join(json.dumps(_event_to_row(e)) for e in events) + "\n")
     view = RunView()
     reader = ScriptedKeyReader(["ENTER", "d", "?", "ESC", "ESC", "ESC", "q"])
     console = _console(100)
@@ -534,3 +597,17 @@ def test_real_key_reader_non_tty_stream_yields_none() -> None:
     reader = _RealKeyReader(_FakeStream())
     assert reader.read(timeout=0.0) is None
     reader.close()
+
+
+def test_supervise_background_follow_is_never_interactive(monkeypatch) -> None:
+    """The supervise path runs follow() in a daemon thread; it must never read keys
+    or change terminal mode, even when stdout is a TTY (review of PR #718)."""
+    import inspect
+
+    from verdict.orchestration import cli as orch_cli
+
+    src = inspect.getsource(orch_cli)
+    i = src.find("target=lambda: follow(")
+    assert i != -1, "background follow call not found"
+    call = src[i : src.find(")", src.find("interactive=", i)) + 1]
+    assert "interactive=False" in call

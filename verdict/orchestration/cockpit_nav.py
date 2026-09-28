@@ -276,19 +276,25 @@ def transition_chain_for(view: Any, node_id: str) -> TransitionChain:
             fail_route = last_failure.route_id or ""
             if not fail_route:
                 continue
-            if c.key == fail_route or (c.scope == "provider" and fail_route.startswith(c.key + "/")):
+            if c.key == fail_route or (
+                c.scope == "provider" and fail_route.startswith(c.key + "/")
+            ):
                 cooldown_bits.append(f"{c.scope}:{c.key}")
         parts = [f"failed({cat})"]
         if cooldown_bits:
             parts.append("cooldown[" + ",".join(sorted(set(cooldown_bits))) + "]")
         if last_reassign is not None:
-            parts.append(f"replaced[{last_reassign.from_route or '?'} -> {last_reassign.to_route or '?'}]")
+            parts.append(
+                f"replaced[{last_reassign.from_route or '?'} -> {last_reassign.to_route or '?'}]"
+            )
         node = getattr(view, "nodes", {}).get(node_id)
         if node is not None and getattr(node, "state", None) is not None:
             parts.append(f"now[{node.state.value}]")
         chain.summary = " -> ".join(parts)
     elif last_reassign is not None:
-        chain.summary = f"replaced[{last_reassign.from_route or '?'} -> {last_reassign.to_route or '?'}]"
+        chain.summary = (
+            f"replaced[{last_reassign.from_route or '?'} -> {last_reassign.to_route or '?'}]"
+        )
 
     for f in failures[-3:]:
         line = f"{f.category or 'unknown'} action={f.action or '-'} route={f.route_id or '-'}"
@@ -348,7 +354,9 @@ def identity_for(view: Any, events: Sequence[Any], node_id: str) -> IdentityView
     from collections.abc import Mapping as _Mapping
 
     for e in _terminal_events_for(events, node_id):
-        data = (e.get("data", {}) or {}) if isinstance(e, _Mapping) else (getattr(e, "data", {}) or {})
+        data = (
+            (e.get("data", {}) or {}) if isinstance(e, _Mapping) else (getattr(e, "data", {}) or {})
+        )
         observed = str(data.get("reported_model") or observed)
         session_ref = str(data.get("session_ref") or session_ref)
     mismatch = bool(selected and observed and selected != observed)
@@ -397,12 +405,7 @@ def render_selected_row(view: Any, state: CockpitState, plain: bool) -> Renderab
 
 
 def render_detail_panel(
-    view: Any,
-    events: Sequence[Any],
-    state: CockpitState,
-    *,
-    plain: bool = False,
-    width: int = 100,
+    view: Any, events: Sequence[Any], state: CockpitState, *, plain: bool = False, width: int = 100
 ) -> RenderableType:
     """Detail panel for the currently selected node.
 
@@ -429,19 +432,28 @@ def render_detail_panel(
     chain = transition_chain_for(view, nid)
 
     lines: list[Text] = []
-    lines.append(Text(f"node: {nid}  state: {state_value}  attempt: {attempt}",
-                       style=_style_token("PRIMARY", plain)))
+    lines.append(
+        Text(
+            f"node: {nid}  state: {state_value}  attempt: {attempt}",
+            style=_style_token("PRIMARY", plain),
+        )
+    )
     lines.append(Text(f"selected route: {ident.selected_route or '-'}"))
     obs_line = f"observed model: {ident.observed_route or '-'}"
     if ident.session_ref:
         obs_line += f"  session: {ident.session_ref}"
     lines.append(Text(obs_line))
     if ident.mismatch:
-        lines.append(Text("MISMATCH: selected route != observed reported_model",
-                           style=_style_token("ERROR", plain)))
+        lines.append(
+            Text(
+                "MISMATCH: selected route != observed reported_model",
+                style=_style_token("ERROR", plain),
+            )
+        )
     if chain.is_empty:
-        lines.append(Text("transition: none (no failures recorded)",
-                           style=_style_token("MUTED", plain)))
+        lines.append(
+            Text("transition: none (no failures recorded)", style=_style_token("MUTED", plain))
+        )
     else:
         token = _classify_summary_token(chain.summary)
         lines.append(Text(f"transition: {chain.summary}", style=_style_token(token, plain)))
@@ -450,11 +462,15 @@ def render_detail_panel(
             for tline in chain.technical:
                 lines.append(Text(f"  {tline}"))
         elif chain.technical:
-            lines.append(Text("(press d for technical details)",
-                               style=_style_token("MUTED", plain)))
+            lines.append(
+                Text("(press d for technical details)", style=_style_token("MUTED", plain))
+            )
     # Extension-point hints (no-op controls).
-    lines.append(Text("(c=context BOD-278, r=routing BOD-277 — not wired)",
-                       style=_style_token("MUTED", plain)))
+    lines.append(
+        Text(
+            "(c=context BOD-278, r=routing BOD-277 — not wired)", style=_style_token("MUTED", plain)
+        )
+    )
 
     body: RenderableType = Group(*lines)
     if plain:
@@ -490,11 +506,7 @@ def render_footer(plain: bool = False) -> RenderableType:
 # ---------------------------------------------------------------------------
 
 
-def dispatch_key(
-    key: str,
-    state: CockpitState,
-    view: Any,
-) -> bool:
+def dispatch_key(key: str, state: CockpitState, view: Any) -> bool:
     """Apply ``key`` to ``state``.  Returns True when the state changed."""
     if key in (KEY_UP, "k"):
         state.move(-1)
@@ -592,7 +604,7 @@ def run_cockpit(
             # 1. Apply any newly appended events.
             fresh = events_source()
             if len(fresh) > len(seen):
-                for e in fresh[len(seen):]:
+                for e in fresh[len(seen) :]:
                     view.apply(e)
                 seen = fresh
                 # Refresh node order (preserves selection identity).

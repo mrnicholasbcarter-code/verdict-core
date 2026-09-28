@@ -1060,10 +1060,7 @@ def _run_interactive_cockpit(
     ``seen`` is the number of events already applied to ``view`` (used to
     skip a previous controller life via ``start_seq``).
     """
-    from verdict.orchestration.cockpit_nav import (
-        _RealKeyReader,
-        run_cockpit,
-    )
+    from verdict.orchestration.cockpit_nav import _RealKeyReader, run_cockpit
     from verdict.orchestration.tui import render as _render
 
     reader = key_reader
