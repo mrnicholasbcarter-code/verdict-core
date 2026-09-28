@@ -376,6 +376,10 @@ class DagRuntime:
             requirements = TaskRequirements.for_node(run.node, exclude_routes=frozenset(tried))
             choice, considered = self.selector.select(requirements, now=self.now())
             counts = _ladder_counts(considered)
+            # Post-probe statistics for eligibility events (BOD-203).
+            _post: dict[str, int] = getattr(self.selector, "last_select_stats", {})
+            if _post:
+                counts = {**counts, **_post}
             if choice is None:
                 # Check if we can wait for a short cooldown to expire
                 earliest_cooldown: datetime | None = None
