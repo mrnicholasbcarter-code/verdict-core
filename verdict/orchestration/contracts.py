@@ -440,6 +440,7 @@ EVENT_TYPES = frozenset(
         "review_attempt",  # BOD-224: one per reviewer attempt
         "repack",  # BOD-272: context budget shrunk after a context-length overflow
         "rehydrate",  # BOD-272: same-route retry with failing verification evidence
+        "decision_signals_context_budget",  # BOD-203 AC3: advisory context budget
         "run_finished",
     }
 )
