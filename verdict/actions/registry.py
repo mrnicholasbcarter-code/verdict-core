@@ -10,7 +10,14 @@ import contextlib
 from collections.abc import Callable
 from typing import Any
 
-from verdict.actions.base import NOOP_SINK, ActionEvent, ActionResult, ActionSink, ActionSpec
+from verdict.actions.base import (
+    NOOP_SINK,
+    ActionEvent,
+    ActionResult,
+    ActionSink,
+    ActionSpec,
+    LaunchSpec,
+)
 
 # ---------------------------------------------------------------------------
 # Registry storage
@@ -64,39 +71,39 @@ def run_action(
 # ---------------------------------------------------------------------------
 
 MACHINE_ONLY: dict[str, str] = {
-    "serve": "server/daemon lifecycle; long-running HTTP process",
-    "mcp": "MCP server lifecycle; invoked by other programs, not users",
-    "hook": "hook management endpoint; invoked by harness integrations",
-    "uninstall": "destructive global uninstall; not an interactive action",
-    "memory": "memory-bridge lifecycle; invoked by harness integrations",
-    "runtime": "daemon lifecycle management; long-running system process",
-    "certify": "certification snapshot; batch dev-tool process",
-    "check": "inline probe wrapper; dev-tool plumbing",
-    "choose": "legacy model chooser; superseded by route action",
-    "compat": "compatibility scanner; dev-tool",
-    "failover-proof": "failover proof generation; batch dev-tool",
-    "harness": "per-harness lifecycle commands; dev-tool plumbing",
-    "metadata": "metadata sync; batch process invoked by scripts",
-    "openspec": "spec lifecycle; external tool integration",
-    "plan": "legacy alias for setup plan",
-    "run": "legacy alias for route",
+    "serve": "long-running HTTP API server daemon providing OpenAI-compatible routing gateway lifecycle managed by systemd or docker",
+    "mcp": "Model Context Protocol server daemon lifecycle management invoked programmatically by editor integrations not end users",
+    "hook": "git hook event capture endpoints for commit and push actions invoked by version control not users",
+    "uninstall": "destructive global uninstall operation removing all verdict state configuration and credentials with no rollback",
+    "memory": "memory-bridge daemon process lifecycle for harness integration context persistence invoked programmatically not by users",
+    "runtime": "system daemon lifecycle reconciliation managing long-running background service processes and their canonical ownership",
+    "certify": "batch certification evidence generator producing provider detection snapshots invoked by automation pipelines not users",
+    "check": "configuration validation wrapper around probe infrastructure invoked by continuous integration pipelines not users",
+    "choose": "legacy model selector command superseded by route action retained only for backward compatibility with existing scripts",
+    "compat": "OpenAPI compatibility scanner batch tool analyzing gateway conformance invoked by integration test automation not users",
+    "failover-proof": "batch failover proof generator producing cryptographic evidence of provider fallback invoked by test automation not users",
+    "harness": "per-harness adapter daemon lifecycle configuring editor integration endpoints invoked by setup automation not users",
+    "metadata": "model metadata sync daemon fetching provider catalogs on schedule invoked by background automation not users",
+    "openspec": "OpenAPI specification admission daemon managing gateway spec validation lifecycle invoked by integration tools not users",
+    "plan": "legacy setup plan command aliasing setup.plan action retained for backward compatibility with existing automation scripts",
+    "run": "legacy routing command aliasing route action retained for backward compatibility with existing scripts and documentation",
 }
 
-LAUNCH: dict[str, str] = {
-    "orchestrate": "long-running orchestration pipeline; launches parallel workers",
-    "supervise": "supervisor wrapper around orchestrate; long-running",
-    "watch": "live TUI viewer for running orchestrations; interactive",
-    "benchmark": "benchmark suite; long-running measurement",
-    "autodev": "batch automation pipeline; long-running",
-    "autodev-golden-path": "golden-path batch pipeline; long-running",
-    "ui": "launches Streamlit dashboard; separate process",
-    "prove-at-rest": "long-running monitoring probe; continuous",
-    "quickstart": "guided quickstart wizard; interactive session",
-    "simulate": "simulation run; stateful multi-step session",
-    "resume": "story resume pipeline; interactive session",
+LAUNCH: dict[str, LaunchSpec] = {
+    "orchestrate": LaunchSpec(reason="long-running orchestration pipeline with parallel worker coordination and receipt generation", entry="verdict.orchestration.cli:_orchestrate", section="Orchestration"),
+    "supervise": LaunchSpec(reason="supervisor wrapper coordinating orchestration runs with health monitoring and recovery", entry="verdict.orchestration.supervisor:dispatch", section="Orchestration"),
+    "watch": LaunchSpec(reason="live terminal interface displaying real-time orchestration progress and worker status", entry="verdict.orchestration.cli:_watch", section="Orchestration"),
+    "benchmark": LaunchSpec(reason="long-running benchmark suite measuring routing decision quality across multiple scenarios", entry="verdict.cli:cmd_benchmark", section="Development"),
+    "autodev": LaunchSpec(reason="batch automation pipeline orchestrating multiple development tasks with shadow execution tracking", entry="verdict.cli:cmd_autodev_packet_shadow", section="Development"),
+    "autodev-golden-path": LaunchSpec(reason="golden-path validation pipeline executing reference implementation scenarios end-to-end", entry="verdict.cli:cmd_autodev_golden_path", section="Development"),
+    "ui": LaunchSpec(reason="launches Streamlit dashboard as separate long-running web server process for interactive exploration", entry="verdict.dashboard:main", section="Monitoring"),
+    "prove-at-rest": LaunchSpec(reason="continuous background monitoring daemon executing periodic liveness probes against configured gateways", entry="verdict.cli:cmd_prove_at_rest", section="Monitoring"),
+    "quickstart": LaunchSpec(reason="interactive guided setup wizard walking user through credential and gateway configuration", entry="verdict.cli:cmd_quickstart", section="Setup"),
+    "simulate": LaunchSpec(reason="stateful multi-step routing simulation maintaining conversation state across decisions", entry="verdict.cli:cmd_simulate", section="Development"),
+    "resume": LaunchSpec(reason="interactive story resume pipeline reconstructing and continuing interrupted work from checkpoint", entry="verdict.cli:cmd_resume", section="Development"),
 }
 
-GAP: dict[str, str] = {"inspect": "model detail view (BOD-278: context inspect service needed)"}
+GAP: dict[str, str] = {}  # No gaps currently; all commands are classified
 
 # ---------------------------------------------------------------------------
 # Built-in action implementations (lazy-import to avoid import-time overhead)
@@ -636,6 +643,8 @@ def _action_replay(**kwargs: Any) -> ActionResult:
 
 def _register_builtins() -> None:
     """Register the built-in action set at import time."""
+    from verdict.actions.extra import _action_inspect
+
     _specs: list[tuple[ActionSpec, Callable[..., ActionResult]]] = [
         (
             ActionSpec(
@@ -763,6 +772,10 @@ def _register_builtins() -> None:
         (
             ActionSpec("replay", "traces", "read", "Replay a routing decision session", "Traces"),
             _action_replay,
+        ),
+        (
+            ActionSpec("inspect", "models", "read", "Inspect one model's catalog record", "Models"),
+            _action_inspect,
         ),
     ]
     for spec, fn in _specs:

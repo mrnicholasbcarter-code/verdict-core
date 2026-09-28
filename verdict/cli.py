@@ -2982,43 +2982,39 @@ def cmd_inspect(
     model_id: str, catalog: list[ModelInfo] | None = None, output_json: bool = False
 ) -> None:
     """Inspect one model's catalog record and any stored passport evidence."""
-    if catalog is None:
-        catalog = default_model_catalog()
-    matches = [m for m in catalog if m.id == model_id or f"{m.provider}/{m.id}" == model_id]
-    if not matches:
-        message = f"model not found in catalog: {model_id}"
+    from verdict.actions.registry import run_action
+
+    params: dict[str, Any] = {"model_id": model_id}
+    if catalog is not None:
+        params["catalog"] = catalog
+    result = run_action("inspect", params)
+
+    if not result.ok:
         if output_json:
-            print(json.dumps({"error": message}, sort_keys=True))
+            print(json.dumps(result.data, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Model inspect")
-            present.fail(model_id, "not found in catalog")
-        raise SystemExit(1)
-    model = matches[0]
-    payload: dict[str, Any] = {
-        "id": model.id,
-        "provider": model.provider,
-        "tier": model.capability_tier,
-        "context_window": model.context_window,
-        "cost_per_1k": model.cost_per_1k,
-        "capabilities": sorted(model.capabilities),
-        "availability_state": model.availability_state,
-    }
+            present.fail(model_id, result.data.get("error", "unknown error"))
+        raise SystemExit(result.exit_code)
+
+    payload = result.data
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
+
     from verdict import present
 
-    present.header(f"Model inspect  /  {model.id}")
+    present.header(f"Model inspect  /  {model_id}")
     present.kv(
         {
-            "provider": model.provider,
-            "tier": f"T{model.capability_tier}",
-            "context window": model.context_window or "-",
-            "cost per 1k": f"${model.cost_per_1k:.4f}" if model.cost_per_1k else "-",
-            "capabilities": ", ".join(sorted(model.capabilities)) or "-",
-            "availability": model.availability_state,
+            "provider": payload["provider"],
+            "tier": f"T{payload['tier']}",
+            "context window": payload["context_window"] or "-",
+            "cost per 1k": f"${payload['cost_per_1k']:.4f}" if payload["cost_per_1k"] else "-",
+            "capabilities": ", ".join(payload["capabilities"]) or "-",
+            "availability": payload["availability_state"],
         }
     )
 
