@@ -2513,15 +2513,29 @@ def _collect_doctor_diagnostics(
         if repaired_by.get(str(warning)) not in memory_repaired
     )
     shared_memory = memory_report.get("shared_memory") or {}
+
+    # BOD-80 AC 9: when a provider IS configured, run diagnose_shared_memory
+    # with the real health data so unreachable / unwritable / schema_incompatible
+    # surface in the doctor output with named reasons.
+    if isinstance(shared_memory, dict) and shared_memory.get("configured"):
+        from verdict.runtime_certification import diagnose_shared_memory
+
+        sm_diagnosis = diagnose_shared_memory(health_fn=lambda: shared_memory)
+        shared_memory["diagnosis_state"] = sm_diagnosis.state.value
+        shared_memory["diagnosis_reason"] = sm_diagnosis.reason
+        if sm_diagnosis.state.value == "degraded":
+            warnings_found.append(f"shared memory degraded: {sm_diagnosis.reason}")
+
     diag.shared_memory = shared_memory
     if isinstance(shared_memory, dict):
-        sections.append(
-            (
-                "Shared memory",
-                str(shared_memory.get("state", "unknown")),
-                str(shared_memory.get("endpoint") or shared_memory.get("provider_id") or ""),
-            )
+        # Prefer the diagnosis state when available (more specific than discovery state).
+        display_state = str(
+            shared_memory.get("diagnosis_state", shared_memory.get("state", "unknown"))
         )
+        display_detail = shared_memory.get("diagnosis_reason") or str(
+            shared_memory.get("endpoint") or shared_memory.get("provider_id") or ""
+        )
+        sections.append(("Shared memory", display_state, str(display_detail)))
 
     # 1. Config Check
     config_dir = os.path.join(
