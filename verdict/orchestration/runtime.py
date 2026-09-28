@@ -733,7 +733,7 @@ class DagRuntime:
                         }
                     }
                     if terminal.usage is not None
-                    else {}
+                    else ({"usage_missing": True} if terminal.ok else {})
                 ),
             )
             self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
@@ -778,7 +778,7 @@ class DagRuntime:
         try:
             directory = self.run_dir / "attempts"
             directory.mkdir(parents=True, exist_ok=True)
-            record = {
+            record: dict[str, object] = {
                 "node_id": node_id,
                 "attempt": attempt,
                 "route_id": route_id,
@@ -791,6 +791,13 @@ class DagRuntime:
                 "duration_seconds": terminal.duration_seconds,
                 "session_ref": terminal.session_ref,
             }
+            if terminal.usage is not None:
+                record["usage"] = {
+                    "input_tokens": terminal.usage.input_tokens,
+                    "output_tokens": terminal.usage.output_tokens,
+                    "cost_usd": terminal.usage.cost_usd,
+                    "tokens_source": terminal.usage.tokens_source,
+                }
             (directory / f"{node_id}-a{attempt}.json").write_text(json.dumps(record, indent=1))
         except OSError:
             pass

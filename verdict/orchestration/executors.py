@@ -78,18 +78,42 @@ def _iter_json_values(stdout: str) -> tuple[list[Any], bool]:
 
 
 def _collect_messages(values: list[Any]) -> list[dict[str, Any]]:
-    """Find message dicts in parsed JSON values (tolerant of extra keys)."""
+    """Find message dicts in parsed JSON values (tolerant of extra keys).
+
+    Collects from ``"messages"`` (plural list, e.g. agent_end) **and**
+    ``"message"`` (singular dict, e.g. message_end / turn_end).
+    Deduplicates by (role, content-fingerprint) so the same assistant message
+    seen in message_end, turn_end *and* agent_end is not counted twice.
+    """
     messages: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
     for value in values:
         if isinstance(value, dict):
             inner = value.get("messages")
             if isinstance(inner, list):
                 messages.extend(m for m in inner if isinstance(m, dict))
-            elif "role" in value:
-                messages.append(value)
+            else:
+                # singular "message" key (message_end, turn_end)
+                msg = value.get("message")
+                if isinstance(msg, dict) and "role" in msg:
+                    messages.append(msg)
+                elif "role" in value:
+                    messages.append(value)
         elif isinstance(value, list):
             messages.extend(m for m in value if isinstance(m, dict) and "role" in m)
-    return messages
+
+    # Deduplicate: keep last occurrence per (role, content-fingerprint).
+    # Separate JSON lines produce distinct objects with equal content;
+    # use a lightweight repr-hash so value-identical messages collapse.
+    deduped: list[dict[str, Any]] = []
+    for msg in reversed(messages):
+        content = msg.get("content")
+        key = (msg.get("role", ""), repr(content)[:512])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(msg)
+    deduped.reverse()
+    return deduped
 
 
 def _text_of(message: Mapping[str, Any]) -> str:
