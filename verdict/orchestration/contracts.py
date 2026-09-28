@@ -369,6 +369,16 @@ class TaskRequirements:
 
 
 @dataclass(frozen=True)
+class AttemptUsage:
+    """Observed token usage (and optional cost) for one worker attempt."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None  # None unless actually reported; never fabricated
+    tokens_source: str | None = None  # e.g. "prime_stdout", "http_header"
+
+
+@dataclass(frozen=True)
 class WorkerTerminal:
     """Terminal result of one worker attempt, as observed by the executor adapter."""
 
@@ -381,6 +391,7 @@ class WorkerTerminal:
     retry_after_seconds: float | None = None
     duration_seconds: float = 0.0
     session_ref: str = ""  # harness session/journal pointer for provenance
+    usage: AttemptUsage | None = None  # per-attempt token/cost evidence (BOD-203)
 
 
 @dataclass(frozen=True)

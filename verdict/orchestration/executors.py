@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from verdict.orchestration.contracts import WorkerExecutor, WorkerTerminal
+from verdict.orchestration.contracts import AttemptUsage, WorkerExecutor, WorkerTerminal
 from verdict.orchestration.prime_settings import (
     PRIME_AGENT_DIR_ENV,
     PROJECT_SETTINGS_RELPATH,
@@ -243,6 +243,31 @@ class PrimeHeadlessExecutor:
         except (ProcessLookupError, OSError):
             pass
 
+    @staticmethod
+    def _extract_usage(assistant: dict[str, Any] | None) -> AttemptUsage | None:
+        """Extract token usage from the assistant message, if present."""
+        if assistant is None:
+            return None
+        raw = assistant.get("usage")
+        if not isinstance(raw, dict):
+            return None
+        # Accept both input/output (Prime stdout) and prompt_tokens/completion_tokens (OpenAI)
+        inp = raw.get("input") if raw.get("input") is not None else raw.get("prompt_tokens")
+        out = raw.get("output") if raw.get("output") is not None else raw.get("completion_tokens")
+        input_tokens = int(inp) if inp is not None else None
+        output_tokens = int(out) if out is not None else None
+        if input_tokens is None and output_tokens is None:
+            return None
+        # cost_usd only if explicitly present — never fabricated
+        cost_raw = raw.get("cost_usd") if raw.get("cost_usd") is not None else raw.get("cost")
+        cost_usd = float(cost_raw) if cost_raw is not None else None
+        return AttemptUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+            tokens_source="prime_stdout",
+        )
+
     def _interpret(
         self, *, stdout: str, stderr: str, returncode: int, route_id: str, duration: float
     ) -> WorkerTerminal:
@@ -252,11 +277,12 @@ class PrimeHeadlessExecutor:
         for message in messages:
             if message.get("role") == "assistant":
                 assistant = message
+        usage = self._extract_usage(assistant)
         if assistant is None:
             if returncode != 0:
                 tail = _sanitize(stderr) or f"exit {returncode} with no assistant message"
                 return WorkerTerminal(
-                    ok=False, model=route_id, error=tail, duration_seconds=duration
+                    ok=False, model=route_id, error=tail, duration_seconds=duration, usage=usage
                 )
             if not parsed_any:
                 return WorkerTerminal(
@@ -264,9 +290,14 @@ class PrimeHeadlessExecutor:
                     model=route_id,
                     error=f"malformed: {_sanitize(stdout, 200) or 'empty stdout'}",
                     duration_seconds=duration,
+                    usage=usage,
                 )
             return WorkerTerminal(
-                ok=False, model=route_id, error="no_final_answer", duration_seconds=duration
+                ok=False,
+                model=route_id,
+                error="no_final_answer",
+                duration_seconds=duration,
+                usage=usage,
             )
 
         reported_model = str(assistant.get("model", ""))
@@ -281,6 +312,7 @@ class PrimeHeadlessExecutor:
                 stop_reason=stop_reason,
                 error="model_mismatch",
                 duration_seconds=duration,
+                usage=usage,
             )
         error_message = assistant.get("errorMessage")
         if error_message:
@@ -292,6 +324,7 @@ class PrimeHeadlessExecutor:
                 error=error_text,
                 status_code=_parse_status_code(error_text),
                 duration_seconds=duration,
+                usage=usage,
             )
         if stop_reason not in {"stop", "end_turn"}:
             return WorkerTerminal(
@@ -300,6 +333,7 @@ class PrimeHeadlessExecutor:
                 stop_reason=stop_reason,
                 error="no_final_answer",
                 duration_seconds=duration,
+                usage=usage,
             )
         if not text.strip():
             return WorkerTerminal(
@@ -308,6 +342,7 @@ class PrimeHeadlessExecutor:
                 stop_reason=stop_reason,
                 error="empty_output",
                 duration_seconds=duration,
+                usage=usage,
             )
         return WorkerTerminal(
             ok=True,
@@ -315,6 +350,7 @@ class PrimeHeadlessExecutor:
             model=reported_model,
             stop_reason=stop_reason,
             duration_seconds=duration,
+            usage=usage,
         )
 
 
