@@ -459,14 +459,14 @@ class TestDoctorReportsDegradedSharedMemory:
         assert "unreachable" in diag.reason
 
     def test_unwritable(self) -> None:
-        """Store responds but rejects writes → DEGRADED / unwritable."""
+        """Store responds but rejects writes due to auth → DEGRADED / auth_failed."""
 
         def _unwritable() -> dict[str, str]:
             return {"status": "auth_failed", "message": "token expired"}
 
         diag = diagnose_shared_memory(health_fn=_unwritable)
         assert diag.state is CertificationState.DEGRADED
-        assert "unwritable" in diag.reason
+        assert "auth_failed" in diag.reason
 
     def test_unwritable_degraded_status(self) -> None:
         """Provider reports degraded → DEGRADED / unwritable."""
