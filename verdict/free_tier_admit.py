@@ -233,6 +233,10 @@ class CheapPathContextPack:
     # every task-required source must be included, before ``hydrated`` is possible.
     task_complete: bool = True
     required_sources: tuple[str, ...] = ()
+    # Coverage contract: acceptance criteria / proof criteria / verification
+    # commands that must appear in the compiled pack for ``hydrated``.
+    required_facts: tuple[str, ...] = ()
+    satisfied_facts: tuple[str, ...] = ()
     # BudgetReceipt + Context Trust feed for execution-path authority offers.
     budget_receipt: BudgetReceipt | None = None
     context_trust_admitted: bool = True
@@ -247,6 +251,12 @@ class CheapPathContextPack:
     def missing_required_sources(self) -> tuple[str, ...]:
         included = {item.source_uri for item in self.included}
         return tuple(uri for uri in self.required_sources if uri not in included)
+
+    @property
+    def unsatisfied_facts(self) -> tuple[str, ...]:
+        """Coverage-contract facts not carried by the compiled pack."""
+        satisfied = frozenset(self.satisfied_facts)
+        return tuple(f for f in self.required_facts if f not in satisfied)
 
     @property
     def prompt_digest(self) -> str:
@@ -264,6 +274,9 @@ class CheapPathContextPack:
             "task_complete": self.task_complete,
             "required_sources": list(self.required_sources),
             "missing_required_sources": list(self.missing_required_sources),
+            "required_facts": list(self.required_facts),
+            "satisfied_facts": list(self.satisfied_facts),
+            "unsatisfied_facts": list(self.unsatisfied_facts),
             "included": sources,
             "included_sources": list(sources),
             "omissions": [item.to_dict() for item in self.omissions],
@@ -273,6 +286,60 @@ class CheapPathContextPack:
             "context_trust_admitted": self.context_trust_admitted,
             "capability_coverage": self.capability_coverage,
         }
+
+
+def _normalize_fact(text: str) -> str:
+    """Collapse whitespace and lowercase for fact-satisfaction comparison."""
+    return " ".join(text.split()).lower()
+
+
+def _derive_required_facts(
+    acceptance_criteria: Sequence[str],
+    proof_criteria: Sequence[str],
+    verification_commands: Sequence[Sequence[str]] = (),
+) -> tuple[str, ...]:
+    """Build the coverage-contract fact list from task criteria.
+
+    Each acceptance criterion, proof criterion, and verification command
+    becomes a mandatory fact that must appear in the compiled pack for the
+    pack to reach ``hydrated``.
+    """
+    facts: list[str] = []
+    for ac in acceptance_criteria:
+        if ac and ac.strip():
+            facts.append(ac.strip())
+    for pc in proof_criteria:
+        if pc and pc.strip():
+            facts.append(pc.strip())
+    for cmd in verification_commands:
+        joined = " ".join(cmd).strip()
+        if joined:
+            facts.append(f"verification_command:{joined}")
+    return tuple(facts)
+
+
+def _check_fact_satisfaction(
+    required_facts: Sequence[str], units: Sequence[object]
+) -> tuple[str, ...]:
+    """Return which required facts are carried by included units.
+
+    A fact is satisfied when its whitespace-collapsed, case-insensitive text
+    appears as a substring in any included unit's content.
+    """
+    if not required_facts:
+        return ()
+    # Pre-normalize all unit contents once.
+    contents: list[str] = []
+    for unit in units:
+        raw = getattr(unit, "content", None)
+        if raw and isinstance(raw, str):
+            contents.append(_normalize_fact(raw))
+    satisfied: list[str] = []
+    for fact in required_facts:
+        needle = _normalize_fact(fact)
+        if any(needle in c for c in contents):
+            satisfied.append(fact)
+    return tuple(satisfied)
 
 
 def build_cheap_path_context_pack(
@@ -330,7 +397,33 @@ def build_cheap_path_context_pack(
         created_at=0.0,
         source_uri=TASK_SOURCE_URI,
     )
-    slots = (task_slot, *(extra_slots or ()))
+    # Coverage-contract: derive required facts and pack criteria as mandatory
+    # instruction units so they are carried to the model and satisfiable.
+    required_facts = _derive_required_facts(acceptance_criteria, proof_criteria)
+    criteria_slots: list[ContextPackSlot] = []
+    if acceptance_criteria:
+        criteria_slots.append(
+            ContextPackSlot(
+                slot_type="instructions",
+                key="acceptance_criteria",
+                content="\n".join(f"- {ac}" for ac in acceptance_criteria if ac.strip()),
+                source="cheap_path",
+                created_at=0.0,
+                source_uri="urn:verdict:source:acceptance_criteria",
+            )
+        )
+    if proof_criteria:
+        criteria_slots.append(
+            ContextPackSlot(
+                slot_type="instructions",
+                key="proof_criteria",
+                content="\n".join(f"- {pc}" for pc in proof_criteria if pc.strip()),
+                source="cheap_path",
+                created_at=0.0,
+                source_uri="urn:verdict:source:proof_criteria",
+            )
+        )
+    slots = (task_slot, *criteria_slots, *(extra_slots or ()))
     units: list[ContextUnit] = []
     for slot in slots:
         unit = slot.to_unit()
@@ -475,12 +568,15 @@ def build_cheap_path_context_pack(
             NamedOmission(name=TASK_SOURCE_URI, reason=REASON_TASK_INSTRUCTIONS_OMITTED),
             *omissions,
         )
+    satisfied_facts = _check_fact_satisfaction(required_facts, pack.units)
     pack_state = classify_pack_state(
         included=included,
         gathered=gathered.units,
         omissions=omissions,
         required=gathered.required_uris,
         task_complete=task_complete,
+        required_facts=required_facts,
+        satisfied_facts=satisfied_facts,
     )
     return CheapPathContextPack(
         pack_digest=pack.digest,
@@ -493,6 +589,8 @@ def build_cheap_path_context_pack(
         pack_state=pack_state,
         task_complete=task_complete,
         required_sources=gathered.required_uris,
+        required_facts=required_facts,
+        satisfied_facts=satisfied_facts,
         budget_receipt=budget_receipt,
         context_trust_admitted=True,
         capability_coverage=capability_coverage,
