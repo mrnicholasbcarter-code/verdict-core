@@ -1,9 +1,8 @@
 """Domain launch entries for BOD-275 Lane E.
 
 Long-running / interactive CLI surfaces point their ``LaunchSpec.entry`` at
-functions in this module (or another domain module) instead of ``verdict.cli``,
-``verdict.commands`` or ``verdict.orchestration.cli``. This keeps the TUI from
-depending on the CLI layer.
+functions in this module (or another domain module), never at the CLI layer.
+This keeps the TUI independent of the CLI.
 
 Every entry is imported and called by the matching CLI handler through the
 shared function reference, and by the TUI palette through the LaunchSpec.

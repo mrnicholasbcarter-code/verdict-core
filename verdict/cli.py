@@ -809,7 +809,7 @@ def cmd_route(
     if allow_legacy_selector is None:
         allow_legacy_selector = False
 
-    gate = _build_route_gate(allow_offline=allow_offline)
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
     params = {
         "task": task,
         "criticality": criticality,
@@ -898,7 +898,7 @@ def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = Fa
     """Compare a DIRECT frontier call against the Verdict route (issue #265)."""
     from verdict.actions.registry import run_action
 
-    gate = _build_route_gate(allow_offline=allow_offline)
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
     result = run_action(
         "compare",
         {"task": task, "criticality": criticality, "allow_offline": allow_offline, "gate": gate},
