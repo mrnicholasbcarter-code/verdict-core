@@ -109,6 +109,29 @@ def test_demo_cast_is_valid_asciinema_v2() -> None:
         assert secret_marker not in output
 
 
+def test_demo_tui_cast_is_valid_asciinema_v2() -> None:
+    """TUI replay cast (from real-model live-controller-run) is valid asciinema v2."""
+    lines = (ASSETS / "demo-tui.cast").read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert header["version"] == 2
+    assert isinstance(header["width"], int) and isinstance(header["height"], int)
+    last = -1.0
+    events = [json.loads(line) for line in lines[1:] if line.strip()]
+    assert events, "cast has no events"
+    for event in events:
+        assert isinstance(event, list) and len(event) == 3, event
+        at, kind, data = event
+        assert isinstance(at, (int, float)) and at >= last, event
+        assert kind in {"o", "i", "m", "r"} and isinstance(data, str), event
+        last = float(at)
+    # TUI replay output should contain the run outcome
+    output = "".join(e[2] for e in events if e[1] == "o")
+    assert "COMPLETE" in output or "VALIDATED" in output
+    # No secrets in the recording
+    for secret_marker in ("API_KEY", "Bearer ", "sk-"):
+        assert secret_marker not in output
+
+
 def test_committed_demo_run_verifies_and_shows_recovery() -> None:
     assert verify_run_receipt(DEMO_RUN) == []
     receipt = json.loads((DEMO_RUN / "receipt.json").read_text(encoding="utf-8"))
