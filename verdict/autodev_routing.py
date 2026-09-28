@@ -40,6 +40,7 @@ from verdict.gateway_adapters import (
     TranslatedRequest,
 )
 from verdict.probes import ProbeObservation
+from verdict.subagent_selection import is_context_length_error
 from verdict.transitions import ByteState, RetrySafety
 
 
@@ -424,6 +425,10 @@ class OpenAICompatibleEvidenceAdapter:
             # provider identification: 529 is provider infrastructure pressure (not quality degradation)
             failure_class = NormalizedFailureClass.OVERLOADED
             cooldown_seconds = parse_retry_after(signal.retry_after, now=now)
+        elif status in {400, 413} and is_context_length_error(signal.code):
+            # Context-length overflow is request-scoped, not a model/provider defect.
+            # No cooldown, no provider health penalty.
+            failure_class = NormalizedFailureClass.CONTEXT_LENGTH
         elif status in {400, 404, 405, 409, 415, 422}:
             failure_class = NormalizedFailureClass.CAPABILITY
         elif status is not None and status >= 500:

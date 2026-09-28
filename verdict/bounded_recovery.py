@@ -29,6 +29,7 @@ from verdict.runtime_certification import (
     ComponentKind,
     RuntimeCertificationReport,
 )
+from verdict.subagent_selection import is_context_length_error
 
 BOUNDED_RECOVERY_SCHEMA_VERSION = "1"
 
@@ -43,6 +44,7 @@ class RecoveryFailureClass(str, Enum):
     BAD_DECOMPOSITION_OR_PLAN = "bad_decomposition_or_plan"
     IMPLEMENTATION_ERROR = "implementation_error"
     VERIFICATION_OR_TEST_INFRA_FAILURE = "verification_or_test_infra_failure"
+    CONTEXT_LENGTH_OVERFLOW = "context_length_overflow"
     AMBIGUOUS_OR_UNKNOWN = "ambiguous_or_unknown"
 
 
@@ -221,6 +223,10 @@ _SIGNAL_CLASS: tuple[tuple[frozenset[str], RecoveryFailureClass], ...] = (
         RecoveryFailureClass.PROVIDER_OR_GATEWAY_FAILURE,
     ),
     (
+        frozenset({"context_length_exceeded", "context_length_overflow", "context_overflow"}),
+        RecoveryFailureClass.CONTEXT_LENGTH_OVERFLOW,
+    ),
+    (
         frozenset({"capability_deficit", "model_too_weak", "insufficient_capability"}),
         RecoveryFailureClass.MODEL_CAPABILITY_DEFICIT,
     ),
@@ -269,6 +275,14 @@ def classify_failure(evidence: FailureEvidence) -> RecoveryFailureClass:
 
     error = (evidence.error_class or "").lower().strip()
     message = (evidence.message or "").lower()
+
+    # Context-length overflow: request-scoped, no provider/model health penalty.
+    # Check before capability/provider branches so "reset after" text is never
+    # parsed into a cooldown.
+    if error == "context_length_exceeded" or error == "context_length_overflow":
+        return RecoveryFailureClass.CONTEXT_LENGTH_OVERFLOW
+    if evidence.status_code in {400, 413} and is_context_length_error(message):
+        return RecoveryFailureClass.CONTEXT_LENGTH_OVERFLOW
 
     if error in {"context_stale", "context_missing", "stale_context", "missing_context"}:
         return RecoveryFailureClass.MISSING_OR_STALE_CONTEXT
@@ -553,6 +567,32 @@ class BoundedRecoveryController:
                 "emit replan signal for BOD-104 strategy planner within budget "
                 "(planner not invoked here)"
             )
+
+        elif failure_class is RecoveryFailureClass.CONTEXT_LENGTH_OVERFLOW:
+            # Context-length overflow is request-scoped: the payload exceeds this
+            # model's context window.  Reroute to an equivalent (or stronger) route
+            # that may have a larger window — but never retry the same model with the
+            # identical payload.  No cooldown, no provider health penalty.
+            equivalent = _pick_equivalent(route, equivalent_routes, certification)
+            if equivalent is None:
+                stronger = _pick_stronger(route, stronger_routes)
+                if stronger is None:
+                    return _block(
+                        "context length overflow with no alternative route", failure_class
+                    )
+                action = RecoveryAction.SWITCH_EXECUTION_PLANE
+                route_after = stronger
+                reason = (
+                    "context length overflow; switch to stronger route with potentially "
+                    "larger context window (no same-tier equivalent available)"
+                )
+            else:
+                action = RecoveryAction.SWITCH_EXECUTION_PLANE
+                route_after = equivalent
+                reason = (
+                    "context length overflow; switch execution plane to equivalent route "
+                    "with potentially larger context window"
+                )
 
         elif failure_class is RecoveryFailureClass.MODEL_CAPABILITY_DEFICIT:
             stronger = _pick_stronger(route, stronger_routes)

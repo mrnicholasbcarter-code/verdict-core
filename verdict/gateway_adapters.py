@@ -77,6 +77,7 @@ class NormalizedFailureClass(str, Enum):
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
     OVERLOADED = "overloaded"  # 529 provider capacity/infrastructure pressure
+    CONTEXT_LENGTH = "context_length"  # prompt/input exceeds model context window
 
 
 TELEMETRY_FIELDS = frozenset(
