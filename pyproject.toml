@@ -43,6 +43,11 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+tracing = [
+    "opentelemetry-api==1.45.0",
+    "opentelemetry-sdk==1.45.0",
+    "opentelemetry-exporter-otlp==1.45.0",
+]
 server = ["fastapi>=0.141.1", "uvicorn>=0.53.0"]
 dashboard = ["streamlit>=1.64.0", "plotly>=7.1.0", "pandas>=2.3.3"]
 # `all` is what `verdict serve` / `verdict dashboard` tell users to install;

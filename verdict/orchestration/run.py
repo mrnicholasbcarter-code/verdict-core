@@ -205,6 +205,11 @@ class _Progress:
     def __init__(self, log: EventLog, path: Path, run_id: str) -> None:
         self.log, self.path, self.run_id = log, path, run_id
         self.pid = os.getpid()
+        self._trace_span: Any = None
+
+    def set_trace_span(self, span: Any) -> None:
+        """Attach the root OTel span so ``emit`` can record child spans."""
+        self._trace_span = span
 
     def emit(self, type: str, node_id: str = "", **data: Any) -> Any:
         event = self.log.emit(type, node_id=node_id, **data)
@@ -222,6 +227,13 @@ class _Progress:
             )
         )
         tmp.replace(self.path)
+        # BOD-90: optional OTel child span per event
+        if self._trace_span is not None:
+            from verdict.tracing import record_event
+
+            record_event(self._trace_span, type, node_id, data)
+            if type == "run_finished":
+                self._trace_span.end()
         return event
 
 
@@ -483,6 +495,11 @@ async def run_golden_path(
     run_dir = load_or_create_run(runs_root, run_id)
     log = EventLog(run_dir / "events.jsonl")
     events = _Progress(log, run_dir / PROGRESS_FILE, run_dir.name)
+    # BOD-90: optional OTel root span for this orchestration run
+    from verdict.tracing import start_run_span
+
+    _otel_root = start_run_span(run_dir.name, goal, str(repo))
+    events.set_trace_span(_otel_root)
     resumed = prior_validated(run_dir)
     events.emit(
         "run_started",
@@ -785,6 +802,7 @@ async def run_golden_path(
         events.emit(
             "controller", state="RECEIPT_FAILED", detail=f"{type(exc).__name__}: {exc}"[:300]
         )
+        _otel_root.end()
         return GoldenRunResult(
             run_dir,
             RunOutcome.BLOCKED.value,
@@ -798,6 +816,7 @@ async def run_golden_path(
             state="VERDICT_OVERRIDE",
             detail=f"runtime={result.outcome.value} receipt={outcome}: {reason}",
         )
+    _otel_root.end()
     return GoldenRunResult(
         run_dir, outcome, reason if outcome != "COMPLETE" else result.reason, receipt_path
     )
