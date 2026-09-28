@@ -677,3 +677,226 @@ def test_follow_non_interactive_max_polls_respected(tmp_path: Path) -> None:
         stop_when_final=False,
     )
     assert view.goal == "pending"
+
+
+# ---------------------------------------------------------------------------
+# _watch CLI: interactive flag is computed at the call site (BOD-276 / PR-719)
+# ---------------------------------------------------------------------------
+
+
+def _make_events(tmp_path: Path) -> Path:
+    """Write a minimal events.jsonl so _watch does not early-exit."""
+    p = tmp_path / "run" / "events.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"run_started","node_id":"","data":{"goal":"g"}}\n'
+        '{"seq":2,"at":"2026-01-01T00:00:01Z","type":"run_finished","node_id":"","data":{"outcome":"COMPLETE"}}\n'
+    )
+    return p
+
+
+def test_watch_non_tty_stdout_calls_follow_non_interactive(tmp_path: Path, monkeypatch) -> None:
+    """When stdout is not a TTY, _watch must pass interactive=False to follow()."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    events_path = _make_events(tmp_path)
+
+    calls: list[dict] = []
+
+    def _fake_follow(path, **kwargs):  # type: ignore[override]
+        calls.append(kwargs)
+        from verdict.orchestration.tui import RunView
+        v = RunView.__new__(RunView)
+        object.__setattr__(v, "outcome", "COMPLETE")
+        object.__setattr__(v, "goal", "g")
+        object.__setattr__(v, "event_count", 2)
+        return v
+
+    monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
+    monkeypatch.setattr(
+        "verdict.orchestration.cli.follow", _fake_follow, raising=False
+    )
+    # non-TTY stdout
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+
+    args = argparse.Namespace(
+        run=str(events_path.parent),
+        runs_dir=str(tmp_path),
+        once=False,
+        replay=False,
+        json=False,
+        speed=1.0,
+    )
+    orch_cli._watch(args)
+
+    assert calls, "follow() was not called"
+    assert calls[0].get("interactive") is False, (
+        f"expected interactive=False for non-TTY stdout, got {calls[0].get('interactive')}"
+    )
+
+
+def test_watch_ci_env_calls_follow_non_interactive(tmp_path: Path, monkeypatch) -> None:
+    """CI=1 on a TTY must still produce interactive=False."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    events_path = _make_events(tmp_path)
+
+    calls: list[dict] = []
+
+    def _fake_follow(path, **kwargs):  # type: ignore[override]
+        calls.append(kwargs)
+        from verdict.orchestration.tui import RunView
+        v = RunView.__new__(RunView)
+        object.__setattr__(v, "outcome", "COMPLETE")
+        object.__setattr__(v, "goal", "g")
+        object.__setattr__(v, "event_count", 2)
+        return v
+
+    monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
+    monkeypatch.setattr(
+        "verdict.orchestration.cli.follow", _fake_follow, raising=False
+    )
+    # Both streams claim to be a TTY but CI=1 forces plain
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setenv("CI", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    args = argparse.Namespace(
+        run=str(events_path.parent),
+        runs_dir=str(tmp_path),
+        once=False,
+        replay=False,
+        json=False,
+        speed=1.0,
+    )
+    orch_cli._watch(args)
+
+    assert calls, "follow() was not called"
+    assert calls[0].get("interactive") is False, (
+        f"expected interactive=False with CI=1, got {calls[0].get('interactive')}"
+    )
+
+
+def test_watch_no_color_env_calls_follow_non_interactive(tmp_path: Path, monkeypatch) -> None:
+    """NO_COLOR=1 on a TTY must produce interactive=False."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    events_path = _make_events(tmp_path)
+
+    calls: list[dict] = []
+
+    def _fake_follow(path, **kwargs):  # type: ignore[override]
+        calls.append(kwargs)
+        from verdict.orchestration.tui import RunView
+        v = RunView.__new__(RunView)
+        object.__setattr__(v, "outcome", "COMPLETE")
+        object.__setattr__(v, "goal", "g")
+        object.__setattr__(v, "event_count", 2)
+        return v
+
+    monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
+    monkeypatch.setattr(
+        "verdict.orchestration.cli.follow", _fake_follow, raising=False
+    )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delenv("CI", raising=False)
+
+    args = argparse.Namespace(
+        run=str(events_path.parent),
+        runs_dir=str(tmp_path),
+        once=False,
+        replay=False,
+        json=False,
+        speed=1.0,
+    )
+    orch_cli._watch(args)
+
+    assert calls, "follow() was not called"
+    assert calls[0].get("interactive") is False, (
+        f"expected interactive=False with NO_COLOR=1, got {calls[0].get('interactive')}"
+    )
+
+
+def test_watch_tty_no_plain_signal_calls_follow_interactive(tmp_path: Path, monkeypatch) -> None:
+    """Real TTY with no plain-mode signals must produce interactive=True."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    events_path = _make_events(tmp_path)
+
+    calls: list[dict] = []
+
+    def _fake_follow(path, **kwargs):  # type: ignore[override]
+        calls.append(kwargs)
+        from verdict.orchestration.tui import RunView
+        v = RunView.__new__(RunView)
+        object.__setattr__(v, "outcome", "COMPLETE")
+        object.__setattr__(v, "goal", "g")
+        object.__setattr__(v, "event_count", 2)
+        return v
+
+    monkeypatch.setattr("verdict.orchestration.tui.follow", _fake_follow)
+    monkeypatch.setattr(
+        "verdict.orchestration.cli.follow", _fake_follow, raising=False
+    )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    # Clear all plain-mode env vars
+    for v in ("NO_COLOR", "CI", "TERM", "VERDICT_PLAIN", "VERDICT_NO_ANIMATION"):
+        monkeypatch.delenv(v, raising=False)
+
+    args = argparse.Namespace(
+        run=str(events_path.parent),
+        runs_dir=str(tmp_path),
+        once=False,
+        replay=False,
+        json=False,
+        speed=1.0,
+    )
+    orch_cli._watch(args)
+
+    assert calls, "follow() was not called"
+    assert calls[0].get("interactive") is True, (
+        f"expected interactive=True for TTY with no plain signals, got {calls[0].get('interactive')}"
+    )
+
+
+def test_watch_explicit_interactive_non_tty_does_not_loop(tmp_path: Path) -> None:
+    """follow() with interactive=True and a non-terminal console must not loop
+    forever: max_iterations/max_polls provides the hard stop (hang guard from #718)."""
+    import io
+
+    from rich.console import Console as _Console
+
+    from verdict.orchestration.tui import follow as _follow
+
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"run_started","node_id":"","data":{"goal":"g"}}\n'
+        '{"seq":2,"at":"2026-01-01T00:00:01Z","type":"run_finished","node_id":"","data":{"outcome":"COMPLETE"}}\n'
+    )
+
+    reader = ScriptedKeyReader(["q"])
+    console = _Console(file=io.StringIO(), force_terminal=False, width=100)
+    # explicit interactive=True with a capped iteration count must terminate
+    view = _follow(
+        events,
+        console=console,
+        interactive=True,
+        key_reader=reader,
+        max_iterations=5,
+        poll_seconds=0.0,
+        stop_when_final=True,
+    )
+    assert getattr(view, "outcome", "") == "COMPLETE"
