@@ -83,6 +83,7 @@ class Topology(str, Enum):
 class RunOutcome(str, Enum):
     COMPLETE = "COMPLETE"
     BLOCKED = "BLOCKED"
+    CANCELLED = "CANCELLED"
 
 
 def _norm_path(value: str) -> str:
