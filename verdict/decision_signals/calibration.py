@@ -32,6 +32,14 @@ TASK_CLASSES = (
     "frontier_required",
 )
 
+# Closed set of recognised orchestration roles (AC5, BOD-203).
+ROLES: tuple[str, ...] = (
+    "controller",
+    "implementation_worker",
+    "research_test_worker",
+    "independent_reviewer",
+)
+
 # Promotion gates. Initial values are deliberately strict and are NOT
 # calibrated thresholds for production; they only decide what the report may
 # recommend. Changing them is a policy change that must be revisioned.
@@ -62,6 +70,18 @@ class CalibrationRecord:
     total_cost_usd: float = 0.0
     time_to_green_s: float | None = None
     signal_latency_ms: int | None = None
+    # AC5 -- orchestration role (optional; None = legacy record without role)
+    role: str | None = None
+    # AC6 -- per-category cost breakdown (optional, default 0)
+    context_cost_usd: float = 0.0
+    tool_cost_usd: float = 0.0
+    retry_cost_usd: float = 0.0
+    verification_cost_usd: float = 0.0
+    escalation_cost_usd: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.role is not None and self.role not in ROLES:
+            raise ValueError(f"unknown role {self.role!r}; expected one of {ROLES}")
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> CalibrationRecord:
@@ -102,6 +122,16 @@ class CalibrationReport:
     false_negatives: list[str] = field(default_factory=list)
     recommended_state: str = "SHADOW"
     recommendation_reasons: list[str] = field(default_factory=list)
+    # AC6 -- per-category cost totals
+    context_cost_usd: float = 0.0
+    tool_cost_usd: float = 0.0
+    retry_cost_usd: float = 0.0
+    verification_cost_usd: float = 0.0
+    escalation_cost_usd: float = 0.0
+    cost_per_verified_completion: float | None = None
+    # AC7 -- per-role breakdown (role -> sub-report dict)
+    per_role: dict[str, dict[str, Any]] = field(default_factory=dict)
+    per_role_recommendations: dict[str, tuple[str, list[str]]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema": "verdict.openjev-calibration/v1", **asdict(self)}
@@ -167,22 +197,19 @@ def reliability_buckets(
     return out
 
 
-def evaluate(
+def _evaluate_slice(
     records: Sequence[CalibrationRecord],
     *,
-    threshold: float = 0.5,
-    min_confidence: float = 0.6,
-    security_threshold: float = 0.5,
-) -> CalibrationReport:
-    """Score OpenJev against ground truth at one decision threshold.
+    threshold: float,
+    min_confidence: float,
+    security_threshold: float,
+) -> dict[str, Any]:
+    """Core evaluation logic shared by global and per-slice paths.
 
-    ``frontier predicted`` means ``frontier_worthy >= threshold``. A record
-    without a usable signal (missing, or below ``min_confidence``) falls back
-    to the existing planner: it can never count as an avoided planner call,
-    matching the fail-closed rule "never default to the cheap path because
-    OpenJev failed".
+    Returns a dict of metrics (not a CalibrationReport) so callers can
+    embed results in the top-level report or in per-role/per-class dicts.
     """
-    per_class = {name: 0 for name in TASK_CLASSES}
+    per_class: dict[str, int] = {name: 0 for name in TASK_CLASSES}
     for record in records:
         per_class[record.task_class] = per_class.get(record.task_class, 0) + 1
 
@@ -208,33 +235,131 @@ def evaluate(
         1 for r in usable if r.planner_was_frontier and (r.frontier_worthy or 0.0) < threshold
     )
 
+    verified_count = sum(r.verified for r in records)
+    total_cost = round(sum(r.total_cost_usd for r in records), 6)
+    context_cost = round(sum(r.context_cost_usd for r in records), 6)
+    tool_cost = round(sum(r.tool_cost_usd for r in records), 6)
+    retry_cost = round(sum(r.retry_cost_usd for r in records), 6)
+    verification_cost = round(sum(r.verification_cost_usd for r in records), 6)
+    escalation_cost = round(sum(r.escalation_cost_usd for r in records), 6)
+
+    return {
+        "records": len(records),
+        "usable_signals": len(usable),
+        "per_class": per_class,
+        "frontier_fn_rate": _rate(len(fn), len(needed)),
+        "frontier_fp_rate": _rate(len(fp), len(not_needed)),
+        "security_fn_rate": _rate(len(sec_fn), len(sec)),
+        "brier": brier,
+        "calibration_error": ece,
+        "reliability": buckets,
+        "planner_calls_avoided": avoided,
+        "verified_rate": _rate(verified_count, len(records)),
+        "first_pass_rate": _rate(sum(r.first_pass for r in records), len(records)),
+        "mean_retries": _mean([float(r.retries) for r in records]),
+        "mean_escalations": _mean([float(r.escalations) for r in records]),
+        "total_cost_usd": total_cost,
+        "context_cost_usd": context_cost,
+        "tool_cost_usd": tool_cost,
+        "retry_cost_usd": retry_cost,
+        "verification_cost_usd": verification_cost,
+        "escalation_cost_usd": escalation_cost,
+        "cost_per_verified_completion": (
+            round(total_cost / verified_count, 6) if verified_count else None
+        ),
+        "median_time_to_green_s": _median(
+            [r.time_to_green_s for r in records if r.time_to_green_s is not None]
+        ),
+        "mean_signal_latency_ms": _mean(
+            [float(r.signal_latency_ms) for r in records if r.signal_latency_ms is not None]
+        ),
+        "false_negatives": [r.task_id for r in fn],
+    }
+
+
+def evaluate(
+    records: Sequence[CalibrationRecord],
+    *,
+    threshold: float = 0.5,
+    min_confidence: float = 0.6,
+    security_threshold: float = 0.5,
+) -> CalibrationReport:
+    """Score OpenJev against ground truth at one decision threshold.
+
+    ``frontier predicted`` means ``frontier_worthy >= threshold``. A record
+    without a usable signal (missing, or below ``min_confidence``) falls back
+    to the existing planner: it can never count as an avoided planner call,
+    matching the fail-closed rule "never default to the cheap path because
+    OpenJev failed".
+
+    Per-role and per-task-class breakdowns are included when the data contains
+    records with a ``role`` field (AC5/AC7, BOD-203). Insufficient per-role
+    samples always yield SHADOW for that slice -- never promotion.
+    """
+    eval_kwargs = {
+        "threshold": threshold,
+        "min_confidence": min_confidence,
+        "security_threshold": security_threshold,
+    }
+    m = _evaluate_slice(records, **eval_kwargs)
+
     report = CalibrationReport(
         policy_threshold=threshold,
         min_confidence=min_confidence,
-        records=len(records),
-        usable_signals=len(usable),
-        per_class=per_class,
-        frontier_fn_rate=_rate(len(fn), len(needed)),
-        frontier_fp_rate=_rate(len(fp), len(not_needed)),
-        security_fn_rate=_rate(len(sec_fn), len(sec)),
-        brier=brier,
-        calibration_error=ece,
-        reliability=buckets,
-        planner_calls_avoided=avoided,
-        verified_rate=_rate(sum(r.verified for r in records), len(records)),
-        first_pass_rate=_rate(sum(r.first_pass for r in records), len(records)),
-        mean_retries=_mean([float(r.retries) for r in records]),
-        mean_escalations=_mean([float(r.escalations) for r in records]),
-        total_cost_usd=round(sum(r.total_cost_usd for r in records), 6),
-        median_time_to_green_s=_median(
-            [r.time_to_green_s for r in records if r.time_to_green_s is not None]
-        ),
-        mean_signal_latency_ms=_mean(
-            [float(r.signal_latency_ms) for r in records if r.signal_latency_ms is not None]
-        ),
-        false_negatives=[r.task_id for r in fn],
+        records=m["records"],
+        usable_signals=m["usable_signals"],
+        per_class=m["per_class"],
+        frontier_fn_rate=m["frontier_fn_rate"],
+        frontier_fp_rate=m["frontier_fp_rate"],
+        security_fn_rate=m["security_fn_rate"],
+        brier=m["brier"],
+        calibration_error=m["calibration_error"],
+        reliability=m["reliability"],
+        planner_calls_avoided=m["planner_calls_avoided"],
+        verified_rate=m["verified_rate"],
+        first_pass_rate=m["first_pass_rate"],
+        mean_retries=m["mean_retries"],
+        mean_escalations=m["mean_escalations"],
+        total_cost_usd=m["total_cost_usd"],
+        median_time_to_green_s=m["median_time_to_green_s"],
+        mean_signal_latency_ms=m["mean_signal_latency_ms"],
+        false_negatives=m["false_negatives"],
+        context_cost_usd=m["context_cost_usd"],
+        tool_cost_usd=m["tool_cost_usd"],
+        retry_cost_usd=m["retry_cost_usd"],
+        verification_cost_usd=m["verification_cost_usd"],
+        escalation_cost_usd=m["escalation_cost_usd"],
+        cost_per_verified_completion=m["cost_per_verified_completion"],
     )
     report.recommended_state, report.recommendation_reasons = recommend(report)
+
+    # AC7 -- per-role slices
+    roles_seen: dict[str, list[CalibrationRecord]] = {}
+    for r in records:
+        if r.role is not None:
+            roles_seen.setdefault(r.role, []).append(r)
+
+    for role, role_records in sorted(roles_seen.items()):
+        role_m = _evaluate_slice(role_records, **eval_kwargs)
+        # Strip reliability buckets from per-role dict for brevity
+        role_m.pop("reliability", None)
+        report.per_role[role] = role_m
+        # Per-role recommendation: build a minimal CalibrationReport to run
+        # through the same recommend() logic, inheriting global thresholds.
+        role_report = CalibrationReport(
+            policy_threshold=threshold,
+            min_confidence=min_confidence,
+            records=role_m["records"],
+            usable_signals=role_m["usable_signals"],
+            per_class=role_m["per_class"],
+            frontier_fn_rate=role_m["frontier_fn_rate"],
+            frontier_fp_rate=role_m["frontier_fp_rate"],
+            security_fn_rate=role_m["security_fn_rate"],
+            brier=role_m["brier"],
+            calibration_error=role_m["calibration_error"],
+        )
+        report.per_role_recommendations[role] = recommend(role_report)
+
     return report
 
 
@@ -298,11 +423,46 @@ def render_markdown(report: CalibrationReport) -> str:
         f"mean escalations: {fmt(report.mean_escalations, pct=False)}",
         f"- total cost: ${report.total_cost_usd:.4f}; "
         f"median time-to-green: {report.median_time_to_green_s}",
+        f"- cost per verified completion: "
+        f"{'$' + fmt(report.cost_per_verified_completion, pct=False) if report.cost_per_verified_completion is not None else 'n/a'}",
+        f"- cost breakdown: context=${report.context_cost_usd:.4f}, "
+        f"tool=${report.tool_cost_usd:.4f}, retry=${report.retry_cost_usd:.4f}, "
+        f"verification=${report.verification_cost_usd:.4f}, "
+        f"escalation=${report.escalation_cost_usd:.4f}",
         f"- recommended state: **{report.recommended_state}**",
     ]
     lines += [f"  - {reason}" for reason in report.recommendation_reasons]
     lines += ["", "## Records per class", ""]
     lines += [f"- {name}: {count}" for name, count in report.per_class.items()]
+
+    # AC7 -- per-role breakdown
+    if report.per_role:
+        lines += ["", "## Per-role breakdown", ""]
+        for role in sorted(report.per_role):
+            rm = report.per_role[role]
+            rec_state, rec_reasons = report.per_role_recommendations.get(
+                role, ("SHADOW", ["no recommendation computed"])
+            )
+            lines += [
+                f"### {role}",
+                "",
+                f"- records: {rm['records']} (usable: {rm['usable_signals']})",
+                f"- frontier FN rate: {fmt(rm.get('frontier_fn_rate'))}",
+                f"- security FN rate: {fmt(rm.get('security_fn_rate'))}",
+                f"- verified: {fmt(rm.get('verified_rate'))}; "
+                f"first pass: {fmt(rm.get('first_pass_rate'))}",
+                f"- total cost: ${rm.get('total_cost_usd', 0):.4f}; "
+                f"cost/verified: {'$' + fmt(rm.get('cost_per_verified_completion'), pct=False) if rm.get('cost_per_verified_completion') is not None else 'n/a'}",
+                f"- cost breakdown: context=${rm.get('context_cost_usd', 0):.4f}, "
+                f"tool=${rm.get('tool_cost_usd', 0):.4f}, "
+                f"retry=${rm.get('retry_cost_usd', 0):.4f}, "
+                f"verification=${rm.get('verification_cost_usd', 0):.4f}, "
+                f"escalation=${rm.get('escalation_cost_usd', 0):.4f}",
+                f"- recommended state: **{rec_state}**",
+            ]
+            lines += [f"  - {r}" for r in rec_reasons]
+            lines.append("")
+
     lines += [
         "",
         "## Reliability",
