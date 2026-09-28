@@ -574,7 +574,7 @@ def _watch(args: argparse.Namespace) -> int:
     if args.replay:
         view = follow_replay(events, speed=args.speed)
         return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
-    view = follow(events, stop_when_final=True)
+    view = follow(events, stop_when_final=True, interactive=True)
     return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
 
 

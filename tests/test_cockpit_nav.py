@@ -611,3 +611,69 @@ def test_supervise_background_follow_is_never_interactive(monkeypatch) -> None:
     assert i != -1, "background follow call not found"
     call = src[i : src.find(")", src.find("interactive=", i)) + 1]
     assert "interactive=False" in call
+
+
+# ---------------------------------------------------------------------------
+# BOD-276: follow() defaults to non-interactive; key reader never invoked
+# ---------------------------------------------------------------------------
+
+
+def test_follow_defaults_non_interactive_key_reader_never_called(tmp_path: Path) -> None:
+    """follow() must not read keys when called without interactive=True,
+    even when the console reports force_terminal=True."""
+    import io
+
+    from rich.console import Console as _Console
+
+    from verdict.orchestration.tui import follow as _follow
+
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"run_started","node_id":"","data":{"goal":"g"}}\n'
+        '{"seq":2,"at":"2026-01-01T00:00:01Z","type":"run_finished","node_id":"","data":{"outcome":"COMPLETE"}}\n'
+    )
+
+    class _BoomReader:
+        def read(self, timeout: float = 0.0) -> str:
+            raise AssertionError("key reader must not be used in non-interactive follow")
+
+        def close(self) -> None:
+            pass
+
+    # force_terminal=True simulates a real TTY -- follow() must still NOT enter cockpit
+    console = _Console(file=io.StringIO(), force_terminal=True, width=100)
+    view = _follow(
+        events,
+        console=console,
+        key_reader=_BoomReader(),
+        poll_seconds=0.0,
+        max_polls=5,
+        stop_when_final=True,
+    )
+    assert getattr(view, "outcome", "") == "COMPLETE"
+
+
+def test_follow_non_interactive_max_polls_respected(tmp_path: Path) -> None:
+    """Non-interactive follow() must exit after max_polls iterations even when
+    stop_when_final never fires (no run_finished event written)."""
+    import io
+
+    from rich.console import Console as _Console
+
+    from verdict.orchestration.tui import follow as _follow
+
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"run_started","node_id":"","data":{"goal":"pending"}}\n'
+    )
+
+    console = _Console(file=io.StringIO(), force_terminal=False, width=100)
+    # stop_when_final=False with max_polls=3 -- must exit after 3 polls, not loop forever
+    view = _follow(
+        events,
+        console=console,
+        poll_seconds=0.0,
+        max_polls=3,
+        stop_when_final=False,
+    )
+    assert view.goal == "pending"

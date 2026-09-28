@@ -972,7 +972,7 @@ def follow(
     poll_seconds: float = 0.25,
     max_polls: int | None = None,
     start_seq: int = 0,
-    interactive: bool | None = None,
+    interactive: bool = False,
     key_reader: Any | None = None,
     max_iterations: int = 2000,
 ) -> RunView:
@@ -981,12 +981,14 @@ def follow(
     ``start_seq`` skips events from earlier controller lives of a resumed run, so
     a previous ``run_finished`` cannot end (or mislabel) the current live view.
 
-    When ``interactive`` is True (or ``None`` and stdout is a real TTY) the
-    cockpit navigation layer from :mod:`verdict.orchestration.cockpit_nav`
-    takes over: arrow keys / j / k move the selection, Enter opens the node
-    detail panel, ``d`` expands technical details, ``?`` toggles help,
-    ``Esc`` navigates back and ``q`` quits.  Non-TTY / NO_COLOR / CI / dumb
-    terminals keep the legacy output path unchanged.
+    When ``interactive`` is True the cockpit navigation layer from
+    :mod:`verdict.orchestration.cockpit_nav` takes over: arrow keys / j / k
+    move the selection, Enter opens the node detail panel, ``d`` expands
+    technical details, ``?`` toggles help, ``Esc`` navigates back and ``q``
+    quits.  Callers must opt in explicitly; ``follow()`` never auto-detects a
+    TTY and enters the cockpit on its own.  ``verdict watch`` on a real TTY
+    passes ``interactive=True``; background callers (supervise threads, tests)
+    keep the default ``False`` and always use the non-interactive path.
     """
     target = console or Console()
     plain = plain_mode(console)
@@ -996,8 +998,6 @@ def follow(
     if start_seq:
         seen = sum(1 for e in read_events(events_path) if _event_seq(e) <= start_seq)
 
-    if interactive is None:
-        interactive = (not plain) and bool(getattr(target, "is_terminal", False))
     if interactive:
         # Prime the view with any events already skipped by start_seq so the
         # cockpit's first frame reflects the current state accurately.
