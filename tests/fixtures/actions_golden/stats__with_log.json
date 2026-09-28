@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "stderr_empty": true,
+  "stdout": "\nVERDICT  /  Routing stats\nautonomous control plane  ·  plan · select · recover · verify · prove\n\n\n  Tier Distribution\nTier  Count  Pct  \nT0    3      20.0%\nT1    5      33.3%\nT2    7      46.7%\n  Total Requests  15      \n  P50 Latency     177.47ms\n\n  Top Routed Models\nModel                        Calls\nkr/claude-haiku-5            7    \nkr/claude-sonnet-5-thinking  5    \nkr/claude-opus-5             3    \n"
+}

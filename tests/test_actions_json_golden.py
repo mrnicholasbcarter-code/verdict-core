@@ -525,3 +525,255 @@ def test_eligibility_faked_inventory_golden() -> None:
         f"want: {json.dumps(expected, sort_keys=True)[:600]}"
     )
     assert "\033[" not in result.stdout
+
+
+# ===========================================================================
+# F3 — success-path goldens (BOD-275 lane F3)
+# ===========================================================================
+# These tests cover the NORMAL (non-error) paths for commands whose handlers
+# are being moved onto shared actions:
+#
+# stats, cost-report, suggest — human output with a committed fixture log.
+# receipt show --json          — valid receipt stored in an isolated DB.
+# probe --json                 — transport faked in-process via shim.
+# replay --json                — session seeded from a static fixture via shim.
+#
+# Volatile fields normalised:
+#   probe:  diagnostics.started_at / finished_at → "NORMALIZED"; duration_ms,
+#           results[].latency_ms → 0.0
+#   replay: created_at / updated_at / checkpoints[].created_at /
+#           steps[].started_at → 0.0
+# ===========================================================================
+
+_FIXTURE_LOG = INPUTS / "routing-decisions.jsonl"
+_PROBE_SHIM = Path(__file__).resolve().parent / "helpers" / "probe_golden_shim.py"
+_REPLAY_SHIM = Path(__file__).resolve().parent / "helpers" / "replay_golden_shim.py"
+
+# Stable receipt coordinates written by the capture script.
+_RECEIPT_ID = "rcpt-f3test-golden-bod275"
+_RECEIPT_SCOPE = "attempt/f3golden/unit-1/attempt-1"
+
+
+def _receipt_db_path() -> str:
+    """Return a writable receipts.db under a temp HOME, pre-seeded with the F3 receipt."""
+    import tempfile
+
+    from verdict.receipt_store import ReceiptStore
+    from verdict.routing_receipt import RoutingReceiptV1
+
+    tmp_home = tempfile.mkdtemp(prefix="vgolden_rcpt_")
+    os.makedirs(os.path.join(tmp_home, ".verdict"), exist_ok=True)
+    db = os.path.join(tmp_home, ".verdict", "receipts.db")
+    store = ReceiptStore(db, strict_scope=True)
+    receipt = RoutingReceiptV1(
+        receipt_id=_RECEIPT_ID,
+        attempt_id="attempt-f3golden-001",
+        story_id="f3golden-story",
+        work_unit_id="unit-1",
+        created_at="2026-09-28T12:00:00Z",
+        state="finalized",
+        task_profile={"task": "write unit tests", "criticality": "medium"},
+        decision={"model": "kr/claude-sonnet-5-thinking", "provider": "kr", "tier": 1},
+    )
+    store.put_receipt(
+        receipt_type="decision",
+        scope=_RECEIPT_SCOPE,
+        payload=receipt.to_dict(),
+        receipt_id=_RECEIPT_ID,
+    )
+    return db
+
+
+# ---------------------------------------------------------------------------
+# stats / cost-report / suggest — human output with a real log fixture
+# ---------------------------------------------------------------------------
+
+
+def test_stats_with_log_golden() -> None:
+    """stats with a fixture log produces deterministic human output."""
+    import subprocess as _sp
+
+    result = _sp.run(
+        [sys.executable, "-m", "verdict", "stats", f"--log_path={_FIXTURE_LOG}"],
+        cwd=_clean_workdir(),
+        env=_base_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    fixture = _load_fixture("stats__with_log")
+    assert result.returncode == fixture["exit_code"], result.stderr[-200:]
+    assert result.stdout == fixture["stdout"], (
+        f"stdout mismatch:\ngot:  {result.stdout[:300]!r}\nwant: {fixture['stdout'][:300]!r}"
+    )
+
+
+def test_cost_report_with_log_golden() -> None:
+    """cost-report with verdict-decisions.jsonl in CWD produces deterministic output."""
+    import shutil
+    import subprocess as _sp
+    import tempfile
+
+    cwd = tempfile.mkdtemp(prefix="vgolden_cost_")
+    shutil.copy(str(_FIXTURE_LOG), os.path.join(cwd, "verdict-decisions.jsonl"))
+    result = _sp.run(
+        [sys.executable, "-m", "verdict", "cost-report"],
+        cwd=cwd,
+        env=_base_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    fixture = _load_fixture("cost_report__with_log")
+    assert result.returncode == fixture["exit_code"], result.stderr[-200:]
+    assert result.stdout == fixture["stdout"], (
+        f"stdout mismatch:\ngot:  {result.stdout[:300]!r}\nwant: {fixture['stdout'][:300]!r}"
+    )
+
+
+def test_suggest_with_log_golden() -> None:
+    """suggest with a fixture log produces deterministic human output."""
+    import subprocess as _sp
+
+    result = _sp.run(
+        [sys.executable, "-m", "verdict", "suggest", f"--log_path={_FIXTURE_LOG}"],
+        cwd=_clean_workdir(),
+        env=_base_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    fixture = _load_fixture("suggest__with_log")
+    assert result.returncode == fixture["exit_code"], result.stderr[-200:]
+    assert result.stdout == fixture["stdout"], (
+        f"stdout mismatch:\ngot:  {result.stdout[:300]!r}\nwant: {fixture['stdout'][:300]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# receipt show --json — valid receipt (exit 0)
+# ---------------------------------------------------------------------------
+
+
+def test_receipt_show_valid_json_golden() -> None:
+    """receipt show --json with a seeded DB returns the stored receipt payload."""
+    import subprocess as _sp
+
+    db = _receipt_db_path()
+    result = _sp.run(
+        [
+            sys.executable, "-m", "verdict",
+            "receipt", "show", _RECEIPT_ID,
+            "--db", db,
+            "--scope", _RECEIPT_SCOPE,
+            "--json",
+        ],
+        cwd=_clean_workdir(),
+        env=_base_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    fixture = _load_fixture("receipt_show__valid")
+    assert result.returncode == fixture["exit_code"], result.stderr[-400:]
+    assert result.stdout.strip(), "empty stdout"
+    parsed = _canonical(result.stdout)
+    expected = _canonical(fixture["stdout"])
+    # Structural fields must match exactly (created_at is fixed in the fixture)
+    assert parsed["receipt_id"] == expected["receipt_id"]
+    assert parsed["state"] == expected["state"]
+    assert parsed["schema_version"] == expected["schema_version"]
+    assert parsed["created_at"] == expected["created_at"]
+    assert parsed["decision_digest"] == expected["decision_digest"]
+    assert parsed["decision"] == expected["decision"]
+    assert "[" not in result.stdout
+    assert "[" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# probe --json — transport faked in-process via shim (exit 0)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_success_json_golden() -> None:
+    """probe --json with injected fake transport returns a ready result."""
+    import subprocess as _sp
+
+    env = _base_env()
+    env["PYTHONPATH"] = str(ROOT)
+    result = _sp.run(
+        [sys.executable, str(_PROBE_SHIM)],
+        cwd=_clean_workdir(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    fixture = _load_fixture("probe__success")
+    assert result.returncode == fixture["exit_code"], (
+        f"exit {result.returncode} != {fixture['exit_code']}\nstderr: {result.stderr[-400:]}"
+    )
+    assert result.stdout.strip(), "empty stdout"
+    parsed = _canonical(result.stdout)
+
+    # Normalise volatile timing before comparison
+    parsed["diagnostics"]["started_at"] = "NORMALIZED"
+    parsed["diagnostics"]["finished_at"] = "NORMALIZED"
+    parsed["diagnostics"]["duration_ms"] = 0.0
+    for res in parsed.get("results", []):
+        res["latency_ms"] = 0.0
+
+    expected = _canonical(fixture["stdout"])
+    assert parsed == expected, (
+        f"JSON mismatch:\ngot:  {json.dumps(parsed, sort_keys=True)[:600]}\n"
+        f"want: {json.dumps(expected, sort_keys=True)[:600]}"
+    )
+    assert "[" not in result.stdout
+    assert "[" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# replay --json — session seeded from a static fixture via shim (exit 0)
+# ---------------------------------------------------------------------------
+
+
+def _norm_replay(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalise float timestamps so replay goldens are byte-stable."""
+    d = {k: v for k, v in data.items()}
+    d["created_at"] = 0.0
+    d["updated_at"] = 0.0
+    d["checkpoints"] = [{**ck, "created_at": 0.0} for ck in d.get("checkpoints", [])]
+    d["steps"] = [{**st, "started_at": 0.0} for st in d.get("steps", [])]
+    return d
+
+
+def test_replay_valid_json_golden() -> None:
+    """replay --json for a seeded session returns structural fields unchanged."""
+    import subprocess as _sp
+
+    env = _base_env()
+    env["PYTHONPATH"] = str(ROOT)
+    result = _sp.run(
+        [sys.executable, str(_REPLAY_SHIM)],
+        cwd=_clean_workdir(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    fixture = _load_fixture("replay__valid")
+    assert result.returncode == fixture["exit_code"], (
+        f"exit {result.returncode} != {fixture['exit_code']}\nstderr: {result.stderr[-400:]}"
+    )
+    assert result.stdout.strip(), "empty stdout"
+    parsed = _norm_replay(_canonical(result.stdout))
+    expected = _norm_replay(_canonical(fixture["stdout"]))
+    assert parsed["session_id"] == expected["session_id"]
+    assert parsed["model_id"] == expected["model_id"]
+    assert parsed["state"] == expected["state"]
+    assert parsed["schema_version"] == expected["schema_version"]
+    assert parsed["task_spec"] == expected["task_spec"]
+    assert len(parsed["steps"]) == len(expected["steps"])
+    assert [s["name"] for s in parsed["steps"]] == [s["name"] for s in expected["steps"]]
+    assert "[" not in result.stdout
+    assert "[" not in result.stdout
