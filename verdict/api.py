@@ -1882,6 +1882,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     attempts_used: list[dict[str, Any]] = []
     last_error: BaseException | None = None
     last_status: int | None = None
+    _last_error_body: str = ""  # bounded upstream body for failure classification
 
     def record_attempt_event(*, attempt: Any, event_type: str, details: dict[str, Any]) -> None:
         nonlocal route_evidence
@@ -1943,6 +1944,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 result = replace(result, body=_ValidatedSSEStream(result.body, surface=surface))
                 result = await _prime_stream(result)
             last_status = result.status_code
+            # Extract bounded body text for failure classification (context-length
+            # detection).  Error responses are always BufferedUpstreamResponse, so
+            # body is bytes.  Read at most 8 KB; never log or persist the raw body.
+            _error_body = ""
+            if result.status_code >= 400 and isinstance(result, BufferedUpstreamResponse):
+                _error_body = result.body[:8192].decode("utf-8", errors="replace")
+            _last_error_body = _error_body
             # outcome receipts: the only place execution cost is observable is *after* the
             # upstream answers. Persist it per attempt, keyed to the decision.
             _record_execution_outcome(
@@ -1988,7 +1996,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "outcome": "success" if result.status_code < 400 else "error",
                     "failure_class": None
                     if result.status_code < 400
-                    else failure_class(result.status_code),
+                    else failure_class(result.status_code, body=_error_body),
                     "transition_legal": True if index == 0 else bool(edge and edge.legal),
                     "compatibility_rule_version": result.compatibility_rule_version,
                     "context_pack": injection.to_dict(),
@@ -2005,7 +2013,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "status_code": result.status_code,
                     "failure_class": None
                     if result.status_code < 400
-                    else failure_class(result.status_code),
+                    else failure_class(result.status_code, body=_error_body),
                     "transition_edge": edge.to_dict() if edge is not None else None,
                     "compatibility_rule_version": result.compatibility_rule_version,
                     "context_pack": injection.to_dict(),
@@ -2014,6 +2022,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             if result.status_code < 400 or not retryable_response_status(
                 result.status_code,
                 compatibility_applied=result.compatibility_rule_version is not None,
+                body=_error_body,
             ):
                 break
             last_error = None
@@ -2060,7 +2069,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 event_type=f"{event_prefix}_error",
                 outcome="error",
                 features=features,
-                error_class=failure_class(last_status, last_error),
+                error_class=failure_class(last_status, last_error, body=_last_error_body),
                 retries=max(0, len(attempts_used) - 1),
                 fallbacks=attempts_used[1:],
                 latency_ms=(monotonic() - started_at) * 1000,
