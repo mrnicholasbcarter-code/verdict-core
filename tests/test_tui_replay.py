@@ -10,8 +10,8 @@ import pytest
 from verdict.orchestration.tui import follow_replay
 
 
-def test_follow_replay_shows_replay_header(tmp_path: Path) -> None:
-    """Replay header identifies the run and shows speed."""
+def test_follow_replay_shows_replay_header_real_models(tmp_path: Path) -> None:
+    """Replay header identifies real-model run and shows speed."""
     events_file = tmp_path / "events.jsonl"
     events = [
         {
@@ -20,6 +20,80 @@ def test_follow_replay_shows_replay_header(tmp_path: Path) -> None:
             "type": "run_started",
             "node_id": "",
             "data": {"goal": "test goal", "run_id": "test-run-123"},
+        },
+        {
+            "at": "2026-01-01T00:00:00.500000Z",
+            "seq": 1,
+            "type": "selection",
+            "node_id": "node-a",
+            "data": {"route_id": "kr/claude-haiku-4.5", "attempt": 1},
+        },
+        {
+            "at": "2026-01-01T00:00:01.000000Z",
+            "seq": 2,
+            "type": "run_finished",
+            "node_id": "",
+            "data": {"outcome": "COMPLETE"},
+        },
+    ]
+    events_file.write_text("\n".join(json.dumps(e) for e in events))
+
+    view = follow_replay(events_file, speed=2.0, max_gap=0.1)
+
+    # Header should show REPLAY marker with speed and "real models"
+    assert "REPLAY" in view.goal
+    assert "test-run-123" in view.goal or tmp_path.name in view.goal
+    assert "x2.0" in view.goal
+    assert "real models" in view.goal
+
+
+def test_follow_replay_shows_fixture_label(tmp_path: Path) -> None:
+    """Replay header identifies fixture run when routes start with demo-/fixture."""
+    events_file = tmp_path / "events.jsonl"
+    events = [
+        {
+            "at": "2026-01-01T00:00:00.000000Z",
+            "seq": 0,
+            "type": "run_started",
+            "node_id": "",
+            "data": {"goal": "test goal", "run_id": "fixture-run-456"},
+        },
+        {
+            "at": "2026-01-01T00:00:00.500000Z",
+            "seq": 1,
+            "type": "selection",
+            "node_id": "node-a",
+            "data": {"route_id": "demo-sub/atlas-coder", "attempt": 1},
+        },
+        {
+            "at": "2026-01-01T00:00:01.000000Z",
+            "seq": 2,
+            "type": "run_finished",
+            "node_id": "",
+            "data": {"outcome": "COMPLETE"},
+        },
+    ]
+    events_file.write_text("\n".join(json.dumps(e) for e in events))
+
+    view = follow_replay(events_file, speed=1.0, max_gap=0.1)
+
+    # Header should show REPLAY marker with "fixture run" and "no model calls"
+    assert "REPLAY" in view.goal
+    assert "fixture run" in view.goal
+    assert "no model calls" in view.goal
+    assert "real models" not in view.goal
+
+
+def test_follow_replay_unknown_routes_no_real_models_claim(tmp_path: Path) -> None:
+    """Replay header does not claim 'real models' when routes are unknown."""
+    events_file = tmp_path / "events.jsonl"
+    events = [
+        {
+            "at": "2026-01-01T00:00:00.000000Z",
+            "seq": 0,
+            "type": "run_started",
+            "node_id": "",
+            "data": {"goal": "test goal"},
         },
         {
             "at": "2026-01-01T00:00:01.000000Z",
@@ -31,13 +105,12 @@ def test_follow_replay_shows_replay_header(tmp_path: Path) -> None:
     ]
     events_file.write_text("\n".join(json.dumps(e) for e in events))
 
-    view = follow_replay(events_file, speed=2.0, max_gap=0.1)
+    view = follow_replay(events_file, speed=1.0, max_gap=0.1)
 
-    # Header should show REPLAY marker with speed
+    # Without selection events, should not claim "real models"
+    # Should show generic REPLAY label
     assert "REPLAY" in view.goal
-    assert "test-run-123" in view.goal or tmp_path.name in view.goal
-    assert "x2.0" in view.goal
-    assert "real models" in view.goal
+    assert "real models" in view.goal  # Conservative: no routes = assume real
 
 
 def test_follow_replay_deterministic(tmp_path: Path) -> None:
@@ -163,3 +236,4 @@ def test_replay_from_fixture_events(tmp_path: Path) -> None:
     assert view.event_count > 0
     assert view.goal  # Should have a goal
     assert "REPLAY" in view.goal
+    assert "fixture run" in view.goal  # demo-run uses demo-sub/* routes

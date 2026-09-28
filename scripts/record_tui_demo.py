@@ -2,11 +2,11 @@
 """Record TUI replay as asciinema v2 cast for visual demo.
 
 Uses the same stdlib PTY approach as record_demo.py. Records `verdict watch --replay`
-with timing driven by the event stream timestamps.
+with timing driven by the event stream timestamps (same scaling and gap cap as follow_replay).
 
-Usage:
-    python scripts/record_tui_demo.py /tmp/dogfood-runs/df83/20260928T110700Z
-    python scripts/record_tui_demo.py --speed 2.0 /path/to/run
+Usage (from verdict-core root):
+    python scripts/record_tui_demo.py docs/proof/live-controller-run
+    python scripts/record_tui_demo.py --speed 0.5 docs/proof/live-controller-run
 
 Then render SVG:
     npx -y svg-term-cli@2.1.1 --in docs/assets/demo-tui.cast \
@@ -50,8 +50,35 @@ def _run_in_pty(argv: list[str], env: dict[str, str]) -> tuple[bytes, int]:
     return b"".join(chunks), os.waitstatus_to_exitcode(status)
 
 
-def record_replay(run_dir: Path, speed: float = 1.0, output: Path | None = None) -> None:
-    """Record verdict watch --replay in a PTY."""
+def _read_event_timestamps(events_file: Path) -> list[float]:
+    """Read event timestamps and compute inter-event delays."""
+    import datetime as dt
+
+    timestamps: list[float] = []
+    with events_file.open("r") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            at = event.get("at", "")
+            if at:
+                # Parse ISO timestamp
+                try:
+                    ts = dt.datetime.fromisoformat(at.replace("Z", "+00:00"))
+                    timestamps.append(ts.timestamp())
+                except Exception:
+                    # If parsing fails, use 0
+                    timestamps.append(0.0)
+            else:
+                timestamps.append(0.0)
+
+    return timestamps
+
+
+def record_replay(
+    run_dir: Path, speed: float = 1.0, max_gap: float = 1.5, output: Path | None = None
+) -> None:
+    """Record verdict watch --replay in a PTY with event-based pacing."""
     if output is None:
         output = ROOT / "docs" / "assets" / "demo-tui.cast"
 
@@ -66,7 +93,7 @@ def record_replay(run_dir: Path, speed: float = 1.0, output: Path | None = None)
         print(f"No events.jsonl in {run_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Build command
+    # Build command - use rich output (no NO_COLOR) so we get the colored TUI
     python = sys.executable
     argv = [
         python,
@@ -79,12 +106,11 @@ def record_replay(run_dir: Path, speed: float = 1.0, output: Path | None = None)
         str(speed),
     ]
 
-    # Environment - NO_COLOR forces plain text output we can capture
+    # Environment - TERM for rich output
     env = {
         "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": str(ROOT),
         "TERM": "xterm-256color",
-        "NO_COLOR": "1",
         "COLUMNS": str(WIDTH),
         "LINES": str(HEIGHT),
     }
@@ -96,7 +122,20 @@ def record_replay(run_dir: Path, speed: float = 1.0, output: Path | None = None)
     if exit_code != 0:
         print(f"warning: command exited with code {exit_code}", file=sys.stderr)
 
-    # Write asciinema v2 format with paced output
+    # Read event timestamps to compute pacing
+    timestamps = _read_event_timestamps(events_file)
+
+    # Compute delays between events (with max_gap cap and speed scaling)
+    delays: list[float] = []
+    for i in range(len(timestamps) - 1):
+        if timestamps[i] > 0 and timestamps[i + 1] > 0:
+            delay = timestamps[i + 1] - timestamps[i]
+            delay = min(delay, max_gap) / speed
+            delays.append(max(0.0, delay))
+        else:
+            delays.append(0.0)
+
+    # Write asciinema v2 format with event-based pacing
     header = {
         "version": 2,
         "width": WIDTH,
@@ -105,14 +144,41 @@ def record_replay(run_dir: Path, speed: float = 1.0, output: Path | None = None)
         "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"},
     }
 
-    # Pace the output by lines
+    # Split text into lines and assign delays based on event boundaries
+    # We approximate: distribute delays across output lines proportionally
+    lines = text.splitlines(keepends=True)
+
+    # Simple approach: assign delays evenly across lines
+    # More sophisticated: detect event markers in output and sync
+    # For now, use a simple heuristic: spread event delays across output lines
     events = []
     clock = 0.0
-    line_delay = 0.08  # seconds per line
 
-    for line in text.splitlines(keepends=True):
-        events.append([round(clock, 3), "o", line])
-        clock += line_delay
+    if not delays:
+        # Fallback: fixed timing if we couldn't parse timestamps
+        line_delay = 0.08
+        for line in lines:
+            events.append([round(clock, 3), "o", line])
+            clock += line_delay
+    else:
+        # Distribute event delays across lines
+        # Assume roughly proportional output per event
+        lines_per_event = len(lines) / (len(delays) + 1) if delays else 1
+        delay_idx = 0
+        lines_since_event = 0
+
+        for line in lines:
+            events.append([round(clock, 3), "o", line])
+
+            # Advance clock based on event timing
+            lines_since_event += 1
+            if delay_idx < len(delays) and lines_since_event >= lines_per_event:
+                clock += delays[delay_idx]
+                delay_idx += 1
+                lines_since_event = 0
+            else:
+                # Small inter-line delay for readability
+                clock += 0.02
 
     with output.open("w", encoding="utf-8") as f:
         f.write(json.dumps(header) + "\n")
@@ -130,16 +196,26 @@ def record_replay(run_dir: Path, speed: float = 1.0, output: Path | None = None)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("run_dir", type=Path, help="Path to completed run directory")
+    parser.add_argument(
+        "run_dir",
+        type=Path,
+        help="Path to completed run directory (e.g., docs/proof/live-controller-run)",
+    )
     parser.add_argument(
         "--speed", type=float, default=1.0, help="Replay speed multiplier (default: 1.0)"
+    )
+    parser.add_argument(
+        "--max-gap",
+        type=float,
+        default=1.5,
+        help="Maximum delay between events in seconds (default: 1.5)",
     )
     parser.add_argument(
         "--output", type=Path, help="Output .cast file (default: docs/assets/demo-tui.cast)"
     )
 
     args = parser.parse_args()
-    record_replay(args.run_dir, speed=args.speed, output=args.output)
+    record_replay(args.run_dir, speed=args.speed, max_gap=args.max_gap, output=args.output)
 
 
 if __name__ == "__main__":

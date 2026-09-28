@@ -1014,6 +1014,38 @@ def follow(
     return view
 
 
+def _is_fixture_run(events: list[Any]) -> bool:
+    """Detect if a run used fixture/demo routes instead of real models.
+
+    Returns True if ANY executed route starts with 'demo-', 'demo-sub/', or 'fixture'.
+    Unknown/absent routes are treated as non-fixture (conservative).
+    """
+    for event in events:
+        if event.type in ("selection", "dispatch"):
+            route_id = event.data.get("route_id", "")
+            if route_id.startswith(("demo-", "demo-sub/", "fixture")):
+                return True
+    return False
+
+
+def _print_integrity_check(run_dir: Path, console: Console, plain: bool) -> None:
+    """Print receipt integrity check at the end of replay."""
+    from verdict.orchestration.receipt import verify_run_receipt
+
+    problems = verify_run_receipt(run_dir)
+    if problems:
+        msg = f"integrity: FAILED ({'; '.join(problems)})"
+    else:
+        msg = "integrity: OK (events digest verified)"
+
+    if plain:
+        console.print(msg, markup=False, highlight=False)
+    else:
+        # For rich mode, print on a new line after the live view stops
+        style = "red" if problems else "green"
+        console.print(f"[{style}]{msg}[/{style}]")
+
+
 def follow_replay(
     events_path: Path,
     *,
@@ -1031,7 +1063,7 @@ def follow_replay(
         speed: Time multiplier (2.0 = twice as fast)
         max_gap: Maximum delay between events in seconds (before speed scaling)
 
-    The header shows "REPLAY of recorded run <id> (real models) - time x<speed>".
+    The header identifies whether routes were real models or fixture/scripted.
     """
     import time
 
@@ -1046,6 +1078,9 @@ def follow_replay(
 
     # Get run_id from path
     run_id = events_path.parent.name
+
+    # Detect if this is a fixture run by examining routes
+    is_fixture = _is_fixture_run(events)
 
     live = (
         None
@@ -1065,7 +1100,10 @@ def follow_replay(
 
             # Inject replay marker into view after first event
             if i == 0 and view.goal:
-                view.goal = f"REPLAY of recorded run {run_id} (real models) - time x{speed}"
+                if is_fixture:
+                    view.goal = f"REPLAY of fixture run {run_id} (no model calls) - time x{speed}"
+                else:
+                    view.goal = f"REPLAY of recorded run {run_id} (real models) - time x{speed}"
 
             if plain:
                 target.print(event_line(event), markup=False, highlight=False)
@@ -1090,5 +1128,8 @@ def follow_replay(
         if live is not None:
             time.sleep(0.5 / speed)  # Brief pause to see final state
             live.stop()
+
+        # Show integrity verification at the end
+        _print_integrity_check(events_path.parent, target, plain)
 
     return view
