@@ -53,6 +53,8 @@ class RoutingDecision:
     actual_cost_usd: float | None = None
     fallback_result: str | None = None
     verification_result: str | None = None
+    # BOD-203 AC2: ranking receipt from adaptive advisory.
+    adaptive_influence: dict[str, Any] | None = None
 
     @property
     def selected_model(self) -> str:
