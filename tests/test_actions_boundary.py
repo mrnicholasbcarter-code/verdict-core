@@ -46,8 +46,8 @@ class TestActionsBoundary:
         violations: list[str] = []
         for filepath in self._collect_action_files():
             for lineno, target in self._extract_imports(filepath):
-                if target in ("verdict.cli", "verdict.commands") or target.startswith(
-                    ("verdict.cli.", "verdict.commands.")
+                if target in ("verdict.cli", "verdict.commands", "verdict.orchestration.cli") or target.startswith(
+                    ("verdict.cli.", "verdict.commands.", "verdict.orchestration.cli.")
                 ):
                     rel = filepath.relative_to(ROOT)
                     violations.append(f"{rel}:{lineno} imports {target}")
@@ -145,7 +145,7 @@ class TestNoCliStringReferences:
     """AST scan: verdict/actions/** and verdict/doctor_diagnostics.py must not reference
     'verdict.cli' or 'verdict.commands' as strings or via sys.modules subscripts."""
 
-    FORBIDDEN = ("verdict.cli", "verdict.commands")
+    FORBIDDEN = ("verdict.cli", "verdict.commands", "verdict.orchestration.cli")
     SCAN_PATHS: ClassVar[list[Path]] = [
         ROOT / "verdict" / "actions",
         ROOT / "verdict" / "doctor_diagnostics.py",
