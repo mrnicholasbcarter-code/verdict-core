@@ -1,0 +1,20 @@
+{
+ "node_id": "add-doctor-integration-test",
+ "attempt": 1,
+ "route_id": "cc/claude-sonnet-4-5-20250929",
+ "ok": true,
+ "reported_model": "cc/claude-sonnet-4-5-20250929",
+ "stop_reason": "stop",
+ "status_code": null,
+ "error": "",
+ "output_tail": "Perfect! The objective has been completed successfully. Let me provide a final summary:\n\n## Summary\n\nI successfully updated the integration test file `tests/test_doctor_shared_memory.py` to properly test the new BOD-273 feature where `auth_failed` status is reported as its own distinct degraded reason, separate from `unwritable`.\n\n### Key Changes:\n\n1. **Fixed test_doctor_shared_memory_auth_failed**: \n   - This test now uses `status: \"auth_failed\"` and verifies the diagnosis_reason starts with `\"auth_failed:\"`\n   - Previously it incorrectly expected `\"unwritable\"` when the status was `\"auth_failed\"`\n\n2. **Added new test_doctor_shared_memory_unwritable**:\n   - This test uses `status: \"degraded\"` for real write-permission failures\n   - Verifies the diagnosis_reason starts with `\"unwritable:\"`\n   - Ensures backward compatibility for the `unwritable` reason\n\n3. **Integration test coverage**:\n   - The tests run the real `cmd_doctor` entry point from `verdict/cli.py`\n   - They operate in a temporary HOME directory to isolate from system state\n   - They verify the full flow from the doctor command through `diagnose_shared_memory`\n\n### Test Results:\n- \u2705 All 6 tests in `test_doctor_shared_memory.py` pass\n- \u2705 All 25 tests in `test_runtime_certification.py` pass\n- \u2705 Total: 31 tests passed\n\nThe implementation in `verdict/runtime_certification.py` (commit 066ff16) already had the correct code that distinguishes between `auth_failed` and `degraded` statuses. The test file now properly validates this behavior.\n\nRESULT: DONE",
+ "duration_seconds": 655.9675488430075,
+ "session_ref": "",
+ "usage": {
+  "input_tokens": 499,
+  "output_tokens": 681,
+  "cost_usd": 0.0,
+  "tokens_source": "prime_stdout",
+  "turns": 1
+ }
+}

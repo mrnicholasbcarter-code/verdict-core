@@ -22,6 +22,7 @@
 | PM-004 | runtime compatibility | Verdict can render a deterministic, fail-closed compatibility matrix from existing runtime passport evidence. | `verdict/runtime_compatibility.py` | build_runtime_compatibility_report | implementation | `pytest -q tests/test_runtime_compatibility.py` | verified |
 | | | | `tests/test_runtime_compatibility.py` | test_order_and_digest_are_deterministic | test | | |
 | | | | `tests/test_runtime_compatibility.py` | test_limitations_are_visible_as_degraded_and_output_is_secret_safe | test | | |
+| | | | `docs/proof/dogfood-bod-273-2026-09-28/README.md` | BOD-273 auth_failed diagnosis | evidence | | |
 | PM-005 | policy and transitions | Routing policy and legal transition checks are deterministic and versioned. | `verdict/policy.py` | compile_policy and explain_policy | implementation | `pytest -q tests/test_policy_transitions.py` | verified |
 | | | | `verdict/transitions.py` | TransitionCompiler | implementation | | |
 | | | | `tests/test_policy_transitions.py` | all policy and transition invariants | test | | |
@@ -59,6 +60,7 @@
 | | | | `scripts/evidence_bundle.py` | bundle verifier | implementation | | |
 | | | | `RELEASE_CHECKLIST.md` | pre-release validation | checklist | | |
 | | | | `VERSIONING.md` | release versioning | documentation | | |
+| | | | `docs/proof/dogfood-bod-273-2026-09-28/receipt.json` | first complete real-model dogfood run | evidence | | |
 | PM-014 | local memory | The repository contains tested local memory and code-graph components with explicit scope and offline-oriented behavior. | `verdict/memory_plane.py` | MemoryPlane storage and scope boundary | implementation | `pytest -q tests/test_memory_plane.py tests/test_code_graph.py` | verified |
 | | | | `verdict/code_graph.py` | CodeGraphEngine parsing and graph queries | implementation | | |
 | | | | `tests/test_memory_plane.py` | restart, scope, export, and integrity tests | test | | |
