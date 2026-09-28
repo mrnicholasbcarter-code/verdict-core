@@ -10,7 +10,6 @@ non-TTY) is ASCII only and emits no colour.
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -26,6 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from verdict.design import GLYPHS as GLYPHS  # re-export for local callers
 from verdict.orchestration.contracts import NodeState, RunEvent
 from verdict.terminal_ui import TOKENS, clean
 
@@ -44,15 +44,7 @@ STAGES: tuple[str, ...] = (
     "REVIEW",
 )
 
-# glyph key -> (rich glyph, ascii glyph, design token)
-GLYPHS: Mapping[str, tuple[str, str, str]] = {
-    "running": ("\u25cf", "*", "PRIMARY"),
-    "validated": ("\u2713", "+", "SUCCESS"),
-    "failed": ("\u2717", "x", "ERROR"),
-    "reassigned": ("\u21bb", "~", "WARNING"),
-    "planned": ("\u25cc", "o", "MUTED"),
-    "blocked": ("\u25a0", "#", "ERROR"),
-}
+
 _STATE_GLYPH: Mapping[NodeState, str] = {
     NodeState.PLANNED: "planned",
     NodeState.ADMITTED: "planned",
@@ -929,15 +921,20 @@ def render_text(
 
 
 def plain_mode(console: Console | None = None) -> bool:
-    """Same fallback rules as :class:`verdict.terminal_ui.TerminalUI`."""
+    """Same fallback rules as :class:`verdict.terminal_ui.TerminalUI`, via :mod:`verdict.design`.
+
+    The console's own terminal detection is authoritative (it honours force_terminal),
+    so the policy is asked about the console, not its underlying file.
+    """
+    from verdict.design import presentation_mode as _pm
+
     source = console or Console()
-    return (
-        not source.is_terminal
-        or "NO_COLOR" in os.environ
-        or os.getenv("TERM") == "dumb"
-        or bool(os.getenv("CI"))
-        or os.getenv("VERDICT_PLAIN") == "1"
-    )
+
+    class _ConsoleStream:
+        def isatty(self) -> bool:
+            return source.is_terminal
+
+    return not _pm(_ConsoleStream()).color
 
 
 def read_events(path: Path) -> list[RunEvent]:
@@ -975,18 +972,50 @@ def follow(
     poll_seconds: float = 0.25,
     max_polls: int | None = None,
     start_seq: int = 0,
+    interactive: bool | None = None,
+    key_reader: Any | None = None,
+    max_iterations: int = 2000,
 ) -> RunView:
     """Live-tail a JSONL events file; plain mode prints one narrative line per event.
 
     ``start_seq`` skips events from earlier controller lives of a resumed run, so
     a previous ``run_finished`` cannot end (or mislabel) the current live view.
+
+    When ``interactive`` is True (or ``None`` and stdout is a real TTY) the
+    cockpit navigation layer from :mod:`verdict.orchestration.cockpit_nav`
+    takes over: arrow keys / j / k move the selection, Enter opens the node
+    detail panel, ``d`` expands technical details, ``?`` toggles help,
+    ``Esc`` navigates back and ``q`` quits.  Non-TTY / NO_COLOR / CI / dumb
+    terminals keep the legacy output path unchanged.
     """
     target = console or Console()
     plain = plain_mode(console)
     width = target.width or 100
-    view, seen, polls = RunView(), 0, 0
+    view: RunView = RunView()
+    seen, polls = 0, 0
     if start_seq:
         seen = sum(1 for e in read_events(events_path) if _event_seq(e) <= start_seq)
+
+    if interactive is None:
+        interactive = (not plain) and bool(getattr(target, "is_terminal", False))
+    if interactive:
+        # Prime the view with any events already skipped by start_seq so the
+        # cockpit's first frame reflects the current state accurately.
+        if seen:
+            for evt in read_events(events_path)[:seen]:
+                view.apply(evt)
+        return _run_interactive_cockpit(
+            events_path,
+            view=view,
+            seen=seen,
+            console=target,
+            plain=plain,
+            key_reader=key_reader,
+            poll_seconds=max(0.0, poll_seconds),
+            max_iterations=max_iterations,
+            stop_when_final=stop_when_final,
+        )
+
     live = (
         None
         if plain
@@ -1011,6 +1040,56 @@ def follow(
     finally:
         if live is not None:
             live.stop()
+    return view
+
+
+def _run_interactive_cockpit(
+    events_path: Path,
+    *,
+    view: RunView,
+    seen: int,
+    console: Console,
+    plain: bool,
+    key_reader: Any | None,
+    poll_seconds: float,
+    max_iterations: int,
+    stop_when_final: bool,
+) -> RunView:
+    """Drive :func:`cockpit_nav.run_cockpit` against the live events file.
+
+    ``seen`` is the number of events already applied to ``view`` (used to
+    skip a previous controller life via ``start_seq``).
+    """
+    from verdict.orchestration.cockpit_nav import _RealKeyReader, run_cockpit
+    from verdict.orchestration.tui import render as _render
+
+    reader = key_reader
+    if reader is None:
+        # Real TTY reader; ScriptedKeyReader is chosen by tests explicitly.
+        reader = _RealKeyReader()
+
+    # ``events_source`` returns the tail after ``seen``; the cockpit applies
+    # the delta.  We recompute the full events list each poll from disk and
+    # only replay the events the cockpit has not seen yet.
+    already: list[RunEvent] = list(read_events(events_path))[:seen]
+
+    def _source() -> list[RunEvent]:
+        return already + list(read_events(events_path))[seen:]
+
+    def _render_dashboard(v: Any, width: int, plain_flag: bool) -> Any:
+        return _render(v, width=width, plain=plain_flag)
+
+    run_cockpit(
+        view=view,
+        events_source=_source,
+        render_dashboard=_render_dashboard,
+        console=console,
+        key_reader=reader,
+        plain=plain,
+        poll_seconds=poll_seconds,
+        max_iterations=max_iterations,
+        stop_when_final=stop_when_final,
+    )
     return view
 
 

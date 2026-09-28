@@ -27,7 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from verdict.orchestration.candidate_builder import (
+    MAX_CANDIDATES as _MAX_CANDIDATES,  # noqa: F401 re-exported; tests import from runtime
+)
+from verdict.orchestration.candidate_builder import build_candidates as _build_candidates
+from verdict.orchestration.candidate_builder import build_rejections as _build_rejections
 from verdict.orchestration.contracts import (
+    TRANSITIONS,
     EligibilityStage,
     FailureClassification,
     FailureClassifier,
@@ -49,6 +55,8 @@ from verdict.orchestration.contracts import (
     route_family,
     route_provider,
 )
+from verdict.orchestration.controls import ControlReader, ControlRequest
+from verdict.orchestration.recovery import RecoveryBudget
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 # Indirection for testing
@@ -286,6 +294,11 @@ class DagRuntime:
         self._base_sha = ""
         self._integration = run_dir / "worktrees" / "_integration"
         self._capacity: dict[str, str] = {}
+        # Controls -------------------------------------------------------
+        self._controls = ControlReader(run_dir)
+        self._cancel_requested = False
+        self._processed_controls: set[str] = set()
+        self._recovery_budget = RecoveryBudget(max_attempts_per_node=policy.max_attempts_per_node)
 
     # ------------------------------------------------------------------ state
     def _set(self, run: NodeRun, state: NodeState, **data: Any) -> None:
@@ -302,6 +315,197 @@ class DagRuntime:
 
     def route_load(self, route_id: str) -> int:
         return sum(1 for r in self.inflight.values() if r == route_id)
+
+    # ------------------------------------------------------------------ controls
+    def _poll_controls(self, pending: dict[str, asyncio.Task[None]]) -> RunOutcome | None:
+        """Poll the control channel and handle pending requests.
+
+        Returns ``RunOutcome.CANCELLED`` when the caller should exit the main
+        loop, or ``None`` to continue normally.
+        """
+        for req in self._controls.pending():
+            if req.id in self._processed_controls:
+                continue
+            self._processed_controls.add(req.id)
+            if req.kind == "cancel_run":
+                self._handle_cancel_run(req, pending)
+                return RunOutcome.CANCELLED
+            elif req.kind == "cancel_node":
+                self._handle_cancel_node(req, pending)
+            elif req.kind == "retry_node":
+                self._handle_retry_node(req, pending)
+            else:
+                self.events.emit(
+                    "control",
+                    id=req.id,
+                    kind=req.kind,
+                    accepted=False,
+                    reason=f"unknown control kind: {req.kind!r}",
+                )
+        return None
+
+    def _handle_cancel_run(
+        self, req: ControlRequest, pending: dict[str, asyncio.Task[None]]
+    ) -> None:
+        """Cancel every running task and mark PLANNED/non-terminal nodes as BLOCKED."""
+        self._cancel_requested = True
+        for task in pending.values():
+            task.cancel()
+        for run in self.nodes.values():
+            if run.state in {
+                NodeState.PLANNED,
+                NodeState.ADMITTED,
+                NodeState.DISPATCHED,
+                NodeState.RUNNING,
+            } and run.state not in {NodeState.BLOCKED, NodeState.VALIDATED}:
+                terminal = frozenset(TRANSITIONS.get(run.state, frozenset()))
+                if NodeState.BLOCKED in terminal:
+                    run.reason = "cancelled by operator"
+                    run.state = NodeState.BLOCKED
+                    self.events.emit(
+                        "node_state",
+                        run.node.node_id,
+                        state="BLOCKED",
+                        reason="cancelled by operator",
+                    )
+                elif NodeState.TERMINAL_FAILURE in terminal:
+                    run.reason = "cancelled by operator"
+                    run.state = NodeState.TERMINAL_FAILURE
+                    self.events.emit(
+                        "node_state",
+                        run.node.node_id,
+                        state="TERMINAL_FAILURE",
+                        reason="cancelled by operator",
+                    )
+        self.events.emit(
+            "control",
+            id=req.id,
+            kind="cancel_run",
+            accepted=True,
+            reason="run cancelled by operator",
+            requested_by=req.requested_by,
+        )
+
+    def _handle_cancel_node(
+        self, req: ControlRequest, pending: dict[str, asyncio.Task[None]]
+    ) -> None:
+        """Cancel a specific node — no automatic replacement; dependents BLOCKED."""
+        node_id = req.node_id or ""
+        if node_id not in self.nodes:
+            self.events.emit(
+                "control",
+                id=req.id,
+                kind="cancel_node",
+                accepted=False,
+                reason=f"unknown node_id: {node_id!r}",
+            )
+            return
+        run = self.nodes[node_id]
+        # Cancel the running task if present
+        if node_id in pending:
+            pending[node_id].cancel()
+        # Transition to BLOCKED via the legal path
+        if run.state in {
+            NodeState.PLANNED,
+            NodeState.ADMITTED,
+            NodeState.DISPATCHED,
+            NodeState.RUNNING,
+        }:
+            terminal = frozenset(TRANSITIONS.get(run.state, frozenset()))
+            if NodeState.TERMINAL_FAILURE in terminal:
+                run.reason = "cancelled_by_operator"
+                run.state = NodeState.TERMINAL_FAILURE
+                self.events.emit(
+                    "node_state", node_id, state="TERMINAL_FAILURE", reason="cancelled_by_operator"
+                )
+                # Move to BLOCKED to prevent automatic recovery
+                run.state = NodeState.BLOCKED
+                self.events.emit(
+                    "node_state", node_id, state="BLOCKED", reason="cancelled_by_operator"
+                )
+            elif NodeState.BLOCKED in terminal:
+                run.reason = "cancelled_by_operator"
+                run.state = NodeState.BLOCKED
+                self.events.emit(
+                    "node_state", node_id, state="BLOCKED", reason="cancelled_by_operator"
+                )
+        elif run.state in {NodeState.TERMINAL_FAILURE, NodeState.REJECTED}:
+            # Already failed; block to prevent retry
+            run.reason = "cancelled_by_operator"
+            run.state = NodeState.BLOCKED
+            self.events.emit("node_state", node_id, state="BLOCKED", reason="cancelled_by_operator")
+        self.events.emit(
+            "control",
+            id=req.id,
+            kind="cancel_node",
+            accepted=True,
+            reason="node cancelled by operator",
+            node_id=node_id,
+            requested_by=req.requested_by,
+        )
+
+    def _handle_retry_node(
+        self, req: ControlRequest, pending: dict[str, asyncio.Task[None]]
+    ) -> None:
+        """Retry a TERMINAL_FAILURE/BLOCKED node through RecoveryBudget."""
+        node_id = req.node_id or ""
+        if node_id not in self.nodes:
+            self.events.emit(
+                "control",
+                id=req.id,
+                kind="retry_node",
+                accepted=False,
+                reason=f"unknown node_id: {node_id!r}",
+            )
+            return
+        run = self.nodes[node_id]
+        if run.state not in {NodeState.TERMINAL_FAILURE, NodeState.BLOCKED}:
+            self.events.emit(
+                "control",
+                id=req.id,
+                kind="retry_node",
+                accepted=False,
+                reason=f"node {node_id} in state {run.state.value}; retry only for TERMINAL_FAILURE/BLOCKED",
+                node_id=node_id,
+            )
+            return
+        # Build failure history for RecoveryBudget
+        failures = [
+            FailureClassification(
+                category=h.get("outcome", "unknown"),
+                action="REROUTE",
+                cooldown_seconds=0,
+                scope="none",
+                evidence="",
+            )
+            for h in run.history
+        ]
+        action, reason = self._recovery_budget.decide(node_id, failures)
+        if action == "FAIL_CLOSED":
+            self.events.emit(
+                "control",
+                id=req.id,
+                kind="retry_node",
+                accepted=False,
+                reason=f"recovery budget refused: {reason}",
+                node_id=node_id,
+            )
+            return
+        # Re-open the node for dispatch
+        run.state = NodeState.PLANNED
+        run.reason = ""
+        self.events.emit(
+            "node_state", node_id, state="PLANNED", reason=f"retry requested by operator ({reason})"
+        )
+        self.events.emit(
+            "control",
+            id=req.id,
+            kind="retry_node",
+            accepted=True,
+            reason=f"retry accepted: {reason}",
+            node_id=node_id,
+            requested_by=req.requested_by,
+        )
 
     # ------------------------------------------------------------------ run
     async def run(self) -> RunResult:
@@ -321,6 +525,10 @@ class DagRuntime:
                     for task in pending.values():
                         task.cancel()
                     return await self._finish(RunOutcome.BLOCKED, "run deadline exceeded")
+                # Poll external control channel
+                cancel = self._poll_controls(pending)
+                if cancel is not None:
+                    return await self._finish(RunOutcome.CANCELLED, "run cancelled by operator")
                 self._propagate_blocks()
                 for node_id in self._ready():
                     if node_id not in pending:
@@ -346,6 +554,8 @@ class DagRuntime:
         return await self._conclude()
 
     def _ready(self) -> list[str]:
+        if self._cancel_requested:
+            return []  # Stop admitting new work
         ready = []
         for node_id, run in self.nodes.items():
             if run.state is not NodeState.PLANNED:
@@ -406,6 +616,15 @@ class DagRuntime:
             _post: dict[str, int] = getattr(self.selector, "last_select_stats", {})
             if _post:
                 counts = {**counts, **_post}
+            # BOD-277: per-route eligibility verdicts for trace drill-down.
+            _rejections = _build_rejections(considered)
+            _selected_route = choice.route_id if choice is not None else None
+            _cands, _cands_omitted = _build_candidates(considered, _selected_route)
+            _evidence: dict[str, Any] = {
+                "rejections": _rejections,
+                "candidates": _cands,
+                "candidates_omitted": _cands_omitted,
+            }
             if choice is None:
                 # Check if we can wait for a short cooldown to expire
                 earliest_cooldown: datetime | None = None
@@ -442,7 +661,7 @@ class DagRuntime:
 
                 # Otherwise, fail closed as before
                 run.reason = "no eligible model: " + _explain_exhaustion(considered)
-                self.events.emit("eligibility", node_id, **counts, selected=None)
+                self.events.emit("eligibility", node_id, **counts, **_evidence, selected=None)
                 self._set(run, NodeState.BLOCKED, reason=run.reason)
                 self.events.emit(
                     "failure",
@@ -465,6 +684,7 @@ class DagRuntime:
                     "eligibility",
                     node_id,
                     **counts,
+                    **_evidence,
                     selected=None,
                     revoked=choice.route_id,
                     reason=f"pre-dispatch recheck: {blocker} cooling",
@@ -491,6 +711,7 @@ class DagRuntime:
                 "eligibility",
                 node_id,
                 **counts,
+                **_evidence,
                 selected=choice.route_id,
                 capacity_class=choice.capacity_class.value,
                 rank=choice.rank,
@@ -742,6 +963,7 @@ class DagRuntime:
                     prompt_bytes=prompt_bytes,
                     truncated="[truncated" in prompt.lower(),
                     budget_bytes=budget,
+                    sources=_hydrate_sources(node.required_context, worktree, budget),
                 )
                 terminal = await self._execute(prompt, run.route_id, worktree)
             finally:
@@ -1156,3 +1378,39 @@ def _ladder_counts(verdicts: Sequence[Any]) -> dict[str, int]:
         "available": counts["available"],
         "eligible": counts["task_eligible"],
     }
+
+
+def _hydrate_sources(
+    required_context: Sequence[str], worktree: Path, budget_bytes: int
+) -> list[dict[str, Any]]:
+    """Build per-source entries from the same data hydrate_node_prompt uses."""
+    sources: list[dict[str, Any]] = []
+    remaining = budget_bytes
+    for rel in required_context:
+        entry: dict[str, Any] = {"path": str(rel)}
+        path = worktree / rel
+        try:
+            size = path.stat().st_size
+        except OSError:
+            entry["bytes"] = 0
+            entry["included"] = False
+            entry["truncated_at"] = None
+            entry["reason"] = "unreadable"
+            sources.append(entry)
+            continue
+        entry["bytes"] = size
+        if remaining <= 0:
+            entry["included"] = False
+            entry["truncated_at"] = None
+            entry["reason"] = "budget_exhausted"
+        elif size > remaining:
+            entry["included"] = True
+            entry["truncated_at"] = remaining
+            entry["reason"] = "truncated"
+        else:
+            entry["included"] = True
+            entry["truncated_at"] = None
+            entry["reason"] = None
+        remaining -= min(size, max(remaining, 0))
+        sources.append(entry)
+    return sources

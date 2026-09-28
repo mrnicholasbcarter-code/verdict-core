@@ -68,6 +68,12 @@ def add_parsers(subparsers: Any) -> None:
     )
     orch.add_argument("--plain", action="store_true", help="ASCII narrative instead of live view")
     orch.add_argument("--json", action="store_true", help="Print the final receipt JSON")
+    orch.add_argument(
+        "--executor",
+        choices=("prime", "direct-gateway"),
+        default="prime",
+        help="Worker executor backend (default: prime)",
+    )
 
     watch = subparsers.add_parser("watch", help="Live view of a Verdict orchestration run")
     watch.add_argument("run", help="Run id or run directory")
@@ -261,9 +267,19 @@ def _prime_visibility(args: argparse.Namespace) -> int:
 
 
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
-    from verdict.orchestration.executors import FaultInjectingExecutor, PrimeHeadlessExecutor
+    from verdict.orchestration.executors import (
+        DirectGatewayExecutor,
+        FaultInjectingExecutor,
+        PrimeHeadlessExecutor,
+    )
 
-    executor: WorkerExecutor = PrimeHeadlessExecutor()
+    executor: WorkerExecutor
+    if getattr(args, "executor", "prime") == "direct-gateway":
+        executor = DirectGatewayExecutor(
+            base_url=args.gateway, api_key=os.environ.get("OPENAI_API_KEY", "")
+        )
+    else:
+        executor = PrimeHeadlessExecutor()
     faults: dict[str, list[str]] = {}
     injected = list(args.inject)
     # Supervisor-generation-scoped chaos: VERDICT_CHAOS_G0 applies only to the
@@ -351,7 +367,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
     viewer = None
     if not args.json:
         viewer = threading.Thread(
-            target=lambda: follow(events_path, stop_when_final=True, start_seq=prior_seq),
+            # Background progress view: never interactive (it must not read stdin
+            # or change terminal mode while the orchestration loop runs).
+            target=lambda: follow(
+                events_path, stop_when_final=True, start_seq=prior_seq, interactive=False
+            ),
             daemon=True,
         )
         viewer.start()

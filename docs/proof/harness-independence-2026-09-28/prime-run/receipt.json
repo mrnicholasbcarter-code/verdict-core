@@ -1,0 +1,245 @@
+{
+  "claimed_outcome": "COMPLETE",
+  "controller_events": [
+    {
+      "at": "2026-09-28T19:13:11.476665Z",
+      "detail": "plan produced",
+      "node_id": "",
+      "route_id": "kr/claude-haiku-4.5",
+      "seq": 6,
+      "state": "HEALTHY"
+    },
+    {
+      "at": "2026-09-28T19:15:45.603392Z",
+      "excluded_families": [
+        "claude"
+      ],
+      "excluded_routes": [
+        "kr/claude-sonnet-4"
+      ],
+      "level": "family",
+      "node_id": "",
+      "reviewer_route": "kr/gpt-5.6-terra",
+      "seq": 44,
+      "state": "REVIEW_INDEPENDENCE"
+    }
+  ],
+  "cooldowns": [],
+  "decision_signals": [
+    {
+      "actual_decision": {
+        "capacity_class": "subscription",
+        "frontier_planner_invoked": true,
+        "provider": "kiro",
+        "route_id": "kr/claude-haiku-4.5"
+      },
+      "at": "2026-09-28T19:13:11.477737Z",
+      "mode": "SHADOW",
+      "node_id": "",
+      "seq": 7,
+      "signals": {
+        "confidence": 0.3855820381840585,
+        "failure_class": null,
+        "input_digest": "034fa72d2e7fa121612450b64e0fb2b4ccf51e6a0c1b55beb58980d69d7c405e",
+        "latency_ms": 958,
+        "mode": "SHADOW",
+        "model": "openjev-0.1",
+        "observed_at": "2026-09-28T19:12:41.386569Z",
+        "provider": "openjev",
+        "purpose": "frontier_planning",
+        "request_id": "req_c05e1aa10f15f4d46007dc2815a8aa16",
+        "schema_version": "decision-signals/v1",
+        "signals": {
+          "ambiguity": 0.3306355242639333,
+          "complexity": 0.5306242388837968,
+          "context_need": 0.18812575927011155,
+          "decomposability": 0.9201178205859992,
+          "frontier_worthy": 0.4518344299085973,
+          "security_sensitive": 0.006280680052192803,
+          "verification_strength": 0.5190578626579441
+        },
+        "usage": {
+          "input_tokens": 292,
+          "output_tokens": 0
+        },
+        "version": "openjev-0.1"
+      }
+    }
+  ],
+  "event_count": 47,
+  "events_digest": "sha256:ee8122305524a43dbaeac433b714bdc8c8e6a8cfc98b560e02b28c276a377585",
+  "finished_at": "2026-09-28T19:15:45.606277Z",
+  "goal": "test",
+  "graph_digest": "sha256:12c383938ca124e956a48b0979a2ff01c1f25da8a90430dc007a635f51ec83b2",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 43
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 31
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 59.05,
+          "executed_model": "kr/claude-sonnet-4",
+          "fault_injected": false,
+          "intended_route": "kr/claude-sonnet-4",
+          "outcome": "success",
+          "provider": "kr",
+          "route_id": "kr/claude-sonnet-4",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 48283,
+            "output_tokens": 576,
+            "tokens_source": "prime_stdout",
+            "turns": 4
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "research",
+      "node_id": "discover-test-scope",
+      "validated_by": [
+        {
+          "command": "(none: non-code node)",
+          "exit_code": 0,
+          "seq": 20
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 89.79,
+          "executed_model": "kr/claude-sonnet-4",
+          "fault_injected": false,
+          "intended_route": "kr/claude-sonnet-4",
+          "outcome": "success",
+          "provider": "kr",
+          "route_id": "kr/claude-sonnet-4",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 15396,
+            "output_tokens": 399,
+            "tokens_source": "prime_stdout",
+            "turns": 1
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "create-test-suite",
+      "validated_by": [
+        {
+          "command": "python -m pytest tests/test_core.py -v",
+          "exit_code": 0,
+          "seq": 32
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "unknown",
+          "duration_seconds": 0.0,
+          "executed_model": "(mechanical merge)",
+          "fault_injected": false,
+          "intended_route": "",
+          "outcome": "success",
+          "provider": "",
+          "route_id": "",
+          "route_identity": "mechanical"
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "integrate",
+      "node_id": "run-full-test-suite",
+      "validated_by": [
+        {
+          "command": "python -m pytest tests/ -v --tb=short",
+          "exit_code": 0,
+          "seq": 39
+        }
+      ]
+    }
+  ],
+  "outcome": "COMPLETE",
+  "planner_attempts": [
+    {
+      "at": "2026-09-28T19:12:43.493839Z",
+      "attempt": 1,
+      "capacity_class": "subscription",
+      "provider": "kiro",
+      "route_id": "kr/claude-haiku-4.5",
+      "seq": 3
+    },
+    {
+      "at": "2026-09-28T19:12:59.913108Z",
+      "attempt": 2,
+      "budget": 7,
+      "reason": "parse_plan: node[0]: acceptance must be a list",
+      "route_id": "kr/claude-haiku-4.5",
+      "seq": 4
+    },
+    {
+      "at": "2026-09-28T19:13:11.472645Z",
+      "attempt": 2,
+      "budget": 7,
+      "error": "",
+      "ok": true,
+      "route_id": "kr/claude-haiku-4.5",
+      "seq": 5
+    }
+  ],
+  "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
+  "reassignments": [],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 3
+  },
+  "review": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "category": "",
+        "duration_seconds": 2.217,
+        "route_id": "kr/gpt-5.6-terra",
+        "status": "PASS"
+      }
+    ],
+    "blocking": 0,
+    "reviewer": "open-code-review v1.12.9",
+    "route_id": "kr/gpt-5.6-terra",
+    "status": "PASS"
+  },
+  "route_identity_summary": {
+    "attempts": 3,
+    "match": 2,
+    "mechanical": 1,
+    "mismatch": 0,
+    "unattested": 0
+  },
+  "run_id": "20260928T191241Z",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-09-28T19:12:41.384907Z",
+  "topology": "WORKER_CRITIC"
+}

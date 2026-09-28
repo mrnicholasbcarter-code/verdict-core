@@ -555,6 +555,9 @@ def verify_run_receipt(run_dir: Path) -> list[str]:
 def completion_verdict(receipt: Mapping[str, Any]) -> tuple[str, str]:
     """COMPLETE only with validated work, an ok integration barrier and a clean PASS review."""
     blocked = RunOutcome.BLOCKED.value
+    # Cancelled runs are never COMPLETE — preserve the operator's intent.
+    if receipt.get("claimed_outcome") == RunOutcome.CANCELLED.value:
+        return RunOutcome.CANCELLED.value, "run cancelled by operator"
     if receipt.get("schema") != RECEIPT_SCHEMA:
         return blocked, f"unknown receipt schema {receipt.get('schema')!r}"
     gated = {NodeKind.IMPLEMENT.value, NodeKind.INTEGRATE.value}
