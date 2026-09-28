@@ -21,7 +21,7 @@ import shutil
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -288,19 +288,176 @@ def _atomic_write_yaml(path: Path, data: Mapping[str, Any]) -> None:
     tmp.replace(path)
 
 
+Parity = Literal["supported", "partial", "unsupported", "not-installed"]
+
+_BINARY_NAMES = ("hermes",)
+
+
+@dataclass(frozen=True)
+class DiscoverReport:
+    installed: bool
+    binary_path: str | None
+    config_path: Path
+    config_exists: bool
+    managed_by_verdict: bool
+    base_url: str | None
+    pointing_at_verdict: bool
+    pointing_at_omniroute: bool
+
+
+@dataclass(frozen=True)
+class CertifyReport:
+    harness: str
+    overall: Parity
+    facets: Mapping[str, Parity]
+    healthy: bool
+    token_env_set: bool
+    base_url: str | None
+    notes: tuple[str, ...]
+    needs_owner: tuple[str, ...]
+
+
+def discover(
+    *, hermes_home: Path | None = None, which: Callable[[str], str | None] | None = None
+) -> DiscoverReport:
+    """Observe Hermes install/config without mutating anything."""
+
+    paths = resolve_paths(hermes_home=hermes_home)
+    finder = which or shutil.which
+    binary: str | None = None
+    for name in _BINARY_NAMES:
+        found = finder(name)
+        if found:
+            binary = str(found)
+            break
+    exists = paths.config.is_file()
+    managed = False
+    base_url: str | None = None
+    pointing_verdict = False
+    pointing_omniroute = False
+    if exists:
+        loaded = yaml.safe_load(paths.config.read_text(encoding="utf-8")) or {}
+        if isinstance(loaded, Mapping):
+            for entry in _provider_entries(loaded):
+                if entry.get("name") == PROVIDER_NAME:
+                    managed = True
+                    base_url = str(entry["base_url"]) if entry.get("base_url") else None
+                    break
+            if base_url:
+                pointing_verdict = "8000" in base_url and "20128" not in base_url
+                pointing_omniroute = "20128" in base_url
+    return DiscoverReport(
+        installed=binary is not None,
+        binary_path=binary,
+        config_path=paths.config,
+        config_exists=exists,
+        managed_by_verdict=managed,
+        base_url=base_url,
+        pointing_at_verdict=pointing_verdict,
+        pointing_at_omniroute=pointing_omniroute,
+    )
+
+
+def certify(
+    *,
+    hermes_home: Path | None = None,
+    force: bool = False,
+    health_check: HealthCheck | Callable[[str], bool] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> CertifyReport:
+    """Evidence-only certification. Never prints secrets. Live token use is NEEDS_OWNER."""
+
+    discovered = discover(hermes_home=hermes_home, which=which)
+    report = status(hermes_home=hermes_home)
+    base = report.base_url or DEFAULT_BASE_URL
+    if force:
+        healthy = True
+    else:
+        healthy = health_check(base) if health_check is not None else probe_health(base_url=base)
+
+    facets: dict[str, Parity] = {
+        "hooks": "unsupported",  # no native hook system in Hermes
+        "model_selection": "partial",
+        "config_import": "supported" if report.config_exists else "partial",
+        "mcp": "unsupported",  # Hermes has no MCP support
+        "subagents": "unsupported",
+        "resume": "unsupported",
+        "tool_interception": "unsupported",
+        "structured_output": "unsupported",
+        # Lifecycle matrix facets (BOD-80 parity)
+        "session_start": "unsupported",  # no hook system — no session-start injection
+        "before_first_turn": "unsupported",  # no hook system — no pre-turn recall
+        "tool_pre_post": "unsupported",  # no tool pre/post hooks
+        "edit_event": "unsupported",  # no edit event hooks
+        "compaction_yield": "unsupported",  # no compaction hooks
+        "verification_result": "unsupported",  # no verification hooks
+        "session_end": "unsupported",  # no session-end hooks
+        "sync_async_semantics": "unsupported",  # no hook system
+        "mutation_capability": "unsupported",  # no memory write path from Hermes hooks
+    }
+    notes: list[str] = [
+        "OpenAI-compatible provider via ~/.hermes/config.yaml → Verdict :8000",
+        "Hermes has no native hook system; lifecycle events are unsupported",
+    ]
+    needs_owner = ("live enable with secrets (export token_env; Hermes API key is NEEDS_OWNER)",)
+    if not discovered.installed:
+        overall: Parity = "not-installed"
+        notes.append("hermes binary not found on PATH")
+    elif report.enabled and healthy:
+        overall = "partial"
+    elif report.enabled:
+        overall = "partial"
+        notes.append("Verdict health probe failed; pass --force to ignore for local proof")
+    else:
+        overall = "unsupported"
+        notes.append("harness not enabled for Verdict-managed path")
+
+    return CertifyReport(
+        harness="hermes",
+        overall=overall,
+        facets=facets,
+        healthy=healthy,
+        token_env_set=report.token_env_set,
+        base_url=report.base_url,
+        notes=tuple(notes),
+        needs_owner=needs_owner,
+    )
+
+
+def format_certify(report: CertifyReport) -> str:
+    facet_lines = "\n".join(f"  {name}: {level}" for name, level in sorted(report.facets.items()))
+    notes = "\n".join(f"  - {note}" for note in report.notes)
+    owner = "\n".join(f"  - {item}" for item in report.needs_owner)
+    return (
+        f"Hermes certify: {report.overall}\n"
+        f"  healthy: {'yes' if report.healthy else 'no'}\n"
+        f"  token_env set: {'yes' if report.token_env_set else 'no'}\n"
+        f"  base_url: {report.base_url or '(none)'}\n"
+        f"Facets:\n{facet_lines}\n"
+        f"Notes:\n{notes}\n"
+        f"Needs owner:\n{owner}\n"
+    )
+
+
 __all__ = [
     "BACKUP_NAME",
     "DEFAULT_BASE_URL",
     "DEFAULT_MODEL",
     "DEFAULT_TOKEN_ENV",
     "PROVIDER_NAME",
+    "CertifyReport",
+    "DiscoverReport",
     "EnableResult",
     "HarnessHermesError",
     "HermesHarnessPaths",
+    "Parity",
     "StatusReport",
     "apply_verdict_provider",
+    "certify",
     "disable",
+    "discover",
     "enable",
+    "format_certify",
     "format_status",
     "resolve_paths",
     "status",

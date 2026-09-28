@@ -42,6 +42,15 @@ HARNESS_PARITY_FACETS: tuple[str, ...] = (
     "model_selection",
     "config_import",
     "structured_output",
+    "session_start",
+    "before_first_turn",
+    "tool_pre_post",
+    "edit_event",
+    "compaction_yield",
+    "verification_result",
+    "session_end",
+    "sync_async_semantics",
+    "mutation_capability",
 )
 
 # Canonical memory MCP wins; peers become redundant when it is present.
@@ -341,6 +350,15 @@ def harness_parity_from_evidence(
         "model_selection": ("model_selection",),
         "config_import": ("config_import",),
         "structured_output": ("structured_output",),
+        "session_start": ("session_start",),
+        "before_first_turn": ("before_first_turn",),
+        "tool_pre_post": ("tool_pre_post",),
+        "edit_event": ("edit_event",),
+        "compaction_yield": ("compaction_yield",),
+        "verification_result": ("verification_result",),
+        "session_end": ("session_end",),
+        "sync_async_semantics": ("sync_async_semantics",),
+        "mutation_capability": ("mutation_capability",),
     }
     for facet in HARNESS_PARITY_FACETS:
         keys = mapping[facet]
