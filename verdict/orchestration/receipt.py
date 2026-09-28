@@ -508,7 +508,16 @@ def write_run_receipt(run_dir: Path) -> Path:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    write_outcome_records(run_dir, receipt)
+    try:
+        write_outcome_records(run_dir, receipt)
+    except OSError as exc:
+        import sys
+
+        print(
+            f"warning: could not write outcome records to"
+            f" {run_dir / 'outcome-records.jsonl'}: {exc}",
+            file=sys.stderr,
+        )
     _fsync_dir(run_dir)
     return target
 

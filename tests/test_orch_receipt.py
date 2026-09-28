@@ -401,3 +401,53 @@ def test_receipt_review_without_attempts_is_unchanged(tmp_path: Path) -> None:
 
     review = build_run_receipt(_run(tmp_path, review=PASS))["review"]
     assert "attempts" not in review
+
+
+# ---- BOD-90: outcome-records sidecar write is guarded ----
+
+
+def test_sidecar_oserror_does_not_crash_receipt(tmp_path: Path) -> None:
+    """OSError writing outcome-records.jsonl must not prevent receipt creation."""
+    run_dir = _run(tmp_path, review=PASS)
+    # Place a directory at the sidecar path so the write raises OSError
+    sidecar = run_dir / "outcome-records.jsonl"
+    sidecar.mkdir()
+
+    import io
+    import sys
+
+    captured = io.StringIO()
+    old_stderr = sys.stderr
+    sys.stderr = captured
+    try:
+        path = write_run_receipt(run_dir)
+    finally:
+        sys.stderr = old_stderr
+
+    # Receipt was written and verifies cleanly
+    assert path.exists()
+    assert json.loads(path.read_text())["schema"] == RECEIPT_SCHEMA
+    assert verify_run_receipt(run_dir) == []
+
+    # Warning was emitted to stderr
+    warning = captured.getvalue()
+    assert "outcome-records.jsonl" in warning
+    assert "warning" in warning.lower()
+
+    # No outcome-records.jsonl file (the directory is still there)
+    assert sidecar.is_dir()
+
+
+def test_sidecar_builder_bug_still_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bug in build_outcome_records (non-OSError) must still propagate."""
+    import verdict.outcome_records as orm
+
+    run_dir = _run(tmp_path, review=PASS)
+
+    def _boom(*_a: Any, **_kw: Any) -> None:
+        raise ValueError("bug in record builder")
+
+    monkeypatch.setattr(orm, "build_outcome_records", _boom)
+
+    with pytest.raises(ValueError, match="bug in record builder"):
+        write_run_receipt(run_dir)
