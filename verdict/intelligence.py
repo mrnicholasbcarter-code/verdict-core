@@ -1394,6 +1394,15 @@ class IntelligenceService:
             str(item) for item in contract.get("proof_criteria", ()) if str(item).strip()
         )
         errors = tuple(str(item) for item in contract.get("errors", ()) if str(item).strip())
+        # Verification commands: pass only commands the task actually declares.
+        # Each command is an argv list (Sequence[str]).  The contract may carry
+        # them as ``verification_commands: [[cmd, arg, ...], ...]``.
+        _raw_vc = contract.get("verification_commands", ())
+        verification_commands: tuple[tuple[str, ...], ...] = tuple(
+            tuple(str(tok) for tok in cmd)
+            for cmd in (_raw_vc if isinstance(_raw_vc, (list, tuple)) else ())
+            if isinstance(cmd, (list, tuple)) and cmd
+        )
         # Cheap path: gather real provenance units, compile under budget, then
         # execute. Digest + named omissions land on the admit receipt.
         chosen_plan = next(
@@ -1408,6 +1417,7 @@ class IntelligenceService:
             mcp_root=self.mcp_root,
             acceptance_criteria=acceptance_criteria,
             proof_criteria=proof_criteria,
+            verification_commands=verification_commands,
             errors=errors,
             use_context_fabric=True,
         )
