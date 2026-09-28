@@ -94,7 +94,7 @@ class TestTracingOn:
 
     def test_span_hierarchy_and_attributes(self) -> None:
         from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
         exporter = InMemorySpanExporter()
 
@@ -245,3 +245,33 @@ class TestNoOpSpan:
         ]:
             with mock.patch.dict(os.environ, {"VERDICT_TRACING": val}):
                 assert mod._is_enabled() is expected, f"VERDICT_TRACING={val!r}"
+
+
+class TestUsageAttributes:
+    """Usage counters survive the secret filter; strings under usage keys do not."""
+
+    def test_usage_keys_allowed_despite_token_in_name(self) -> None:
+        from verdict.tracing import _filter_attributes
+
+        out = _filter_attributes(
+            {
+                "event.usage.input_tokens": 9393,
+                "event.usage.output_tokens": 44,
+                "event.usage.turns": 2,
+                "event.usage.prompt_tokens": 100,
+            }
+        )
+        assert out == {
+            "event.usage.input_tokens": 9393,
+            "event.usage.output_tokens": 44,
+            "event.usage.turns": 2,
+            "event.usage.prompt_tokens": 100,
+        }
+
+    def test_non_allowlisted_secret_keys_still_dropped(self) -> None:
+        from verdict.tracing import _filter_attributes
+
+        out = _filter_attributes(
+            {"event.api_key": "x", "event.auth_token": "y", "event.state": "OK"}
+        )
+        assert out == {"event.state": "OK"}

@@ -42,11 +42,24 @@ ALLOWED_ATTRIBUTES: frozenset[str] = frozenset(
         "event.usage.prompt_tokens",
         "event.usage.completion_tokens",
         "event.usage.total_tokens",
+        "event.usage.input_tokens",
+        "event.usage.output_tokens",
+        "event.usage.turns",
         "event.duration_seconds",
     }
 )
 
 _MAX_ATTR_VALUE_LEN = 256
+
+_USAGE_KEYS: tuple[str, ...] = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "input_tokens",
+    "output_tokens",
+    "turns",
+)
+_USAGE_ATTRIBUTES: frozenset[str] = frozenset(f"event.usage.{k}" for k in _USAGE_KEYS)
 
 # ---------------------------------------------------------------------------
 # Lazy singleton — nothing is imported until actually needed.
@@ -154,7 +167,10 @@ def _filter_attributes(attrs: Mapping[str, Any]) -> dict[str, str | int | float 
     for key, value in attrs.items():
         if key not in ALLOWED_ATTRIBUTES:
             continue
-        if _looks_secret(key):
+        # The allowlist is exact and reviewed. The secret-fragment check guards
+        # keys added to it later; usage counters are known-safe numbers even
+        # though their names contain "token".
+        if _looks_secret(key) and key not in _USAGE_ATTRIBUTES:
             continue
         out[key] = _safe_value(value)
     return out
@@ -220,9 +236,11 @@ def record_event(
                 # Token usage (nested under "usage" dict or flat).
                 usage = data.get("usage")
                 if isinstance(usage, Mapping):
-                    for ukey in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                        if ukey in usage:
-                            raw_attrs[f"event.usage.{ukey}"] = usage[ukey]
+                    for ukey in _USAGE_KEYS:
+                        value = usage.get(ukey)
+                        # Numbers only: never copy a string that happens to sit under a usage key.
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            raw_attrs[f"event.usage.{ukey}"] = value
 
                 safe = _filter_attributes(raw_attrs)
                 for k, v in safe.items():
