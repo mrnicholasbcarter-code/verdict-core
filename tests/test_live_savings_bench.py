@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-TASKS_JSON = Path(__file__).resolve().parent.parent / "benchmarks" / "fixtures" / "live_savings" / "tasks.json"
+TASKS_JSON = (
+    Path(__file__).resolve().parent.parent
+    / "benchmarks"
+    / "fixtures"
+    / "live_savings"
+    / "tasks.json"
+)
 FIXTURE_DIR = TASKS_JSON.parent
 
 
@@ -17,6 +23,7 @@ class TestOptIn:
     def test_refuses_without_opt_in(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         monkeypatch.delenv("VERDICT_LIVE_SMOKE", raising=False)
         from scripts.live_savings_bench import _refuse_without_opt_in
+
         with pytest.raises(SystemExit):
             _refuse_without_opt_in()
 
@@ -87,10 +94,7 @@ class TestGrading:
     def test_fizzbuzz_wrong_solution_fails(self, tmp_path: Path) -> None:
         from scripts.live_savings_bench import _grade_solution
 
-        code = (
-            "def fizzbuzz(n: int) -> list[str]:\n"
-            "    return [str(i) for i in range(1, n + 1)]\n"
-        )
+        code = "def fizzbuzz(n: int) -> list[str]:\n    return [str(i) for i in range(1, n + 1)]\n"
         task = {"id": "fizzbuzz", "test_file": "test_fizzbuzz.py"}
         assert _grade_solution(task, code) is False
 
@@ -119,6 +123,7 @@ class TestPriceFetching:
 
     def test_model_price_keys_cover_all_models(self) -> None:
         from scripts.live_savings_bench import BASELINE_MODEL, MODEL_PRICE_KEYS, VERDICT_CANDIDATES
+
         assert BASELINE_MODEL in MODEL_PRICE_KEYS
         for m in VERDICT_CANDIDATES:
             assert m in MODEL_PRICE_KEYS
@@ -148,7 +153,9 @@ class TestPerPairEligibility:
 
         tc = {
             "cc/claude-opus-5": TokenCounter(model="cc/claude-opus-5", proportional=True),
-            "cc/claude-haiku-4-5-20251001": TokenCounter(model="cc/claude-haiku-4-5-20251001", proportional=True),
+            "cc/claude-haiku-4-5-20251001": TokenCounter(
+                model="cc/claude-haiku-4-5-20251001", proportional=True
+            ),
         }
         price_table = {
             "cc/claude-opus-5": {"input_per_1m": 5.0, "output_per_1m": 25.0},

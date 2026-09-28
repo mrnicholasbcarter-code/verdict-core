@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Live savings benchmark: real models, observed token usage, published list prices (BOD-203). Ten coding tasks graded by unit tests; `scripts/live_savings_bench.py` (opt-in, `VERDICT_LIVE_SMOKE=1`); proof at `docs/proof/live-savings-2026-09-28/`. README Cost comparison section rewritten from measured results.
+- Live cost check on real models (BOD-203): fifteen coding tasks graded by unit tests, observed token usage at published list prices; `scripts/live_savings_bench.py` (opt-in, `VERDICT_LIVE_SMOKE=1`); proof at `docs/proof/live-savings-2026-09-28/`. Result: the offline catalog router chose the baseline model for every task, so no routing saving was measured; README Cost comparison says so.
 - Optional OpenTelemetry tracing (`verdict[tracing]`, BOD-90): install with `pip install 'verdict-core[tracing]'` and enable with `VERDICT_TRACING=1`. Exports spans to OTLP endpoints; prompts and secrets are not attached. See `verdict/tracing.py` for implementation.
 
 ### Changed

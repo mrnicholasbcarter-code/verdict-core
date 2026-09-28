@@ -676,48 +676,41 @@ never probed).
 
 ## Cost comparison
 
-**Measured result — real models, observed token usage, published list prices.**
+**No routing saving measured yet.** A live run on real models found that Verdict's
+offline router chose the same model as the baseline for every task, so the two arms
+cost the same apart from run-to-run token variance.
 
-Fifteen coding tasks (10 standalone + 5 repo-context), each run twice on both arms,
-graded by executable unit tests:
+Setup: fifteen coding tasks (10 standalone + 5 repo-context), each run twice per arm,
+graded by executable unit tests. Both arms sent the same prompt.
 
-- **Baseline**: every task sent to `cc/claude-opus-5` (frontier).
-- **Verdict**: `Gate.route()` with offline catalog — Verdict's real planner + ranker selects
-  the model per task. In this configuration the router selected opus-5 for every task.
+- **Baseline arm**: every task sent to `cc/claude-opus-5`.
+- **Verdict arm**: model chosen by `Gate.route(allow_offline=True)`, the CLI catalog path.
+  This path has no live `EligibilityGate`, provider health or quota input, so this run
+  does **not** measure the live admission/eligibility router. It chose `cc/claude-opus-5`
+  for all 15 tasks.
 
-| Metric | Overall | Standalone (n=10) | Repo-context (n=5) |
+| Measure (list price x observed tokens) | Overall | Standalone (n=10) | Repo-context (n=5) |
 |---|---|---|---|
-| Baseline list-price cost | $0.7668 | $0.6225 | $0.1443 |
-| Verdict list-price cost | $0.8386 | $0.6756 | $0.1631 |
-| **Savings** | **-9.4 %** | **-8.5 %** | **-13.0 %** |
-| Baseline pass rate | 26/30 | 20/20 | 6/10 |
-| Verdict pass rate | 30/30 | 20/20 | 10/10 |
-| Eligible pairs | 26 | 20 | 6 |
+| Baseline arm cost | $0.7668 | $0.6225 | $0.1443 |
+| Verdict arm cost | $0.8386 | $0.6756 | $0.1631 |
+| (task, repeat) pairs compared | 26 | 20 | 6 |
 
-Excluded pairs (baseline failed): cooldown_sentinel/r1, cooldown_sentinel/r2, ladder_stages/r1, ladder_stages/r2.
+Same model and same prompt in both arms: the cost difference is token variance between
+runs, not a routing effect. Pass rates were 26/30 (baseline arm) and 30/30 (Verdict arm);
+with identical model and input this is also run-to-run variance, not a Verdict advantage.
+Costs are compared only over (task, repeat) pairs where both arms passed; the four
+excluded pairs are cooldown_sentinel r1/r2 and ladder_stages r1/r2 (baseline failed).
 
-The offline catalog router selected the same model (opus-5) for both arms on every task —
-**no cost savings** in this configuration. The savings column shows small negative values
-from natural token-count variance between runs. A live deployment with provider configs
-and the full eligibility gate may route differently.
+Costs are **not billed amounts**: [published list prices](https://www.anthropic.com/pricing)
+(fetched at run time; page SHA-256 in the proof dir) applied to observed token usage on
+subscription capacity (no invoice). Small n (15 tasks x 2 repeats).
 
-Costs are **not billed amounts** — prices are [published list prices](https://www.anthropic.com/pricing)
-(fetched at run time, SHA-256 in proof dir) applied to observed token usage on
-subscription capacity (no invoice).
-Small n (15 tasks × 2 repeats); savings computed per (task, repeat) pair where both arms passed.
-
-![Live savings: per-task list-price cost for baseline (opus-5) and Verdict arm](docs/assets/chart-live-savings.svg)
+![Live cost check: per-task list-price cost for the baseline arm and the Verdict arm, both on cc/claude-opus-5](docs/assets/chart-live-savings.svg)
 
 <sub>Data: [`docs/proof/live-savings-2026-09-28/report.json`](docs/proof/live-savings-2026-09-28/report.json).
-Observed token usage × published list prices; subscription capacity, no invoice.
-See [`scripts/live_savings_bench.py`](scripts/live_savings_bench.py) for methodology;
+Observed token usage x published list prices; subscription capacity, no invoice.
+Method: [`scripts/live_savings_bench.py`](scripts/live_savings_bench.py);
 run with `VERDICT_LIVE_SMOKE=1` (opt-in, spends real capacity).</sub>
-
-**Deterministic mock — no provider spend.**
-
-```bash
-uv run python -m verdict.routing_demo --mock
-```
 
 The deterministic mock compares 100 requests using fixed price estimates against a
 class-aware route. See [`docs/benchmarks/routing-demo.md`](docs/benchmarks/routing-demo.md)

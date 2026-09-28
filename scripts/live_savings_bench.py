@@ -37,7 +37,13 @@ import httpx
 
 # ── Configuration ──────────────────────────────────────────────────────
 GATEWAY = os.environ.get("OMNIROUTE_GATEWAY", "http://localhost:20128/v1")
-TASKS_JSON = Path(__file__).resolve().parent.parent / "benchmarks" / "fixtures" / "live_savings" / "tasks.json"
+TASKS_JSON = (
+    Path(__file__).resolve().parent.parent
+    / "benchmarks"
+    / "fixtures"
+    / "live_savings"
+    / "tasks.json"
+)
 PROOF_DIR = Path(__file__).resolve().parent.parent / "docs" / "proof" / "live-savings-2026-09-28"
 REPEATS = 2
 EXECUTE_TIMEOUT = 120.0
@@ -82,20 +88,20 @@ def fetch_prices() -> tuple[dict[str, dict[str, Any]], str, str]:
         # Find model card section: "Opus 5" followed by Input $X / MTok and Output $Y / MTok
         # Escape for regex, handle "Opus 5" not matching "Opus 5.5"
         if display_name.endswith("5"):
-            pattern = re.escape(display_name) + r'(?![\.\d])'
+            pattern = re.escape(display_name) + r"(?![\.\d])"
         else:
             pattern = re.escape(display_name)
 
         found = False
         for m in re.finditer(pattern, page_text, re.IGNORECASE):
             end = min(len(page_text), m.end() + 3000)
-            chunk = page_text[m.start():end]
+            chunk = page_text[m.start() : end]
             # Strip HTML tags for easier parsing
-            clean = re.sub(r'<[^>]+>', '|', chunk)
-            clean = re.sub(r'\|+', '|', clean)
+            clean = re.sub(r"<[^>]+>", "|", chunk)
+            clean = re.sub(r"\|+", "|", clean)
 
-            input_match = re.search(r'Input[\|\s]*\$(\d+(?:\.\d+)?)[\s\|]*/\s*MTok', clean)
-            output_match = re.search(r'Output[\|\s]*\$(\d+(?:\.\d+)?)[\s\|]*/\s*MTok', clean)
+            input_match = re.search(r"Input[\|\s]*\$(\d+(?:\.\d+)?)[\s\|]*/\s*MTok", clean)
+            output_match = re.search(r"Output[\|\s]*\$(\d+(?:\.\d+)?)[\s\|]*/\s*MTok", clean)
             if input_match and output_match:
                 input_price = float(input_match.group(1))
                 output_price = float(output_match.group(1))
@@ -125,8 +131,7 @@ def fetch_prices() -> tuple[dict[str, dict[str, Any]], str, str]:
         f"Fetched: {access_ts}\n"
         f"SHA-256: {page_sha256}\n"
         f"Page size: {len(page_text)} chars\n\n"
-        f"## Extracted prices\n" +
-        "\n".join(extracted) + "\n",
+        f"## Extracted prices\n" + "\n".join(extracted) + "\n",
         encoding="utf-8",
     )
 
@@ -294,14 +299,12 @@ def select_verdict_model(
     # Build a Gate with allow_offline=True (static catalog, no probe I/O)
     # and only the models we have valid counters + prices for
     valid_models = {BASELINE_MODEL} | {
-        m for m in VERDICT_CANDIDATES
+        m
+        for m in VERDICT_CANDIDATES
         if m in counter_results and counter_results[m].proportional and m in price_table
     }
 
-    gate = Gate(
-        primary_model=BASELINE_MODEL,
-        allow_offline=True,
-    )
+    gate = Gate(primary_model=BASELINE_MODEL, allow_offline=True)
 
     task_prompt = task.get("prompt", "")
     task_class = task.get("task_class", "medium-code")
@@ -349,8 +352,13 @@ def compute_cost(result: TaskResult, price_table: dict[str, dict[str, Any]]) -> 
     return input_cost + output_cost
 
 
-def run_task_arm(task: dict[str, Any], model: str, arm: str, repeat: int,
-                 routing_receipt: dict[str, Any] | None = None) -> TaskResult:
+def run_task_arm(
+    task: dict[str, Any],
+    model: str,
+    arm: str,
+    repeat: int,
+    routing_receipt: dict[str, Any] | None = None,
+) -> TaskResult:
     """Run one task on one model and grade it."""
     tag = uuid.uuid4().hex[:8]
     prompt = task["prompt"] + f"\n\n<!-- run-{tag} -->"
@@ -426,12 +434,10 @@ def build_report(
     for task_id in task_ids:
         for repeat in repeats:
             b_run = next(
-                (r for r in baseline_results if r.task_id == task_id and r.repeat == repeat),
-                None,
+                (r for r in baseline_results if r.task_id == task_id and r.repeat == repeat), None
             )
             v_run = next(
-                (r for r in verdict_results if r.task_id == task_id and r.repeat == repeat),
-                None,
+                (r for r in verdict_results if r.task_id == task_id and r.repeat == repeat), None
             )
             pair_key = f"{task_id}/r{repeat}"
 
@@ -445,16 +451,20 @@ def build_report(
                 cost_excluded_pairs.append({"pair": pair_key, "reason": "verdict failed"})
                 continue
             if b_run.model not in valid_counter_models:
-                cost_excluded_pairs.append({
-                    "pair": pair_key,
-                    "reason": f"baseline model {b_run.model} counter not proportional",
-                })
+                cost_excluded_pairs.append(
+                    {
+                        "pair": pair_key,
+                        "reason": f"baseline model {b_run.model} counter not proportional",
+                    }
+                )
                 continue
             if v_run.model not in valid_counter_models:
-                cost_excluded_pairs.append({
-                    "pair": pair_key,
-                    "reason": f"verdict model {v_run.model} counter not proportional",
-                })
+                cost_excluded_pairs.append(
+                    {
+                        "pair": pair_key,
+                        "reason": f"verdict model {v_run.model} counter not proportional",
+                    }
+                )
                 continue
 
             b_cost = compute_cost(b_run, price_table)
@@ -465,11 +475,13 @@ def build_report(
 
             baseline_cost += b_cost
             verdict_cost += v_cost
-            cost_eligible_pairs.append({
-                "pair": pair_key,
-                "baseline_cost": round(b_cost, 6),
-                "verdict_cost": round(v_cost, 6),
-            })
+            cost_eligible_pairs.append(
+                {
+                    "pair": pair_key,
+                    "baseline_cost": round(b_cost, 6),
+                    "verdict_cost": round(v_cost, 6),
+                }
+            )
 
     savings_pct = (
         ((baseline_cost - verdict_cost) / baseline_cost * 100) if baseline_cost > 0 else 0.0
@@ -503,12 +515,10 @@ def build_report(
                     g_baseline += p["baseline_cost"]
                     g_verdict += p["verdict_cost"]
                     g_eligible += 1
-            for repeat in repeats:
+            for _repeat in repeats:
                 g_total_pairs += 1
 
-        g_savings = (
-            ((g_baseline - g_verdict) / g_baseline * 100) if g_baseline > 0 else 0.0
-        )
+        g_savings = ((g_baseline - g_verdict) / g_baseline * 100) if g_baseline > 0 else 0.0
         group_summaries[group] = {
             "tasks": group_task_ids,
             "eligible_pairs": g_eligible,
@@ -638,7 +648,9 @@ def main() -> None:
     print("--- Fetching prices from anthropic.com/pricing ---")
     price_table, price_sha256, price_access_ts = fetch_prices()
     for model_id, prices in price_table.items():
-        print(f"  {model_id}: ${prices['input_per_1m']}/MTok in, ${prices['output_per_1m']}/MTok out")
+        print(
+            f"  {model_id}: ${prices['input_per_1m']}/MTok in, ${prices['output_per_1m']}/MTok out"
+        )
     print(f"  Page SHA-256: {price_sha256[:16]}...")
     print()
 
@@ -646,8 +658,10 @@ def main() -> None:
     tasks = tasks_data["tasks"]
 
     print("=== Live savings benchmark ===")
-    print(f"Tasks: {len(tasks)} ({sum(1 for t in tasks if t.get('task_group')=='standalone')} standalone, "
-          f"{sum(1 for t in tasks if t.get('task_group')=='repo-context')} repo-context)")
+    print(
+        f"Tasks: {len(tasks)} ({sum(1 for t in tasks if t.get('task_group') == 'standalone')} standalone, "
+        f"{sum(1 for t in tasks if t.get('task_group') == 'repo-context')} repo-context)"
+    )
     print(f"Baseline: {BASELINE_MODEL}")
     print(f"Repeats per arm: {REPEATS}")
     print()
@@ -692,7 +706,9 @@ def main() -> None:
     print()
 
     # Step 3: Build report
-    report = build_report(all_results, counter_results, tasks, price_table, price_sha256, price_access_ts)
+    report = build_report(
+        all_results, counter_results, tasks, price_table, price_sha256, price_access_ts
+    )
 
     # Step 4: Write outputs
     PROOF_DIR.mkdir(parents=True, exist_ok=True)
@@ -730,9 +746,13 @@ def main() -> None:
     print("=== Per-group results ===")
     for group, gs in report.get("group_summaries", {}).items():
         print(f"  {group} ({len(gs['tasks'])} tasks):")
-        print(f"    Baseline pass: {gs['baseline_pass_rate']}, Verdict pass: {gs['verdict_pass_rate']}")
+        print(
+            f"    Baseline pass: {gs['baseline_pass_rate']}, Verdict pass: {gs['verdict_pass_rate']}"
+        )
         print(f"    Eligible pairs: {gs['eligible_pairs']}/{gs['total_pairs']}")
-        print(f"    Baseline cost: ${gs['baseline_cost_usd']:.4f}, Verdict cost: ${gs['verdict_cost_usd']:.4f}")
+        print(
+            f"    Baseline cost: ${gs['baseline_cost_usd']:.4f}, Verdict cost: ${gs['verdict_cost_usd']:.4f}"
+        )
         if gs["baseline_cost_usd"] > 0:
             print(f"    Savings: {gs['savings_pct']}%")
 

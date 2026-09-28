@@ -186,7 +186,9 @@ def live_savings() -> None:
     for entry in per_task:
         task_id = entry["task_id"]
         # Check if any pair for this task is eligible
-        task_eligible = any(p.startswith(f"{task_id}/") for p in eligible_pairs) or task_id in eligible_tasks
+        task_eligible = (
+            any(p.startswith(f"{task_id}/") for p in eligible_pairs) or task_id in eligible_tasks
+        )
         if not task_eligible:
             continue
         b_runs = [r for r in entry["runs"] if r["arm"] == "baseline" and r.get("cost_usd")]
