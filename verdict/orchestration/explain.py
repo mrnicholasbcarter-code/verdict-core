@@ -151,7 +151,10 @@ def _selected_because(selected: RouteVerdict, runner_up: RouteVerdict | None) ->
         left = selected.rank_components.get(key)
         right = other_components.get(key)
         if left is None or right is None:
-            reasons.append(f"{key} unknown on one side: {left} vs {right}")
+            if key == "price" and left is None and right is None:
+                reasons.append("price unknown for both")
+            else:
+                reasons.append(f"{key} unknown on one side: {left} vs {right}")
             continue
         if left == right:
             reasons.append(f"equal on {key}: {left}")

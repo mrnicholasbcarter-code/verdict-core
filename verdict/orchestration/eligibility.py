@@ -488,39 +488,28 @@ class EligibilityLadder:
             score += 1
         return score
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
-        try:
-            pref = self._prefer_providers.index(a.provider)
-        except ValueError:
-            pref = len(self._prefer_providers)
-        # BOD-271: within a capacity class the cheapest SUFFICIENT route wins.
-        # Capability beyond the task's floor (slack) and metered price both cost
-        # something, so a stronger model never wins merely for being stronger.
-        # Load comes before task fit: spreading concurrent nodes across equally
-        # eligible routes of the preferred capacity beats piling onto one route.
-        return (
-            _CAPACITY_ORDER[a.capacity],
-            a.slack,
-            a.price,
-            pref,
-            self._load(a.route_id),
-            -a.fit,
-            a.route_id,
-        )
-
     def _rank_components(self, a: _Assessment) -> dict[str, Any]:
-        """Mirror of :meth:`_rank_key` as an ordered dict.
+        """Compute all ranking components used to sort candidates.
 
-        Values are the same integers/floats/strings the sort key uses, so that
-        ``sorted(candidates, key=lambda a: tuple(components.values()))`` produces
-        the same order as ``sorted(candidates, key=self._rank_key)``. ``price``
-        is reported as ``None`` when the inventory row had no explicit pricing
-        (rank uses 0.0 as the tiebreaker, but the exposed value must not lie
-        about being "free"). Callers can either sort on the tuple or read the
-        keys individually to explain a decision.
+        This is the single source of truth for ranking values. Returns an ordered
+        dict with these keys (in sort order):
 
-        Uses ``getattr`` with defaults so a partially-mocked ladder (see the
-        BOD-203 post-probe tests that bypass ``__init__``) keeps working.
+        - ``capacity_order``: int from _CAPACITY_ORDER mapping
+        - ``slack``: capability tiers beyond task floor
+        - ``price_for_rank``: float, always 0.0 when price_known is False
+        - ``provider_pref``: index in prefer_providers or len() if not listed
+        - ``load``: current assignment count for this route
+        - ``fit``: capability tiers from task floor to route tier (positive)
+        - ``route_id``: lexicographic tiebreaker
+        - ``price_known``: bool, whether inventory had explicit pricing
+
+        The sort tuple built by :meth:`_rank_key` negates ``fit`` so stronger
+        routes rank lower (smaller is better). Exposed ``rank_components`` in
+        :class:`RouteVerdict` shows ``price`` as ``None`` when ``price_known``
+        is False (display truth) and ``fit`` as positive (capability distance).
+
+        Uses ``getattr`` with defaults so partially-mocked ladders (BOD-203
+        post-probe tests that bypass ``__init__``) keep working.
         """
         preferred = getattr(self, "_prefer_providers", ())
         try:
@@ -529,18 +518,52 @@ class EligibilityLadder:
             pref = len(preferred)
         load_fn = getattr(self, "_load", None)
         load_value = int(load_fn(a.route_id)) if callable(load_fn) else 0
-        # Bare _Assessment attributes are used for capability/price/slack.
-        # A Mock assessment simply carries whatever the test set on it.
         price_known = bool(getattr(a, "price_known", False))
         price_value = getattr(a, "price", 0.0)
         return {
             "capacity_order": _CAPACITY_ORDER[a.capacity],
             "slack": getattr(a, "slack", 0),
-            "price": price_value if price_known else None,
+            "price_for_rank": price_value if price_known else 0.0,
             "provider_pref": pref,
             "load": load_value,
             "fit": getattr(a, "fit", 0),
             "route_id": a.route_id,
+            "price_known": price_known,
+        }
+
+    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
+        """Build the sort tuple from :meth:`_rank_components`.
+
+        Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
+        """
+        c = self._rank_components(a)
+        return (
+            c["capacity_order"],
+            c["slack"],
+            c["price_for_rank"],
+            c["provider_pref"],
+            c["load"],
+            -c["fit"],  # negate: stronger routes (higher fit) should rank lower
+            c["route_id"],
+        )
+
+    def _rank_components_for_display(self, components: dict[str, Any]) -> dict[str, Any]:
+        """Transform internal rank_components to consumer-facing format.
+
+        Internal format has ``price_for_rank`` (always a float, 0.0 when unknown)
+        and ``price_known`` (bool). Consumer format replaces these with ``price``
+        (None when unknown, float otherwise) and omits ``price_known``.
+        """
+        price_known = components.get("price_known", False)
+        price_value = components.get("price_for_rank", 0.0)
+        return {
+            "capacity_order": components["capacity_order"],
+            "slack": components["slack"],
+            "price": price_value if price_known else None,
+            "provider_pref": components["provider_pref"],
+            "load": components["load"],
+            "fit": components["fit"],  # stays positive
+            "route_id": components["route_id"],
         }
 
     def _assess_all(
@@ -575,7 +598,14 @@ class EligibilityLadder:
         # BOD-277: candidates already carry the assessment fields we expose.
         components = {a.route_id: self._rank_components(a) for a in candidates}
         verdicts = tuple(
-            a.verdict(rank=ranks.get(a.route_id), rank_components=components.get(a.route_id))
+            a.verdict(
+                rank=ranks.get(a.route_id),
+                rank_components=(
+                    self._rank_components_for_display(components[a.route_id])
+                    if a.route_id in components
+                    else None
+                ),
+            )
             for a in assessments
         )
         self._last_verdicts = verdicts
@@ -656,7 +686,11 @@ class EligibilityLadder:
                     plan_label=a.plan_label,
                     cooldown_until=None,
                     rank=chosen_rank,
-                    rank_components=components.get(a.route_id),
+                    rank_components=(
+                        self._rank_components_for_display(components[a.route_id])
+                        if a.route_id in components
+                        else None
+                    ),
                     capability_tier=a.tier if a.tier_known else None,
                     context_window=a.context_window,
                     supports_tools=a.supports_tools,
@@ -667,7 +701,12 @@ class EligibilityLadder:
             else:
                 verdicts.append(
                     a.verdict(
-                        rank=ranks.get(a.route_id), rank_components=components.get(a.route_id)
+                        rank=ranks.get(a.route_id),
+                        rank_components=(
+                            self._rank_components_for_display(components[a.route_id])
+                            if a.route_id in components
+                            else None
+                        ),
                     )
                 )
         self._last_verdicts = tuple(verdicts)

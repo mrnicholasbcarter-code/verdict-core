@@ -274,6 +274,7 @@ class TestBehaviourParityAcrossFixtures:
         candidates = [v for v in verdicts if v.rank_components is not None]
         assert candidates
         for v in candidates:
+            assert v.rank_components is not None
             assert list(v.rank_components) == [  # ordered dict, matches _rank_key
                 "capacity_order",
                 "slack",
@@ -475,7 +476,7 @@ class TestExplainSelection:
         ]
         reasons = explain_selection(vs)["selected_because"]
         # No component can decide; walk records honest state without inventing.
-        assert any("unknown on one side" in r for r in reasons)
+        assert any("price unknown for both" in r for r in reasons)
         # route_id differs -> deciding component (tiebroken by route_id).
         assert reasons[-1].startswith("tiebroken by route_id: p/sel vs p/next")
 
@@ -562,3 +563,112 @@ def test_event_size_bound_stays_under_32kb_with_25_candidates() -> None:
     sample = [v.to_dict() for v in verdicts[-25:]]
     blob = json.dumps(sample, default=str)
     assert len(blob.encode()) < 32_768
+
+
+
+def test_rank_key_parity_with_original(tmp_path: Path) -> None:
+    """Verify that refactored ranking produces identical sort order to origin/main.
+
+    BOD-277 follow-up: _rank_components is now the single source of truth, and
+    _rank_key builds its tuple from those components. This test freezes the
+    original _rank_key logic and verifies byte-identical ranking on 500 routes.
+    """
+    import random
+
+    # Freeze the original _rank_key implementation from origin/main
+    def _original_rank_key(
+        ladder: EligibilityLadder,
+        a: Any,
+        prefer_providers: tuple[str, ...],
+        load_map: Mapping[str, int],
+    ) -> tuple[int, int, float, int, int, int, str]:
+        from verdict.orchestration.eligibility import _CAPACITY_ORDER
+        try:
+            pref = prefer_providers.index(a.provider)
+        except ValueError:
+            pref = len(prefer_providers)
+        return (
+            _CAPACITY_ORDER[a.capacity],
+            a.slack,
+            a.price,
+            pref,
+            load_map.get(a.route_id, 0),
+            -a.fit,
+            a.route_id,
+        )
+
+    # Create a ladder with 500 synthetic routes
+    random.seed(42)
+    rows = []
+    for i in range(500):
+        provider = random.choice(["anthropic", "openai", "google", "meta"])
+        route_id = f"{provider}/model-{i:03d}"
+        has_pricing = random.random() > 0.3  # 70% have pricing
+        pricing = {"input": random.uniform(0.5, 10.0), "output": random.uniform(1.0, 20.0)} if has_pricing else None
+        rows.append(_row(
+            route_id,
+            owned_by=provider,
+            context=random.choice([8_000, 32_000, 128_000, 200_000]),
+            tools=random.choice([True, False]),
+            reasoning=random.choice([True, False]),
+            pricing=pricing,
+        ))
+
+    conns = [
+        _conn("anthropic", plan="max"),
+        _conn("openai", plan="max"),
+        _conn("google", plan="max"),
+        _conn("meta", plan="max"),
+    ]
+
+    # Create synthetic load map
+    load_map = {row["id"]: random.randint(0, 5) for row in rows}
+
+    def load_fn(rid: str) -> int:
+        return load_map.get(rid, 0)
+
+    ladder = EligibilityLadder(
+        inventory_rows=rows,
+        connections=conns,
+        probe=_Probe(),
+        state_path=tmp_path / "parity.json",
+        prefer_providers=("anthropic", "openai"),
+        max_probes_per_select=0,
+        max_per_route=10,
+        load=load_fn,
+    )
+
+    requirements = TaskRequirements(
+        max_capability_tier=2,
+        min_context_tokens=16_000,
+        required_capabilities=frozenset(),
+    )
+
+    # Get all assessments
+    _assessments, candidates = ladder._assess_all(requirements, NOW)
+
+    # Compute both sort keys
+    prefer = ("anthropic", "openai")
+    original_keys = [_original_rank_key(ladder, a, prefer, load_map) for a in candidates]
+    new_keys = [ladder._rank_key(a) for a in candidates]
+
+    # Verify byte-identical tuples
+    assert original_keys == new_keys, "Ranking keys must be byte-identical to origin/main"
+
+    # Verify sort order is identical
+    original_sorted = sorted(range(len(candidates)), key=lambda i: original_keys[i])
+    new_sorted = sorted(range(len(candidates)), key=lambda i: new_keys[i])
+    assert original_sorted == new_sorted, "Sort order must be identical to origin/main"
+
+    # Verify that _rank_components produces values that match the key
+    # (except fit is positive in components, negated in the key)
+    for a in candidates[:10]:  # Check first 10
+        components = ladder._rank_components(a)
+        key = ladder._rank_key(a)
+        assert components["capacity_order"] == key[0]
+        assert components["slack"] == key[1]
+        assert components["price_for_rank"] == key[2]
+        assert components["provider_pref"] == key[3]
+        assert components["load"] == key[4]
+        assert -components["fit"] == key[5]  # fit is negated in the key
+        assert components["route_id"] == key[6]
