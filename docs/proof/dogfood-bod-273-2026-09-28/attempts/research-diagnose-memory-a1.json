@@ -1,0 +1,20 @@
+{
+ "node_id": "research-diagnose-memory",
+ "attempt": 1,
+ "route_id": "cc/claude-sonnet-4-5-20250929",
+ "ok": true,
+ "reported_model": "cc/claude-sonnet-4-5-20250929",
+ "stop_reason": "stop",
+ "status_code": null,
+ "error": "",
+ "output_tail": "Perfect! I have successfully completed the research objective. Let me provide a final summary:\n\n## Research Complete\n\nI have examined the current `diagnose_shared_memory` implementation and fully understand the issue:\n\n### Key Findings\n\n1. **Location**: The function is in `verdict/runtime_certification.py`, lines 690-738\n\n2. **Current Problem**: Lines 741-745 incorrectly map BOTH `auth_failed` and `degraded` provider status values to the same `unwritable` reason:\n   ```python\n   if status_raw in {\"degraded\", \"auth_failed\"}:\n       return SharedMemoryDiagnosis(\n           state=CertificationState.DEGRADED,\n           reason=f\"unwritable: {report.get('message', status_raw)}\",\n       )\n   ```\n\n3. **Required Fix**: Split this into two separate checks:\n   - `auth_failed` \u2192 `\"auth_failed: ...\"` \n   - `degraded` \u2192 `\"unwritable: ...\"`\n\n4. **Test Impact Identified**:\n   - `test_unwritable()` in `test_runtime_certification.py` will need update\n   - `test_doctor_shared_memory_unwritable()` in `test_doctor_shared_memory.py` will need update\n   - `test_unwritable_degraded_status()` should continue passing unchanged\n\n5. **Complete understanding** of the status-to-reason mapping logic for all cases (unreachable, schema_incompatible, unwritable, auth_failed, ok)\n\nAll acceptance criteria for this research node have been met. The findings are documented in `RESEARCH_FINDINGS.md` for reference by implementation nodes.\n\n**RESULT: DONE**",
+ "duration_seconds": 192.73180543299532,
+ "session_ref": "",
+ "usage": {
+  "input_tokens": 407,
+  "output_tokens": 663,
+  "cost_usd": 0.0,
+  "tokens_source": "prime_stdout",
+  "turns": 1
+ }
+}

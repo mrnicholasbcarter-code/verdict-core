@@ -1,0 +1,20 @@
+{
+ "node_id": "fix-diagnose-auth-failed",
+ "attempt": 1,
+ "route_id": "cc/claude-sonnet-4-5-20250929",
+ "ok": true,
+ "reported_model": "cc/claude-sonnet-4-5-20250929",
+ "stop_reason": "stop",
+ "status_code": null,
+ "error": "",
+ "output_tail": "Perfect! All acceptance criteria have been met:\n\n\u2705 diagnose_shared_memory returns a reason starting with 'auth_failed' when provider status is 'auth_failed'\n\u2705 'unwritable' is still returned for real write-permission failures (degraded status)\n\u2705 All existing tests in test_runtime_certification.py pass\n\nRESULT: DONE",
+ "duration_seconds": 353.02558416401735,
+ "session_ref": "",
+ "usage": {
+  "input_tokens": 340,
+  "output_tokens": 348,
+  "cost_usd": 0.0,
+  "tokens_source": "prime_stdout",
+  "turns": 1
+ }
+}

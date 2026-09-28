@@ -1,0 +1,83 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "verdict-omniroute",
+    "model": "codex/gpt-6-sol"
+  },
+  "message": "Review complete: 0 finding(s) across 1 selected item(s).",
+  "summary": {
+    "files_reviewed": 1,
+    "comments": 0,
+    "total_tokens": 24918,
+    "input_tokens": 24602,
+    "output_tokens": 316,
+    "cache_read_tokens": 18688,
+    "elapsed": "20s"
+  },
+  "tool_calls": {
+    "total": 5,
+    "by_tool": {
+      "code_search": 2,
+      "file_read": 3
+    },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [],
+  "groups": [
+    {
+      "label": "verdict/runtime_certification.py",
+      "files": [
+        "verdict/runtime_certification.py"
+      ]
+    }
+  ],
+  "session_id": "acf676e9-5dbb-4ff4-9c4c-91b57d79ce52",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "acf676e9-5dbb-4ff4-9c4c-91b57d79ce52",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "e3c724cb464d100f057412f94389b5bb89a4c2efdde808dfe540dafc6d642ff0"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "08083f68c818b69c75f82758d06db4df3ba7bf4b",
+      "requested_head": "283f8e0490c606356650d6295a2e68b5c9435c0a",
+      "resolved_base": "08083f68c818b69c75f82758d06db4df3ba7bf4b",
+      "resolved_head": "283f8e0490c606356650d6295a2e68b5c9435c0a",
+      "exact_range": "08083f68c818b69c75f82758d06db4df3ba7bf4b..283f8e0490c606356650d6295a2e68b5c9435c0a",
+      "source_artifact_sha256": "9beb53838a636d4c97f698636feae8a1a2c8cb4007ce2ef0c4afa088017448d8"
+    },
+    "execution": {
+      "ocr_version": "v1.12.9",
+      "provider": "verdict-omniroute",
+      "model": "codex/gpt-6-sol",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "9f33647a25a002db1b7770ce092ffab8b77ef98379e262871a243afd75f798d9",
+      "runtime_config_sha256": "27e35540e094fcce547856f8256409e469241b3c88c930153ec2ee18c5bb3608"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "695a8c2f6dba527aee99ed7b79dbf241988bc4aaad88bb99ebb4abb6e795a34d",
+          "path": "verdict/runtime_certification.py",
+          "fingerprint": "a210c93c13002a38107c4b25bcf1c7466e45ab7afa7cf525a6a3f1f9aa41a3bb"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "695a8c2f6dba527aee99ed7b79dbf241988bc4aaad88bb99ebb4abb6e795a34d",
+          "path": "verdict/runtime_certification.py",
+          "fingerprint": "a210c93c13002a38107c4b25bcf1c7466e45ab7afa7cf525a6a3f1f9aa41a3bb"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 20428
+  }
+}

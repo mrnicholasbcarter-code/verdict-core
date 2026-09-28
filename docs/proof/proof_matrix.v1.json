@@ -131,6 +131,11 @@
           "path": "tests/test_runtime_compatibility.py",
           "locator": "test_limitations_are_visible_as_degraded_and_output_is_secret_safe",
           "kind": "test"
+        },
+        {
+          "path": "docs/proof/dogfood-bod-273-2026-09-28/README.md",
+          "locator": "BOD-273 auth_failed diagnosis",
+          "kind": "evidence"
         }
       ],
       "verification": "pytest -q tests/test_runtime_compatibility.py",
@@ -415,6 +420,11 @@
           "path": "VERSIONING.md",
           "locator": "release versioning",
           "kind": "documentation"
+        },
+        {
+          "path": "docs/proof/dogfood-bod-273-2026-09-28/receipt.json",
+          "locator": "first complete real-model dogfood run",
+          "kind": "evidence"
         }
       ],
       "verification": "Run the release checklist against an exact tagged artifact and attach the resulting bundle and CI records.",
