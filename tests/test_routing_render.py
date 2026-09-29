@@ -239,7 +239,9 @@ def _to_text(renderable: Any, width: int = 100, *, color: bool = False) -> str:
         force_terminal=color,
         color_system="truecolor" if color else None,
         no_color=not color,
+        file=None,
     )
+    console.size = (width, 40)
     console.print(renderable)
     return console.export_text()
 
@@ -531,6 +533,34 @@ class TestPresentationAndGoldens:
                 path.write_text(got)
             assert got == path.read_text(), f"golden mismatch at width={width}"
 
+    def test_lines_fit_and_counts_match_rows(self) -> None:
+        """No rendered line exceeds the width, and the header names the row gap."""
+        view = _view()
+        evaluation = view.evaluations[0]
+        assert evaluation.candidates is not None
+        recorded = len(evaluation.candidates)
+        omitted = evaluation.candidates_omitted
+        for width in (60, 100, 120, 200):
+            text = render_routing_text(view, width=width, now=_NOW)
+            for line in text.splitlines():
+                assert len(line) <= width + 7, f"width {width} line {len(line)}: {line!r}"
+            rendered = render_routing(view, _plain_mode(width), now=_NOW)
+            rich = _to_text(rendered, width=width, color=False)
+            for line in rich.splitlines():
+                assert len(line) <= width, f"rich width {width} line {len(line)}: {line!r}"
+            flat = " ".join(text.split())
+            assert f"showing {recorded}/{recorded}" in flat
+            if omitted:
+                assert f"{recorded} recorded, {omitted} counted only" in flat
+            # Table state labels, not the funnel, decide how many rows are admitted.
+            table = [
+                line
+                for line in text.splitlines()
+                if "SELECTED" in line or "ADMITTED" in line or "REJECTED" in line
+            ]
+            assert any("SELECTED" in line and "see selected because" in line for line in table)
+            assert sum("ADMITTED" in line for line in table) == 1
+
     def test_colour_uses_design_tokens_only(self) -> None:
         src = Path("verdict/orchestration/routing_render.py").read_text()
         assert re.search(r"#[0-9a-fA-F]{6}\b", src) is None
@@ -540,6 +570,7 @@ class TestPresentationAndGoldens:
         assert "from verdict.design import" in src
         assert "render_state(" in src
         console = Console(record=True, width=100, force_terminal=True, color_system="truecolor")
+        console.size = (100, 40)
         console.print(render_routing(_view(), _color_mode(100)))
         exported = console.export_text()
         assert "selected because" in exported.lower() or "SELECTED" in exported

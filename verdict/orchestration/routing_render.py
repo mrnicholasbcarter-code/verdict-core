@@ -78,6 +78,34 @@ def _fmt(value: Any) -> str:
     return _safe_text(str(value))
 
 
+def _wrap_plain(text: str, width: int) -> list[str]:
+    """Wrap a prose line on spaces. A single token longer than width is cut.
+
+    A trailing word shorter than 8 characters stays on the previous line,
+    even if that line runs a few columns past width. An orphan word is worse.
+    """
+    if len(text) <= width:
+        return [text]
+    out: list[str] = []
+    rest = text
+    while rest:
+        if len(rest) <= width:
+            out.append(rest)
+            break
+        cut = rest.rfind(" ", 0, width + 1)
+        if cut <= 0:
+            out.append(rest[: width - 1] + "\u2026")
+            rest = rest[width - 1 :].lstrip()
+            continue
+        nxt = rest[cut + 1 :]
+        if " " not in nxt and len(nxt) < 8:
+            out.append(rest)
+            break
+        out.append(rest[:cut].rstrip())
+        rest = nxt.lstrip()
+    return out or [""]
+
+
 def _fmt_remaining(remaining: float | None) -> str:
     if remaining is None:
         return "unknown"
@@ -87,7 +115,8 @@ def _fmt_remaining(remaining: float | None) -> str:
 
 
 def _fmt_rank(rank: int | None) -> str:
-    return "unknown" if rank is None else str(rank)
+    """Missing rank is an em dash, not the word unknown (that word is noise)."""
+    return "\u2014" if rank is None else str(rank)
 
 
 def _fmt_components(components: Mapping[str, Any] | None) -> str:
@@ -191,13 +220,46 @@ def paginate(
     return list(rows[start : start + size]), index, pages
 
 
+def _recorded_count(evaluation: EligibilityEvaluation) -> int | None:
+    if evaluation.candidates is None:
+        return None
+    return len(evaluation.candidates)
+
+
+def _funnel_admitted(evaluation: EligibilityEvaluation) -> int:
+    """Routes the funnel says reached TASK_ELIGIBLE (includes the selected winner)."""
+    return evaluation.funnel.get("TASK_ELIGIBLE", 0)
+
+
+def _table_state_counts(evaluation: EligibilityEvaluation) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for cand in evaluation.candidates or ():
+        state = candidate_state(cand, evaluation)
+        counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
 def _headline(evaluation: EligibilityEvaluation) -> str:
+    """Counts that match the table, or say exactly why they do not.
+
+    Funnel DISCOVERED is the evaluated population. The table lists only
+    recorded candidate rows. ``candidates_omitted`` are counted, not listed.
+    Admitted is the funnel TASK_ELIGIBLE count (selected is inside that stage),
+    not the number of rows whose explorer state is ADMITTED.
+    """
     discovered = evaluation.funnel.get("DISCOVERED", 0)
-    admitted = evaluation.funnel.get("TASK_ELIGIBLE", 0)
+    admitted = _funnel_admitted(evaluation)
     selected = evaluation.funnel.get("SELECTED", 0)
+    recorded = _recorded_count(evaluation)
     omitted = evaluation.candidates_omitted
-    extra = f", {omitted} omitted" if omitted else ""
-    return f"{discovered} candidates, {admitted} admitted, {selected} selected{extra}"
+    core = f"{discovered} candidates, {admitted} admitted, {selected} selected"
+    if recorded is None:
+        return core
+    if omitted:
+        return f"{core}; {recorded} recorded, {omitted} counted only"
+    if recorded != discovered:
+        return f"{core}; {recorded} recorded with details"
+    return core
 
 
 def _funnel_line(evaluation: EligibilityEvaluation) -> str:
@@ -206,6 +268,32 @@ def _funnel_line(evaluation: EligibilityEvaluation) -> str:
         count = evaluation.funnel.get(stage)
         parts.append(f"{stage} {_fmt(count) if count is None else count}")
     return " > ".join(parts)
+
+
+def _funnel_renderable(evaluation: EligibilityEvaluation, mode: PresentationMode) -> Text:
+    """One secondary line. Only the SELECTED stage count takes the primary colour."""
+    text = Text()
+    for index, stage in enumerate(FUNNEL_STAGES):
+        if index:
+            text.append(" > ", style=_style("SECONDARY", mode))
+        count = evaluation.funnel.get(stage)
+        shown = _fmt(count) if count is None else str(count)
+        text.append(f"{stage} ", style=_style("SECONDARY", mode))
+        if stage == "SELECTED":
+            text.append(shown, style=_style("PRIMARY", mode))
+        else:
+            text.append(shown, style=_style("SECONDARY", mode))
+    return text
+
+
+def _because_renderable(line: str, mode: PresentationMode) -> Text:
+    """PRIMARY label, TEXT body. The full reason lives here, not in the table."""
+    prefix = "selected because:"
+    if line.startswith(prefix):
+        return Text.assemble(
+            (prefix, _style("PRIMARY", mode)), (line[len(prefix) :], _style("TEXT", mode))
+        )
+    return Text(line, style=_style("TEXT", mode))
 
 
 def _freshness(evaluation: EligibilityEvaluation, generated_at: str) -> str:
@@ -314,9 +402,10 @@ def _state_renderable(
     remaining_seconds: float | None = None,
     phase: float = 0.0,
 ) -> Text:
-    """Glyph + label via design.render_state. Motion only for observed running."""
+    """Glyph + label only. Remaining time stays in the cooldowns section."""
+    _ = remaining_seconds
     design_state = _STATE_TOKEN[state]
-    rendered = render_state(design_state, mode=mode, remaining_seconds=remaining_seconds)
+    rendered = render_state(design_state, mode=mode, show_remaining=False)
     # Explorer states that design.py labels differently keep an explicit alias
     # so "visible" / "confirmed" stay distinct in the table.
     if state == "visible":
@@ -337,9 +426,7 @@ def _state_renderable(
     return rendered
 
 
-def _plain_state(
-    state: CandidateState, *, unicode: bool, remaining_seconds: float | None = None
-) -> str:
+def _plain_state(state: CandidateState, *, unicode: bool) -> str:
     from verdict.design import state_style
 
     design_state = _STATE_TOKEN[state]
@@ -353,7 +440,8 @@ def _plain_state(
     if state == "selected":
         glyph = style.glyph if unicode else style.ascii_glyph
         return f"{glyph} SELECTED"
-    return style.text(unicode=unicode, remaining_seconds=remaining_seconds)
+    # Glyph + label only. Cooldown remaining time is a cooldowns-section fact.
+    return style.text(unicode=unicode, show_remaining=False)
 
 
 def _remaining_seconds(cooldown_until: str | None, now: datetime | None) -> float | None:
@@ -377,8 +465,9 @@ def _remaining_seconds(cooldown_until: str | None, now: datetime | None) -> floa
 def _candidate_reason_cell(candidate: CandidateRecord, evaluation: EligibilityEvaluation) -> str:
     state = candidate_state(candidate, evaluation)
     if state == "selected":
+        # The full reason is the "selected because" line above the table.
         if evaluation.selected_because:
-            return _safe_text(evaluation.selected_because[0])
+            return "see selected because"
         return "unknown (no rank components recorded)"
     if state == "rejected" or state == "cooldown":
         stage, reason = first_rejection(candidate)
@@ -392,6 +481,17 @@ def _candidate_reason_cell(candidate: CandidateRecord, evaluation: EligibilityEv
     return "unknown"
 
 
+def _provider_width(rows: Sequence[CandidateRecord]) -> int:
+    widest = max((len(_fmt(c.provider) if c.provider else "unknown") for c in rows), default=0)
+    return max(10, widest)
+
+
+def _rank_cell(rank: int | None, mode: PresentationMode) -> Text:
+    if rank is None:
+        return Text("\u2014", style=_style("MUTED", mode))
+    return Text(str(rank), style=_style("TEXT", mode))
+
+
 def _build_table(
     evaluation: EligibilityEvaluation,
     rows: Sequence[CandidateRecord],
@@ -400,40 +500,97 @@ def _build_table(
     now: datetime | None = None,
     phase: float = 0.0,
 ) -> Table:
+    """Fixed widths for state, rank, and capacity. Ratio for route and reason.
+
+    Panel padding is (1, 2), so the inner width is mode.width - 6. Provider
+    is at least 10 so names like openrouter are not cut to openrou.
+    """
+    inner = max(40, mode.width - 6)
+    provider_w = _provider_width(rows)
+    state_w = 12  # glyph + space + COOLDOWN; remaining time is not in this cell
+    show_rank = inner >= 90
+    show_comp = inner >= 130
+    rank_w = 6
+    capacity_w = 12
+    fixed = 2 + provider_w + 2 + state_w  # route padding + provider + state
+    if show_rank:
+        fixed += 2 + rank_w + 2 + capacity_w
+    if show_comp:
+        fixed += 2 + 12
+    fixed += 2  # reason padding
+    leftover = max(8, inner - fixed)
+    route_w = max(10, leftover // 3)
+    reason_w = max(8, leftover - route_w)
+
     table = Table(
-        expand=True,
+        expand=False,
         show_header=True,
         header_style=_style("SECONDARY", mode),
         border_style=_style("BORDER", mode),
         box=None,
         pad_edge=False,
+        padding=(0, 1),
         collapse_padding=True,
     )
-    table.add_column("route", overflow="ellipsis", no_wrap=True, ratio=3, min_width=10)
-    table.add_column("provider", overflow="ellipsis", no_wrap=True, ratio=1, min_width=4)
-    table.add_column("state", overflow="ellipsis", no_wrap=True, ratio=3, min_width=12)
-    if mode.width >= 100:
-        table.add_column("rank", overflow="ellipsis", no_wrap=True, justify="right", min_width=4)
-        table.add_column("capacity", overflow="ellipsis", no_wrap=True, ratio=2, min_width=10)
-    if mode.width >= 140:
-        table.add_column("components", overflow="ellipsis", no_wrap=True, ratio=3, min_width=8)
-    table.add_column("reason", overflow="ellipsis", no_wrap=True, ratio=4, min_width=8)
+    table.add_column(
+        "route", overflow="ellipsis", no_wrap=True, ratio=3, min_width=route_w, max_width=route_w
+    )
+    table.add_column(
+        "provider",
+        overflow="ellipsis",
+        no_wrap=True,
+        min_width=provider_w,
+        max_width=provider_w,
+        width=provider_w,
+    )
+    table.add_column(
+        "state",
+        overflow="ellipsis",
+        no_wrap=True,
+        width=state_w,
+        min_width=state_w,
+        max_width=state_w,
+    )
+    if show_rank:
+        table.add_column(
+            "rank",
+            overflow="ellipsis",
+            no_wrap=True,
+            justify="right",
+            width=rank_w,
+            min_width=rank_w,
+            max_width=rank_w,
+        )
+        table.add_column(
+            "capacity",
+            overflow="ellipsis",
+            no_wrap=True,
+            width=capacity_w,
+            min_width=capacity_w,
+            max_width=capacity_w,
+        )
+    if show_comp:
+        table.add_column(
+            "components", overflow="ellipsis", no_wrap=True, ratio=2, min_width=12, max_width=24
+        )
+    table.add_column(
+        "reason", overflow="ellipsis", no_wrap=True, ratio=4, min_width=reason_w, max_width=reason_w
+    )
 
     for cand in rows:
         state = candidate_state(cand, evaluation)
-        remaining = _remaining_seconds(cand.cooldown_until, now)
-        state_cell = _state_renderable(state, mode, remaining_seconds=remaining, phase=phase)
+        state_cell = _state_renderable(state, mode, remaining_seconds=None, phase=phase)
         reason = _candidate_reason_cell(cand, evaluation)
         cells: list[RenderableType] = [
-            Text(_fmt(cand.route_id) if cand.route_id else "unknown"),
-            Text(_fmt(cand.provider) if cand.provider else "unknown"),
+            Text(_fmt(cand.route_id) if cand.route_id else "unknown", style=_style("TEXT", mode)),
+            Text(_fmt(cand.provider) if cand.provider else "unknown", style=_style("TEXT", mode)),
             state_cell,
         ]
-        if mode.width >= 100:
-            cells.append(Text(_fmt_rank(cand.rank)))
-            cells.append(Text(_capacity_source(cand)))
-        if mode.width >= 140:
-            cells.append(Text(_fmt_components(cand.rank_components)))
+        if show_rank:
+            cells.append(_rank_cell(cand.rank, mode))
+            cells.append(Text(_capacity_source(cand), style=_style("TEXT", mode)))
+        if show_comp:
+            cells.append(Text(_fmt_components(cand.rank_components), style=_style("MUTED", mode)))
         cells.append(Text(reason, style=_style("MUTED", mode)))
         table.add_row(*cells)
     return table
@@ -454,9 +611,13 @@ def _evaluation_blocks(
 ) -> list[RenderableType]:
     blocks: list[RenderableType] = []
     node = evaluation.node_id or "unknown"
-    header = f"node {node}  seq {evaluation.seq}  {_headline(evaluation)}"
-    blocks.append(Text(header, style=_style("PRIMARY", mode)))
-    blocks.append(Text(_funnel_line(evaluation), style=_style("SECONDARY", mode)))
+    header = Text.assemble(
+        (f"node {node}", _style("TEXT", mode)),
+        (f"  seq {evaluation.seq}  ", _style("SECONDARY", mode)),
+        (_headline(evaluation), _style("SECONDARY", mode)),
+    )
+    blocks.append(header)
+    blocks.append(_funnel_renderable(evaluation, mode))
     blocks.append(Text(_freshness(evaluation, generated_at), style=_style("MUTED", mode)))
 
     selected = evaluation.selected_route or "unknown"
@@ -471,7 +632,7 @@ def _evaluation_blocks(
             Text("MISMATCH: selected route != observed reported_model", style=_style("ERROR", mode))
         )
     for line in _selected_because_lines(evaluation):
-        blocks.append(Text(line, style=_style("CYAN", mode)))
+        blocks.append(_because_renderable(line, mode))
 
     if evaluation.candidates is None:
         blocks.append(
@@ -507,6 +668,8 @@ def _evaluation_blocks(
         )
         if page_rows:
             blocks.append(_build_table(evaluation, page_rows, mode, now=now, phase=phase))
+            if any(cand.rank is None for cand in page_rows):
+                blocks.append(Text("rank \u2014 not recorded", style=_style("MUTED", mode)))
         else:
             blocks.append(Text("no candidates on this page", style=_style("MUTED", mode)))
 
@@ -560,9 +723,12 @@ def render_routing(
     generated = view.generated_at or "unknown"
     n_eval = len(view.evaluations)
     blocks.append(
-        Text(
-            f"routing explorer  source={source}  evaluations={n_eval}  generated_at={generated}",
-            style=_style("PRIMARY", mode),
+        Text.assemble(
+            ("routing explorer", _style("PRIMARY", mode)),
+            (
+                f"  source={source}  evaluations={n_eval}  generated_at={generated}",
+                _style("SECONDARY", mode),
+            ),
         )
     )
     if not view.evaluations:
@@ -616,8 +782,11 @@ def render_routing_text(
     source = view.source or "unknown"
     generated = view.generated_at or "unknown"
     lines.append("routing")
-    lines.append(
-        f"explorer  source={source}  evaluations={len(view.evaluations)}  generated_at={generated}"
+    lines.extend(
+        _wrap_plain(
+            f"explorer  source={source}  evaluations={len(view.evaluations)}  generated_at={generated}",
+            width,
+        )
     )
     if not view.evaluations:
         lines.append("no eligibility evidence recorded")
@@ -635,18 +804,21 @@ def render_routing_text(
             lines.append("")
         evaluation = view.evaluations[eval_i]
         node = evaluation.node_id or "unknown"
-        lines.append(f"node {node}  seq {evaluation.seq}  {_headline(evaluation)}")
-        lines.append(_funnel_line(evaluation))
-        lines.append(_freshness(evaluation, view.generated_at))
+        lines.extend(
+            _wrap_plain(f"node {node}  seq {evaluation.seq}  {_headline(evaluation)}", width)
+        )
+        lines.extend(_wrap_plain(_funnel_line(evaluation), width))
+        lines.extend(_wrap_plain(_freshness(evaluation, view.generated_at), width))
         selected = evaluation.selected_route or "unknown"
         observed = evaluation.observed_route or "unknown"
         ident = f"selected_route={selected}  observed_route={observed}"
         if evaluation.session_ref:
             ident += f"  session={_safe_text(evaluation.session_ref)}"
-        lines.append(ident)
+        lines.extend(_wrap_plain(ident, width))
         if evaluation.selected_observed_mismatch:
-            lines.append("MISMATCH: selected route != observed reported_model")
-        lines.extend(_selected_because_lines(evaluation))
+            lines.extend(_wrap_plain("MISMATCH: selected route != observed reported_model", width))
+        for because in _selected_because_lines(evaluation):
+            lines.extend(_wrap_plain(because, width))
 
         if evaluation.candidates is None:
             lines.append("candidates: unknown (not recorded on this eligibility event)")
@@ -673,32 +845,58 @@ def render_routing_text(
             else:
                 show_rank = width >= 100
                 show_comp = width >= 140
-                header = ["route", "provider", "state"]
+                provider_w = _provider_width(page_rows)
+                state_w = 12  # ascii glyph + space + COOLDOWN (10)
+                # widths: fixed state/rank/capacity; provider from content; rest to route+reason
+                fixed = state_w + provider_w
                 if show_rank:
-                    header.extend(["rank", "capacity"])
+                    fixed += 6 + 12
                 if show_comp:
-                    header.append("components")
-                header.append("reason")
-                lines.append("  ".join(header))
+                    fixed += 16
+                # one space between route, provider, state, and each optional column, plus reason
+                n_gaps = 3 + (2 if show_rank else 0) + (1 if show_comp else 0)
+                leftover = max(16, width - fixed - n_gaps)
+                route_w = max(8, leftover // 3)
+                reason_w = max(8, leftover - route_w)
+
+                def _fit(value: str, size: int, *, right: bool = False) -> str:
+                    if len(value) > size:
+                        if size <= 1:
+                            return value[:size]
+                        return value[: size - 1] + "\u2026"
+                    if right:
+                        return value.rjust(size)
+                    return value.ljust(size)
+
+                header_cells = [
+                    _fit("route", route_w),
+                    _fit("provider", provider_w),
+                    _fit("state", state_w),
+                ]
+                if show_rank:
+                    header_cells.append(_fit("rank", 6, right=True))
+                    header_cells.append(_fit("capacity", 12))
+                if show_comp:
+                    header_cells.append(_fit("components", 16))
+                header_cells.append(_fit("reason", reason_w))
+                lines.append(" ".join(header_cells).rstrip())
                 for cand in page_rows:
                     st = candidate_state(cand, evaluation)
-                    remaining = _remaining_seconds(cand.cooldown_until, now)
-                    st_txt = _plain_state(st, unicode=False, remaining_seconds=remaining)
+                    st_txt = _plain_state(st, unicode=False)
                     cells = [
-                        _fmt(cand.route_id) if cand.route_id else "unknown",
-                        _fmt(cand.provider) if cand.provider else "unknown",
-                        st_txt,
+                        _fit(_fmt(cand.route_id) if cand.route_id else "unknown", route_w),
+                        _fit(_fmt(cand.provider) if cand.provider else "unknown", provider_w),
+                        _fit(st_txt, state_w),
                     ]
                     if show_rank:
-                        cells.append(_fmt_rank(cand.rank))
-                        cells.append(_capacity_source(cand))
+                        cells.append(_fit(_fmt_rank(cand.rank), 6, right=True))
+                        cells.append(_fit(_capacity_source(cand), 12))
                     if show_comp:
-                        cells.append(_fmt_components(cand.rank_components))
-                    cells.append(_candidate_reason_cell(cand, evaluation))
-                    row = "  ".join(cells)
-                    if len(row) > width:
-                        row = row[: max(0, width - 1)] + "..."
-                    lines.append(row)
+                        cells.append(_fit(_fmt_components(cand.rank_components), 16))
+                    cells.append(_fit(_candidate_reason_cell(cand, evaluation), reason_w))
+                    lines.append(" ".join(cells).rstrip())
+                if show_rank and any(cand.rank is None for cand in page_rows):
+                    lines.append("rank \u2014 not recorded")
 
         cooldowns = _cooldown_rows(evaluation)
         if cooldowns:
@@ -706,9 +904,12 @@ def render_routing_text(
             for cand in cooldowns:
                 remaining = _remaining_seconds(cand.cooldown_until, now)
                 remaining_txt = _fmt_remaining(remaining)
-                lines.append(
-                    f"  {_fmt(cand.route_id)}  until={_fmt(cand.cooldown_until)}  "
-                    f"remaining={remaining_txt}  capacity={_capacity_source(cand)}"
+                lines.extend(
+                    _wrap_plain(
+                        f"  {_fmt(cand.route_id)}  until={_fmt(cand.cooldown_until)}  "
+                        f"remaining={remaining_txt}  capacity={_capacity_source(cand)}",
+                        width,
+                    )
                 )
         else:
             lines.append("cooldowns: none recorded")
@@ -719,7 +920,7 @@ def render_routing_text(
                 reasons = evaluation.rejections[stage]
                 for reason, count in sorted(reasons.items()):
                     bits.append(f"{stage}:{_safe_text(reason)}={count}")
-            lines.append("rejections  " + "  ".join(bits))
+            lines.extend(_wrap_plain("rejections  " + "  ".join(bits), width))
         else:
             lines.append("rejections: unknown or none recorded")
     return "\n".join(lines) + "\n"

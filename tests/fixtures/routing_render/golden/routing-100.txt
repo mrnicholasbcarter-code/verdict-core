@@ -1,18 +1,19 @@
 routing
 explorer  source=recorded  evaluations=1  generated_at=2026-09-28T12:00:01Z
-node impl  seq 5  12 candidates, 3 admitted, 1 selected, 4 omitted
+node impl  seq 5  12 candidates, 3 admitted, 1 selected; 6 recorded, 4 counted only
 DISCOVERED 12 > ENTITLED 10 > HEALTHY 8 > AVAILABLE 6 > TASK_ELIGIBLE 3 > SELECTED 1
 evaluated_at=2026-09-28T12:00:00Z  view_generated_at=2026-09-28T12:00:01Z
 selected_route=cc/claude-opus  observed_route=cc/claude-opus  session=sess-abc
 selected because: cheaper capacity class than runner-up: subscription vs metered
 showing 6/6 (page 1/1, size 25)
-route  provider  state  rank  capacity  reason
-cc/claude-opus  cc  * SELECTED  0  subscription  cheaper capacity class than runner-up: subscriptio...
-cc/claude-sonnet  cc  o ADMITTED  1  subscription  reached TASK_ELIGIBLE
-openrouter/gpt-4o  openrouter  x REJECTED  unknown  metered  HEALTHY: unhealthy
-kr/claude-opus  kr  ~ COOLDOWN (360m 00s remaining)  unknown  subscription  AVAILABLE: cooldown
-demo-sub/atlas-coder  demo-sub  o VISIBLE  unknown  unknown  reached DISCOVERED
-mystery/model  unknown  ? UNKNOWN  unknown  unknown  unknown
+route              provider   state          rank capacity     reason
+cc/claude-opus     cc         * SELECTED        0 subscription see selected because
+cc/claude-sonnet   cc         o ADMITTED        1 subscription reached TASK_ELIGIBLE
+openrouter/gpt-4o  openrouter x REJECTED        — metered      HEALTHY: unhealthy
+kr/claude-opus     kr         ~ COOLDOWN        — subscription AVAILABLE: cooldown
+demo-sub/atlas-co… demo-sub   o VISIBLE         — unknown      reached DISCOVERED
+mystery/model      unknown    ? UNKNOWN         — unknown      unknown
+rank — not recorded
 cooldowns
   kr/claude-opus  until=2026-09-28T18:00:00Z  remaining=21600s  capacity=subscription
 rejections  AVAILABLE:cooldown=1  HEALTHY:unhealthy=2  TASK_ELIGIBLE:context_too_small=1
