@@ -1,0 +1,18 @@
+routing
+explorer  source=recorded  evaluations=1  generated_at=2026-09-28T12:00:01Z
+node impl  seq 5  12 candidates, 3 admitted, 1 selected, 4 omitted
+DISCOVERED 12 > ENTITLED 10 > HEALTHY 8 > AVAILABLE 6 > TASK_ELIGIBLE 3 > SELECTED 1
+evaluated_at=2026-09-28T12:00:00Z  view_generated_at=2026-09-28T12:00:01Z
+selected_route=cc/claude-opus  observed_route=cc/claude-opus  session=sess-abc
+selected because: cheaper capacity class than runner-up: subscription vs metered
+showing 6/6 (page 1/1, size 25)
+route  provider  state  rank  capacity  components  reason
+cc/claude-opus  cc  * SELECTED  0  subscription  capacity_order=0 slack=1 price=unknown provider_pref=0 load=0 fit=3 route_id=cc/claude-opus  cheaper capacity class than runner-up: subscription vs me...
+cc/claude-sonnet  cc  o ADMITTED  1  subscription  capacity_order=0 slack=2 price=unknown provider_pref=0 load=0 fit=2 route_id=cc/claude-sonnet  reached TASK_ELIGIBLE
+openrouter/gpt-4o  openrouter  x REJECTED  unknown  metered  unknown  HEALTHY: unhealthy
+kr/claude-opus  kr  ~ COOLDOWN (360m 00s remaining)  unknown  subscription  unknown  AVAILABLE: cooldown
+demo-sub/atlas-coder  demo-sub  o VISIBLE  unknown  unknown  unknown  reached DISCOVERED
+mystery/model  unknown  ? UNKNOWN  unknown  unknown  unknown  unknown
+cooldowns
+  kr/claude-opus  until=2026-09-28T18:00:00Z  remaining=21600s  capacity=subscription
+rejections  AVAILABLE:cooldown=1  HEALTHY:unhealthy=2  TASK_ELIGIBLE:context_too_small=1
