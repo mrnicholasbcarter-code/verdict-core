@@ -1,0 +1,6 @@
+{
+  "stdout": "{\n  \"mcp_registered\": true,\n  \"mcp_config\": \"<CWD>/.mcp.json\"\n}\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "mcp status --json"
+}

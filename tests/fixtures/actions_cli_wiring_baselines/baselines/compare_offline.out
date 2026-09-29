@@ -1,0 +1,11 @@
+{
+  "comparison_report": {
+    "cost_delta": 0.0,
+    "direct_model": "anthropic/claude-opus-5",
+    "latency_delta": 0.0,
+    "quality_score": 1.0,
+    "task": "sum two ints",
+    "verdict_model": "anthropic/claude-opus-5",
+    "verdict_strategy": "SWARM_AUTODEV"
+  }
+}

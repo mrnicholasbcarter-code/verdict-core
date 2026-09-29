@@ -1,0 +1,17 @@
+
+VERDICT  /  Routing Decision
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+  Task       sum two ints                                          
+  Model      anthropic/claude-opus-5  (T0)                         
+  Provider   primary                                               
+  Outcome    fallback                                              
+  Managed    offline                                               
+  Transport  error                                                 
+  Quality    unknown                                               
+  Protected  false                                                 
+  Degraded   false                                                 
+  Latency    2.4ms                                                 
+  Strategy   DIRECT                                                
+  Reason     offline routing does not execute a provider completion
+{"execute_preview": "offline routing does not execute a provider completion", "model": "anthropic/claude-opus-5", "provider": "primary", "request_id": "", "strategy_selection": {"model": "anthropic/claude-opus-5", "reasoning": "CLI route/run dispatched one provider completion directly", "strategy": "DIRECT", "timestamp": "2026-09-28T18:45:34.581422+00:00"}, "transport_outcome": "error"}

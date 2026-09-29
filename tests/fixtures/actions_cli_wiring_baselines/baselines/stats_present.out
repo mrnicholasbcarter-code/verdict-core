@@ -1,0 +1,18 @@
+
+VERDICT  /  Routing stats
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+
+  Tier Distribution
+Tier  Count  Pct  
+T0    2      50.0%
+T1    1      25.0%
+T2    1      25.0%
+  Total Requests  4      
+  P50 Latency     97.50ms
+
+  Top Routed Models
+Model        Calls
+gpt-4o       2    
+gpt-4o-mini  1    
+claude-3     1    

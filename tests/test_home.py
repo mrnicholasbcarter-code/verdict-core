@@ -42,7 +42,7 @@ def test_palette_commands_are_registered_subcommands() -> None:
             cli.main()
     finally:
         argparse.ArgumentParser.parse_args = original  # type: ignore[method-assign]
-    missing = [command for _, command, _ in PALETTE if command not in parser_commands]
+    missing = [command for _, command, _, _ in PALETTE if command not in parser_commands]
     assert not missing, missing
 
 
