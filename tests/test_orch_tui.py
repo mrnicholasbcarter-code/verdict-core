@@ -448,3 +448,23 @@ def test_header_names_root_controller_and_failover_owner() -> None:
     ]  # fmt: skip
     text = render_text(bare, width=140, plain=True)
     assert "bare launch: root-pinned, no automatic failover" in text
+
+
+def test_plan_started_new_route_clears_observed_identity() -> None:
+    """BOD-276 fix: plan_started on a new route immediately clears observed identity.
+
+    After plan_started(B) the view must show 'not reported yet' for B
+    before any B HEALTHY event arrives.
+    """
+    view = RunView.from_events(
+        [
+            event(1, "plan_started", route_id="cc/route-a"),
+            event(2, "controller", state="HEALTHY", route_id="cc/route-a",
+                  observed_model="cc/actual-a", session_ref="sess-a"),
+            # New attempt on route B — no HEALTHY event yet
+            event(3, "plan_started", route_id="cc/route-b"),
+        ]
+    )
+    assert view.controller_route == "cc/route-b"
+    assert view.planner_observed_model == ""
+    assert view.planner_session_ref == ""

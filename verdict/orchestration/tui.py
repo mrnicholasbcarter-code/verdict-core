@@ -278,9 +278,16 @@ class RunView:
             "scope": _t(data.get("scope", ""), 90),
         }
 
+    def _set_controller_route(self, route: str) -> None:
+        """Set the active controller route, clearing stale observed identity on change."""
+        if route != self.controller_route:
+            self.planner_observed_model = ""
+            self.planner_session_ref = ""
+        self.controller_route = route
+
     def _on_plan_started(self, node_id: str, data: dict[str, Any]) -> None:
         route = _t(data.get("route_id", "unassigned"), 64)
-        self.controller_route = route
+        self._set_controller_route(route)
         self.controller_state = "PLANNING"
         self.controller.append(("PLANNING", f"frontier decomposition on {route}"))
 
@@ -491,13 +498,8 @@ class RunView:
                 self.review_independence += f"; reviewer {_t(data.get('reviewer_route'), 48)}"
             return
         route = _t(data.get("route_id", ""), 64)
-        if route and route != self.controller_route:
-            # New planner attempt on a different route: clear stale observed identity
-            self.planner_observed_model = ""
-            self.planner_session_ref = ""
-            self.controller_route = route
-        elif route:
-            self.controller_route = route
+        if route:
+            self._set_controller_route(route)
         # BOD-276: planner observed identity (from the successful terminal)
         if state == "HEALTHY":
             # Always replace observed fields unconditionally so no stale values survive
