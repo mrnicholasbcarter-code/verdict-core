@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from rich.console import Group, RenderableType
+from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
@@ -242,34 +243,52 @@ def _budget_header_text(
     width: int,
     unicode: bool,
     mode: PresentationMode | None = None,
-) -> Text:
-    """Labelled budget line: TEXT metrics + pressure-coloured bar track."""
+) -> RenderableType:
+    """Labelled budget line: TEXT metrics + a pressure-coloured bar sized at render time.
+
+    The bar lives in an expanding grid column, so it takes whatever width the
+    terminal actually gives the panel (never truncated, never past the border).
+    Unknown used/budget renders the word 'unknown', not an empty or guessed bar.
+    """
     band = pressure_band(pressure)
     band_label, band_token = _PRESSURE_STYLE[band]
     metrics = f"{format_bytes(used)} / {format_bytes(budget)} ({format_pressure(pressure)})"
-    # Fit bar into remaining width; drop band label before shrinking below 4.
-    prefix_len = len(f"budget  run={run}  {metrics}  {band_label}  ")
-    bar_width = min(30, max(4, width - prefix_len - 2))
-    show_band = True
-    if prefix_len + bar_width + 2 > width:
-        show_band = False
-        prefix_len = len(f"budget  run={run}  {metrics}  ")
-        bar_width = min(30, max(4, width - prefix_len - 2))
-    filled, rem = _bar_chars(used, budget, bar_width, unicode=unicode)
-    out = Text(no_wrap=True, overflow="ellipsis")
-    out.append("budget  ", style=_style("SECONDARY", mode) if mode else "")
-    out.append(f"run={run}  ", style=_style("TEXT", mode) if mode else "")
-    out.append(metrics, style=_style("TEXT", mode) if mode else "")
-    if show_band:
-        out.append(f"  {band_label}  ", style=_style("MUTED", mode) if mode else "")
+    label = Text(no_wrap=True, overflow="ellipsis")
+    label.append("budget  ", style=_style("SECONDARY", mode) if mode else "")
+    label.append(f"run={run}  ", style=_style("TEXT", mode) if mode else "")
+    label.append(metrics, style=_style("TEXT", mode) if mode else "")
+    label.append(f"  {band_label}", style=_style("MUTED", mode) if mode else "")
+    known = used is not None and budget is not None and budget > 0
+    bar: RenderableType
+    if not known:
+        bar = Text("unknown", style=_style("MUTED", mode) if mode else "")
+    elif mode is not None and mode.color and unicode:
+        fill = _state_cell_style(band_token, mode)
+        bar = ProgressBar(
+            total=float(budget or 1),
+            completed=float(min(used or 0, budget or 0)),
+            width=None,
+            style=_style("MUTED", mode),
+            complete_style=fill,
+            finished_style=fill,
+        )
     else:
-        out.append("  ", style=_style("MUTED", mode) if mode else "")
-    out.append("[", style=_style("MUTED", mode) if mode else "")
-    # Pressure colour on the fill only; never bold (headers own bold).
-    out.append(filled, style=_state_cell_style(band_token, mode) if mode else "")
-    out.append(rem, style=_style("MUTED", mode) if mode else "")
-    out.append("]", style=_style("MUTED", mode) if mode else "")
-    return out
+        filled, rem = _bar_chars(used, budget, 20, unicode=unicode)
+        bar = Text("[" + filled + rem + "]", style=_style("MUTED", mode) if mode else "")
+    grid = Table.grid(expand=True, padding=(0, 2))
+    grid.add_column(no_wrap=True, overflow="ellipsis")
+    grid.add_column(ratio=1, min_width=4)
+    if width < label.cell_len + 12:
+        # Narrow terminal: metrics on one row, full-width bar on the next.
+        label.no_wrap = False
+        label.overflow = "fold"
+        grid = Table.grid(expand=True)
+        grid.add_column(ratio=1)
+        grid.add_row(label)
+        grid.add_row(bar)
+        return grid
+    grid.add_row(label, bar)
+    return grid
 
 
 def _node_header(node: NodeContextView, mode: PresentationMode) -> Text:

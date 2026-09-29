@@ -353,3 +353,31 @@ class TestCockpitWire:
         assert "budget" in text
         open_context_view(state, _View())
         assert state.context_open is False
+
+
+def test_budget_bar_fills_render_width_and_never_overflows() -> None:
+    """The colour budget bar is sized by Rich at render time (not a fixed 30 cells)."""
+    import io
+    from dataclasses import replace
+
+    from rich.cells import cell_len
+    from rich.text import Text
+
+    from verdict.design import presentation_mode
+
+    view = _full_view()
+    widths = {}
+    for w in (60, 100, 200):
+        buf = io.StringIO()
+        con = Console(file=buf, width=w, force_terminal=True, color_system="truecolor")
+        con.size = (w, 40)  # pin the render width; do not inherit the test runner's terminal
+        mode = replace(
+            presentation_mode(), width=w, color=True, unicode=True, color_system="truecolor"
+        )
+        con.print(render_context(view, mode))
+        lines = Text.from_ansi(buf.getvalue()).plain.splitlines()
+        assert max(cell_len(line) for line in lines) <= w
+        widths[w] = max(line.count("━") for line in lines)
+    # 60 cols puts the bar on its own row (widest), then it grows with the terminal.
+    assert widths[100] < widths[200]
+    assert all(v >= 10 for v in widths.values()), widths
