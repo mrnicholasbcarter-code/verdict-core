@@ -696,10 +696,57 @@ def step_git_clean(repo_path: Path) -> StepResult:
         )
 
 
+def _producer_git_sha_from_receipt(receipt_data: dict[str, Any]) -> str | None:
+    """Return the receipt producer git_sha, or None when absent/null/blank."""
+    producer = receipt_data.get("producer")
+    if not isinstance(producer, dict):
+        return None
+    raw = producer.get("git_sha")
+    if raw is None:
+        return None
+    sha = str(raw).strip()
+    return sha or None
+
+
+def _format_producer_sha(sha: str | None) -> str:
+    """Explicit unknown/null representation — never invent a SHA."""
+    return sha if sha else "null"
+
+
+def verdict_tree_changed_between(
+    repo_path: Path, left_sha: str, right_sha: str
+) -> bool | None:
+    """Whether any path under verdict/ differs between two revisions.
+
+    Returns True/False when git can answer, or None when the comparison fails
+    (unknown SHAs, missing git, etc.). Callers must treat None as unverifiable.
+    """
+    if left_sha == right_sha:
+        return False
+    result = run_command(
+        ["git", "diff", "--name-only", left_sha, right_sha, "--", "verdict/"],
+        cwd=repo_path,
+    )
+    if result.returncode != 0:
+        return None
+    return bool(result.stdout.strip())
+
+
 def step_rehearsals(
-    repo_path: Path, rehearsal_dirs: dict[str, Path], output_dir: Path
+    repo_path: Path,
+    rehearsal_dirs: dict[str, Path],
+    output_dir: Path,
+    certified_git_sha: str | None = None,
 ) -> StepResult:
-    """Copy and verify rehearsal run data."""
+    """Copy and verify rehearsal run data, including producer provenance.
+
+    ``certified_git_sha`` is optional so existing three-argument callers keep
+    working. When supplied (as ``run_certification`` does), each rehearsal's
+    producer SHA is compared to the certified SHA: equal SHAs PASS; differing
+    SHAs PASS only when git confirms ``verdict/`` is unchanged between them;
+    otherwise the step is INCOMPLETE. Missing files and events-digest mismatches
+    remain FAIL and take precedence over provenance freshness.
+    """
     if not rehearsal_dirs:
         return StepResult(
             step_id="rehearsals",
@@ -711,7 +758,10 @@ def step_rehearsals(
     rehearsal_output = output_dir / "rehearsals"
     rehearsal_output.mkdir(exist_ok=True)
 
+    producer_reports: list[str] = []
+    stale_notes: list[str] = []
     verified_count = 0
+
     for name, run_dir in rehearsal_dirs.items():
         if not run_dir.exists():
             return StepResult(
@@ -752,13 +802,52 @@ def step_rehearsals(
                 reason=f"Events digest mismatch in {name}",
             )
 
+        producer_sha = _producer_git_sha_from_receipt(receipt_data)
+        producer_reports.append(f"{name}={_format_producer_sha(producer_sha)}")
+
+        # Provenance freshness (only when a certified SHA is supplied).
+        if certified_git_sha:
+            if producer_sha is None:
+                stale_notes.append(
+                    f"{name} producer git_sha is null (cannot verify against"
+                    f" certified {certified_git_sha})"
+                )
+            elif producer_sha != certified_git_sha:
+                changed = verdict_tree_changed_between(
+                    repo_path, producer_sha, certified_git_sha
+                )
+                if changed is True:
+                    stale_notes.append(
+                        f"{name} producer {producer_sha} differs from certified"
+                        f" {certified_git_sha} with verdict/ changes"
+                    )
+                elif changed is None:
+                    stale_notes.append(
+                        f"{name} producer {producer_sha} differs from certified"
+                        f" {certified_git_sha} (could not verify verdict/ diff)"
+                    )
+                # changed is False -> still fresh; remains PASS
+
         verified_count += 1
+
+    producers_summary = ", ".join(producer_reports)
+    if stale_notes:
+        return StepResult(
+            step_id="rehearsals",
+            name="Rehearsal verification",
+            status="INCOMPLETE",
+            reason=(
+                f"Verified {verified_count} rehearsal(s);"
+                f" producers: {producers_summary}; "
+                + "; ".join(stale_notes)
+            ),
+        )
 
     return StepResult(
         step_id="rehearsals",
         name="Rehearsal verification",
         status="PASS",
-        reason=f"Verified {verified_count} rehearsal(s)",
+        reason=f"Verified {verified_count} rehearsal(s); producers: {producers_summary}",
     )
 
 
@@ -860,7 +949,12 @@ def run_certification(
     print("  [11/11] Rehearsal verification...")
     output_dir = repo_path / "artifacts" / "certification" / manifest.git_sha
     output_dir.mkdir(parents=True, exist_ok=True)
-    steps.append(step_rehearsals(repo_path, rehearsal_dirs or {}, output_dir))
+    steps.append(
+        step_rehearsals(
+            repo_path, rehearsal_dirs or {}, output_dir,
+            certified_git_sha=manifest.git_sha,
+        )
+    )
 
     manifest.steps = steps
     manifest.finished_at = utc_timestamp()
