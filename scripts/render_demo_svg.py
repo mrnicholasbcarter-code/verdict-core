@@ -75,6 +75,7 @@ def poster_stamp_ms(cast: Path) -> int:
             return max(0, round(compressed * 1000))
     return max(0, round(compressed * 1000))
 
+
 def _svg_term(cast: Path, out: Path, extra: list[str]) -> None:
     header = json.loads(cast.read_text(encoding="utf-8").splitlines()[0])
     width, height = int(header["width"]), int(header["height"])
