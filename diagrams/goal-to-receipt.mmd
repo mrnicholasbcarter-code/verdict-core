@@ -1,11 +1,3 @@
-# Goal-to-Receipt Pipeline
-
-How a goal becomes a verified receipt through the orchestration pipeline.
-
-Source: [`diagrams/goal-to-receipt.mmd`](../../diagrams/goal-to-receipt.mmd).
-The fenced block below is byte-identical to that file.
-
-```mermaid
 %% goal-to-receipt.mmd -- goal to verified receipt
 %% Source (verified against code at this commit):
 %%   verdict/orchestration/planner.py (FrontierPlanner)
@@ -105,4 +97,3 @@ class COOLDOWN,RESELECT cooldown
 class FAILCLOSED,RBLOCK failed
 class STAGE_D,STAGE_E,STAGE_H,STAGE_A,STAGE_T,WORKGRAPH,CLASSIFY validated
 class SUP muted
-```
