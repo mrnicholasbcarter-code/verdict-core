@@ -744,8 +744,8 @@ of named drops, and executes through `/v1/chat/completions`. An empty intersecti
 closed instead of falling back to Opus. See
 [`docs/guides/free-tier-admit-smoke.md`](docs/guides/free-tier-admit-smoke.md). Keep those
 identities proved in the background with
-[`verdict prove-at-rest`](docs/guides/prove-at-rest-smoke.md) (free∩active only; paid/frontier
-never probed).
+[`verdict prove-at-rest`](docs/guides/health-cache.md) (every admitted route;
+the health cache is separate from selection, which is unchanged).
 
 ## Cost comparison
 

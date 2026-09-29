@@ -329,6 +329,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             timeout=getattr(args, "timeout", 15.0),
             allow_live_probe=getattr(args, "allow_live_probe", False),
             output_json=getattr(args, "json", False),
+            max_requests=getattr(args, "max_requests", 300),
+            max_wall_seconds=getattr(args, "max_wall_seconds", 600.0),
         )
     elif args.command == "uninstall":
         legacy.cmd_uninstall(purge_data=getattr(args, "purge_data", False))

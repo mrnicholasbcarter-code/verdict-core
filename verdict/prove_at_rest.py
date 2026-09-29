@@ -1,481 +1,563 @@
-"""Prove-at-rest daemon for free-tier ∩ active OmniRoute identities.
+"""Prove-at-rest: the single prober that fills the health cache.
 
-Continuously (or once) proves only free∩active concrete catalog identities at
-rest. Paid/frontier and inactive/unconnected identities are never probed; they
-are either omitted or recorded as *skipped* with a named reason when they appear
-as free-tier admit drops.
+The daemon covers every admitted route in every capacity class. It spends
+most of a cycle on FREE routes and only checks liveness for the other
+classes. It writes ``health-cache.json`` (see
+``verdict.orchestration.health_cache``) and nothing else.
 
-Proof results (healthy / failed / skipped) and optional ModelPassport payloads
-are persisted to a JSON file Core reads on serve admit. Request-time budgeted
-confirm probes run in ``verdict.admit_prove_confirm`` (not this daemon).
+It does **not** write ``~/.verdict/orchestration-health.json``. That file
+belongs to the selection ladder. Story 3 is what teaches the ladder to read
+this cache, so this change leaves selection order and ranking untouched.
+
+Old state
+---------
+Releases before this one persisted a cycle document at
+``~/.verdict/prove-at-rest/state.json`` (override ``VERDICT_PROVE_AT_REST_STATE``).
+That document is a different schema (one cycle of free-intersect-active proof
+results plus passports). This daemon **ignores** it. It neither reads nor
+deletes it. ``load_healthy_passports`` still reads it, unchanged, for callers
+that have not moved.
+
+Cycle order
+-----------
+1. half-open negatives (a negative whose ``until`` has elapsed);
+2. stale healthy entries;
+3. never-probed FREE routes, round-robin by provider/pool;
+4. SUBSCRIPTION, METERED and UNKNOWN, liveness (chat) only;
+5. a small epsilon slice of cold providers (providers with no fresh entry).
+
+Each cycle stops at ``max_requests`` (default 300) or ``max_wall_seconds``
+(default 10 min), with concurrency 4. Every completed probe is persisted, so
+a crash keeps partial progress. The cursor records which ordering pass the
+cycle was in.
+
+Two-step probe
+--------------
+Chat first: ``Reply with exactly: OK``. Then one required tool call. A route
+is a coding worker only when the tool call succeeds (``tool_ok``). Other
+capacity classes stop after the chat step.
+
+Token buckets
+-------------
+One bucket per provider/pool, shared with real calls through
+``HealthCache.consume``. A 429 zeroes that bucket until ``Retry-After``.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-from verdict.free_tier_admit import (
-    REASON_INACTIVE_UNCONNECTED,
-    REASON_PROVIDER_INACTIVE,
-    REASON_PROVIDER_NOT_CONNECTED,
-    OmniRouteAdmitSnapshot,
-    admit_free_tier_active,
-    load_omniroute_admit_snapshot,
-    omniroute_endpoint_from_env,
+from verdict.orchestration.contracts import CapacityClass
+from verdict.orchestration.health_cache import (
+    CATEGORY_AUTH,
+    CATEGORY_CATALOG_STALE,
+    CATEGORY_GONE,
+    CATEGORY_NOT_FOUND,
+    CATEGORY_OK,
+    CATEGORY_PAYMENT,
+    CATEGORY_PERMISSION,
+    CATEGORY_RATE_LIMITED,
+    CATEGORY_TIMEOUT,
+    CATEGORY_UPSTREAM,
+    STATE_FRESH,
+    STATE_NEGATIVE,
+    STATE_STALE,
+    STATE_UNPROBED,
+    HealthCache,
+    HealthCacheError,
+    HealthEntry,
+    ProbeResult,
+    default_cache_path,
 )
-from verdict.model_passports import PASSPORT_TTL_SECONDS, ModelPassport
-from verdict.probes import ProbeBudget, ProbeObservation, ProbePolicy, ProbeRunner, ProbeTransport
 
-PROVE_AT_REST_SCHEMA_VERSION = "1"
-STATUS_HEALTHY = "healthy"
-STATUS_FAILED = "failed"
-STATUS_SKIPPED = "skipped"
-_VALID_STATUSES = frozenset({STATUS_HEALTHY, STATUS_FAILED, STATUS_SKIPPED})
+# The old cycle document stays readable. This module no longer writes it.
+# ``ProveAtRestDaemon`` is the legacy free-intersect-active prover; the
+# single prober above is ``Prober``. Both names are importable so existing
+# callers keep working while the daemon command uses ``Prober``.
+from verdict.prove_at_rest_legacy import (
+    DEFAULT_INTERVAL_SECONDS,
+    DEFAULT_PROBE_TIMEOUT_SECONDS,
+    ENV_STATE_PATH,
+    PROVE_AT_REST_SCHEMA_VERSION,
+    STATUS_FAILED,
+    STATUS_HEALTHY,
+    STATUS_SKIPPED,
+    ProofResult,
+    ProveAtRestCycle,
+    ProveAtRestDaemon,
+    ProveAtRestError,
+    ProveAtRestStore,
+    default_state_path,
+    load_healthy_passports,
+    passport_from_probe,
+)
 
-DEFAULT_INTERVAL_SECONDS = 300.0
-DEFAULT_PROBE_TIMEOUT_SECONDS = 15.0
-ENV_STATE_PATH = "VERDICT_PROVE_AT_REST_STATE"
+CHAT_PROBE_MESSAGE = "Reply with exactly: OK"
+TOOL_NAME = "verdict_probe_ping"
+DEFAULT_MAX_REQUESTS = 300
+DEFAULT_MAX_WALL_SECONDS = 600.0
+DEFAULT_CONCURRENCY = 4
+DEFAULT_EPSILON = 2
+ENV_CACHE_PATH = "VERDICT_HEALTH_CACHE"
+
+# Old on-disk document. Ignored, never migrated, never deleted.
+LEGACY_STATE_RELATIVE = Path(".verdict") / "prove-at-rest" / "state.json"
 
 
-class ProveAtRestError(ValueError):
-    """Raised when prove-at-rest state or inputs violate the contract."""
+class ProveError(HealthCacheError):
+    """Raised when a prove-at-rest cycle cannot start."""
 
 
-def default_state_path() -> Path:
-    """Return the configured or default prove-at-rest state file path."""
-    configured = os.getenv(ENV_STATE_PATH)
-    if configured and configured.strip():
-        return Path(configured).expanduser().resolve()
-    return (Path.home() / ".verdict" / "prove-at-rest" / "state.json").resolve()
+@dataclass(frozen=True)
+class AdmittedRoute:
+    """One admitted route the prober may visit. Built by the caller.
+
+    ``capacity`` is the evidence-backed class (``free``, ``subscription``,
+    ``metered``, ``unknown``). ``pool`` is an optional shared-quota pool.
+    """
+
+    route_id: str
+    provider: str
+    capacity: str
+    pool: str | None = None
+    capacity_evidence: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.route_id.strip() or not self.provider.strip():
+            raise ProveError("route_id and provider must be non-empty")
+        if self.capacity not in {item.value for item in CapacityClass}:
+            raise ProveError(f"unknown capacity class: {self.capacity}")
+
+
+@dataclass(frozen=True)
+class ProbeExchange:
+    """What the fake or live transport returns for one HTTP call."""
+
+    http_status: int | None
+    ok: bool
+    chat_exact: bool = False
+    tool_called: bool = False
+    latency_ms: float | None = None
+    retry_after_seconds: float | None = None
+    error_category: str | None = None
+
+
+# A transport probes one route for one phase ("chat" or "tool") and must not
+# touch the network unless the caller built a live transport.
+ProbeTransportFn = Callable[[str, str, float], ProbeExchange]
+
+
+@dataclass
+class CycleStats:
+    """Counters for one cycle. ``requests`` counts chat and tool calls."""
+
+    requests: int = 0
+    probed: int = 0
+    fresh: int = 0
+    negative: int = 0
+    skipped_bucket: int = 0
+    stopped_reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requests": self.requests,
+            "probed": self.probed,
+            "fresh": self.fresh,
+            "negative": self.negative,
+            "skipped_bucket": self.skipped_bucket,
+            "stopped_reason": self.stopped_reason,
+        }
+
+
+def category_for(exchange: ProbeExchange) -> str:
+    """Map a transport result onto a cache category."""
+    status = exchange.http_status
+    if exchange.ok:
+        return CATEGORY_OK
+    named = exchange.error_category or ""
+    if status == 429 or named in {"rate_limited", "rate_limit"}:
+        return CATEGORY_RATE_LIMITED
+    if status == 401 or named in {"auth", "unauthorized", "authentication"}:
+        return CATEGORY_AUTH
+    if status == 402 or named in {"payment_required", "quota_exhausted"}:
+        return CATEGORY_PAYMENT
+    if status == 403 or named in {"forbidden", "permission"}:
+        return CATEGORY_PERMISSION
+    if status == 404 or named == "not_found":
+        return CATEGORY_NOT_FOUND
+    if status == 410 or named in {"gone", "http_410"}:
+        return CATEGORY_GONE
+    if named == "catalog_stale":
+        return CATEGORY_CATALOG_STALE
+    if status is None or named == "timeout":
+        return CATEGORY_TIMEOUT
+    if status >= 500 or named in {"upstream", "upstream_error"}:
+        return CATEGORY_UPSTREAM
+    return named or "http_error"
+
+
+def chat_payload(route_id: str) -> dict[str, Any]:
+    """First step: a chat completion that must answer OK. No tools."""
+    return {
+        "model": route_id,
+        "messages": [{"role": "user", "content": CHAT_PROBE_MESSAGE}],
+        "max_tokens": 8,
+        "temperature": 0,
+        "stream": False,
+    }
+
+
+def tool_payload(route_id: str) -> dict[str, Any]:
+    """Second step: the model must call the single required tool."""
+    return {
+        "model": route_id,
+        "messages": [
+            {"role": "user", "content": f"Call the tool {TOOL_NAME} with argument value ok."}
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": TOOL_NAME,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"],
+                    },
+                },
+            }
+        ],
+        "tool_choice": {"type": "function", "function": {"name": TOOL_NAME}},
+        "max_tokens": 64,
+        "temperature": 0,
+        "stream": False,
+    }
+
+
+def _provider_of(route_id: str) -> str:
+    if "/" in route_id:
+        return route_id.split("/", 1)[0]
+    return route_id or "unknown"
+
+
+def _pool_of(route: AdmittedRoute) -> str | None:
+    return route.pool
+
+
+def order_cycle(
+    routes: Sequence[AdmittedRoute],
+    cache: HealthCache,
+    now: datetime,
+    *,
+    epsilon: int = DEFAULT_EPSILON,
+) -> list[tuple[AdmittedRoute, str]]:
+    """Order one cycle. Each item is ``(route, kind)``.
+
+    ``kind`` is ``full`` (chat then tool) or ``liveness`` (chat only).
+    """
+    by_id = {route.route_id: route for route in routes}
+    half_open: list[AdmittedRoute] = []
+    stale: list[AdmittedRoute] = []
+    seen: set[str] = set()
+    for route in routes:
+        lookup = cache.lookup(route.route_id, now)
+        entry = lookup.entry
+        if entry is None:
+            continue
+        if lookup.state == STATE_NEGATIVE:
+            continue
+        if not entry.healthy and lookup.state == STATE_UNPROBED:
+            # Negative whose ``until`` has elapsed: half-open.
+            half_open.append(route)
+            seen.add(route.route_id)
+        elif entry.healthy and lookup.state == STATE_UNPROBED:
+            # Usable window elapsed: probe again with the never-probed group.
+            continue
+        elif lookup.state == STATE_STALE:
+            stale.append(route)
+            seen.add(route.route_id)
+
+    free_new = [
+        route
+        for route in routes
+        if route.capacity == CapacityClass.FREE.value
+        and route.route_id not in seen
+        and cache.lookup(route.route_id, now).state == STATE_UNPROBED
+    ]
+    other_new = [
+        route
+        for route in routes
+        if route.capacity != CapacityClass.FREE.value
+        and route.route_id not in seen
+        and cache.lookup(route.route_id, now).state == STATE_UNPROBED
+    ]
+
+    ordered: list[tuple[AdmittedRoute, str]] = []
+    ordered.extend((route, "full") for route in half_open)
+    ordered.extend((route, "full") for route in stale)
+    ordered.extend((route, "full") for route in _round_robin(free_new))
+    ordered.extend((route, "liveness") for route in other_new)
+    ordered.extend(
+        _epsilon_slice(
+            routes,
+            cache,
+            now,
+            seen=set(item[0].route_id for item in ordered),
+            epsilon=epsilon,
+            by_id=by_id,
+        )
+    )
+    return ordered
+
+
+def _round_robin(routes: Sequence[AdmittedRoute]) -> list[AdmittedRoute]:
+    """Spread never-probed FREE routes across provider/pool buckets."""
+    groups: dict[str, list[AdmittedRoute]] = {}
+    for route in routes:
+        key = route.provider if not route.pool else f"{route.provider}/{route.pool}"
+        groups.setdefault(key, []).append(route)
+    queues = list(groups.values())
+    if not queues:
+        return []
+    depth = max(len(queue) for queue in queues)
+    out: list[AdmittedRoute] = []
+    for index in range(depth):
+        for queue in queues:
+            if index < len(queue):
+                out.append(queue[index])
+    return out
+
+
+def _epsilon_slice(
+    routes: Sequence[AdmittedRoute],
+    cache: HealthCache,
+    now: datetime,
+    *,
+    seen: set[str],
+    epsilon: int,
+    by_id: Mapping[str, AdmittedRoute],
+) -> list[tuple[AdmittedRoute, str]]:
+    """One liveness probe for each provider that has no fresh entry.
+
+    Capped at ``epsilon`` providers. A provider is cold when none of its
+    cached entries is fresh. Routes already ordered in this cycle are skipped,
+    so the slice never repeats work the earlier passes already cover.
+    """
+    fresh_providers: set[str] = set()
+    for entry in cache.routes().values():
+        if entry.state_at(now) == STATE_FRESH and entry.healthy:
+            fresh_providers.add(_provider_of(entry.route_id))
+    out: list[tuple[AdmittedRoute, str]] = []
+    taken: set[str] = set()
+    for route in routes:
+        if len(out) >= max(0, epsilon):
+            break
+        if route.provider in fresh_providers or route.provider in taken:
+            continue
+        if route.route_id in seen:
+            continue
+        taken.add(route.provider)
+        out.append((by_id[route.route_id], "liveness"))
+    return out
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _format_datetime(value: datetime) -> str:
-    if value.tzinfo is None:
-        raise ProveAtRestError("timestamp must be timezone-aware")
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _parse_datetime(value: Any, field_name: str) -> datetime:
-    if not isinstance(value, str) or not value.strip():
-        raise ProveAtRestError(f"{field_name} must be a non-empty ISO-8601 string")
-    raw = value.strip()
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError as exc:
-        raise ProveAtRestError(f"{field_name} is not a valid timestamp") from exc
-    if parsed.tzinfo is None:
-        raise ProveAtRestError(f"{field_name} must be timezone-aware")
-    return parsed.astimezone(timezone.utc)
-
-
-def _provider_of(identity_id: str) -> str:
-    if "/" in identity_id:
-        return identity_id.split("/", 1)[0]
-    return identity_id or "unknown"
-
-
-def passport_from_probe(
-    *, provider: str, identity_id: str, observation: ProbeObservation
-) -> ModelPassport:
-    """Build a ModelPassport from an already-run at-rest probe (no second call)."""
-    ready = observation.availability_state == "ready"
-    if observation.error_class == "unauthorized":
-        auth_state = "unauthorized"
-    elif ready:
-        auth_state = "authorized"
-    else:
-        auth_state = "unknown"
-    if ready:
-        availability_state = "eligible"
-        reason = None
-    elif observation.availability_state == "denied" and observation.quarantine_until is not None:
-        availability_state = "quarantined"
-        reason = observation.error or "quarantined"
-    elif observation.availability_state == "denied":
-        availability_state = "denied"
-        reason = observation.error or "denied"
-    else:
-        availability_state = "degraded"
-        reason = observation.error_class or observation.error or observation.status
-    qualified_at = observation.observed_at
-    expires_at = qualified_at + timedelta(seconds=PASSPORT_TTL_SECONDS)
-    return ModelPassport(
-        provider=provider,
-        model_id=identity_id,
-        auth_state=auth_state,
-        latency_p95=observation.latency_ms,
-        last_verified_timestamp=observation.observed_at,
-        availability_state=availability_state,
-        availability_reason=reason,
-        quarantine_until=observation.quarantine_until
-        if availability_state == "quarantined"
-        else None,
-        quarantined_at=observation.observed_at if availability_state == "quarantined" else None,
-        qualified_at=qualified_at,
-        expires_at=expires_at,
-    )
-
-
-@dataclass(frozen=True)
-class ProofResult:
-    """One identity's prove-at-rest outcome."""
-
-    identity_id: str
-    provider: str
-    status: str
-    reason: str | None = None
-    proved_at: datetime | None = None
-    latency_ms: float | None = None
-    http_status: int | None = None
-    error_class: str | None = None
-    passport: ModelPassport | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.identity_id, str) or not self.identity_id.strip():
-            raise ProveAtRestError("identity_id must be non-empty")
-        if not isinstance(self.provider, str) or not self.provider.strip():
-            raise ProveAtRestError("provider must be non-empty")
-        if self.status not in _VALID_STATUSES:
-            raise ProveAtRestError("status must be healthy, failed, or skipped")
-        if self.status == STATUS_SKIPPED and (
-            not isinstance(self.reason, str) or not self.reason.strip()
-        ):
-            raise ProveAtRestError("skipped results require a named reason")
-        if self.proved_at is not None and (
-            not isinstance(self.proved_at, datetime) or self.proved_at.tzinfo is None
-        ):
-            raise ProveAtRestError("proved_at must be timezone-aware")
-
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "identity_id": self.identity_id,
-            "provider": self.provider,
-            "status": self.status,
-        }
-        if self.reason is not None:
-            payload["reason"] = self.reason
-        if self.proved_at is not None:
-            payload["proved_at"] = _format_datetime(self.proved_at)
-        if self.latency_ms is not None:
-            payload["latency_ms"] = self.latency_ms
-        if self.http_status is not None:
-            payload["http_status"] = self.http_status
-        if self.error_class is not None:
-            payload["error_class"] = self.error_class
-        if self.passport is not None:
-            payload["passport"] = self.passport.to_dict()
-        return payload
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> ProofResult:
-        if not isinstance(value, Mapping):
-            raise ProveAtRestError("proof result must be a mapping")
-        identity_id = value.get("identity_id")
-        provider = value.get("provider")
-        status = value.get("status")
-        if not isinstance(identity_id, str) or not isinstance(provider, str):
-            raise ProveAtRestError("identity_id and provider are required")
-        if not isinstance(status, str):
-            raise ProveAtRestError("status is required")
-        passport_raw = value.get("passport")
-        passport = None
-        if passport_raw is not None:
-            if not isinstance(passport_raw, Mapping):
-                raise ProveAtRestError("passport must be a mapping")
-            passport = ModelPassport.from_dict(passport_raw)
-        proved_raw = value.get("proved_at")
-        proved_at = _parse_datetime(proved_raw, "proved_at") if proved_raw is not None else None
-        reason = value.get("reason")
-        latency = value.get("latency_ms")
-        http_status = value.get("http_status")
-        error_class = value.get("error_class")
-        return cls(
-            identity_id=identity_id,
-            provider=provider,
-            status=status,
-            reason=str(reason) if isinstance(reason, str) else None,
-            proved_at=proved_at,
-            latency_ms=float(latency) if isinstance(latency, (int, float)) else None,
-            http_status=int(http_status) if isinstance(http_status, int) else None,
-            error_class=str(error_class) if isinstance(error_class, str) else None,
-            passport=passport,
-        )
-
-
-@dataclass(frozen=True)
-class ProveAtRestCycle:
-    """One complete prove-at-rest pass over free∩active + named skips."""
-
-    cycle_id: str
-    started_at: datetime
-    finished_at: datetime
-    results: tuple[ProofResult, ...]
-    admitted: tuple[str, ...] = ()
-    active_providers: tuple[str, ...] = ()
-    free_tier_providers: tuple[str, ...] = ()
-    schema_version: str = PROVE_AT_REST_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        if self.schema_version != PROVE_AT_REST_SCHEMA_VERSION:
-            raise ProveAtRestError("schema_version must be '1'")
-        if not isinstance(self.cycle_id, str) or not self.cycle_id.strip():
-            raise ProveAtRestError("cycle_id must be non-empty")
-        for name in ("started_at", "finished_at"):
-            value = getattr(self, name)
-            if not isinstance(value, datetime) or value.tzinfo is None:
-                raise ProveAtRestError(f"{name} must be timezone-aware")
-
-    @property
-    def summary(self) -> dict[str, int]:
-        counts = {STATUS_HEALTHY: 0, STATUS_FAILED: 0, STATUS_SKIPPED: 0}
-        for item in self.results:
-            counts[item.status] = counts.get(item.status, 0) + 1
-        return counts
-
-    def healthy_identities(self) -> tuple[str, ...]:
-        return tuple(item.identity_id for item in self.results if item.status == STATUS_HEALTHY)
-
-    def passports(self) -> dict[str, ModelPassport]:
-        """Passports keyed by identity_id for later admit consumption."""
-        out: dict[str, ModelPassport] = {}
-        for item in self.results:
-            if item.passport is not None:
-                out[item.identity_id] = item.passport
-        return out
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema_version": self.schema_version,
-            "cycle_id": self.cycle_id,
-            "started_at": _format_datetime(self.started_at),
-            "finished_at": _format_datetime(self.finished_at),
-            "admitted": list(self.admitted),
-            "active_providers": list(self.active_providers),
-            "free_tier_providers": list(self.free_tier_providers),
-            "summary": self.summary,
-            "results": [item.to_dict() for item in self.results],
-        }
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> ProveAtRestCycle:
-        if not isinstance(value, Mapping):
-            raise ProveAtRestError("cycle must be a mapping")
-        results_raw = value.get("results")
-        if not isinstance(results_raw, list):
-            raise ProveAtRestError("results must be a list")
-        results = tuple(ProofResult.from_dict(item) for item in results_raw)
-        admitted = value.get("admitted") or []
-        active = value.get("active_providers") or []
-        free_tier = value.get("free_tier_providers") or []
-        if (
-            not isinstance(admitted, list)
-            or not isinstance(active, list)
-            or not isinstance(free_tier, list)
-        ):
-            raise ProveAtRestError("admitted/active/free_tier provider lists must be lists")
-        return cls(
-            cycle_id=str(value.get("cycle_id") or ""),
-            started_at=_parse_datetime(value.get("started_at"), "started_at"),
-            finished_at=_parse_datetime(value.get("finished_at"), "finished_at"),
-            results=results,
-            admitted=tuple(str(item) for item in admitted),
-            active_providers=tuple(str(item) for item in active),
-            free_tier_providers=tuple(str(item) for item in free_tier),
-            schema_version=str(value.get("schema_version") or PROVE_AT_REST_SCHEMA_VERSION),
-        )
-
-
 @dataclass
-class ProveAtRestStore:
-    """Atomic JSON persistence for the latest prove-at-rest cycle."""
+class Prober:
+    """One cycle, or a loop of cycles, over an injected admitted-route source."""
 
-    path: Path
-
-    def __post_init__(self) -> None:
-        self.path = Path(self.path).expanduser().resolve()
-
-    def read(self) -> ProveAtRestCycle | None:
-        if not self.path.exists():
-            return None
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise ProveAtRestError(f"cannot read prove-at-rest state: {exc}") from exc
-        if not isinstance(payload, Mapping):
-            raise ProveAtRestError("prove-at-rest state must be a JSON object")
-        return ProveAtRestCycle.from_dict(payload)
-
-    def write(self, cycle: ProveAtRestCycle) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        body = json.dumps(cycle.to_dict(), indent=2, sort_keys=True) + "\n"
-        tmp.write_text(body, encoding="utf-8")
-        tmp.replace(self.path)
-
-    def record_confirm(
-        self, identity_id: str, observation: ProbeObservation, *, now: datetime | None = None
-    ) -> None:
-        """Persist one budgeted confirm without replacing the rest of the cycle.
-
-        A successful confirm refreshes that identity's passport. A failed
-        confirm records the failure. Missing state is left untouched because a
-        confirm must not invent a prove cycle.
-        """
-        cycle = self.read()
-        if cycle is None:
-            return
-        current = now or observation.observed_at
-        provider = _provider_of(identity_id)
-        ready = observation.availability_state == "ready" and observation.error is None
-        passport = (
-            passport_from_probe(provider=provider, identity_id=identity_id, observation=observation)
-            if ready
-            else None
-        )
-        result = ProofResult(
-            identity_id=identity_id,
-            provider=provider,
-            status=STATUS_HEALTHY if ready else STATUS_FAILED,
-            reason=(
-                None
-                if ready
-                else (observation.error_class or observation.error or observation.status)
-            ),
-            proved_at=observation.observed_at,
-            latency_ms=observation.latency_ms,
-            http_status=observation.http_status,
-            error_class=observation.error_class,
-            passport=passport,
-        )
-        replaced = False
-        results: list[ProofResult] = []
-        for item in cycle.results:
-            if item.identity_id == identity_id and not replaced:
-                results.append(result)
-                replaced = True
-            else:
-                results.append(item)
-        if not replaced:
-            results.append(result)
-        self.write(
-            replace(
-                cycle,
-                finished_at=current if current >= cycle.started_at else cycle.finished_at,
-                results=tuple(results),
-            )
-        )
-
-
-SnapshotLoader = Callable[[], OmniRouteAdmitSnapshot]
-CycleErrorHandler = Callable[[Exception], None]
-
-
-@dataclass
-class ProveAtRestDaemon:
-    """Background (or one-shot) prover for free∩active OmniRoute identities."""
-
-    store: ProveAtRestStore
-    snapshot_loader: SnapshotLoader
-    transport: ProbeTransport
+    cache: HealthCache
+    routes_loader: Callable[[], Sequence[AdmittedRoute]]
+    transport: ProbeTransportFn
+    max_requests: int = DEFAULT_MAX_REQUESTS
+    max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS
+    concurrency: int = DEFAULT_CONCURRENCY
+    probe_timeout_seconds: float = 15.0
+    epsilon: int = DEFAULT_EPSILON
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS
-    probe_timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS
-    live: bool = False
-    consented: bool = False
     clock: Callable[[], datetime] = field(default=_now)
+    monotonic: Callable[[], float] = field(default=time.monotonic)
     sleep: Callable[[float], None] = field(default=time.sleep)
-    issue_passports: bool = True
-    on_cycle_error: CycleErrorHandler | None = None
+    on_cycle_error: Callable[[Exception], None] | None = None
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.interval_seconds, bool)
-            or not isinstance(self.interval_seconds, (int, float))
-            or self.interval_seconds <= 0
-        ):
-            raise ProveAtRestError("interval_seconds must be positive")
-        if (
-            isinstance(self.probe_timeout_seconds, bool)
-            or not isinstance(self.probe_timeout_seconds, (int, float))
-            or self.probe_timeout_seconds <= 0
-        ):
-            raise ProveAtRestError("probe_timeout_seconds must be positive")
+        if self.max_requests < 1:
+            raise ProveError("max_requests must be >= 1")
+        if self.max_wall_seconds <= 0:
+            raise ProveError("max_wall_seconds must be positive")
+        if self.concurrency < 1:
+            raise ProveError("concurrency must be >= 1")
+        if self.probe_timeout_seconds <= 0:
+            raise ProveError("probe_timeout_seconds must be positive")
 
     def stop(self) -> None:
         self._stop.set()
 
-    def status(self) -> ProveAtRestCycle | None:
-        return self.store.read()
+    def run_once(self) -> CycleStats:
+        """Probe until the request cap or the wall cap, persisting as it goes."""
+        started = self.monotonic()
+        now = self.clock()
+        routes = list(self.routes_loader())
+        ordered = order_cycle(routes, self.cache, now, epsilon=self.epsilon)
+        stats = CycleStats()
+        cursor = self.cache.cursor
+        resume_at = int(cursor.get("next_index", 0)) if cursor.get("cycle_open") else 0
+        if resume_at > len(ordered):
+            resume_at = 0
 
-    def run_once(self) -> ProveAtRestCycle:
-        """Prove free∩active identities once and persist the cycle."""
-        started = self.clock()
-        snapshot = self.snapshot_loader()
-        receipt = admit_free_tier_active(snapshot)
-        results: list[ProofResult] = []
+        pending = ordered[resume_at:]
+        batch_size = self.concurrency
 
-        # Named skips from admit — never probed (inactive, opaque, ghosts, …).
-        for drop in receipt.exclusions:
-            # This persisted schema predates the split provider diagnostics.
-            # Preserve its public aggregate reason for old readers.
-            reason = (
-                REASON_INACTIVE_UNCONNECTED
-                if drop.reason in {REASON_PROVIDER_INACTIVE, REASON_PROVIDER_NOT_CONNECTED}
-                else drop.reason
-            )
-            results.append(
-                ProofResult(
-                    identity_id=drop.model_id,
-                    provider=_provider_of(drop.model_id),
-                    status=STATUS_SKIPPED,
-                    reason=reason,
-                    proved_at=started,
-                )
-            )
+        def over_budget(extra: int = 0) -> str:
+            if stats.requests + extra > self.max_requests:
+                return "request_cap"
+            if self.monotonic() - started >= self.max_wall_seconds:
+                return "wall_cap"
+            return ""
 
-        # Only free∩active concrete identities are probed.
-        if receipt.admitted:
-            results.extend(self._prove_admitted(receipt.admitted, observed_at=started))
+        index = resume_at
+        while pending:
+            reason = over_budget()
+            if reason:
+                stats.stopped_reason = reason
+                self._persist_cursor(index, open_cycle=True)
+                self.cache.save()
+                break
+            batch = pending[:batch_size]
+            pending = pending[batch_size:]
+            self._persist_cursor(index, open_cycle=True)
+            self.cache.save()
+            self._run_batch(batch, stats, started)
+            index += len(batch)
+            self._persist_cursor(index, open_cycle=True)
+            self.cache.save()
+        else:
+            stats.stopped_reason = stats.stopped_reason or "complete"
+            self.cache.clear_cursor()
+            self.cache.save()
+        return stats
 
-        finished = self.clock()
-        cycle = ProveAtRestCycle(
-            cycle_id=str(uuid4()),
-            started_at=started,
-            finished_at=finished,
-            results=tuple(results),
-            admitted=receipt.admitted,
-            active_providers=receipt.active_providers,
-            free_tier_providers=receipt.free_tier_providers,
+    def _persist_cursor(self, index: int, *, open_cycle: bool) -> None:
+        self.cache.set_cursor({"cycle_open": open_cycle, "next_index": index})
+
+    def _run_batch(
+        self, batch: Sequence[tuple[AdmittedRoute, str]], stats: CycleStats, started: float
+    ) -> None:
+        # The batch width is ``concurrency`` (how many routes are reserved
+        # before the next cap check). Calls run one at a time so the cache
+        # file is only ever written by this thread. A crash between saves
+        # keeps every probe already saved.
+        for route, kind in batch:
+            if stats.requests >= self.max_requests:
+                stats.stopped_reason = stats.stopped_reason or "request_cap"
+                return
+            if self.monotonic() - started >= self.max_wall_seconds:
+                stats.stopped_reason = "wall_cap"
+                return
+            before = stats.requests
+            self._probe_route(route, kind, stats)
+            if stats.requests != before:
+                self.cache.save()
+
+    def _probe_route(self, route: AdmittedRoute, kind: str, stats: CycleStats) -> None:
+        now = self.clock()
+        if not self.cache.consume(route.provider, now, pool=route.pool):
+            stats.skipped_bucket += 1
+            return
+        stats.requests += 1
+        try:
+            chat = self.transport(route.route_id, "chat", self.probe_timeout_seconds)
+        except TimeoutError:
+            chat = ProbeExchange(http_status=None, ok=False, error_category="timeout")
+        self._note_rate_limit(route, chat, now)
+        chat_ok = bool(chat.ok and chat.chat_exact and chat.http_status == 200)
+        tool_ok = False
+        latency = chat.latency_ms
+        status = chat.http_status
+        category = category_for(chat)
+        observed = chat
+
+        if chat_ok and kind == "full" and stats.requests < self.max_requests:
+            now_tool = self.clock()
+            if self.cache.consume(route.provider, now_tool, pool=route.pool):
+                stats.requests += 1
+                try:
+                    tool = self.transport(route.route_id, "tool", self.probe_timeout_seconds)
+                except TimeoutError:
+                    tool = ProbeExchange(http_status=None, ok=False, error_category="timeout")
+                self._note_rate_limit(route, tool, now_tool)
+                tool_ok = bool(tool.ok and tool.tool_called and tool.http_status == 200)
+                if tool.latency_ms is not None:
+                    latency = (latency or 0.0) + tool.latency_ms
+                if not tool_ok:
+                    status = tool.http_status
+                    category = category_for(tool)
+                    observed = tool
+            # No bucket token for the tool call: chat succeeded, tool did not
+            # run, so this is not a coding worker.
+        if chat_ok and (tool_ok or kind == "liveness"):
+            category = CATEGORY_OK
+            status = 200
+        result = ProbeResult(
+            category=category,
+            chat_ok=chat_ok,
+            tool_ok=tool_ok,
+            latency_ms=latency,
+            http_status=status,
+            retry_after_seconds=observed.retry_after_seconds,
+            pool=route.pool,
+            capacity_evidence=route.capacity_evidence,
         )
-        self.store.write(cycle)
-        return cycle
+        # Liveness success is healthy for the cache state machine but not a
+        # coding worker: tool_ok stays false. ``ProbeResult.healthy`` requires
+        # tool_ok, so record it as a successful liveness entry directly.
+        if chat_ok and kind == "liveness":
+            self._record_liveness(route, result, now)
+        else:
+            self.cache.record(route.route_id, result, now)
+        stats.probed += 1
+        entry = self.cache.entry(route.route_id)
+        if entry is not None and entry.healthy:
+            stats.fresh += 1
+        elif entry is not None and not entry.healthy:
+            stats.negative += 1
 
-    def run_forever(self) -> ProveAtRestCycle | None:
-        """Loop ``run_once`` until ``stop()``; returns the last completed cycle."""
+    def _record_liveness(self, route: AdmittedRoute, result: ProbeResult, now: datetime) -> None:
+        """Chat-only success: fresh for liveness, but not a coding worker."""
+        self.cache.record_liveness(
+            route.route_id,
+            latency_ms=result.latency_ms,
+            pool=route.pool,
+            capacity_evidence=route.capacity_evidence,
+            now=now,
+        )
+
+    def _note_rate_limit(
+        self, route: AdmittedRoute, exchange: ProbeExchange, now: datetime
+    ) -> None:
+        if category_for(exchange) != CATEGORY_RATE_LIMITED:
+            return
+        seconds = exchange.retry_after_seconds if exchange.retry_after_seconds else 60.0
+        self.cache.zero_bucket(route.provider, now + timedelta(seconds=seconds), pool=route.pool)
+
+    def run_forever(self) -> CycleStats | None:
+        """Loop ``run_once`` until ``stop``. A cycle error retries next interval."""
         self._stop.clear()
-        last: ProveAtRestCycle | None = None
+        last: CycleStats | None = None
         while not self._stop.is_set():
             try:
                 last = self.run_once()
             except Exception as exc:
-                # A transient inventory or probe-plane failure must not kill the
-                # long-running refresher. Keep the last complete state on disk,
-                # surface the named failure to the host, and retry next interval.
                 if self.on_cycle_error is not None:
                     self.on_cycle_error(exc)
             remaining = float(self.interval_seconds)
@@ -485,80 +567,227 @@ class ProveAtRestDaemon:
                 remaining -= step
         return last
 
-    def _prove_admitted(
-        self, admitted: Sequence[str], *, observed_at: datetime
-    ) -> list[ProofResult]:
-        n = max(len(admitted), 1)
-        duration = max(60.0, float(n) * float(self.probe_timeout_seconds))
-        runner = ProbeRunner(
-            ProbePolicy(
-                max_models_per_run=n,
-                timeout_seconds=float(self.probe_timeout_seconds),
-                max_duration_seconds=duration,
+
+# ---------------------------------------------------------------------------
+# Admitted-set loading (same evidence path as `verdict eligibility`)
+# ---------------------------------------------------------------------------
+
+
+def routes_from_evidence(
+    inventory_rows: Sequence[Mapping[str, Any]],
+    connections: Sequence[Mapping[str, Any]],
+    *,
+    now: datetime,
+    state_dir: Path | None = None,
+) -> tuple[AdmittedRoute, ...]:
+    """Admit exactly the way ``verdict eligibility`` does, without probing.
+
+    Uses ``admit`` over the live inventory and connections. Routes that fail
+    admission are not probed. Capacity class comes from the same ladder
+    classifier eligibility uses, so this prober and ``verdict eligibility``
+    agree on FREE versus SUBSCRIPTION.
+    """
+    from verdict.admission import admit, default_runtime_evidence
+
+    evidence = default_runtime_evidence(now=now, state_dir=state_dir)
+    admitted = admit(inventory_rows, connections, evidence, now=now)
+    by_id: dict[str, Mapping[str, Any]] = {str(row.get("id", "")): row for row in inventory_rows}
+    conn_by_provider: dict[str, Mapping[str, Any]] = {}
+    for item in connections:
+        name = str(item.get("provider", "")).lower()
+        if name and name not in conn_by_provider:
+            conn_by_provider[name] = item
+    out: list[AdmittedRoute] = []
+    for record in admitted.records:
+        if not record.admitted:
+            continue
+        row: Mapping[str, Any] = by_id.get(record.route_id, {})
+        provider = record.provider or _provider_of(record.route_id)
+        conn: Mapping[str, Any] | None = conn_by_provider.get(provider.lower())
+        capacity, plan = capacity_class_of(conn, row)
+        out.append(
+            AdmittedRoute(
+                route_id=record.route_id,
+                provider=provider,
+                capacity=capacity.value,
+                pool=None,
+                capacity_evidence=plan or None,
             )
         )
-        observations = runner.run(
-            list(admitted),
-            self.transport,
-            now=observed_at,
-            live=self.live,
-            consented=self.consented,
-            provider="prove_at_rest",
-            budget=ProbeBudget(
-                provider="prove_at_rest",
-                max_requests=n,
-                max_tokens=n,
-                max_duration_seconds=duration,
-            ),
-        )
-        by_id = {item.model_id: item for item in observations}
-        out: list[ProofResult] = []
-        for identity_id in admitted:
-            observation = by_id.get(identity_id)
-            provider = _provider_of(identity_id)
-            if observation is None:
-                out.append(
-                    ProofResult(
-                        identity_id=identity_id,
-                        provider=provider,
-                        status=STATUS_FAILED,
-                        reason="probe_missing",
-                        proved_at=observed_at,
-                    )
-                )
+    return tuple(out)
+
+
+def capacity_class_of(
+    conn: Mapping[str, Any] | None, row: Mapping[str, Any]
+) -> tuple[CapacityClass, str]:
+    """Same rules as ``EligibilityLadder._capacity_class``.
+
+    Copied, not called through a ladder instance: building a ladder would
+    read and could rewrite ``orchestration-health.json``. The two copies are
+    checked against each other in tests. Selection order is not touched.
+    """
+    if conn is None:
+        return CapacityClass.UNKNOWN, ""
+    plan_label = str(conn.get("plan_label", ""))
+    plan_lower = plan_label.lower()
+    auth_type = str(conn.get("authType", "")).lower()
+    pricing = row.get("pricing")
+    prices: list[float] = []
+    if isinstance(pricing, Mapping):
+        for value in pricing.values():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                prices.append(float(value))
+    all_zero = bool(prices) and all(price == 0 for price in prices)
+    positive = any(price > 0 for price in prices)
+    if auth_type == "oauth" and "free" not in plan_lower:
+        return CapacityClass.SUBSCRIPTION, plan_label
+    if bool(conn.get("import_free_only")) or "free" in plan_lower or all_zero:
+        return CapacityClass.FREE, plan_label
+    if auth_type == "apikey" and positive:
+        return CapacityClass.METERED, plan_label
+    return CapacityClass.UNKNOWN, plan_label
+
+
+def load_admitted_routes(
+    gateway: str, *, api_key: str | None, now: datetime | None = None, timeout: float = 30.0
+) -> tuple[AdmittedRoute, ...]:
+    """Fetch inventory and connections, then admit. Same GETs as eligibility."""
+    from verdict.orchestration.run import fetch_connections, fetch_inventory
+
+    current = now or _now()
+    origin = gateway.rstrip("/")
+    if origin.endswith("/v1"):
+        origin = origin[: -len("/v1")]
+    rows = fetch_inventory(origin, api_key=api_key, timeout=timeout)
+    connections = fetch_connections(origin, api_key=api_key, timeout=timeout)
+    return routes_from_evidence(rows, connections, now=current)
+
+
+# ---------------------------------------------------------------------------
+# Live transport and daemon construction
+# ---------------------------------------------------------------------------
+
+
+def _exchange_from_body(
+    status: int | None,
+    body: Mapping[str, Any] | None,
+    *,
+    phase: str,
+    latency_ms: float | None,
+    retry_after: float | None,
+) -> ProbeExchange:
+    if not isinstance(body, Mapping):
+        body = {}
+    choices = body.get("choices")
+    message: Mapping[str, Any] = {}
+    if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+        raw_message = choices[0].get("message")
+        if isinstance(raw_message, Mapping):
+            message = raw_message
+    content = message.get("content")
+    text = content.strip() if isinstance(content, str) else ""
+    tool_calls = message.get("tool_calls")
+    called = False
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            if not isinstance(call, Mapping):
                 continue
-            ready = observation.availability_state == "ready"
-            passport = None
-            if ready and self.issue_passports:
-                passport = passport_from_probe(
-                    provider=provider, identity_id=identity_id, observation=observation
+            fn = call.get("function")
+            name = fn.get("name") if isinstance(fn, Mapping) else None
+            if name == TOOL_NAME:
+                called = True
+    ok = status == 200
+    return ProbeExchange(
+        http_status=status,
+        ok=ok,
+        chat_exact=(phase == "chat" and text == "OK"),
+        tool_called=(phase == "tool" and called),
+        latency_ms=latency_ms,
+        retry_after_seconds=retry_after,
+        error_category=None,
+    )
+
+
+def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
+    """OpenAI-compatible transport. Built only for a consented live daemon."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    endpoint = base_url.rstrip("/")
+    if endpoint.endswith("/v1"):
+        endpoint = endpoint[: -len("/v1")]
+    endpoint = endpoint + "/v1/chat/completions"
+
+    def transport(route_id: str, phase: str, timeout_seconds: float) -> ProbeExchange:
+        payload = chat_payload(route_id) if phase == "chat" else tool_payload(route_id)
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+                raw = response.read(1_048_576)
+                elapsed = (time.monotonic() - started) * 1000.0
+                parsed = json.loads(raw) if raw else {}
+                return _exchange_from_body(
+                    response.status,
+                    parsed if isinstance(parsed, Mapping) else {},
+                    phase=phase,
+                    latency_ms=elapsed,
+                    retry_after=None,
                 )
-            if ready:
-                out.append(
-                    ProofResult(
-                        identity_id=identity_id,
-                        provider=provider,
-                        status=STATUS_HEALTHY,
-                        proved_at=observation.observed_at,
-                        latency_ms=observation.latency_ms,
-                        http_status=observation.http_status,
-                        passport=passport,
-                    )
-                )
-            else:
-                out.append(
-                    ProofResult(
-                        identity_id=identity_id,
-                        provider=provider,
-                        status=STATUS_FAILED,
-                        reason=observation.error_class or observation.error or observation.status,
-                        proved_at=observation.observed_at,
-                        latency_ms=observation.latency_ms,
-                        http_status=observation.http_status,
-                        error_class=observation.error_class,
-                    )
-                )
-        return out
+        except urllib.error.HTTPError as exc:
+            elapsed = (time.monotonic() - started) * 1000.0
+            retry_after = None
+            header = exc.headers.get("Retry-After") if exc.headers else None
+            if header:
+                try:
+                    retry_after = float(header)
+                except ValueError:
+                    retry_after = None
+            return ProbeExchange(
+                http_status=exc.code,
+                ok=False,
+                latency_ms=elapsed,
+                retry_after_seconds=retry_after,
+                error_category=category_for(ProbeExchange(http_status=exc.code, ok=False)),
+            )
+        except TimeoutError:
+            return ProbeExchange(http_status=None, ok=False, error_category="timeout")
+
+    return transport
+
+
+@dataclass
+class ProverDaemon:
+    """Long-running prober wired to a gateway. Writes only the health cache."""
+
+    prober: Prober
+    consented: bool
+
+    def run_once(self) -> CycleStats:
+        if not self.consented:
+            raise ProveError(
+                "live prove-at-rest requires explicit consent; pass --allow-live-probe"
+            )
+        return self.prober.run_once()
+
+    def run_forever(self) -> CycleStats | None:
+        if not self.consented:
+            raise ProveError(
+                "live prove-at-rest requires explicit consent; pass --allow-live-probe"
+            )
+        return self.prober.run_forever()
+
+    def stop(self) -> None:
+        self.prober.stop()
 
 
 def build_live_daemon(
@@ -569,73 +798,140 @@ def build_live_daemon(
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     probe_timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
     allow_live_probe: bool = False,
-    transport: ProbeTransport | None = None,
-) -> ProveAtRestDaemon:
-    """Construct a daemon wired to OmniRoute env / explicit endpoint."""
-    from verdict.free_tier_admit import normalize_omniroute_origin
-    from verdict.probes import openai_probe_transport
+    max_requests: int = DEFAULT_MAX_REQUESTS,
+    max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    transport: ProbeTransportFn | None = None,
+    cache_path: Path | None = None,
+) -> ProverDaemon:
+    """Construct the daemon. ``state_path`` is accepted and ignored.
+
+    The legacy cycle file (``state_path`` / ``VERDICT_PROVE_AT_REST_STATE``)
+    is not read and not written. The daemon writes ``cache_path`` or
+    ``VERDICT_HEALTH_CACHE`` or ``~/.verdict/health-cache.json``.
+    """
+    del state_path  # legacy document: ignored, see module docstring
+    from verdict.free_tier_admit import normalize_omniroute_origin, omniroute_endpoint_from_env
 
     if base_url and base_url.strip():
-        endpoint: tuple[str, str | None] = (base_url.strip(), api_key)
+        origin = normalize_omniroute_origin(base_url.strip())
+        key = api_key
     else:
         found = omniroute_endpoint_from_env()
         if found is None:
-            raise ProveAtRestError(
+            raise ProveError(
                 "OmniRoute endpoint required; set OMNIROUTE_BASE_URL or pass --base-url"
             )
-        endpoint = found
-    origin, key = endpoint
-    if api_key is not None:
-        key = api_key
-    origin = normalize_omniroute_origin(origin)
+        origin = normalize_omniroute_origin(found[0])
+        key = api_key if api_key is not None else found[1]
 
-    def _loader() -> OmniRouteAdmitSnapshot:
-        return load_omniroute_admit_snapshot(origin, api_key=key)
+    def loader() -> tuple[AdmittedRoute, ...]:
+        from verdict.orchestration.run import resolve_api_key
 
-    if transport is None:
-        transport = openai_probe_transport(f"{origin}/v1", api_key=key)
-    return ProveAtRestDaemon(
-        store=ProveAtRestStore(path=state_path or default_state_path()),
-        snapshot_loader=_loader,
-        transport=transport,
-        interval_seconds=interval_seconds,
+        resolved = key if key is not None else resolve_api_key()
+        return load_admitted_routes(origin, api_key=resolved)
+
+    cache = HealthCache(cache_path or default_cache_path())
+    chosen = transport if transport is not None else live_transport(origin, api_key=key)
+    prober = Prober(
+        cache=cache,
+        routes_loader=loader,
+        transport=chosen,
+        max_requests=max_requests,
+        max_wall_seconds=max_wall_seconds,
+        concurrency=concurrency,
         probe_timeout_seconds=probe_timeout_seconds,
-        live=True,
-        consented=allow_live_probe,
+        interval_seconds=interval_seconds,
     )
+    return ProverDaemon(prober=prober, consented=allow_live_probe)
 
 
-def load_healthy_passports(path: Path | None = None) -> dict[str, ModelPassport]:
-    """Read persisted healthy passports for later admit (empty if missing)."""
-    store = ProveAtRestStore(path=path or default_state_path())
-    cycle = store.read()
-    if cycle is None:
-        return {}
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
+
+
+def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[str, Any]:
+    """Counts by state and class, top healthy coding workers, cold providers."""
+    current = now or _now()
+    by_state = {STATE_FRESH: 0, STATE_STALE: 0, STATE_NEGATIVE: 0, STATE_UNPROBED: 0}
+    by_class: dict[str, int] = {}
+    workers: list[HealthEntry] = []
+    providers: dict[str, set[str]] = {}
+    for entry in cache.routes().values():
+        state = entry.state_at(current)
+        by_state[state] = by_state.get(state, 0) + 1
+        evidence = entry.capacity_evidence or "unknown"
+        if state in {STATE_FRESH, STATE_STALE}:
+            by_class[evidence] = by_class.get(evidence, 0) + 1
+        provider = _provider_of(entry.route_id)
+        providers.setdefault(provider, set()).add(state)
+        if state in {STATE_FRESH, STATE_STALE} and entry.tool_ok:
+            workers.append(entry)
+    workers.sort(key=lambda item: (item.latency_ms is None, item.latency_ms or 0.0))
+    cold = sorted(
+        provider
+        for provider, states in providers.items()
+        if STATE_FRESH not in states and STATE_STALE not in states
+    )
+    # Providers that appear only as negatives, plus providers we were told
+    # about through buckets but have no fresh route.
     return {
-        identity_id: passport
-        for identity_id, passport in cycle.passports().items()
-        if any(
-            item.identity_id == identity_id and item.status == STATUS_HEALTHY
-            for item in cycle.results
-        )
+        "cache_path": str(cache.path),
+        "schema_version": "1",
+        "counts_by_state": by_state,
+        "healthy_by_capacity_evidence": by_class,
+        "top_healthy_coding_workers": [
+            {
+                "route_id": entry.route_id,
+                "latency_ms": entry.latency_ms,
+                "pool": entry.pool,
+                "capacity_evidence": entry.capacity_evidence,
+                "checked_at": entry.checked_at.isoformat().replace("+00:00", "Z"),
+            }
+            for entry in workers[:10]
+        ],
+        "cold_providers": cold,
+        "legacy_state": "ignored",
     }
 
 
 __all__ = [
+    "CHAT_PROBE_MESSAGE",
+    "DEFAULT_CONCURRENCY",
+    "DEFAULT_EPSILON",
     "DEFAULT_INTERVAL_SECONDS",
+    "DEFAULT_MAX_REQUESTS",
+    "DEFAULT_MAX_WALL_SECONDS",
     "DEFAULT_PROBE_TIMEOUT_SECONDS",
+    "ENV_CACHE_PATH",
     "ENV_STATE_PATH",
+    "LEGACY_STATE_RELATIVE",
     "PROVE_AT_REST_SCHEMA_VERSION",
     "STATUS_FAILED",
     "STATUS_HEALTHY",
     "STATUS_SKIPPED",
+    "TOOL_NAME",
+    "AdmittedRoute",
+    "CycleStats",
+    "ProbeExchange",
+    "Prober",
     "ProofResult",
     "ProveAtRestCycle",
     "ProveAtRestDaemon",
     "ProveAtRestError",
     "ProveAtRestStore",
+    "ProveError",
+    "ProverDaemon",
     "build_live_daemon",
+    "category_for",
+    "chat_payload",
     "default_state_path",
+    "load_admitted_routes",
     "load_healthy_passports",
+    "order_cycle",
     "passport_from_probe",
+    "routes_from_evidence",
+    "status_report",
+    "tool_payload",
 ]

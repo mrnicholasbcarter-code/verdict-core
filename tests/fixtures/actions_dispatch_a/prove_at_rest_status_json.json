@@ -1,6 +1,1 @@
-{
-  "stdout": "{\n  \"state_path\": \"<HOME>/.verdict/prove-at-rest/state.json\",\n  \"status\": \"empty\"\n}\n",
-  "stderr": "",
-  "exit_code": 0,
-  "command": "prove-at-rest status --json"
-}
+{"stdout":"{\n  \"cache_path\": \"<HOME>/.verdict/health-cache.json\",\n  \"legacy_state\": \"ignored\",\n  \"state_path\": \"<HOME>/.verdict/health-cache.json\",\n  \"status\": \"empty\"\n}\n","stderr":"","exit_code":0,"command":"prove-at-rest status --json"}

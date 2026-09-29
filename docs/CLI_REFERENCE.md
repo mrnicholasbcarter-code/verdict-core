@@ -253,9 +253,11 @@ The output is intentionally explicit:
 - HTTP success means only that transport succeeded. Quality remains `unknown`
   until a verifier records a quality outcome.
 
-Use `verdict prove-at-rest once --allow-live-probe --json` to refresh health
-evidence. `verdict prove-at-rest status --json` only reads the persisted cycle
-and does not make network requests.
+Use `verdict prove-at-rest once --allow-live-probe --json` to refresh the
+health cache. `verdict prove-at-rest status --json` only reads that cache and
+does not make network requests. The cache is not the selection ladder's state
+file; selection order is unchanged. See
+[health-cache.md](guides/health-cache.md).
 
 ### `verdict run` — Execute through the route path
 
