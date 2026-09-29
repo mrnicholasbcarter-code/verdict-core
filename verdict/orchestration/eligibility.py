@@ -303,6 +303,9 @@ class EligibilityLadder:
         ``evidence_rule`` names the classification rule that fired.
 
         Priority order (design §B, plus origin/main signals restored):
+        (0) conn is None → UNKNOWN (no connection data; checked before all
+            other rules, so even a ``:free``-suffixed route without a
+            connection returns UNKNOWN, not FREE).
         (a) ``:free`` suffix → FREE (overrides oauth → subscription).
         (b) Connection free signals (``importFreeModelsOnly``,
             ``import_free_only``, free tier/plan, ``plan_label`` containing
@@ -834,9 +837,8 @@ class EligibilityLadder:
         category = result.category
         if (
             not result.healthy
-            and hasattr(result, "status_code")
-            and category in ("bad_request", "unservable")
-            and is_catalog_stale_error(category)
+            and category in ("bad_request", "unservable", "unsupported")
+            and is_catalog_stale_error(result.error_message)
         ):
             category = "catalog_stale"
         self._state["health"][route_id] = {

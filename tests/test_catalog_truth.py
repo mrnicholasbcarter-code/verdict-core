@@ -606,3 +606,74 @@ class TestRankingParityAgainstOriginMain:
         assert verdicts["agy/claude-sonnet-4-6"].reason == "excluded_route"
         assert verdicts["antigravity/claude-sonnet-4-6"].reason == "excluded_family"
         assert verdicts["antigravity/gpt-oss-120b-medium"].reason == "excluded_family"
+
+
+# -----------------------------------------------------------------------
+# F. CATALOG-GHOST COOLDOWN WIRING (_record_health end-to-end)
+# -----------------------------------------------------------------------
+
+
+def _make_minimal_ladder(state_path: Path) -> "EligibilityLadder":
+    """Build an EligibilityLadder with no inventory or connections for unit testing."""
+    from verdict.orchestration.eligibility import EligibilityLadder
+
+    return EligibilityLadder(
+        inventory_rows=[],
+        connections=[],
+        probe=lambda _route: HealthResult(True, "healthy"),
+        state_path=state_path,
+    )
+
+
+_CATALOG_MSG = (
+    "Model 'x' is not available in the active live catalog for provider 'y'"
+)
+_UNRELATED_MSG = "Your request was rejected due to content policy."
+
+
+class TestCatalogGhostWiring:
+    def test_catalog_stale_message_produces_catalog_stale_cooldown(
+        self, tmp_path: Path
+    ) -> None:
+        """_record_health with a catalog-stale error message → category catalog_stale."""
+        ladder = _make_minimal_ladder(tmp_path / "state.json")
+        result = HealthResult(
+            healthy=False,
+            category="unsupported",
+            status_code=400,
+            error_message=_CATALOG_MSG,
+        )
+        ladder._record_health("cx/some-model", result, NOW)
+        health = ladder._state["health"]["cx/some-model"]
+        assert health["category"] == "catalog_stale", health
+        cooldown = ladder._state["cooldowns"].get("route:cx/some-model")
+        assert cooldown is not None
+        assert cooldown["category"] == "catalog_stale"
+        until_dt = datetime.fromisoformat(cooldown["until"])
+        expected_min = NOW + timedelta(seconds=CATALOG_STALE_COOLDOWN_SECONDS - 5)
+        assert until_dt >= expected_min, until_dt
+
+    def test_unrelated_400_stays_unsupported(self, tmp_path: Path) -> None:
+        """_record_health with an unrelated 400 message → category stays unsupported."""
+        ladder = _make_minimal_ladder(tmp_path / "state.json")
+        result = HealthResult(
+            healthy=False,
+            category="unsupported",
+            status_code=400,
+            error_message=_UNRELATED_MSG,
+        )
+        ladder._record_health("cx/some-model", result, NOW)
+        health = ladder._state["health"]["cx/some-model"]
+        assert health["category"] == "unsupported", health
+
+    def test_mutation_check_passing_category_breaks_reclassification(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression guard: passing category instead of error_message must NOT reclassify."""
+        from verdict.orchestration.provider_catalog import is_catalog_stale_error
+
+        # If we accidentally pass the category string (the old bug), the phrase
+        # "not available in the active live catalog" is absent → returns False.
+        assert not is_catalog_stale_error("unsupported")
+        assert not is_catalog_stale_error("bad_request")
+        assert not is_catalog_stale_error("unservable")

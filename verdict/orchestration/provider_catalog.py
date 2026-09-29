@@ -4,12 +4,11 @@ Resolves owned_by aliases that the OmniRoute inventory uses but that do not
 match any connection provider name.  Identifies backend pools so two prefixes
 backed by the same quota are never treated as independent.
 
-Evidence sources:
-- /tmp/research-empirical.md: agy≡antigravity (identical tool-call ids),
-  kilocode :free ≡ openrouter :free (same upstream generation id).
-- /tmp/research-or-providers.json: connection list with importFreeModelsOnly,
-  authType, providerSpecificData.tier fields.
-- /tmp/research-audit.md §5: 274 routes with unmapped owned_by values.
+Evidence: alias and pool identity was established by comparing tool-call ids
+across agy/* and antigravity/* routes (identical ids confirm shared backend),
+and generation ids across kilocode :free and openrouter :free routes (same
+upstream pool).  The owned_by alias table was built from an OmniRoute
+inventory audit that found 274 routes with unmapped owned_by values.
 """
 
 from __future__ import annotations
@@ -99,7 +98,7 @@ def backend_pool(route_id: str) -> str:
     return prefix
 
 
-def resolve_provider(owned_by: str, route_id: str) -> str:
+def resolve_provider(owned_by: str, route_id: str = "") -> str:
     """Resolve the effective provider name for connection lookup.
 
     Checks the alias table first, then falls back to ``owned_by`` as-is

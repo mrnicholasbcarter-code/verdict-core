@@ -82,6 +82,7 @@ class HealthResult:
     category: str
     status_code: int | None = None
     retry_after_seconds: float | None = None
+    error_message: str = ""
 
 
 @dataclass(frozen=True)
@@ -232,15 +233,18 @@ def classify_probe_status(
         403: "permission",
         429: "rate_limited",
     }
+    bounded_body = body[:500]
     if status_code == 400 and any(m in body.lower() for m in _UNSERVABLE_MARKERS):
-        return HealthResult(False, "unservable", status_code, retry_after_seconds)
+        return HealthResult(False, "unservable", status_code, retry_after_seconds, bounded_body)
     if status_code in {400, 413} and is_context_length_error(body):
         return HealthResult(False, CONTEXT_LENGTH_CATEGORY, status_code)
     if status_code in categories:
-        return HealthResult(False, categories[status_code], status_code, retry_after_seconds)
+        return HealthResult(
+            False, categories[status_code], status_code, retry_after_seconds, bounded_body
+        )
     if status_code is not None and status_code >= 500:
-        return HealthResult(False, "upstream_temporary", status_code, retry_after_seconds)
-    return HealthResult(False, "transport_temporary", status_code, retry_after_seconds)
+        return HealthResult(False, "upstream_temporary", status_code, retry_after_seconds, bounded_body)
+    return HealthResult(False, "transport_temporary", status_code, retry_after_seconds, bounded_body)
 
 
 def _failure_cooldown(result: HealthResult) -> float:
