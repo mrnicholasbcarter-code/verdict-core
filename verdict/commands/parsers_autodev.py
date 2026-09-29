@@ -197,6 +197,29 @@ def register(subparsers: Any) -> None:
     )
     suggest_p.add_argument("--log_path", default="verdict-decisions.jsonl")
 
+    # --- Trace + Demo (BOD-279) ---
+    trace_p = subparsers.add_parser("trace", help="Human-readable trace of an orchestration run")
+    trace_p.add_argument("run", help="Run id or run directory")
+    trace_p.add_argument("--runs-dir", default=".verdict/runs")
+    trace_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    trace_p.add_argument("--step", type=int, default=None, help="Drill into step by seq number")
+    trace_p.add_argument("--kind", default=None, help="Filter steps by kind")
+    trace_p.add_argument("--routing", action="store_true", help="Show routing evidence detail")
+    trace_p.add_argument("--context", action="store_true", help="Show context provenance detail")
+    trace_p.add_argument("--width", type=int, default=100, help="Output width (default: 100)")
+
+    demo_p = subparsers.add_parser(
+        "demo", help="Credential-free deterministic demo (offline scenario)"
+    )
+    demo_p.add_argument(
+        "--live", action="store_true", help="Use production routing path (requires credentials)"
+    )
+    demo_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    demo_p.add_argument(
+        "--speed", type=float, default=1.0, help="TUI replay speed multiplier (default: 1.0)"
+    )
+    demo_p.add_argument("--width", type=int, default=100, help="Output width (default: 100)")
+
     doctor_p = subparsers.add_parser(
         "doctor", help="Scan and repair system configuration and connectivity issues"
     )

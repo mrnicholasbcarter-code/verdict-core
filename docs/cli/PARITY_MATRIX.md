@@ -15,6 +15,7 @@
 | `compat` | `compat.manifest` | Configuration | read | ✅ action |
 | `cost-report` | `cost-report` | Overview | read | ✅ action |
 | `credentials` | `credentials.list` | Configuration | read | ✅ action |
+| `demo` | `demo.run` | Traces | read | ✅ action |
 | `detect` | `detect` | Health | read | ✅ action |
 | `doctor` | `doctor` | Doctor | read | ✅ action |
 | `eligibility` | `eligibility` | Health | read | ✅ action |
@@ -45,9 +46,10 @@
 | `stats` | `stats` | Overview | read | ✅ action |
 | `suggest` | `suggest` | Overview | read | ✅ action |
 | `supervise` | — | Orchestration | launch | 🚀 launch: dispatch (supervise_run): spawns and restarts an orchestrate controller process against a stall and deadline budget; long-running supervisor loop |
+| `trace` | `trace.view` | Traces | read | ✅ action |
 | `ui` | — | Monitoring | launch | 🚀 launch: cmd_ui (launch_dashboard): launches the Streamlit analytics dashboard as a separate long-running web server process for interactive exploration; long-running web UI |
 | `uninstall` | — | — | — | 🔧 machine-only: cmd_uninstall (uninstall_memory_bridge): removes memory bridge hooks, MCP registrations, and optionally purges the .verdict data directory globally; destructive global uninstall |
 | `watch` | — | Orchestration | launch | 🚀 launch: _watch (tui.follow): live-follows a running orchestration's events.jsonl and renders the TUI until the run terminates; long-running interactive view |
 
-**Summary:** 35 actions, 7 launch, 2 machine-only, 0 gaps
+**Summary:** 37 actions, 7 launch, 2 machine-only, 0 gaps
 

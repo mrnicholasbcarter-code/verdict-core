@@ -17,6 +17,7 @@ The registered subcommands below are grouped by their primary use. Run
 | Orchestration | `orchestrate`, `supervise`, `watch`, `run-receipt`, `eligibility`, `resume` |
 | Execution and service | `serve`, `detect`, `probe`, `catalog`, `prove-at-rest`, `certify` |
 | Metadata, memory, and integrations | `metadata`, `memory`, `mcp`, `hook`, `harness`, `runtime` |
+| Traces and demo | `trace`, `demo` |
 | Development workflows | `autodev`, `autodev-golden-path`, `quickstart` |
 | Reporting and review | `stats`, `benchmark`, `cost-report`, `receipt`, `suggest` |
 | Interface | `ui` |
@@ -84,6 +85,85 @@ verdict watch RUN_ID --runs-dir .verdict/runs --once
 | `run` | Run ID or run directory |
 | `--runs-dir RUNS_DIR` | Run directory root |
 | `--once` | Render current state and exit |
+
+### `verdict trace` — Human-readable trace of a run
+
+```bash
+verdict trace <run-id|run-dir> [--json] [--step N] [--kind K] [--routing] [--context]
+```
+
+| Flag | Description |
+|---|---|
+| `run` | Run id or run directory path |
+| `--json` | Output machine-readable JSON (no ANSI) |
+| `--step N` | Drill into step by sequence number |
+| `--kind K` | Filter steps by kind (e.g. `failure`, `cooldown`, `selection`) |
+| `--routing` | Show routing evidence detail (uses routing explorer) |
+| `--context` | Show context provenance detail (uses context explorer) |
+| `--width W` | Output width in columns (default: 100) |
+
+Example output (offline flagship scenario):
+
+```
+trace  run=offline-flagship-failover
+  goal: flagship failover test
+  steps: 34  schema: trace-view-v1
+
+seq   kind            node      detail
+--------------------------------------------------
+1     request                   goal=flagship failover test
+6     selection       node-1    route=alpha/model-a
+17    failure         node-1
+18    cooldown        node-1
+27    selection       node-1    route=beta/model-b
+28    reassign        node-1
+36    terminal        node-1    model=beta/model-b
+56    run_finished              outcome=COMPLETE
+```
+
+Replay path: use `verdict watch --replay <run-id>` for an interactive TUI replay.
+
+### `verdict demo` — Credential-free deterministic demo
+
+```bash
+verdict demo [--live] [--json] [--speed X]
+```
+
+| Flag | Description |
+|---|---|
+| `--live` | Use production routing path (requires configured credentials) |
+| `--json` | Output machine-readable JSON (trace + claims + receipt) |
+| `--speed X` | TUI replay speed multiplier (default: 1.0) |
+| `--width W` | Output width in columns (default: 100) |
+
+Default mode runs the OFFLINE flagship scenario: scripted workers, injected
+faults, no credentials or provider spend. On a TTY it shows the TUI replay
+followed by a trace and claims panel.
+
+Every screen is labelled `OFFLINE SCENARIO: scripted workers, injected faults`.
+
+Claims panel (from `--json` or text output):
+
+```
+CLAIMS VERIFIED
+------------------------------------------------------------
+  [VERIFIED] Task-aware model selection
+  [VERIFIED] Provider/model health considered in routing
+  [VERIFIED] Worker failure isolated from controller
+  [VERIFIED] Automatic bounded failover
+  [VERIFIED] Cooldown recorded
+  [VERIFIED] Replacement completed successfully on alternate route
+  [VERIFIED] Validation passed
+  [VERIFIED] Receipt integrity verified
+
+NOT SHOWN BY THIS RUN
+------------------------------------------------------------
+  [NOT OBSERVED] Capability filtering reduced candidate pool
+  [NOT OBSERVED] Independent review passed
+```
+
+`--live` refuses unless credentials are configured and directs the user to
+`verdict orchestrate` with the production routing path.
 
 ### `verdict run-receipt` — Show and verify an orchestration receipt
 
