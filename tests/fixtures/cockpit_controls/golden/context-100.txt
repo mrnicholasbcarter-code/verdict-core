@@ -18,4 +18,4 @@ transition: none (no failures recorded)
 |  Observed retry_node: refused; recovery budget exhausted                                         |
 |                                                                                                  |
 +--------------------------------------------------------------------------------------------------+
-? help  c context  r routing  p receipt  q quit
+? help  c context  r routing  p receipt  h health  q quit

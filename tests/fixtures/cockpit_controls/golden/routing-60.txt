@@ -33,4 +33,4 @@ transition: none (no failures recorded)
 |  exhausted                                               |
 |                                                          |
 +----------------------------------------------------------+
-? help  c context  r routing  p receipt  q quit
+? help  c context  r routing  p receipt  h health  q quit

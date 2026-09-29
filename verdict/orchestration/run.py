@@ -380,8 +380,15 @@ async def plan_with_failover(
                 detail=f"reselecting planner after {failure.category}",
             )
             continue
+        events.emit(
+            "controller",
+            state="HEALTHY",
+            route_id=choice.route_id,
+            detail="plan produced",
+            observed_model=terminal.model,
+            session_ref=terminal.session_ref,
+        )
         del terminal
-        events.emit("controller", state="HEALTHY", route_id=choice.route_id, detail="plan produced")
         if max_parallel != graph.max_parallel:
             graph = WorkGraph(
                 graph.goal,

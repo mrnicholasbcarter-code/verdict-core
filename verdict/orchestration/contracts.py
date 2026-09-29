@@ -656,6 +656,7 @@ class ReviewResult:
     findings: tuple[ReviewFinding, ...] = ()
     raw_ref: str = ""  # path to raw reviewer output
     detail: str = ""
+    observed_model: str = ""  # model actually reported by the reviewer payload (may be empty)
     # Every reviewer attempt (route, status, failure category/scope/cooldown).
     attempts: tuple[dict[str, object], ...] = ()
 

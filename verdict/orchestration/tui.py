@@ -185,6 +185,7 @@ class ReviewView:
     status: str = ""
     reviewer: str = ""
     route_id: str = ""
+    observed_model: str = ""
     blocking: int = 0
     findings: int = 0
 
@@ -220,6 +221,9 @@ class RunView:
         # whether root failover is supervisor-owned.
         self.root_controller = ""
         self.root_generation = ""
+        # BOD-276: planner observed identity (from controller HEALTHY event)
+        self.planner_observed_model = ""
+        self.planner_session_ref = ""
         self.review_independence = ""
         self.remediation_rounds = 0
         self.review: ReviewView | None = None
@@ -275,9 +279,16 @@ class RunView:
             "scope": _t(data.get("scope", ""), 90),
         }
 
+    def _set_controller_route(self, route: str) -> None:
+        """Set the active controller route, clearing stale observed identity on change."""
+        if route != self.controller_route:
+            self.planner_observed_model = ""
+            self.planner_session_ref = ""
+        self.controller_route = route
+
     def _on_plan_started(self, node_id: str, data: dict[str, Any]) -> None:
         route = _t(data.get("route_id", "unassigned"), 64)
-        self.controller_route = route
+        self._set_controller_route(route)
         self.controller_state = "PLANNING"
         self.controller.append(("PLANNING", f"frontier decomposition on {route}"))
 
@@ -438,6 +449,7 @@ class RunView:
             _t(data.get("status", ""), 24),
             _t(data.get("reviewer", ""), 64),
             _t(data.get("route_id", ""), 64),
+            _t(data.get("observed_model", ""), 64),
             _i(data.get("blocking")) or 0,
             _count(data.get("findings")),
         )
@@ -488,7 +500,12 @@ class RunView:
             return
         route = _t(data.get("route_id", ""), 64)
         if route:
-            self.controller_route = route
+            self._set_controller_route(route)
+        # BOD-276: planner observed identity (from the successful terminal)
+        if state == "HEALTHY":
+            # Always replace observed fields unconditionally so no stale values survive
+            self.planner_observed_model = _t(data.get("observed_model", ""), 64)
+            self.planner_session_ref = _t(data.get("session_ref", ""), 64)
         self.controller_state = state or self.controller_state
         self.controller.append((state, detail + (f" [{route}]" if route else "")))
 
@@ -767,6 +784,9 @@ def _review_lines(view: RunView) -> list[str]:
         f"{review.route_id or 'unassigned'} "
         f"({review.blocking} blocking / {review.findings} findings)"
     ]
+    # BOD-276: reviewer identity — selected route vs observed model
+    lines.append(f"reviewer selected: {review.route_id or 'not selected yet'}")
+    lines.append(f"reviewer observed: {review.observed_model or 'not reported yet'}")
     if len(view.review_attempts) > 1:
         lines.append(
             "attempts: "
@@ -789,6 +809,18 @@ def _controller_lines(view: RunView) -> list[str]:
             f"frontier controller: {view.controller_route or '-'} "
             f"[{view.controller_state or 'UNKNOWN'}]"
         )
+    # BOD-276: planner identity — selected route vs observed model
+    head.append(f"planner selected: {view.controller_route or 'not selected yet'}")
+    head.append(
+        f"planner observed: {view.planner_observed_model or 'not reported yet'}"
+        + (f"  session: {view.planner_session_ref}" if view.planner_session_ref else "")
+    )
+    if (
+        view.controller_route
+        and view.planner_observed_model
+        and view.controller_route != view.planner_observed_model
+    ):
+        head.append("MISMATCH: planner selected route != observed reported_model")
     return head + [f"{state} {detail}".strip() for state, detail in view.controller]
 
 
@@ -1084,7 +1116,7 @@ def _run_interactive_cockpit(
     from verdict.orchestration.cockpit_nav import _RealKeyReader
 
     reader = key_reader if key_reader is not None else _RealKeyReader()
-    if panel_name not in {None, "routing", "context", "receipt"}:
+    if panel_name not in {None, "routing", "context", "receipt", "health"}:
         raise ValueError(f"unknown inspection panel: {panel_name}")
 
     def _source() -> list[RunEvent]:
