@@ -426,6 +426,258 @@ def test_rehearsal_verification_fails_on_digest_mismatch():
         assert "mismatch" in result.reason.lower()
 
 
+def _minimal_rehearsal_run(
+    run_dir: Path, *, producer: dict | None
+) -> Path:
+    """Create a rehearsal run directory using the real receipt builder.
+
+    Writes graph.json + events.jsonl, then ``write_run_receipt`` so the receipt
+    (including events_digest and optional producer) comes from production code.
+    """
+    from verdict.orchestration.contracts import WorkGraph, WorkNode
+    from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    graph = WorkGraph(
+        goal="rehearsal provenance",
+        nodes=(
+            WorkNode(
+                "a",
+                "build a",
+                owned_files=("pkg/a.py",),
+                verification_command=("true",),
+            ),
+        ),
+    )
+    (run_dir / "graph.json").write_text(
+        json.dumps({**graph.to_dict(), "run_id": run_dir.name})
+    )
+    log = EventLog(run_dir / "events.jsonl")
+    started: dict = {"run_id": run_dir.name, "goal": "rehearsal provenance"}
+    if producer is not None:
+        started["producer"] = producer
+    log.emit("run_started", **started)
+    write_run_receipt(run_dir)
+    return run_dir
+
+
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    )
+    return result.stdout.strip()
+
+
+def test_rehearsal_reports_producer_sha_explicit_null():
+    """step_rehearsals reports every rehearsal name and producer SHA (or null)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        with_producer = _minimal_rehearsal_run(
+            root / "with_sha",
+            producer={"verdict_version": "0.3.0", "git_sha": "deadbeef", "dirty": False},
+        )
+        legacy = _minimal_rehearsal_run(root / "legacy", producer=None)
+        null_sha = _minimal_rehearsal_run(
+            root / "null_sha",
+            producer={"verdict_version": "0.3.0", "git_sha": None, "dirty": None},
+        )
+        output_dir = root / "output"
+        output_dir.mkdir()
+
+        # Three-arg call remains supported (no certified SHA -> no freshness gate).
+        result = certify_release.step_rehearsals(
+            Path.cwd(),
+            {"with_sha": with_producer, "legacy": legacy, "null_sha": null_sha},
+            output_dir,
+        )
+
+        assert result.status == "PASS"
+        assert "with_sha=deadbeef" in result.reason
+        assert "legacy=null" in result.reason
+        assert "null_sha=null" in result.reason
+        # Must not invent a SHA for missing/null producers.
+        assert "legacy=None" not in result.reason
+
+
+def test_rehearsal_equal_producer_sha_passes(temp_git_repo):
+    """Equal producer SHA and certified SHA remains PASS."""
+    repo = temp_git_repo
+    certified = _git(repo, "rev-parse", "HEAD")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = _minimal_rehearsal_run(
+            Path(tmpdir) / "clean",
+            producer={"verdict_version": "0.3.0", "git_sha": certified, "dirty": False},
+        )
+        output_dir = Path(tmpdir) / "output"
+        output_dir.mkdir()
+
+        result = certify_release.step_rehearsals(
+            repo,
+            {"clean": run_dir},
+            output_dir,
+            certified_git_sha=certified,
+        )
+
+        assert result.status == "PASS"
+        assert f"clean={certified}" in result.reason
+
+
+def test_rehearsal_differing_sha_without_verdict_changes_passes(temp_git_repo):
+    """Differing producer SHA stays PASS when verdict/ is unchanged between revisions."""
+    repo = temp_git_repo
+    # First commit SHA (producer) — README only so far.
+    producer_sha = _git(repo, "rev-parse", "HEAD")
+
+    # Second commit outside verdict/ -> certified SHA differs, verdict/ unchanged.
+    (repo / "NOTES.md").write_text("docs only")
+    _git(repo, "add", "NOTES.md")
+    _git(repo, "commit", "-m", "docs outside verdict")
+    certified = _git(repo, "rev-parse", "HEAD")
+    assert producer_sha != certified
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = _minimal_rehearsal_run(
+            Path(tmpdir) / "stale_ok",
+            producer={
+                "verdict_version": "0.3.0",
+                "git_sha": producer_sha,
+                "dirty": False,
+            },
+        )
+        output_dir = Path(tmpdir) / "output"
+        output_dir.mkdir()
+
+        result = certify_release.step_rehearsals(
+            repo,
+            {"stale_ok": run_dir},
+            output_dir,
+            certified_git_sha=certified,
+        )
+
+        assert result.status == "PASS"
+        assert f"stale_ok={producer_sha}" in result.reason
+
+
+def test_rehearsal_differing_sha_with_verdict_changes_incomplete(temp_git_repo):
+    """Differing producer SHA is INCOMPLETE when verdict/ changed between revisions."""
+    repo = temp_git_repo
+    producer_sha = _git(repo, "rev-parse", "HEAD")
+
+    # Commit under verdict/ so the pathspec diff is non-empty.
+    verdict_dir = repo / "verdict"
+    verdict_dir.mkdir()
+    (verdict_dir / "marker.py").write_text("# changed\n")
+    _git(repo, "add", "verdict/marker.py")
+    _git(repo, "commit", "-m", "touch verdict")
+    certified = _git(repo, "rev-parse", "HEAD")
+    assert producer_sha != certified
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = _minimal_rehearsal_run(
+            Path(tmpdir) / "stale",
+            producer={
+                "verdict_version": "0.3.0",
+                "git_sha": producer_sha,
+                "dirty": False,
+            },
+        )
+        output_dir = Path(tmpdir) / "output"
+        output_dir.mkdir()
+
+        result = certify_release.step_rehearsals(
+            repo,
+            {"stale": run_dir},
+            output_dir,
+            certified_git_sha=certified,
+        )
+
+        assert result.status == "INCOMPLETE"
+        assert f"stale={producer_sha}" in result.reason
+        assert "verdict/" in result.reason
+        assert certified in result.reason
+
+
+def test_rehearsal_digest_mismatch_fails_before_provenance(temp_git_repo):
+    """Events-digest FAIL takes precedence over provenance freshness."""
+    repo = temp_git_repo
+    certified = _git(repo, "rev-parse", "HEAD")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = _minimal_rehearsal_run(
+            Path(tmpdir) / "tampered",
+            producer={"verdict_version": "0.3.0", "git_sha": "other", "dirty": False},
+        )
+        # Tamper events after receipt was written -> digest mismatch.
+        events = run_dir / "events.jsonl"
+        events.write_text(events.read_text() + '{"type":"heartbeat"}\n')
+
+        output_dir = Path(tmpdir) / "output"
+        output_dir.mkdir()
+
+        result = certify_release.step_rehearsals(
+            repo,
+            {"tampered": run_dir},
+            output_dir,
+            certified_git_sha=certified,
+        )
+
+        assert result.status == "FAIL"
+        assert "mismatch" in result.reason.lower()
+
+
+def test_run_certification_supplies_certified_git_sha(temp_git_repo):
+    """run_certification passes the manifest SHA into step_rehearsals."""
+    repo = temp_git_repo
+    certified = _git(repo, "rev-parse", "HEAD")
+    captured: dict = {}
+
+    def fake_step_rehearsals(repo_path, rehearsal_dirs, output_dir, certified_git_sha=None):
+        captured["certified_git_sha"] = certified_git_sha
+        return certify_release.StepResult(
+            step_id="rehearsals",
+            name="Rehearsal verification",
+            status="SKIPPED",
+            reason="stubbed",
+        )
+
+    stubs = {
+        "step_test_clean_shell": lambda *a, **k: certify_release.StepResult(
+            "test_clean", "t", "PASS"
+        ),
+        "step_test_dirty_shell": lambda *a, **k: certify_release.StepResult(
+            "test_dirty", "t", "PASS"
+        ),
+        "step_ruff_check": lambda *a, **k: certify_release.StepResult("ruff", "t", "PASS"),
+        "step_ruff_format": lambda *a, **k: certify_release.StepResult("fmt", "t", "PASS"),
+        "step_mypy": lambda *a, **k: certify_release.StepResult("mypy", "t", "PASS"),
+        "step_build": lambda *a, **k: certify_release.StepResult("build", "t", "PASS"),
+        "step_package_smoke": lambda *a, **k: certify_release.StepResult(
+            "smoke", "t", "PASS"
+        ),
+        "step_security": lambda *a, **k: certify_release.StepResult("sec", "t", "PASS"),
+        "step_docs_check": lambda *a, **k: certify_release.StepResult("docs", "t", "PASS"),
+        "step_git_clean": lambda *a, **k: certify_release.StepResult("git", "t", "PASS"),
+        "step_rehearsals": fake_step_rehearsals,
+        "capture_environment": lambda *a, **k: certify_release.EnvironmentSnapshot(
+            python_version="3",
+            platform="test",
+            uv_version="0",
+        ),
+    }
+
+    # run_certification requires .venv/bin
+    (repo / ".venv" / "bin").mkdir(parents=True)
+
+    with patch.multiple(certify_release, **stubs):
+        manifest, _ = certify_release.run_certification(repo, rehearsal_dirs={})
+
+    assert captured["certified_git_sha"] == certified
+    assert manifest.git_sha == certified
+
+
 def test_refusal_on_dirty_tree_without_flag():
     """Test that certification refuses to run on dirty tree without --allow-dirty."""
     # This would be an integration test with the full run_certification function
