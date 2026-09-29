@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from rich import box
+from rich.cells import cell_len, set_cell_size
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
@@ -801,19 +802,18 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
     """
     checks_ok = [c for c in (*view.verifications, *view.barriers, *view.integrations) if c.ok]
     checks_bad = [c for c in (*view.verifications, *view.barriers, *view.integrations) if not c.ok]
-    # Truncate each check line to the VERIFY panel's inner column width.
-    # The VERIFY panel is half of a 110-col terminal (55 cols) minus 4 for
-    # box + padding = 51 inner chars.  Truncating prevents a command detail
-    # that contains a status word (e.g. "grep -q FAIL …") from wrapping onto
-    # a new line that starts with that word, which would look like a status.
-    _verify_col = 51  # inner width of the VERIFY panel at 110 cols
+    wide = not plain and width >= 110
+    # Match _section's actual width: plain has no padding; panels reserve two
+    # border cells and two padding cells. Only wide, styled layouts split columns.
+    verify_width = width // 2 if wide else width
+    verify_col = max(1, verify_width - (0 if plain else 4))
 
     def _vline(prefix: str, label: str, detail: str) -> str:
         full = f"{prefix} {label} {detail}".strip()
-        if len(full) <= _verify_col:
+        if cell_len(full) <= verify_col:
             return full
-        keep = _verify_col - 1  # reserve one char for "…"
-        return full[:keep] + "\u2026"
+        # Count terminal cells, not code points, so wide glyphs cannot wrap either.
+        return set_cell_size(full, verify_col - 1) + "…"
 
     verify_lines = (
         [f"{len(checks_ok)} passed, {len(checks_bad)} failed"]
@@ -848,7 +848,6 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
         "REVIEW": _lines(_review_lines(view), "no review recorded"),
     }
     out: list[RenderableType] = [_header(view, plain, width)]
-    wide = not plain and width >= 110
     rows: list[tuple[str, ...]] = (
         [
             ("GOAL", "UNDERSTAND"),

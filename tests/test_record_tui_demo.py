@@ -247,3 +247,7 @@ def test_svg_renderer_uses_cast_dimensions_and_generic_font(
     assert command[command.index("--width") + 1] == "110"
     assert "Powerline" not in out.read_text()
     assert "monospace" in out.read_text()
+    renderer._svg_term(cast, out, ["--at", "1000"], height=49)
+    poster_command = commands[1]
+    assert poster_command[poster_command.index("--height") + 1] == "49"
+    assert poster_command[-2:] == ["--at", "1000"]

@@ -29,6 +29,7 @@ import os
 import pty
 import re
 import select
+import signal
 import struct
 import sys
 import termios
@@ -92,8 +93,6 @@ def read_pty_events(
         while True:
             ready, _, _ = select.select([fd], [], [], read_timeout)
             if not ready:
-                import signal
-
                 os.kill(pid, signal.SIGKILL)
                 raise CaptureError(f"PTY produced no output for {read_timeout:g}s")
             try:
@@ -391,8 +390,6 @@ def scenario_session(speed: float, *, short: bool = False) -> None:
         console.clear()
         console.print(SCENARIO_LABEL, markup=False)
         # Print real CLI output with observed exit statuses (not speculative annotations).
-        # atomic without fabricating or reconstructing any receipt fields.
-        # Print real exit statuses, not speculative annotations.
         ok_status = f"exit status: {receipt.returncode}\n".encode()
         fail_status = f"exit status: {rejected.returncode}\n".encode()
         sys.stdout.buffer.write(

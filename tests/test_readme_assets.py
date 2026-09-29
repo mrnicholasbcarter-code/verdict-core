@@ -178,6 +178,13 @@ def test_posters_show_complete_cockpit_state() -> None:
         text = _visible_svg_text(poster)
         assert "VALIDATED" in text, f"{poster_name}: expected VALIDATED in poster text"
         assert "REASSIGN" in text.upper(), f"{poster_name}: expected REASSIGN in poster text"
+        # svg-term uses a 1.67 font size and 1.3 line-height. The viewport should
+        # end after the final occupied row, not at the original 72-row PTY height.
+        viewbox = re.search(r'viewBox="0 0 110 ([0-9.]+)"', poster)
+        assert viewbox is not None
+        row_height = 1.67 * 1.3
+        content_bottom = max(float(y) for y in re.findall(r'<text[^>]* y="([0-9.]+)"', poster))
+        assert 0 < float(viewbox.group(1)) - content_bottom < row_height
 
 
 def test_animated_first_frame_is_not_blank() -> None:

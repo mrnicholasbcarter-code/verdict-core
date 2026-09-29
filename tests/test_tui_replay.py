@@ -269,13 +269,11 @@ def test_replay_kind_needs_evidence_for_real_models() -> None:
     )
     # Real run with alpha/ route and no offline marker → 'real'
     assert _replay_kind([run_started(run_id="live-run-001"), ev("selection", "alpha/x")]) == "real"
-    # Env var MUST NOT be used: mode is passed explicitly, never via os.environ
-    import subprocess
-
-    result = subprocess.run(
-        ["grep", "-r", "VERDICT_RUN_MODE", "verdict/", "scripts/"], capture_output=True, text=True
-    )
-    assert result.returncode != 0, (
-        "VERDICT_RUN_MODE env var found in source - use explicit mode= parameter instead:\n"
-        + result.stdout
-    )
+    # Mode is passed explicitly; inspect only package Python sources, from any cwd.
+    package = Path(__file__).resolve().parents[1] / "verdict"
+    offenders = [
+        str(path.relative_to(package))
+        for path in sorted(package.rglob("*.py"))
+        if "VERDICT_RUN_MODE" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"VERDICT_RUN_MODE found in source; use explicit mode=: {offenders}"
