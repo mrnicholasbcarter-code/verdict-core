@@ -14,6 +14,32 @@ def _isolate_auth_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
 
 
+_CREDENTIAL_PREFIXES = (
+    "OMNIROUTE_",
+    "LLMGATE_",
+    "VERDICT_OMNIROUTE_",
+    "TYPESAFE_",
+    "OPENROUTER_",
+    "OPENAI_",
+    "ANTHROPIC_",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_credentials(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Delete provider credential env vars so tests never leak into live services.
+
+    Tests marked ``@pytest.mark.integration`` are exempt.
+    """
+    if request.node.get_closest_marker("integration"):
+        return
+    for key in list(os.environ):
+        if any(key.startswith(prefix) for prefix in _CREDENTIAL_PREFIXES):
+            monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_verdict_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the unverified-dev opt-in off unless a test sets it explicitly, and

@@ -1,0 +1,6 @@
+{
+  "stdout": "{\n  \"status\": \"success\",\n  \"configured_tools\": [\n    \"mcp\",\n    \"codex\",\n    \"claude\"\n  ],\n  \"synced_session_records\": 0,\n  \"memory_db_path\": \"<HOME>/.verdict/memory.db\"\n}\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "mcp init --json"
+}

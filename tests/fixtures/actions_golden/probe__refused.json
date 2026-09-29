@@ -1,0 +1,5 @@
+{
+  "exit_code": 2,
+  "stderr_empty": true,
+  "stdout": "{\"diagnostics\": null, \"error\": \"live probes require explicit consent; pass --allow-live-probe\"}\n"
+}

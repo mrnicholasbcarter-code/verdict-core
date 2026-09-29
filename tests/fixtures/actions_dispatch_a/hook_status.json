@@ -1,0 +1,6 @@
+{
+  "stdout": "\nVERDICT  /  Hook / status\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - codex agents md  MISSING\n  + claude md  OK\n  + mcp json  OK\n  + memory db  OK\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "hook status"
+}
