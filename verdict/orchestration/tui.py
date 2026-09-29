@@ -184,6 +184,7 @@ class ReviewView:
     status: str = ""
     reviewer: str = ""
     route_id: str = ""
+    observed_model: str = ""
     blocking: int = 0
     findings: int = 0
 
@@ -440,6 +441,7 @@ class RunView:
             _t(data.get("status", ""), 24),
             _t(data.get("reviewer", ""), 64),
             _t(data.get("route_id", ""), 64),
+            _t(data.get("observed_model", ""), 64),
             _i(data.get("blocking")) or 0,
             _count(data.get("findings")),
         )
@@ -779,7 +781,7 @@ def _review_lines(view: RunView) -> list[str]:
     ]
     # BOD-276: reviewer identity — selected route vs observed model
     lines.append(f"reviewer selected: {review.route_id or 'not selected yet'}")
-    lines.append(f"reviewer observed: {review.route_id or 'not reported yet'}")
+    lines.append(f"reviewer observed: {review.observed_model or 'not reported yet'}")
     if len(view.review_attempts) > 1:
         lines.append(
             "attempts: "

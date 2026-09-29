@@ -165,7 +165,29 @@ def test_controller_identity_matching() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_reviewer_identity_known() -> None:
+def test_reviewer_identity_known_with_observed() -> None:
+    """When the OCR payload reports a model, it is the observed identity."""
+    events = [
+        _event(
+            1,
+            "review",
+            status="PASS",
+            reviewer="ocr",
+            route_id="kr/haiku",
+            observed_model="kr/haiku",
+            blocking=0,
+            findings=0,
+        )
+    ]
+    view = RunView.from_events(events)
+    ident = identity_for_reviewer(view, events)
+    assert ident.selected_route == "kr/haiku"
+    assert ident.observed_route == "kr/haiku"
+    assert not ident.mismatch
+
+
+def test_reviewer_identity_no_observed_model() -> None:
+    """When the OCR payload has no model, observed is empty, not the selected route."""
     events = [
         _event(
             1, "review", status="PASS", reviewer="ocr", route_id="kr/haiku", blocking=0, findings=0
@@ -174,8 +196,8 @@ def test_reviewer_identity_known() -> None:
     view = RunView.from_events(events)
     ident = identity_for_reviewer(view, events)
     assert ident.selected_route == "kr/haiku"
-    assert ident.observed_route == "kr/haiku"
-    assert not ident.mismatch  # same route for OCR
+    assert ident.observed_route == ""  # NOT kr/haiku: no fabrication
+    assert not ident.mismatch  # cannot mismatch when observed is unknown
 
 
 def test_reviewer_identity_unknown() -> None:
@@ -224,7 +246,14 @@ def test_detail_panel_reviewer_shows_identity() -> None:
     events = [
         _event(1, "node_state", "n1", state="RUNNING"),
         _event(
-            2, "review", status="PASS", reviewer="ocr", route_id="kr/haiku", blocking=0, findings=0
+            2,
+            "review",
+            status="PASS",
+            reviewer="ocr",
+            route_id="kr/haiku",
+            observed_model="kr/haiku",
+            blocking=0,
+            findings=0,
         ),
     ]
     view = RunView.from_events(events)
@@ -584,7 +613,14 @@ def test_review_block_shows_reviewer_identity() -> None:
     events = [
         _event(1, "run_started", goal="g"),
         _event(
-            2, "review", status="PASS", reviewer="ocr", route_id="kr/haiku", blocking=0, findings=0
+            2,
+            "review",
+            status="PASS",
+            reviewer="ocr",
+            route_id="kr/haiku",
+            observed_model="kr/haiku",
+            blocking=0,
+            findings=0,
         ),
     ]
     view = RunView.from_events(events)
@@ -592,6 +628,21 @@ def test_review_block_shows_reviewer_identity() -> None:
     text = _rich_to_text(console, render(view, width=120, plain=True))
     assert "reviewer selected: kr/haiku" in text
     assert "reviewer observed: kr/haiku" in text
+
+
+def test_review_block_no_observed_model() -> None:
+    """When observed_model is missing, 'not reported yet' shown instead of selected route."""
+    events = [
+        _event(1, "run_started", goal="g"),
+        _event(
+            2, "review", status="PASS", reviewer="ocr", route_id="kr/haiku", blocking=0, findings=0
+        ),
+    ]
+    view = RunView.from_events(events)
+    console = _console(120)
+    text = _rich_to_text(console, render(view, width=120, plain=True))
+    assert "reviewer selected: kr/haiku" in text
+    assert "reviewer observed: not reported yet" in text
 
 
 # ---------------------------------------------------------------------------

@@ -465,6 +465,7 @@ class OpenCodeReviewer:
             route_id=route_id,
             findings=tuple(findings),
             raw_ref=raw_ref,
+            observed_model=observed or "",
         )
 
     @staticmethod

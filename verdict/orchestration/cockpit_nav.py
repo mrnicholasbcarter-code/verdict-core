@@ -582,10 +582,9 @@ def identity_for_reviewer(view: Any, events: Sequence[Any]) -> IdentityView:
     """Selected vs observed identity for the reviewer role."""
     review = getattr(view, "review", None)
     selected = getattr(review, "route_id", "") if review else ""
-    # The reviewer doesn't have a separate terminal-reported model;
-    # the review.route_id IS the observed model for OCR.
-    observed = selected
-    return IdentityView(selected, observed, "", False)
+    observed = getattr(review, "observed_model", "") if review else ""
+    mismatch = bool(selected and observed and selected != observed)
+    return IdentityView(selected, observed, "", mismatch)
 
 
 def _render_controller_detail(
