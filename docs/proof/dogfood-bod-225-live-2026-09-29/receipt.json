@@ -1,0 +1,408 @@
+{
+  "claimed_outcome": "COMPLETE",
+  "controller_events": [
+    {
+      "at": "2026-09-29T02:48:48.345194Z",
+      "category": "no_final_answer",
+      "detail": "FrontierPlanner: planning executor failed: no_final_answer",
+      "fault_injected": false,
+      "node_id": "",
+      "route_id": "cx/gpt-5.5",
+      "seq": 4,
+      "state": "PLANNER_FAILED"
+    },
+    {
+      "at": "2026-09-29T02:48:48.365857Z",
+      "detail": "reselecting planner after no_final_answer",
+      "node_id": "",
+      "seq": 6,
+      "state": "REPLACING"
+    },
+    {
+      "at": "2026-09-29T02:51:42.123750Z",
+      "detail": "plan produced",
+      "node_id": "",
+      "route_id": "cx/gpt-5.6-sol",
+      "seq": 8,
+      "state": "HEALTHY"
+    },
+    {
+      "at": "2026-09-29T03:34:41.027265Z",
+      "detail": "1 validated node(s) reused",
+      "node_id": "",
+      "seq": 72,
+      "state": "RESUMED"
+    },
+    {
+      "at": "2026-09-29T03:34:42.176503Z",
+      "detail": "3 attempt(s) from a previous controller life",
+      "node_id": "rehearsal_guard",
+      "seq": 75,
+      "state": "ABANDONED_ATTEMPT"
+    },
+    {
+      "at": "2026-09-29T03:43:45.697485Z",
+      "excluded_families": [
+        "grok"
+      ],
+      "excluded_routes": [
+        "gc/grok-4.5"
+      ],
+      "level": "family",
+      "node_id": "",
+      "reviewer_route": "",
+      "seq": 100,
+      "state": "REVIEW_INDEPENDENCE"
+    },
+    {
+      "at": "2026-09-29T04:31:16.744259Z",
+      "detail": "3 validated node(s) reused",
+      "node_id": "",
+      "seq": 102,
+      "state": "RESUMED"
+    },
+    {
+      "at": "2026-09-29T04:32:35.922284Z",
+      "excluded_families": [
+        "grok"
+      ],
+      "excluded_routes": [
+        "gc/grok-4.5"
+      ],
+      "level": "family",
+      "node_id": "",
+      "reviewer_route": "cc/claude-opus-4-6",
+      "seq": 109,
+      "state": "REVIEW_INDEPENDENCE"
+    }
+  ],
+  "cooldowns": [
+    {
+      "at": "2026-09-29T02:48:48.364668Z",
+      "category": "no_final_answer",
+      "key": "cx/gpt-5.5",
+      "node_id": "",
+      "scope": "route",
+      "seq": 5,
+      "until": "2026-09-29T02:53:48+00:00"
+    },
+    {
+      "at": "2026-09-29T02:51:42.386868Z",
+      "category": "rate_limited",
+      "key": "cx",
+      "node_id": "producer_receipt",
+      "scope": "provider",
+      "seq": 23,
+      "until": "2026-09-29T02:52:12+00:00"
+    },
+    {
+      "at": "2026-09-29T03:18:38.821709Z",
+      "category": "timeout",
+      "key": "cx/gpt-5.5",
+      "node_id": "rehearsal_guard",
+      "scope": "route",
+      "seq": 48,
+      "until": "2026-09-29T03:20:38+00:00"
+    },
+    {
+      "at": "2026-09-29T03:28:22.217048Z",
+      "category": "no_final_answer",
+      "key": "cx/gpt-5.6-sol",
+      "node_id": "rehearsal_guard",
+      "scope": "route",
+      "seq": 61,
+      "until": "2026-09-29T03:33:22+00:00"
+    }
+  ],
+  "decision_signals": [
+    {
+      "actual_decision": {
+        "capacity_class": "subscription",
+        "frontier_planner_invoked": true,
+        "provider": "codex",
+        "route_id": "cx/gpt-5.6-sol"
+      },
+      "at": "2026-09-29T02:51:42.126414Z",
+      "mode": "SHADOW",
+      "node_id": "",
+      "seq": 9,
+      "signals": {
+        "confidence": 0.6636714232988156,
+        "failure_class": null,
+        "input_digest": "3c6e498e5739885e76edb171d8b3defb48c7c642ceae3caa10e728bb3529a9d7",
+        "latency_ms": 1042,
+        "mode": "SHADOW",
+        "model": "openjev-0.1",
+        "observed_at": "2026-09-29T02:43:27.883623Z",
+        "provider": "openjev",
+        "purpose": "frontier_planning",
+        "request_id": "req_fef908c5343700af4669304369630f70",
+        "schema_version": "decision-signals/v1",
+        "signals": {
+          "ambiguity": 0.031960977953706,
+          "complexity": 0.428013202426993,
+          "context_need": 0.4499972351559914,
+          "decomposability": 0.9952555495129707,
+          "frontier_worthy": 0.003254190758793643,
+          "security_sensitive": 0.818841907501524,
+          "verification_strength": 0.7141099821053323
+        },
+        "usage": {
+          "input_tokens": 397,
+          "output_tokens": 0
+        },
+        "version": "openjev-0.1"
+      }
+    }
+  ],
+  "event_count": 112,
+  "events_digest": "sha256:827d347629f5f4c2aa6e8d12f88cbac08dbee9a312f37909f00cce94f12f7082",
+  "finished_at": "2026-09-29T04:32:35.926180Z",
+  "goal": "BOD-225: Record the producing Verdict version and git SHA in run receipts. build_run_receipt adds optional producer {verdict_version, git_sha, dirty} (backward compatible; null values explicit, never guessed). Record it once at run_started so resume keeps the original producer. certify_release.py step_rehearsals reports each rehearsal producer SHA and marks INCOMPLETE when it differs from the certified SHA AND verdict/ changed between them. Tests through the real receipt builder and the real step_rehearsals.",
+  "graph_digest": "sha256:e213807ec8d0a677283b8e1d0867e1277bf40136d25796533fcb2f7a1444db2f",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 108
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 87
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 0.0,
+          "executed_model": "cx/gpt-5.6-sol",
+          "failure_category": "rate_limited",
+          "fault_injected": true,
+          "intended_route": "cx/gpt-5.6-sol",
+          "outcome": "failure",
+          "provider": "cx",
+          "route_id": "cx/gpt-5.6-sol",
+          "route_identity": "unattested"
+        },
+        {
+          "attempt": 2,
+          "capacity_class": "subscription",
+          "duration_seconds": 703.88,
+          "executed_model": "gc/grok-4.5",
+          "fault_injected": false,
+          "intended_route": "gc/grok-4.5",
+          "outcome": "success",
+          "provider": "gc",
+          "route_id": "gc/grok-4.5",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 379,
+            "output_tokens": 807,
+            "tokens_source": "prime_stdout",
+            "turns": 1
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "producer_receipt",
+      "validated_by": [
+        {
+          "command": "python -m pytest -q tests/test_orch_receipt.py tests/test_orch_resume.py",
+          "exit_code": 0,
+          "seq": 36
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 901.0,
+          "executed_model": "cx/gpt-5.5",
+          "failure_category": "timeout",
+          "fault_injected": false,
+          "intended_route": "cx/gpt-5.5",
+          "outcome": "failure",
+          "provider": "cx",
+          "route_id": "cx/gpt-5.5",
+          "route_identity": "unattested"
+        },
+        {
+          "attempt": 2,
+          "capacity_class": "subscription",
+          "duration_seconds": 580.4,
+          "executed_model": "cx/gpt-5.6-sol",
+          "failure_category": "no_final_answer",
+          "fault_injected": false,
+          "intended_route": "cx/gpt-5.6-sol",
+          "outcome": "failure",
+          "provider": "cx",
+          "route_id": "cx/gpt-5.6-sol",
+          "route_identity": "unattested",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 44052,
+            "output_tokens": 7601,
+            "tokens_source": "prime_stdout",
+            "turns": 14
+          }
+        },
+        {
+          "attempt": 3,
+          "capacity_class": "subscription",
+          "fault_injected": false,
+          "outcome": "abandoned",
+          "provider": "gc",
+          "route_id": "gc/grok-4.5",
+          "route_identity": "unattested"
+        },
+        {
+          "attempt": 4,
+          "capacity_class": "subscription",
+          "duration_seconds": 524.69,
+          "executed_model": "gc/grok-4.5",
+          "fault_injected": false,
+          "intended_route": "gc/grok-4.5",
+          "outcome": "success",
+          "provider": "gc",
+          "route_id": "gc/grok-4.5",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 806,
+            "output_tokens": 627,
+            "tokens_source": "prime_stdout",
+            "turns": 2
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "rehearsal_guard",
+      "validated_by": [
+        {
+          "command": "python -m pytest -q tests/test_certify_release.py",
+          "exit_code": 0,
+          "seq": 88
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "unknown",
+          "duration_seconds": 0.0,
+          "executed_model": "(mechanical merge)",
+          "fault_injected": false,
+          "intended_route": "",
+          "outcome": "success",
+          "provider": "",
+          "route_id": "",
+          "route_identity": "mechanical"
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "integrate",
+      "node_id": "integrate_provenance",
+      "validated_by": [
+        {
+          "command": "python -m pytest -q tests/test_orch_receipt.py tests/test_orch_resume.py tests/test_certify_release.py",
+          "exit_code": 0,
+          "seq": 95
+        }
+      ]
+    }
+  ],
+  "outcome": "COMPLETE",
+  "planner_attempts": [
+    {
+      "at": "2026-09-29T02:43:30.599210Z",
+      "attempt": 1,
+      "capacity_class": "subscription",
+      "provider": "codex",
+      "route_id": "cx/gpt-5.5",
+      "seq": 3
+    },
+    {
+      "at": "2026-09-29T02:48:50.285783Z",
+      "attempt": 2,
+      "capacity_class": "subscription",
+      "provider": "codex",
+      "route_id": "cx/gpt-5.6-sol",
+      "seq": 7
+    }
+  ],
+  "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
+  "reassignments": [
+    {
+      "at": "2026-09-29T02:51:44.111873Z",
+      "attempt": 2,
+      "from_route": "cx/gpt-5.6-sol",
+      "node_id": "producer_receipt",
+      "reason": "rate_limited",
+      "seq": 27,
+      "to_route": "gc/grok-4.5"
+    },
+    {
+      "at": "2026-09-29T03:18:40.909406Z",
+      "attempt": 2,
+      "from_route": "cx/gpt-5.5",
+      "node_id": "rehearsal_guard",
+      "reason": "timeout",
+      "seq": 52,
+      "to_route": "cx/gpt-5.6-sol"
+    },
+    {
+      "at": "2026-09-29T03:28:25.118162Z",
+      "attempt": 3,
+      "from_route": "cx/gpt-5.6-sol",
+      "node_id": "rehearsal_guard",
+      "reason": "no_final_answer",
+      "seq": 65,
+      "to_route": "gc/grok-4.5"
+    }
+  ],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 2
+  },
+  "review": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "category": "",
+        "duration_seconds": 76.577,
+        "route_id": "cc/claude-opus-4-6",
+        "status": "PASS"
+      }
+    ],
+    "blocking": 0,
+    "reviewer": "open-code-review v1.12.9",
+    "route_id": "cc/claude-opus-4-6",
+    "status": "PASS"
+  },
+  "route_identity_summary": {
+    "attempts": 7,
+    "match": 2,
+    "mechanical": 1,
+    "mismatch": 0,
+    "unattested": 4
+  },
+  "run_id": "20260929T024327Z",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-09-29T02:43:27.881456Z",
+  "topology": "WORKER_CRITIC"
+}

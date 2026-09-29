@@ -2,9 +2,9 @@
 
 # Verdict
 
-**An autonomous development control plane: a goal goes in, and a verified, independently reviewed, receipted change comes out.**
+**A goal goes in; a verified, independently reviewed, receipted change comes out.**
 
-A model that fails a safety check cannot be scored back in.
+Verdict plans a DAG, admits models from live evidence, runs parallel workers with same-node failover, verifies each node, runs an independent review, then writes a tamper-evident receipt. A model that fails a safety check cannot be scored back in.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -13,13 +13,206 @@ A model that fails a safety check cannot be scored back in.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Quick start](#quick-start) · [Demo](#demo-goal-to-receipt) · [What it does](#what-it-does) · [How it works](#how-it-works) · [How Verdict differs](#how-verdict-differs) · [Roadmap](#roadmap-in-progress) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
+[Try it](#try-it-with-no-keys) · [Live proof](#proof-from-a-live-run) · [How it works](#how-it-works) · [What it does](#what-it-does) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
 
 <picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-poster.svg"><img src="docs/assets/demo.svg" alt="Terminal recording: a goal becomes a three-node DAG, workers fail on injected quota, rate-limit and no-final-answer faults, each node is reassigned to another admitted route, the review passes, run-receipt verifies the event-log digest, and a tampered copy fails verification" width="860"></picture>
 
 <sub>Fixture run, credential-free, no model calls, replayed at real time. Recorded from <a href="scripts/demo_orchestrate.py"><code>scripts/demo_orchestrate.py</code></a>. Full cast: <a href="docs/assets/demo.cast"><code>docs/assets/demo.cast</code></a>. Still frame: <a href="docs/assets/demo-poster.svg"><code>docs/assets/demo-poster.svg</code></a>.</sub>
 
 </div>
+
+## Try it with no keys
+
+Install, run the offline demo, and inspect the trace — no API key, no gateway, no network:
+
+```bash
+pip install verdict-core
+verdict demo
+```
+
+`verdict demo` is an **offline scenario** with scripted workers and injected faults. It runs
+the real orchestration pipeline (planner, admission, DAG runtime, failure intelligence,
+integration barrier, reviewer-independence policy, receipt writer) against fixture routes.
+No model is called. The output:
+
+```text
+trace  run=offline-flagship-failover
+goal: flagship failover test
+steps: 34  schema: trace-view-v1
+
+seq   kind            node      detail
+--------------------------------------
+1     request                   goal=flagship failover test
+2     classification            
+3     plan                      
+5     routing         node-1    
+6     selection       node-1    route=alpha/claude-a
+8     routing         node-2    
+9     selection       node-2    route=alpha/claude-a
+12    dispatch        node-1    
+14    context         node-1    
+15    terminal        node-1    model=alpha/claude-a  failed
+17    failure         node-1    category=rate_limited
+18    cooldown        node-1    key=alpha  until=...
+20    dispatch        node-2    
+22    context         node-2    
+23    terminal        node-2    model=alpha/claude-a  ok
+26    routing         node-1    
+27    selection       node-1    route=beta/gpt-b
+28    reassign        node-1    alpha/claude-a -> beta/gpt-b
+30    barrier         node-2    
+31    verify          node-2    passed=True
+33    dispatch        node-1    
+35    context         node-1    
+36    terminal        node-1    model=beta/gpt-b  ok
+38    barrier         node-1    
+40    verify          node-1    passed=True
+45    terminal        integrate model=(mechanical merge)  ok
+47    verify          integrate passed=True
+48    barrier         integrate 
+50    integrate                 
+51    barrier                   
+53    review                    reviewer=gamma/gemini-c  PASS
+54    review                    reviewer=gamma/gemini-c  PASS
+55    run_finished              outcome=COMPLETE
+
+OFFLINE SCENARIO: scripted workers, injected faults
+
+CLAIMS VERIFIED
+------------------------------------------------------------
+  + VERIFIED  Task-aware model selection  (event:6, event:9, event:27)
+  + VERIFIED  Capability filtering reduced candidate pool  (event:5, event:8, event:26)
+  + VERIFIED  Provider/model health considered in routing  (event:5, event:26)
+  + VERIFIED  Explicit concrete worker assignment  (event:12, event:20, event:33)
+  + VERIFIED  Worker failure isolated from controller  (event:17, event:20, event:55)
+  + VERIFIED  Automatic bounded failover  (event:28)
+  + VERIFIED  Cooldown recorded  (event:18)
+  + VERIFIED  Context assembled within budget  (event:14, event:22, event:35)
+  + VERIFIED  Replacement completed successfully on alternate route  (event:36)
+  + VERIFIED  Validation passed  (event:31, event:40, event:47)
+  + VERIFIED  Independent review passed  (event:54)
+  + VERIFIED  Receipt integrity verified  (receipt:verify)
+```
+
+What happened: `node-1` was assigned to `alpha/claude-a`, hit an injected `rate_limited`
+fault, was cooled down, reassigned to `beta/gpt-b`, and passed. `node-2` ran on
+`alpha/claude-a` without fault. An independent reviewer on `gamma/gemini-c` (a route no
+worker used) passed the merged result. Each CLAIM VERIFIED line cites the event sequence
+numbers that prove it.
+
+The demo is tested in CI on branch `feat/demo-trace`
+(PR [#737](https://github.com/mrnicholasbcarter-code/verdict-core/pull/737)).
+
+You can also inspect the committed fixture run the same way:
+
+```bash
+verdict trace docs/proof/demo-run
+verdict run-receipt --runs-dir . docs/proof/demo-run
+```
+
+The [`docs/proof/demo-run/`](docs/proof/demo-run) directory is a verified fixture run with
+three injected faults. `run-receipt` recomputes the SHA-256 digest and confirms integrity:
+
+```text
+COMPLETE: all implement/integrate nodes validated, barrier ok, review PASS
+integrity: OK (events digest verified)
+  parser             VALIDATED        demo-sub/atlas-coder[failure:quota_exhausted*] -> demo-free/birch-coder[failure:rate_limited*] -> demo-free2/elm-coder[success]
+  cli_flag           VALIDATED        demo-sub/atlas-coder[failure:no_final_answer*] -> demo-free/cedar-coder[success]
+  integrate          VALIDATED        merge[success]
+  review: PASS by fixture-reviewer (no model call) on demo-metered/delta-coder
+```
+
+`*` marks an injected fault. `parser` started on the subscription route, hit an injected quota
+fault, moved to a free route, hit an injected rate limit, then passed on a third provider.
+`cli_flag` got `no_final_answer` and moved to another free route. The review went to the only
+admitted candidate left (metered) because all cooled providers and routes without tool calling
+were excluded.
+
+Source: [`scripts/demo_orchestrate.py`](scripts/demo_orchestrate.py).
+Test: [`tests/test_readme_assets.py`](tests/test_readme_assets.py).
+
+## Quick start
+
+For a quick single-routing decision (also credential-free):
+
+```bash
+verdict quickstart --non-interactive --dry-run
+```
+
+```text
+Verdict credential-free quickstart
+===================================
+Task: Add structured output to the invoice parser
+Required capabilities: structured_output, tools
+Selected route: demo/frontier-tools
+Excluded candidates: 3
+Receipt: fixture:issue-35 (deterministic_fixture)
+Status: PASS
+- demo/no-tools: missing capability: tools
+- demo/quota-empty: quota exhausted
+- demo/unverified: health unknown
+```
+
+Each excluded candidate gets a named refusal reason. Source:
+[`verdict/flagship_demo.py`](verdict/flagship_demo.py).
+Test: [`tests/test_flagship_demo.py`](tests/test_flagship_demo.py) (asserts this block
+byte-for-byte).
+
+For a contributor checkout:
+
+```bash
+uv sync --extra dev
+uv run python -m verdict quickstart --non-interactive --dry-run
+```
+
+## Proof from a live run
+
+The [`docs/proof/dogfood-bod-225-live-2026-09-29/`](docs/proof/dogfood-bod-225-live-2026-09-29)
+directory contains a live `verdict orchestrate` run for a real Linear story (BOD-225), with
+real providers reached through OmniRoute. It is **not** a fixture.
+
+**Chain summary** (from that proof's [README](docs/proof/dogfood-bod-225-live-2026-09-29/README.md)):
+
+| seq | event | route | outcome |
+|---|---|---|---|
+| 4–8 | planner | cx/gpt-5.5 → cx/gpt-5.6-sol | `no_final_answer` then HEALTHY |
+| 20–27 | reassign producer_receipt | cx/gpt-5.6-sol → gc/grok-4.5 | injected `rate_limited` |
+| 37 | VALIDATED producer_receipt | gc/grok-4.5 | verify PASS |
+| 45–65 | reassign rehearsal_guard | cx/gpt-5.5 → cx/gpt-5.6-sol → gc/grok-4.5 | timeout, `no_final_answer` |
+| 71–75 | RESUMED | | 1 validated node reused after controller restart |
+| 89 | VALIDATED rehearsal_guard | gc/grok-4.5 | verify PASS |
+| 97–99 | integrate | mechanical | combined verify PASS |
+| 100–102 | RESUMED | | 3 validated nodes reused after VM reboot |
+| 109–111 | review | cc/claude-opus-4-6 | PASS |
+| 112 | run_finished | | COMPLETE |
+
+**What this proves** (quoting the proof README): worker assignment across live OmniRoute
+providers; failover on one injected fault and two real worker faults, with cooldown and
+reassignment to a different route; controller survival across restart and resume, reusing
+already-validated nodes; independent review PASS on a route no worker used; a verified receipt.
+
+**What this does NOT prove** (quoting the proof README): the reviewer is `cc/claude-opus-4-6`,
+which is also the controller-family model used by the session's merge captain (not by the run's
+workers). It is a single run. Resume happened after a VM reboot, not an injected controller
+crash.
+
+Verify locally:
+
+```bash
+verdict run-receipt docs/proof/dogfood-bod-225-live-2026-09-29
+```
+
+This proof lands in PR [#739](https://github.com/mrnicholasbcarter-code/verdict-core/pull/739).
+
+---
+
+**Recorded TUI walkthrough** (live run, kr/* workers, controller failover, independent review PASS)
+
+<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"><img src="docs/assets/demo-tui.svg" alt="TUI replay of live-controller-run" width="860"></picture>
+
+<sub>Replay of the recorded real-model run [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (about 91 s), replayed at 1x real time from the recorded run. Gaps longer than 1.5 s were shortened by the replay (three gaps, about 87 s of idle). Recorded with [`scripts/record_tui_demo.py`](scripts/record_tui_demo.py). You can run this yourself: `verdict watch docs/proof/live-controller-run --replay --speed 1`. Still frame: [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg).</sub>
+
+## How it works
 
 Give Verdict a goal and a git repository. It runs this loop:
 
@@ -36,216 +229,6 @@ external tools do the execution, and Verdict only calls them:
 - **OmniRoute** is a local OpenAI-compatible gateway. It supplies the model inventory and runs model calls ([`verdict/omniroute.py`](verdict/omniroute.py)).
 - **Prime Agent** is a headless coding-agent CLI. It runs each worker process (`prime-agent -p --model <exact route>`) and does not select models.
 - **`ocr`** (open-code-review) is the reviewer CLI ([`verdict/orchestration/review.py`](verdict/orchestration/review.py)).
-
-## Quick start
-
-Run the credential-free fixture from an empty directory, with no API key, no gateway, and no
-network access:
-
-```bash
-verdict quickstart --non-interactive --dry-run
-```
-
-The fixture makes one deterministic routing decision, selects `demo/frontier-tools`, and
-names every excluded candidate:
-
-```text
-Verdict credential-free quickstart
-===================================
-Task: Add structured output to the invoice parser
-Required capabilities: structured_output, tools
-Selected route: demo/frontier-tools
-Excluded candidates: 3
-Receipt: fixture:issue-35 (deterministic_fixture)
-Status: PASS
-- demo/no-tools: missing capability: tools
-- demo/quota-empty: quota exhausted
-- demo/unverified: health unknown
-```
-
-Read the last three lines first: `demo/frontier-tools` was selected, and each of the other
-three candidates was refused with a named reason (`missing capability: tools`, `quota
-exhausted`, `health unknown`). Nothing here calls a provider, reads a credential, or writes
-state. The executable source and its regression test are
-[`verdict/flagship_demo.py`](verdict/flagship_demo.py) and
-[`tests/test_flagship_demo.py`](tests/test_flagship_demo.py); the test asserts this exact
-block byte-for-byte against the README.
-
-For a contributor checkout:
-
-```bash
-uv sync --extra dev
-uv run python -m verdict quickstart --non-interactive --dry-run
-```
-
-## Demo: goal to receipt
-
-**Real-model run replay: visual TUI walkthrough** (kr/* workers, controller failover, independent review PASS)
-
-<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"><img src="docs/assets/demo-tui.svg" alt="TUI replay of live-controller-run" width="860"></picture>
-
-<sub>Replay of the recorded real-model run [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (about 91 s), replayed at 1x real time from the recorded run. Gaps longer than 1.5 s were shortened by the replay (three gaps, about 87 s of idle). Recorded with [`scripts/record_tui_demo.py`](scripts/record_tui_demo.py). You can run this yourself: `verdict watch docs/proof/live-controller-run --replay --speed 1`. Still frame: [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg).</sub>
-
----
-
-**Fixture run. Credential-free, deterministic, no model calls, no network.**
-
-```bash
-python scripts/demo_orchestrate.py --out docs/proof/demo-run
-verdict run-receipt docs/proof/demo-run
-```
-
-[`scripts/demo_orchestrate.py`](scripts/demo_orchestrate.py) runs the real orchestration code:
-`run_golden_path`, the planner parser, canonical `admit()`, the `EligibilityLadder`, `DagRuntime` with one
-git worktree per attempt, `FailureIntelligence`, the integration barrier, the reviewer-independence
-policy and the receipt writer. Only the edges are fixtures:
-
-| Edge | In the demo | In `verdict orchestrate` |
-|---|---|---|
-| Model inventory and provider accounts | 10 fixture routes, 5 fixture accounts | OmniRoute `/v1/models` and `/api/providers` |
-| Health probe | fixture: every probed route is healthy | 1-token probe through the gateway |
-| Workers | scripted: write the owned file, answer `RESULT: DONE` | Prime Agent on the selected route |
-| Faults | `FaultInjectingExecutor`: quota and rate limit on `parser`, no final answer on `cli_flag` | real provider failures (or the same injector via `--inject`) |
-| Reviewer | fixture: selects an independent route through the ladder, returns `PASS` | `ocr` on the selected route |
-
-The committed run is in [`docs/proof/demo-run/`](docs/proof/demo-run). Verifying it prints:
-
-```text
-COMPLETE: all implement/integrate nodes validated, barrier ok, review PASS
-integrity: OK (events digest verified)
-  parser             VALIDATED        demo-sub/atlas-coder[failure:quota_exhausted*] -> demo-free/birch-coder[failure:rate_limited*] -> demo-free2/elm-coder[success]
-  cli_flag           VALIDATED        demo-sub/atlas-coder[failure:no_final_answer*] -> demo-free/cedar-coder[success]
-  integrate          VALIDATED        merge[success]
-  review: PASS by fixture-reviewer (no model call) on demo-metered/delta-coder
-```
-
-`*` marks an injected fault. Here is how to read the run:
-
-- `parser` started on the subscription route. An injected quota failure put the whole `demo-sub`
-  provider on cooldown. The node moved to a free route and got an injected rate limit, which cooled
-  down `demo-free`. It then moved to a free route at a third provider and passed.
-- `cli_flag` got `no_final_answer`, which cools down only that route, and moved to another free route.
-- No route that wrote code could review it, and neither could any of its model families. The two
-  cooled providers were out, and `fir-mini` has no tool calling. So the review went to the metered
-  route: it was the only admitted candidate left.
-- Change one byte of `events.jsonl` and `run-receipt` reports
-  `events_digest mismatch: events.jsonl changed after receipt was written`. The end of the recording shows this.
-
-![Admission funnel: 10 fixture routes; the opaque auto/best-coding is dropped at DISCOVERED, an account-less route at ENTITLED, a route with unhealthy runtime evidence at HEALTHY and a rate-limited provider at AVAILABLE, leaving 6 admitted](docs/assets/chart-admission-funnel.svg)
-
-<sub>Data: [`docs/proof/demo-run/admission.json`](docs/proof/demo-run/admission.json), the canonical admission receipt of the demo inventory. Fixture data.</sub>
-
-![Recovery per node: parser tried demo-sub/atlas-coder (quota_exhausted, injected), demo-free/birch-coder (rate_limited, injected), then validated on demo-free2/elm-coder; cli_flag tried demo-sub/atlas-coder (no_final_answer, injected), then validated on demo-free/cedar-coder](docs/assets/chart-recovery.svg)
-
-<sub>Data: [`docs/proof/demo-run/receipt.json`](docs/proof/demo-run/receipt.json), the demo run receipt. Fixture data with injected faults.</sub>
-
-To regenerate the run, the cast and the charts, see [Regenerating the demo assets](#regenerating-the-demo-assets).
-
-
-## What it does
-
-Each claim links to the code that does it and a test that checks it, at this commit.
-
-**One admitted set, narrowed but never widened.** `admit()` builds the admitted set from live inventory,
-provider connections and runtime evidence. A missing input fails closed, and there is no catalog-only
-fallback ([`verdict/admission.py:940`](verdict/admission.py#L940)). The set cannot be built any other way
-([`:389`](verdict/admission.py#L389)). Scope, provider family and the active controller can only narrow it
-([`verdict/orchestration/cli.py:219-227`](verdict/orchestration/cli.py#L219-L227)). The ladder raises
-`AdmissionBypassError` if it ever picks a route outside the set
-([`verdict/orchestration/eligibility.py:207`](verdict/orchestration/eligibility.py#L207)).
-Tests: [`tests/test_admission.py`](tests/test_admission.py), [`tests/test_orchestration_admission.py`](tests/test_orchestration_admission.py).
-
-**Per-node assignment, paid-for and free capacity first.** Every node runs the eligibility ladder
-`DISCOVERED → ENTITLED → HEALTHY → AVAILABLE → TASK_ELIGIBLE → SELECTED` and records the failed stage and
-the reason for each candidate. The ladder ranks by capacity class first: subscription, then free, then
-metered, then unknown ([`verdict/orchestration/eligibility.py:30-35`](verdict/orchestration/eligibility.py#L30-L35)).
-Within a class it ranks by provider preference, then by current load, then by task fit
-([`:478`](verdict/orchestration/eligibility.py#L478)). Capacity class comes from account evidence,
-never from a model name. Probes go round-robin across providers within a class, so one failing provider
-cannot use up the probe budget ([`:539-621`](verdict/orchestration/eligibility.py#L539-L621)).
-Test: [`tests/test_orch_eligibility.py`](tests/test_orch_eligibility.py).
-
-**Cheaper-first on the single-route path is a runtime assertion.** `RouteSelection` raises in its own
-constructor when a paid identity was chosen while a cheaper kept candidate existed
-([`verdict/live_routing.py:85-93`](verdict/live_routing.py#L85-L93)). For low-criticality `verdict route`
-calls, `_offload_free_tier` admits only concrete **free-tier ∩ active-provider** identities and fails closed
-on an empty intersection ([`verdict/intelligence.py:1030`](verdict/intelligence.py#L1030),
-[`verdict/free_tier_admit.py`](verdict/free_tier_admit.py)). Test: [`tests/test_free_tier_admit.py`](tests/test_free_tier_admit.py).
-
-**Recovery by reassignment, with a hard stop.** `FailureIntelligence` maps each failure to a category, an
-action, a cooldown and a scope: route or provider
-([`verdict/orchestration/recovery.py:148`](verdict/orchestration/recovery.py#L148)). Each failure resolves to
-exactly one outcome. `RETRY_INFRA` retries the same route after a gateway-local shed. `BLOCK` stops with
-`non-recoverable: <category>`. Every other failure reassigns the same node to the next admitted route and
-emits a `reassign` event ([`verdict/orchestration/runtime.py:430-451`](verdict/orchestration/runtime.py#L430-L451)).
-After `max_attempts_per_node` (4), or with no admitted route left, the node ends in `pool_exhausted` /
-`FAIL_CLOSED` ([`:361-371`](verdict/orchestration/runtime.py#L361-L371)). Tests:
-[`tests/test_orch_recovery.py`](tests/test_orch_recovery.py), [`tests/test_orch_runtime.py`](tests/test_orch_runtime.py).
-
-**Relay retries stay inside the admitted set.** The OpenAI-compatible relay tries an alternative only when
-the decision marked it admitted, and only when the live admitted set (if wired) also holds it. If the
-selected model is outside the live set, the relay makes no attempt
-([`verdict/relay.py:152-170`](verdict/relay.py#L152-L170)). Test: [`tests/test_relay_admission.py`](tests/test_relay_admission.py).
-
-**Independent review.** The reviewer must not be any route that wrote code in the run. It should also be
-from a different model family; if no other family has capacity, route-level independence is used and
-recorded ([`verdict/orchestration/runtime.py:989-1014`](verdict/orchestration/runtime.py#L989-L1014)). A
-non-zero exit, a timeout or output that does not parse all become `ERROR`, never `PASS`
-([`verdict/orchestration/review.py:1-19`](verdict/orchestration/review.py#L1-L19)).
-Tests: [`tests/test_orch_review.py`](tests/test_orch_review.py), [`tests/test_orch_resume.py`](tests/test_orch_resume.py).
-
-**Tamper-evident receipts.** The receipt stores the SHA-256 of `events.jsonl`
-([`verdict/orchestration/receipt.py:173`](verdict/orchestration/receipt.py#L173),
-[`:476`](verdict/orchestration/receipt.py#L476)). Verification recomputes it and rebuilds every other field
-from the same log ([`:525`](verdict/orchestration/receipt.py#L525)).
-Tests: [`tests/test_orch_receipt.py`](tests/test_orch_receipt.py), [`tests/test_readme_assets.py`](tests/test_readme_assets.py)
-(verifies the committed demo run).
-
-## Decision signals (OpenJev)
-
-Verdict can ask an external decision-signal provider how complex, how frontier-worthy and how ambiguous a
-task looks. The shipped provider is OpenJev System-One, reached through the Codiv API
-([`verdict/decision_signals/openjev.py`](verdict/decision_signals/openjev.py)). Signals are inputs to
-Verdict. They never make the decision.
-
-`VERDICT_DECISION_SIGNALS_MODE` selects the mode ([`verdict/decision_signals/shadow.py:21-36`](verdict/decision_signals/shadow.py#L21-L36)).
-The provider is built only when the mode is not `OFF` and `TYPESAFE_API_KEY` is set
-([`verdict/decision_signals/factory.py`](verdict/decision_signals/factory.py)).
-
-| Mode | What it can change | What it cannot change |
-|---|---|---|
-| `OFF` (default) | Nothing. The provider is never called. | — |
-| `SHADOW` | Nothing. `verdict orchestrate` asks once per run, before planning, and records the answer next to the actual planner choice as a `decision_signals` event in the receipt ([`verdict/orchestration/run.py:208-230`](verdict/orchestration/run.py#L208-L230), [`:316-331`](verdict/orchestration/run.py#L316-L331)). | Planner selection, node requirements, the DAG. Test: [`tests/test_shadow_integration.py`](tests/test_shadow_integration.py). |
-| `ADVISORY` | On the single-route path (`IntelligenceService.route`), the order of already-admitted candidates, so it can change which admitted model is picked ([`verdict/intelligence.py:526-608`](verdict/intelligence.py#L526-L608)). Every outcome is recorded as an `advisory:*` safety flag. | Membership: it never adds, removes or restores a candidate. It is skipped for protected (tier 0) tasks, restricted-privacy tasks, confidence below 0.6 (default), a provider error, and no answer within the timeout (default 1,500 ms) ([`verdict/decision_signals/advisory.py:1-31`](verdict/decision_signals/advisory.py#L1-L31)). In `verdict orchestrate`, `ADVISORY` behaves like `SHADOW`. Test: [`tests/test_decision_signals_advisory.py`](tests/test_decision_signals_advisory.py). |
-
-The demo run records one `SHADOW` signal from a fixture provider in its receipt. The test above shows that opposite `SHADOW` signals produce the same requirements and the same DAG.
-
-## Roadmap (in progress)
-
-These are not done at this commit. They are listed so nothing above is read as covering them.
-
-- **Cross-provider fencing on the first worker failure.** Today a failure cools down only the failed route or its own provider. Other providers stay eligible until they fail themselves.
-- **Root-controller failover.** Worker nodes are reassigned. A failing root controller is not yet replaced automatically.
-- **A single retry authority.** Node recovery, the relay and the reviewer each keep their own bounded retry loop today.
-- **Subscription headroom.** Quota rows are evidence only: exhausted means drop. Admission does not yet plan around the headroom left in a subscription window.
-- **Automatic gateway lifecycle.** Verdict does not start, restart or upgrade OmniRoute. The gateway must already be running for live runs.
-
-## How it works
-
-A single `verdict orchestrate` call runs the full pipeline:
-
-```
-goal
- └─ CONTROLLER  frontier planner decomposes into a WorkGraph (DAG)
-     └─ PLAN / DAG  topology chosen deterministically (SOLO / WORKER_CRITIC / PARALLEL_WORK_UNITS)
-         └─ SELECT  per-node eligibility ladder
-             │  DISCOVERED → ENTITLED → HEALTHY → AVAILABLE → TASK_ELIGIBLE → SELECTED
-             └─ WORKERS  parallel execution; each node gets its own worktree + route
-                 └─ RECOVERY  quota / rate-limit / timeout → same-node reroute → pool exhaustion → FAIL_CLOSED
-                     └─ VERIFY  ownership check + per-node tests + integration barrier
-                         └─ REVIEW  independent OCR (open-code-review); reviewer excluded from all implementer routes
-                             └─ RECEIPT  SHA-256 digest of the event log; `run-receipt` re-verifies it
-```
 
 Three-role split:
 
@@ -626,6 +609,7 @@ class OVERRIDE muted
 
 </details>
 
+
 ## How Verdict differs
 
 Verdict is admission control, not a gateway. It decides whether a model may be used at all,
@@ -663,6 +647,106 @@ described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#admission-boundary).
 
 See [`docs/guides/comparison.md`](docs/guides/comparison.md) for a feature-by-feature
 comparison against LiteLLM, OpenRouter, and Portkey specifically.
+
+## What it does
+
+Each claim links to the code that does it and a test that checks it, at this commit.
+
+**One admitted set, narrowed but never widened.** `admit()` builds the admitted set from live inventory,
+provider connections and runtime evidence. A missing input fails closed, and there is no catalog-only
+fallback ([`verdict/admission.py:940`](verdict/admission.py#L940)). The set cannot be built any other way
+([`:389`](verdict/admission.py#L389)). Scope, provider family and the active controller can only narrow it
+([`verdict/orchestration/cli.py:219-227`](verdict/orchestration/cli.py#L219-L227)). The ladder raises
+`AdmissionBypassError` if it ever picks a route outside the set
+([`verdict/orchestration/eligibility.py:207`](verdict/orchestration/eligibility.py#L207)).
+Tests: [`tests/test_admission.py`](tests/test_admission.py), [`tests/test_orchestration_admission.py`](tests/test_orchestration_admission.py).
+
+**Per-node assignment, paid-for and free capacity first.** Every node runs the eligibility ladder
+`DISCOVERED → ENTITLED → HEALTHY → AVAILABLE → TASK_ELIGIBLE → SELECTED` and records the failed stage and
+the reason for each candidate. The ladder ranks by capacity class first: subscription, then free, then
+metered, then unknown ([`verdict/orchestration/eligibility.py:30-35`](verdict/orchestration/eligibility.py#L30-L35)).
+Within a class it ranks by provider preference, then by current load, then by task fit
+([`:478`](verdict/orchestration/eligibility.py#L478)). Capacity class comes from account evidence,
+never from a model name. Probes go round-robin across providers within a class, so one failing provider
+cannot use up the probe budget ([`:539-621`](verdict/orchestration/eligibility.py#L539-L621)).
+Test: [`tests/test_orch_eligibility.py`](tests/test_orch_eligibility.py).
+
+**Cheaper-first on the single-route path is a runtime assertion.** `RouteSelection` raises in its own
+constructor when a paid identity was chosen while a cheaper kept candidate existed
+([`verdict/live_routing.py:85-93`](verdict/live_routing.py#L85-L93)). For low-criticality `verdict route`
+calls, `_offload_free_tier` admits only concrete **free-tier ∩ active-provider** identities and fails closed
+on an empty intersection ([`verdict/intelligence.py:1030`](verdict/intelligence.py#L1030),
+[`verdict/free_tier_admit.py`](verdict/free_tier_admit.py)). Test: [`tests/test_free_tier_admit.py`](tests/test_free_tier_admit.py).
+
+**Recovery by reassignment, with a hard stop.** `FailureIntelligence` maps each failure to a category, an
+action, a cooldown and a scope: route or provider
+([`verdict/orchestration/recovery.py:148`](verdict/orchestration/recovery.py#L148)). Each failure resolves to
+exactly one outcome. `RETRY_INFRA` retries the same route after a gateway-local shed. `BLOCK` stops with
+`non-recoverable: <category>`. Every other failure reassigns the same node to the next admitted route and
+emits a `reassign` event ([`verdict/orchestration/runtime.py:430-451`](verdict/orchestration/runtime.py#L430-L451)).
+After `max_attempts_per_node` (4), or with no admitted route left, the node ends in `pool_exhausted` /
+`FAIL_CLOSED` ([`:361-371`](verdict/orchestration/runtime.py#L361-L371)). Tests:
+[`tests/test_orch_recovery.py`](tests/test_orch_recovery.py), [`tests/test_orch_runtime.py`](tests/test_orch_runtime.py).
+
+**Relay retries stay inside the admitted set.** The OpenAI-compatible relay tries an alternative only when
+the decision marked it admitted, and only when the live admitted set (if wired) also holds it. If the
+selected model is outside the live set, the relay makes no attempt
+([`verdict/relay.py:152-170`](verdict/relay.py#L152-L170)). Test: [`tests/test_relay_admission.py`](tests/test_relay_admission.py).
+
+**Independent review.** The reviewer must not be any route that wrote code in the run. It should also be
+from a different model family; if no other family has capacity, route-level independence is used and
+recorded ([`verdict/orchestration/runtime.py:989-1014`](verdict/orchestration/runtime.py#L989-L1014)). A
+non-zero exit, a timeout or output that does not parse all become `ERROR`, never `PASS`
+([`verdict/orchestration/review.py:1-19`](verdict/orchestration/review.py#L1-L19)).
+Tests: [`tests/test_orch_review.py`](tests/test_orch_review.py), [`tests/test_orch_resume.py`](tests/test_orch_resume.py).
+
+**Tamper-evident receipts.** The receipt stores the SHA-256 of `events.jsonl`
+([`verdict/orchestration/receipt.py:173`](verdict/orchestration/receipt.py#L173),
+[`:476`](verdict/orchestration/receipt.py#L476)). Verification recomputes it and rebuilds every other field
+from the same log ([`:525`](verdict/orchestration/receipt.py#L525)).
+Tests: [`tests/test_orch_receipt.py`](tests/test_orch_receipt.py), [`tests/test_readme_assets.py`](tests/test_readme_assets.py)
+(verifies the committed demo run).
+
+## Demo charts
+
+![Admission funnel: 10 fixture routes; the opaque auto/best-coding is dropped at DISCOVERED, an account-less route at ENTITLED, a route with unhealthy runtime evidence at HEALTHY and a rate-limited provider at AVAILABLE, leaving 6 admitted](docs/assets/chart-admission-funnel.svg)
+
+<sub>Data: [`docs/proof/demo-run/admission.json`](docs/proof/demo-run/admission.json), the canonical admission receipt of the demo inventory. Fixture data.</sub>
+
+![Recovery per node: parser tried demo-sub/atlas-coder (quota_exhausted, injected), demo-free/birch-coder (rate_limited, injected), then validated on demo-free2/elm-coder; cli_flag tried demo-sub/atlas-coder (no_final_answer, injected), then validated on demo-free/cedar-coder](docs/assets/chart-recovery.svg)
+
+<sub>Data: [`docs/proof/demo-run/receipt.json`](docs/proof/demo-run/receipt.json), the demo run receipt. Fixture data with injected faults.</sub>
+
+To regenerate the run, the cast and the charts, see [Regenerating the demo assets](#regenerating-the-demo-assets).
+
+## Decision signals (OpenJev)
+
+Verdict can ask an external decision-signal provider how complex, how frontier-worthy and how ambiguous a
+task looks. The shipped provider is OpenJev System-One, reached through the Codiv API
+([`verdict/decision_signals/openjev.py`](verdict/decision_signals/openjev.py)). Signals are inputs to
+Verdict. They never make the decision.
+
+`VERDICT_DECISION_SIGNALS_MODE` selects the mode ([`verdict/decision_signals/shadow.py:21-36`](verdict/decision_signals/shadow.py#L21-L36)).
+The provider is built only when the mode is not `OFF` and `TYPESAFE_API_KEY` is set
+([`verdict/decision_signals/factory.py`](verdict/decision_signals/factory.py)).
+
+| Mode | What it can change | What it cannot change |
+|---|---|---|
+| `OFF` (default) | Nothing. The provider is never called. | — |
+| `SHADOW` | Nothing. `verdict orchestrate` asks once per run, before planning, and records the answer next to the actual planner choice as a `decision_signals` event in the receipt ([`verdict/orchestration/run.py:208-230`](verdict/orchestration/run.py#L208-L230), [`:316-331`](verdict/orchestration/run.py#L316-L331)). | Planner selection, node requirements, the DAG. Test: [`tests/test_shadow_integration.py`](tests/test_shadow_integration.py). |
+| `ADVISORY` | On the single-route path (`IntelligenceService.route`), the order of already-admitted candidates, so it can change which admitted model is picked ([`verdict/intelligence.py:526-608`](verdict/intelligence.py#L526-L608)). Every outcome is recorded as an `advisory:*` safety flag. | Membership: it never adds, removes or restores a candidate. It is skipped for protected (tier 0) tasks, restricted-privacy tasks, confidence below 0.6 (default), a provider error, and no answer within the timeout (default 1,500 ms) ([`verdict/decision_signals/advisory.py:1-31`](verdict/decision_signals/advisory.py#L1-L31)). In `verdict orchestrate`, `ADVISORY` behaves like `SHADOW`. Test: [`tests/test_decision_signals_advisory.py`](tests/test_decision_signals_advisory.py). |
+
+The demo run records one `SHADOW` signal from a fixture provider in its receipt. The test above shows that opposite `SHADOW` signals produce the same requirements and the same DAG.
+
+## Roadmap (in progress)
+
+These are not done at this commit. They are listed so nothing above is read as covering them.
+
+- **Cross-provider fencing on the first worker failure.** Today a failure cools down only the failed route or its own provider. Other providers stay eligible until they fail themselves.
+- **Root-controller failover.** Worker nodes are reassigned. A failing root controller is not yet replaced automatically.
+- **A single retry authority.** Node recovery, the relay and the reviewer each keep their own bounded retry loop today.
+- **Subscription headroom.** Quota rows are evidence only: exhausted means drop. Admission does not yet plan around the headroom left in a subscription window.
+- **Automatic gateway lifecycle.** Verdict does not start, restart or upgrade OmniRoute. The gateway must already be running for live runs.
 
 ## Proof
 
