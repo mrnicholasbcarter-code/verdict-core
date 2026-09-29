@@ -713,9 +713,7 @@ def _format_producer_sha(sha: str | None) -> str:
     return sha if sha else "null"
 
 
-def verdict_tree_changed_between(
-    repo_path: Path, left_sha: str, right_sha: str
-) -> bool | None:
+def verdict_tree_changed_between(repo_path: Path, left_sha: str, right_sha: str) -> bool | None:
     """Whether any path under verdict/ differs between two revisions.
 
     Returns True/False when git can answer, or None when the comparison fails
@@ -724,8 +722,7 @@ def verdict_tree_changed_between(
     if left_sha == right_sha:
         return False
     result = run_command(
-        ["git", "diff", "--name-only", left_sha, right_sha, "--", "verdict/"],
-        cwd=repo_path,
+        ["git", "diff", "--name-only", left_sha, right_sha, "--", "verdict/"], cwd=repo_path
     )
     if result.returncode != 0:
         return None
@@ -813,9 +810,7 @@ def step_rehearsals(
                     f" certified {certified_git_sha})"
                 )
             elif producer_sha != certified_git_sha:
-                changed = verdict_tree_changed_between(
-                    repo_path, producer_sha, certified_git_sha
-                )
+                changed = verdict_tree_changed_between(repo_path, producer_sha, certified_git_sha)
                 if changed is True:
                     stale_notes.append(
                         f"{name} producer {producer_sha} differs from certified"
@@ -838,8 +833,7 @@ def step_rehearsals(
             status="INCOMPLETE",
             reason=(
                 f"Verified {verified_count} rehearsal(s);"
-                f" producers: {producers_summary}; "
-                + "; ".join(stale_notes)
+                f" producers: {producers_summary}; " + "; ".join(stale_notes)
             ),
         )
 
@@ -951,8 +945,7 @@ def run_certification(
     output_dir.mkdir(parents=True, exist_ok=True)
     steps.append(
         step_rehearsals(
-            repo_path, rehearsal_dirs or {}, output_dir,
-            certified_git_sha=manifest.git_sha,
+            repo_path, rehearsal_dirs or {}, output_dir, certified_git_sha=manifest.git_sha
         )
     )
 

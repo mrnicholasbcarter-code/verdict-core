@@ -426,9 +426,7 @@ def test_rehearsal_verification_fails_on_digest_mismatch():
         assert "mismatch" in result.reason.lower()
 
 
-def _minimal_rehearsal_run(
-    run_dir: Path, *, producer: dict | None
-) -> Path:
+def _minimal_rehearsal_run(run_dir: Path, *, producer: dict | None) -> Path:
     """Create a rehearsal run directory using the real receipt builder.
 
     Writes graph.json + events.jsonl, then ``write_run_receipt`` so the receipt
@@ -441,17 +439,10 @@ def _minimal_rehearsal_run(
     graph = WorkGraph(
         goal="rehearsal provenance",
         nodes=(
-            WorkNode(
-                "a",
-                "build a",
-                owned_files=("pkg/a.py",),
-                verification_command=("true",),
-            ),
+            WorkNode("a", "build a", owned_files=("pkg/a.py",), verification_command=("true",)),
         ),
     )
-    (run_dir / "graph.json").write_text(
-        json.dumps({**graph.to_dict(), "run_id": run_dir.name})
-    )
+    (run_dir / "graph.json").write_text(json.dumps({**graph.to_dict(), "run_id": run_dir.name}))
     log = EventLog(run_dir / "events.jsonl")
     started: dict = {"run_id": run_dir.name, "goal": "rehearsal provenance"}
     if producer is not None:
@@ -464,9 +455,7 @@ def _minimal_rehearsal_run(
 def _git(repo: Path, *args: str) -> str:
     import subprocess
 
-    result = subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
     return result.stdout.strip()
 
 
@@ -480,8 +469,7 @@ def test_rehearsal_reports_producer_sha_explicit_null():
         )
         legacy = _minimal_rehearsal_run(root / "legacy", producer=None)
         null_sha = _minimal_rehearsal_run(
-            root / "null_sha",
-            producer={"verdict_version": "0.3.0", "git_sha": None, "dirty": None},
+            root / "null_sha", producer={"verdict_version": "0.3.0", "git_sha": None, "dirty": None}
         )
         output_dir = root / "output"
         output_dir.mkdir()
@@ -515,10 +503,7 @@ def test_rehearsal_equal_producer_sha_passes(temp_git_repo):
         output_dir.mkdir()
 
         result = certify_release.step_rehearsals(
-            repo,
-            {"clean": run_dir},
-            output_dir,
-            certified_git_sha=certified,
+            repo, {"clean": run_dir}, output_dir, certified_git_sha=certified
         )
 
         assert result.status == "PASS"
@@ -541,20 +526,13 @@ def test_rehearsal_differing_sha_without_verdict_changes_passes(temp_git_repo):
     with tempfile.TemporaryDirectory() as tmpdir:
         run_dir = _minimal_rehearsal_run(
             Path(tmpdir) / "stale_ok",
-            producer={
-                "verdict_version": "0.3.0",
-                "git_sha": producer_sha,
-                "dirty": False,
-            },
+            producer={"verdict_version": "0.3.0", "git_sha": producer_sha, "dirty": False},
         )
         output_dir = Path(tmpdir) / "output"
         output_dir.mkdir()
 
         result = certify_release.step_rehearsals(
-            repo,
-            {"stale_ok": run_dir},
-            output_dir,
-            certified_git_sha=certified,
+            repo, {"stale_ok": run_dir}, output_dir, certified_git_sha=certified
         )
 
         assert result.status == "PASS"
@@ -578,20 +556,13 @@ def test_rehearsal_differing_sha_with_verdict_changes_incomplete(temp_git_repo):
     with tempfile.TemporaryDirectory() as tmpdir:
         run_dir = _minimal_rehearsal_run(
             Path(tmpdir) / "stale",
-            producer={
-                "verdict_version": "0.3.0",
-                "git_sha": producer_sha,
-                "dirty": False,
-            },
+            producer={"verdict_version": "0.3.0", "git_sha": producer_sha, "dirty": False},
         )
         output_dir = Path(tmpdir) / "output"
         output_dir.mkdir()
 
         result = certify_release.step_rehearsals(
-            repo,
-            {"stale": run_dir},
-            output_dir,
-            certified_git_sha=certified,
+            repo, {"stale": run_dir}, output_dir, certified_git_sha=certified
         )
 
         assert result.status == "INCOMPLETE"
@@ -618,10 +589,7 @@ def test_rehearsal_digest_mismatch_fails_before_provenance(temp_git_repo):
         output_dir.mkdir()
 
         result = certify_release.step_rehearsals(
-            repo,
-            {"tampered": run_dir},
-            output_dir,
-            certified_git_sha=certified,
+            repo, {"tampered": run_dir}, output_dir, certified_git_sha=certified
         )
 
         assert result.status == "FAIL"
@@ -637,10 +605,7 @@ def test_run_certification_supplies_certified_git_sha(temp_git_repo):
     def fake_step_rehearsals(repo_path, rehearsal_dirs, output_dir, certified_git_sha=None):
         captured["certified_git_sha"] = certified_git_sha
         return certify_release.StepResult(
-            step_id="rehearsals",
-            name="Rehearsal verification",
-            status="SKIPPED",
-            reason="stubbed",
+            step_id="rehearsals", name="Rehearsal verification", status="SKIPPED", reason="stubbed"
         )
 
     stubs = {
@@ -654,17 +619,13 @@ def test_run_certification_supplies_certified_git_sha(temp_git_repo):
         "step_ruff_format": lambda *a, **k: certify_release.StepResult("fmt", "t", "PASS"),
         "step_mypy": lambda *a, **k: certify_release.StepResult("mypy", "t", "PASS"),
         "step_build": lambda *a, **k: certify_release.StepResult("build", "t", "PASS"),
-        "step_package_smoke": lambda *a, **k: certify_release.StepResult(
-            "smoke", "t", "PASS"
-        ),
+        "step_package_smoke": lambda *a, **k: certify_release.StepResult("smoke", "t", "PASS"),
         "step_security": lambda *a, **k: certify_release.StepResult("sec", "t", "PASS"),
         "step_docs_check": lambda *a, **k: certify_release.StepResult("docs", "t", "PASS"),
         "step_git_clean": lambda *a, **k: certify_release.StepResult("git", "t", "PASS"),
         "step_rehearsals": fake_step_rehearsals,
         "capture_environment": lambda *a, **k: certify_release.EnvironmentSnapshot(
-            python_version="3",
-            platform="test",
-            uv_version="0",
+            python_version="3", platform="test", uv_version="0"
         ),
     }
 
