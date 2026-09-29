@@ -11,16 +11,25 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.cells import cell_len
+from rich.console import Console
 
 from tests.test_flagship_failover_scenario import _run_scenario
-from verdict.orchestration.claims import CLAIM_STATUS_VERIFIED, Claim, derive_claims
-from verdict.orchestration.demo_render import render_claims_text
-from verdict.orchestration.trace_render import render_trace_text
-from verdict.orchestration.trace_view import trace_view
+from verdict.design import presentation_mode, state_style
+from verdict.orchestration.claims import (
+    CLAIM_STATUS_NOT_OBSERVED,
+    CLAIM_STATUS_VERIFIED,
+    Claim,
+    derive_claims,
+)
+from verdict.orchestration.demo_render import render_claims, render_claims_text
+from verdict.orchestration.trace_render import _KIND_STATE, render_trace, render_trace_text
+from verdict.orchestration.trace_view import STEP_KINDS, trace_view
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "trace_render" / "golden"
 
@@ -157,6 +166,10 @@ class TestTraceGoldens:
                         + (parts[1] if len(parts) > 1 else "")
                         + ("\n" if line.endswith("\n") else "")
                     )
+            if "until=" in line:
+                import re
+
+                line = re.sub(r"until=\S+", "until=<ts>", line)
             out.append(line)
         return "".join(out)
 
@@ -231,3 +244,72 @@ class TestClaimsRender:
             claims, label="OFFLINE SCENARIO: scripted workers, injected faults"
         )
         assert "OFFLINE SCENARIO" in text
+
+
+class TestOfflineClaimsVerified:
+    """The offline flagship must prove review and capability filtering."""
+
+    @pytest.fixture(autouse=True)
+    def scenario(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.run_dir, self.events, self.receipt = _load_run(tmp_path, monkeypatch)
+        self.by_id = _claims_by_id(derive_claims(self.events, self.receipt, run_dir=self.run_dir))
+
+    def test_independent_review_verified(self) -> None:
+        claim = self.by_id["independent_review"]
+        assert claim.status == CLAIM_STATUS_VERIFIED
+        assert claim.evidence[-1].value["shared_families"] == []
+
+    def test_capability_filtering_verified(self) -> None:
+        claim = self.by_id["capability_filtering"]
+        assert claim.status == CLAIM_STATUS_VERIFIED
+        assert claim.evidence
+
+
+class TestRichWidthAndGlyphs:
+    """Truecolor panels stay inside the console width; glyphs are width-1."""
+
+    @pytest.fixture(autouse=True)
+    def scenario(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.run_dir, self.events, self.receipt = _load_run(tmp_path, monkeypatch)
+        self.tv = trace_view(self.run_dir)
+        self.claims = derive_claims(self.events, self.receipt, run_dir=self.run_dir)
+
+    def test_kind_glyphs_are_design_glyphs_of_width_one(self) -> None:
+        for kind in STEP_KINDS:
+            state, token = _KIND_STATE[kind]
+            style = state_style(state)
+            assert cell_len(style.glyph) == 1
+            assert cell_len(style.ascii_glyph) == 1
+            assert token in {"SUCCESS", "ERROR", "WARNING", "PRIMARY", "SECONDARY"}
+
+    @pytest.mark.parametrize("width", (60, 100))
+    def test_rich_lines_fit_width(self, width: int) -> None:
+        mode = replace(
+            presentation_mode(), width=width, color=True, unicode=True, color_system="truecolor"
+        )
+        for renderable in (
+            render_trace(self.tv, mode),
+            render_claims(self.claims, mode, label="OFFLINE"),
+        ):
+            console = Console(
+                width=width, force_terminal=True, color_system="truecolor", legacy_windows=False
+            )
+            console.size = (width, 40)
+            with console.capture() as cap:
+                console.print(renderable)
+            from rich.text import Text
+
+            for i, line in enumerate(cap.get().splitlines()):
+                # cell_len on a raw ANSI line counts SGR resets as cells.
+                visible = Text.from_ansi(line).cell_len
+                assert visible <= width, f"line {i} width {visible} > {width}: {line!r}"
+
+    def test_trace_detail_rows_are_not_blank(self) -> None:
+        text = render_trace_text(self.tv, width=100)
+        for needle in ("category=", "key=", "until=", "->", "reviewer=", "PASS"):
+            assert needle in text, needle
+
+    def test_not_shown_section_absent_when_all_verified(self) -> None:
+        text = render_claims_text(self.claims, width=100)
+        if all(c.status != CLAIM_STATUS_NOT_OBSERVED for c in self.claims):
+            assert "NOT SHOWN" not in text

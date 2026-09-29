@@ -112,12 +112,13 @@ trace  run=offline-flagship-failover
 seq   kind            node      detail
 --------------------------------------------------
 1     request                   goal=flagship failover test
-6     selection       node-1    route=alpha/model-a
-17    failure         node-1
-18    cooldown        node-1
-27    selection       node-1    route=beta/model-b
-28    reassign        node-1
-36    terminal        node-1    model=beta/model-b
+6     selection       node-1    route=alpha/claude-a
+17    failure         node-1    category=rate_limited
+18    cooldown        node-1    key=alpha  until=2026-09-29T00:00:00+00:00
+27    selection       node-1    route=beta/gpt-b
+28    reassign        node-1    alpha/claude-a -> beta/gpt-b
+36    terminal        node-1    model=beta/gpt-b  ok
+54    review                    reviewer=gamma/gemini-c  PASS
 56    run_finished              outcome=COMPLETE
 ```
 
@@ -147,19 +148,18 @@ Claims panel (from `--json` or text output):
 ```
 CLAIMS VERIFIED
 ------------------------------------------------------------
-  [VERIFIED] Task-aware model selection
-  [VERIFIED] Provider/model health considered in routing
-  [VERIFIED] Worker failure isolated from controller
-  [VERIFIED] Automatic bounded failover
-  [VERIFIED] Cooldown recorded
-  [VERIFIED] Replacement completed successfully on alternate route
-  [VERIFIED] Validation passed
-  [VERIFIED] Receipt integrity verified
-
-NOT SHOWN BY THIS RUN
-------------------------------------------------------------
-  [NOT OBSERVED] Capability filtering reduced candidate pool
-  [NOT OBSERVED] Independent review passed
+  + VERIFIED  Task-aware model selection
+  + VERIFIED  Capability filtering reduced candidate pool
+  + VERIFIED  Provider/model health considered in routing
+  + VERIFIED  Explicit concrete worker assignment
+  + VERIFIED  Worker failure isolated from controller
+  + VERIFIED  Automatic bounded failover
+  + VERIFIED  Cooldown recorded
+  + VERIFIED  Context assembled within budget
+  + VERIFIED  Replacement completed successfully on alternate route
+  + VERIFIED  Validation passed
+  + VERIFIED  Independent review passed
+  + VERIFIED  Receipt integrity verified
 ```
 
 `--live` refuses unless credentials are configured and directs the user to

@@ -34,21 +34,31 @@ from verdict.subagent_selection import HealthResult
 
 FLAGSHIP_GOAL = "flagship failover test"
 FLAGSHIP_RUN_ID = "offline-flagship-failover"
-ROUTE_A = "alpha/model-a"
-ROUTE_B = "beta/model-b"
-ROUTE_C = "gamma/model-c"
+# Tails must be distinct route_family() values. A shared token such as
+# "model" makes the reviewer look like the same family as the workers, so
+# independent review cannot be verified.
+ROUTE_A = "alpha/claude-a"
+ROUTE_B = "beta/gpt-b"
+ROUTE_C = "gamma/gemini-c"
+# Fails the real task gate (missing tool_calling, context under the 32k floor).
+ROUTE_WEAK = "delta/qwen-weak"
 _OFFLINE_OCR_ENV = "VERDICT_OFFLINE_DEMO_OCR_KEY"
 
 
-def _inventory_row(route_id: str, *, owned_by: str) -> dict[str, Any]:
+def _inventory_row(
+    route_id: str, *, owned_by: str, context_length: int = 200_000, tool_calling: bool = True
+) -> dict[str, Any]:
     """A route as returned by the inventory boundary, with no fabricated score."""
     return {
         "id": route_id,
         "owned_by": owned_by,
-        "context_length": 200_000,
-        "max_input_tokens": 200_000,
+        "context_length": context_length,
+        "max_input_tokens": context_length,
         "max_output_tokens": 32_000,
-        "capabilities": {"tool_calling": True, "reasoning": True},
+        "capabilities": {"tool_calling": tool_calling, "reasoning": True},
+        # Same declared tier so family names do not change the ranking.
+        # Lexicographic route id keeps alpha first, then beta, then gamma.
+        "capability_tier": 2,
         "pricing": {"input": 1.0, "output": 2.0},
     }
 
@@ -70,8 +80,14 @@ INVENTORY = [
     _inventory_row(ROUTE_A, owned_by="alpha"),
     _inventory_row(ROUTE_B, owned_by="beta"),
     _inventory_row(ROUTE_C, owned_by="gamma"),
+    _inventory_row(ROUTE_WEAK, owned_by="delta", context_length=8_000, tool_calling=False),
 ]
-CONNECTIONS = [_connection("alpha"), _connection("beta"), _connection("gamma")]
+CONNECTIONS = [
+    _connection("alpha"),
+    _connection("beta"),
+    _connection("gamma"),
+    _connection("delta"),
+]
 
 
 def _impl_node(node_id: str, deps: tuple[str, ...] = ()) -> WorkNode:
