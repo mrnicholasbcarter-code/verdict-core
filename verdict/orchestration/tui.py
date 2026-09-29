@@ -1105,33 +1105,43 @@ def _run_interactive_cockpit(
     )
 
 
-_FIXTURE_PREFIXES = (
+# Route-id prefixes that identify fixture/scripted runs.  Only prefixes that
+# are authoritative (reserved by the Verdict scenario inventory) belong here.
+# Generic names like alpha/ or beta/ are NOT fixture markers because a real
+# provider could use those names; use the run-id/mode marker instead.
+_FIXTURE_ROUTE_PREFIXES = (
     "demo-",
     "demo-sub/",
     "demo-free",
-    "alpha/",
-    "beta/",
-    "gamma/",
-    "delta/",
     "fixture",
-    "offline-",
 )
 
 
 def _replay_kind(events: list[Any]) -> str:
     """Classify a recorded run from its own events: 'fixture', 'real' or 'unknown'.
 
-    'real' requires at least one executed route and no fixture route. A run with
-    no executed routes makes no claim ('unknown'), so a label never says
-    'real models' without evidence.
+    Detection order:
+    1. run_started.data["mode"] == "offline-scenario"  (authoritative from demo_scenario.py)
+    2. run_started.data["run_id"].startswith("offline-")
+    3. Any executed route starts with a known fixture prefix.
+
+    'real' requires at least one executed route and no fixture signal.
+    A run with no executed routes makes no claim ('unknown').
     """
+    for event in events:
+        if event.type == "run_started":
+            run_id = str(event.data.get("run_id") or "")
+            mode = str(event.data.get("mode") or "")
+            if mode == "offline-scenario" or run_id.startswith("offline-"):
+                return "fixture"
+            break
     routes = [
         str(event.data.get("route_id") or "")
         for event in events
         if event.type in ("selection", "dispatch")
     ]
     routes = [r for r in routes if r]
-    if any(r.startswith(_FIXTURE_PREFIXES) for r in routes):
+    if any(r.startswith(_FIXTURE_ROUTE_PREFIXES) for r in routes):
         return "fixture"
     return "real" if routes else "unknown"
 

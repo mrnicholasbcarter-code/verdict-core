@@ -169,6 +169,17 @@ def test_posters_are_static_and_readme_prefers_reduced_motion() -> None:
         assert f'src="docs/assets/{animated_name}"' in readme
 
 
+def test_posters_show_complete_cockpit_state() -> None:
+    """Posters are rendered from the COMPLETE cockpit frame: all nodes VALIDATED,
+    failure/reassign history visible, review PASS.
+    """
+    for poster_name in ("demo-poster.svg", "demo-tui-poster.svg"):
+        poster = (ASSETS / poster_name).read_text(encoding="utf-8")
+        text = _visible_svg_text(poster)
+        assert "VALIDATED" in text, f"{poster_name}: expected VALIDATED in poster text"
+        assert "REASSIGN" in text.upper(), f"{poster_name}: expected REASSIGN in poster text"
+
+
 def test_animated_first_frame_is_not_blank() -> None:
     """Frame 0 of each recording shows text, not only a cursor."""
     for name in ("demo.svg", "demo-tui.svg"):

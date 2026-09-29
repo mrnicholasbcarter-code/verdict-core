@@ -133,6 +133,7 @@ def test_scenario_cast_discloses_source_and_speed(
     chunks = [
         (1.0, b"VERDICT cooldown reassign " + b"frame " * 50),
         (2.0, b"COMPLETE\n" + marker + b"\nevents_digest mismatch"),
+        (3.0, b"exit status: 1\n"),
     ]
     calls: list[tuple[list[str], dict[str, str], int, int]] = []
 

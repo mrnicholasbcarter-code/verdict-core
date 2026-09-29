@@ -248,7 +248,37 @@ def test_replay_kind_needs_evidence_for_real_models() -> None:
     def ev(t: str, route: str) -> SimpleNamespace:
         return SimpleNamespace(type=t, data={"route_id": route})
 
+    def run_started(run_id: str = "", mode: str = "") -> SimpleNamespace:
+        return SimpleNamespace(type="run_started", data={"run_id": run_id, "mode": mode})
+
     assert _replay_kind([]) == "unknown"
     assert _replay_kind([ev("node_state", "")]) == "unknown"
+    # Real provider route with a generic name → still 'real'
+    assert _replay_kind([ev("selection", "alpha/real-provider")]) == "real"
     assert _replay_kind([ev("selection", "kr/claude-haiku-4.5")]) == "real"
     assert _replay_kind([ev("selection", "kr/x"), ev("dispatch", "demo-sub/atlas")]) == "fixture"
+    # mode marker from demo_scenario.py → 'fixture' regardless of route name
+    assert (
+        _replay_kind([run_started(mode="offline-scenario"), ev("selection", "alpha/real-looking")])
+        == "fixture"
+    )
+    # offline- run_id prefix → 'fixture'
+    assert (
+        _replay_kind([run_started(run_id="offline-flagship-failover"), ev("selection", "alpha/x")])
+        == "fixture"
+    )
+    # Real run with alpha/ route and no offline marker → 'real'
+    assert (
+        _replay_kind([run_started(run_id="live-run-001"), ev("selection", "alpha/x")]) == "real"
+    )
+    # Env var MUST NOT be used: mode is passed explicitly, never via os.environ
+    import subprocess
+    result = subprocess.run(
+        ["grep", "-r", "VERDICT_RUN_MODE", "verdict/", "scripts/"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, (
+        "VERDICT_RUN_MODE env var found in source - use explicit mode= parameter instead:\n"
+        + result.stdout
+    )

@@ -486,6 +486,7 @@ async def run_golden_path(
     inflight: dict[str, str] | None = None,
     openspec_change_dir: Path | None = None,
     decision_signal_provider: DecisionSignalProvider | None = None,
+    mode: str = "",
 ) -> GoldenRunResult:
     # TYPESAFE credentials migration: auto-wire factory default when no provider injected
     if decision_signal_provider is None:
@@ -526,6 +527,9 @@ async def run_golden_path(
             "max_parallel": policy.max_parallel,
             "max_cooldown_wait_seconds": policy.max_cooldown_wait_seconds,
         },
+        # Authoritative mode marker for replay classification.  Passed explicitly
+        # by the caller (e.g. demo_scenario.py); absent ("") for live runs.
+        mode=mode,
     )
     if resumed:
         events.emit(

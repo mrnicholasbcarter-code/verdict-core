@@ -275,6 +275,9 @@ def run_flagship_scenario(
                 graph=GRAPH,
                 run_id=run_id,
                 policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
+                # Authoritative marker so replay classification identifies this as a
+                # scripted scenario and never shows 'real models' in cockpit replay.
+                mode="offline-scenario",
             )
         )
     finally:

@@ -390,20 +390,23 @@ def scenario_session(speed: float, *, short: bool = False) -> None:
             raise CaptureError("tampered receipt was not rejected with digest mismatch")
         console.clear()
         console.print(SCENARIO_LABEL, markup=False)
-        console.print("$ verdict run-receipt <temporary offline run>", markup=False)
-        # Preserve the CLI bytes exactly. One write keeps the final verify frame
+        # Print real CLI output with observed exit statuses (not speculative annotations).
         # atomic without fabricating or reconstructing any receipt fields.
+        # Print real exit statuses, not speculative annotations.
+        ok_status = f"exit status: {receipt.returncode}\n".encode()
+        fail_status = f"exit status: {rejected.returncode}\n".encode()
         sys.stdout.buffer.write(
-            receipt.stdout
+            b"$ verdict run-receipt <temporary offline run>\n"
+            + receipt.stdout
+            + ok_status
             + b"\n$ verdict run-receipt <copy with one event byte changed>\n"
-            + b"[expected exit 1: tamper detected if events_digest mismatch]\n"
             + rejected.stdout
         )
         sys.stdout.buffer.flush()
         # Short pause then a sentinel line to ensure the PTY reader sees
         # the full rejected output before the process exits.
         time.sleep(0.05)
-        sys.stdout.buffer.write(b"# events_digest mismatch confirmed\n")
+        sys.stdout.buffer.write(fail_status)
         sys.stdout.buffer.flush()
         time.sleep(2)
 
@@ -448,7 +451,7 @@ def record_scenario(speed: float = 1.0, output: Path | None = None, *, short: bo
             cols=WIDTH,
         )
     atomic = coalesce_atomic(chunks)
-    validate_capture(atomic, exit_code, marker="events_digest mismatch")
+    validate_capture(atomic, exit_code, marker="exit status: 1")
     text = visible_text(b"".join(data for _, data in atomic))
     for required in ("COMPLETE", "cooldown", "reassign", COMPLETION_MARKER):
         if required.casefold() not in text.casefold():
