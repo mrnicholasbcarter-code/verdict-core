@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
+from urllib.parse import urlsplit
 
 import httpx
 import yaml
@@ -536,6 +538,26 @@ def detect_cloud_apis() -> list[DetectedProvider]:
     return detected
 
 
+def _url_host_matches(url: str, host: str) -> bool:
+    """Return True when ``url``'s parsed hostname is ``host`` or a subdomain of it.
+
+    A substring or prefix check on the raw URL (``host in url`` or
+    ``url.startswith(f"https://{host}")``) can be bypassed with a crafted URL such
+    as ``https://evil.com/?x=api.openai.com``, ``https://api.openai.com.evil.com``,
+    or userinfo tricks like ``https://api.openai.com@evil.com``. Comparing the
+    *parsed* hostname closes those bypasses.
+    """
+    try:
+        hostname = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    host = host.lower()
+    hostname = hostname.lower()
+    return hostname == host or hostname.endswith(f".{host}")
+
+
 def detect_custom_endpoints() -> list[DetectedProvider]:
     """Detect custom OpenAI-compatible endpoints from config/env."""
     detected = []
@@ -544,7 +566,7 @@ def detect_custom_endpoints() -> list[DetectedProvider]:
     base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
     api_key = os.getenv("OPENAI_API_KEY")
 
-    if base_url and not base_url.startswith("https://api.openai.com"):
+    if base_url and not _url_host_matches(base_url, "api.openai.com"):
         models = (
             _fetch_models_from_server(base_url, "/models") if _check_port_from_url(base_url) else []
         )
@@ -652,7 +674,15 @@ def format_detection_report(result: DetectionResult, verbose: bool = False) -> s
             if p.api_key_configured:
                 status_parts.append("🔑 Auth OK")
             elif p.api_key_env:
-                status_parts.append(f"🔒 Needs {p.api_key_env}")
+                # codeql[py/clear-text-logging-sensitive-data] Guarded: we validate
+                # that api_key_env looks like an env-var name (^[A-Z][A-Z0-9_]{1,63}$)
+                # before printing. If a user mistakenly puts a key VALUE in
+                # api_key_env, the guard masks it as '<invalid env name>'.
+                env_name = str(p.api_key_env)
+                if re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", env_name):
+                    status_parts.append(f"🔒 Needs {env_name}")
+                else:
+                    status_parts.append("🔒 Needs <invalid env name>")
 
             model_info = f" — {len(p.models)} models" if p.models else ""
             if p.models and verbose:
