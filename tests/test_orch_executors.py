@@ -565,6 +565,45 @@ async def test_fault_key_by_dispatch_ordinal(tmp_path: Path) -> None:
     assert (await fx.run("x", route_id="cc/b", cwd=tmp_path / "n2-a2", timeout_seconds=5)).ok
 
 
+async def test_fault_worker_key_skips_planner_calls(tmp_path: Path) -> None:
+    """worker#1 is the first attempt worktree even when planning used two calls."""
+    inner = ScriptedExecutor(
+        lambda p, r, c: WorkerTerminal(ok=True, output="RESULT: DONE", model=r)
+    )
+    fx = FaultInjectingExecutor(inner, {"worker#1": ["rate_limit"]})
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    plan = await fx.run("plan", route_id="cc/planner", cwd=repo, timeout_seconds=5)
+    repair = await fx.run("repair", route_id="cc/planner", cwd=repo, timeout_seconds=5)
+    assert plan.ok and repair.ok
+    first_worker = await fx.run(
+        "impl", route_id="cc/worker", cwd=tmp_path / "parser-a1", timeout_seconds=5
+    )
+    assert first_worker.status_code == 429
+    assert first_worker.session_ref == "fault-injected:rate_limit"
+    second_worker = await fx.run(
+        "impl", route_id="cc/worker", cwd=tmp_path / "cli-a1", timeout_seconds=5
+    )
+    assert second_worker.ok
+
+
+async def test_fault_hash_n_still_counts_planner(tmp_path: Path) -> None:
+    """#N still counts planner calls; #2 is plan-repair when planning used two calls."""
+    inner = ScriptedExecutor(
+        lambda p, r, c: WorkerTerminal(ok=True, output="RESULT: DONE", model=r)
+    )
+    fx = FaultInjectingExecutor(inner, {"#2": ["rate_limit"]})
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert (await fx.run("plan", route_id="cc/planner", cwd=repo, timeout_seconds=5)).ok
+    repair = await fx.run("repair", route_id="cc/planner", cwd=repo, timeout_seconds=5)
+    assert repair.status_code == 429
+    worker = await fx.run(
+        "impl", route_id="cc/worker", cwd=tmp_path / "parser-a1", timeout_seconds=5
+    )
+    assert worker.ok
+
+
 def test_installed_prime_096_declares_config_directory_override() -> None:
     """Pin launch env to Prime 0.9.6's published real config contract."""
     import shutil

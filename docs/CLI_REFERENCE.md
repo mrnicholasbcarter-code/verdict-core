@@ -52,7 +52,7 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--prefer PREFER` | Comma-separated provider preference among subscription capacity (ranking policy, not a fallback chain) |
 | `--scope SCOPE` | Comma-separated allowed route prefixes; empty means all |
 | `--no-review` | Skip OCR review; run ends BLOCKED |
-| `--inject ROUTE=FAULT[,FAULT]` | Inject a named chaos fault for a route |
+| `--inject ROUTE=FAULT[,FAULT]` | Inject a named chaos fault (`route`, `cc/*`, `@node`, `#N`, `worker#N`, `*`) |
 | `--state-file STATE_FILE` | Health/cooldown state file (default `~/.verdict/orchestration-health.json`) |
 | `--plain` | ASCII narrative instead of live view |
 | `--json` | Print final receipt JSON |
@@ -96,6 +96,10 @@ verdict run-receipt RUN_ID --runs-dir .verdict/runs --json
 | `run` | Run ID or run directory |
 | `--runs-dir RUNS_DIR` | Run directory root |
 | `--json` | Print JSON |
+
+Text output includes outcome, integrity, per-node attempts, and, when present,
+how many implement nodes changed no files (`no_change_nodes` on the receipt).
+That field is omitted when empty so committed receipts still verify.
 
 ### `verdict eligibility` — Show the eligibility ladder
 

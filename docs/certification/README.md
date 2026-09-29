@@ -244,12 +244,12 @@ To include rehearsals in certification:
 
 1. **Run clean rehearsal**:
    ```bash
-   verdict run --goal "..." --output clean-run/
+   verdict orchestrate "..." --repo . --runs-dir clean-run/
    ```
 
 2. **Run chaos rehearsal**:
    ```bash
-   verdict run --goal "..." --chaos --output chaos-run/
+   verdict orchestrate "..." --repo . --inject "*=quota" --runs-dir chaos-run/
    ```
 
 3. **Certify with rehearsals**:

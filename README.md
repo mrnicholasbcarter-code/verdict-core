@@ -628,7 +628,7 @@ All assets come from committed code and committed data. None of the tools below 
 | [`docs/assets/demo-tui.cast`](docs/assets/demo-tui.cast) | ~700 KB | [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (real-model run), replayed at 1x; gaps over 1.5 s shortened | `python scripts/record_tui_demo.py --speed 1 docs/proof/live-controller-run` |
 | [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~110 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
 | [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~16 KB | last frame of `demo-tui.cast` | same command as `demo-tui.svg` |
-| `docs/assets/chart-*.svg` | ~10 KB each | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
+| `docs/assets/chart-*.svg` | ~65-95 KB each (text as paths) | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
 
 The recording's typing and line pacing are synthetic. Its text is the real output of each command.
 [`tests/test_readme_assets.py`](tests/test_readme_assets.py) checks that every linked asset and chart
