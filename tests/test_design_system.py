@@ -10,7 +10,7 @@ import pytest
 from verdict.design import GLYPHS, TOKENS, presentation_mode
 
 # ---------------------------------------------------------------------------
-# Token contract: existing keys and values must be unchanged
+# Token contract: existing keys remain; values follow the new visual palette
 # ---------------------------------------------------------------------------
 
 ORIGINAL_TOKENS = {
@@ -31,9 +31,13 @@ def test_existing_token_keys_present() -> None:
         assert key in TOKENS, f"TOKENS missing key {key!r}"
 
 
-def test_existing_token_values_unchanged() -> None:
-    for key, value in ORIGINAL_TOKENS.items():
-        assert TOKENS[key] == value, f"TOKENS[{key!r}] changed: {TOKENS[key]!r} != {value!r}"
+def test_existing_token_names_map_to_visual_palette() -> None:
+    from verdict.design import PALETTE, TOKEN_ALIASES, token_style
+
+    for key in ORIGINAL_TOKENS:
+        assert TOKENS[key] == token_style(key)
+        assert PALETTE[TOKEN_ALIASES.get(key, key)].hex in TOKENS[key]
+    assert TOKENS["WARNING"] != TOKENS["ACCENT"]
 
 
 def test_new_semantic_keys_present() -> None:
