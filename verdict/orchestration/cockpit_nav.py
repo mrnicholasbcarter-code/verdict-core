@@ -184,6 +184,11 @@ class CockpitState:
     expanded: bool = False
     help_open: bool = False
     quit_requested: bool = False
+    routing_open: bool = False
+    routing_view: Any = None
+    routing_render: Any = None
+    routing_render_text: Any = None
+    routing_from_run: Any = None
 
     def sync_order(self, node_ids: Sequence[str]) -> None:
         prev = self.selected_id
@@ -219,7 +224,27 @@ def open_context_view(state: CockpitState, view: Any) -> None:
 
 
 def open_routing_view(state: CockpitState, view: Any) -> None:
-    """BOD-277 extension point. Currently a no-op."""
+    """BOD-277 extension point: toggle the routing explorer panel.
+
+    Builds a :class:`~verdict.orchestration.routing_view.RoutingView` from the
+    live :class:`RunView`. The compose path refreshes from the event stream
+    when present so the explorer stays authoritative without probing.
+    """
+    from verdict.orchestration.routing_render import (
+        render_routing,
+        render_routing_text,
+        routing_view_from_run_view,
+    )
+
+    open_now = not state.routing_open
+    state.routing_open = open_now
+    if not open_now:
+        state.routing_view = None
+        return
+    state.routing_view = routing_view_from_run_view(view)
+    state.routing_render = render_routing
+    state.routing_render_text = render_routing_text
+    state.routing_from_run = routing_view_from_run_view
 
 
 def submit_control(state: CockpitState, action: str) -> None:
@@ -375,7 +400,7 @@ _HELP_LINES = (
     "  d                expand technical details",
     "  esc              back / close detail",
     "  c                context view (BOD-278, not wired)",
-    "  r                routing view (BOD-277, not wired)",
+    "  r                routing view (toggle explorer)",
     "  ?                toggle this help",
     "  q                quit watch",
 )
@@ -468,7 +493,7 @@ def render_detail_panel(
     # Extension-point hints (no-op controls).
     lines.append(
         Text(
-            "(c=context BOD-278, r=routing BOD-277 — not wired)", style=_style_token("MUTED", plain)
+            "(c=context BOD-278 not wired, r=routing explorer)", style=_style_token("MUTED", plain)
         )
     )
 
@@ -495,7 +520,7 @@ def _classify_summary_token(summary: str) -> str:
 
 
 def render_footer(plain: bool = False) -> RenderableType:
-    hint = "? help  enter detail  d expand  esc back  q quit"
+    hint = "? help  enter detail  d expand  r routing  esc back  q quit"
     if plain:
         return Text(hint)
     return Text(hint, style=TOKENS["MUTED"])
@@ -524,6 +549,9 @@ def dispatch_key(key: str, state: CockpitState, view: Any) -> bool:
         if state.help_open:
             state.help_open = False
             return True
+        if state.routing_open:
+            state.routing_open = False
+            return True
         if state.detail_open:
             state.detail_open = False
             return True
@@ -541,8 +569,8 @@ def dispatch_key(key: str, state: CockpitState, view: Any) -> bool:
         open_context_view(state, view)  # BOD-278 extension point (no-op)
         return False
     if key == KEY_ROUTING:
-        open_routing_view(state, view)  # BOD-277 extension point (no-op)
-        return False
+        open_routing_view(state, view)  # BOD-277 extension point
+        return True
     return False
 
 
@@ -583,6 +611,39 @@ def run_cockpit(
         blocks.append(render_dashboard(view, width, plain))
         if state.detail_open:
             blocks.append(render_detail_panel(view, seen, state, plain=plain, width=width))
+        if state.routing_open:
+            # BOD-277 render call — projection prepared by open_routing_view
+            rview = (
+                state.routing_from_run(view, seen)
+                if state.routing_from_run is not None
+                else state.routing_view
+            )
+            if rview is not None:
+                nid = state.selected_id
+                eval_idx = None
+                if nid:
+                    for i, ev in enumerate(getattr(rview, "evaluations", ())):
+                        if getattr(ev, "node_id", "") == nid:
+                            eval_idx = i
+                            break
+                if plain:
+                    if state.routing_render_text is not None:
+                        blocks.append(
+                            Text(
+                                state.routing_render_text(
+                                    rview, width=width, evaluation_index=eval_idx
+                                )
+                            )
+                        )
+                else:
+                    from verdict.design import presentation_mode as _pm
+
+                    if state.routing_render is not None:
+                        blocks.append(
+                            state.routing_render(
+                                rview, _pm(console, env=None), evaluation_index=eval_idx
+                            )
+                        )
         if state.help_open:
             blocks.append(render_help(plain=plain))
         blocks.append(render_footer(plain=plain))
