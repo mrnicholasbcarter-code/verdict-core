@@ -36,7 +36,8 @@ def _fmt_until(value: str) -> str:
     try:
         from datetime import datetime
 
-        datetime.fromisoformat(value)
+        # Python < 3.11 rejects a trailing 'Z' in fromisoformat; normalise it.
+        datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
         return value[11:19]
     except ValueError:
         return value
