@@ -1,8 +1,9 @@
 """Record the credential-free orchestration demo as an asciinema v2 cast.
 
-Stdlib only. Each command runs in a real pseudo-terminal. The recorder takes
-its output bytes verbatim and paces them line by line, so the cast plays at a
-readable speed. Only the timing is synthetic. The content is the real output.
+Each command runs in a real pseudo-terminal sized to the cast. The typed
+prompt is paced for readability. Command output keeps the real PTY read
+timestamps and is not split into lines, so escape sequences stay intact.
+A failed command, a traceback, or a missing receipt marker rejects the cast.
 
     python scripts/record_demo.py                       # writes docs/assets/demo.cast
     npx -y svg-term-cli@2.1.1 --in docs/assets/demo.cast \
@@ -18,17 +19,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pty
-import select
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
 WIDTH, HEIGHT = 110, 34
 TYPE_DELAY = 0.035  # seconds per typed character
-LINE_DELAY = 0.09  # seconds per output line
 PAUSE = 1.2  # pause after each command
 
 TAMPER_DIR = Path(tempfile.gettempdir()) / "verdict-demo-tampered"
@@ -74,32 +73,30 @@ def _env(home: str) -> dict[str, str]:
     }
 
 
-def _run_in_pty(argv: list[str], env: dict[str, str]) -> tuple[bytes, int]:
-    pid, fd = pty.fork()
-    if pid == 0:  # child
-        os.chdir(ROOT)
-        os.execvpe(argv[0], argv, env)
-    chunks: list[bytes] = []
-    while True:
-        ready, _, _ = select.select([fd], [], [], 30)
-        if not ready:
-            break
-        try:
-            data = os.read(fd, 65536)
-        except OSError:
-            break
-        if not data:
-            break
-        chunks.append(data)
-    _, status = os.waitpid(pid, 0)
-    os.close(fd)
-    return b"".join(chunks), os.waitstatus_to_exitcode(status)
+def _capture():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "record_tui_demo", Path(__file__).resolve().parent / "record_tui_demo.py"
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load record_tui_demo")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def record(out: Path, python: str) -> int:
+    """Record each command's real PTY reads. Reject the whole cast on any failure.
+
+    The typed prompt is paced for readability. Command output keeps the real
+    read timestamps, shifted onto the cast clock. Reads are not split into
+    lines, so an escape sequence stays inside the read that produced it.
+    """
     home = tempfile.mkdtemp(prefix="verdict-rec-home-")
     events: list[list[object]] = []
     clock = 0.5
+    capture = _capture()
     try:
         for shown, argv in _commands(python):
             events.append([round(clock, 3), "o", "\x1b[1;32m$\x1b[0m "])
@@ -108,13 +105,32 @@ def record(out: Path, python: str) -> int:
                 events.append([round(clock, 3), "o", ch])
             clock += 0.3
             events.append([round(clock, 3), "o", "\r\n"])
-            output, code = _run_in_pty(argv, _env(home))
-            text = output.decode("utf-8", errors="replace")
-            for line in text.splitlines(keepends=True):
-                clock += LINE_DELAY
-                events.append([round(clock, 3), "o", line])
+            chunks, code = capture.read_pty_events(argv, _env(home), rows=HEIGHT, cols=WIDTH)
+            atomic = capture.coalesce_atomic(chunks)
+            raw = b"".join(data for _, data in atomic)
+            text = raw.decode("utf-8", errors="replace")
+            # The tampered receipt is expected to fail verification (exit 1).
+            allowed = code == 0 or (code == 1 and "events_digest mismatch" in text)
+            if not allowed:
+                raise capture.CaptureError(f"{shown} exited {code}")
+            if "Traceback (most recent call last)" in text:
+                raise capture.CaptureError(f"traceback while running {shown}")
+            if atomic:
+                base = clock
+                origin = atomic[0][0]
+                for at, data in atomic:
+                    clock = base + max(0.0, at - origin)
+                    events.append([round(clock, 3), "o", data.decode("utf-8", errors="replace")])
             clock += PAUSE
-            print(f"recorded: {shown} (exit {code})", file=sys.stderr)
+            print(f"recorded: {shown} (exit {code}, {len(atomic)} reads)", file=sys.stderr)
+        joined = "".join(str(event[2]) for event in events)
+        if "integrity: OK (events digest verified)" not in joined:
+            raise capture.CaptureError("demo capture lacks the receipt integrity marker")
+        if "events_digest mismatch" not in joined:
+            raise capture.CaptureError("demo capture lacks the tampered-receipt mismatch")
+    except capture.CaptureError as exc:
+        print(f"capture rejected: {exc}", file=sys.stderr)
+        return 1
     finally:
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(TAMPER_DIR, ignore_errors=True)
