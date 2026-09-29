@@ -699,9 +699,7 @@ def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> Non
     cursor = cache.cursor
     assert cursor.get("cycle_open") is True
     probed_ids = cursor.get("probed_ids") or []
-    assert "cx/r0" in probed_ids, (
-        f"expected cx/r0 in probed_ids after cap, got {probed_ids!r}"
-    )
+    assert "cx/r0" in probed_ids, f"expected cx/r0 in probed_ids after cap, got {probed_ids!r}"
     assert "cx/r1" not in probed_ids, (
         f"cx/r1 must not be in probed_ids (was never probed), got {probed_ids!r}"
     )
@@ -936,7 +934,7 @@ def test_cursor_resume_survives_route_reorder_and_removal(tmp_path: Path) -> Non
         epsilon=0,
         concurrency=1,
     )
-    stats2 = prober2.run_once()
+    prober2.run_once()
     # After two cycles every route must have been probed at least once.
     for ri in [r0, r1, r2, r3]:
         entry = cache.entry(ri.route_id)
@@ -954,9 +952,7 @@ def test_half_open_and_stale_paid_routes_get_liveness_kind(tmp_path: Path) -> No
     # Record a negative for a subscription route (will become half-open/stale once it
     # elapses, but for ordering we just need it in the half-open bucket).
     cache.record(
-        "sub/model",
-        ProbeResult(category=CATEGORY_TIMEOUT, chat_ok=False, tool_ok=False),
-        long_ago,
+        "sub/model", ProbeResult(category=CATEGORY_TIMEOUT, chat_ok=False, tool_ok=False), long_ago
     )
     # Record a stale healthy entry for a metered route.
     cache.record(
@@ -1026,11 +1022,19 @@ def test_empty_reported_model_stored_as_not_reported_identity(tmp_path: Path) ->
     route = _route("cx/silent-model", "free")
     # Both chat and tool succeed but neither echoes a model id.
     chat_no_id = ProbeExchange(
-        http_status=200, ok=True, chat_exact=True, tool_called=False, latency_ms=10,
+        http_status=200,
+        ok=True,
+        chat_exact=True,
+        tool_called=False,
+        latency_ms=10,
         reported_model="",
     )
     tool_no_id = ProbeExchange(
-        http_status=200, ok=True, chat_exact=False, tool_called=True, latency_ms=10,
+        http_status=200,
+        ok=True,
+        chat_exact=False,
+        tool_called=True,
+        latency_ms=10,
         reported_model="",
     )
     transport = _Script(
@@ -1089,12 +1093,7 @@ def test_cli_once_forwards_max_wall_seconds(tmp_path: Path) -> None:
     with patch("verdict.actions.registry.run_action", side_effect=fake_run_action):
         from verdict.cli import cmd_prove_at_rest
 
-        cmd_prove_at_rest(
-            "once",
-            allow_live_probe=True,
-            max_wall_seconds=123.0,
-            max_requests=5,
-        )
+        cmd_prove_at_rest("once", allow_live_probe=True, max_wall_seconds=123.0, max_requests=5)
 
     assert collected, "run_action was never called"
     params = collected[0]["params"]

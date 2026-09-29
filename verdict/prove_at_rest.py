@@ -302,6 +302,7 @@ def order_cycle(
     ]
 
     ordered: list[tuple[AdmittedRoute, str]] = []
+
     def _kind_for(route: AdmittedRoute) -> str:
         """Derive probe kind from capacity class (defect 3 fix for half-open/stale)."""
         if route.capacity in {
@@ -601,10 +602,7 @@ class Prober:
         # record it as "not_reported" so status output can distinguish it from
         # a route whose identity was actively verified.
         _reported = observed.reported_model
-        if not _reported:
-            _identity = "not_reported"
-        else:
-            _identity = "verified"
+        _identity = "not_reported" if not _reported else "verified"
         result = ProbeResult(
             category=category,
             chat_ok=chat_ok,
