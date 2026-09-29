@@ -292,7 +292,7 @@ def agentic_turn1_payload(route_id: str) -> dict[str, Any]:
                     f"Read the file at {AGENTIC_PROBE_FILE} using the "
                     f"{AGENTIC_TOOL_READ} tool and tell me its contents."
                 ),
-            },
+            }
         ],
         "tools": AGENTIC_TOOLS,
         "max_tokens": 256,
@@ -301,11 +301,10 @@ def agentic_turn1_payload(route_id: str) -> dict[str, Any]:
     }
 
 
-def agentic_turn2_payload(
-    route_id: str, turn1_messages: list[dict[str, Any]]
-) -> dict[str, Any]:
+def agentic_turn2_payload(route_id: str, turn1_messages: list[dict[str, Any]]) -> dict[str, Any]:
     """Turn 2: ask the model to edit a line (given previous conversation)."""
-    messages = list(turn1_messages) + [
+    messages = [
+        *turn1_messages,
         {
             "role": "user",
             "content": (
@@ -324,11 +323,10 @@ def agentic_turn2_payload(
     }
 
 
-def agentic_turn3_payload(
-    route_id: str, turn2_messages: list[dict[str, Any]]
-) -> dict[str, Any]:
+def agentic_turn3_payload(route_id: str, turn2_messages: list[dict[str, Any]]) -> dict[str, Any]:
     """Turn 3: ask the model to confirm the edit by reading again."""
-    messages = list(turn2_messages) + [
+    messages = [
+        *turn2_messages,
         {
             "role": "user",
             "content": (
@@ -372,7 +370,8 @@ def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
         message = choices[0].get("message", {}) if isinstance(choices[0], Mapping) else {}
         calls = message.get("tool_calls", [])
         return any(
-            isinstance(tc, Mapping) and isinstance(tc.get("function"), Mapping)
+            isinstance(tc, Mapping)
+            and isinstance(tc.get("function"), Mapping)
             and tc["function"].get("name") == tool_name
             for tc in (calls if isinstance(calls, list) else [])
         )
@@ -381,9 +380,7 @@ def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
         return False
     if not _has_tool_call(exchanges[1], AGENTIC_TOOL_EDIT):
         return False
-    if not _has_tool_call(exchanges[2], AGENTIC_TOOL_READ):
-        return False
-    return True
+    return _has_tool_call(exchanges[2], AGENTIC_TOOL_READ)
 
 
 def _provider_of(route_id: str) -> str:
@@ -730,7 +727,8 @@ class Prober:
             exchanges: list[ProbeExchange] = []
             try:
                 t1 = self.agentic_transport(
-                    route.route_id, agentic_turn1_payload(route.route_id),
+                    route.route_id,
+                    agentic_turn1_payload(route.route_id),
                     self.probe_timeout_seconds,
                 )
                 exchanges.append(t1)

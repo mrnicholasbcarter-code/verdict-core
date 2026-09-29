@@ -17,34 +17,23 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-from verdict.orchestration.contracts import (
-    CapacityClass,
-    ProbeClass,
-    TaskRequirements,
-)
+from verdict.orchestration.contracts import CapacityClass, ProbeClass, TaskRequirements
 from verdict.orchestration.eligibility import (
-    EligibilityLadder,
     _CAPACITY_ORDER,
     _WORKER_CAPACITY_ORDER,
-    ENV_ALLOW_UNKNOWN,
+    EligibilityLadder,
 )
 from verdict.orchestration.health_cache import (
     CATEGORY_OK,
     FRESH_SECONDS,
+    STATE_FRESH,
+    STATE_STALE,
+    USABLE_SECONDS,
     HealthCache,
     HealthEntry,
     ProbeResult,
-    STATE_FRESH,
-    STATE_STALE,
-    STATE_UNPROBED,
-    USABLE_SECONDS,
 )
-from verdict.prove_at_rest import (
-    ProbeExchange,
-    score_agentic_probe,
-)
+from verdict.prove_at_rest import ProbeExchange, score_agentic_probe
 from verdict.subagent_selection import HealthResult
 
 NOW = datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc)
@@ -71,11 +60,7 @@ def _row(
 
 
 def _conn(
-    provider: str,
-    *,
-    auth: str = "oauth",
-    plan: str = "max",
-    free_only: bool = False,
+    provider: str, *, auth: str = "oauth", plan: str = "max", free_only: bool = False
 ) -> dict[str, Any]:
     return {
         "provider": provider,
@@ -107,7 +92,10 @@ def _make(
 ) -> tuple[EligibilityLadder, FakeProbe]:
     probe = FakeProbe()
     ladder = EligibilityLadder(
-        rows, connections, probe, tmp_path / "state.json",
+        rows,
+        connections,
+        probe,
+        tmp_path / "state.json",
         health_cache=health_cache,
         allow_unknown_capacity=allow_unknown,
         **kwargs,
@@ -310,8 +298,8 @@ class TestDeterminism:
         conns = [_conn("a"), _conn("b", plan="free", free_only=True)]
         ladder1, _ = _make(tmp_path / "r1", rows, conns)
         ladder2, _ = _make(tmp_path / "r2", rows, conns)
-        s1, v1 = ladder1.select(WORKER_REQ, now=NOW)
-        s2, v2 = ladder2.select(WORKER_REQ, now=NOW)
+        s1, _v1 = ladder1.select(WORKER_REQ, now=NOW)
+        s2, _v2 = ladder2.select(WORKER_REQ, now=NOW)
         assert s1 is not None and s2 is not None
         assert s1.route_id == s2.route_id
 
@@ -330,8 +318,9 @@ class TestStaleFresh:
 
     def test_stale_entry_still_qualifies(self, tmp_path: Path) -> None:
         """Stale-healthy entry (past fresh window but inside usable) still works."""
-        entry = _fresh_entry("free/m", agentic_ok=True, probe_class="agentic",
-                             age_seconds=FRESH_SECONDS + 60)
+        entry = _fresh_entry(
+            "free/m", agentic_ok=True, probe_class="agentic", age_seconds=FRESH_SECONDS + 60
+        )
         cache = _build_cache(tmp_path, [entry])
         lookup = cache.lookup("free/m", NOW)
         assert lookup.state == STATE_STALE
@@ -339,8 +328,9 @@ class TestStaleFresh:
 
     def test_expired_entry_fails_agentic_gate(self, tmp_path: Path) -> None:
         """Expired (past usable window) loses agentic qualification."""
-        entry = _fresh_entry("free/m", agentic_ok=True, probe_class="agentic",
-                             age_seconds=USABLE_SECONDS + 60)
+        entry = _fresh_entry(
+            "free/m", agentic_ok=True, probe_class="agentic", age_seconds=USABLE_SECONDS + 60
+        )
         cache = _build_cache(tmp_path, [entry])
         rows = [_row("free/m", owned_by="free", pricing={"input": 0, "output": 0})]
         conns = [_conn("free", auth="apikey", plan="free", free_only=True)]
@@ -379,9 +369,7 @@ class TestAgenticProbeScoring:
                 "choices": [
                     {
                         "message": {
-                            "tool_calls": [
-                                {"function": {"name": tool_name, "arguments": "{}"}}
-                            ]
+                            "tool_calls": [{"function": {"name": tool_name, "arguments": "{}"}}]
                         }
                     }
                 ]
@@ -466,7 +454,8 @@ class TestHealthEntryProbeClass:
 
 class TestRankComponentsProbeInfo:
     def test_components_include_cache_fields(self, tmp_path: Path) -> None:
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
 
         # Use real now for checked_at so it's fresh at lookup time
         real_now = _dt.now(_tz.utc)

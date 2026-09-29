@@ -14,7 +14,6 @@ from verdict.orchestration.contracts import (
     CapacityClass,
     EligibilityStage,
     FailureClassification,
-    ProbeClass,
     RouteVerdict,
     TaskRequirements,
     route_family,
@@ -233,7 +232,9 @@ class EligibilityLadder:
             self._allow_unknown = allow_unknown_capacity
         else:
             self._allow_unknown = os.environ.get(ENV_ALLOW_UNKNOWN, "").lower() in (
-                "1", "true", "yes",
+                "1",
+                "true",
+                "yes",
             )
 
     @property
@@ -509,11 +510,7 @@ class EligibilityLadder:
         # only when a fresh AGENTIC probe PASS is in the health cache.
         # A single-call PASS alone qualifies for chat/summary (frontier_worthy).
         cache = getattr(self, "_health_cache", None)
-        if (
-            capacity == CapacityClass.FREE
-            and not req.frontier_worthy
-            and cache is not None
-        ):
+        if capacity == CapacityClass.FREE and not req.frontier_worthy and cache is not None:
             from verdict.orchestration.health_cache import STATE_FRESH, STATE_STALE
 
             gate_now = now or datetime.now(timezone.utc)
@@ -578,9 +575,6 @@ class EligibilityLadder:
         cache_checked_at: str | None = None
         cache_freshness: str | None = None
         if cache is not None:
-            from verdict.orchestration.health_cache import STATE_FRESH, STATE_STALE
-
-            rc_req = getattr(self, "_current_requirements", None)
             rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
             lookup = cache.lookup(a.route_id, rc_now)
             if lookup.entry is not None:
