@@ -137,6 +137,25 @@ def pool_aware_families(route_ids: frozenset[str] | set[str]) -> frozenset[str]:
     return frozenset(backend_pool(rid) for rid in route_ids)
 
 
+# Pools that alias two or more prefixes onto one quota.  Default
+# prefix-as-pool identities are omitted: those are not extra independence
+# constraints beyond the prefix itself.
+ALIASED_POOLS: frozenset[str] = frozenset(_POOL_BY_PREFIX.values()) | frozenset(
+    _FREE_SUFFIX_POOL.values()
+)
+
+
+def aliased_pools_for(route_ids: frozenset[str] | set[str]) -> frozenset[str]:
+    """Return cross-prefix aliased pools used by ``route_ids``.
+
+    ``agy/*`` and ``antigravity/*`` share ``google-antigravity``;
+    kilocode/openrouter ``:free`` share ``openrouter-free``.  Same-prefix
+    default pools (``kr``, ``cc``, ...) are omitted so reviewer
+    independence still allows a different family on the same prefix.
+    """
+    return frozenset(p for p in pool_aware_families(route_ids) if p in ALIASED_POOLS)
+
+
 # ---------------------------------------------------------------------------
 # D. Capacity classification helpers
 # ---------------------------------------------------------------------------
@@ -151,23 +170,27 @@ def connection_signals_free(conn: Mapping[str, Any]) -> tuple[bool, str]:
     """Check whether a connection signals free-tier access.
 
     Returns ``(is_free, rule)`` where ``rule`` names the signal that fired.
+
+    Extra rules restored from origin/main ``_capacity_class``:
+    ``import_free_only`` (snake_case, used by tests and sanitize_connections)
+    and ``plan_label`` containing ``free`` for any auth type.
     """
-    if conn.get("importFreeModelsOnly") is True or (
-        isinstance(conn.get("providerSpecificData"), Mapping)
-        and conn["providerSpecificData"].get("importFreeModelsOnly") is True
-    ):
+    if conn.get("importFreeModelsOnly") is True:
         return True, "importFreeModelsOnly"
+    if bool(conn.get("import_free_only")):
+        return True, "import_free_only"
     psd = conn.get("providerSpecificData")
     if isinstance(psd, Mapping):
+        if psd.get("importFreeModelsOnly") is True:
+            return True, "importFreeModelsOnly"
         tier = str(psd.get("tier", "")).lower()
         if tier and "free" in tier:
             return True, f"providerSpecificData.tier={tier}"
         plan = str(psd.get("plan", "")).lower()
         if plan and "free" in plan:
             return True, f"providerSpecificData.plan={plan}"
-    auth = str(conn.get("authType", "")).lower()
     plan_label = str(conn.get("plan_label", "")).lower()
-    if auth == "oauth" and "free" in plan_label:
+    if "free" in plan_label:
         return True, f"plan_label={plan_label}"
     return False, ""
 

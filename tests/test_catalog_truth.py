@@ -8,6 +8,7 @@ account emails, or host paths.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from verdict.orchestration.eligibility import (
 from verdict.orchestration.provider_catalog import (
     CATALOG_STALE_COOLDOWN_SECONDS,
     OWNED_BY_ALIASES,
+    aliased_pools_for,
     backend_pool,
     connection_signals_free,
     has_free_suffix,
@@ -147,6 +149,11 @@ class TestBackendPool:
         """agy→antigravity must NOT count as independent failover or review."""
         assert routes_share_pool("agy/claude-sonnet-4-6", "antigravity/claude-sonnet-4-6")
 
+    def test_aliased_pools_for_cross_prefix_only(self) -> None:
+        assert aliased_pools_for({"agy/claude-sonnet-4-6"}) == frozenset({"google-antigravity"})
+        assert aliased_pools_for({"cc/claude-sonnet-5"}) == frozenset()
+        assert aliased_pools_for({"kilocode/model:free"}) == frozenset({"openrouter-free"})
+
 
 # -----------------------------------------------------------------------
 # C. CAPACITY CLASSIFICATION
@@ -215,6 +222,82 @@ class TestCapacityClassification:
         )
         assert is_free
         assert rule == "importFreeModelsOnly"
+
+    def test_import_free_only_snake_case_is_free(self) -> None:
+        """Sanitized connections (and existing tests) use import_free_only."""
+        conn = {"import_free_only": True, "authType": "apikey", "plan_label": "payg"}
+        is_free, rule = connection_signals_free(conn)
+        assert is_free
+        assert rule == "import_free_only"
+        row = {
+            "id": "gl/glm-5",
+            "owned_by": "glm",
+            "capabilities": {"tool_calling": True},
+            "context_length": 128000,
+            "pricing": {"input": 1.0, "output": 2.0},
+        }
+        ladder = _make_ladder(
+            inventory=[row],
+            connections=[{**conn, "provider": "glm", "isActive": True, "testStatus": "ok"}],
+        )
+        capacity, _plan, evidence = ladder._capacity_class(conn, row, route_id="gl/glm-5")
+        assert capacity is CapacityClass.FREE
+        assert evidence == "import_free_only"
+        verdicts = ladder.evaluate(
+            TaskRequirements(required_capabilities=frozenset({"tools"})), now=NOW
+        )
+        assert verdicts[0].capacity_class == CapacityClass.FREE
+
+    def test_apikey_plan_label_free_is_free(self) -> None:
+        """plan_label containing 'free' is FREE for any auth type, not just oauth."""
+        conn = {"authType": "apikey", "plan_label": "free", "import_free_only": False}
+        is_free, rule = connection_signals_free(conn)
+        assert is_free
+        assert rule == "plan_label=free"
+        row = {
+            "id": "pay/model",
+            "owned_by": "pay",
+            "capabilities": {"tool_calling": True},
+            "context_length": 128000,
+            "pricing": {"input": 3.0, "output": 15.0},
+        }
+        ladder = _make_ladder(
+            inventory=[row],
+            connections=[{**conn, "provider": "pay", "isActive": True, "testStatus": "ok"}],
+        )
+        capacity, _plan, evidence = ladder._capacity_class(conn, row, route_id="pay/model")
+        assert capacity is CapacityClass.FREE
+        assert evidence == "plan_label=free"
+        verdicts = ladder.evaluate(
+            TaskRequirements(required_capabilities=frozenset({"tools"})), now=NOW
+        )
+        assert verdicts[0].capacity_class == CapacityClass.FREE
+
+    def test_all_zero_pricing_is_free(self) -> None:
+        """All-zero explicit pricing is FREE even for apikey without other signals."""
+        conn = {
+            "provider": "zero",
+            "authType": "apikey",
+            "isActive": True,
+            "testStatus": "ok",
+            "plan_label": "payg",
+            "import_free_only": False,
+        }
+        row = {
+            "id": "zero/model",
+            "owned_by": "zero",
+            "capabilities": {"tool_calling": True},
+            "context_length": 128000,
+            "pricing": {"input": 0, "output": 0},
+        }
+        ladder = _make_ladder(inventory=[row], connections=[conn])
+        capacity, _plan, evidence = ladder._capacity_class(conn, row, route_id="zero/model")
+        assert capacity is CapacityClass.FREE
+        assert evidence == "all_zero_pricing"
+        verdicts = ladder.evaluate(
+            TaskRequirements(required_capabilities=frozenset({"tools"})), now=NOW
+        )
+        assert verdicts[0].capacity_class == CapacityClass.FREE
 
     def test_free_tier_in_psd_is_free(self) -> None:
         is_free, rule = connection_signals_free(
@@ -332,7 +415,8 @@ class TestNotFreeOverride:
 class TestSelectionOrderUnchanged:
     """The _CAPACITY_ORDER mapping must be unchanged (Story 3 holds this)."""
 
-    def test_capacity_order_is_subscription_first(self) -> None:
+    def test_capacity_order_unchanged_in_story_1(self) -> None:
+        # Story 3 changes this order (free-first). Story 1 must not.
         assert _CAPACITY_ORDER[CapacityClass.SUBSCRIPTION] == 0
         assert _CAPACITY_ORDER[CapacityClass.FREE] == 1
         assert _CAPACITY_ORDER[CapacityClass.METERED] == 2
@@ -354,3 +438,171 @@ class TestProviderResolution:
         assert len(cxa) == 1
         # Should resolve to codex provider via alias
         assert cxa[0].provider in ("codex-app-server", "codex")
+
+
+# Kilocode (and kc alias) :free tails that origin/main classed SUBSCRIPTION
+# because oauth won over the suffix.  Each tail exists under both prefixes.
+_KILOCODE_FREE_TAILS: tuple[str, ...] = (
+    "poolside/laguna-s-2.1:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "dots-studio/dots-3-note-preview:free",
+    "inclusionai/ling-3.0-flash-sante:free",
+    "qwen/qwen3.8-27b:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "thinkingmachines/inkling-small:free",
+    "poolside/laguna-xs-2.1:free",
+    "cohere/north-mini-code:free",
+    "nvidia/nemotron-3.5-content-safety:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "stepfun/step-3.7-flash:free",
+    "deepseek-v4-flash-0731:free",
+    "dots-3-note-preview:free",
+    "glm-5.2:free",
+    "hy3:free",
+    "inkling-small:free",
+    "kat-coder-pro-v2.5:free",
+    "laguna-m.1:free",
+    "laguna-xs-2.1:free",
+    "lfm-2.5-2.6b:free",
+    "ling-3.0-flash-fin:free",
+    "ling-3.0-flash-sante:free",
+    "ling-3.0-flash-vl:free",
+    "nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nemotron-3-super-120b-a12b:free",
+    "nemotron-3-ultra-550b-a55b:free",
+    "nemotron-3.5-content-safety:free",
+    "nemotron-3.5-lightning:free",
+    "nex-n2.5-mini:free",
+    "nex-n2.5-pro:free",
+    "north-mini-code:free",
+    "qwen3.8-27b:free",
+    "step-3.7-flash:free",
+)
+
+
+def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, str]]:
+    """Every route whose class differs from origin/main, with the new rule."""
+    out: dict[str, tuple[CapacityClass, CapacityClass, str]] = {}
+    for tail in _KILOCODE_FREE_TAILS:
+        for prefix in ("kc", "kilocode"):
+            out[f"{prefix}/{tail}"] = (
+                CapacityClass.SUBSCRIPTION,
+                CapacityClass.FREE,
+                "free_suffix",
+            )
+    out["cmd/inclusionai/ling-3.0-flash-sante:free"] = (
+        CapacityClass.UNKNOWN,
+        CapacityClass.FREE,
+        "free_suffix",
+    )
+    out["command-code/inclusionai/ling-3.0-flash-sante:free"] = (
+        CapacityClass.UNKNOWN,
+        CapacityClass.FREE,
+        "free_suffix",
+    )
+    return out
+
+
+class _OriginMainCapacityLadder(EligibilityLadder):
+    """Same ladder, origin/main ``_capacity_class`` rules (no :free suffix)."""
+
+    def _capacity_class(
+        self, conn: Mapping[str, Any] | None, row: Mapping[str, Any], route_id: str = ""
+    ) -> tuple[CapacityClass, str, str]:
+        if conn is None:
+            return CapacityClass.UNKNOWN, "", "no_connection"
+        plan_label = str(conn.get("plan_label", ""))
+        plan_lower = plan_label.lower()
+        auth_type = str(conn.get("authType", "")).lower()
+        pricing = row.get("pricing")
+        prices: list[float] = []
+        if isinstance(pricing, Mapping):
+            for value in pricing.values():
+                if isinstance(value, (int, float)):
+                    prices.append(float(value))
+        all_zero = bool(prices) and all(p == 0 for p in prices)
+        positive = any(p > 0 for p in prices)
+        if auth_type == "oauth" and "free" not in plan_lower:
+            return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
+        if bool(conn.get("import_free_only")) or "free" in plan_lower or all_zero:
+            return CapacityClass.FREE, plan_label, "legacy_free"
+        if auth_type == "apikey" and positive:
+            return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
+        return CapacityClass.UNKNOWN, plan_label, "unknown"
+
+
+class TestRankingParityAgainstOriginMain:
+    """Selection order is unchanged for every route whose class did not change."""
+
+    def test_ranking_inventory_is_sanitized_and_capped(self) -> None:
+        path = FIXTURES / "ranking_inventory.json"
+        raw = path.read_bytes()
+        assert len(raw) < 1_000_000
+        text = raw.decode("utf-8").lower()
+        for needle in ("/home/", "gmail.com", "bearer ", "copilottoken", "password"):
+            assert needle not in text
+
+    def test_ranked_order_unchanged_except_listed_class_changes(self, tmp_path: Path) -> None:
+        inventory = json.loads((FIXTURES / "ranking_inventory.json").read_text())
+        connections = json.loads((FIXTURES / "ranking_connections.json").read_text())
+        req = TaskRequirements(required_capabilities=frozenset({"tools"}))
+
+        def probe(route_id: str) -> HealthResult:
+            return HealthResult(healthy=True, category="", status_code=200)
+
+        old = _OriginMainCapacityLadder(
+            inventory_rows=inventory,
+            connections=connections,
+            probe=probe,
+            state_path=tmp_path / "old-state.json",
+        )
+        new = EligibilityLadder(
+            inventory_rows=inventory,
+            connections=connections,
+            probe=probe,
+            state_path=tmp_path / "new-state.json",
+        )
+        old_verdicts = {v.route_id: v for v in old.evaluate(req, now=NOW)}
+        new_verdicts = {v.route_id: v for v in new.evaluate(req, now=NOW)}
+        assert set(old_verdicts) == set(new_verdicts)
+
+        expected = _expected_class_changes()
+        observed: dict[str, tuple[CapacityClass, CapacityClass]] = {}
+        for rid, nv in new_verdicts.items():
+            ov = old_verdicts[rid]
+            if ov.capacity_class != nv.capacity_class:
+                observed[rid] = (ov.capacity_class, nv.capacity_class)
+
+        assert set(observed) == set(expected), (
+            f"unexpected class changes: extra={sorted(set(observed) - set(expected))[:8]}"
+            f" missing={sorted(set(expected) - set(observed))[:8]}"
+        )
+        for rid, (old_c, new_c, rule) in expected.items():
+            assert observed[rid] == (old_c, new_c), rid
+            _cap, _plan, evidence = new._capacity_class(
+                new._connection_for(new_verdicts[rid].provider), new._rows[rid], route_id=rid
+            )
+            assert evidence == rule, f"{rid} evidence {evidence!r} != {rule!r}"
+
+        # Relative ranked order of routes whose class did not change is identical.
+        def ranked(verdicts: dict[str, Any]) -> list[str]:
+            kept = [
+                v for v in verdicts.values() if v.rank is not None and v.route_id not in expected
+            ]
+            kept.sort(key=lambda v: v.rank or 0)
+            return [v.route_id for v in kept]
+
+        assert ranked(old_verdicts) == ranked(new_verdicts)
+
+    def test_agy_exclude_routes_excludes_antigravity_pool(self) -> None:
+        ladder = _make_ladder()
+        req = TaskRequirements(
+            required_capabilities=frozenset({"tools"}),
+            exclude_routes=frozenset({"agy/claude-sonnet-4-6"}),
+        )
+        verdicts = {v.route_id: v for v in ladder.evaluate(req, now=NOW)}
+        assert verdicts["agy/claude-sonnet-4-6"].reason == "excluded_route"
+        assert verdicts["antigravity/claude-sonnet-4-6"].reason == "excluded_family"
+        assert verdicts["antigravity/gpt-oss-120b-medium"].reason == "excluded_family"

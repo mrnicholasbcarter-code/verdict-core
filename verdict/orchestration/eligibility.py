@@ -20,6 +20,7 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.provider_catalog import (
     CATALOG_STALE_COOLDOWN_SECONDS,
+    aliased_pools_for,
     backend_pool,
     connection_signals_free,
     has_free_suffix,
@@ -301,13 +302,15 @@ class EligibilityLadder:
         Returns ``(capacity, plan_label, evidence_rule)`` where
         ``evidence_rule`` names the classification rule that fired.
 
-        Priority order (design §B):
+        Priority order (design §B, plus origin/main signals restored):
         (a) ``:free`` suffix → FREE (overrides oauth → subscription).
-        (b) ``importFreeModelsOnly=true`` on connection, or oauth with a
-            free tier signal in providerSpecificData → FREE.
+        (b) Connection free signals (``importFreeModelsOnly``,
+            ``import_free_only``, free tier/plan, ``plan_label`` containing
+            ``free`` for any auth type) → FREE.
         (c) oauth without a free signal → SUBSCRIPTION.
-        (d) apikey with positive pricing → METERED.
-        (e) otherwise UNKNOWN with a named reason.
+        (d) all-zero explicit pricing → FREE.
+        (e) apikey with positive pricing → METERED.
+        (f) otherwise UNKNOWN with a named reason.
         """
         if conn is None:
             return CapacityClass.UNKNOWN, "", "no_connection"
@@ -342,11 +345,11 @@ class EligibilityLadder:
         if all_zero:
             return CapacityClass.FREE, plan_label, "all_zero_pricing"
 
-        # (d) apikey with positive pricing → METERED.
+        # (e) apikey with positive pricing → METERED.
         if auth_type == "apikey" and positive:
             return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
 
-        # (e) UNKNOWN with a named reason.
+        # (f) UNKNOWN with a named reason.
         reason = f"no_pricing_data:auth={auth_type}"
         return CapacityClass.UNKNOWN, plan_label, reason
 
@@ -526,6 +529,12 @@ class EligibilityLadder:
         if route_id in req.exclude_routes:
             return "excluded_route"
         if route_family(route_id) in req.exclude_families:
+            return "excluded_family"
+        # Pool-aware independence: aliased backend pools (agy≡antigravity,
+        # kilocode/openrouter :free) are excluded by pool id, not prefix.
+        if backend_pool(route_id) in req.exclude_families:
+            return "excluded_family"
+        if backend_pool(route_id) in aliased_pools_for(req.exclude_routes):
             return "excluded_family"
         lowered = route_id.lower()
         # Spend guard: frontier capability (classifier tier 0, or a declared
