@@ -567,6 +567,7 @@ class DagRuntime:
                         pending[node_id] = asyncio.create_task(self._drive(node_id))
                 if not pending:
                     break
+                # Wake often enough to notice a cancel while workers are running.
                 done, _ = await asyncio.wait(
                     pending.values(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED
                 )
