@@ -41,6 +41,7 @@ def _fmt_until(value: str) -> str:
     except ValueError:
         return value
 
+
 PanelName = Literal["routing", "context", "receipt", "health"]
 KEY_CANCEL_RUN = "x"
 KEY_CANCEL_NODE = "X"
