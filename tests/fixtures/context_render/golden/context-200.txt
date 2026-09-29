@@ -1,0 +1,14 @@
+context
+budget  run=run-abc  118.0 KB / 120.0 KB  pressure 98% (elevated)  [##############################]
+node alpha  used 48.0 KB / budget 60.0 KB  pressure 80% (elevated)
+  * included          1.2 KB  file     README.md
+  T trimmed           8.0 KB  file     verdict/orchestration/context_view.py  truncated_at=4000
+  = deduplicated       500 B  file     dup.md  reason=deduplicated
+  v compressed        9.0 KB  file     big.md  reason=compressed
+  o excluded           100 B  file     skip.md  reason=budget_exhausted
+  * included            50 B  file     ~/.config/secret-notes.md
+  o excluded            20 B  file     creds/[redacted]  reason=unreadable
+  o excluded            10 B  file     env/[redacted]  reason=excluded
+  * included         unknown  source   mystery.bin
+node beta  used 70.0 KB / budget 60.0 KB  pressure 117% (over)
+  * included           200 B  file     only.md
