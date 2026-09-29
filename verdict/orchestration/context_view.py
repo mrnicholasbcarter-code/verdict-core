@@ -62,10 +62,16 @@ class NodeContextView:
     # budget pressure = prompt_bytes / budget_bytes; None when either is unknown
     budget_pressure: float | None
 
+    # compression: "not_performed" when orchestrate engine ran (it never compresses),
+    # or the algorithm name if a future engine compresses, or None for legacy events
+    # that pre-date this field.
+    compression: str | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "budget_bytes": self.budget_bytes,
             "budget_pressure": self.budget_pressure,
+            "compression": self.compression,
             "node_id": self.node_id,
             "prompt_bytes": self.prompt_bytes,
             "sources": (None if self.sources is None else [s.to_dict() for s in self.sources]),
@@ -192,6 +198,9 @@ def _node_view_from_event(event: RunEvent) -> NodeContextView:
         sources = [_source_entry_from_raw(s) for s in raw_sources]
         totals = _totals_by_state(sources)
 
+    raw_compression = data.get("compression")
+    compression: str | None = str(raw_compression) if raw_compression is not None else None
+
     return NodeContextView(
         node_id=event.node_id,
         budget_bytes=budget_bytes,
@@ -199,6 +208,7 @@ def _node_view_from_event(event: RunEvent) -> NodeContextView:
         prompt_bytes=prompt_bytes,
         totals_by_state=totals,
         budget_pressure=_budget_pressure(prompt_bytes, budget_bytes),
+        compression=compression,
     )
 
 

@@ -9,7 +9,7 @@ Runs ``run_golden_path`` OFFLINE with:
 - Real OpenCodeReviewer with a scripted OCR CLI runner
 
 Inventory design (discrimination):
-  Route A (alpha/model-a) is STRICTLY BEST by the real ranking
+  Route A (alpha/claude-a) is STRICTLY BEST by the real ranking
   (same capacity class / price / capabilities; wins by lexicographic tiebreak).
   The fault is injected by exact route key, so only when the ladder picks A does
   the fault fire.  With cooldown working, the selector rejects A at the AVAILABLE
@@ -186,8 +186,8 @@ class TestFlagshipFailoverScenario:
         """The ladder's persisted state has a provider-scope cooldown for alpha.
 
         rate_limit (429) is provider-scoped: ``record_failure`` writes both
-        ``route:alpha/model-a`` and ``provider:alpha``.  Node-2 may call
-        ``record_success(alpha/model-a)`` which clears the route-level entry,
+        ``route:alpha/claude-a`` and ``provider:alpha``.  Node-2 may call
+        ``record_success(alpha/claude-a)`` which clears the route-level entry,
         but the provider-level entry survives.
 
         Mutation A (skip record_failure) → no provider cooldown → FAILS.

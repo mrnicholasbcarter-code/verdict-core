@@ -18,6 +18,7 @@ from typing import Any
 
 from verdict.orchestration.contracts import route_family
 from verdict.orchestration.eligibility import _OPAQUE_PREFIXES
+from verdict.orchestration.provider_catalog import aliased_pools_for
 from verdict.orchestration.receipt import EVENTS_FILE, RECEIPT_FILE, verify_run_receipt
 
 # ---------------------------------------------------------------------------
@@ -625,17 +626,20 @@ def _claim_independent_review(
     shared_families = sorted(
         {route_family(r) for r in reviewer_ids} & {route_family(r) for r in worker_ids}
     )
+    shared_pools = sorted(aliased_pools_for(reviewer_ids) & aliased_pools_for(worker_ids))
     value = {
         "reviewer_routes": sorted(reviewer_ids),
         "worker_identities": sorted(worker_ids),
         "shared_identities": shared,
         "shared_families": shared_families,
+        "shared_pools": shared_pools,
     }
     if shared:
         # The reviewer executed as one of the workers: review was not independent.
         return _claim(cid, text, CLAIM_STATUS_CONTRADICTED, [_ev(review, value)])
-    if shared_families:
-        # Distinct routes but the same model family: independence not demonstrated.
+    if shared_families or shared_pools:
+        # Distinct routes but the same model family or backend pool: independence
+        # not demonstrated (agy ≡ antigravity, kilocode :free ≡ openrouter :free).
         return _claim(cid, text, CLAIM_STATUS_NOT_OBSERVED, [_ev(review, value)])
     return _claim(cid, text, CLAIM_STATUS_VERIFIED, [_ev(review, value)])
 

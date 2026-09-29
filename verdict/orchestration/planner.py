@@ -491,8 +491,17 @@ def hydrate_node_prompt(
     budget = max_context_bytes
     context_blocks: list[str] = []
     truncation_notes: list[str] = []
+    seen_canonical: dict[str, str] = {}  # canonical path -> first rel
     for rel in node.required_context:
-        path = repo / rel
+        # Normalise: strip leading "./" so "./a.py" and "a.py" are the same file.
+        canonical = rel[2:] if rel.startswith("./") else rel
+        if canonical in seen_canonical:
+            truncation_notes.append(
+                f"{rel}: deduplicated (same file as {seen_canonical[canonical]})"
+            )
+            continue
+        seen_canonical[canonical] = rel
+        path = repo / canonical
         try:
             data = path.read_bytes()
         except OSError as exc:

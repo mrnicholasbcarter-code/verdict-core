@@ -24,6 +24,118 @@ from verdict.harness_prime import DEFAULT_BASE_URL as PRIME_HARNESS_DEFAULT_BASE
 from verdict.harness_prime import DEFAULT_TOKEN_ENV as PRIME_HARNESS_DEFAULT_TOKEN_ENV
 
 
+def _resolve_run_dir(run: str, runs_dir: str) -> Path:
+    """Resolve a run identifier to a directory path."""
+    p = Path(run)
+    if p.is_dir():
+        return p
+    candidate = Path(runs_dir) / run
+    if candidate.is_dir():
+        return candidate
+    # Try absolute path
+    if p.exists():
+        return p
+    return candidate
+
+
+def _cmd_trace(args: argparse.Namespace) -> None:
+    """Handle ``verdict trace`` CLI command."""
+    import json
+
+    from verdict.actions.registry import run_action
+
+    run_dir = _resolve_run_dir(args.run, args.runs_dir)
+    params: dict[str, object] = {"run_dir": str(run_dir), "json": args.json, "width": args.width}
+    if args.step is not None:
+        params["step"] = args.step
+    if args.kind is not None:
+        params["kind"] = args.kind
+    if args.routing:
+        params["routing"] = True
+    if args.context:
+        params["context"] = True
+
+    result = run_action("trace.view", params)
+    if args.json:
+        print(json.dumps(result.data, indent=2, default=str))
+    elif "text" in result.data:
+        print(result.data["text"], end="")
+    else:
+        print(json.dumps(result.data, indent=2, default=str))
+    if not result.ok:
+        sys.exit(result.exit_code or 1)
+
+
+def _cmd_demo(args: argparse.Namespace) -> None:
+    """Handle ``verdict demo`` CLI command."""
+    import json
+    import shutil
+    import tempfile
+
+    from verdict.actions.registry import run_action
+
+    if args.live:
+        result = run_action("demo.run", {"live": True, "json": args.json, "width": args.width})
+        if "text" in result.data:
+            print(result.data["text"])
+        elif not result.ok:
+            print(result.data.get("error", "unknown error"), file=sys.stderr)
+        sys.exit(0 if result.ok else 1)
+
+    # Offline: run scenario directly so we keep the temp dir alive for TUI replay
+    from verdict.orchestration.claims import derive_claims
+    from verdict.orchestration.demo_render import render_claims_text
+    from verdict.orchestration.demo_scenario import run_flagship_scenario
+    from verdict.orchestration.trace_render import render_trace_text
+    from verdict.orchestration.trace_view import trace_view
+
+    workspace = Path(tempfile.mkdtemp(prefix="verdict-demo-"))
+    runs_dir = workspace / "runs"
+    try:
+        worker_seconds = float(getattr(args, "worker_seconds", 1.5))
+        result_sc = run_flagship_scenario(
+            runs_dir, workspace_root=workspace, worker_seconds=worker_seconds
+        )
+        events_raw = [
+            json.loads(line)
+            for line in (result_sc.run_dir / "events.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        receipt = json.loads((result_sc.run_dir / "receipt.json").read_text())
+        claims = derive_claims(events_raw, receipt, run_dir=result_sc.run_dir)
+        tv = trace_view(result_sc.run_dir)
+
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "trace": tv.to_dict(),
+                        "claims": [c.to_dict() for c in claims],
+                        "receipt": receipt,
+                        "mode": "offline",
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+            return
+
+        is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+        if is_tty:
+            from verdict.orchestration.tui import follow_replay
+
+            follow_replay(result_sc.run_dir / "events.jsonl", speed=args.speed)
+            print()
+
+        label = f"OFFLINE SCENARIO: scripted workers ({worker_seconds:g} s each), injected faults"
+        trace_text = render_trace_text(tv, width=args.width)
+        claims_text = render_claims_text(claims, width=args.width, label=label)
+        print(trace_text)
+        print(claims_text, end="")
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     # Existing integrations monkeypatch verdict.cli.cmd_* and provider helpers.
     # Keep those lookups dynamic until the compatibility contract is migrated.
@@ -169,6 +281,10 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         legacy.cmd_quickstart(
             output_json=args.json, non_interactive=args.non_interactive, dry_run=args.dry_run
         )
+    elif args.command == "trace":
+        _cmd_trace(args)
+    elif args.command == "demo":
+        _cmd_demo(args)
     elif args.command == "ui":
         try:
             from verdict.actions.launch import launch_dashboard
