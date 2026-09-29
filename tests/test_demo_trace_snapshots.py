@@ -76,12 +76,10 @@ def _normalize_seq(text: str) -> str:
 def _extract_node(line: str) -> str:
     """Return the node column value from a normalised trace line."""
     stripped = line.strip()
-    if not stripped or stripped.startswith("trace") or stripped.startswith("goal"):
+    if not stripped:
         return ""
-    if stripped.startswith("seq") or stripped.startswith("---"):
+    if stripped.startswith(("trace", "goal", "seq", "---", "steps:")):
         return ""
-    if stripped.startswith("steps:") or stripped.startswith("NNN"):
-        pass
     if not stripped.startswith("NNN"):
         return ""
     parts = stripped.split()
@@ -112,9 +110,13 @@ def _extract_anchors(lines: list[str]) -> list[str]:
 def _assert_trace_golden(got: str, path: Path, *, width: int) -> None:
     """Interleaving-insensitive golden comparison for trace text."""
     got_norm = _normalize_seq(got)
-    if not path.exists() or os.environ.get("UPDATE_GOLDEN") == "1":
+    if os.environ.get("UPDATE_GOLDEN") == "1":
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(got_norm)
+    if not path.exists():
+        pytest.fail(
+            f"golden file missing: {path}  (run UPDATE_GOLDEN=1 pytest to create it)"
+        )
     expected_norm = _normalize_seq(path.read_text())
 
     got_lines = [ln for ln in got_norm.splitlines() if ln.strip()]
@@ -277,8 +279,12 @@ class TestDemoTraceSnapshots:
         # Normalise event seq numbers (e.g. "event:42" -> "event:N") so
         # parallel-worker interleaving does not invalidate the golden.
         norm = re.sub(r"\bevent:\d+", "event:N", text)
-        if not path.exists() or os.environ.get("UPDATE_GOLDEN") == "1":
+        if os.environ.get("UPDATE_GOLDEN") == "1":
             path.write_text(norm)
+        if not path.exists():
+            pytest.fail(
+                f"golden file missing: {path}  (run UPDATE_GOLDEN=1 pytest to create it)"
+            )
         expected = path.read_text()
         assert norm == expected, (
             f"demo claims golden mismatch at width={width} (run UPDATE_GOLDEN=1 to regenerate)"

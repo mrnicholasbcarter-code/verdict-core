@@ -28,11 +28,6 @@ from verdict.orchestration.trace_view import trace_view
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def scenario_data(tmp_path_factory: pytest.TempPathFactory, monkeypatch_session: Any) -> Any:
-    pytest.skip("module-scope monkeypatch not available; use function-scope")
-
-
 @pytest.fixture()
 def run_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Run the flagship scenario and return (run_dir, trace_view, context_view)."""
@@ -89,18 +84,39 @@ class TestTracePanelContext:
         assert "\x1b" not in text, "context panel text must be ANSI-free"
 
     def test_panel_json_parity_with_context_command(self) -> None:
-        """JSON from --panel context matches context.view action payload for same node."""
+        """--panel context --json output matches context_json for the same node.
+
+        One side is exercised through _cmd_trace (capturing stdout); the other
+        is the direct context_json call that verdict context --json uses.
+        """
+        import argparse
+        import io
+        from contextlib import redirect_stdout
+
+        from verdict.commands.dispatch import _cmd_trace
+
         context_steps = self.tv.steps_by_kind("context")
         node_id = context_steps[0].node_id
 
-        # Via panel path
-        panel_result = _action_context_view(
-            run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node=node_id
+        # Side A: invoke _cmd_trace --panel context --json, capture stdout
+        ns = argparse.Namespace(
+            run=str(self.run_dir),
+            runs_dir=str(self.run_dir.parent),
+            panel="context",
+            node=node_id,
+            json=True,
+            step=None,
+            kind=None,
+            routing=False,
+            context=False,
+            width=100,
         )
-        assert panel_result.ok
-        panel_payload = context_json(panel_result.data["view"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _cmd_trace(ns)
+        cli_payload = json.loads(buf.getvalue())
 
-        # Via direct context command path
+        # Side B: direct context_json call (same as verdict context --json)
         direct_result = _action_context_view(
             run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node=node_id
         )
@@ -108,9 +124,9 @@ class TestTracePanelContext:
         direct_payload = context_json(direct_result.data["view"])
 
         # Both payloads must be equivalent JSON
-        assert json.dumps(panel_payload, sort_keys=True) == json.dumps(
+        assert json.dumps(cli_payload, sort_keys=True) == json.dumps(
             direct_payload, sort_keys=True
-        ), "panel JSON diverges from context command JSON"
+        ), "panel --json diverges from context command JSON"
 
     def test_panel_json_has_required_keys(self) -> None:
         """Context JSON payload has the required top-level keys."""
@@ -227,3 +243,39 @@ class TestTraceContextStepHints:
         tv_no_id = replace(self.tv, run_id="")
         text = render_trace_text(tv_no_id, width=120)
         assert "--panel context" not in text, "hint should not appear when run_id is empty"
+
+
+# ---------------------------------------------------------------------------
+# Part D: CLI enforcement -- --panel requires --node
+# ---------------------------------------------------------------------------
+
+
+class TestTracePanelRequiresNode:
+    """--panel without --node must exit with code 2."""
+
+    def test_panel_without_node_exits_2(self, tmp_path: Path) -> None:
+        import argparse
+        from verdict.commands.dispatch import _cmd_trace
+
+        # Create a minimal run dir so we don't fail on run resolution
+        run_dir = tmp_path / "run_stub"
+        run_dir.mkdir()
+        (run_dir / "events.jsonl").write_text("")
+
+        ns = argparse.Namespace(
+            run=str(run_dir),
+            runs_dir=str(tmp_path),
+            panel="context",
+            node=None,  # missing --node
+            json=False,
+            step=None,
+            kind=None,
+            routing=False,
+            context=False,
+            width=100,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _cmd_trace(ns)
+        assert exc_info.value.code == 2, (
+            f"expected exit(2) for --panel without --node, got {exc_info.value.code}"
+        )
