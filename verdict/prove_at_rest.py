@@ -502,7 +502,9 @@ class Prober:
 
         return _strip(route_id) == _strip(reported)
 
-    def _probe_route(self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float) -> None:
+    def _probe_route(
+        self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float
+    ) -> None:
         now = self.clock()
         if not self.cache.consume(route.provider, now, pool=route.pool):
             stats.skipped_bucket += 1

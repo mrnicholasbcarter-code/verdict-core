@@ -561,9 +561,7 @@ def test_capacity_class_matches_the_ladder() -> None:
 
     # Shapes that capacity_class_of handles (no :free suffix / no
     # importFreeModelsOnly / no providerSpecificData that the ladder adds).
-    shared_shapes: list[
-        tuple[dict[str, object] | None, dict[str, object], CapacityClass]
-    ] = [
+    shared_shapes: list[tuple[dict[str, object] | None, dict[str, object], CapacityClass]] = [
         (None, {}, CapacityClass.UNKNOWN),
         ({"authType": "oauth", "plan_label": "pro"}, {}, CapacityClass.SUBSCRIPTION),
         ({"authType": "oauth", "plan_label": "free"}, {}, CapacityClass.FREE),
@@ -599,7 +597,9 @@ def test_capacity_class_matches_the_ladder() -> None:
     suffix_conn = {"authType": "oauth", "plan_label": "pro"}
     suffix_row: dict[str, object] = {}
     # :free suffix → FREE in ladder, but capacity_class_of returns SUBSCRIPTION.
-    ladder_class, _, rule = ladder._capacity_class(suffix_conn, suffix_row, route_id="cc/model:free")
+    ladder_class, _, rule = ladder._capacity_class(
+        suffix_conn, suffix_row, route_id="cc/model:free"
+    )
     assert ladder_class == CapacityClass.FREE, f"ladder should classify :free as FREE, got {rule}"
     standalone_class, _ = capacity_class_of(suffix_conn, suffix_row)
     assert standalone_class == CapacityClass.SUBSCRIPTION, (
@@ -661,6 +661,7 @@ def test_tool_skipped_no_bucket_does_not_record_negative(tmp_path: Path) -> None
     # Confirm it wasn't recorded as negative.
     if entry is not None:
         from verdict.orchestration.health_cache import STATE_NEGATIVE
+
         assert entry.state_at(NOW) != STATE_NEGATIVE, (
             "skipped-tool route must not be marked negative"
         )
@@ -805,6 +806,7 @@ def test_wall_cap_before_tool_call_does_not_record_negative(tmp_path: Path) -> N
     entry = cache.entry("cx/walltgt")
     if entry is not None:
         from verdict.orchestration.health_cache import STATE_NEGATIVE
+
         assert entry.state_at(NOW) != STATE_NEGATIVE, (
             "wall-capped route between chat and tool must not be negative"
         )
@@ -814,15 +816,15 @@ def test_action_prove_once_forwards_max_wall_seconds() -> None:
     """Defect 4: max_wall_seconds from kwargs must reach build_live_daemon."""
     calls: list[dict[str, object]] = []
 
+    from verdict.prove_at_rest import CycleStats
+
     def fake_build(**kw: object) -> object:
         calls.append(kw)
 
         class FakeDaemon:
             consented = True
 
-            def run_once(self) -> "CycleStats":
-                from verdict.prove_at_rest import CycleStats
-
+            def run_once(self) -> CycleStats:
                 return CycleStats()
 
         return FakeDaemon()
@@ -835,12 +837,8 @@ def test_action_prove_once_forwards_max_wall_seconds() -> None:
         from verdict.actions.extra import _action_prove_at_rest_once
 
         _action_prove_at_rest_once(
-            allow_live_probe=True,
-            base_url="http://localhost:9999",
-            max_wall_seconds=120.0,
+            allow_live_probe=True, base_url="http://localhost:9999", max_wall_seconds=120.0
         )
 
     assert calls, "build_live_daemon was never called"
-    assert calls[0].get("max_wall_seconds") == 120.0, (
-        f"max_wall_seconds not forwarded: {calls[0]}"
-    )
+    assert calls[0].get("max_wall_seconds") == 120.0, f"max_wall_seconds not forwarded: {calls[0]}"
