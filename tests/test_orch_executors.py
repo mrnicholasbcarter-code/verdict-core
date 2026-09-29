@@ -663,3 +663,51 @@ def test_scripted_executor_stamps_kind_without_mutating_script_result(tmp_path: 
     result = run(ScriptedExecutor(lambda p, r, c: terminal), "go", tmp_path)
     assert result == replace(terminal, executor_kind="scripted")
     assert terminal.executor_kind == "live"
+
+
+def test_spawn_failure_model_is_empty_not_route_id(tmp_path: Path) -> None:
+    """A spawn failure must not set model=route_id; no model reported its identity."""
+    result = run(PrimeHeadlessExecutor(prime_bin=str(tmp_path / "nope")), "go", tmp_path)
+    assert not result.ok
+    assert "spawn failed" in result.error
+    assert result.executor_kind == "live"
+    assert result.model == "", f"expected empty model, got {result.model!r}"
+
+
+def test_spawn_failure_terminal_replay_is_not_real(tmp_path: Path) -> None:
+    """Replay of a run with only a spawn-failure terminal must not claim 'real models'."""
+    import json
+
+    from verdict.orchestration.tui import _replay_evidence, read_events
+
+    event_data = [
+        ("run_started", {"goal": "spawn fail run", "run_id": "spawn-fail-run"}),
+        (
+            "terminal",
+            {
+                "executor_kind": "live",
+                "ok": False,
+                "reported_model": "",
+                "error": "spawn failed: [Errno 2] No such file or directory",
+            },
+        ),
+        ("run_finished", {"outcome": "FAILED"}),
+    ]
+    events_file = tmp_path / "events.jsonl"
+    events_file.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "at": "2026-01-01T00:00:00.000000Z",
+                    "seq": seq,
+                    "type": event_type,
+                    "node_id": "node-a" if event_type == "terminal" else "",
+                    "data": data,
+                }
+            )
+            for seq, (event_type, data) in enumerate(event_data)
+        )
+    )
+    kind, inferred = _replay_evidence(read_events(events_file))
+    assert kind != "real", f"expected not-real, got {kind!r}"
+    assert kind != "mixed: live and scripted workers"

@@ -1128,8 +1128,17 @@ def _replay_evidence(events: list[Any]) -> tuple[str, bool]:
     Explicit executor markers take precedence over legacy model-name inference.
     Selection/dispatch routes never establish that a model was called. Faults
     and mechanical merges are not evidence of model execution.
+
+    Precedence rules (total and symmetric):
+    - Any terminal with executor_kind='live' and a non-empty reported model
+      (i.e. a model that actually responded) → at least partly real.
+    - All non-fault terminals scripted → fixture.
+    - Mix of live (with reported model) and scripted terminals →
+      "mixed: live and scripted workers".
+    - Legacy (no explicit markers): infer from model names.
     """
     real = False
+    has_scripted = False
     inferred = False
     legacy_fixture = False
     run_executor: str | None = None
@@ -1147,7 +1156,8 @@ def _replay_evidence(events: list[Any]) -> tuple[str, bool]:
         elif event.type == "terminal":
             kind = str(data["executor_kind"] or "") if "executor_kind" in data else run_executor
             if kind == "scripted":
-                return "fixture", False
+                has_scripted = True
+                continue
             if (
                 kind == "fault-injected"
                 or data.get("fault_injected")
@@ -1167,8 +1177,12 @@ def _replay_evidence(events: list[Any]) -> tuple[str, bool]:
                 legacy_fixture = True
             else:
                 inferred = True
+    if real and has_scripted:
+        return "mixed: live and scripted workers", False
     if real:
         return "real", False
+    if has_scripted:
+        return "fixture", False
     if legacy_fixture:
         return "fixture", False
     return ("real", True) if inferred else ("unknown", False)
@@ -1279,6 +1293,7 @@ def follow_replay(
                 label = {
                     "fixture": "fixture run {rid} (no model calls)",
                     "real": "recorded run {rid} (real models)",
+                    "mixed: live and scripted workers": "recorded run {rid} (mixed: live and scripted workers)",
                     "unknown": "recorded run {rid}",
                 }[kind].format(rid=run_id)
                 if inferred:

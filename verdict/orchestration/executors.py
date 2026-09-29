@@ -271,7 +271,7 @@ class PrimeHeadlessExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=(
                     "prime retry policy not one-shot: "
                     + "; ".join(policy_problems)
@@ -293,7 +293,7 @@ class PrimeHeadlessExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=f"spawn failed: {_sanitize(str(exc))}",
                 duration_seconds=time.monotonic() - started,
             )
@@ -305,7 +305,7 @@ class PrimeHeadlessExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error="timeout",
                 duration_seconds=time.monotonic() - started,
             )
@@ -453,7 +453,7 @@ class PrimeHeadlessExecutor:
                 return WorkerTerminal(
                     executor_kind="live",
                     ok=False,
-                    model=route_id,
+                    model="",
                     error=tail,
                     duration_seconds=duration,
                     usage=usage,
@@ -462,7 +462,7 @@ class PrimeHeadlessExecutor:
                 return WorkerTerminal(
                     executor_kind="live",
                     ok=False,
-                    model=route_id,
+                    model="",
                     error=f"malformed: {_sanitize(stdout, 200) or 'empty stdout'}",
                     duration_seconds=duration,
                     usage=usage,
@@ -470,7 +470,7 @@ class PrimeHeadlessExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error="no_final_answer",
                 duration_seconds=duration,
                 usage=usage,
@@ -1002,7 +1002,7 @@ class DirectGatewayExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error="timeout",
                 duration_seconds=time.monotonic() - started,
             )
@@ -1010,7 +1010,7 @@ class DirectGatewayExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=f"transport: {_sanitize(str(exc), 200)}",
                 duration_seconds=time.monotonic() - started,
             )
@@ -1096,7 +1096,7 @@ class DirectGatewayExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=error_text,
                 status_code=resp.status_code,
                 retry_after_seconds=retry_after,
@@ -1108,7 +1108,7 @@ class DirectGatewayExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=f"malformed: {_sanitize(resp.text, 200)}",
                 duration_seconds=duration,
             )
@@ -1117,7 +1117,7 @@ class DirectGatewayExecutor:
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error="empty_output",
                 duration_seconds=duration,
             )
