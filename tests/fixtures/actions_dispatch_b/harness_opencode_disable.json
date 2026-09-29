@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "opencode",
+    "disable"
+  ],
+  "exit_code": 1,
+  "stdout": "\nVERDICT  /  OpenCode harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  ! OpenCode harness  FAILED\n    Verdict OpenCode harness is not enabled: no backup at \n/tmp/v275db-h-opencode/.config/opencode/opencode.json.verdict.bak\n",
+  "stderr": ""
+}

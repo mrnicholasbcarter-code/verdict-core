@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "cline",
+    "certify"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  Cline harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - Cline certification  UNSUPPORTED\n    not healthy\n  base URL               (none)\n  token environment set  yes   \n\n  Facets\nFacet              Level      \nconfig_import      partial    \nhooks              unsupported\nmcp                partial    \nmodel_selection    partial    \nresume             partial    \nstructured_output  partial    \nsubagents          partial    \ntool_interception  unsupported\n\n  Notes\n  Verdict-managed ~/.cline/verdict-provider.json + verdict-openai.env\n  Prefer cline CLI providers.json when installed; else IDE settings sidecar + UI\nsteps\n  OmniRoute is optional upstream behind Verdict serve \u2014 not a harness target\n  Cline extension API-key paste / opaque store may still need UI confirmation\n  cline binary not found on PATH (graceful not-installed)\n\n  Needs owner\n  live enable with secrets (API key paste in Cline UI / token_env export)\n",
+  "stderr": ""
+}

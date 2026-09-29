@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "stderr_empty": true,
+  "stdout": "{\"errors\": [\"URLError\"], \"operation\": \"omniroute-catalog-qualification\", \"passed\": false, \"projection_reconciliation\": {\"compared_fields\": [\"expected_row_count\", \"row_count\", \"unique_id_count\", \"malformed_row_count\", \"duplicate_row_delta\", \"duplicate_ids\", \"provider_counts\", \"capability_counts\", \"profile_counts\", \"context_length\", \"max_output_tokens\"], \"management_status\": \"unknown\", \"mismatches\": [\"one or both projections have no valid snapshot\"], \"passed\": false, \"public_status\": \"unknown\", \"status\": \"unknown\"}, \"projections\": {\"management\": {\"errors\": [\"URLError\"], \"operation\": \"omniroute-catalog-qualification\", \"passed\": false, \"qualification_version\": \"1\", \"snapshot\": null, \"status\": \"unknown\"}, \"public\": {\"errors\": [\"URLError\"], \"operation\": \"omniroute-catalog-qualification\", \"passed\": false, \"qualification_version\": \"1\", \"snapshot\": null, \"status\": \"unknown\"}}, \"qualification_version\": \"1\", \"snapshot\": null, \"status\": \"unknown\"}\n"
+}

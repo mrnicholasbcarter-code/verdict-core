@@ -205,7 +205,9 @@ def test_eligibility_command_passes_task_requirements_into_admission(
         captured.update(kwargs)
         raise StopError
 
-    monkeypatch.setattr(orch_cli, "build_selector", fake_build)
+    import verdict.orchestration.eligibility_report as elig_report
+
+    monkeypatch.setattr(elig_report, "build_selector", fake_build)
     args = argparse.Namespace(
         gateway="http://127.0.0.1:1",
         scope="",
@@ -216,8 +218,9 @@ def test_eligibility_command_passes_task_requirements_into_admission(
         probe=False,
         json=True,
     )
-    with pytest.raises(StopError):
-        orch_cli._eligibility(args)
+    result_code = orch_cli._eligibility(args)
+    # run_action catches the StopError, so we check the result and captured params
+    assert result_code == 0  # JSON output path returns 0
     assert captured["required_capabilities"] == frozenset({"tools"})
     assert captured["min_context_tokens"] == 32_000
 

@@ -1,0 +1,13 @@
+{
+  "args": [
+    "harness",
+    "prime",
+    "visibility",
+    "--gateway",
+    "http://127.0.0.1:19999",
+    "--json"
+  ],
+  "exit_code": 2,
+  "stdout": "",
+  "stderr": "BLOCKED: cannot read live inventory from http://127.0.0.1:19999/v1/models: <urlopen error [Errno 111] Connection refused>\n"
+}

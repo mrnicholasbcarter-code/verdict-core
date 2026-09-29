@@ -1,0 +1,4 @@
+{
+  "allowed": false,
+  "reason": "Declared manifest file not found: /tmp/no-such-file.json"
+}

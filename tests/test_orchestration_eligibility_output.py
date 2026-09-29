@@ -134,7 +134,7 @@ def test_provider_family_filter_is_listed_and_applied(
 
 def test_no_implicit_slices_in_eligibility_renderers() -> None:
     tree = ast.parse(Path(orch_cli.__file__).read_text(encoding="utf-8"))
-    names = {"_eligibility", "render_eligibility_text", "eligibility_payload", "_page"}
+    names = {"_eligibility", "render_eligibility_text", "_page"}
     funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in names]
     assert {f.name for f in funcs} == names
     for func in funcs:

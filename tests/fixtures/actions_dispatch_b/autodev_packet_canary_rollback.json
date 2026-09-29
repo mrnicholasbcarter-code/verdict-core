@@ -1,0 +1,11 @@
+{
+  "args": [
+    "autodev",
+    "packet",
+    "canary-rollback",
+    "/tmp/canary_state.json"
+  ],
+  "exit_code": 2,
+  "stdout": "",
+  "stderr": "usage: __main__.py autodev packet [-h]\n                                  {create,inspect,validate,resume,execute,shadow,canary,compare} ...\n__main__.py autodev packet: error: argument packet_action: invalid choice: 'canary-rollback' (choose from 'create', 'inspect', 'validate', 'resume', 'execute', 'shadow', 'canary', 'compare')\n"
+}
