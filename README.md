@@ -758,8 +758,8 @@ under `phase:alpha-gate`.
 
 - **Cross-provider fencing on the first worker failure.** Today a failure cools down only the failed route or its own provider. Other providers stay eligible until they fail themselves.
 - **A single retry authority.** Node recovery, the relay and the reviewer each keep their own bounded retry loop today.
-- **Subscription headroom-aware selection.** Admission uses fresh subscription pool evidence to drop exhausted routes and requires bounded confirmation for unknown headroom. Selection does not yet rank eligible routes by the headroom left in their subscription windows.
-- **Automatic gateway restart and upgrade.** Verdict can start a configured local gateway when explicitly opted in. It does not restart an unhealthy running gateway or upgrade OmniRoute automatically.
+- **Subscription headroom-aware selection.** Admission uses fresh subscription pool evidence to drop exhausted routes and requires bounded confirmation for unknown headroom. Selection does not yet rank eligible routes by the headroom left in their subscription windows ([`verdict/subscription_headroom.py`](verdict/subscription_headroom.py), [`verdict/admission.py`](verdict/admission.py), [`tests/test_subscription_headroom.py`](tests/test_subscription_headroom.py)).
+- **Automatic gateway restart and upgrade.** Verdict can start a configured local gateway when explicitly opted in. It does not restart an unhealthy running gateway or upgrade OmniRoute automatically ([`verdict/gateway_lifecycle.py`](verdict/gateway_lifecycle.py), [gateway lifecycle config](docs/CONFIGURATION.md#gateway-lifecycle), [`tests/test_gateway_lifecycle.py`](tests/test_gateway_lifecycle.py)).
 
 ## Proof
 
