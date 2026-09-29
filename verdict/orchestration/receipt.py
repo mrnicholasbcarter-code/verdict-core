@@ -236,6 +236,7 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
     claimed_state = ""
     claimed_seq = -1
     commit: str | None = None
+    pending_probe_fields: dict[str, str] = {}
     for event in events:
         data = event.data
         if event.type == "dispatch":
@@ -259,6 +260,14 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             row["provider"] = str(data.get("provider") or row["provider"] or route_provider(route))
             if data.get("capacity_class"):
                 row["capacity_class"] = str(data["capacity_class"])
+            # Free-first story 3: probe class and cache freshness.
+            for field in ("probe_class", "cache_checked_at", "cache_freshness"):
+                if data.get(field):
+                    row[field] = str(data[field])
+            # Apply any buffered selection-event probe fields.
+            if pending_probe_fields:
+                row.update(pending_probe_fields)
+                pending_probe_fields = {}
             row["fault_injected"] = bool(row["fault_injected"] or data.get("fault_injected"))
             if event.type == "terminal":
                 ok = data.get("ok") is True
@@ -281,6 +290,16 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             elif event.type == "failure":
                 row["outcome"] = "failure"
                 row["failure_category"] = str(data.get("category") or "unknown")
+        elif event.type == "selection":
+            # Selection events carry probe-class fields but must not
+            # create new attempt rows. Buffer fields for the next
+            # dispatch that creates or touches a row.
+            for field in ("probe_class", "cache_checked_at", "cache_freshness"):
+                if data.get(field):
+                    pending_probe_fields[field] = str(data[field])
+            # UNKNOWN capacity opt-in flag.
+            if data.get("unknown_capacity_opt_in"):
+                pending_probe_fields["unknown_capacity_opt_in"] = "true"
         elif event.type == "node_state":
             claimed_state = str(data.get("state", ""))
             claimed_seq = event.seq

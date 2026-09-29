@@ -242,6 +242,9 @@ class HealthEntry:
     # Defect 5 fix: "not_reported" when the gateway did not echo the model id;
     # "verified" when the reported id matched.  Empty string means unknown/legacy.
     identity: str = ""
+    probe_class: str = "single_call"  # "agentic" | "single_call"
+    agentic_ok: bool = False  # True only when a 3-turn agentic probe passed
+    agentic_checked_at: datetime | None = None  # when the last agentic probe ran
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -250,6 +253,8 @@ class HealthEntry:
             raise HealthCacheError("consecutive_failures must be >= 0")
         _aware(self.checked_at, "checked_at")
         _aware(self.until, "until")
+        if self.agentic_checked_at is not None:
+            _aware(self.agentic_checked_at, "agentic_checked_at")
 
     def state_at(self, now: datetime) -> str:
         return classify_state(
@@ -277,6 +282,10 @@ class HealthEntry:
             payload["http_status"] = self.http_status
         if self.identity:
             payload["identity"] = self.identity
+        payload["probe_class"] = self.probe_class
+        payload["agentic_ok"] = self.agentic_ok
+        if self.agentic_checked_at is not None:
+            payload["agentic_checked_at"] = format_datetime(self.agentic_checked_at)
         return payload
 
     @classmethod
@@ -306,6 +315,13 @@ class HealthEntry:
             http_status=int(http_status) if isinstance(http_status, int) else None,
             healthy=value.get("healthy") is True,
             identity=str(value.get("identity") or ""),
+            probe_class=str(value.get("probe_class") or "single_call"),
+            agentic_ok=value.get("agentic_ok") is True,
+            agentic_checked_at=(
+                parse_datetime(value["agentic_checked_at"], "agentic_checked_at")
+                if value.get("agentic_checked_at")
+                else None
+            ),
         )
 
 
@@ -338,6 +354,8 @@ class ProbeResult:
     # Defect 5 fix: "not_reported" when the gateway echoed no model id;
     # "verified" when the reported id matched the requested route.
     identity: str = ""
+    probe_class: str = "single_call"  # "agentic" | "single_call"
+    agentic_ok: bool = False
 
     @property
     def healthy(self) -> bool:
@@ -540,6 +558,22 @@ class HealthCache:
             raise HealthCacheError("route must be non-empty")
         current = _aware(now, "now")
         previous = self._routes.get(route)
+        # Preserve the best probe_class: an existing agentic pass is kept even
+        # when a subsequent single_call probe runs (agentic is rarer).
+        probe_class = result.probe_class
+        agentic_ok = result.agentic_ok
+        # Track agentic timestamp independently from checked_at so that
+        # repeated single-call PASSes cannot keep an old agentic PASS fresh.
+        agentic_checked_at: datetime | None = None
+        if result.agentic_ok and result.probe_class == "agentic":
+            # This *is* a fresh agentic probe.
+            agentic_checked_at = current
+        if previous is not None and previous.agentic_ok and probe_class == "single_call":
+            agentic_ok = True
+            probe_class = "agentic"
+            # Carry forward the *original* agentic timestamp, NOT the
+            # current single-call timestamp.
+            agentic_checked_at = previous.agentic_checked_at
         if result.healthy:
             entry = HealthEntry(
                 route_id=route,
@@ -555,6 +589,9 @@ class HealthCache:
                 http_status=result.http_status,
                 healthy=True,
                 identity=result.identity,
+                probe_class=probe_class,
+                agentic_ok=agentic_ok,
+                agentic_checked_at=agentic_checked_at,
             )
         else:
             prior = previous.consecutive_failures if previous is not None else 0
@@ -591,6 +628,8 @@ class HealthCache:
                 http_status=result.http_status,
                 healthy=False,
                 identity=result.identity,
+                probe_class=probe_class,
+                agentic_ok=False,  # failure resets agentic qualification
             )
         self._routes[route] = entry
         return entry

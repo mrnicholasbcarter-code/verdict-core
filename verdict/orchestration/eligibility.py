@@ -42,12 +42,21 @@ _PREPAID_CAPACITY = frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})
 _UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
 _CODING_MARKERS = ("code", "codex", "sonnet", "fable", "opus")
+# Planning / controller / review: subscription first (frontier for orchestration).
 _CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.SUBSCRIPTION: 0,
     CapacityClass.FREE: 1,
     CapacityClass.METERED: 2,
     CapacityClass.UNKNOWN: 3,
 }
+# Implementation workers: free first (free-first story 3).
+_WORKER_CAPACITY_ORDER: Mapping[CapacityClass, int] = {
+    CapacityClass.FREE: 0,
+    CapacityClass.SUBSCRIPTION: 1,
+    CapacityClass.METERED: 2,
+    CapacityClass.UNKNOWN: 3,
+}
+ENV_ALLOW_UNKNOWN = "VERDICT_ALLOW_UNKNOWN_CAPACITY"
 _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
     "rate_limited": 60.0,
     "quota_exhausted": 3600.0,
@@ -220,6 +229,8 @@ class EligibilityLadder:
         max_probes_per_select: int = 8,
         admitted: AdmittedSet | None = None,
         admission_receipt: Path | None = None,
+        health_cache: Any | None = None,
+        allow_unknown_capacity: bool | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -239,6 +250,17 @@ class EligibilityLadder:
         self._admitted = admitted
         # Where the admitted set (with live confirmations) is persisted.
         self._admission_receipt = admission_receipt
+        # Health cache (from #742 prove-at-rest daemon). Read-only in selection.
+        self._health_cache = health_cache
+        # UNKNOWN capacity opt-in: env override if not set explicitly.
+        if allow_unknown_capacity is not None:
+            self._allow_unknown = allow_unknown_capacity
+        else:
+            self._allow_unknown = os.environ.get(ENV_ALLOW_UNKNOWN, "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
 
     @property
     def admitted(self) -> AdmittedSet | None:
@@ -502,7 +524,7 @@ class EligibilityLadder:
         # unknown (rendered as UNKNOWN downstream); we never invent a value.
         a.context_window, a.supports_tools, a.supports_structured_output = _capability_facts(row)
 
-        reason = self._task_gate(row, route_id, requirements, a.capacity)
+        reason = self._task_gate(row, route_id, requirements, a.capacity, now=now)
         if reason:
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, reason
             return a
@@ -533,6 +555,7 @@ class EligibilityLadder:
         route_id: str,
         req: TaskRequirements,
         capacity: CapacityClass = CapacityClass.UNKNOWN,
+        now: datetime | None = None,
     ) -> str:
         caps = row.get("capabilities") or {}
         caps = caps if isinstance(caps, Mapping) else {}
@@ -568,6 +591,35 @@ class EligibilityLadder:
         for suffix in _EFFORT_SUFFIXES:
             if lowered.endswith(suffix) and route_id[: -len(suffix)] in self._rows:
                 return "effort_duplicate"
+        # UNKNOWN capacity gate: never for implementation unless opted in.
+        if (
+            capacity == CapacityClass.UNKNOWN
+            and not req.frontier_worthy
+            and not getattr(self, "_allow_unknown", False)
+        ):
+            return "unknown_capacity_not_opted_in"
+        # Agentic gate: a FREE route qualifies as an implementation worker
+        # only when a FRESH AGENTIC probe PASS is in the health cache.
+        # A single-call PASS alone qualifies for chat/summary (frontier_worthy).
+        if capacity == CapacityClass.FREE and not req.frontier_worthy:
+            cache = getattr(self, "_health_cache", None)
+            if cache is None:
+                return "no_health_cache"
+            from verdict.orchestration.health_cache import FRESH_SECONDS
+
+            gate_now = now or datetime.now(timezone.utc)
+            lookup = cache.lookup(route_id, gate_now)
+            if lookup.entry is None or not lookup.entry.agentic_ok:
+                return "no_agentic_probe"
+            # The agentic gate uses agentic_checked_at (not the general
+            # checked_at that single-call probes refresh). Only FRESH is
+            # accepted: stale means the agentic qualification expired.
+            ack = lookup.entry.agentic_checked_at
+            if ack is None:
+                return "agentic_probe_stale"
+            age = (gate_now - ack).total_seconds()
+            if age > FRESH_SECONDS:
+                return "agentic_probe_stale"
         return ""
 
     def _fit(self, row: Mapping[str, Any], route_id: str, req: TaskRequirements) -> int:
@@ -612,8 +664,26 @@ class EligibilityLadder:
         load_value = int(load_fn(a.route_id)) if callable(load_fn) else 0
         price_known = bool(getattr(a, "price_known", False))
         price_value = getattr(a, "price", 0.0)
+        # Role-aware capacity ordering: implementation workers use free-first;
+        # planning/controller/review (frontier_worthy) use subscription-first.
+        req = getattr(self, "_current_requirements", None)
+        is_worker = req is not None and not req.frontier_worthy
+        order_map = _WORKER_CAPACITY_ORDER if is_worker else _CAPACITY_ORDER
+        cap_order = order_map.get(a.capacity, 3)
+        # Health cache freshness for the receipt (read-only, never written).
+        cache = getattr(self, "_health_cache", None)
+        probe_class = "none"
+        cache_checked_at: str | None = None
+        cache_freshness: str | None = None
+        if cache is not None:
+            rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
+            lookup = cache.lookup(a.route_id, rc_now)
+            if lookup.entry is not None:
+                probe_class = lookup.entry.probe_class
+                cache_checked_at = lookup.entry.checked_at.isoformat()
+                cache_freshness = lookup.state
         return {
-            "capacity_order": _CAPACITY_ORDER[a.capacity],
+            "capacity_order": cap_order,
             "slack": getattr(a, "slack", 0),
             "price_for_rank": price_value if price_known else 0.0,
             "provider_pref": pref,
@@ -621,6 +691,9 @@ class EligibilityLadder:
             "fit": getattr(a, "fit", 0),
             "route_id": a.route_id,
             "price_known": price_known,
+            "probe_class": probe_class,
+            "cache_checked_at": cache_checked_at,
+            "cache_freshness": cache_freshness,
         }
 
     def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
@@ -656,11 +729,16 @@ class EligibilityLadder:
             "load": components["load"],
             "fit": components["fit"],  # stays positive
             "route_id": components["route_id"],
+            "probe_class": components.get("probe_class", "none"),
+            "cache_checked_at": components.get("cache_checked_at"),
+            "cache_freshness": components.get("cache_freshness"),
         }
 
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
+        self._current_requirements = requirements
+        self._current_now = now
         assessments: list[_Assessment] = []
         for route_id in sorted(self._rows):
             row = self._rows[route_id]

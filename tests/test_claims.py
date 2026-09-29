@@ -189,7 +189,9 @@ def _clean_run(
     runs_root.mkdir()
     state_path = tmp_path / "ladder-state.json"
 
-    ladder = EligibilityLadder(INVENTORY, CONNECTIONS, FakeProbe(), state_path)
+    ladder = EligibilityLadder(
+        INVENTORY, CONNECTIONS, FakeProbe(), state_path, allow_unknown_capacity=True
+    )
     executor = ScriptedExecutor(_worker_script)  # No faults
     classifier = FailureIntelligence()
 

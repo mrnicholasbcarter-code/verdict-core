@@ -34,6 +34,7 @@ from verdict.orchestration.candidate_builder import build_candidates as _build_c
 from verdict.orchestration.candidate_builder import build_rejections as _build_rejections
 from verdict.orchestration.contracts import (
     TRANSITIONS,
+    CapacityClass,
     EligibilityStage,
     FailureClassification,
     FailureClassifier,
@@ -758,6 +759,17 @@ class DagRuntime:
                 capacity_class=choice.capacity_class.value,
                 rank=choice.rank,
             )
+            # Emit probe-class fields so receipts record qualifying probe info.
+            _probe_fields: dict[str, Any] = {}
+            if choice.rank_components:
+                for _pf in ("probe_class", "cache_checked_at", "cache_freshness"):
+                    if choice.rank_components.get(_pf) is not None:
+                        _probe_fields[_pf] = str(choice.rank_components[_pf])
+            # Record UNKNOWN capacity opt-in when an UNKNOWN route was selected.
+            if choice.capacity_class == CapacityClass.UNKNOWN and getattr(
+                self.selector, "_allow_unknown", False
+            ):
+                _probe_fields["unknown_capacity_opt_in"] = True
             self.events.emit(
                 "selection",
                 node_id,
@@ -767,6 +779,7 @@ class DagRuntime:
                 plan=choice.plan_label,
                 rank=choice.rank,
                 attempt=run.attempt,
+                **_probe_fields,
             )
             self._capacity[node_id] = choice.capacity_class.value
             self.inflight[node_id] = choice.route_id

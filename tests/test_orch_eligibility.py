@@ -381,7 +381,48 @@ class TestCapacityAndRanking:
         assert verdicts["op/qwen3-coder"].capacity_class is CapacityClass.METERED
         assert verdicts["mm/minimax-m2"].capacity_class is CapacityClass.UNKNOWN
 
-    def test_subscription_before_free_before_metered(self, tmp_path: Path) -> None:
+    def test_free_before_subscription_for_workers(self, tmp_path: Path) -> None:
+        """Free-first: implementation workers rank FREE before SUBSCRIPTION.
+
+        A health cache with a fresh agentic PASS is required for the FREE
+        route to be implementation-eligible. Without it, FREE routes are
+        rejected with ``no_health_cache``.
+        """
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+        rows = [
+            row("op/qwen3-coder", owned_by="openrouter"),
+            row("gl/glm-5", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
+            row("cc/claude-sonnet-5", owned_by="claude"),
+        ]
+        connections = [
+            conn("openrouter", auth="apikey", plan="payg"),
+            conn("glm", auth="apikey", plan="free", free_only=True),
+            conn("claude", auth="oauth", plan="claude_max"),
+        ]
+        # Provide a cache with a fresh agentic PASS for the free route.
+        cache = HealthCache(tmp_path / "health-cache.json")
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "gl/glm-5",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        cache.save()
+        ladder, _ = make_ladder(tmp_path, rows, connections, health_cache=cache)
+        verdicts = ladder.evaluate(REQ, now=NOW)
+        ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
+        # Free-first: gl/glm-5 (FREE) before cc/claude-sonnet-5 (SUBSCRIPTION)
+        assert [v.route_id for v in ranked] == ["gl/glm-5", "cc/claude-sonnet-5", "op/qwen3-coder"]
+
+    def test_subscription_first_for_frontier_worthy(self, tmp_path: Path) -> None:
+        """Planning/controller/review (frontier_worthy) ranks SUBSCRIPTION first."""
         rows = [
             row("op/qwen3-coder", owned_by="openrouter"),
             row("gl/glm-5", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
@@ -393,8 +434,10 @@ class TestCapacityAndRanking:
             conn("claude", auth="oauth", plan="claude_max"),
         ]
         ladder, _ = make_ladder(tmp_path, rows, connections)
-        verdicts = ladder.evaluate(REQ, now=NOW)
+        frontier_req = TaskRequirements(frontier_worthy=True, max_capability_tier=3)
+        verdicts = ladder.evaluate(frontier_req, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
+        # Subscription first for frontier work
         assert [v.route_id for v in ranked] == ["cc/claude-sonnet-5", "gl/glm-5", "op/qwen3-coder"]
 
     def test_prefer_providers_is_configurable(self, tmp_path: Path) -> None:
