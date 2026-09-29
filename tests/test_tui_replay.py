@@ -218,8 +218,8 @@ def test_follow_replay_max_gap_caps_delays(tmp_path: Path) -> None:
     view = follow_replay(events_file, speed=1.0, max_gap=0.2)
     elapsed = time.time() - start
 
-    # Should complete in ~0.2s + processing + final pause (0.5s)
-    assert elapsed < 1.2  # 0.2 gap + 0.5 pause + margins
+    # Should complete in ~0.2s + processing (no final pause: removed by BOD-280)
+    assert elapsed < 1.0  # 0.2 gap + margins
     assert view.outcome == "COMPLETE"
 
 
@@ -252,3 +252,184 @@ def test_replay_kind_needs_evidence_for_real_models() -> None:
     assert _replay_kind([ev("node_state", "")]) == "unknown"
     assert _replay_kind([ev("selection", "kr/claude-haiku-4.5")]) == "real"
     assert _replay_kind([ev("selection", "kr/x"), ev("dispatch", "demo-sub/atlas")]) == "fixture"
+
+
+# ---------------------------------------------------------------------------
+# BOD-280: New tests for reduced-motion / no-sleep / sync-output / tmux
+# ---------------------------------------------------------------------------
+
+
+def _make_events(tmp_path: Path, *, gap_s: float = 0.5) -> Path:
+    """Write two-event jsonl with the given inter-event gap."""
+    import datetime
+
+    t0 = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    t1 = t0 + datetime.timedelta(seconds=gap_s)
+
+    events = [
+        {
+            "at": t0.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "seq": 0,
+            "type": "run_started",
+            "node_id": "",
+            "data": {"goal": "test goal", "run_id": "test-run-abc"},
+        },
+        {
+            "at": t1.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "seq": 1,
+            "type": "run_finished",
+            "node_id": "",
+            "data": {"outcome": "COMPLETE"},
+        },
+    ]
+    f = tmp_path / "events.jsonl"
+    import json
+
+    f.write_text("\n".join(json.dumps(e) for e in events))
+    return f
+
+
+def test_replay_with_animation_disabled_renders_statically(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """VERDICT_NO_ANIMATION: replay must NOT start a Live context."""
+    import io
+
+    from rich.console import Console
+
+    from verdict.orchestration.tui import follow_replay
+
+    monkeypatch.setenv("VERDICT_NO_ANIMATION", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    stream = io.StringIO()
+    console = Console(file=stream, force_terminal=True, width=80, color_system=None)
+
+    live_started: list[bool] = []
+
+    import rich.live as _rl
+
+    original_start = _rl.Live.start
+
+    def _patched_start(self: _rl.Live, *args: object, **kwargs: object) -> None:
+        live_started.append(True)
+        original_start(self, *args, **kwargs)
+
+    monkeypatch.setattr(_rl.Live, "start", _patched_start)
+
+    events_file = _make_events(tmp_path, gap_s=0.1)
+    follow_replay(events_file, console=console, speed=100.0, max_gap=0.05)
+
+    assert not live_started, "Live must not be started when animation is disabled"
+
+
+def test_replay_no_decorative_sleep_after_final_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No time.sleep() call after the last event (the 0.5-s 'see final state' pause)."""
+    import io
+
+    from rich.console import Console
+
+    from verdict.orchestration.tui import follow_replay
+
+    monkeypatch.setenv("VERDICT_NO_ANIMATION", "1")
+
+    stream = io.StringIO()
+    console = Console(file=stream, force_terminal=False, width=80)
+
+    sleep_calls: list[float] = []
+
+    import time as _time_mod
+
+    original_sleep = _time_mod.sleep
+
+    def _patched_sleep(s: float) -> None:
+        sleep_calls.append(s)
+        original_sleep(0.0)  # don't actually wait
+
+    monkeypatch.setattr(_time_mod, "sleep", _patched_sleep)
+
+    events_file = _make_events(tmp_path, gap_s=0.0)
+    follow_replay(events_file, console=console, speed=1.0, max_gap=0.0)
+
+    # Any sleep should be timestamp-driven inter-event delay, not a post-final pause.
+    # With gap_s=0.0 there should be zero sleeps at all.
+    assert sleep_calls == [], f"Unexpected sleep calls: {sleep_calls}"
+
+
+def test_replay_tmux_no_dec2026_markers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """TMUX env: replay must not write DEC-2026 synchronized-output markers."""
+    import io
+
+    from rich.console import Console
+
+    from verdict.orchestration.tui import follow_replay
+
+    monkeypatch.setenv("TMUX", "/private/tmp/tmux-500/default,1234,0")
+    monkeypatch.delenv("VERDICT_NO_ANIMATION", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    stream = io.StringIO()
+    console = Console(file=stream, force_terminal=True, width=80, color_system=None)
+
+    events_file = _make_events(tmp_path, gap_s=0.0)
+    follow_replay(events_file, console=console, speed=100.0, max_gap=0.0)
+
+    output = stream.getvalue()
+    assert "\x1b[?2026h" not in output, "DEC-2026 sync-ON must not appear for TMUX"
+    assert "\x1b[?2026l" not in output, "DEC-2026 sync-OFF must not appear for TMUX"
+
+
+def test_replay_render_exception_still_writes_sync_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A render error must not leave the synchronized-output block open."""
+    import io
+
+    from rich.console import Console
+
+    from verdict.orchestration import tui as _tui
+
+    monkeypatch.delenv("VERDICT_NO_ANIMATION", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+
+    # Force a terminal that supports synchronized output (kitty-like)
+    monkeypatch.setenv("TERM", "xterm-kitty")
+
+    written: list[str] = []
+
+    class _FakeFile(io.StringIO):
+        def write(self, s: str) -> int:  # type: ignore[override]
+            written.append(s)
+            return super().write(s)
+
+        def isatty(self) -> bool:
+            return True
+
+    fake_file = _FakeFile()
+    console = Console(file=fake_file, force_terminal=True, width=80, color_system=None)
+
+    # Patch render to raise on the second call (after live started)
+    call_count = [0]
+    original_render = _tui.render
+
+    def _bad_render(*args: object, **kwargs: object) -> object:
+        call_count[0] += 1
+        if call_count[0] >= 2:
+            raise RuntimeError("injected render failure")
+        return original_render(*args, **kwargs)
+
+    monkeypatch.setattr(_tui, "render", _bad_render)
+
+    events_file = _make_events(tmp_path, gap_s=0.0)
+    import contextlib
+
+    with contextlib.suppress(RuntimeError):
+        _tui.follow_replay(events_file, console=console, speed=100.0, max_gap=0.0)
+
+    joined = "".join(written)
+    # If a sync-ON was written, a sync-OFF must follow
+    if "\x1b[?2026h" in joined:
+        assert "\x1b[?2026l" in joined, "sync-OFF missing after render exception"

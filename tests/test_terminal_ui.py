@@ -178,3 +178,35 @@ def test_setup_json_stays_machine_readable(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert json.loads(output)["mutation_free"] is True
     assert "\x1b" not in output
+
+
+# ---------------------------------------------------------------------------
+# BOD-280 (e): setup failure → semantic repair command
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_failure_shows_repair_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BootstrapError in session() shows the first remediation as a repair command."""
+    from verdict.provider_bootstrap import BootstrapDiagnostic, BootstrapError
+
+    ui, stream = presenter(monkeypatch, tty=False)
+
+    diag = BootstrapDiagnostic(
+        code="gateway_required_but_absent",
+        diagnostic_class="gateway_health",
+        field="gateway_url",
+        source=None,
+        detail="a gateway provider is configured but no gateway URL resolved",
+        remediation="set VERDICT_GATEWAY_URL, or add 'gateway_url' to the routing config",
+    )
+    exc = BootstrapError("gateway_required_but_absent", (diag,))
+
+    with pytest.raises(BootstrapError), ui.session():
+        raise exc
+
+    output = stream.getvalue()
+    # Must show a repair / run command
+    assert "Run:" in output or "set VERDICT_GATEWAY_URL" in output or "verdict" in output
+    # Must NOT show the raw Python exception repr
+    assert "BootstrapError" not in output
+    assert "Operation failed" not in output
