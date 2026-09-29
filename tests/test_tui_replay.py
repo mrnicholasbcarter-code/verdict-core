@@ -394,6 +394,10 @@ def test_replay_render_exception_still_writes_sync_off(
     monkeypatch.delenv("VERDICT_NO_ANIMATION", raising=False)
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("TMUX", raising=False)
+    # CI=true (GitHub Actions) disables animation in presentation_mode, which
+    # would skip the synchronized-output path this test must exercise.
+    for var in ("CI", "GITHUB_ACTIONS", "REDUCED_MOTION", "SSH_CONNECTION"):
+        monkeypatch.delenv(var, raising=False)
 
     # Force a terminal that supports synchronized output (kitty-like)
     monkeypatch.setenv("TERM", "xterm-kitty")
