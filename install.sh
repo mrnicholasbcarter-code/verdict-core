@@ -14,10 +14,10 @@
 set -euo pipefail
 
 # ── Pinned version & expected hashes ────────────────────────────────
-VERDICT_VERSION="${VERDICT_VERSION:-0.4.0}"
-# SHA-256 digests for verdict-core 0.4.0 (computed from local build; update after PyPI publish)
-VERDICT_WHL_SHA256="f167be07fbec206b339aa3c2a08e58cf6f79e1dcf7df25d3def8eaaada0e1986"
-VERDICT_SDIST_SHA256="528e8413e3003ddbee18313eefa826aa91091a65b3697cde355c96a9f28d16df"
+VERDICT_VERSION="${VERDICT_VERSION:-0.3.0}"
+# SHA-256 digests from PyPI JSON API for verdict-core 0.3.0
+VERDICT_WHL_SHA256="66d3084cc20dd592c5705d63d3f5621c82610b28466129de1fbcc38089ba74a7"
+VERDICT_SDIST_SHA256="b26984788c925cc9d72fa6d86f86d27658b9f39a6926bd00718bdda91254751b"
 
 # ── Colours ─────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -56,7 +56,7 @@ sys.exit(1)
 # For an overridden version fetch the hash from PyPI first.
 resolve_expected_hash() {
   local ver="$1"
-  if [[ "$ver" == "0.4.0" ]]; then
+  if [[ "$ver" == "0.3.0" ]]; then
     EXPECTED_WHL_SHA256="$VERDICT_WHL_SHA256"
     EXPECTED_SDIST_SHA256="$VERDICT_SDIST_SHA256"
   else

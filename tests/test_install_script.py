@@ -15,13 +15,13 @@ import pytest
 
 INSTALL_SH = Path(__file__).resolve().parent.parent / "install.sh"
 
-# Real hashes baked into install.sh for 0.4.0
-GOOD_WHL_SHA256 = "f167be07fbec206b339aa3c2a08e58cf6f79e1dcf7df25d3def8eaaada0e1986"
-GOOD_SDIST_SHA256 = "528e8413e3003ddbee18313eefa826aa91091a65b3697cde355c96a9f28d16df"
+# Real hashes baked into install.sh for 0.3.0
+GOOD_WHL_SHA256 = "66d3084cc20dd592c5705d63d3f5621c82610b28466129de1fbcc38089ba74a7"
+GOOD_SDIST_SHA256 = "b26984788c925cc9d72fa6d86f86d27658b9f39a6926bd00718bdda91254751b"
 
 
 def _fake_pypi_json(
-    version: str = "0.4.0", whl_sha256: str = GOOD_WHL_SHA256, sdist_sha256: str = GOOD_SDIST_SHA256
+    version: str = "0.3.0", whl_sha256: str = GOOD_WHL_SHA256, sdist_sha256: str = GOOD_SDIST_SHA256
 ) -> str:
     """Build a minimal PyPI JSON API response."""
     return json.dumps(
@@ -59,7 +59,7 @@ def _run_install_script(
     """Run install.sh with stubbed commands so it never hits the network."""
     env = os.environ.copy()
     env["VERDICT_VERSION"] = (
-        env_overrides.pop("VERDICT_VERSION", "0.4.0") if env_overrides else "0.4.0"
+        env_overrides.pop("VERDICT_VERSION", "0.3.0") if env_overrides else "0.3.0"
     )
 
     if env_overrides:
@@ -100,7 +100,7 @@ class TestInstallScriptContent:
         self.script = INSTALL_SH.read_text()
 
     def test_pinned_version_present(self) -> None:
-        assert 'VERDICT_VERSION="${VERDICT_VERSION:-0.4.0}"' in self.script
+        assert 'VERDICT_VERSION="${VERDICT_VERSION:-0.3.0}"' in self.script
 
     def test_version_overridable_via_env(self) -> None:
         assert "VERDICT_VERSION:-" in self.script
@@ -172,7 +172,7 @@ class TestGoodHashInstalls:
                 # Create a fake wheel in the dest dir
                 DEST=$(echo "$@" | grep -oP '(?<=--dest )\\S+')
                 mkdir -p "$DEST"
-                echo "fake-wheel-content" > "$DEST/verdict_core-0.4.0-py3-none-any.whl"
+                echo "fake-wheel-content" > "$DEST/verdict_core-0.3.0-py3-none-any.whl"
             fi
             if echo "$@" | grep -q "install"; then
                 cat > {d}/verdict <<'STUB'
@@ -218,7 +218,7 @@ class TestBadHashAborts:
             if echo "$@" | grep -q "download"; then
                 DEST=$(echo "$@" | grep -oP '(?<=--dest )\\S+')
                 mkdir -p "$DEST"
-                echo "tampered-content" > "$DEST/verdict_core-0.4.0-py3-none-any.whl"
+                echo "tampered-content" > "$DEST/verdict_core-0.3.0-py3-none-any.whl"
             fi
             """),
         )
@@ -305,10 +305,10 @@ class TestPyPIHashExtraction:
         """Missing packagetype → NOT_FOUND + non-zero exit."""
         fake_json = json.dumps(
             {
-                "info": {"name": "verdict-core", "version": "0.4.0"},
+                "info": {"name": "verdict-core", "version": "0.3.0"},
                 "urls": [
                     {
-                        "filename": "verdict_core-0.4.0.egg",
+                        "filename": "verdict_core-0.3.0.egg",
                         "packagetype": "bdist_egg",
                         "digests": {"sha256": "abc123"},
                     }
