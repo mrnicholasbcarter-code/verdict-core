@@ -5,11 +5,12 @@
 %%   verdict/harness_claude.py, verdict/harness_prime.py, verdict/harness_codex.py (per-harness discover/status, no shared base)
 %%   verdict/credentials_store.py (get_credential_source), verdict/mcp_config_discovery.py (mcp_config_candidate_paths)
 %%   verdict/cli.py (cmd_detect, cmd_doctor)
-%% Verdict visual theme. Hex from origin/feat/visual-system-core:verdict/design.py PALETTE
-%% (PR #724). Mermaid base themeVariables cannot name classes, so classDef repeats them.
+%% Verdict visual theme. Hex from verdict/design.py PALETTE:
 %% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
 %% purple #a78bfa  cyan #22b8eb  success #4ade80  amber #f5b00b  red #f87171  border #52525b
-%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontFamily':'ui-sans-serif, system-ui, sans-serif','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#a1a1aa','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','signalColor':'#22b8eb','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
+%% Edges/lines use #7c7c88 (>=3:1 on #ffffff and #0d1117; measured 4.12:1 / 4.59:1).
+%% fontFamily omitted: Mermaid sanitizeDirective drops hyphenated themeVariable values.
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
 flowchart TD
     START["verdict (no subcommand) / verdict setup / verdict doctor / verdict detect"]
     START --> PLAIN{"is this a plain terminal? not a TTY, NO_COLOR set, TERM=dumb, CI set, or VERDICT_PLAIN=1"}

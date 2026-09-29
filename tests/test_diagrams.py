@@ -156,7 +156,9 @@ def test_docs_diagram_blocks_are_byte_identical_to_sources() -> None:
         doc = (ROOT / rel_doc).read_text(encoding="utf-8")
         blocks = re.findall(r"```mermaid\n(.*?)```", doc, flags=re.DOTALL)
         source = (DIAGRAMS_DIR / mmd_name).read_text(encoding="utf-8")
-        assert blocks == [source], f"{rel_doc} mermaid block is not byte-identical to diagrams/{mmd_name}"
+        assert blocks == [source], (
+            f"{rel_doc} mermaid block is not byte-identical to diagrams/{mmd_name}"
+        )
 
 
 @pytest.mark.parametrize("name", EXPECTED_DIAGRAMS)
@@ -168,10 +170,30 @@ def test_diagram_uses_the_verdict_theme(name: str) -> None:
     extra = sorted({item for item in defined if item not in VERDICT_CLASS_NAMES})
     assert not extra, f"{name}.mmd defines classDef names outside the shared set: {extra}"
     kind = _first_code_line(text)
-    # classDef applies to flowcharts. stateDiagram-v2 and sequenceDiagram
-    # have no classDef slot, so the shared init header is their theme.
-    if kind.startswith("flowchart") or kind.startswith("graph"):
+    # classDef is used by flowcharts and by stateDiagram-v2 (eligibility-ladder).
+    # sequenceDiagram has no classDef slot, so the shared init header is its theme.
+    if kind.startswith(("flowchart", "graph", "stateDiagram")):
         assert defined, f"{name}.mmd declares no shared classDef"
+
+
+def test_all_diagrams_share_one_init_and_classdef_body() -> None:
+    """Every .mmd must carry the identical init line; classDef bodies must match when present."""
+    init_re = re.compile(r"%%\{init:.*?\}%%", flags=re.DOTALL)
+    inits: set[str] = set()
+    classdef_bodies: set[tuple[str, ...]] = set()
+    for name in EXPECTED_DIAGRAMS:
+        text = (DIAGRAMS_DIR / f"{name}.mmd").read_text(encoding="utf-8")
+        match = init_re.search(text)
+        assert match is not None, f"{name}.mmd has no %%{{init}} line"
+        inits.add(match.group(0))
+        body = tuple(re.findall(r"^classDef .+$", text, flags=re.MULTILINE))
+        if body:
+            classdef_bodies.add(body)
+    assert len(inits) == 1, f"expected one shared init line, found {len(inits)}"
+    assert len(classdef_bodies) == 1, (
+        f"expected one shared classDef body among diagrams that declare classDef, "
+        f"found {len(classdef_bodies)}"
+    )
 
 
 def _cited_file_line_refs(text: str) -> list[tuple[str, int, int | None]]:
