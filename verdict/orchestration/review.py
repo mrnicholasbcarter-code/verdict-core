@@ -42,6 +42,7 @@ from verdict.orchestration.contracts import (
     dispatch_blocker,
     require_launchable,
 )
+from verdict.orchestration.provider_catalog import aliased_pools_for
 
 __all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "StaticDiffGate", "make_subprocess_runner"]
 
@@ -244,7 +245,7 @@ class OpenCodeReviewer:
             reasoning=True,
             frontier_worthy=True,
             exclude_routes=exclude_routes,
-            exclude_families=exclude_families,
+            exclude_families=exclude_families | aliased_pools_for(exclude_routes),
         )
         tried: set[str] = set()
         last: ReviewResult | None = None

@@ -944,20 +944,43 @@ def _reject_json_constant(value: str) -> None:
 
 
 def _invoke_bounded(
-    callable_: Any, args: tuple[Any, ...], timeout_seconds: float, cancel_event: Event | None
+    callable_: Any,
+    args: tuple[Any, ...],
+    timeout_seconds: float,
+    cancel_event: Event | None,
+    *,
+    _clock: Callable[[], float] = time.monotonic,
 ) -> Any:
-    """Invoke injected work without allowing a broken fixture to block the runner."""
+    """Invoke injected work without allowing a broken fixture to block the runner.
+
+    Completion is judged by the time the callable *finished*, not the time the
+    waiting thread first observes a done future.  A result completed after the
+    deadline is treated as a timeout even when the observer thread was
+    descheduled past the deadline.
+    """
+    completion_time: list[float] = []
+
+    def _timed_callable(*a: Any) -> Any:
+        try:
+            return callable_(*a)
+        finally:
+            completion_time.append(_clock())
+
+    deadline = _clock() + timeout_seconds
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="verdict-qualification")
-    future = executor.submit(callable_, *args)
-    deadline = time.monotonic() + timeout_seconds
+    future = executor.submit(_timed_callable, *args)
     try:
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 future.cancel()
                 raise _TransportCancelledError
             if future.done():
+                # If the callable recorded a completion time after the deadline,
+                # the work completed too late regardless of when we observe it.
+                if completion_time and completion_time[0] > deadline:
+                    raise _TransportTimedOutError
                 return future.result()
-            remaining = deadline - time.monotonic()
+            remaining = deadline - _clock()
             if remaining <= 0:
                 future.cancel()
                 raise _TransportTimedOutError
