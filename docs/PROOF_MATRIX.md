@@ -61,6 +61,7 @@
 | | | | `RELEASE_CHECKLIST.md` | pre-release validation | checklist | | |
 | | | | `VERSIONING.md` | release versioning | documentation | | |
 | | | | `docs/proof/dogfood-bod-273-2026-09-28/receipt.json` | first complete real-model dogfood run | evidence | | |
+| | | | `docs/proof/dogfood-bod-225-live-2026-09-29/receipt.json` | live dogfood COMPLETE receipt for BOD-225 producer provenance | evidence | | |
 | PM-014 | local memory | The repository contains tested local memory and code-graph components with explicit scope and offline-oriented behavior. | `verdict/memory_plane.py` | MemoryPlane storage and scope boundary | implementation | `pytest -q tests/test_memory_plane.py tests/test_code_graph.py` | verified |
 | | | | `verdict/code_graph.py` | CodeGraphEngine parsing and graph queries | implementation | | |
 | | | | `tests/test_memory_plane.py` | restart, scope, export, and integrity tests | test | | |
@@ -77,6 +78,9 @@
 | | | | `docs/proof/live-controller-run/events.jsonl` | STALLED and RESUMED events | evidence | | |
 | | | | `docs/proof/live-controller-run/receipt.json` | completion receipt with digest | evidence | | |
 | | | | `tests/test_assignment_failover_e2e.py` | test_provider_quota_failover_to_independent_review | test | | |
+| | | | `docs/proof/dogfood-bod-225-live-2026-09-29/README.md` | live worker failover and controller resume narrative | documentation | | |
+| | | | `docs/proof/dogfood-bod-225-live-2026-09-29/events.jsonl` | injected and real worker faults, cooldowns, reassignments, RESUMED | evidence | | |
+| | | | `docs/proof/dogfood-bod-225-live-2026-09-29/receipt.json` | COMPLETE receipt with integrity digest after resume | evidence | | |
 | PM-017 | context coverage contract | Context coverage contracts enforce named required-fact satisfaction before hydrated status is granted. | `verdict/free_tier_admit.py` | CheapPathContextPack and _check_fact_satisfaction | implementation | `pytest -q tests/test_bod272_coverage_contract.py` | verified |
 | | | | `verdict/pack_state.py` | classify_pack_state with required_facts | implementation | | |
 | | | | `tests/test_bod272_coverage_contract.py` | test_partial_when_required_fact_unsatisfied | test | | |

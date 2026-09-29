@@ -1,0 +1,13 @@
+{
+ "node_id": "rehearsal_guard",
+ "attempt": 1,
+ "route_id": "cx/gpt-5.5",
+ "ok": false,
+ "reported_model": "cx/gpt-5.5",
+ "stop_reason": "",
+ "status_code": null,
+ "error": "timeout",
+ "output_tail": "",
+ "duration_seconds": 901.0043756719679,
+ "session_ref": ""
+}

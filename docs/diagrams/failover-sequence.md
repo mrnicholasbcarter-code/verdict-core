@@ -1,59 +1,80 @@
 # Failover Sequence — Single Node
 
 What happens when a worker node fails during orchestration execution.
-The entire recovery loop is inline in `DagRuntime._drive()`
+The recovery loop is inline in `DagRuntime._drive()`
 (`verdict/orchestration/runtime.py`); there is no separate failover engine
-or bounded-recovery controller.
+for worker nodes.
+
+Source: [`diagrams/failover-sequence.mmd`](../../diagrams/failover-sequence.mmd).
+The fenced block below is byte-identical to that file.
 
 ```mermaid
+%% failover-sequence.mmd -- single-node failover inside DagRuntime._drive
+%% Source (verified against code at this commit):
+%%   verdict/orchestration/runtime.py (DagRuntime._drive)
+%%   verdict/orchestration/contracts.py (ModelSelector.select, ModelSelector.record_failure, require_launchable, dispatch_blocker)
+%%   verdict/orchestration/executors.py (PrimeHeadlessExecutor)
+%%   verdict/orchestration/recovery.py (FailureIntelligence.classify)
+%% ControllerSupervisor (verdict/orchestration/supervisor.py) wraps the controller
+%% process via orchestration/cli.py. It does not fail over individual DAG nodes.
+%% Exclusive branches after classify (runtime.py:764-801): RETRY_INFRA sleeps on the
+%% same route; other branches call tried.add(route_id). They are not sequential.
+%% Verdict visual theme. Hex from verdict/design.py PALETTE:
+%% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
+%% purple #a78bfa  cyan #22b8eb  success #4ade80  amber #f5b00b  red #f87171  border #52525b
+%% Edges/lines use #7c7c88 (>=3:1 on #ffffff and #0d1117; measured 4.12:1 / 4.59:1).
+%% fontFamily omitted: Mermaid sanitizeDirective drops hyphenated themeVariable values.
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
 sequenceDiagram
-    participant RT as DagRuntime._drive()<br/>(verdict/orchestration/runtime.py)
-    participant Sel as ModelSelector.select()<br/>(verdict/orchestration/contracts.py)
-    participant Exec as PrimeHeadlessExecutor<br/>(verdict/orchestration/executors.py)
-    participant FI as FailureIntelligence.classify()<br/>(verdict/orchestration/recovery.py)
+    participant RT as DagRuntime._drive()
+    participant Sel as ModelSelector.select()
+    participant Exec as PrimeHeadlessExecutor
+    participant FI as FailureIntelligence.classify()
 
-    Note over RT: tried = ∅
+    rect rgb(16, 16, 20)
+    Note over RT: tried = empty
 
     RT->>Sel: select(requirements, exclude_routes=tried)
-    Sel->>Sel: eligibility ladder<br/>DISCOVERED → ENTITLED → HEALTHY →<br/>AVAILABLE → TASK_ELIGIBLE → SELECTED
+    Sel->>Sel: ladder DISCOVERED to ENTITLED to HEALTHY to AVAILABLE to TASK_ELIGIBLE to SELECTED
     Sel-->>RT: choice (model A, route_id)
 
-    RT->>RT: require_launchable(route_id)<br/>dispatch_blocker(route_id)
+    RT->>RT: require_launchable(route_id) and dispatch_blocker(route_id)
     RT->>Exec: dispatch worker (model A, node N)
 
-    Note over Exec: Worker hits provider error<br/>(429 / 502 / timeout)
+    Note over Exec: worker hits a provider error 429, 502, or timeout
 
-    Exec-->>RT: WorkerTerminal (FAILURE)
+    Exec-->>RT: WorkerTerminal FAILURE
 
     RT->>FI: classify(terminal)
-    FI-->>RT: FailureClassification<br/>(category, cooldown_seconds, scope)
+    FI-->>RT: FailureClassification category, cooldown_seconds, scope
 
-    RT->>Sel: record_failure(route_id, classification)<br/>cooldown with scope (route | provider)
-    Note over RT: tried.add(route_id)<br/>sleep(min(cooldown, 60s))
+    RT->>Sel: record_failure(route_id, classification) with scope route or provider
+
+    alt RETRY_INFRA same route
+        Note over RT: sleep min of cooldown and 60s - same route kept eligible
+    else other recoverable failure
+        Note over RT: add route_id to tried then reselect - exclusive with RETRY_INFRA
+    end
 
     RT->>Sel: select(requirements, exclude_routes=tried)
 
-    alt No eligible model & short cooldown pending
-        Note over RT: Wait for earliest cooldown<br/>(≤ max_cooldown_wait_seconds)
+    alt no eligible model and a short cooldown is pending
+        Note over RT: wait for the earliest cooldown, at most max_cooldown_wait_seconds
         RT->>Sel: select(requirements, exclude_routes=tried)
     end
 
-    alt Pool exhausted (no eligible model)
-        Note over RT: pool_exhausted → FAIL_CLOSED<br/>Node → BLOCKED
-    else Model B selected
+    alt pool exhausted, no eligible model
+        Note over RT: pool_exhausted, action FAIL_CLOSED, node BLOCKED
+    else model B selected
         Sel-->>RT: choice (model B, route_id)
-        RT->>RT: require_launchable(route_id)<br/>dispatch_blocker(route_id)
-
-        alt Pre-dispatch blocker found
-            Note over RT: tried.add(route_id)<br/>continue loop (reselect)
-        else Clear to launch
+        RT->>RT: require_launchable(route_id) and dispatch_blocker(route_id)
+        alt pre-dispatch blocker found
+            Note over RT: tried.add route_id, continue the loop and reselect
+        else clear to launch
             RT->>Exec: redispatch worker (model B, node N)
-            Exec-->>RT: WorkerTerminal (SUCCESS)
-            Note over RT: Node → TERMINAL_SUCCESS → review
+            Exec-->>RT: WorkerTerminal SUCCESS
+            Note over RT: node TERMINAL_SUCCESS, then review
         end
     end
+    end
 ```
-
-**Note:** `ControllerSupervisor` (`verdict/orchestration/supervisor.py`) wraps
-the *controller process* via `orchestration/cli.py`, not individual worker
-nodes inside the DAG runtime.

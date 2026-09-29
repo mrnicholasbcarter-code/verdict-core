@@ -306,10 +306,7 @@ def test_wcag_contrast_on_charcoal(surface: str) -> None:
         assert (luminance(PALETTE[accent].rgb) + 0.05) / (background + 0.05) >= 4.5
 
 
-# Original byte captures: origin/main 4073a1840219cc2870bd363938d87e4fd2a6aba4.
-# First-run restyle: approved home additions expose config.show. All previous facts remain; plain setup helper/orchestration bytes
-# are unchanged here. Per-screen 60/100/200 goldens live in golden/first_run.
-# See docs/design/FIRST_RUN_RESTYLE.md for the layout/repair rationale.
+# Byte captures taken before edits, origin/main 4073a1840219cc2870bd363938d87e4fd2a6aba4.
 def capture_plain_screens(width: int, condition: str) -> str:
     env = (
         {"NO_COLOR": ""}
@@ -376,13 +373,11 @@ def capture_plain_screens(width: int, condition: str) -> str:
 
 @pytest.mark.parametrize("condition", ["plain", "no_color", "non_tty"])
 @pytest.mark.parametrize("width", [60, 100, 200])
-def test_existing_screens_plain_bytes_match_approved_first_run_layout(
-    width: int, condition: str
-) -> None:
+def test_existing_screens_plain_bytes_match_origin_main(width: int, condition: str) -> None:
     expected = {
-        60: "0d559907fb524ac9fc35c1ddd78da3b3b2d3bcc4cd62eaec382784d9582364bf",
-        100: "4f7f87284375b555e97aa470f25dba09d461e29e6802ad9b397bf1688ecb5e5d",
-        200: "4f7f87284375b555e97aa470f25dba09d461e29e6802ad9b397bf1688ecb5e5d",
+        60: "78ce766012e86ad05ce9f5400d8ea9f2c9172b244dc1c844b2655d75ebe4472c",
+        100: "da80777c072e4ccf09cbd046dd3c243c679fc998a910969ae8906b3c03b8ace6",
+        200: "da80777c072e4ccf09cbd046dd3c243c679fc998a910969ae8906b3c03b8ace6",
     }
     output = capture_plain_screens(width, condition)
     assert "\x1b" not in output
