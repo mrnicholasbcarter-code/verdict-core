@@ -149,8 +149,13 @@ def _worker_script_for(
         return _worker_script
 
     async def _delayed(prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
+        import dataclasses
+        import time
+
+        t0 = time.monotonic()
         await asyncio.sleep(worker_seconds)
-        return _worker_script(prompt, route_id, cwd)
+        elapsed = time.monotonic() - t0
+        return dataclasses.replace(_worker_script(prompt, route_id, cwd), duration_seconds=elapsed)
 
     return _delayed
 
