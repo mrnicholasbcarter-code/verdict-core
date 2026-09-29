@@ -425,6 +425,11 @@
           "path": "docs/proof/dogfood-bod-273-2026-09-28/receipt.json",
           "locator": "first complete real-model dogfood run",
           "kind": "evidence"
+        },
+        {
+          "path": "docs/proof/dogfood-bod-225-live-2026-09-29/receipt.json",
+          "locator": "live dogfood COMPLETE receipt for BOD-225 producer provenance",
+          "kind": "evidence"
         }
       ],
       "verification": "Run the release checklist against an exact tagged artifact and attach the resulting bundle and CI records.",
@@ -538,6 +543,21 @@
           "path": "tests/test_assignment_failover_e2e.py",
           "locator": "test_provider_quota_failover_to_independent_review",
           "kind": "test"
+        },
+        {
+          "path": "docs/proof/dogfood-bod-225-live-2026-09-29/README.md",
+          "locator": "live worker failover and controller resume narrative",
+          "kind": "documentation"
+        },
+        {
+          "path": "docs/proof/dogfood-bod-225-live-2026-09-29/events.jsonl",
+          "locator": "injected and real worker faults, cooldowns, reassignments, RESUMED",
+          "kind": "evidence"
+        },
+        {
+          "path": "docs/proof/dogfood-bod-225-live-2026-09-29/receipt.json",
+          "locator": "COMPLETE receipt with integrity digest after resume",
+          "kind": "evidence"
         }
       ],
       "verification": "pytest -q tests/test_assignment_failover_e2e.py tests/test_orch_recovery.py",

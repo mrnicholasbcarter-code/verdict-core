@@ -118,6 +118,7 @@ contracts/*.tgz
 !docs/proof/live-smoke-run/events.jsonl
 !docs/proof/live-controller-run/events.jsonl
 !docs/proof/dogfood-bod-273-2026-09-28/events.jsonl
+!docs/proof/dogfood-bod-225-live-2026-09-29/events.jsonl
 !docs/proof/live-controller-run/controller-g0.log
 !docs/proof/live-controller-run/controller-g1.log
 !tests/fixtures/openjev/calibration/replay_sample.jsonl

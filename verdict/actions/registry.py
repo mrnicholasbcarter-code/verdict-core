@@ -1138,6 +1138,7 @@ def _register_builtins() -> None:
         _action_setup_plan_scoped,
         _action_simulate,
     )
+    from verdict.actions.views import _action_context_view, _action_routing_view
 
     _specs: list[tuple[ActionSpec, Callable[..., ActionResult]]] = [
         (
@@ -1964,6 +1965,26 @@ def _register_builtins() -> None:
                 "Harness",
             ),
             _action_harness_prime_visibility,
+        ),
+        (
+            ActionSpec(
+                "routing.view",
+                "routing",
+                "read",
+                "Show the recorded routing explorer for a run",
+                "Routing",
+            ),
+            _action_routing_view,
+        ),
+        (
+            ActionSpec(
+                "context.view",
+                "orchestration",
+                "read",
+                "Show recorded context budget and provenance for a run",
+                "Runs",
+            ),
+            _action_context_view,
         ),
     ]
     for spec, fn in _specs:

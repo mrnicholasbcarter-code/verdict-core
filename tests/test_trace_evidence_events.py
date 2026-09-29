@@ -207,6 +207,7 @@ _PROOF_DIRS = [
     "docs/proof/live-controller-run",
     "docs/proof/demo-run",
     "docs/proof/dogfood-bod-273-2026-09-28",
+    "docs/proof/dogfood-bod-225-live-2026-09-29",
 ]
 
 

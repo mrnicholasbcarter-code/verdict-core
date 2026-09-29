@@ -795,3 +795,14 @@ def test_config_show_parse_error_does_not_echo_file_content(tmp_path, monkeypatc
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     res = run_action("config.show")
     assert "sk-live-abc" not in repr(res.data)
+
+
+def test_configuration_home_uses_registered_redacted_action() -> None:
+    from verdict.actions.registry import get_action
+    from verdict.home import PALETTE
+
+    entry = next(row for row in PALETTE if row[1] == "config")
+    assert entry[0] == "Config" and entry[3] == "config.show"
+    assert "redacted" in entry[2]
+    assert get_action(entry[3]) is not None
+    assert entry in palette_actions()

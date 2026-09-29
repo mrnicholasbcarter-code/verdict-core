@@ -17,6 +17,7 @@ def present_bootstrap(
         # The machine boundary must never request input, even with terminal stdin.
         options["non_interactive"] = True
         return run_bootstrap(**options)
+    ui.setup_journey()
     with ui.session():
         report = run_bootstrap(
             **options, observer=ui.event, confirm_plan=ui.confirm_plan if ui.interactive else None
