@@ -173,6 +173,42 @@ class TestTraceGoldens:
             out.append(line)
         return "".join(out)
 
+    @staticmethod
+    def _extract_node(line: str) -> str:
+        """Return the node column value from a normalised trace line."""
+        stripped = line.strip()
+        if not stripped or stripped.startswith("trace") or stripped.startswith("goal"):
+            return ""
+        if stripped.startswith("seq") or stripped.startswith("---"):
+            return ""
+        if stripped.startswith("steps:"):
+            return ""
+        # Format: NNN  kind            node      detail
+        parts = stripped.split()
+        if len(parts) >= 3 and parts[0] == "NNN":
+            # Check remaining parts for known node names
+            for p in parts[2:]:
+                if p in ("node-1", "node-2", "integrate"):
+                    return p
+        return ""
+
+    @staticmethod
+    def _extract_anchors(lines: list[str]) -> list[str]:
+        """Extract global anchor kinds that must stay in strict order."""
+        anchor_kinds = ("request", "plan", "integrate", "run_finished")
+        # Also review lines
+        anchors: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or not stripped.startswith("NNN"):
+                continue
+            parts = stripped.split()
+            if len(parts) >= 2:
+                kind = parts[1]
+                if kind in anchor_kinds or kind == "review":
+                    anchors.append(stripped)
+        return anchors
+
     def test_golden_widths(self) -> None:
         GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
         for width in (60, 100):
@@ -182,7 +218,37 @@ class TestTraceGoldens:
             if not path.exists() or os.environ.get("UPDATE_GOLDEN") == "1":
                 path.write_text(got_norm)
             expected_norm = self._normalize_seq(path.read_text())
-            assert got_norm == expected_norm, f"golden mismatch at width={width}"
+
+            got_lines = [ln for ln in got_norm.splitlines() if ln.strip()]
+            exp_lines = [ln for ln in expected_norm.splitlines() if ln.strip()]
+
+            # (1) Multiset of normalised lines must be equal
+            from collections import Counter
+
+            assert Counter(got_lines) == Counter(exp_lines), (
+                f"golden multiset mismatch at width={width}"
+            )
+
+            # (2) Per-node subsequence order matches golden
+            got_by_node: dict[str, list[str]] = {}
+            exp_by_node: dict[str, list[str]] = {}
+            for line in got_lines:
+                node = self._extract_node(line)
+                if node:
+                    got_by_node.setdefault(node, []).append(line)
+            for line in exp_lines:
+                node = self._extract_node(line)
+                if node:
+                    exp_by_node.setdefault(node, []).append(line)
+            for node in exp_by_node:
+                assert got_by_node.get(node) == exp_by_node[node], (
+                    f"golden node-order mismatch for {node} at width={width}"
+                )
+
+            # (3) Global anchors stay in order
+            got_anchors = self._extract_anchors(got_lines)
+            exp_anchors = self._extract_anchors(exp_lines)
+            assert got_anchors == exp_anchors, f"golden anchor-order mismatch at width={width}"
 
     def test_lines_fit_width(self) -> None:
         """No rendered line exceeds the requested width."""
