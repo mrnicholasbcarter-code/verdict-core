@@ -26,9 +26,12 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 Install, run the offline demo, and inspect the trace — no API key, no gateway, no network:
 
 ```bash
-pip install verdict-core
+git clone https://github.com/mrnicholasbcarter-code/verdict-core && cd verdict-core
+pip install -e .
 verdict demo
 ```
+
+> `pip install verdict-core` gains `verdict demo` in the next release.
 
 `verdict demo` is an **offline scenario** with scripted workers and injected faults. It runs
 the real orchestration pipeline (planner, admission, DAG runtime, failure intelligence,
@@ -45,6 +48,7 @@ seq   kind            node      detail
 1     request                   goal=flagship failover test
 2     classification            
 3     plan                      
+4     plan                      
 5     routing         node-1    
 6     selection       node-1    route=alpha/claude-a
 8     routing         node-2    
@@ -66,14 +70,14 @@ seq   kind            node      detail
 35    context         node-1    
 36    terminal        node-1    model=beta/gpt-b  ok
 38    barrier         node-1    
-40    verify          node-1    passed=True
+39    verify          node-1    passed=True
 45    terminal        integrate model=(mechanical merge)  ok
 47    verify          integrate passed=True
 48    barrier         integrate 
 50    integrate                 
 51    barrier                   
-53    review                    reviewer=gamma/gemini-c  PASS
-54    review                    reviewer=gamma/gemini-c  PASS
+53    review                    attempt 1  reviewer=gamma/gemini-c  PASS
+54    review                    verdict  blocking=0  reviewer=gamma/gemini-c  PASS
 55    run_finished              outcome=COMPLETE
 
 OFFLINE SCENARIO: scripted workers, injected faults
@@ -100,8 +104,7 @@ fault, was cooled down, reassigned to `beta/gpt-b`, and passed. `node-2` ran on
 worker used) passed the merged result. Each CLAIM VERIFIED line cites the event sequence
 numbers that prove it.
 
-The demo is tested in CI on branch `feat/demo-trace`
-(PR [#737](https://github.com/mrnicholasbcarter-code/verdict-core/pull/737)).
+The demo is tested in CI ([`tests/test_demo_trace.py`](tests/test_demo_trace.py)).
 
 You can also inspect the committed fixture run the same way:
 
@@ -133,7 +136,7 @@ Test: [`tests/test_readme_assets.py`](tests/test_readme_assets.py).
 
 ## Quick start
 
-For a quick single-routing decision (also credential-free):
+The fixture makes one deterministic routing decision (also credential-free):
 
 ```bash
 verdict quickstart --non-interactive --dry-run
@@ -199,10 +202,10 @@ crash.
 Verify locally:
 
 ```bash
-verdict run-receipt docs/proof/dogfood-bod-225-live-2026-09-29
+verdict run-receipt --runs-dir . docs/proof/dogfood-bod-225-live-2026-09-29
 ```
 
-This proof lands in PR [#739](https://github.com/mrnicholasbcarter-code/verdict-core/pull/739).
+See the full proof bundle in [`docs/proof/dogfood-bod-225-live-2026-09-29/`](docs/proof/dogfood-bod-225-live-2026-09-29/).
 
 ---
 
