@@ -986,10 +986,18 @@ def render_routing_text(
 
 
 def routing_json(view: RoutingView) -> dict[str, Any]:
-    """Same facts as the TUI, no secrets. For the CLI after #708 merges."""
+    """Same facts as the TUI, no secrets.
+
+    Legacy events only recorded the omitted total. Their internal ``_total``
+    summary becomes null here; ``candidates_omitted`` retains the count.
+    Native per-state summaries pass through unchanged.
+    """
     payload = redact_contract_secrets(view.to_dict())
     evaluations: list[dict[str, Any]] = []
     for evaluation in view.evaluations:
+        omitted_summary = evaluation.omitted_summary
+        if omitted_summary is not None and set(omitted_summary) == {"_total"}:
+            omitted_summary = None
         candidates_out: list[dict[str, Any]] | None
         if evaluation.candidates is None:
             candidates_out = None
@@ -1018,7 +1026,7 @@ def routing_json(view: RoutingView) -> dict[str, Any]:
                 "at": evaluation.at or None,
                 "candidates": candidates_out,
                 "candidates_omitted": evaluation.candidates_omitted,
-                "omitted_summary": evaluation.omitted_summary,  # AC7
+                "omitted_summary": omitted_summary,  # AC7
                 "funnel": dict(evaluation.funnel),
                 "headline": _headline(evaluation),
                 "node_id": evaluation.node_id,

@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
+from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+from rich.console import Console
 
+from verdict.design import PresentationMode
+from verdict.orchestration import cockpit_controls as cockpit
 from verdict.orchestration.candidate_builder import MAX_CANDIDATES, build_candidates
 from verdict.orchestration.cockpit_nav import (
+    KEY_BACKSPACE,
+    KEY_ENTER,
+    KEY_ESC,
+    KEY_ROUTING_SEARCH,
     KEY_ROUTING_STATE,
     CockpitState,
+    ScriptedKeyReader,
     _cycle_routing_state_filter,
     dispatch_key,
 )
@@ -27,6 +39,7 @@ from verdict.orchestration.routing_view import (
     RoutingView,
     routing_view_from_inventory,
 )
+from verdict.orchestration.tui import RunView
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -235,8 +248,19 @@ class TestAC6CapacityEvidence:
 class TestAC6SecretLeak:
     """Seed a connection with an email and token; assert neither appears anywhere."""
 
-    def test_no_email_or_token_in_event_or_render(self, tmp_path: Path) -> None:
-        """End-to-end: real inventory + admission; email/token must not leak."""
+    @pytest.mark.parametrize("scope", ["route", "provider"])
+    async def test_no_email_or_token_in_event_or_render(self, tmp_path: Path, scope: str) -> None:
+        """Real verdicts and the runtime's persisted evidence carry no account secrets."""
+        from verdict.orchestration.contracts import (
+            RouteVerdict,
+            TaskRequirements,
+            WorkGraph,
+            WorkNode,
+        )
+        from verdict.orchestration.eligibility import EligibilityLadder
+        from verdict.orchestration.receipt import EventLog
+        from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
+
         inventory = {
             "routes": [
                 {
@@ -258,51 +282,89 @@ class TestAC6SecretLeak:
                 "api_key": "sk-SECRET-TOKEN-1234567890abcdef",
             }
         ]
-        # Use InventorySource (in-memory) instead of file paths
-        from verdict.orchestration.contracts import TaskRequirements
-
-        src = InventorySource(rows=inventory["routes"], connections=connections)
-        reqs = TaskRequirements(
-            required_capabilities=frozenset({"tools"}),
-            min_context_tokens=1_000,
-            coding=True,
-            reasoning=False,
-            frontier_worthy=False,
-            exclude_routes=frozenset(),
-            exclude_families=frozenset(),
+        now = datetime.now(timezone.utc)
+        cooldown_key = (
+            "route:secret-provider/model-a" if scope == "route" else "provider:secret-provider"
         )
+        state_path = tmp_path / "health.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "health": {},
+                    "cooldowns": {cooldown_key: {"until": (now + timedelta(hours=1)).isoformat()}},
+                }
+            )
+        )
+        node = WorkNode(
+            "impl",
+            "check cooldown evidence",
+            owned_files=("unused.txt",),
+            verification_command=("true",),
+            min_context_tokens=1_000,
+        )
+        reqs = TaskRequirements.for_node(node)
+        probe = Mock(side_effect=AssertionError("cooling routes must never be probed"))
+        ladder = EligibilityLadder(inventory["routes"], connections, probe, state_path)
+        verdicts = ladder.evaluate(reqs, now=now)
+        assert verdicts and all(isinstance(v, RouteVerdict) for v in verdicts)
+        verdict_dicts = [v.to_dict() for v in verdicts]
+
+        # Exercise runtime.py's actual _evidence and EventLog, without launching a worker.
+        events = EventLog(tmp_path / "events.jsonl", clock=lambda: now)
+        runtime = DagRuntime(
+            repo=tmp_path,
+            run_dir=tmp_path / "run",
+            graph=WorkGraph("cooldown evidence", (node,)),
+            selector=ladder,
+            executor=Mock(),
+            classifier=Mock(),
+            events=events,
+            prompt_for=lambda _node, _cwd: "unused: pool is cooling",
+            policy=RuntimePolicy(max_cooldown_wait_seconds=0),
+            now=lambda: now,
+        )
+        await asyncio.wait_for(runtime._drive("impl"), timeout=1)
+        event = next(e for e in events.read() if e.type == "eligibility")
+        assert event.data["candidates"] == verdict_dicts
+        probe.assert_not_called()
+
         view = routing_view_from_inventory(
-            reqs.asdict()
-            if hasattr(reqs, "asdict")
-            else {
+            {
                 "required_capabilities": list(reqs.required_capabilities),
                 "min_context_tokens": reqs.min_context_tokens,
                 "coding": reqs.coding,
                 "reasoning": reqs.reasoning,
                 "frontier_worthy": reqs.frontier_worthy,
             },
-            inventory=src,
+            inventory=InventorySource(rows=inventory["routes"], connections=connections),
+            state_path=state_path,
             probe=False,
         )
-
-        # Check event serialisation
-        view_json = view.to_json()
-        assert "secret.example.com" not in view_json
-        assert "sk-SECRET-TOKEN" not in view_json
-        assert "1234567890abcdef" not in view_json
-
-        # Check render
-        text = render_routing_text(view, width=200)
-        assert "secret.example.com" not in text
-        assert "sk-SECRET-TOKEN" not in text
-        assert "1234567890abcdef" not in text
-
-        # Check JSON output
         payload = routing_json(view)
-        blob = json.dumps(payload)
-        assert "secret.example.com" not in blob
-        assert "sk-SECRET-TOKEN" not in blob
-        assert "1234567890abcdef" not in blob
+        projected_candidates = [c.to_dict() for ev in view.evaluations for c in ev.candidates or []]
+        json_candidates = [c for ev in payload["evaluations"] for c in ev["candidates"]]
+        for candidates in (
+            verdict_dicts,
+            event.data["candidates"],
+            projected_candidates,
+            json_candidates,
+        ):
+            assert candidates
+            for candidate in candidates:
+                assert candidate["cooldown_scope"] == cooldown_key
+                assert candidate["cooldown_scope"].startswith(("route:", "provider:"))
+
+        artifacts = [
+            json.dumps(verdict_dicts),
+            json.dumps(event.data),
+            events.path.read_text(),
+            view.to_json(),
+            render_routing_text(view, width=200),
+            json.dumps(payload),
+        ]
+        for artifact in artifacts:
+            for secret in ("secret.example.com", "sk-SECRET-TOKEN", "1234567890abcdef"):
+                assert secret not in artifact
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +457,13 @@ class TestAC7MaxCandidates:
         ev_out = payload["evaluations"][0]
         assert ev_out["omitted_summary"] == summary
 
+    def test_legacy_total_summary_is_null_in_json(self) -> None:
+        ev = _eval(candidates_omitted=5, omitted_summary={"_total": 5})
+        payload = routing_json(_view(ev))
+        assert payload["evaluations"][0]["omitted_summary"] is None
+        assert payload["evaluations"][0]["candidates_omitted"] == 5
+        assert ev.omitted_summary == {"_total": 5}  # projection remains unchanged
+
 
 class TestAC7FilterKeys:
     def test_cycle_routing_state_filter(self) -> None:
@@ -425,23 +494,134 @@ class TestAC7FilterKeys:
         assert not changed
         assert state.routing_state_filter == ""
 
-    def test_filter_never_probes(self) -> None:
+    @pytest.mark.parametrize("backspace", [KEY_BACKSPACE, "\x08", "\x7f"])
+    def test_search_typing_and_backspace_apply_matching_rows(self, backspace: str) -> None:
+        state = CockpitState(routing_open=True)
+        cands = [_cand("cx/gpt-5"), _cand("cx/gpt-6"), _cand("cc/claude-sonnet")]
+        evaluation = _eval(cands, selected_route=None)
+        for key in (KEY_ROUTING_SEARCH, "g", "p", "x", backspace, "t"):
+            assert dispatch_key(key, state, None)
+        assert state.routing_search_open
+        assert state.routing_search_text == "gpt"
+        assert state.routing_text_filter == ""  # Enter has not applied the draft yet.
+        assert dispatch_key(KEY_ENTER, state, None)
+        assert not state.routing_search_open
+        assert not state.detail_open
+        assert state.routing_text_filter == "gpt"
+        assert [
+            c.route_id for c in filter_candidates(cands, evaluation, text=state.routing_text_filter)
+        ] == ["cx/gpt-5", "cx/gpt-6"]
+        text = render_routing_text(_view(evaluation), width=200, text=state.routing_text_filter)
+        assert "cx/gpt-5" in text and "cx/gpt-6" in text
+        assert "cc/claude-sonnet" not in text
+
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_search_escape_clears_without_closing_panel(self, apply: bool) -> None:
+        state = CockpitState(routing_open=True)
+        for key in (KEY_ROUTING_SEARCH, "g", "p", "t"):
+            dispatch_key(key, state, None)
+        if apply:
+            dispatch_key(KEY_ENTER, state, None)
+        assert dispatch_key(KEY_ESC, state, None)
+        assert state.routing_open
+        assert not state.routing_search_open
+        assert state.routing_search_text == state.routing_text_filter == ""
+        assert dispatch_key(KEY_ESC, state, None)
+        assert not state.routing_open
+
+    def test_search_key_has_no_effect_when_routing_closed(self) -> None:
+        state = CockpitState()
+        assert not dispatch_key(KEY_ROUTING_SEARCH, state, None)
+        assert not state.routing_search_open
+
+    def test_search_owns_navigation_and_control_shortcuts(self) -> None:
+        state = cockpit.ControlCockpitState(routing_open=True)
+        state.sync_order(["impl", "other"])
+        view = RunView()
+        assert cockpit.dispatch_key(KEY_ROUTING_SEARCH, state, view)
+        keys = "gjkrsqcdxhpt? /X"
+        for key in keys:
+            assert cockpit.dispatch_key(key, state, view)
+        assert state.routing_search_text == keys
+        assert state.selected_id == "impl"
+        assert state.routing_state_filter == ""
+        assert not state.pending_action
+        assert not state.receipt_open and not state.health_open and not state.context_open
+        assert not state.quit_requested and not state.help_open and not state.expanded
+
+    def test_cockpit_search_loop_filters_and_escape_restores_without_probes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The production control cockpit passes applied filters to the shared renderer."""
+        import socket
+
+        from verdict.orchestration.contracts import RunEvent
+        from verdict.orchestration.eligibility import EligibilityLadder
+
+        probe = Mock(
+            side_effect=AssertionError("search must not make network calls or rank routes")
+        )
+        monkeypatch.setattr(socket.socket, "connect", probe)
+        monkeypatch.setattr(EligibilityLadder, "select", probe)
+        monkeypatch.setattr(EligibilityLadder, "evaluate", probe)
+        events = [
+            RunEvent(1, _NOW_STR, "node_state", "impl", {"state": "RUNNING"}),
+            RunEvent(
+                2,
+                _NOW_STR,
+                "eligibility",
+                "impl",
+                {
+                    "candidates": [
+                        _cand("cx/gpt-5").to_dict(),
+                        _cand("cx/gpt-6").to_dict(),
+                        _cand("cc/claude").to_dict(),
+                    ],
+                    "selected": None,
+                },
+            ),
+        ]
+        frames: list[str] = []
+        real_render = cockpit.render_cockpit
+
+        def render_spy(
+            view: RunView, state: cockpit.ControlCockpitState, mode: PresentationMode
+        ) -> object:
+            frame = real_render(view, state, mode, dashboard=False)
+            captured = StringIO()
+            Console(file=captured, width=200, color_system=None).print(frame)
+            frames.append(captured.getvalue())
+            return frame
+
+        monkeypatch.setattr(cockpit, "render_cockpit", render_spy)
+        cockpit.run_cockpit(
+            tmp_path,
+            console=Console(file=StringIO(), width=200, color_system=None),
+            key_reader=ScriptedKeyReader(["r", "/", "g", "p", "t", KEY_ENTER, KEY_ESC]),
+            events_source=lambda: events,
+            poll_seconds=0,
+            max_iterations=12,
+            stop_when_final=False,
+        )
+        filtered = [frame for frame in frames if "filter text=gpt" in frame]
+        assert filtered
+        assert all("cx/gpt-5" in frame and "cx/gpt-6" in frame for frame in filtered)
+        assert all("cc/claude" not in frame for frame in filtered)
+        assert any("search: /gpt_" in frame for frame in frames)
+        assert "cc/claude" in frames[-1] and "filter text=gpt" not in frames[-1]
+        probe.assert_not_called()
+
+    def test_filter_never_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """filter_candidates is pure; no I/O."""
         import socket
 
-        original_connect = socket.socket.connect
-
-        def _no_connect(*args: object, **kwargs: object) -> None:
-            raise AssertionError("filter_candidates must not make network calls")
-
-        socket.socket.connect = _no_connect  # type: ignore[method-assign]
-        try:
-            cands = [_cand("kr/m", reached="SELECTED"), _cand("cc/m", capacity_class="free")]
-            eval_ = _eval(cands, selected_route="kr/m")
-            result = filter_candidates(eval_.candidates or [], eval_, state="selected")
-            assert len(result) == 1
-        finally:
-            socket.socket.connect = original_connect  # type: ignore[method-assign]
+        probe = Mock(side_effect=AssertionError("filter_candidates must not make network calls"))
+        monkeypatch.setattr(socket.socket, "connect", probe)
+        cands = [_cand("kr/m", reached="SELECTED"), _cand("cc/m", capacity_class="free")]
+        eval_ = _eval(cands, selected_route="kr/m")
+        result = filter_candidates(eval_.candidates or [], eval_, state="selected")
+        assert len(result) == 1
+        probe.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

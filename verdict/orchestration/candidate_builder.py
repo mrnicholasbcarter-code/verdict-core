@@ -69,8 +69,6 @@ def build_candidates(
     kept = others[:budget]
     result = [selected_verdict, *kept] if selected_verdict else kept[:MAX_CANDIDATES]
     omitted_dicts = others[budget:] if len(others) > budget else []
-    if not selected_verdict and len(others) <= MAX_CANDIDATES:
-        omitted_dicts = []
 
     omitted = total - len(result)
 

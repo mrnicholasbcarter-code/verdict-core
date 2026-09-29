@@ -63,6 +63,25 @@ def test_scripted_reader_exhausted_raises_eoferror() -> None:
         reader.read()
 
 
+@pytest.mark.parametrize("raw", [b"\x08", b"\x7f"])
+def test_real_reader_normalizes_backspace(raw: bytes) -> None:
+    import os
+
+    from verdict.orchestration.cockpit_nav import KEY_BACKSPACE
+
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(write_fd, "wb") as writer:
+        writer.write(raw)
+    with os.fdopen(read_fd, "rb") as stream:
+        reader = _RealKeyReader(stream)
+        try:
+            assert reader.read(timeout=0) == KEY_BACKSPACE
+            with pytest.raises(EOFError):
+                reader.read(timeout=0)
+        finally:
+            reader.close()
+
+
 def test_scripted_reader_close_marks_eof() -> None:
     reader = ScriptedKeyReader(["a", "b"])
     reader.close()

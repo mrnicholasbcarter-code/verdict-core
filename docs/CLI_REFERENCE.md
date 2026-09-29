@@ -130,6 +130,16 @@ colour and no box drawing unless the terminal can show them.
 Exit `0` when the view is shown, `2` when the arguments are invalid, `3` when
 the run or node is not found.
 
+In the cockpit routing panel, `s` cycles the state filter. `/` opens text
+entry. Printable characters append to the draft, Backspace deletes the last
+character, and Enter applies the search. Esc clears the draft or applied
+search without closing the panel. These controls only filter recorded
+candidates; they do not rank routes or run probes.
+
+In JSON output, `omitted_summary` contains per-state counts and the first
+reason when recorded. It is `null` for legacy events that only recorded a
+total. `candidates_omitted` still reports that total.
+
 ### `verdict context` — Show recorded context budget and provenance
 
 ```bash
