@@ -100,6 +100,45 @@ from verdict.prove_at_rest_legacy import (
 
 CHAT_PROBE_MESSAGE = "Reply with exactly: OK"
 TOOL_NAME = "verdict_probe_ping"
+
+# --- Agentic probe: 3-turn tool task (read, edit, confirm) -----------------
+AGENTIC_TOOL_READ = "verdict_probe_read_file"
+AGENTIC_TOOL_EDIT = "verdict_probe_edit_file"
+AGENTIC_PROBE_FILE = "/tmp/verdict_agentic_probe.txt"
+AGENTIC_PROBE_ORIGINAL = "line one\nline two\nline three\n"
+AGENTIC_PROBE_EXPECTED = "line one\nLINE TWO\nline three\n"
+DEFAULT_AGENTIC_INTERVAL_HOURS = 24
+AGENTIC_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": AGENTIC_TOOL_READ,
+            "description": "Read a file and return its contents.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": AGENTIC_TOOL_EDIT,
+            "description": "Replace old_text with new_text in a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+]
+
 DEFAULT_MAX_REQUESTS = 300
 DEFAULT_MAX_WALL_SECONDS = 600.0
 DEFAULT_CONCURRENCY = 4
@@ -146,6 +185,8 @@ class ProbeExchange:
     latency_ms: float | None = None
     retry_after_seconds: float | None = None
     error_category: str | None = None
+    response_body: Mapping[str, Any] | None = None  # parsed JSON for agentic scoring
+    status_code: int | None = None  # alias for http_status (used by score_agentic_probe)
 
 
 # A transport probes one route for one phase ("chat" or "tool") and must not
@@ -238,6 +279,111 @@ def tool_payload(route_id: str) -> dict[str, Any]:
         "temperature": 0,
         "stream": False,
     }
+
+
+def agentic_turn1_payload(route_id: str) -> dict[str, Any]:
+    """Turn 1: ask the model to read the probe file."""
+    return {
+        "model": route_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    f"Read the file at {AGENTIC_PROBE_FILE} using the "
+                    f"{AGENTIC_TOOL_READ} tool and tell me its contents."
+                ),
+            },
+        ],
+        "tools": AGENTIC_TOOLS,
+        "max_tokens": 256,
+        "temperature": 0,
+        "stream": False,
+    }
+
+
+def agentic_turn2_payload(
+    route_id: str, turn1_messages: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Turn 2: ask the model to edit a line (given previous conversation)."""
+    messages = list(turn1_messages) + [
+        {
+            "role": "user",
+            "content": (
+                f"Now use {AGENTIC_TOOL_EDIT} to change 'line two' to 'LINE TWO' "
+                f"in {AGENTIC_PROBE_FILE}."
+            ),
+        },
+    ]
+    return {
+        "model": route_id,
+        "messages": messages,
+        "tools": AGENTIC_TOOLS,
+        "max_tokens": 256,
+        "temperature": 0,
+        "stream": False,
+    }
+
+
+def agentic_turn3_payload(
+    route_id: str, turn2_messages: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Turn 3: ask the model to confirm the edit by reading again."""
+    messages = list(turn2_messages) + [
+        {
+            "role": "user",
+            "content": (
+                f"Read {AGENTIC_PROBE_FILE} again with {AGENTIC_TOOL_READ} to "
+                f"confirm the edit was applied."
+            ),
+        },
+    ]
+    return {
+        "model": route_id,
+        "messages": messages,
+        "tools": AGENTIC_TOOLS,
+        "max_tokens": 256,
+        "temperature": 0,
+        "stream": False,
+    }
+
+
+def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
+    """Score a 3-turn agentic probe sequence as pass/fail.
+
+    Pass requires:
+    1. Turn 1 calls read_file with the correct path.
+    2. Turn 2 calls edit_file with old_text='line two' and new_text='LINE TWO'.
+    3. Turn 3 calls read_file again.
+    All three turns must have HTTP 2xx.
+    """
+    if len(exchanges) < 3:
+        return False
+    for ex in exchanges:
+        if ex.status_code is not None and ex.status_code >= 400:
+            return False
+
+    def _has_tool_call(ex: ProbeExchange, tool_name: str) -> bool:
+        body = ex.response_body
+        if not isinstance(body, Mapping):
+            return False
+        choices = body.get("choices", [])
+        if not choices:
+            return False
+        message = choices[0].get("message", {}) if isinstance(choices[0], Mapping) else {}
+        calls = message.get("tool_calls", [])
+        return any(
+            isinstance(tc, Mapping) and isinstance(tc.get("function"), Mapping)
+            and tc["function"].get("name") == tool_name
+            for tc in (calls if isinstance(calls, list) else [])
+        )
+
+    if not _has_tool_call(exchanges[0], AGENTIC_TOOL_READ):
+        return False
+    if not _has_tool_call(exchanges[1], AGENTIC_TOOL_EDIT):
+        return False
+    if not _has_tool_call(exchanges[2], AGENTIC_TOOL_READ):
+        return False
+    return True
 
 
 def _provider_of(route_id: str) -> str:
@@ -388,6 +534,8 @@ class Prober:
     monotonic: Callable[[], float] = field(default=time.monotonic)
     sleep: Callable[[float], None] = field(default=time.sleep)
     on_cycle_error: Callable[[Exception], None] | None = None
+    agentic_interval_hours: float = DEFAULT_AGENTIC_INTERVAL_HOURS
+    agentic_transport: Callable[[str, dict[str, Any], float], ProbeExchange] | None = None
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -445,6 +593,9 @@ class Prober:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
             self.cache.save()
+        # Run agentic probes for FREE routes after the main cycle.
+        if stats.requests < self.max_requests:
+            self.run_agentic_probes(stats)
         return stats
 
     def _persist_cursor(self, index: int, *, open_cycle: bool) -> None:
@@ -549,6 +700,79 @@ class Prober:
             return
         seconds = exchange.retry_after_seconds if exchange.retry_after_seconds else 60.0
         self.cache.zero_bucket(route.provider, now + timedelta(seconds=seconds), pool=route.pool)
+
+    def _needs_agentic(self, route: AdmittedRoute, now: datetime) -> bool:
+        """True when the route is FREE and its agentic probe is stale or missing."""
+        if route.capacity_class != CapacityClass.FREE:
+            return False
+        entry = self.cache.entry(route.route_id)
+        if entry is None:
+            return True
+        if not entry.agentic_ok:
+            return True
+        age = now - entry.checked_at
+        return age.total_seconds() > self.agentic_interval_hours * 3600
+
+    def run_agentic_probes(self, stats: CycleStats) -> None:
+        """Run agentic probes for FREE routes that need them. Bounded."""
+        if self.agentic_transport is None:
+            return
+        now = self.clock()
+        routes = [r for r in self.routes_loader() if self._needs_agentic(r, now)]
+        probed = 0
+        max_agentic = min(8, self.max_requests - stats.requests)
+        for route in routes[:max_agentic]:
+            if stats.requests + 3 > self.max_requests:
+                break
+            now = self.clock()
+            if not self.cache.consume(route.provider, now, pool=route.pool):
+                continue
+            exchanges: list[ProbeExchange] = []
+            try:
+                t1 = self.agentic_transport(
+                    route.route_id, agentic_turn1_payload(route.route_id),
+                    self.probe_timeout_seconds,
+                )
+                exchanges.append(t1)
+                stats.requests += 1
+                if t1.ok and stats.requests < self.max_requests:
+                    t2 = self.agentic_transport(
+                        route.route_id,
+                        agentic_turn2_payload(route.route_id, []),
+                        self.probe_timeout_seconds,
+                    )
+                    exchanges.append(t2)
+                    stats.requests += 1
+                    if t2.ok and stats.requests < self.max_requests:
+                        t3 = self.agentic_transport(
+                            route.route_id,
+                            agentic_turn3_payload(route.route_id, []),
+                            self.probe_timeout_seconds,
+                        )
+                        exchanges.append(t3)
+                        stats.requests += 1
+            except TimeoutError:
+                exchanges.append(
+                    ProbeExchange(http_status=None, ok=False, error_category="timeout")
+                )
+            passed = score_agentic_probe(exchanges)
+            result = ProbeResult(
+                category=CATEGORY_OK if passed else "agentic_fail",
+                chat_ok=len(exchanges) >= 1 and exchanges[0].ok,
+                tool_ok=passed,
+                probe_class="agentic",
+                agentic_ok=passed,
+                pool=route.pool,
+                capacity_evidence=route.capacity_evidence,
+            )
+            self.cache.record(route.route_id, result, now)
+            self.cache.save()
+            probed += 1
+            stats.probed += 1
+            if passed:
+                stats.fresh += 1
+            else:
+                stats.negative += 1
 
     def run_forever(self) -> CycleStats | None:
         """Loop ``run_once`` until ``stop``. A cycle error retries next interval."""

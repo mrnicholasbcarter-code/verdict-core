@@ -1,8 +1,32 @@
 # Health cache and the prove-at-rest prober
 
 `verdict prove-at-rest` probes admitted OmniRoute routes and records the
-result in one health cache. The selection ladder does not read this cache
-yet. Selection order is unchanged by this command.
+result in one health cache. The selection ladder reads this cache to apply
+free-first worker ordering and the agentic gate.
+
+## Free-first worker order
+
+Implementation workers use the capacity order:
+**FREE** (with agentic probe PASS) → **SUBSCRIPTION** → **METERED**.
+UNKNOWN is never used for implementation unless explicitly opted in
+(set `VERDICT_ALLOW_UNKNOWN_CAPACITY=1` or pass `allow_unknown_capacity=True`).
+
+Planning, controller, and independent review tasks use:
+**SUBSCRIPTION** → **FREE** → **METERED** → **UNKNOWN**.
+
+A FREE route qualifies as an implementation worker **only** when a fresh
+AGENTIC probe PASS is in the health cache. A single-call tool PASS alone
+qualifies it for chat or summary roles (frontier-worthy tasks).
+
+Without a health cache attached, the agentic gate is not enforced, and
+selection behaves as before (backward compatible).
+
+## Probe classes
+
+| Class | Turns | Qualifies for | Default interval |
+|---|---|---|---|
+| `single_call` | 2 (chat + one tool call) | Chat, summary, liveness | Every cycle |
+| `agentic` | 3 (read file, edit file, confirm read) | Implementation workers | Once per model per 24 h |
 
 ## Cache
 
@@ -20,6 +44,8 @@ One JSON file, one `fcntl` lock, atomic replace. Each route entry has:
 | `consecutive_failures` | Failures in a row; reset on success |
 | `chat_ok` | The chat step returned exactly `OK` |
 | `tool_ok` | The required tool call succeeded. This is a coding worker. |
+| `probe_class` | `agentic` or `single_call` |
+| `agentic_ok` | True only when a 3-turn agentic probe passed |
 | `latency_ms` | Probe latency |
 | `pool` | Optional shared-quota pool |
 | `capacity_evidence` | Optional capacity label from admission |
@@ -50,6 +76,19 @@ A route with no entry is `unprobed`. `unprobed` is never healthy.
 Callers must pass `now`. Nothing in this module reads the clock itself
 except the CLI status command.
 
+### Receipts
+
+Each selection records per route:
+
+| Field | Source |
+|---|---|
+| `capacity_class` | Economic class of the selected route |
+| `probe_class` | Which probe qualified the route (agentic / single_call / none) |
+| `cache_checked_at` | ISO-8601 timestamp of the probe that qualified it |
+| `cache_freshness` | `fresh`, `stale`, or `None` if no cache entry |
+
+These fields appear in `rank_components` and in `verdict routing` output.
+
 ### Buckets
 
 One sliding window per provider, or per `provider/pool` when a pool is set.
@@ -74,12 +113,27 @@ Order inside a cycle:
 3. Never-probed FREE routes, round-robin by provider/pool.
 4. SUBSCRIPTION, METERED, and UNKNOWN, chat liveness only.
 5. Up to 2 routes from providers that have no fresh entry.
+6. **Agentic probes** for FREE routes that need them (up to 8 per cycle).
 
-A coding-worker probe is two steps: chat `Reply with exactly: OK`, then one
-required tool call (`verdict_probe_ping`). `tool_ok` means the tool call
-succeeded. Other capacity classes stop after chat.
+### Single-call probe
 
-The prober does **not** write `~/.verdict/orchestration-health.json`.
+Two steps: chat `Reply with exactly: OK`, then one required tool call
+(`verdict_probe_ping`). `tool_ok` means the tool call succeeded.
+
+### Agentic probe
+
+Three turns with simulated file tools:
+
+1. Read a file (`verdict_probe_read_file`).
+2. Apply a one-line edit (`verdict_probe_edit_file`).
+3. Read the file again to confirm.
+
+Scored pass/fail. A route with agentic PASS sets `agentic_ok=True` in the
+cache entry. This is the gate for FREE routes to serve as implementation
+workers.
+
+The agentic probe runs once per model per 24 hours (default). It uses the
+same bounds, redaction, and atomic writes as the single-call probe.
 
 ## Legacy state
 
@@ -108,5 +162,5 @@ the test suite or by installing the package.
 ## Tests
 
 ```bash
-uv run pytest tests/test_health_cache.py tests/test_prove_at_rest.py -q
+uv run pytest tests/test_health_cache.py tests/test_prove_at_rest.py tests/test_free_first_order.py -q
 ```

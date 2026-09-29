@@ -316,6 +316,21 @@ class CapacityClass(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ProbeClass(str, Enum):
+    """Which probe qualified a route for work.
+
+    ``AGENTIC``     — 3-turn tool task (read, edit, confirm). Required for
+                      implementation workers on FREE routes.
+    ``SINGLE_CALL`` — one tool-call ping. Qualifies for chat/summary only.
+    ``NONE``        — no probe in the cache (subscription/metered routes that
+                      bypass the agentic gate).
+    """
+
+    AGENTIC = "agentic"
+    SINGLE_CALL = "single_call"
+    NONE = "none"
+
+
 @dataclass(frozen=True)
 class RouteVerdict:
     """Why one route did or did not reach a given ladder stage.

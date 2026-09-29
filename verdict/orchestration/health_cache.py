@@ -238,6 +238,8 @@ class HealthEntry:
     capacity_evidence: str | None = None
     http_status: int | None = None
     healthy: bool = False
+    probe_class: str = "single_call"  # "agentic" | "single_call"
+    agentic_ok: bool = False  # True only when a 3-turn agentic probe passed
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -271,6 +273,8 @@ class HealthEntry:
             payload["capacity_evidence"] = self.capacity_evidence
         if self.http_status is not None:
             payload["http_status"] = self.http_status
+        payload["probe_class"] = self.probe_class
+        payload["agentic_ok"] = self.agentic_ok
         return payload
 
     @classmethod
@@ -299,6 +303,8 @@ class HealthEntry:
             ),
             http_status=int(http_status) if isinstance(http_status, int) else None,
             healthy=value.get("healthy") is True,
+            probe_class=str(value.get("probe_class") or "single_call"),
+            agentic_ok=value.get("agentic_ok") is True,
         )
 
 
@@ -328,6 +334,8 @@ class ProbeResult:
     retry_after_seconds: float | None = None
     pool: str | None = None
     capacity_evidence: str | None = None
+    probe_class: str = "single_call"  # "agentic" | "single_call"
+    agentic_ok: bool = False
 
     @property
     def healthy(self) -> bool:
@@ -530,6 +538,13 @@ class HealthCache:
             raise HealthCacheError("route must be non-empty")
         current = _aware(now, "now")
         previous = self._routes.get(route)
+        # Preserve the best probe_class: an existing agentic pass is kept even
+        # when a subsequent single_call probe runs (agentic is rarer).
+        probe_class = result.probe_class
+        agentic_ok = result.agentic_ok
+        if previous is not None and previous.agentic_ok and probe_class == "single_call":
+            agentic_ok = True
+            probe_class = "agentic"
         if result.healthy:
             entry = HealthEntry(
                 route_id=route,
@@ -544,6 +559,8 @@ class HealthCache:
                 capacity_evidence=result.capacity_evidence,
                 http_status=result.http_status,
                 healthy=True,
+                probe_class=probe_class,
+                agentic_ok=agentic_ok,
             )
         else:
             prior = previous.consecutive_failures if previous is not None else 0
@@ -579,6 +596,8 @@ class HealthCache:
                 capacity_evidence=result.capacity_evidence,
                 http_status=result.http_status,
                 healthy=False,
+                probe_class=probe_class,
+                agentic_ok=False,  # failure resets agentic qualification
             )
         self._routes[route] = entry
         return entry

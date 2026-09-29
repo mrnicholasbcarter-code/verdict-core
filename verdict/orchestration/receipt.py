@@ -259,6 +259,10 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             row["provider"] = str(data.get("provider") or row["provider"] or route_provider(route))
             if data.get("capacity_class"):
                 row["capacity_class"] = str(data["capacity_class"])
+            # Free-first story 3: probe class and cache freshness.
+            for field in ("probe_class", "cache_checked_at", "cache_freshness"):
+                if data.get(field):
+                    row[field] = str(data[field])
             row["fault_injected"] = bool(row["fault_injected"] or data.get("fault_injected"))
             if event.type == "terminal":
                 ok = data.get("ok") is True

@@ -586,11 +586,12 @@ def _malformed_exception(exc: BaseException) -> bool:
 
 
 # Economic ranking policy (NOT a fallback chain): eligibility, health and task
-# fit always gate first; this only orders the surviving pool.  Subscription
-# capacity is already paid for, so it outranks free-tier and metered capacity.
+# fit always gate first; this only orders the surviving pool.
+# Implementation workers use free-first: free (with agentic probe) before
+# subscription before metered.  Planning/controller use subscription-first.
 # Operators override the provider->class map with VERDICT_CAPACITY_CLASSES,
 # e.g. "cc=claude_subscription,cx=subscription".
-CAPACITY_CLASS_ORDER: tuple[str, ...] = ("claude_subscription", "subscription", "free", "metered")
+CAPACITY_CLASS_ORDER: tuple[str, ...] = ("free", "claude_subscription", "subscription", "metered")
 DEFAULT_PROVIDER_CAPACITY_CLASS: Mapping[str, str] = {
     "cc": "claude_subscription",
     "cx": "subscription",
