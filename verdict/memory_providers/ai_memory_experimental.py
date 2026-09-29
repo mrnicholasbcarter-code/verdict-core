@@ -65,8 +65,7 @@ class AiMemoryExperimentalProvider:
         """
         if not endpoint or not endpoint.strip():
             raise SharedMemoryProviderError(
-                ProviderErrorCode.NOT_CONFIGURED,
-                "ai-memory endpoint is not configured",
+                ProviderErrorCode.NOT_CONFIGURED, "ai-memory endpoint is not configured"
             )
         if timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -225,15 +224,14 @@ class AiMemoryExperimentalProvider:
             # ai-memory returns: {"result": {"content": [{"type": "text", "text": "{...}"}]}}
             # The text field is a JSON string with page_id, path, checkpoint
             import json as _json
+
             content_items = result.get("result", {}).get("content", [])
             text_str = content_items[0].get("text", "{}") if content_items else "{}"
             page_info = _json.loads(text_str) if text_str else {}
             page_path = page_info.get("path", path)
 
             return ExternalMemoryRef(
-                provider_id=self.provider_id,
-                external_id=page_path,
-                revision=envelope.revision,
+                provider_id=self.provider_id, external_id=page_path, revision=envelope.revision
             )
         except SharedMemoryProviderError:
             raise  # Let caller handle
@@ -259,11 +257,7 @@ class AiMemoryExperimentalProvider:
             "method": "tools/call",
             "params": {
                 "name": "memory_query",
-                "arguments": {
-                    "query": query.query,
-                    "project": query.project,
-                    "limit": query.limit,
-                },
+                "arguments": {"query": query.query, "project": query.project, "limit": query.limit},
             },
         }
 
@@ -275,6 +269,7 @@ class AiMemoryExperimentalProvider:
             # ai-memory returns: {"result": {"content": [{"type": "text", "text": "{...}"}]}}
             # The text field is a JSON string with {"hits": [{id, path, title, snippet, rank}]}
             import json as _json
+
             content_items = result.get("result", {}).get("content", [])
             text_str = content_items[0].get("text", "{}") if content_items else "{}"
             search_data = _json.loads(text_str) if text_str else {}
@@ -283,20 +278,15 @@ class AiMemoryExperimentalProvider:
             hits = tuple(
                 SharedMemoryHit(
                     ref=ExternalMemoryRef(
-                        provider_id=self.provider_id,
-                        external_id=page["path"],
-                        revision=None,
+                        provider_id=self.provider_id, external_id=page["path"], revision=None
                     ),
                     envelope=self._page_to_envelope(page, query),
                     score=float(page.get("rank", 0.0)),
                 )
-                for page in pages[:query.limit]
+                for page in pages[: query.limit]
             )
 
-            return SharedMemorySearchResult(
-                status=ProviderResultStatus.AVAILABLE,
-                hits=hits,
-            )
+            return SharedMemorySearchResult(status=ProviderResultStatus.AVAILABLE, hits=hits)
         except SharedMemoryProviderError as exc:
             # Fail open: return empty result with error status
             status_map = {
@@ -325,12 +315,7 @@ class AiMemoryExperimentalProvider:
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {
-                "name": "memory_delete_page",
-                "arguments": {
-                    "path": ref.external_id,
-                },
-            },
+            "params": {"name": "memory_delete_page", "arguments": {"path": ref.external_id}},
         }
 
         try:
@@ -364,6 +349,7 @@ class AiMemoryExperimentalProvider:
         content = page.get("body") or page.get("snippet") or page.get("title") or ""
         # strip HTML mark tags from snippet (e.g. <mark>word</mark>)
         import re as _re
+
         content = _re.sub(r"</?mark>", "", content)
 
         return SharedMemoryEnvelope(
@@ -395,7 +381,6 @@ class AiMemoryExperimentalProvider:
             },
         )
 
-
     @staticmethod
     def _parse_timestamp(ts: Any) -> float:
         """Parse RFC3339 or return 0.0."""
@@ -405,6 +390,7 @@ class AiMemoryExperimentalProvider:
             return float(ts)
         try:
             from datetime import datetime
+
             dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
             return dt.timestamp()
         except Exception:

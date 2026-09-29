@@ -1,6 +1,5 @@
 """Tests for AiMemoryExperimentalProvider (BOD-281 POC)."""
 
-
 import httpx
 import pytest
 
@@ -28,21 +27,21 @@ class FakeTransport(httpx.BaseTransport):
         path = str(request.url).split("://", 1)[1].split("/", 1)[1]
         status, body = self.responses.get(path, (404, {"error": "not found"}))
         return httpx.Response(
-            status_code=status,
-            json=body,
-            headers={"content-type": "application/json"},
+            status_code=status, json=body, headers={"content-type": "application/json"}
         )
 
 
 def test_health_available():
     """Health check returns AVAILABLE when ai-memory responds."""
-    transport = FakeTransport({
-        "api/v1/workspaces": (200, [{"workspace_name": "default", "project_count": 1, "page_count": 0}]),
-    })
-    provider = AiMemoryExperimentalProvider(
-        "http://localhost:49374",
-        transport=transport,
+    transport = FakeTransport(
+        {
+            "api/v1/workspaces": (
+                200,
+                [{"workspace_name": "default", "project_count": 1, "page_count": 0}],
+            )
+        }
     )
+    provider = AiMemoryExperimentalProvider("http://localhost:49374", transport=transport)
 
     health = provider.health()
 
@@ -55,10 +54,7 @@ def test_health_available():
 def test_health_unavailable_on_network_error():
     """Health check returns UNAVAILABLE when ai-memory is unreachable."""
     transport = FakeTransport({})  # No responses = connection error
-    provider = AiMemoryExperimentalProvider(
-        "http://localhost:49374",
-        transport=transport,
-    )
+    provider = AiMemoryExperimentalProvider("http://localhost:49374", transport=transport)
 
     health = provider.health()
 
@@ -68,13 +64,9 @@ def test_health_unavailable_on_network_error():
 
 def test_health_auth_failed():
     """Health check returns AUTH_FAILED on 401."""
-    transport = FakeTransport({
-        "api/v1/workspaces": (401, {"error": "unauthorized"}),
-    })
+    transport = FakeTransport({"api/v1/workspaces": (401, {"error": "unauthorized"})})
     provider = AiMemoryExperimentalProvider(
-        "http://localhost:49374",
-        token="wrong-token",
-        transport=transport,
+        "http://localhost:49374", token="wrong-token", transport=transport
     )
 
     health = provider.health()
@@ -87,15 +79,10 @@ def test_search_fail_open_on_timeout():
     # Simulate timeout by returning error in transport
     transport = FakeTransport({})
     provider = AiMemoryExperimentalProvider(
-        "http://localhost:49374",
-        transport=transport,
-        timeout=0.1,
+        "http://localhost:49374", transport=transport, timeout=0.1
     )
 
-    query = SharedMemoryQuery(
-        query="test",
-        project="verdict-core",
-    )
+    query = SharedMemoryQuery(query="test", project="verdict-core")
 
     result = provider.search(query)
 
@@ -106,28 +93,27 @@ def test_search_fail_open_on_timeout():
 
 def test_search_returns_advisory_records():
     """Search results always have authority_verified=False."""
-    transport = FakeTransport({
-        "mcp": (200, {
-            "result": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "{\"hits\": [{\"id\": \"abc123\", \"path\": \"decisions/001.md\", \"title\": \"Decision\", \"snippet\": \"We decided X\", \"rank\": -0.036}]}",
+    transport = FakeTransport(
+        {
+            "mcp": (
+                200,
+                {
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '{"hits": [{"id": "abc123", "path": "decisions/001.md", "title": "Decision", "snippet": "We decided X", "rank": -0.036}]}',
+                            }
+                        ],
+                        "isError": False,
                     }
-                ],
-                "isError": False,
-            }
-        }),
-    })
-    provider = AiMemoryExperimentalProvider(
-        "http://localhost:49374",
-        transport=transport,
+                },
+            )
+        }
     )
+    provider = AiMemoryExperimentalProvider("http://localhost:49374", transport=transport)
 
-    query = SharedMemoryQuery(
-        query="decision",
-        project="verdict-core",
-    )
+    query = SharedMemoryQuery(query="decision", project="verdict-core")
 
     result = provider.search(query)
 
@@ -141,13 +127,25 @@ def test_search_returns_advisory_records():
 
 def test_put_writes_with_frontmatter():
     """put() sends memory to ai-memory with correct frontmatter."""
-    transport = FakeTransport({
-        "mcp": (200, {"result": {"content": [{"type": "text", "text": "{\"page_id\": \"01a0e9cb-test\", \"path\": \"verdict/memory/abc123.md\", \"checkpoint\": \"abc\"}"}], "isError": False}}),
-    })
-    provider = AiMemoryExperimentalProvider(
-        "http://localhost:49374",
-        transport=transport,
+    transport = FakeTransport(
+        {
+            "mcp": (
+                200,
+                {
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '{"page_id": "01a0e9cb-test", "path": "verdict/memory/abc123.md", "checkpoint": "abc"}',
+                            }
+                        ],
+                        "isError": False,
+                    }
+                },
+            )
+        }
     )
+    provider = AiMemoryExperimentalProvider("http://localhost:49374", transport=transport)
 
     envelope = SharedMemoryEnvelope(
         content="Important decision about routing",
@@ -165,14 +163,10 @@ def test_put_writes_with_frontmatter():
 def test_delete_fail_open():
     """delete() returns False on error, never raises."""
     transport = FakeTransport({})  # No response = error
-    provider = AiMemoryExperimentalProvider(
-        "http://localhost:49374",
-        transport=transport,
-    )
+    provider = AiMemoryExperimentalProvider("http://localhost:49374", transport=transport)
 
     ref = ExternalMemoryRef(
-        provider_id="ai-memory-experimental",
-        external_id="verdict/memory/test.md",
+        provider_id="ai-memory-experimental", external_id="verdict/memory/test.md"
     )
 
     result = provider.delete(ref)
