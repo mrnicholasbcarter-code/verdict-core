@@ -507,18 +507,27 @@ class EligibilityLadder:
         ):
             return "unknown_capacity_not_opted_in"
         # Agentic gate: a FREE route qualifies as an implementation worker
-        # only when a fresh AGENTIC probe PASS is in the health cache.
+        # only when a FRESH AGENTIC probe PASS is in the health cache.
         # A single-call PASS alone qualifies for chat/summary (frontier_worthy).
-        cache = getattr(self, "_health_cache", None)
-        if capacity == CapacityClass.FREE and not req.frontier_worthy and cache is not None:
-            from verdict.orchestration.health_cache import STATE_FRESH, STATE_STALE
+        if capacity == CapacityClass.FREE and not req.frontier_worthy:
+            cache = getattr(self, "_health_cache", None)
+            if cache is None:
+                return "no_health_cache"
+            from verdict.orchestration.health_cache import FRESH_SECONDS
 
             gate_now = now or datetime.now(timezone.utc)
             lookup = cache.lookup(route_id, gate_now)
             if lookup.entry is None or not lookup.entry.agentic_ok:
                 return "no_agentic_probe"
-            if lookup.state not in (STATE_FRESH, STATE_STALE):
-                return "agentic_probe_expired"
+            # The agentic gate uses agentic_checked_at (not the general
+            # checked_at that single-call probes refresh). Only FRESH is
+            # accepted: stale means the agentic qualification expired.
+            ack = lookup.entry.agentic_checked_at
+            if ack is None:
+                return "agentic_probe_stale"
+            age = (gate_now - ack).total_seconds()
+            if age > FRESH_SECONDS:
+                return "agentic_probe_stale"
         return ""
 
     def _fit(self, row: Mapping[str, Any], route_id: str, req: TaskRequirements) -> int:

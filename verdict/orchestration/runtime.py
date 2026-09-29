@@ -716,6 +716,12 @@ class DagRuntime:
                 capacity_class=choice.capacity_class.value,
                 rank=choice.rank,
             )
+            # Emit probe-class fields so receipts record qualifying probe info.
+            _probe_fields: dict[str, Any] = {}
+            if choice.rank_components:
+                for _pf in ("probe_class", "cache_checked_at", "cache_freshness"):
+                    if choice.rank_components.get(_pf) is not None:
+                        _probe_fields[_pf] = str(choice.rank_components[_pf])
             self.events.emit(
                 "selection",
                 node_id,
@@ -725,6 +731,7 @@ class DagRuntime:
                 plan=choice.plan_label,
                 rank=choice.rank,
                 attempt=run.attempt,
+                **_probe_fields,
             )
             self._capacity[node_id] = choice.capacity_class.value
             self.inflight[node_id] = choice.route_id

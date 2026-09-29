@@ -45,6 +45,7 @@ One bucket per provider/pool, shared with real calls through
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -349,9 +350,11 @@ def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
     """Score a 3-turn agentic probe sequence as pass/fail.
 
     Pass requires:
-    1. Turn 1 calls read_file with the correct path.
-    2. Turn 2 calls edit_file with old_text='line two' and new_text='LINE TWO'.
-    3. Turn 3 calls read_file again.
+    1. Turn 1 calls read_file with ``path`` == :data:`AGENTIC_PROBE_FILE`.
+    2. Turn 2 calls edit_file with ``old_text`` == ``'line two'`` and
+       ``new_text`` == ``'LINE TWO'``.
+    3. Turn 3 calls read_file with the same path **and** the fake tool result
+       contains the edited content (:data:`AGENTIC_PROBE_EXPECTED`).
     All three turns must have HTTP 2xx.
     """
     if len(exchanges) < 3:
@@ -360,27 +363,66 @@ def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
         if ex.status_code is not None and ex.status_code >= 400:
             return False
 
-    def _has_tool_call(ex: ProbeExchange, tool_name: str) -> bool:
+    def _tool_call_args(ex: ProbeExchange, tool_name: str) -> dict[str, Any] | None:
+        """Return parsed arguments of the first matching tool call, or *None*."""
         body = ex.response_body
         if not isinstance(body, Mapping):
-            return False
+            return None
         choices = body.get("choices", [])
         if not choices:
-            return False
+            return None
         message = choices[0].get("message", {}) if isinstance(choices[0], Mapping) else {}
         calls = message.get("tool_calls", [])
-        return any(
-            isinstance(tc, Mapping)
-            and isinstance(tc.get("function"), Mapping)
-            and tc["function"].get("name") == tool_name
-            for tc in (calls if isinstance(calls, list) else [])
-        )
+        for tc in calls if isinstance(calls, list) else []:
+            if not isinstance(tc, Mapping):
+                continue
+            fn = tc.get("function")
+            if not isinstance(fn, Mapping):
+                continue
+            if fn.get("name") != tool_name:
+                continue
+            raw = fn.get("arguments", "{}")
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    return None
+                return parsed if isinstance(parsed, dict) else None
+            if isinstance(raw, dict):
+                return raw
+            return None
+        return None
 
-    if not _has_tool_call(exchanges[0], AGENTIC_TOOL_READ):
+    # Turn 1: read_file with the exact probe path.
+    t1_args = _tool_call_args(exchanges[0], AGENTIC_TOOL_READ)
+    if t1_args is None or t1_args.get("path") != AGENTIC_PROBE_FILE:
         return False
-    if not _has_tool_call(exchanges[1], AGENTIC_TOOL_EDIT):
+
+    # Turn 2: edit_file with correct old_text / new_text.
+    t2_args = _tool_call_args(exchanges[1], AGENTIC_TOOL_EDIT)
+    if t2_args is None:
         return False
-    return _has_tool_call(exchanges[2], AGENTIC_TOOL_READ)
+    if t2_args.get("old_text") != "line two" or t2_args.get("new_text") != "LINE TWO":
+        return False
+
+    # Turn 3: read_file with the same path AND the tool result contains the
+    # edited content (proving the fake file handler applied the edit).
+    t3_args = _tool_call_args(exchanges[2], AGENTIC_TOOL_READ)
+    if t3_args is None or t3_args.get("path") != AGENTIC_PROBE_FILE:
+        return False
+
+    # Check that the exchange carries the edited file content in any
+    # string value (message content or tool result).
+    def _body_contains(obj: Any, needle: str) -> bool:
+        if isinstance(obj, str):
+            return needle in obj
+        if isinstance(obj, Mapping):
+            return any(_body_contains(v, needle) for v in obj.values())
+        if isinstance(obj, (list, tuple)):
+            return any(_body_contains(v, needle) for v in obj)
+        return False
+
+    return _body_contains(exchanges[2].response_body, AGENTIC_PROBE_EXPECTED)
 
 
 def _provider_of(route_id: str) -> str:
@@ -592,7 +634,7 @@ class Prober:
             self.cache.save()
         # Run agentic probes for FREE routes after the main cycle.
         if stats.requests < self.max_requests:
-            self.run_agentic_probes(stats)
+            self.run_agentic_probes(stats, started=started)
         return stats
 
     def _persist_cursor(self, index: int, *, open_cycle: bool) -> None:
@@ -710,15 +752,26 @@ class Prober:
         age = now - entry.checked_at
         return age.total_seconds() > self.agentic_interval_hours * 3600
 
-    def run_agentic_probes(self, stats: CycleStats) -> None:
-        """Run agentic probes for FREE routes that need them. Bounded."""
+    def run_agentic_probes(self, stats: CycleStats, started: float | None = None) -> None:
+        """Run agentic probes for FREE routes that need them. Bounded.
+
+        Enforces the cycle's wall-time budget and the stop signal before
+        each probe and each turn.
+        """
         if self.agentic_transport is None:
             return
+        wall_start = started if started is not None else self.monotonic()
         now = self.clock()
         routes = [r for r in self.routes_loader() if self._needs_agentic(r, now)]
         probed = 0
         max_agentic = min(8, self.max_requests - stats.requests)
         for route in routes[:max_agentic]:
+            # Check stop signal and wall-time before each probe.
+            if self._stop.is_set():
+                break
+            if self.monotonic() - wall_start >= self.max_wall_seconds:
+                stats.stopped_reason = stats.stopped_reason or "wall_cap"
+                break
             if stats.requests + 3 > self.max_requests:
                 break
             now = self.clock()
@@ -733,7 +786,13 @@ class Prober:
                 )
                 exchanges.append(t1)
                 stats.requests += 1
-                if t1.ok and stats.requests < self.max_requests:
+                # Check stop/wall between turns.
+                if (
+                    t1.ok
+                    and stats.requests < self.max_requests
+                    and not self._stop.is_set()
+                    and self.monotonic() - wall_start < self.max_wall_seconds
+                ):
                     t2 = self.agentic_transport(
                         route.route_id,
                         agentic_turn2_payload(route.route_id, []),
@@ -741,7 +800,12 @@ class Prober:
                     )
                     exchanges.append(t2)
                     stats.requests += 1
-                    if t2.ok and stats.requests < self.max_requests:
+                    if (
+                        t2.ok
+                        and stats.requests < self.max_requests
+                        and not self._stop.is_set()
+                        and self.monotonic() - wall_start < self.max_wall_seconds
+                    ):
                         t3 = self.agentic_transport(
                             route.route_id,
                             agentic_turn3_payload(route.route_id, []),
@@ -930,6 +994,65 @@ def _exchange_from_body(
     )
 
 
+def live_agentic_transport(
+    base_url: str, *, api_key: str | None
+) -> Callable[[str, dict[str, Any], float], ProbeExchange]:
+    """OpenAI-compatible transport for agentic probes (arbitrary payloads).
+
+    Built only for a consented live daemon behind ``--allow-live-probe``.
+    """
+    import urllib.error
+    import urllib.request
+
+    endpoint = base_url.rstrip("/")
+    if endpoint.endswith("/v1"):
+        endpoint = endpoint[: -len("/v1")]
+    endpoint = endpoint + "/v1/chat/completions"
+
+    def transport(route_id: str, payload: dict[str, Any], timeout_seconds: float) -> ProbeExchange:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+                raw = response.read(1_048_576)
+                elapsed = (time.monotonic() - started) * 1000.0
+                parsed = json.loads(raw) if raw else {}
+                return ProbeExchange(
+                    http_status=response.status,
+                    ok=200 <= response.status < 300,
+                    latency_ms=elapsed,
+                    response_body=parsed if isinstance(parsed, Mapping) else {},
+                )
+        except urllib.error.HTTPError as exc:
+            elapsed = (time.monotonic() - started) * 1000.0
+            retry_after = None
+            header = exc.headers.get("Retry-After") if exc.headers else None
+            if header:
+                try:
+                    retry_after = float(header)
+                except ValueError:
+                    retry_after = None
+            return ProbeExchange(
+                http_status=exc.code,
+                ok=False,
+                latency_ms=elapsed,
+                retry_after_seconds=retry_after,
+                error_category=category_for(ProbeExchange(http_status=exc.code, ok=False)),
+            )
+        except TimeoutError:
+            return ProbeExchange(http_status=None, ok=False, error_category="timeout")
+
+    return transport
+
+
 def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
     """OpenAI-compatible transport. Built only for a consented live daemon."""
     import json
@@ -1055,6 +1178,9 @@ def build_live_daemon(
 
     cache = HealthCache(cache_path or default_cache_path())
     chosen = transport if transport is not None else live_transport(origin, api_key=key)
+    # Wire the agentic transport (same OmniRoute client) behind the same
+    # --allow-live-probe opt-in the single-call probe uses.
+    agentic = live_agentic_transport(origin, api_key=key) if allow_live_probe else None
     prober = Prober(
         cache=cache,
         routes_loader=loader,
@@ -1064,6 +1190,7 @@ def build_live_daemon(
         concurrency=concurrency,
         probe_timeout_seconds=probe_timeout_seconds,
         interval_seconds=interval_seconds,
+        agentic_transport=agentic,
     )
     return ProverDaemon(prober=prober, consented=allow_live_probe)
 

@@ -12,6 +12,7 @@ Covers AC1-AC7 of free-first Story 3:
 
 from __future__ import annotations
 
+import json as _json
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,7 +34,12 @@ from verdict.orchestration.health_cache import (
     HealthEntry,
     ProbeResult,
 )
-from verdict.prove_at_rest import ProbeExchange, score_agentic_probe
+from verdict.prove_at_rest import (
+    AGENTIC_PROBE_EXPECTED,
+    AGENTIC_PROBE_FILE,
+    ProbeExchange,
+    score_agentic_probe,
+)
 from verdict.subagent_selection import HealthResult
 
 NOW = datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc)
@@ -109,8 +115,12 @@ def _fresh_entry(
     agentic_ok: bool = False,
     probe_class: str = "single_call",
     age_seconds: float = 60.0,
+    agentic_checked_at: datetime | None = None,
 ) -> HealthEntry:
     checked = NOW - timedelta(seconds=age_seconds)
+    ack = agentic_checked_at
+    if ack is None and agentic_ok:
+        ack = checked  # default to checked_at for convenience
     return HealthEntry(
         route_id=route_id,
         category=CATEGORY_OK,
@@ -122,6 +132,7 @@ def _fresh_entry(
         healthy=True,
         probe_class=probe_class,
         agentic_ok=agentic_ok,
+        agentic_checked_at=ack,
     )
 
 
@@ -168,7 +179,10 @@ class TestCapacityOrdering:
             _conn("glm", auth="apikey", plan="free", free_only=True),
             _conn("claude", auth="oauth", plan="max"),
         ]
-        ladder, _ = _make(tmp_path, rows, conns)  # no health_cache
+        cache = _build_cache(
+            tmp_path, [_fresh_entry("gl/model-b", agentic_ok=True, probe_class="agentic")]
+        )
+        ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
         assert ranked[0].route_id == "gl/model-b"
@@ -230,14 +244,15 @@ class TestAgenticGate:
         by_id = {v.route_id: v for v in verdicts}
         assert by_id["free/model-a"].reason == "no_agentic_probe"
 
-    def test_free_without_health_cache_is_eligible(self, tmp_path: Path) -> None:
-        """Without a health_cache attached, free routes pass (backward compat)."""
+    def test_free_without_health_cache_is_blocked(self, tmp_path: Path) -> None:
+        """Without a health_cache attached, FREE routes are NOT implementation-eligible."""
         rows = [_row("free/model-a", owned_by="free", pricing={"input": 0, "output": 0})]
         conns = [_conn("free", auth="apikey", plan="free", free_only=True)]
         ladder, _ = _make(tmp_path, rows, conns, health_cache=None)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         by_id = {v.route_id: v for v in verdicts}
-        assert by_id["free/model-a"].rank is not None
+        assert by_id["free/model-a"].rank is None
+        assert by_id["free/model-a"].reason == "no_health_cache"
 
     def test_subscription_not_gated_by_agentic(self, tmp_path: Path) -> None:
         """Subscription routes bypass the agentic gate entirely."""
@@ -316,15 +331,18 @@ class TestStaleFresh:
         assert lookup.entry is not None
         assert lookup.entry.agentic_ok is True
 
-    def test_stale_entry_still_qualifies(self, tmp_path: Path) -> None:
-        """Stale-healthy entry (past fresh window but inside usable) still works."""
+    def test_stale_entry_rejected_by_agentic_gate(self, tmp_path: Path) -> None:
+        """Stale agentic entry (agentic_checked_at past FRESH_SECONDS) is rejected."""
         entry = _fresh_entry(
             "free/m", agentic_ok=True, probe_class="agentic", age_seconds=FRESH_SECONDS + 60
         )
         cache = _build_cache(tmp_path, [entry])
-        lookup = cache.lookup("free/m", NOW)
-        assert lookup.state == STATE_STALE
-        assert lookup.entry is not None and lookup.entry.agentic_ok is True
+        rows = [_row("free/m", owned_by="free", pricing={"input": 0, "output": 0})]
+        conns = [_conn("free", auth="apikey", plan="free", free_only=True)]
+        ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
+        verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
+        by_id = {v.route_id: v for v in verdicts}
+        assert by_id["free/m"].reason == "agentic_probe_stale"
 
     def test_expired_entry_fails_agentic_gate(self, tmp_path: Path) -> None:
         """Expired (past usable window) loses agentic qualification."""
@@ -337,76 +355,173 @@ class TestStaleFresh:
         ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         by_id = {v.route_id: v for v in verdicts}
-        assert by_id["free/m"].reason == "agentic_probe_expired"
+        assert by_id["free/m"].reason == "agentic_probe_stale"
 
 
 # ---- AC6: Cache-missing fallback -----
 
 
 class TestCacheMissing:
-    def test_no_health_cache_behaves_as_before(self, tmp_path: Path) -> None:
-        """Without health_cache, selection is today's behavior (no free-first gate)."""
+    def test_no_health_cache_blocks_free(self, tmp_path: Path) -> None:
+        """Without health_cache, FREE routes are NOT implementation-eligible."""
         rows = [
             _row("cc/model-a", owned_by="claude"),
             _row("free/model-b", owned_by="free", pricing={"input": 0, "output": 0}),
         ]
         conns = [_conn("claude"), _conn("free", plan="free", free_only=True)]
         ladder, _ = _make(tmp_path, rows, conns, health_cache=None)
-        s, _ = ladder.select(WORKER_REQ, now=NOW)
-        # Without cache: free ranks first (worker order), and is eligible
+        s, vs = ladder.select(WORKER_REQ, now=NOW)
+        # Without cache: free is blocked; subscription route is selected
         assert s is not None
+        assert s.route_id == "cc/model-a"
+        by_id = {v.route_id: v for v in vs}
+        assert by_id["free/model-b"].reason == "no_health_cache"
 
 
 # ---- AC7: Agentic probe scoring -----
 
 
 class TestAgenticProbeScoring:
-    def _ok_exchange(self, tool_name: str) -> ProbeExchange:
-        return ProbeExchange(
-            http_status=200,
-            ok=True,
-            response_body={
-                "choices": [
-                    {
-                        "message": {
-                            "tool_calls": [{"function": {"name": tool_name, "arguments": "{}"}}]
-                        }
+    """AC7: score_agentic_probe validates arguments, not just tool names."""
+
+    def _exchange(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        body_extra: dict[str, Any] | None = None,
+    ) -> ProbeExchange:
+        args = arguments if arguments is not None else {}
+        body: dict[str, Any] = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {"function": {"name": tool_name, "arguments": _json.dumps(args)}}
+                        ]
                     }
-                ]
-            },
+                }
+            ]
+        }
+        if body_extra:
+            body.update(body_extra)
+        return ProbeExchange(http_status=200, ok=True, response_body=body)
+
+    def _perfect_exchanges(self) -> list[ProbeExchange]:
+        """Three-turn probe with correct arguments and edited content."""
+        t1 = self._exchange("verdict_probe_read_file", {"path": AGENTIC_PROBE_FILE})
+        t2 = self._exchange(
+            "verdict_probe_edit_file",
+            {"path": AGENTIC_PROBE_FILE, "old_text": "line two", "new_text": "LINE TWO"},
         )
+        # Turn 3: read_file again; response body must contain edited content.
+        t3_body = {
+            "choices": [
+                {
+                    "message": {
+                        "content": AGENTIC_PROBE_EXPECTED,
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "verdict_probe_read_file",
+                                    "arguments": _json.dumps({"path": AGENTIC_PROBE_FILE}),
+                                }
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        t3 = ProbeExchange(http_status=200, ok=True, response_body=t3_body)
+        return [t1, t2, t3]
 
     def test_perfect_3_turn_passes(self) -> None:
+        assert score_agentic_probe(self._perfect_exchanges()) is True
+
+    def test_empty_arguments_fails(self) -> None:
+        """Empty {} arguments → FAIL (no path in turn 1)."""
         exchanges = [
-            self._ok_exchange("verdict_probe_read_file"),
-            self._ok_exchange("verdict_probe_edit_file"),
-            self._ok_exchange("verdict_probe_read_file"),
+            self._exchange("verdict_probe_read_file", {}),
+            self._exchange("verdict_probe_edit_file", {}),
+            self._exchange("verdict_probe_read_file", {}),
         ]
-        assert score_agentic_probe(exchanges) is True
+        assert score_agentic_probe(exchanges) is False
+
+    def test_wrong_old_text_fails(self) -> None:
+        """Wrong old_text in turn 2 → FAIL."""
+        t1 = self._exchange("verdict_probe_read_file", {"path": AGENTIC_PROBE_FILE})
+        t2 = self._exchange(
+            "verdict_probe_edit_file",
+            {"path": AGENTIC_PROBE_FILE, "old_text": "WRONG", "new_text": "LINE TWO"},
+        )
+        t3_body = {
+            "choices": [
+                {
+                    "message": {
+                        "content": AGENTIC_PROBE_EXPECTED,
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "verdict_probe_read_file",
+                                    "arguments": _json.dumps({"path": AGENTIC_PROBE_FILE}),
+                                }
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        t3 = ProbeExchange(http_status=200, ok=True, response_body=t3_body)
+        assert score_agentic_probe([t1, t2, t3]) is False
+
+    def test_right_calls_wrong_order_fails(self) -> None:
+        """Correct calls in wrong order → FAIL (edit before read)."""
+        perfect = self._perfect_exchanges()
+        # Swap turn 1 (read) and turn 2 (edit)
+        assert score_agentic_probe([perfect[1], perfect[0], perfect[2]]) is False
 
     def test_wrong_tool_name_fails(self) -> None:
-        exchanges = [
-            self._ok_exchange("verdict_probe_read_file"),
-            self._ok_exchange("wrong_tool"),
-            self._ok_exchange("verdict_probe_read_file"),
-        ]
-        assert score_agentic_probe(exchanges) is False
+        t1 = self._exchange("verdict_probe_read_file", {"path": AGENTIC_PROBE_FILE})
+        t2 = self._exchange("wrong_tool", {"path": AGENTIC_PROBE_FILE})
+        t3 = self._perfect_exchanges()[2]
+        assert score_agentic_probe([t1, t2, t3]) is False
 
     def test_fewer_than_3_turns_fails(self) -> None:
-        exchanges = [
-            self._ok_exchange("verdict_probe_read_file"),
-            self._ok_exchange("verdict_probe_edit_file"),
-        ]
-        assert score_agentic_probe(exchanges) is False
+        perfect = self._perfect_exchanges()
+        assert score_agentic_probe(perfect[:2]) is False
 
     def test_http_error_fails(self) -> None:
         bad = ProbeExchange(http_status=500, ok=False, status_code=500)
-        exchanges = [
-            self._ok_exchange("verdict_probe_read_file"),
-            bad,
-            self._ok_exchange("verdict_probe_read_file"),
-        ]
-        assert score_agentic_probe(exchanges) is False
+        perfect = self._perfect_exchanges()
+        assert score_agentic_probe([perfect[0], bad, perfect[2]]) is False
+
+    def test_missing_edited_content_in_turn3_fails(self) -> None:
+        """Turn 3 response doesn't contain the edited content → FAIL."""
+        t1 = self._exchange("verdict_probe_read_file", {"path": AGENTIC_PROBE_FILE})
+        t2 = self._exchange(
+            "verdict_probe_edit_file",
+            {"path": AGENTIC_PROBE_FILE, "old_text": "line two", "new_text": "LINE TWO"},
+        )
+        # Turn 3: body does NOT contain AGENTIC_PROBE_EXPECTED
+        t3_body = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "some other content",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "verdict_probe_read_file",
+                                    "arguments": _json.dumps({"path": AGENTIC_PROBE_FILE}),
+                                }
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        t3 = ProbeExchange(http_status=200, ok=True, response_body=t3_body)
+        assert score_agentic_probe([t1, t2, t3]) is False
 
 
 # ---- AC: ProbeClass enum -----
@@ -471,6 +586,7 @@ class TestRankComponentsProbeInfo:
             healthy=True,
             probe_class="agentic",
             agentic_ok=True,
+            agentic_checked_at=checked,
         )
         cache = _build_cache(tmp_path, [entry])
         rows = [_row("free/m", owned_by="free", pricing={"input": 0, "output": 0})]
@@ -483,3 +599,180 @@ class TestRankComponentsProbeInfo:
         assert v.rank_components["probe_class"] == "agentic"
         assert v.rank_components["cache_freshness"] in (STATE_FRESH, STATE_STALE)
         assert v.rank_components["cache_checked_at"] is not None
+
+
+# ---- Finding 2: agentic_checked_at separate from checked_at -----
+
+
+class TestAgenticCheckedAtSeparation:
+    def test_single_call_pass_does_not_refresh_agentic_timestamp(self, tmp_path: Path) -> None:
+        """Agentic PASS at T0, single-call PASSes at T0+23h and T0+25h.
+
+        At T0+25h the agentic gate must say stale because agentic_checked_at
+        is T0, which is 25 h ago (beyond FRESH_SECONDS = 10 min).
+        """
+
+        t0 = NOW - timedelta(hours=25)
+        cache = HealthCache(tmp_path / "hc.json")
+        # Step 1: agentic PASS at T0
+        agentic_result = ProbeResult(
+            category=CATEGORY_OK, chat_ok=True, tool_ok=True, probe_class="agentic", agentic_ok=True
+        )
+        cache.record("free/m", agentic_result, t0)
+        entry = cache.entry("free/m")
+        assert entry is not None
+        assert entry.agentic_ok is True
+        assert entry.agentic_checked_at == t0
+
+        # Step 2: single-call PASS at T0+23h
+        t_23h = t0 + timedelta(hours=23)
+        single_result = ProbeResult(
+            category=CATEGORY_OK,
+            chat_ok=True,
+            tool_ok=True,
+            probe_class="single_call",
+            agentic_ok=False,
+        )
+        cache.record("free/m", single_result, t_23h)
+        entry2 = cache.entry("free/m")
+        assert entry2 is not None
+        assert entry2.agentic_ok is True  # preserved
+        assert entry2.checked_at == t_23h  # single-call time
+        assert entry2.agentic_checked_at == t0  # NOT refreshed
+
+        # Step 3: single-call PASS at T0+25h (= NOW)
+        cache.record("free/m", single_result, NOW)
+        entry3 = cache.entry("free/m")
+        assert entry3 is not None
+        assert entry3.agentic_ok is True  # still preserved
+        assert entry3.checked_at == NOW  # single-call time
+        assert entry3.agentic_checked_at == t0  # NOT refreshed
+
+        cache.save()
+
+        # Step 4: eligibility gate at NOW should reject (agentic_checked_at is 25h old)
+        rows = [_row("free/m", owned_by="free", pricing={"input": 0, "output": 0})]
+        conns = [_conn("free", auth="apikey", plan="free", free_only=True)]
+        ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
+        verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
+        by_id = {v.route_id: v for v in verdicts}
+        assert by_id["free/m"].reason == "agentic_probe_stale"
+
+
+# ---- Finding 4: wall-time and stop signal in run_agentic_probes -----
+
+
+class TestAgenticProbeWallTime:
+    def test_wall_time_stops_agentic_probes(self) -> None:
+        """run_agentic_probes respects the cycle wall-time budget."""
+
+        import tempfile
+
+        from verdict.orchestration.health_cache import HealthCache
+        from verdict.prove_at_rest import AdmittedRoute, CycleStats, ProbeExchange, Prober
+
+        with tempfile.TemporaryDirectory() as td:
+            cache = HealthCache(Path(td) / "hc.json")
+            call_count = 0
+            mono_time = [0.0]
+
+            def fake_transport(
+                route_id: str, payload: dict[str, Any], timeout: float
+            ) -> ProbeExchange:
+                nonlocal call_count
+                call_count += 1
+                # Advance wall time past budget on first call
+                mono_time[0] += 700.0
+                return ProbeExchange(http_status=200, ok=True, response_body={})
+
+            routes = [
+                AdmittedRoute(route_id="free/m1", provider="free", capacity="free"),
+                AdmittedRoute(route_id="free/m2", provider="free2", capacity="free"),
+            ]
+            prober = Prober(
+                cache=cache,
+                routes_loader=lambda: routes,
+                transport=lambda *a: ProbeExchange(http_status=200, ok=True),
+                max_wall_seconds=600.0,
+                agentic_transport=fake_transport,
+                monotonic=lambda: mono_time[0],
+            )
+            stats = CycleStats()
+            prober.run_agentic_probes(stats, started=0.0)
+            # Should have stopped after first route's first turn (wall cap exceeded)
+            assert call_count <= 3  # at most one route's 3 turns
+
+    def test_stop_signal_stops_agentic_probes(self) -> None:
+        """run_agentic_probes respects the stop signal."""
+        import tempfile
+
+        from verdict.orchestration.health_cache import HealthCache
+        from verdict.prove_at_rest import AdmittedRoute, CycleStats, ProbeExchange, Prober
+
+        with tempfile.TemporaryDirectory() as td:
+            cache = HealthCache(Path(td) / "hc.json")
+            call_count = 0
+
+            def fake_transport(
+                route_id: str, payload: dict[str, Any], timeout: float
+            ) -> ProbeExchange:
+                nonlocal call_count
+                call_count += 1
+                return ProbeExchange(http_status=200, ok=True, response_body={})
+
+            routes = [
+                AdmittedRoute(route_id="free/m1", provider="free", capacity="free"),
+                AdmittedRoute(route_id="free/m2", provider="free2", capacity="free"),
+            ]
+            prober = Prober(
+                cache=cache,
+                routes_loader=lambda: routes,
+                transport=lambda *a: ProbeExchange(http_status=200, ok=True),
+                agentic_transport=fake_transport,
+            )
+            prober.stop()  # set the stop signal
+            stats = CycleStats()
+            prober.run_agentic_probes(stats, started=0.0)
+            assert call_count == 0  # no probes should have run
+
+
+# ---- Finding 6: receipt probe-class fields -----
+
+
+class TestReceiptProbeFields:
+    def test_selection_event_carries_probe_fields(self) -> None:
+        """Probe-class fields reach the receipt through the selection event."""
+        from verdict.orchestration.contracts import RunEvent
+        from verdict.orchestration.receipt import _node_record
+
+        events = [
+            RunEvent(
+                seq=1,
+                at="2026-09-29T12:00:00+00:00",
+                type="selection",
+                node_id="worker-0",
+                data={
+                    "route_id": "free/m",
+                    "provider": "free",
+                    "capacity_class": "free",
+                    "probe_class": "agentic",
+                    "cache_checked_at": "2026-09-29T11:59:00+00:00",
+                    "cache_freshness": "fresh",
+                },
+            ),
+            RunEvent(
+                seq=2,
+                at="2026-09-29T12:01:00+00:00",
+                type="terminal",
+                node_id="worker-0",
+                data={"route_id": "free/m", "ok": True, "duration_seconds": 5.0},
+            ),
+        ]
+        record = _node_record("worker-0", "implementation", events)
+        # The attempt row should carry probe fields from the selection event.
+        attempts = record.get("attempts", [])
+        assert len(attempts) >= 1
+        row = attempts[0]
+        assert row.get("probe_class") == "agentic"
+        assert row.get("cache_checked_at") == "2026-09-29T11:59:00+00:00"
+        assert row.get("cache_freshness") == "fresh"

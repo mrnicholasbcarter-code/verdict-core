@@ -18,8 +18,12 @@ A FREE route qualifies as an implementation worker **only** when a fresh
 AGENTIC probe PASS is in the health cache. A single-call tool PASS alone
 qualifies it for chat or summary roles (frontier-worthy tasks).
 
-Without a health cache attached, the agentic gate is not enforced, and
-selection behaves as before (backward compatible).
+Without a health cache attached, FREE routes are **not** implementation-eligible
+(`no_health_cache`); selection falls through to SUBSCRIPTION / METERED.
+
+Free-first ordering applies to the **eligibility ladder** when a health
+cache is attached. `verdict orchestrate` does not use this path yet;
+the live proof will land in a follow-up.
 
 ## Probe classes
 
@@ -46,6 +50,7 @@ One JSON file, one `fcntl` lock, atomic replace. Each route entry has:
 | `tool_ok` | The required tool call succeeded. This is a coding worker. |
 | `probe_class` | `agentic` or `single_call` |
 | `agentic_ok` | True only when a 3-turn agentic probe passed |
+| `agentic_checked_at` | When the last agentic probe ran (separate from `checked_at`) |
 | `latency_ms` | Probe latency |
 | `pool` | Optional shared-quota pool |
 | `capacity_evidence` | Optional capacity label from admission |
