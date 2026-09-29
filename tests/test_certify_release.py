@@ -836,19 +836,15 @@ def test_compute_verdict_all_pass_clean_certified():
     assert verdict == "CERTIFIED"
 
 
-def test_compute_verdict_skipped_rehearsals_certified():
-    """Test compute_verdict: SKIPPED rehearsals (no credentials) -> CERTIFIED.
-
-    A rehearsal skip means live gateway credentials were not provided; all other
-    evidence is valid so the verdict is CERTIFIED (not INCOMPLETE).
-    """
+def test_compute_verdict_skipped_rehearsals_incomplete():
+    """Test compute_verdict: SKIPPED rehearsals -> INCOMPLETE."""
     test_pass = certify_release.StepResult(step_id="test", name="Tests", status="PASS")
     rehearsals_skipped = certify_release.StepResult(
         step_id="rehearsals", name="Rehearsals", status="SKIPPED", reason="none provided"
     )
 
     verdict = certify_release.compute_verdict([test_pass, rehearsals_skipped], git_dirty=False)
-    assert verdict == "CERTIFIED"
+    assert verdict == "INCOMPLETE"
 
 
 def test_compute_verdict_dirty_tree_incomplete():

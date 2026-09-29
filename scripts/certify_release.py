@@ -772,20 +772,16 @@ def compute_verdict(
 
     Rules:
     - Any FAIL -> FAILED
-    - Any INCOMPLETE or git_dirty -> INCOMPLETE
-    - Rehearsal SKIPPED (no live credentials) is acceptable: CERTIFIED with a note
+    - Any INCOMPLETE or git_dirty or skipped rehearsals -> INCOMPLETE
     - Otherwise -> CERTIFIED
     """
     has_failures = any(s.status == "FAIL" for s in steps)
     has_incomplete = any(s.status == "INCOMPLETE" for s in steps)
-    # A skipped rehearsal means live credentials were not provided, which is
-    # expected in CI/pre-publish runs.  It does not downgrade the verdict to
-    # INCOMPLETE — all other evidence is still valid.
-    has_non_rehearsal_skip = any(s.status == "SKIPPED" and s.step_id != "rehearsals" for s in steps)
+    has_skipped_rehearsals = any(s.step_id == "rehearsals" and s.status == "SKIPPED" for s in steps)
 
     if has_failures:
         return "FAILED"
-    elif has_incomplete or git_dirty or has_non_rehearsal_skip:
+    elif has_incomplete or git_dirty or has_skipped_rehearsals:
         return "INCOMPLETE"
     else:
         return "CERTIFIED"
