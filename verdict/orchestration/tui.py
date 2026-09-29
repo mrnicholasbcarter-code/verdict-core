@@ -801,10 +801,24 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
     """
     checks_ok = [c for c in (*view.verifications, *view.barriers, *view.integrations) if c.ok]
     checks_bad = [c for c in (*view.verifications, *view.barriers, *view.integrations) if not c.ok]
+    # Truncate each check line to the VERIFY panel's inner column width.
+    # The VERIFY panel is half of a 110-col terminal (55 cols) minus 4 for
+    # box + padding = 51 inner chars.  Truncating prevents a command detail
+    # that contains a status word (e.g. "grep -q FAIL …") from wrapping onto
+    # a new line that starts with that word, which would look like a status.
+    _VERIFY_COL = 51
+
+    def _vline(prefix: str, label: str, detail: str) -> str:
+        full = f"{prefix} {label} {detail}".strip()
+        if len(full) <= _VERIFY_COL:
+            return full
+        keep = _VERIFY_COL - 1  # reserve one char for "…"
+        return full[:keep] + "\u2026"
+
     verify_lines = (
         [f"{len(checks_ok)} passed, {len(checks_bad)} failed"]
-        + [f"FAIL {c.label} {c.detail}".strip() for c in checks_bad[-4:]]
-        + [f"PASS {c.label} {c.detail}".strip() for c in view.verifications if c.ok][-4:]
+        + [_vline("FAIL", c.label, c.detail) for c in checks_bad[-4:]]
+        + [_vline("PASS", c.label, c.detail) for c in view.verifications if c.ok][-4:]
     )
     dag = [f"L{i}: " + ", ".join(layer) for i, layer in enumerate(view.layers)]
     plan = [*_plan_lines(view)[:2], "", *dag] if dag else _plan_lines(view)

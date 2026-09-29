@@ -242,6 +242,72 @@ def test_check_results_are_projected() -> None:
     assert view.integrations[0].detail == "2 commit(s)"
 
 
+def test_verify_lines_truncate_so_pass_fail_prefix_never_wraps() -> None:
+    """A PASS command whose detail contains 'FAIL' must not produce a continuation
+    line starting with 'FAIL'.  Each check line is truncated with '…' to fit the
+    VERIFY panel's inner column width so word-wrap never starts with a status word.
+    """
+    from verdict.orchestration.tui import render
+
+    # Craft a verify command whose detail contains 'FAIL' past the wrap point:
+    # "PASS node-2 sh -c test -f node-2.txt && ! grep -q FAIL node-2.txt (exit 0)"
+    # That is 72 chars – longer than the 51-char panel inner width.
+    long_cmd = "sh -c test -f node-2.txt && ! grep -q FAIL node-2.txt"
+    view = RunView.from_events(
+        [event(1, "verify", "node-2", ok=True, command=long_cmd, exit_code=0)]
+    )
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    console = Console(file=buf, width=110, color_system=None, force_terminal=False)
+    console.print(render(view, width=110, plain=True))
+    text = buf.getvalue()
+
+    lines = text.splitlines()
+    # Extract the VERIFY section: lines between the VERIFY header and the next
+    # section header (a line that is all-caps and ends without trailing data,
+    # or starts with a title-case section name).
+    in_verify = False
+    verify_content: list[str] = []
+    for ln in lines:
+        stripped = ln.strip()
+        if stripped == "VERIFY":
+            in_verify = True
+            continue
+        if in_verify:
+            # A new top-level section header ends the VERIFY block
+            if stripped in (
+                "REVIEW",
+                "COMPLETE",
+                "BLOCKED",
+                "WORKERS",
+                "QUOTA/COOLDOWN",
+                "FAILURE/REASSIGN",
+                "SELECT",
+                "HYDRATE",
+                "GOAL",
+                "UNDERSTAND",
+                "CONTROLLER",
+                "PLAN / DAG",
+            ):
+                break
+            verify_content.append(ln)
+
+    # No content line in the VERIFY block may start with "FAIL" for a passing check.
+    # All verifications here are ok=True so no FAIL-prefix line should appear.
+    fail_rows = [ln for ln in verify_content if ln.lstrip().startswith("FAIL")]
+    assert not fail_rows, (
+        f"VERIFY block has content line(s) starting with FAIL for a passing check: {fail_rows}"
+    )
+    # The PASS line must be present and must fit in 51 chars (inner panel width).
+    pass_rows = [ln for ln in verify_content if ln.lstrip().startswith("PASS")]
+    assert pass_rows, f"no PASS line found in VERIFY section; content={verify_content}"
+    for row in pass_rows:
+        assert len(row.strip()) <= 51, f"PASS line exceeds 51 chars: {row.strip()!r}"
+
+
 def test_follow_skips_previous_controller_life(tmp_path) -> None:
     import json as _json
 
