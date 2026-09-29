@@ -220,31 +220,15 @@ class CockpitState:
 
 
 def open_context_view(state: CockpitState, view: Any) -> None:
-    """BOD-278 extension point: toggle the context budget/provenance panel.
-
-    Builds a :class:`~verdict.orchestration.context_view.ContextView` from the
-    live :class:`RunView` summary (sources stay unknown until hydrate events
-    with a ``sources`` field are projected separately). Stores the projection
-    on ``state`` for the cockpit compose path.
-    """
-    from verdict.orchestration.context_render import (
-        context_view_from_run_view,
-        render_context,
-        render_context_text,
-    )
+    """Toggle recorded context provenance for the selected worker."""
+    from verdict.orchestration.cockpit_controls import context_for_selected
+    from verdict.orchestration.context_render import render_context, render_context_text
 
     open_now = not bool(getattr(state, "context_open", False))
     state.context_open = open_now  # type: ignore[attr-defined]
-    if not open_now:
-        state.context_panel = None  # type: ignore[attr-defined]
-        return
-    cview = context_view_from_run_view(view)
-    state.context_view = cview  # type: ignore[attr-defined]
-    # Pre-bind callables so the compose path stays a thin render call.
+    state.context_view = context_for_selected(state, view) if open_now else None  # type: ignore[attr-defined]
     state.context_render = render_context  # type: ignore[attr-defined]
     state.context_render_text = render_context_text  # type: ignore[attr-defined]
-    # Keep imports referenced for type-checkers / freeze tools.
-    _ = (render_context, render_context_text)
 
 
 def open_routing_view(state: CockpitState, view: Any) -> None:
@@ -272,8 +256,10 @@ def open_routing_view(state: CockpitState, view: Any) -> None:
 
 
 def submit_control(state: CockpitState, action: str) -> None:
-    """BOD-275 / PR #713 extension point for cancel/retry through the
-    shared action layer. Currently a no-op — controls are wired later."""
+    """Submit through the shared CLI/cockpit action, never mutate run state."""
+    from verdict.orchestration.cockpit_controls import submit_control as submit
+
+    submit(state, action)
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +411,9 @@ _HELP_LINES = (
     "  esc              back / close detail",
     "  c                context view (toggle budget/provenance)",
     "  r                routing view (toggle explorer)",
+    "  p                verified receipt summary",
+    "  x (twice)        request run cancellation",
+    "  X / t            cancel / retry selected worker (Enter confirms)",
     "  ?                toggle this help",
     "  q                quit watch",
 )
@@ -454,7 +443,13 @@ def render_selected_row(view: Any, state: CockpitState, plain: bool) -> Renderab
 
 
 def render_detail_panel(
-    view: Any, events: Sequence[Any], state: CockpitState, *, plain: bool = False, width: int = 100
+    view: Any,
+    events: Sequence[Any],
+    state: CockpitState,
+    *,
+    plain: bool = False,
+    width: int = 100,
+    mode: Any = None,
 ) -> RenderableType:
     """Detail panel for the currently selected node.
 
@@ -471,7 +466,11 @@ def render_detail_panel(
     nid = state.selected_id
     if not nid:
         text = Text("no node selected", style=_style_token("MUTED", plain))
-        return text if plain else Panel(text, border_style=TOKENS["BORDER"], title="detail")
+        if plain:
+            return text
+        from verdict.design import panel
+
+        return panel(text, title="detail", mode=mode)
 
     node = getattr(view, "nodes", {}).get(nid)
     state_value = node.state.value if node is not None else "-"
@@ -487,11 +486,18 @@ def render_detail_panel(
             style=_style_token("PRIMARY", plain),
         )
     )
-    lines.append(Text(f"selected route: {ident.selected_route or '-'}"))
-    obs_line = f"observed model: {ident.observed_route or '-'}"
+    lines.append(
+        Text(
+            f"selected route: {ident.selected_route or 'not selected yet'}",
+            style=_style_token("TEXT" if ident.selected_route else "MUTED", plain),
+        )
+    )
+    obs_line = f"observed model: {ident.observed_route or 'not reported yet'}"
     if ident.session_ref:
         obs_line += f"  session: {ident.session_ref}"
-    lines.append(Text(obs_line))
+    lines.append(
+        Text(obs_line, style=_style_token("TEXT" if ident.observed_route else "MUTED", plain))
+    )
     if ident.mismatch:
         lines.append(
             Text(
@@ -514,17 +520,12 @@ def render_detail_panel(
             lines.append(
                 Text("(press d for technical details)", style=_style_token("MUTED", plain))
             )
-    # Extension-point hints (no-op controls).
-    lines.append(
-        Text(
-            "(c=context BOD-278 not wired, r=routing explorer)", style=_style_token("MUTED", plain)
-        )
-    )
-
     body: RenderableType = Group(*lines)
     if plain:
         return body
-    return Panel(body, border_style=TOKENS["BORDER"], title=f"detail: {nid}")
+    from verdict.design import panel
+
+    return panel(body, title=f"detail: {nid}", mode=mode)
 
 
 def _classify_summary_token(summary: str) -> str:
@@ -544,7 +545,7 @@ def _classify_summary_token(summary: str) -> str:
 
 
 def render_footer(plain: bool = False) -> RenderableType:
-    hint = "? help  enter detail  d expand  c context  r routing  esc back  q quit"
+    hint = "? help  c context  r routing  p receipt  q quit"
     if plain:
         return Text(hint)
     return Text(hint, style=TOKENS["MUTED"])
@@ -640,19 +641,11 @@ def run_cockpit(
             blocks.append(render_detail_panel(view, seen, state, plain=plain, width=width))
         if state.routing_open:
             # BOD-277 render call — projection prepared by open_routing_view
-            rview = (
-                state.routing_from_run(view, seen)
-                if state.routing_from_run is not None
-                else state.routing_view
-            )
+            from verdict.orchestration.cockpit_controls import routing_for_selected
+
+            rview = routing_for_selected(state, view, seen)
             if rview is not None:
-                nid = state.selected_id
-                eval_idx = None
-                if nid:
-                    for i, ev in enumerate(getattr(rview, "evaluations", ())):
-                        if getattr(ev, "node_id", "") == nid:
-                            eval_idx = i
-                            break
+                eval_idx: int | None = None
                 if plain:
                     if state.routing_render_text is not None:
                         blocks.append(
@@ -673,7 +666,9 @@ def run_cockpit(
                         )
         if getattr(state, "context_open", False):
             # BOD-278 render call — projection prepared by open_context_view
-            cview = getattr(state, "context_view", None)
+            from verdict.orchestration.cockpit_controls import context_for_selected
+
+            cview = context_for_selected(state, view, seen)
             if cview is not None:
                 if plain:
                     text_fn = getattr(state, "context_render_text", None)

@@ -980,6 +980,8 @@ def follow(
     interactive: bool = False,
     key_reader: Any | None = None,
     max_iterations: int = 2000,
+    node_id: str | None = None,
+    panel_name: str | None = None,
 ) -> RunView:
     """Live-tail a JSONL events file; plain mode prints one narrative line per event.
 
@@ -1019,6 +1021,8 @@ def follow(
             poll_seconds=max(0.0, poll_seconds),
             max_iterations=max_iterations,
             stop_when_final=stop_when_final,
+            node_id=node_id,
+            panel_name=panel_name,
         )
 
     live = (
@@ -1066,43 +1070,39 @@ def _run_interactive_cockpit(
     poll_seconds: float,
     max_iterations: int,
     stop_when_final: bool,
+    node_id: str | None = None,
+    panel_name: str | None = None,
 ) -> RunView:
     """Drive :func:`cockpit_nav.run_cockpit` against the live events file.
 
     ``seen`` is the number of events already applied to ``view`` (used to
     skip a previous controller life via ``start_seq``).
     """
-    from verdict.orchestration.cockpit_nav import _RealKeyReader, run_cockpit
-    from verdict.orchestration.tui import render as _render
+    from typing import cast
 
-    reader = key_reader
-    if reader is None:
-        # Real TTY reader; ScriptedKeyReader is chosen by tests explicitly.
-        reader = _RealKeyReader()
+    from verdict.orchestration.cockpit_controls import PanelName, run_cockpit
+    from verdict.orchestration.cockpit_nav import _RealKeyReader
 
-    # ``events_source`` returns the tail after ``seen``; the cockpit applies
-    # the delta.  We recompute the full events list each poll from disk and
-    # only replay the events the cockpit has not seen yet.
-    already: list[RunEvent] = list(read_events(events_path))[:seen]
+    reader = key_reader if key_reader is not None else _RealKeyReader()
+    if panel_name not in {None, "routing", "context", "receipt"}:
+        raise ValueError(f"unknown inspection panel: {panel_name}")
 
     def _source() -> list[RunEvent]:
-        return already + list(read_events(events_path))[seen:]
+        # A resumed controller's earlier terminal outcome must not stop this view.
+        return list(read_events(events_path))[seen:]
 
-    def _render_dashboard(v: Any, width: int, plain_flag: bool) -> Any:
-        return _render(v, width=width, plain=plain_flag)
-
-    run_cockpit(
-        view=view,
-        events_source=_source,
-        render_dashboard=_render_dashboard,
+    return run_cockpit(
+        events_path.parent,
         console=console,
         key_reader=reader,
-        plain=plain,
+        node_id=node_id,
+        panel_name=cast(PanelName | None, panel_name),
+        events_source=_source,
+        initial_view=view,
         poll_seconds=poll_seconds,
         max_iterations=max_iterations,
         stop_when_final=stop_when_final,
     )
-    return view
 
 
 _FIXTURE_PREFIXES = ("demo-", "demo-sub/", "fixture")

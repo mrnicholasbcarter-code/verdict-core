@@ -1,0 +1,28 @@
+selected: alpha  state: RUNNING   (1/2)
+node: alpha  state: RUNNING  attempt: 1
+selected route: kr/claude-opus
+observed model: not reported yet
+transition: none (no failures recorded)
++- routing --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+|                                                                                                                                                                                                      |
+|  routing explorer  source=recorded  evaluations=1  generated_at=2026-09-29T00:00:09Z                                                                                                                 |
+|  node alpha  seq 2  0 candidates, 0 admitted, 1 selected; 1 recorded with details                                                                                                                    |
+|  DISCOVERED 0 > ENTITLED 0 > HEALTHY 0 > AVAILABLE 0 > TASK_ELIGIBLE 0 > SELECTED 1                                                                                                                  |
+|  evaluated_at=2026-09-29T00:00:01Z  view_generated_at=2026-09-29T00:00:09Z                                                                                                                           |
+|  selected_route=kr/claude-opus  observed_route=unknown                                                                                                                                               |
+|  selected because: unknown (no rank components recorded)                                                                                                                                             |
+|  showing 1/1 (page 1/1, size 25)                                                                                                                                                                     |
+|  route                                       provider   state          rank capacity     components   reason                                                                                         |
+|  kr/claude-opus                              kr         * SELECTED        0 subscription unknown      unknown (no rank components recorded)                                                          |
+|  cooldowns: none recorded                                                                                                                                                                            |
+|  rejections: unknown or none recorded                                                                                                                                                                |
+|                                                                                                                                                                                                      |
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
++- safe controls --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+|                                                                                                                                                                                                      |
+|  x cancel run (twice) | X cancel worker | t retry worker                                                                                                                                             |
+|  Controls use shared actions. Controller policy decides; proof stays required.                                                                                                                       |
+|  Observed retry_node: refused; recovery budget exhausted                                                                                                                                             |
+|                                                                                                                                                                                                      |
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+? help  c context  r routing  p receipt  q quit

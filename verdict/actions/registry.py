@@ -1075,6 +1075,15 @@ def _action_replay(**kwargs: Any) -> ActionResult:
 
 def _register_builtins() -> None:
     """Register the built-in action set at import time."""
+    from verdict.actions.run_controls import cancel_node, cancel_run, retry_node
+
+    for name, summary, handler in (
+        ("run.cancel", "Cancel an active orchestration run", cancel_run),
+        ("run.cancel-node", "Cancel an active worker without replacement", cancel_node),
+        ("run.retry-node", "Retry failed work through the recovery budget", retry_node),
+    ):
+        register(ActionSpec(name, "orchestration", "mutation", summary, "Orchestration"), handler)
+
     from verdict.actions.extra import (
         _action_autodev_packet_canary,
         _action_autodev_packet_canary_rollback,
