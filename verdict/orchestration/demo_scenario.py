@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,21 +34,31 @@ from verdict.subagent_selection import HealthResult
 
 FLAGSHIP_GOAL = "flagship failover test"
 FLAGSHIP_RUN_ID = "offline-flagship-failover"
-ROUTE_A = "alpha/model-a"
-ROUTE_B = "beta/model-b"
-ROUTE_C = "gamma/model-c"
+# Tails must be distinct route_family() values. A shared token such as
+# "model" makes the reviewer look like the same family as the workers, so
+# independent review cannot be verified.
+ROUTE_A = "alpha/claude-a"
+ROUTE_B = "beta/gpt-b"
+ROUTE_C = "gamma/gemini-c"
+# Fails the real task gate (missing tool_calling, context under the 32k floor).
+ROUTE_WEAK = "delta/qwen-weak"
 _OFFLINE_OCR_ENV = "VERDICT_OFFLINE_DEMO_OCR_KEY"
 
 
-def _inventory_row(route_id: str, *, owned_by: str) -> dict[str, Any]:
+def _inventory_row(
+    route_id: str, *, owned_by: str, context_length: int = 200_000, tool_calling: bool = True
+) -> dict[str, Any]:
     """A route as returned by the inventory boundary, with no fabricated score."""
     return {
         "id": route_id,
         "owned_by": owned_by,
-        "context_length": 200_000,
-        "max_input_tokens": 200_000,
+        "context_length": context_length,
+        "max_input_tokens": context_length,
         "max_output_tokens": 32_000,
-        "capabilities": {"tool_calling": True, "reasoning": True},
+        "capabilities": {"tool_calling": tool_calling, "reasoning": True},
+        # Same declared tier so family names do not change the ranking.
+        # Lexicographic route id keeps alpha first, then beta, then gamma.
+        "capability_tier": 2,
         "pricing": {"input": 1.0, "output": 2.0},
     }
 
@@ -70,8 +80,14 @@ INVENTORY = [
     _inventory_row(ROUTE_A, owned_by="alpha"),
     _inventory_row(ROUTE_B, owned_by="beta"),
     _inventory_row(ROUTE_C, owned_by="gamma"),
+    _inventory_row(ROUTE_WEAK, owned_by="delta", context_length=8_000, tool_calling=False),
 ]
-CONNECTIONS = [_connection("alpha"), _connection("beta"), _connection("gamma")]
+CONNECTIONS = [
+    _connection("alpha"),
+    _connection("beta"),
+    _connection("gamma"),
+    _connection("delta"),
+]
 
 
 def _impl_node(node_id: str, deps: tuple[str, ...] = ()) -> WorkNode:
@@ -117,6 +133,26 @@ def _worker_script(prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
     node_id = cwd.name.rsplit("-a", 1)[0]
     (cwd / f"{node_id}.txt").write_text(f"{node_id} implemented by {route_id}\n")
     return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop")
+
+
+def _worker_script_for(
+    worker_seconds: float,
+) -> Callable[[str, str, Path], WorkerTerminal | Awaitable[WorkerTerminal]]:
+    """Return the scripted worker, sleeping ``worker_seconds`` before the terminal.
+
+    The sleep is the scenario boundary only. It is what makes two workers overlap
+    in the event log when ``max_parallel`` is 2. Zero stays synchronous so tests
+    and goldens remain fast and deterministic.
+    """
+
+    if worker_seconds <= 0:
+        return _worker_script
+
+    async def _delayed(prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
+        await asyncio.sleep(worker_seconds)
+        return _worker_script(prompt, route_id, cwd)
+
+    return _delayed
 
 
 class _PassingOcrRunner:
@@ -182,14 +218,24 @@ def _load_events(run_dir: Path) -> list[dict[str, Any]]:
 
 
 def run_flagship_scenario(
-    runs_root: Path, *, workspace_root: Path, run_id: str = FLAGSHIP_RUN_ID
+    runs_root: Path,
+    *,
+    workspace_root: Path,
+    run_id: str = FLAGSHIP_RUN_ID,
+    worker_seconds: float = 0.0,
 ) -> FlagshipScenarioResult:
     """Run the offline flagship through ``run_golden_path`` and return its artifacts.
 
     ``run_id`` is fixed by default. Event timestamps, cooldown expiry times, elapsed
     durations, and git commit hashes remain runtime-derived because the production
     loop does not currently expose a clock or git-object injection seam.
+
+    ``worker_seconds`` is how long each scripted worker stays running before it
+    returns a terminal. The default is zero so tests stay fast. A positive value
+    is only an async sleep inside the scripted executor, never a runtime hook.
     """
+    if worker_seconds < 0:
+        raise ValueError(f"worker_seconds must be >= 0, got {worker_seconds}")
     runs_root = Path(runs_root).resolve()
     workspace_root = Path(workspace_root).resolve()
     run_dir = runs_root / run_id
@@ -208,7 +254,9 @@ def run_flagship_scenario(
         workspace_root / "ladder-state.json",
         allow_unknown_capacity=True,
     )
-    executor = FaultInjectingExecutor(ScriptedExecutor(_worker_script), {ROUTE_A: ["rate_limit"]})
+    executor = FaultInjectingExecutor(
+        ScriptedExecutor(_worker_script_for(worker_seconds)), {ROUTE_A: ["rate_limit"]}
+    )
     reviewer = OpenCodeReviewer(
         ladder,
         api_key_env=_OFFLINE_OCR_ENV,

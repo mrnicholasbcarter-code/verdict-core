@@ -42,7 +42,13 @@ def test_palette_commands_are_registered_subcommands() -> None:
             cli.main()
     finally:
         argparse.ArgumentParser.parse_args = original  # type: ignore[method-assign]
-    missing = [command for _, command, _, _ in PALETTE if command not in parser_commands]
+    from verdict.actions.registry import get_action
+
+    missing = [
+        command
+        for _, command, _, action in PALETTE
+        if command not in parser_commands and get_action(action) is None
+    ]
     assert not missing, missing
 
 
@@ -68,7 +74,7 @@ def test_styled_home_shows_wordmark_and_gateway_state() -> None:
     console = _console(terminal=True)
     console.print(render_home(state, plain=False, width=110))
     text = console.file.getvalue()
-    assert "reachable" in text and "42 models" in text and "\u2588" in text
+    assert "REACHABLE" in text and "42 models" in text and "\u2588" in text
 
 
 def test_hostile_run_names_are_sanitized(tmp_path: Path) -> None:
@@ -99,3 +105,12 @@ def test_python_dash_m_verdict_cli_still_runs_main() -> None:
         [sys.executable, "-m", "verdict.cli", "--help"], capture_output=True, text=True, timeout=60
     )
     assert proc.returncode == 0 and "orchestrate" in proc.stdout
+
+
+def test_event_log_without_receipt_does_not_claim_running(tmp_path: Path) -> None:
+    run = tmp_path / "unobserved"
+    run.mkdir()
+    (run / "events.jsonl").write_text("{}\n")
+    row = recent_runs([tmp_path])[0]
+    assert row["outcome"] == "NO RECEIPT"
+    assert "not observed" in row["reason"]

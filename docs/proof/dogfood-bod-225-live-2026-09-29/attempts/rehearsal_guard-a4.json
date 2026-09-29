@@ -1,0 +1,20 @@
+{
+ "node_id": "rehearsal_guard",
+ "attempt": 4,
+ "route_id": "gc/grok-4.5",
+ "ok": true,
+ "reported_model": "gc/grok-4.5",
+ "stop_reason": "stop",
+ "status_code": null,
+ "error": "",
+ "output_tail": "## Summary\n\nExtended release rehearsal verification for BOD-225 producer provenance.\n\n### `scripts/certify_release.py`\n- Added helpers to read producer `git_sha` from receipts, format missing values as `null`, and check `verdict/` diffs between SHAs.\n- `step_rehearsals` now:\n  - reports every rehearsal name and producer SHA (`null` when absent)\n  - accepts optional `certified_git_sha` (3-arg callers still work)\n  - PASS when SHAs match, or when they differ but `verdict/` is unchanged\n  - INCOMPLETE when SHAs differ and `verdict/` changed (or the diff cannot be verified)\n  - keeps missing-file / events-digest failures as FAIL first\n- `run_certification` passes `manifest.git_sha` into rehearsal verification.\n\n### `tests/test_certify_release.py`\n- Builds receipts with real `write_run_receipt` / `EventLog`.\n- Covers equal SHA, differing SHA without `verdict/` changes, differing SHA with `verdict/` changes, digest FAIL precedence, explicit `null` reporting, and certified-SHA handoff from `run_certification`.\n\n**Verification:** `python -m pytest -q tests/test_certify_release.py` \u2192 41 passed.\n\nRESULT: DONE",
+ "duration_seconds": 524.6852055549971,
+ "session_ref": "",
+ "usage": {
+  "input_tokens": 806,
+  "output_tokens": 627,
+  "cost_usd": 0.0,
+  "tokens_source": "prime_stdout",
+  "turns": 2
+ }
+}

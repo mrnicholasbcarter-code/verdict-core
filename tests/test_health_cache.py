@@ -14,11 +14,11 @@ from pathlib import Path
 import pytest
 
 from verdict.orchestration.contracts import CapacityClass
-from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
     CATEGORY_GONE,
+    CATEGORY_MODEL_MISMATCH,
     CATEGORY_NOT_FOUND,
     CATEGORY_OK,
     CATEGORY_PAYMENT,
@@ -52,7 +52,6 @@ from verdict.prove_at_rest import (
 )
 
 NOW = datetime(2026, 9, 29, 5, 0, tzinfo=timezone.utc)
-FIXTURE = Path(__file__).parent / "fixtures" / "health_cache_routes.json"
 
 
 def _at(seconds: float) -> datetime:
@@ -335,17 +334,34 @@ def _ok(tool: bool = False) -> ProbeExchange:
     )
 
 
-def test_cycle_never_exceeds_request_cap_on_large_inventory(tmp_path: Path) -> None:
-    raw = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    routes = [
-        AdmittedRoute(
-            route_id=item["route_id"],
-            provider=item["provider"],
-            capacity=item["capacity"],
-            capacity_evidence=item["capacity"],
-        )
-        for item in raw
+def _large_routes(n: int = 3100) -> list[AdmittedRoute]:
+    """Generate *n* synthetic routes over 10 providers (no disk I/O)."""
+    providers = [
+        "openrouter",
+        "kilocode",
+        "agy",
+        "cx",
+        "gc",
+        "kr",
+        "cc",
+        "cu",
+        "opencode",
+        "deepseek",
     ]
+    capacities = ["free", "metered", "subscription"]
+    return [
+        AdmittedRoute(
+            route_id=f"{providers[i % len(providers)]}/model-{i:04d}",
+            provider=providers[i % len(providers)],
+            capacity=capacities[i % len(capacities)],
+            capacity_evidence=capacities[i % len(capacities)],
+        )
+        for i in range(n)
+    ]
+
+
+def test_cycle_never_exceeds_request_cap_on_large_inventory(tmp_path: Path) -> None:
+    routes = _large_routes(3100)
     assert len(routes) > 3000
 
     def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
@@ -480,6 +496,10 @@ def test_liveness_probe_does_not_call_the_tool(tmp_path: Path) -> None:
 
 
 def test_bucket_stops_a_provider_mid_cycle(tmp_path: Path) -> None:
+    # bucket_capacity=1 with 5 full-kind routes (chat+tool each):
+    # Route 0: chat consumes the 1 token (requests=1); tool: no bucket → skipped_bucket+=1.
+    # Routes 1-4: initial consume fails → skipped_bucket+=1 each.
+    # Total: requests=1, skipped_bucket=5 (1 tool-skip + 4 initial-skips).
     routes = [_route(f"bai/{index}", "free") for index in range(5)]
     transport = _Script(
         {(route.route_id, "chat"): _ok() for route in routes}
@@ -496,7 +516,7 @@ def test_bucket_stops_a_provider_mid_cycle(tmp_path: Path) -> None:
     )
     stats = prober.run_once()
     assert stats.requests == 1
-    assert stats.skipped_bucket == 4
+    assert stats.skipped_bucket == 5  # 1 tool-skip (defect-1 fix) + 4 initial-skips
 
 
 def test_status_report_lists_workers_and_cold_providers(tmp_path: Path) -> None:
@@ -527,26 +547,64 @@ def test_status_report_lists_workers_and_cold_providers(tmp_path: Path) -> None:
 
 
 def test_capacity_class_matches_the_ladder() -> None:
-    """The copied classifier and the ladder's method agree on every shape."""
-    shapes: list[tuple[dict[str, object] | None, dict[str, object]]] = [
-        (None, {}),
-        ({"authType": "oauth", "plan_label": "pro"}, {}),
-        ({"authType": "oauth", "plan_label": "free"}, {}),
-        ({"authType": "apikey", "import_free_only": True, "plan_label": ""}, {}),
-        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 1.0}}),
-        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 0}}),
-        ({"authType": "apikey", "plan_label": ""}, {}),
-    ]
-    for conn, row in shapes:
-        via_copy = capacity_class_of(conn, row)
-        via_ladder = EligibilityLadder._capacity_class(object(), conn, row)  # type: ignore[arg-type]
-        assert via_copy == via_ladder
-        assert via_copy[0] in {
+    """capacity_class_of agrees with EligibilityLadder._capacity_class on shared shapes.
+
+    The standalone function omits the ``:free`` suffix and connection-signal
+    extensions (documented in its docstring) but must agree on every case it
+    does handle.  We compare against the ladder's 3-tuple output (class,
+    plan_label, rule) by checking only the class, which is what callers use.
+    """
+    from verdict.orchestration.eligibility import EligibilityLadder
+
+    # A minimal ladder that needs no filesystem state for _capacity_class.
+    ladder = EligibilityLadder.__new__(EligibilityLadder)
+
+    # Shapes that capacity_class_of handles (no :free suffix / no
+    # importFreeModelsOnly / no providerSpecificData that the ladder adds).
+    shared_shapes: list[tuple[dict[str, object] | None, dict[str, object], CapacityClass]] = [
+        (None, {}, CapacityClass.UNKNOWN),
+        ({"authType": "oauth", "plan_label": "pro"}, {}, CapacityClass.SUBSCRIPTION),
+        ({"authType": "oauth", "plan_label": "free"}, {}, CapacityClass.FREE),
+        (
+            {"authType": "apikey", "import_free_only": True, "plan_label": ""},
+            {},
             CapacityClass.FREE,
-            CapacityClass.SUBSCRIPTION,
+        ),
+        (
+            {"authType": "apikey", "plan_label": ""},
+            {"pricing": {"prompt": 1.0}},
             CapacityClass.METERED,
-            CapacityClass.UNKNOWN,
-        }
+        ),
+        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 0}}, CapacityClass.FREE),
+        ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.UNKNOWN),
+        # Bool pricing values must NOT be treated as prices (True == 1 in Python).
+        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.UNKNOWN),
+    ]
+    for conn, row, expected_class in shared_shapes:
+        via_standalone = capacity_class_of(conn, row)
+        # _capacity_class returns (CapacityClass, plan_label, rule); extract class.
+        via_ladder_triple = ladder._capacity_class(conn, row)
+        assert via_standalone[0] == via_ladder_triple[0], (
+            f"standalone/ladder mismatch for conn={conn!r} row={row!r}: "
+            f"{via_standalone[0]} vs {via_ladder_triple[0]}"
+        )
+        assert via_standalone[0] == expected_class, (
+            f"expected {expected_class} for conn={conn!r} row={row!r}, got {via_standalone[0]}"
+        )
+
+    # Extra cases the ladder handles via :free suffix / connection signals that
+    # capacity_class_of intentionally skips (document their divergence).
+    suffix_conn = {"authType": "oauth", "plan_label": "pro"}
+    suffix_row: dict[str, object] = {}
+    # :free suffix → FREE in ladder, but capacity_class_of returns SUBSCRIPTION.
+    ladder_class, _, rule = ladder._capacity_class(
+        suffix_conn, suffix_row, route_id="cc/model:free"
+    )
+    assert ladder_class == CapacityClass.FREE, f"ladder should classify :free as FREE, got {rule}"
+    standalone_class, _ = capacity_class_of(suffix_conn, suffix_row)
+    assert standalone_class == CapacityClass.SUBSCRIPTION, (
+        "capacity_class_of must NOT classify :free suffix (it is a documented omission)"
+    )
 
 
 def test_legacy_cycle_file_is_not_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -566,3 +624,221 @@ def test_legacy_cycle_file_is_not_written(tmp_path: Path, monkeypatch: pytest.Mo
     prober.run_once()
     assert json.loads(legacy.read_text(encoding="utf-8"))["keep"] is True
     assert cache_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for reviewer defects (fix2)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_skipped_no_bucket_does_not_record_negative(tmp_path: Path) -> None:
+    """Defect 1: chat succeeds, bucket exhausted for tool → route NOT marked negative.
+
+    Only the chat token is consumed; the route should remain unprobed (no
+    negative entry) because the tool was never tested.
+    """
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path, bucket_capacity=1)
+    route = _route("cx/model", "free")
+    # Only script the chat call; the tool must never be called.
+    transport = _Script({("cx/model", "chat"): _ok()})
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: [route],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+    )
+    stats = prober.run_once()
+    # One chat request consumed the bucket.
+    assert stats.requests == 1
+    # The route must NOT be marked unhealthy or cooled down.
+    entry = cache.entry("cx/model")
+    assert entry is None or entry.category != CATEGORY_OK or not entry.healthy, (
+        "route should be unprobed or negative-free, not healthy"
+    )
+    # Confirm it wasn't recorded as negative.
+    if entry is not None:
+        from verdict.orchestration.health_cache import STATE_NEGATIVE
+
+        assert entry.state_at(NOW) != STATE_NEGATIVE, (
+            "skipped-tool route must not be marked negative"
+        )
+
+
+def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> None:
+    """Defect 2: a request-cap hit mid-batch leaves the cursor at the first unprobed route.
+
+    With concurrency=1 and cap=1 on 3 routes, the prober should:
+    - Probe route 0 (uses the 1 allowed request).
+    - Stop: cursor next_index == 1.
+    - Second cycle: resume at route 1 (not route 2 or back to 0).
+    """
+    routes = [_route(f"cx/r{i}", "free") for i in range(3)]
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path, bucket_capacity=100)
+    transport = _Script(
+        {(r.route_id, "chat"): _ok() for r in routes}
+        | {(r.route_id, "tool"): _ok(tool=True) for r in routes}
+    )
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        max_requests=1,
+        epsilon=0,
+        concurrency=1,
+    )
+    stats1 = prober.run_once()
+    assert stats1.stopped_reason == "request_cap"
+    # Cursor must point to route 1, not past all 3.
+    cursor = cache.cursor
+    assert cursor.get("cycle_open") is True
+    assert cursor.get("next_index") == 1, (
+        f"expected cursor at 1 after first cap, got {cursor.get('next_index')}"
+    )
+
+
+def test_model_mismatch_is_not_recorded_healthy(tmp_path: Path) -> None:
+    """Defect 3: a response reporting a different model must be recorded as model_mismatch."""
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path, bucket_capacity=100)
+    route = _route("cx/expected-model", "free")
+    # Chat response echoes the wrong model.
+    mismatched_chat = ProbeExchange(
+        http_status=200,
+        ok=True,
+        chat_exact=True,
+        tool_called=False,
+        latency_ms=10,
+        reported_model="cx/different-model",
+    )
+    transport = _Script({("cx/expected-model", "chat"): mismatched_chat})
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: [route],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+        concurrency=1,
+    )
+    prober.run_once()
+    entry = cache.entry("cx/expected-model")
+    assert entry is not None
+    assert entry.category == CATEGORY_MODEL_MISMATCH, (
+        f"expected model_mismatch category, got {entry.category!r}"
+    )
+    assert not entry.healthy
+
+
+def test_model_identity_match_is_healthy(tmp_path: Path) -> None:
+    """Defect 3 (correct case): matching reported model → healthy."""
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path, bucket_capacity=100)
+    route = _route("cx/good-model", "free")
+    # Chat reports the same model (without provider prefix — tolerated).
+    matching_chat = ProbeExchange(
+        http_status=200,
+        ok=True,
+        chat_exact=True,
+        tool_called=False,
+        latency_ms=10,
+        reported_model="good-model",
+    )
+    matching_tool = ProbeExchange(
+        http_status=200,
+        ok=True,
+        chat_exact=False,
+        tool_called=True,
+        latency_ms=10,
+        reported_model="good-model",
+    )
+    transport = _Script(
+        {("cx/good-model", "chat"): matching_chat, ("cx/good-model", "tool"): matching_tool}
+    )
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: [route],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+        concurrency=1,
+    )
+    prober.run_once()
+    entry = cache.entry("cx/good-model")
+    assert entry is not None
+    assert entry.healthy, f"matching-model probe should be healthy; category={entry.category!r}"
+
+
+def test_wall_cap_before_tool_call_does_not_record_negative(tmp_path: Path) -> None:
+    """Defect 5: wall deadline hit between chat and tool → route stays unchanged."""
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path, bucket_capacity=100)
+    route = _route("cx/walltgt", "free")
+    clock_val = [0.0]
+
+    def monotonic() -> float:
+        # First call (before chat): within limit.
+        # After chat succeeds: return a value past max_wall_seconds.
+        v = clock_val[0]
+        clock_val[0] += 400.0  # each tick = 400s; wall cap = 600s
+        return v
+
+    transport = _Script({("cx/walltgt", "chat"): _ok()})
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: [route],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=monotonic,
+        max_wall_seconds=600.0,
+        epsilon=0,
+        concurrency=1,
+    )
+    stats = prober.run_once()
+    assert stats.stopped_reason == "wall_cap"
+    # Route must not be recorded as negative.
+    entry = cache.entry("cx/walltgt")
+    if entry is not None:
+        from verdict.orchestration.health_cache import STATE_NEGATIVE
+
+        assert entry.state_at(NOW) != STATE_NEGATIVE, (
+            "wall-capped route between chat and tool must not be negative"
+        )
+
+
+def test_action_prove_once_forwards_max_wall_seconds() -> None:
+    """Defect 4: max_wall_seconds from kwargs must reach build_live_daemon."""
+    calls: list[dict[str, object]] = []
+
+    from verdict.prove_at_rest import CycleStats
+
+    def fake_build(**kw: object) -> object:
+        calls.append(kw)
+
+        class FakeDaemon:
+            consented = True
+
+            def run_once(self) -> CycleStats:
+                return CycleStats()
+
+        return FakeDaemon()
+
+    # build_live_daemon is imported locally inside the action function under the
+    # name 'verdict.prove_at_rest.build_live_daemon', so patch at the source.
+    from unittest.mock import patch
+
+    with patch("verdict.prove_at_rest.build_live_daemon", side_effect=fake_build):
+        from verdict.actions.extra import _action_prove_at_rest_once
+
+        _action_prove_at_rest_once(
+            allow_live_probe=True, base_url="http://localhost:9999", max_wall_seconds=120.0
+        )
+
+    assert calls, "build_live_daemon was never called"
+    assert calls[0].get("max_wall_seconds") == 120.0, f"max_wall_seconds not forwarded: {calls[0]}"

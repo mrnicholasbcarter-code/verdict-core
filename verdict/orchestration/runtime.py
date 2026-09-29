@@ -108,7 +108,7 @@ async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> t
         return 127, f"verification command not found: {argv[0]}: {exc}"
     try:
         out, _ = await asyncio.wait_for(process.communicate(), timeout)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
         import contextlib
         import os
         import signal
@@ -116,6 +116,8 @@ async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> t
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
         await process.wait()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         return 124, f"timeout after {timeout}s"
     return process.returncode or 0, out.decode("utf-8", "replace")[-4000:]
 
@@ -144,6 +146,8 @@ class NodeRun:
     attempt: int = 0
     route_id: str = ""
     history: list[dict[str, Any]] = field(default_factory=list)
+    failures: list[FailureClassification] = field(default_factory=list)
+    excluded_routes: set[str] = field(default_factory=set)
     commit: str = ""
     reason: str = ""
     # BOD-272: REQUIRED_CONTEXT byte budget for this node's next attempt
@@ -402,6 +406,21 @@ class DagRuntime:
             )
             return
         run = self.nodes[node_id]
+        if run.state not in {
+            NodeState.PLANNED,
+            NodeState.ADMITTED,
+            NodeState.DISPATCHED,
+            NodeState.RUNNING,
+        }:
+            self.events.emit(
+                "control",
+                node_id,
+                id=req.id,
+                kind="cancel_node",
+                accepted=False,
+                reason=f"node {node_id} is {run.state.value}; only active work can be cancelled",
+            )
+            return
         # Cancel the running task if present
         if node_id in pending:
             pending[node_id].cancel()
@@ -470,18 +489,27 @@ class DagRuntime:
                 node_id=node_id,
             )
             return
-        # Build failure history for RecoveryBudget
-        failures = [
-            FailureClassification(
-                category=h.get("outcome", "unknown"),
-                action="REROUTE",
-                cooldown_seconds=0,
-                scope="none",
-                evidence="",
+        if node_id in pending and not pending[node_id].done():
+            self.events.emit(
+                "control",
+                node_id,
+                id=req.id,
+                kind="retry_node",
+                accepted=False,
+                reason="node driver is still active; retry refused",
             )
-            for h in run.history
-        ]
-        action, reason = self._recovery_budget.decide(node_id, failures)
+            return
+        if "cancelled" in run.reason or not run.failures:
+            refusal = (
+                "node was cancelled; replacement prohibited"
+                if "cancelled" in run.reason
+                else "no recoverable failure evidence recorded; retry refused"
+            )
+            self.events.emit(
+                "control", node_id, id=req.id, kind="retry_node", accepted=False, reason=refusal
+            )
+            return
+        action, reason = self._recovery_budget.decide(node_id, run.failures, attempts=run.attempt)
         if action == "FAIL_CLOSED":
             self.events.emit(
                 "control",
@@ -529,6 +557,10 @@ class DagRuntime:
                 # Poll external control channel
                 cancel = self._poll_controls(pending)
                 if cancel is not None:
+                    # Wait for the cancellable executor to kill its process group
+                    # before publishing the terminal event and receipt.
+                    await asyncio.gather(*pending.values(), return_exceptions=True)
+                    pending.clear()
                     return await self._finish(RunOutcome.CANCELLED, "run cancelled by operator")
                 self._propagate_blocks()
                 for node_id in self._ready():
@@ -536,10 +568,15 @@ class DagRuntime:
                         pending[node_id] = asyncio.create_task(self._drive(node_id))
                 if not pending:
                     break
-                done, _ = await asyncio.wait(pending.values(), return_when=asyncio.FIRST_COMPLETED)
+                # Wake often enough to notice a cancel while workers are running.
+                done, _ = await asyncio.wait(
+                    pending.values(), timeout=0.1, return_when=asyncio.FIRST_COMPLETED
+                )
                 for node_id, task in list(pending.items()):
                     if task in done:
                         del pending[node_id]
+                        if task.cancelled():
+                            continue
                         exc = task.exception()
                         if exc is not None:  # isolation: a crashed driver blocks only its node
                             run = self.nodes[node_id]
@@ -552,6 +589,8 @@ class DagRuntime:
         finally:
             for task in pending.values():
                 task.cancel()
+            if pending:
+                await asyncio.gather(*pending.values(), return_exceptions=True)
         return await self._conclude()
 
     def _ready(self) -> list[str]:
@@ -590,8 +629,8 @@ class DagRuntime:
         if run.node.kind in {NodeKind.INTEGRATE, NodeKind.REVIEW}:
             await self._integrate_node(run)
             return
-        failures: list[FailureClassification] = []
-        tried: set[str] = set()
+        failures = run.failures
+        tried = run.excluded_routes
         waited_once = False
         revocations = 0
         while True:
@@ -977,6 +1016,7 @@ class DagRuntime:
                     truncated="[truncated" in prompt.lower(),
                     budget_bytes=budget,
                     sources=_hydrate_sources(node.required_context, worktree, budget),
+                    compression="not_performed",
                 )
                 terminal = await self._execute(prompt, run.route_id, worktree)
             finally:
@@ -1393,15 +1433,44 @@ def _ladder_counts(verdicts: Sequence[Any]) -> dict[str, int]:
     }
 
 
+def _normalize_context_path(rel: str) -> str:
+    """Normalise a required_context path to a canonical relative form.
+
+    Removes a leading ``./`` so that ``./a.py`` and ``a.py`` are treated as
+    the same file.  ``../`` traversal is left untouched — it is handled (or
+    rejected) upstream; we must not silently change its semantics here.
+    """
+    # Strip leading ./ only; never modify ../ paths.
+    if rel.startswith("./"):
+        return rel[2:]
+    return rel
+
+
 def _hydrate_sources(
     required_context: Sequence[str], worktree: Path, budget_bytes: int
 ) -> list[dict[str, Any]]:
-    """Build per-source entries from the same data hydrate_node_prompt uses."""
+    """Build per-source entries from the same data hydrate_node_prompt uses.
+
+    Normalises each path and de-duplicates: the *first* occurrence of a
+    canonical path is processed normally; subsequent occurrences get
+    ``included=False, reason="deduplicated", duplicate_of=<first_path>``.
+    """
     sources: list[dict[str, Any]] = []
     remaining = budget_bytes
+    seen: dict[str, str] = {}  # canonical path -> original path of first occurrence
     for rel in required_context:
+        canonical = _normalize_context_path(rel)
         entry: dict[str, Any] = {"path": str(rel)}
-        path = worktree / rel
+        if canonical in seen:
+            entry["bytes"] = None
+            entry["included"] = False
+            entry["truncated_at"] = None
+            entry["reason"] = "deduplicated"
+            entry["duplicate_of"] = seen[canonical]
+            sources.append(entry)
+            continue
+        seen[canonical] = str(rel)
+        path = worktree / canonical
         try:
             size = path.stat().st_size
         except OSError:

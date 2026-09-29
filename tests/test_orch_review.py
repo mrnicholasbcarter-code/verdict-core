@@ -259,6 +259,20 @@ def test_exclusions_forwarded_to_selector(tmp_path: Path, monkeypatch) -> None:
     assert "tools" in selector.requirements.required_capabilities
 
 
+def test_agy_worker_forwards_antigravity_pool_exclusion(tmp_path: Path, monkeypatch) -> None:
+    """Reviewer selection excludes the shared google-antigravity pool."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=_load_fixture("sample-clean.json"))
+    selector = FakeSelector(_verdict("kr/gpt-5.6-terra"))
+    reviewer = _reviewer(tmp_path, selector, runner)
+    _run(
+        reviewer, exclude_routes=frozenset({"agy/claude-sonnet-4-6"}), exclude_families=frozenset()
+    )
+    assert selector.requirements is not None
+    assert "google-antigravity" in selector.requirements.exclude_families
+    assert selector.requirements.exclude_routes == frozenset({"agy/claude-sonnet-4-6"})
+
+
 def test_api_key_never_in_argv_or_files(tmp_path: Path, monkeypatch) -> None:
     secret = "sk-super-secret-9999"
     monkeypatch.setenv("TEST_OCR_KEY", secret)

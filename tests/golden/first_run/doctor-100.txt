@@ -1,0 +1,19 @@
+
+VERDICT  /  Doctor
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+╭─ CAPABILITIES ───────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                  │
+│  code.symbols: COVERED  native · healthy · local                                                 │
+│  memory.search: MISSING  unknown                                                                 │
+│      Repair: verdict setup --recommended                                                         │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ ISSUES (2) ─────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                  │
+│  ISSUE: Missing configuration: verdict.yaml                                                      │
+│      Repair: verdict setup                                                                       │
+│  ISSUE: OmniRoute gateway unreachable                                                            │
+│      Repair: verdict detect                                                                      │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
