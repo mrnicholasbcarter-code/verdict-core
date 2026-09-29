@@ -215,5 +215,4 @@ All 9 decisions originally left open in this ADR were resolved by the operator
 on 2026-09-29.  The resolutions are recorded in the **Operator decisions** table
 above.  The live `SupervisorGovernorConfig` defaults (2/2/1) predate this ADR;
 the ADR initial caps (2/3/1) supersede them when enabled.
-   Should the operator be notified when pressure reduces effective caps below
-   the configured values?
+
