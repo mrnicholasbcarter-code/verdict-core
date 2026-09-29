@@ -409,3 +409,41 @@ def test_disabled_helpers_default_to_presentation_mode(monkeypatch: pytest.Monke
     assert pulse(0.5, state="running") == 1
     assert border_highlight(0.5, 80, state="running") is None
     assert trace_step(0.5, [("A", "B")]) is None
+
+
+def test_state_colours_stay_distinct_when_rich_downgrades_to_16_colours() -> None:
+    """Screens pass truecolor TOKENS to Rich; Rich downgrades them on 16-colour terminals.
+
+    Cooldown/warning must not collapse onto failure (or success) after that downgrade.
+    """
+    from rich.color import Color, ColorSystem
+
+    from verdict.design import PALETTE, TOKEN_ALIASES
+
+    def ansi16(name: str) -> int | None:
+        token = PALETTE[TOKEN_ALIASES.get(name, name)]
+        return Color.parse(token.hex).downgrade(ColorSystem.STANDARD).number
+
+    failure, cooldown, success = ansi16("ERROR"), ansi16("COOLDOWN"), ansi16("SUCCESS")
+    assert len({failure, cooldown, success}) == 3, (failure, cooldown, success)
+    assert ansi16("WARNING") == cooldown
+
+
+def test_terminal_ui_renders_cooldown_and_error_differently_in_16_colours() -> None:
+    import io
+
+    from rich.console import Console
+    from rich.theme import Theme
+
+    from verdict.design import TOKENS
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, color_system="standard", theme=Theme(TOKENS))
+    console.print("c", style="COOLDOWN", end="")
+    cooldown = buf.getvalue()
+    buf.seek(0)
+    buf.truncate()
+    console.print("e", style="ERROR", end="")
+    error = buf.getvalue()
+    strip = lambda s: s.replace("c", "").replace("e", "").replace("[0m", "").replace("\x1b", "")  # noqa: E731
+    assert strip(cooldown).replace("1;", "") != strip(error).replace("1;", ""), (cooldown, error)

@@ -22,7 +22,7 @@ Rich also downgrades truecolor styles for consoles that negotiate fewer colours.
 | PURPLE | 167,139,250 / `#a78bfa` | 147 | bright_magenta |
 | CYAN | 34,184,235 / `#22b8eb` | 39 | bright_cyan |
 | SUCCESS | 74,222,128 / `#4ade80` | 84 | bright_green |
-| AMBER | 245,158,11 / `#f59e0b` | 214 | bright_yellow |
+| AMBER | 245,176,11 / `#f5b00b` | 214 | bright_yellow |
 | RED | 248,113,113 / `#f87171` | 210 | bright_red |
 | BORDER | 82,82,91 / `#52525b` | 240 | bright_black |
 

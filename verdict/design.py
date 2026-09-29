@@ -52,7 +52,9 @@ PALETTE: dict[str, PaletteToken] = {
     "PURPLE": PaletteToken((167, 139, 250), 147, "bright_magenta"),
     "CYAN": PaletteToken((34, 184, 235), 39, "bright_cyan"),
     "SUCCESS": PaletteToken((74, 222, 128), 84, "bright_green"),
-    "AMBER": PaletteToken((245, 158, 11), 214, "bright_yellow"),
+    # #f5b00b rather than #f59e0b: Rich downgrades #f59e0b to ANSI 9 (bright red) on
+    # 16-colour terminals, which made cooldown look like failure. #f5b00b maps to ANSI 11.
+    "AMBER": PaletteToken((245, 176, 11), 214, "bright_yellow"),
     "RED": PaletteToken((248, 113, 113), 210, "bright_red"),
     "BORDER": PaletteToken((82, 82, 91), 240, "bright_black"),
 }
