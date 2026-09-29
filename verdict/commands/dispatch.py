@@ -511,6 +511,11 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     elif args.command == "inspect":
         legacy.cmd_inspect(args.model_id, output_json=args.json)
+    elif args.command == "config":
+        if getattr(args, "config_action", None) == "show":
+            legacy.cmd_config_show(output_json=bool(getattr(args, "json", False)))
+        else:
+            raise SystemExit(f"unknown config action: {getattr(args, 'config_action', None)!r}")
     elif args.command == "receipt":
         legacy.cmd_receipt(
             args.receipt_action,
