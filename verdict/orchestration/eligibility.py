@@ -28,6 +28,7 @@ from verdict.orchestration.provider_catalog import (
     is_not_free_signal,
     record_not_free_override,
     resolve_provider,
+    sanitized_plan_label,
 )
 from verdict.subagent_selection import HealthResult
 
@@ -321,7 +322,7 @@ class EligibilityLadder:
         """
         if conn is None:
             return CapacityClass.UNKNOWN, "", "no_connection"
-        plan_label = str(conn.get("plan_label", ""))
+        plan_label = sanitized_plan_label(conn.get("plan_label", ""))
         auth_type = str(conn.get("authType", "")).lower()
 
         # (a) :free suffix overrides oauth → subscription (fixes D5: 72
@@ -541,7 +542,7 @@ class EligibilityLadder:
         if route_family(route_id) in req.exclude_families:
             return "excluded_family"
         # Pool-aware independence: aliased backend pools (agy≡antigravity,
-        # kilocode/openrouter :free) are excluded by pool id, not prefix.
+        # kc/kilocode/openrouter :free) are excluded by pool id, not prefix.
         if backend_pool(route_id) in req.exclude_families:
             return "excluded_family"
         if backend_pool(route_id) in aliased_pools_for(req.exclude_routes):

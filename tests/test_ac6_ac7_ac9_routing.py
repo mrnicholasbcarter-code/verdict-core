@@ -249,7 +249,23 @@ class TestAC6SecretLeak:
     """Seed a connection with an email and token; assert neither appears anywhere."""
 
     @pytest.mark.parametrize("scope", ["route", "provider"])
-    async def test_no_email_or_token_in_event_or_render(self, tmp_path: Path, scope: str) -> None:
+    @pytest.mark.parametrize(
+        ("free_signal", "expected_evidence"),
+        [
+            (
+                {"providerSpecificData": {"tier": "free user@secret.example.com"}},
+                "providerSpecificData.tier",
+            ),
+            (
+                {"providerSpecificData": {"plan": "free user@secret.example.com"}},
+                "providerSpecificData.plan",
+            ),
+            ({"plan_label": "free user@secret.example.com"}, "plan_label"),
+        ],
+    )
+    async def test_no_email_or_token_in_event_or_render(
+        self, tmp_path: Path, scope: str, free_signal: dict[str, object], expected_evidence: str
+    ) -> None:
         """Real verdicts and the runtime's persisted evidence carry no account secrets."""
         from verdict.orchestration.contracts import (
             RouteVerdict,
@@ -277,7 +293,7 @@ class TestAC6SecretLeak:
                 "provider": "secret-provider",
                 "isActive": True,
                 "authType": "apikey",
-                "plan_label": "subscription",
+                **free_signal,
                 "email": "user@secret.example.com",
                 "api_key": "sk-SECRET-TOKEN-1234567890abcdef",
             }
@@ -353,6 +369,7 @@ class TestAC6SecretLeak:
             for candidate in candidates:
                 assert candidate["cooldown_scope"] == cooldown_key
                 assert candidate["cooldown_scope"].startswith(("route:", "provider:"))
+                assert candidate["capacity_evidence"] == expected_evidence
 
         artifacts = [
             json.dumps(verdict_dicts),

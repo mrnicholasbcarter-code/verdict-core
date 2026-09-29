@@ -320,6 +320,17 @@ class TestTaskEligible:
         assert verdicts["cc/claude-sonnet-5"].failed_stage is EligibilityStage.TASK_ELIGIBLE
         assert verdicts["cx/gpt-6-codex"].failed_stage is None
 
+    def test_kc_free_worker_excludes_openrouter_free_reviewer(self, tmp_path: Path) -> None:
+        rows = [
+            row("kc/cohere/north-mini-code:free", owned_by="kilocode"),
+            row("openrouter/cohere/north-mini-code:free", owned_by="openrouter"),
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("kilocode"), conn("openrouter")])
+        req = TaskRequirements(exclude_routes=frozenset({"kc/cohere/north-mini-code:free"}))
+        verdicts = by_route(ladder.evaluate(req, now=NOW))
+        assert verdicts["kc/cohere/north-mini-code:free"].reason == "excluded_route"
+        assert verdicts["openrouter/cohere/north-mini-code:free"].reason == "excluded_family"
+
     def test_exclude_routes(self, tmp_path: Path) -> None:
         ladder, _ = make_ladder(
             tmp_path, [row("cc/claude-sonnet-5", owned_by="claude")], [conn("claude")]

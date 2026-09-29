@@ -14,8 +14,11 @@ Evidence sources:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
+
+from verdict.security import redact_text
 
 # ---------------------------------------------------------------------------
 # A. Owned-by alias table
@@ -74,6 +77,7 @@ _POOL_BY_PREFIX: Mapping[str, str] = {
 # Evidence: research-empirical.md — kilocode :free and openrouter :free for
 # north-mini-code returned the same upstream generation id (gen-1790657873-…).
 _FREE_SUFFIX_POOL: Mapping[str, str] = {
+    "kc": "openrouter-free",
     "kilocode": "openrouter-free",
     "openrouter": "openrouter-free",
 }
@@ -149,7 +153,7 @@ def aliased_pools_for(route_ids: frozenset[str] | set[str]) -> frozenset[str]:
     """Return cross-prefix aliased pools used by ``route_ids``.
 
     ``agy/*`` and ``antigravity/*`` share ``google-antigravity``;
-    kilocode/openrouter ``:free`` share ``openrouter-free``.  Same-prefix
+    kc/kilocode/openrouter ``:free`` share ``openrouter-free``.  Same-prefix
     default pools (``kr``, ``cc``, ...) are omitted so reviewer
     independence still allows a different family on the same prefix.
     """
@@ -164,6 +168,14 @@ def aliased_pools_for(route_ids: frozenset[str] | set[str]) -> frozenset[str]:
 def has_free_suffix(route_id: str) -> bool:
     """True when the route id ends with ``:free``."""
     return route_id.endswith(":free")
+
+
+_EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+
+
+def sanitized_plan_label(value: object) -> str:
+    """Return a display-safe plan label with credentials and email addresses removed."""
+    return _EMAIL.sub("[redacted]", redact_text(value))
 
 
 def connection_signals_free(conn: Mapping[str, Any]) -> tuple[bool, str]:
@@ -185,13 +197,13 @@ def connection_signals_free(conn: Mapping[str, Any]) -> tuple[bool, str]:
             return True, "importFreeModelsOnly"
         tier = str(psd.get("tier", "")).lower()
         if tier and "free" in tier:
-            return True, f"providerSpecificData.tier={tier}"
+            return True, "providerSpecificData.tier"
         plan = str(psd.get("plan", "")).lower()
         if plan and "free" in plan:
-            return True, f"providerSpecificData.plan={plan}"
+            return True, "providerSpecificData.plan"
     plan_label = str(conn.get("plan_label", "")).lower()
     if "free" in plan_label:
-        return True, f"plan_label={plan_label}"
+        return True, "plan_label"
     return False, ""
 
 
