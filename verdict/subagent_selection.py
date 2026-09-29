@@ -243,8 +243,12 @@ def classify_probe_status(
             False, categories[status_code], status_code, retry_after_seconds, bounded_body
         )
     if status_code is not None and status_code >= 500:
-        return HealthResult(False, "upstream_temporary", status_code, retry_after_seconds, bounded_body)
-    return HealthResult(False, "transport_temporary", status_code, retry_after_seconds, bounded_body)
+        return HealthResult(
+            False, "upstream_temporary", status_code, retry_after_seconds, bounded_body
+        )
+    return HealthResult(
+        False, "transport_temporary", status_code, retry_after_seconds, bounded_body
+    )
 
 
 def _failure_cooldown(result: HealthResult) -> float:

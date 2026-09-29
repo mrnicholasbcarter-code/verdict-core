@@ -613,10 +613,8 @@ class TestRankingParityAgainstOriginMain:
 # -----------------------------------------------------------------------
 
 
-def _make_minimal_ladder(state_path: Path) -> "EligibilityLadder":
+def _make_minimal_ladder(state_path: Path) -> EligibilityLadder:
     """Build an EligibilityLadder with no inventory or connections for unit testing."""
-    from verdict.orchestration.eligibility import EligibilityLadder
-
     return EligibilityLadder(
         inventory_rows=[],
         connections=[],
@@ -625,23 +623,16 @@ def _make_minimal_ladder(state_path: Path) -> "EligibilityLadder":
     )
 
 
-_CATALOG_MSG = (
-    "Model 'x' is not available in the active live catalog for provider 'y'"
-)
+_CATALOG_MSG = "Model 'x' is not available in the active live catalog for provider 'y'"
 _UNRELATED_MSG = "Your request was rejected due to content policy."
 
 
 class TestCatalogGhostWiring:
-    def test_catalog_stale_message_produces_catalog_stale_cooldown(
-        self, tmp_path: Path
-    ) -> None:
+    def test_catalog_stale_message_produces_catalog_stale_cooldown(self, tmp_path: Path) -> None:
         """_record_health with a catalog-stale error message → category catalog_stale."""
         ladder = _make_minimal_ladder(tmp_path / "state.json")
         result = HealthResult(
-            healthy=False,
-            category="unsupported",
-            status_code=400,
-            error_message=_CATALOG_MSG,
+            healthy=False, category="unsupported", status_code=400, error_message=_CATALOG_MSG
         )
         ladder._record_health("cx/some-model", result, NOW)
         health = ladder._state["health"]["cx/some-model"]
@@ -657,18 +648,13 @@ class TestCatalogGhostWiring:
         """_record_health with an unrelated 400 message → category stays unsupported."""
         ladder = _make_minimal_ladder(tmp_path / "state.json")
         result = HealthResult(
-            healthy=False,
-            category="unsupported",
-            status_code=400,
-            error_message=_UNRELATED_MSG,
+            healthy=False, category="unsupported", status_code=400, error_message=_UNRELATED_MSG
         )
         ladder._record_health("cx/some-model", result, NOW)
         health = ladder._state["health"]["cx/some-model"]
         assert health["category"] == "unsupported", health
 
-    def test_mutation_check_passing_category_breaks_reclassification(
-        self, tmp_path: Path
-    ) -> None:
+    def test_mutation_check_passing_category_breaks_reclassification(self, tmp_path: Path) -> None:
         """Regression guard: passing category instead of error_message must NOT reclassify."""
         from verdict.orchestration.provider_catalog import is_catalog_stale_error
 
