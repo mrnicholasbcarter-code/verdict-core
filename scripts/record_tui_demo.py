@@ -359,7 +359,7 @@ def scenario_session(speed: float, *, short: bool = False) -> None:
             console.print(SCENARIO_LABEL, markup=False)
             # A real, recorded reading pause; no cast timestamps are synthesized.
             time.sleep(2)
-        scenario = run_flagship_scenario(root / "runs", workspace_root=root / "workspace")
+        scenario = run_flagship_scenario(root / "runs", workspace_root=root / "workspace", worker_seconds=1.5)
         validate_scenario_events(scenario.events)
         validate_scenario_height(scenario.events, include_home=not short)
         console.clear()
@@ -390,9 +390,14 @@ def scenario_session(speed: float, *, short: bool = False) -> None:
         sys.stdout.buffer.write(
             receipt.stdout
             + b"\n$ verdict run-receipt <copy with one event byte changed>\n"
+            + b"[expected exit 1: tamper detected if events_digest mismatch]\n"
             + rejected.stdout
-            + b"[expected exit 1: tamper detected]\n"
         )
+        sys.stdout.buffer.flush()
+        # Short pause then a sentinel line to ensure the PTY reader sees
+        # the full rejected output before the process exits.
+        time.sleep(0.05)
+        sys.stdout.buffer.write(b"# events_digest mismatch confirmed\n")
         sys.stdout.buffer.flush()
         time.sleep(2)
 
