@@ -560,26 +560,40 @@ def _fault_terminal(kind: str, route_id: str, session_ref: str) -> WorkerTermina
     )
 
 
+_WORKER_ATTEMPT_DIR_RE = re.compile(r"^.+-a\d+$")
+
+
 class FaultInjectingExecutor:
     """Pop queued synthetic faults per route before delegating to ``inner``."""
 
     def __init__(self, inner: WorkerExecutor, faults: Mapping[str, list[str]]) -> None:
         self.inner = inner
         self._faults: dict[str, list[str]] = {k: list(v) for k, v in faults.items()}
-        self._dispatches = 0  # worker dispatches seen (planning included), for "#N" keys
+        self._dispatches = 0  # executor calls seen (planning included), for "#N" keys
+        self._worker_dispatches = 0  # attempt worktrees ``<node>-a<N>`` only, for "worker#N"
+
+    @staticmethod
+    def _is_worker_attempt(cwd: Path) -> bool:
+        """True when ``cwd`` is a node attempt worktree named ``<node>-a<N>``."""
+        return _WORKER_ATTEMPT_DIR_RE.fullmatch(cwd.name) is not None
 
     def _keys(self, route_id: str, cwd: Path) -> list[str]:
-        """Match order: exact route, provider prefix ("cc/*"), node ("@slugify"), "*".
+        """Match order: #N, worker#N (workers only), route, provider, @node, *.
 
         The node id is taken from the attempt worktree name ``<node>-a<N>`` so a
         chaos run can target "the first attempt of node X, whatever route the
         eligibility ladder picked" without predicting ranking.
+
+        ``#N`` counts every executor call, including planner and plan-repair.
+        ``worker#N`` counts only worker dispatches (attempt worktree ``<node>-a<N>``).
         """
         provider = route_id.split("/", 1)[0] + "/*"
         node = cwd.name.rsplit("-a", 1)[0] if "-a" in cwd.name else cwd.name
-        # "#N": the N-th executor call of the run, whatever node/route it is. Lets a
-        # chaos run hit a worker without predicting planner-chosen node ids.
-        return [f"#{self._dispatches}", route_id, provider, "@" + node, "*"]
+        keys = [f"#{self._dispatches}"]
+        if self._is_worker_attempt(cwd):
+            keys.append(f"worker#{self._worker_dispatches}")
+        keys.extend([route_id, provider, "@" + node, "*"])
+        return keys
 
     def _pop_fault(self, route_id: str, cwd: Path | None = None) -> str | None:
         for key in self._keys(route_id, cwd or Path(".")):
@@ -592,6 +606,8 @@ class FaultInjectingExecutor:
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         self._dispatches += 1
+        if self._is_worker_attempt(cwd):
+            self._worker_dispatches += 1
         kind = self._pop_fault(route_id, cwd)
         if kind is None:
             return await self.inner.run(
