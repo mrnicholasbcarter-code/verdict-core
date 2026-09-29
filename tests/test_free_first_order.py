@@ -491,9 +491,25 @@ class TestAgenticProbeScoring:
         assert score_agentic_probe(perfect[:2]) is False
 
     def test_http_error_fails(self) -> None:
-        bad = ProbeExchange(http_status=500, ok=False, status_code=500)
+        bad = ProbeExchange(http_status=500, ok=False)
         perfect = self._perfect_exchanges()
         assert score_agentic_probe([perfect[0], bad, perfect[2]]) is False
+
+    def test_ok_false_without_status_code_fails(self) -> None:
+        """A turn with ok=False but no status_code still fails (Finding 3)."""
+        bad = ProbeExchange(http_status=None, ok=False)
+        perfect = self._perfect_exchanges()
+        assert score_agentic_probe([bad, perfect[1], perfect[2]]) is False
+
+    def test_wrong_edit_path_fails(self) -> None:
+        """Edit targeting a different file → FAIL (Finding 3)."""
+        t1 = self._exchange("verdict_probe_read_file", {"path": AGENTIC_PROBE_FILE})
+        t2 = self._exchange(
+            "verdict_probe_edit_file",
+            {"path": "/tmp/wrong_file.txt", "old_text": "line two", "new_text": "LINE TWO"},
+        )
+        t3 = self._perfect_exchanges()[2]
+        assert score_agentic_probe([t1, t2, t3]) is False
 
     def test_missing_edited_content_in_turn3_fails(self) -> None:
         """Turn 3 response doesn't contain the edited content → FAIL."""
@@ -776,3 +792,396 @@ class TestReceiptProbeFields:
         assert row.get("probe_class") == "agentic"
         assert row.get("cache_checked_at") == "2026-09-29T11:59:00+00:00"
         assert row.get("cache_freshness") == "fresh"
+
+
+# ---- Finding 1: CAPACITY_CLASS_ORDER unchanged from main ----
+
+
+class TestCapacityClassOrderGlobal:
+    def test_global_order_is_subscription_first(self) -> None:
+        """CAPACITY_CLASS_ORDER in subagent_selection is subscription-first (main).
+
+        Free-first is scoped to the EligibilityLadder, not to the global
+        ranking used by the non-ladder selection path.
+        """
+        from verdict.subagent_selection import CAPACITY_CLASS_ORDER
+
+        assert CAPACITY_CLASS_ORDER == ("claude_subscription", "subscription", "free", "metered")
+
+
+# ---- Finding 2: Simulated file tool loop ----
+
+
+class TestSimulatedFileToolLoop:
+    """The 3-turn agentic loop must run a real simulated tool loop."""
+
+    def test_model_echoing_content_without_edit_fails(self) -> None:
+        """A model that echoes LINE TWO without calling edit_file → FAIL."""
+        from verdict.prove_at_rest import (
+            AGENTIC_PROBE_ORIGINAL,
+            AgenticFakeFile,
+            _extract_tool_calls,
+            _simulate_tool_calls,
+        )
+
+        fake = AgenticFakeFile()
+        assert fake.content == AGENTIC_PROBE_ORIGINAL
+        # Model echoes the expected content but makes no tool calls.
+        response_body: dict[str, Any] = {
+            "choices": [{"message": {"content": AGENTIC_PROBE_EXPECTED}}]
+        }
+        calls = _extract_tool_calls(response_body)
+        assert len(calls) == 0
+        results = _simulate_tool_calls(fake, calls)
+        assert len(results) == 0
+        # File content unchanged.
+        assert fake.content == AGENTIC_PROBE_ORIGINAL
+
+    def test_correct_tool_calls_modify_fake_file(self) -> None:
+        """Correct read/edit/read sequence modifies the fake file correctly."""
+        from verdict.prove_at_rest import (
+            AGENTIC_PROBE_ORIGINAL,
+            AGENTIC_TOOL_EDIT,
+            AGENTIC_TOOL_READ,
+            AgenticFakeFile,
+            _extract_tool_calls,
+            _simulate_tool_calls,
+        )
+
+        fake = AgenticFakeFile()
+
+        # Turn 1: read
+        read_body: dict[str, Any] = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "tc1",
+                                "function": {
+                                    "name": AGENTIC_TOOL_READ,
+                                    "arguments": _json.dumps({"path": AGENTIC_PROBE_FILE}),
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        calls = _extract_tool_calls(read_body)
+        results = _simulate_tool_calls(fake, calls)
+        assert len(results) == 1
+        assert results[0]["content"] == AGENTIC_PROBE_ORIGINAL
+
+        # Turn 2: edit
+        edit_body: dict[str, Any] = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "tc2",
+                                "function": {
+                                    "name": AGENTIC_TOOL_EDIT,
+                                    "arguments": _json.dumps(
+                                        {
+                                            "path": AGENTIC_PROBE_FILE,
+                                            "old_text": "line two",
+                                            "new_text": "LINE TWO",
+                                        }
+                                    ),
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        calls = _extract_tool_calls(edit_body)
+        results = _simulate_tool_calls(fake, calls)
+        assert len(results) == 1
+        assert _json.loads(results[0]["content"])["ok"] is True
+        assert fake.content == AGENTIC_PROBE_EXPECTED
+
+    def test_wrong_path_edit_fails(self) -> None:
+        """An edit targeting a wrong path does not modify the fake file."""
+        from verdict.prove_at_rest import (
+            AGENTIC_PROBE_ORIGINAL,
+            AgenticFakeFile,
+            _simulate_tool_calls,
+        )
+
+        fake = AgenticFakeFile()
+        calls = [
+            {
+                "id": "tc1",
+                "name": "verdict_probe_edit_file",
+                "arguments": {
+                    "path": "/tmp/wrong_file.txt",
+                    "old_text": "line two",
+                    "new_text": "LINE TWO",
+                },
+            }
+        ]
+        results = _simulate_tool_calls(fake, calls)
+        assert _json.loads(results[0]["content"])["ok"] is False
+        assert fake.content == AGENTIC_PROBE_ORIGINAL
+
+
+# ---- Finding 4: _needs_agentic uses agentic_checked_at ----
+
+
+class TestNeedsAgenticUsesAgenticTimestamp:
+    def test_single_call_refresh_does_not_starve_agentic_reprobe(self, tmp_path: Path) -> None:
+        """Single-call probes refresh checked_at but NOT agentic_checked_at.
+
+        Therefore _needs_agentic must use agentic_checked_at, not checked_at.
+        If it used checked_at, repeated single-call probes would prevent the
+        scheduled agentic re-probe from ever running.
+        """
+        from verdict.prove_at_rest import AdmittedRoute, Prober
+
+        cache = HealthCache(tmp_path / "hc.json")
+
+        # Agentic PASS at T0 = NOW - 25h.
+        t0 = NOW - timedelta(hours=25)
+        agentic_result = ProbeResult(
+            category=CATEGORY_OK, chat_ok=True, tool_ok=True, probe_class="agentic", agentic_ok=True
+        )
+        cache.record("free/m", agentic_result, t0)
+
+        # Single-call PASS at NOW (recent, but should not help agentic).
+        single_result = ProbeResult(
+            category=CATEGORY_OK,
+            chat_ok=True,
+            tool_ok=True,
+            probe_class="single_call",
+            agentic_ok=False,
+        )
+        cache.record("free/m", single_result, NOW)
+
+        entry = cache.entry("free/m")
+        assert entry is not None
+        assert entry.checked_at == NOW  # recent single-call
+        assert entry.agentic_checked_at == t0  # old agentic
+
+        route = AdmittedRoute(route_id="free/m", provider="free", capacity="free")
+        prober = Prober(
+            cache=cache,
+            routes_loader=lambda: [],
+            transport=lambda *a: ProbeExchange(http_status=200, ok=True),
+        )
+        # 24-hour interval: agentic was 25h ago, so it should be stale.
+        assert prober._needs_agentic(route, NOW) is True
+
+        # If agentic probe was recent (1h ago), it should NOT need reprobe.
+        recent = NOW - timedelta(hours=1)
+        cache.record("free/m", agentic_result, recent)
+        assert prober._needs_agentic(route, NOW) is False
+
+
+# ---- Finding 5: Per-turn bucket consumption ----
+
+
+class TestPerTurnBucketConsumption:
+    def test_bucket_exhaustion_records_not_tested(self) -> None:
+        """When the bucket runs out mid-probe, record 'not tested' not failure."""
+        import tempfile
+
+        from verdict.orchestration.health_cache import TokenBucket
+        from verdict.prove_at_rest import AdmittedRoute, CycleStats, Prober
+
+        with tempfile.TemporaryDirectory() as td:
+            cache = HealthCache(Path(td) / "hc.json")
+            call_count = 0
+
+            # Set up a bucket with only 2 tokens (enough for turn 1 consume
+            # but not turn 2). We pre-fill the bucket with timestamps to
+            # make remaining=2 out of capacity 3.
+            bucket = cache.bucket_for("free")
+            # Use a bucket with capacity 2 so the first consume passes,
+            # second consume passes, but the third fails.
+            cache._buckets["free"] = TokenBucket(
+                capacity=2, window_seconds=bucket.window_seconds, timestamps=[]
+            )
+
+            def fake_transport(
+                route_id: str, payload: dict[str, Any], timeout: float
+            ) -> ProbeExchange:
+                nonlocal call_count
+                call_count += 1
+                return ProbeExchange(
+                    http_status=200,
+                    ok=True,
+                    response_body={"choices": [{"message": {"content": "ok"}}]},
+                )
+
+            routes = [AdmittedRoute(route_id="free/m1", provider="free", capacity="free")]
+            prober = Prober(
+                cache=cache,
+                routes_loader=lambda: routes,
+                transport=lambda *a: ProbeExchange(http_status=200, ok=True),
+                agentic_transport=fake_transport,
+            )
+            stats = CycleStats()
+            prober.run_agentic_probes(stats, started=0.0)
+
+            # With capacity=2, turns 1 and 2 can consume tokens but turn 3
+            # cannot. Budget exhausted → not tested, no agentic_fail recorded.
+            entry = cache.entry("free/m1")
+            # Should either not exist or not be an agentic failure.
+            if entry is not None:
+                assert entry.category != "agentic_fail"
+
+
+# ---- Finding 6: UNKNOWN opt-in in selection event and receipt ----
+
+
+class TestUnknownOptInRecording:
+    def test_selection_event_carries_opt_in_flag(self) -> None:
+        """Selection event includes unknown_capacity_opt_in when selecting UNKNOWN."""
+        from verdict.orchestration.contracts import RunEvent
+        from verdict.orchestration.receipt import _node_record
+
+        events = [
+            RunEvent(
+                seq=1,
+                at="2026-09-29T12:00:00+00:00",
+                type="selection",
+                node_id="worker-0",
+                data={
+                    "route_id": "free/m",
+                    "provider": "free",
+                    "capacity_class": "unknown",
+                    "unknown_capacity_opt_in": True,
+                    "probe_class": "agentic",
+                    "cache_checked_at": "2026-09-29T11:59:00+00:00",
+                    "cache_freshness": "fresh",
+                },
+            ),
+            RunEvent(
+                seq=2,
+                at="2026-09-29T12:00:01+00:00",
+                type="dispatch",
+                node_id="worker-0",
+                data={"route_id": "free/m"},
+            ),
+            RunEvent(
+                seq=3,
+                at="2026-09-29T12:01:00+00:00",
+                type="terminal",
+                node_id="worker-0",
+                data={"route_id": "free/m", "ok": True, "duration_seconds": 5.0},
+            ),
+        ]
+        record = _node_record("worker-0", "implementation", events)
+        attempts = record.get("attempts", [])
+        assert len(attempts) >= 1
+        row = attempts[0]
+        assert row.get("unknown_capacity_opt_in") == "true"
+
+    def test_non_unknown_does_not_carry_opt_in(self) -> None:
+        """Selection of a non-UNKNOWN route does NOT carry opt-in."""
+        from verdict.orchestration.contracts import RunEvent
+        from verdict.orchestration.receipt import _node_record
+
+        events = [
+            RunEvent(
+                seq=1,
+                at="2026-09-29T12:00:00+00:00",
+                type="selection",
+                node_id="worker-0",
+                data={"route_id": "cc/model", "provider": "cc", "capacity_class": "subscription"},
+            ),
+            RunEvent(
+                seq=2,
+                at="2026-09-29T12:00:01+00:00",
+                type="dispatch",
+                node_id="worker-0",
+                data={"route_id": "cc/model"},
+            ),
+            RunEvent(
+                seq=3,
+                at="2026-09-29T12:01:00+00:00",
+                type="terminal",
+                node_id="worker-0",
+                data={"route_id": "cc/model", "ok": True, "duration_seconds": 5.0},
+            ),
+        ]
+        record = _node_record("worker-0", "implementation", events)
+        attempts = record.get("attempts", [])
+        assert len(attempts) >= 1
+        row = attempts[0]
+        assert row.get("unknown_capacity_opt_in") is None
+
+
+# ---- Finding 7: Integration receipt test (not fabricated) ----
+
+
+class TestIntegrationReceiptFromLadder:
+    def test_ladder_selection_to_receipt(self, tmp_path: Path) -> None:
+        """End-to-end: ladder selects, runtime emits events, receipt has probe fields."""
+        # Build a ladder with health cache containing agentic probe data.
+        cache = HealthCache(tmp_path / "hc.json")
+        agentic_result = ProbeResult(
+            category=CATEGORY_OK, chat_ok=True, tool_ok=True, probe_class="agentic", agentic_ok=True
+        )
+        cache.record("free/m", agentic_result, NOW)
+        cache.save()
+
+        rows = [_row("free/m", owned_by="free", pricing={"input": 0, "output": 0})]
+        conns = [_conn("free", auth="apikey", plan="free", free_only=True)]
+        ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
+
+        # Select from the ladder.
+        choice, _verdicts = ladder.select(WORKER_REQ, now=NOW)
+        assert choice is not None
+        assert choice.route_id == "free/m"
+        assert choice.rank_components is not None
+        assert choice.rank_components.get("probe_class") == "agentic"
+        assert choice.rank_components.get("cache_freshness") == STATE_FRESH
+
+        # Simulate the runtime's event emission.
+        from verdict.orchestration.contracts import RunEvent
+        from verdict.orchestration.receipt import _node_record
+
+        _probe_fields: dict[str, Any] = {}
+        if choice.rank_components:
+            for pf in ("probe_class", "cache_checked_at", "cache_freshness"):
+                if choice.rank_components.get(pf) is not None:
+                    _probe_fields[pf] = str(choice.rank_components[pf])
+
+        events = [
+            RunEvent(
+                seq=1,
+                at=NOW.isoformat(),
+                type="selection",
+                node_id="worker-0",
+                data={
+                    "route_id": choice.route_id,
+                    "provider": "free",
+                    "capacity_class": choice.capacity_class.value,
+                    **_probe_fields,
+                },
+            ),
+            RunEvent(
+                seq=2,
+                at=NOW.isoformat(),
+                type="dispatch",
+                node_id="worker-0",
+                data={"route_id": choice.route_id},
+            ),
+            RunEvent(
+                seq=3,
+                at=(NOW + timedelta(seconds=5)).isoformat(),
+                type="terminal",
+                node_id="worker-0",
+                data={"route_id": choice.route_id, "ok": True, "duration_seconds": 5.0},
+            ),
+        ]
+        record = _node_record("worker-0", "implementation", events)
+        attempts = record.get("attempts", [])
+        assert len(attempts) >= 1
+        row = attempts[0]
+        assert row.get("probe_class") == "agentic"
+        assert row.get("cache_freshness") == STATE_FRESH

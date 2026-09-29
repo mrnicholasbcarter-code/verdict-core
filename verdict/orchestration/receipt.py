@@ -297,6 +297,9 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             for field in ("probe_class", "cache_checked_at", "cache_freshness"):
                 if data.get(field):
                     pending_probe_fields[field] = str(data[field])
+            # UNKNOWN capacity opt-in flag.
+            if data.get("unknown_capacity_opt_in"):
+                pending_probe_fields["unknown_capacity_opt_in"] = "true"
         elif event.type == "node_state":
             claimed_state = str(data.get("state", ""))
             claimed_seq = event.seq

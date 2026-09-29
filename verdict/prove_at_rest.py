@@ -140,6 +140,121 @@ AGENTIC_TOOLS = [
     },
 ]
 
+
+class AgenticFakeFile:
+    """In-memory fake file for agentic probe tool simulation.
+
+    Starts with ``AGENTIC_PROBE_ORIGINAL`` content. ``read`` returns
+    the current content. ``edit`` applies ``old_text`` → ``new_text``
+    only when the path matches ``AGENTIC_PROBE_FILE`` and ``old_text``
+    is found; returns ``True`` on success, ``False`` on mismatch.
+    """
+
+    def __init__(self) -> None:
+        self.content: str = AGENTIC_PROBE_ORIGINAL
+
+    def read(self, path: str) -> str | None:
+        """Read the fake file content, or *None* if the path is wrong."""
+        if path != AGENTIC_PROBE_FILE:
+            return None
+        return self.content
+
+    def edit(self, path: str, old_text: str, new_text: str) -> bool:
+        """Apply an edit. Returns *True* iff the path and old_text match."""
+        if path != AGENTIC_PROBE_FILE:
+            return False
+        if old_text not in self.content:
+            return False
+        self.content = self.content.replace(old_text, new_text, 1)
+        return True
+
+
+def _extract_tool_calls(response_body: Any) -> list[dict[str, Any]]:
+    """Extract tool calls from an OpenAI-style response body.
+
+    Returns a list of ``{"id": ..., "name": ..., "arguments": {...}}`` dicts.
+    """
+    if not isinstance(response_body, Mapping):
+        return []
+    choices = response_body.get("choices", [])
+    if not choices:
+        return []
+    msg = choices[0]
+    if isinstance(msg, Mapping):
+        msg = msg.get("message", msg)
+    if not isinstance(msg, Mapping):
+        return []
+    calls = msg.get("tool_calls", [])
+    result: list[dict[str, Any]] = []
+    for tc in calls if isinstance(calls, list) else []:
+        if not isinstance(tc, Mapping):
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, Mapping):
+            continue
+        name = fn.get("name")
+        if not name:
+            continue
+        raw = fn.get("arguments", "{}")
+        if isinstance(raw, str):
+            try:
+                args = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+        elif isinstance(raw, dict):
+            args = raw
+        else:
+            args = {}
+        result.append({"id": tc.get("id", ""), "name": name, "arguments": args})
+    return result
+
+
+def _simulate_tool_calls(
+    fake_file: AgenticFakeFile, tool_calls: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Execute tool calls against the fake file and return tool-result messages."""
+    results: list[dict[str, Any]] = []
+    for tc in tool_calls:
+        name = tc["name"]
+        args = tc["arguments"]
+        if name == AGENTIC_TOOL_READ:
+            content = fake_file.read(args.get("path", ""))
+            if content is None:
+                output = json.dumps({"error": f"file not found: {args.get('path', '')}"})
+            else:
+                output = content
+        elif name == AGENTIC_TOOL_EDIT:
+            ok = fake_file.edit(
+                args.get("path", ""), args.get("old_text", ""), args.get("new_text", "")
+            )
+            output = json.dumps({"ok": ok})
+        else:
+            output = json.dumps({"error": f"unknown tool: {name}"})
+        results.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": output})
+    return results
+
+
+def _extract_assistant_message(response_body: Any) -> dict[str, Any]:
+    """Extract the assistant message from an OpenAI response for conversation continuity."""
+    if not isinstance(response_body, Mapping):
+        return {"role": "assistant", "content": ""}
+    choices = response_body.get("choices", [])
+    if not choices or not isinstance(choices[0], Mapping):
+        return {"role": "assistant", "content": ""}
+    msg = choices[0].get("message", {})
+    if not isinstance(msg, Mapping):
+        return {"role": "assistant", "content": ""}
+    # Return a minimal assistant message preserving tool_calls if present.
+    result: dict[str, Any] = {"role": "assistant"}
+    if msg.get("content") is not None:
+        result["content"] = msg["content"]
+    else:
+        result["content"] = None
+    if msg.get("tool_calls"):
+        result["tool_calls"] = msg["tool_calls"]
+    return result
+
+
 DEFAULT_MAX_REQUESTS = 300
 DEFAULT_MAX_WALL_SECONDS = 600.0
 DEFAULT_CONCURRENCY = 4
@@ -282,7 +397,9 @@ def tool_payload(route_id: str) -> dict[str, Any]:
     }
 
 
-def agentic_turn1_payload(route_id: str) -> dict[str, Any]:
+def agentic_turn1_payload(
+    route_id: str, conversation: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Turn 1: ask the model to read the probe file."""
     return {
         "model": route_id,
@@ -302,10 +419,13 @@ def agentic_turn1_payload(route_id: str) -> dict[str, Any]:
     }
 
 
-def agentic_turn2_payload(route_id: str, turn1_messages: list[dict[str, Any]]) -> dict[str, Any]:
+def agentic_turn2_payload(
+    route_id: str, conversation: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Turn 2: ask the model to edit a line (given previous conversation)."""
+    prior = list(conversation) if conversation else []
     messages = [
-        *turn1_messages,
+        *prior,
         {
             "role": "user",
             "content": (
@@ -324,10 +444,13 @@ def agentic_turn2_payload(route_id: str, turn1_messages: list[dict[str, Any]]) -
     }
 
 
-def agentic_turn3_payload(route_id: str, turn2_messages: list[dict[str, Any]]) -> dict[str, Any]:
+def agentic_turn3_payload(
+    route_id: str, conversation: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Turn 3: ask the model to confirm the edit by reading again."""
+    prior = list(conversation) if conversation else []
     messages = [
-        *turn2_messages,
+        *prior,
         {
             "role": "user",
             "content": (
@@ -360,7 +483,9 @@ def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
     if len(exchanges) < 3:
         return False
     for ex in exchanges:
-        if ex.status_code is not None and ex.status_code >= 400:
+        if not ex.ok:
+            return False
+        if ex.http_status is not None and ex.http_status >= 400:
             return False
 
     def _tool_call_args(ex: ProbeExchange, tool_name: str) -> dict[str, Any] | None:
@@ -398,9 +523,11 @@ def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
     if t1_args is None or t1_args.get("path") != AGENTIC_PROBE_FILE:
         return False
 
-    # Turn 2: edit_file with correct old_text / new_text.
+    # Turn 2: edit_file with correct path, old_text, and new_text.
     t2_args = _tool_call_args(exchanges[1], AGENTIC_TOOL_EDIT)
     if t2_args is None:
+        return False
+    if t2_args.get("path") != AGENTIC_PROBE_FILE:
         return False
     if t2_args.get("old_text") != "line two" or t2_args.get("new_text") != "LINE TWO":
         return False
@@ -741,7 +868,12 @@ class Prober:
         self.cache.zero_bucket(route.provider, now + timedelta(seconds=seconds), pool=route.pool)
 
     def _needs_agentic(self, route: AdmittedRoute, now: datetime) -> bool:
-        """True when the route is FREE and its agentic probe is stale or missing."""
+        """True when the route is FREE and its agentic probe is stale or missing.
+
+        Uses ``agentic_checked_at`` (not ``checked_at``) so that regular
+        single-call probes cannot keep an old agentic PASS from being
+        re-probed indefinitely.
+        """
         if route.capacity != CapacityClass.FREE.value:
             return False
         entry = self.cache.entry(route.route_id)
@@ -749,7 +881,9 @@ class Prober:
             return True
         if not entry.agentic_ok:
             return True
-        age = now - entry.checked_at
+        # Use the agentic-specific timestamp, not the general checked_at.
+        ref = entry.agentic_checked_at if entry.agentic_checked_at is not None else entry.checked_at
+        age = now - ref
         return age.total_seconds() > self.agentic_interval_hours * 3600
 
     def run_agentic_probes(self, stats: CycleStats, started: float | None = None) -> None:
@@ -775,49 +909,57 @@ class Prober:
             if stats.requests + 3 > self.max_requests:
                 break
             now = self.clock()
+            # Consume one bucket token before each turn, stop when empty.
             if not self.cache.consume(route.provider, now, pool=route.pool):
                 continue
+            fake_file = AgenticFakeFile()
+            conversation: list[dict[str, Any]] = []
             exchanges: list[ProbeExchange] = []
+            budget_exhausted = False
+            turn_payloads = [agentic_turn1_payload, agentic_turn2_payload, agentic_turn3_payload]
             try:
-                t1 = self.agentic_transport(
-                    route.route_id,
-                    agentic_turn1_payload(route.route_id),
-                    self.probe_timeout_seconds,
-                )
-                exchanges.append(t1)
-                stats.requests += 1
-                # Check stop/wall between turns.
-                if (
-                    t1.ok
-                    and stats.requests < self.max_requests
-                    and not self._stop.is_set()
-                    and self.monotonic() - wall_start < self.max_wall_seconds
-                ):
-                    t2 = self.agentic_transport(
-                        route.route_id,
-                        agentic_turn2_payload(route.route_id, []),
-                        self.probe_timeout_seconds,
-                    )
-                    exchanges.append(t2)
+                for turn_idx, payload_fn in enumerate(turn_payloads):
+                    if turn_idx > 0:
+                        # Consume a bucket token before each subsequent turn.
+                        now = self.clock()
+                        if not self.cache.consume(route.provider, now, pool=route.pool):
+                            budget_exhausted = True
+                            break
+                        # Check stop/wall between turns.
+                        if (
+                            not exchanges[-1].ok
+                            or stats.requests >= self.max_requests
+                            or self._stop.is_set()
+                            or self.monotonic() - wall_start >= self.max_wall_seconds
+                        ):
+                            break
+                    payload = payload_fn(route.route_id, conversation)
+                    ex = self.agentic_transport(route.route_id, payload, self.probe_timeout_seconds)
+                    exchanges.append(ex)
                     stats.requests += 1
-                    if (
-                        t2.ok
-                        and stats.requests < self.max_requests
-                        and not self._stop.is_set()
-                        and self.monotonic() - wall_start < self.max_wall_seconds
-                    ):
-                        t3 = self.agentic_transport(
-                            route.route_id,
-                            agentic_turn3_payload(route.route_id, []),
-                            self.probe_timeout_seconds,
-                        )
-                        exchanges.append(t3)
-                        stats.requests += 1
+                    if not ex.ok:
+                        break
+                    # Simulate tool calls against the fake file and build
+                    # conversation history for the next turn.
+                    assistant_msg = _extract_assistant_message(ex.response_body)
+                    tool_calls = _extract_tool_calls(ex.response_body)
+                    tool_results = _simulate_tool_calls(fake_file, tool_calls)
+                    # Build cumulative conversation: user + assistant + tool results.
+                    conversation = list(payload.get("messages", []))
+                    conversation.append(assistant_msg)
+                    conversation.extend(tool_results)
             except TimeoutError:
                 exchanges.append(
                     ProbeExchange(http_status=None, ok=False, error_category="timeout")
                 )
+            if budget_exhausted:
+                # Record as "not tested" — the route is not failed, just untested.
+                stats.probed += 1
+                continue
             passed = score_agentic_probe(exchanges)
+            # Also verify the fake file reached the expected state.
+            if passed:
+                passed = fake_file.content == AGENTIC_PROBE_EXPECTED
             result = ProbeResult(
                 category=CATEGORY_OK if passed else "agentic_fail",
                 chat_ok=len(exchanges) >= 1 and exchanges[0].ok,
