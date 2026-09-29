@@ -966,7 +966,7 @@ def test_cmd_doctor_all_healthy(
 
     out = capsys.readouterr().out
     assert "System is healthy! All checks passed." in out
-    assert "Doctor Report: 0 issues identified. 0 resolved." in out
+    assert "ISSUES (0)" in out
 
 
 def test_cli_documentation_json_surfaces_blocked_state(

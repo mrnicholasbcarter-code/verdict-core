@@ -470,36 +470,56 @@ class TerminalUI:
             self.console.print(Text(f"    Repair: {command}", style="ACCENT"))
 
     def doctor(self, report: Mapping[str, Any]) -> None:
-        self.panel(
-            "Capability coverage",
-            "Observed discovery and certification. Missing capabilities stay visible; installed does not mean healthy.",
-        )
-        self.section("Capabilities")
+        from verdict.design import PresentationMode
+        from verdict.design import panel as design_panel
+        from verdict.doctor_presentation import PROBLEM_STATES, repair_command
+
+        mode = PresentationMode(True, True, False, self.console.width)
+        cap_items: list[Text] = []
         for item in rows(report.get("capabilities")):
             detail = " · ".join(
                 str(item[key])
                 for key in ("selected_provider_id", "health", "authority")
                 if item.get(key) is not None
             )
-            self.doctor_finding(
-                str(item.get("capability_id", "Capability")),
-                str(item.get("status", "unknown")),
-                detail,
-            )
+            cap_id = str(item.get("capability_id", "Capability"))
+            status = str(item.get("status", "unknown"))
+            line = Text(f"{cap_id}: {status.upper()}", style="TEXT")
+            if detail:
+                line.append(f"  {detail}", style="MUTED")
+            cap_items.append(line)
+            if not self.machine and status.lower() in PROBLEM_STATES:
+                cmd = repair_command(f"{cap_id} {status} {detail}")
+                cap_items.append(Text(f"    Repair: {cmd}", style="ACCENT"))
+        if cap_items:
+            content: Group | Text = Group(*cap_items)
+        else:
+            content = Text("No capabilities discovered.", style="MUTED")
+        self.console.print(design_panel(content, title="CAPABILITIES", mode=mode))
 
     def doctor_summary(self, issues: Sequence[str], fixed: Sequence[str]) -> None:
-        self.panel(
-            "Doctor Report",
-            f"Doctor Report: {len(issues)} issues identified. {len(fixed)} resolved.",
-        )
+        from verdict.design import PresentationMode
+        from verdict.design import panel as design_panel
+        from verdict.doctor_presentation import repair_command
+
+        mode = PresentationMode(True, True, False, self.console.width)
+        issue_items: list[Text] = []
+        shown_count = 0
         for issue in issues:
             resolved = any(item.lower() in issue.lower() for item in fixed)
-            self.doctor_finding(
-                "FIXED" if resolved else "ISSUE", "ok" if resolved else "failed", issue
-            )
-        if not issues:
-            self.status(
-                "System is healthy! All checks passed.",
-                "healthy",
-                "Configuration checks passed; capability coverage is reported separately above.",
-            )
+            label = "FIXED" if resolved else "ISSUE"
+            state = "ok" if resolved else "failed"
+            line = Text(f"{label}: ", style="ACCENT" if resolved else "ERROR")
+            line.append(issue, style="TEXT")
+            issue_items.append(line)
+            shown_count += 1
+            if not self.machine and not resolved:
+                cmd = repair_command(f"{label} {state} {issue}")
+                issue_items.append(Text(f"    Repair: {cmd}", style="ACCENT"))
+        if issue_items:
+            issue_content: Group | Text = Group(*issue_items)
+            title = f"ISSUES ({shown_count})"
+        else:
+            issue_content = Text("System is healthy! All checks passed.", style="SUCCESS")
+            title = "ISSUES (0)"
+        self.console.print(design_panel(issue_content, title=title, mode=mode))

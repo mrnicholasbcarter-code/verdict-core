@@ -61,13 +61,13 @@ PALETTE: tuple[tuple[str, str, str, str], ...] = (
     ("Models", "catalog", "OmniRoute catalog dump", "catalog"),
     ("Routing", "route", "route one task through the gate", "route"),
     ("Routing", "routing", "recorded routing explorer for a run", "routing.view"),
-    ("Runs", "context", "recorded context budget and provenance", "context.view"),
+    ("Context", "context", "recorded context budget and provenance", "context.view"),
     ("Routing", "compare", "compare dual-route results", "compare"),
     ("Overview", "stats", "statistics from routing decision log", "stats"),
     ("Overview", "suggest", "suggestions from routing history", "suggest"),
     ("Overview", "cost-report", "cost report from routing decisions", "cost-report"),
     ("Config", "config", "show resolved configuration (secrets redacted)", "config.show"),
-    ("Configuration", "credentials", "manage stored credentials", "credentials.list"),
+    ("Config", "credentials", "manage stored credentials", "credentials.list"),
     ("Setup", "doctor", "health of gateways, harnesses, memory, docs", "doctor"),
     ("Setup", "setup", "plan or apply capability bootstrap", "setup.plan"),
     ("Setup", "quickstart", "credential-free deterministic demo", ""),
@@ -299,14 +299,14 @@ def _styled_home(state: HomeState, *, width: int) -> RenderableType:
             controls.add_row(Text(group.upper(), style=TOKENS["PRIMARY"]), "")
         controls.add_row(Text(f"verdict {command}", style=TOKENS["TEXT"]), Text(purpose))
         last = group
-    hints = Text("↑/↓ select  ·  Enter run  ·  q quit", style=TOKENS["ACCENT"])
-    hints.append("\nverdict --help  ·  VERDICT_NO_ANIMATION=1", style=TOKENS["MUTED"])
+    footer = Text("↑/↓ select  ·  Enter run  ·  q quit", style=TOKENS["ACCENT"])
+    footer.append("\nverdict --help  ·  VERDICT_NO_ANIMATION=1", style=TOKENS["MUTED"])
+    controls_panel = panel(Group(controls, footer), title="03 / COMMANDS", mode=mode)
     return Group(
         panel(mark, mode=mode, tone="PRIMARY"),
         panel(gateway, title="01 / CONNECTION", mode=mode),
         panel(work, title="02 / RECENT WORK", mode=mode),
-        hints,
-        panel(controls, title="03 / COMMANDS", mode=mode),
+        controls_panel,
     )
 
 
