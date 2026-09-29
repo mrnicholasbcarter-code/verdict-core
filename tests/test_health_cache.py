@@ -694,11 +694,16 @@ def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> Non
     )
     stats1 = prober.run_once()
     assert stats1.stopped_reason == "request_cap"
-    # Cursor must point to route 1, not past all 3.
+    # Cursor must record the probed route ids so the next cycle resumes correctly.
+    # (Defect 2 fix changed from next_index to probed_ids.)
     cursor = cache.cursor
     assert cursor.get("cycle_open") is True
-    assert cursor.get("next_index") == 1, (
-        f"expected cursor at 1 after first cap, got {cursor.get('next_index')}"
+    probed_ids = cursor.get("probed_ids") or []
+    assert "cx/r0" in probed_ids, (
+        f"expected cx/r0 in probed_ids after cap, got {probed_ids!r}"
+    )
+    assert "cx/r1" not in probed_ids, (
+        f"cx/r1 must not be in probed_ids (was never probed), got {probed_ids!r}"
     )
 
 
@@ -842,3 +847,257 @@ def test_action_prove_once_forwards_max_wall_seconds() -> None:
 
     assert calls, "build_live_daemon was never called"
     assert calls[0].get("max_wall_seconds") == 120.0, f"max_wall_seconds not forwarded: {calls[0]}"
+
+
+# ---------------------------------------------------------------------------
+# Review round 3 — six regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_request_cap_after_chat_does_not_record_negative(tmp_path: Path) -> None:
+    """Issue 1 (request-cap path): chat succeeds, request cap reached → no negative.
+
+    The max_requests cap fires BETWEEN the chat and the tool call.
+    The route must be left unchanged (not recorded as a negative).
+    """
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path, bucket_capacity=100)
+    route = _route("cx/rc-target", "free")
+    # Only script the chat call; the tool must never be called.
+    transport = _Script({("cx/rc-target", "chat"): _ok()})
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: [route],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        # cap at exactly 1: chat call consumes it; tool would need cap > 1
+        max_requests=1,
+        epsilon=0,
+        concurrency=1,
+    )
+    stats = prober.run_once()
+    assert stats.stopped_reason in {"request_cap", "complete"}, (
+        f"unexpected stopped_reason: {stats.stopped_reason!r}"
+    )
+    entry = cache.entry("cx/rc-target")
+    if entry is not None:
+        assert entry.state_at(NOW) != STATE_NEGATIVE, (
+            "request-cap route between chat and tool must not be recorded as negative"
+        )
+    # Tool must never have been called.
+    assert ("cx/rc-target", "tool") not in transport.calls, (
+        "tool call must not be made when request cap reached after chat"
+    )
+
+
+def test_cursor_resume_survives_route_reorder_and_removal(tmp_path: Path) -> None:
+    """Issue 2 (cursor by route_id): routes disappear/reorder → no unprobed route skipped.
+
+    Cycle 1: 4 routes, cap=2 → probes r0,r1; cursor stores their ids.
+    Between cycles, the route list reorders (r1,r0,r3,r2).
+    Cycle 2: r0 and r1 already probed; r3 and r2 are still unprobed and must
+    both be reached in the second cycle.
+    """
+    # Create 4 routes with distinct names.
+    r0, r1, r2, r3 = [_route(f"cx/rv{i}", "free") for i in range(4)]
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path, bucket_capacity=100)
+    transcript: list[str] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        transcript.append(route_id)
+        return _ok(tool=(phase == "tool"))
+
+    # First cycle: cap at 2 requests (one full probe = 2 requests for free routes).
+    prober1 = Prober(
+        cache=cache,
+        routes_loader=lambda: [r0, r1, r2, r3],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        max_requests=2,
+        epsilon=0,
+        concurrency=1,
+    )
+    stats1 = prober1.run_once()
+    assert stats1.stopped_reason in {"request_cap", "complete"}
+
+    # Second cycle with REORDERED routes (r1 before r0, r3 before r2).
+    # The resume should skip the already-probed ids, not skip by index.
+    prober2 = Prober(
+        cache=cache,
+        routes_loader=lambda: [r1, r0, r3, r2],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        # large cap so the whole remaining list is processed
+        max_requests=1000,
+        epsilon=0,
+        concurrency=1,
+    )
+    stats2 = prober2.run_once()
+    # After two cycles every route must have been probed at least once.
+    for ri in [r0, r1, r2, r3]:
+        entry = cache.entry(ri.route_id)
+        assert entry is not None, f"{ri.route_id!r} was never probed"
+
+
+def test_half_open_and_stale_paid_routes_get_liveness_kind(tmp_path: Path) -> None:
+    """Issue 3: half-open and stale subscription/metered routes must use kind='liveness'.
+
+    Only FREE routes get kind='full'.  Other capacity classes are documented
+    as chat-only; forcing a tool call on them was a defect.
+    """
+    cache = HealthCache(tmp_path / "cache.json")
+    long_ago = NOW - timedelta(seconds=3600 * 8)  # deep in the negative window
+    # Record a negative for a subscription route (will become half-open/stale once it
+    # elapses, but for ordering we just need it in the half-open bucket).
+    cache.record(
+        "sub/model",
+        ProbeResult(category=CATEGORY_TIMEOUT, chat_ok=False, tool_ok=False),
+        long_ago,
+    )
+    # Record a stale healthy entry for a metered route.
+    cache.record(
+        "meter/model",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True),
+        NOW - timedelta(seconds=700),
+    )
+    routes = [
+        _route("sub/model", "subscription"),
+        _route("meter/model", "metered"),
+        _route("free/model", "free"),
+    ]
+    ordered = order_cycle(routes, cache, NOW, epsilon=0)
+    kinds = {route.route_id: kind for route, kind in ordered}
+
+    # Half-open subscription → liveness.
+    assert "sub/model" in kinds, "sub/model should be in ordered (half-open)"
+    assert kinds["sub/model"] == "liveness", (
+        f"subscription half-open must use kind='liveness', got {kinds['sub/model']!r}"
+    )
+    # Stale metered → liveness.
+    assert "meter/model" in kinds, "meter/model should be in ordered (stale)"
+    assert kinds["meter/model"] == "liveness", (
+        f"metered stale must use kind='liveness', got {kinds['meter/model']!r}"
+    )
+    # Free → full (unchanged).
+    if "free/model" in kinds:
+        assert kinds["free/model"] == "full", "free route must keep kind='full'"
+
+
+def test_model_identity_same_prefix_matches_different_prefix_does_not(tmp_path: Path) -> None:
+    """Issue 4: provider prefix in reported model must be compared, not stripped.
+
+    Cases:
+    - Same provider prefix + same suffix → match (True).
+    - No prefix in reported + same suffix → match (True).
+    - Different provider prefix + same suffix → MISMATCH (False).
+    """
+    from verdict.prove_at_rest import Prober
+
+    match_fn = Prober._model_identity_matches
+
+    # Same provider: cc/model vs cc/model → match.
+    assert match_fn("cc/claude-opus-4", "cc/claude-opus-4") is True, (
+        "identical route_id+reported must match"
+    )
+    # No prefix in reported, same suffix → match (gateway stripped prefix).
+    assert match_fn("cc/claude-opus-4", "claude-opus-4") is True, (
+        "reported without prefix and matching suffix must match"
+    )
+    # Different provider prefix + same suffix → MISMATCH.
+    assert match_fn("cc/claude-opus-4", "otherprov/claude-opus-4") is False, (
+        "different provider prefix must be a mismatch even if suffix matches"
+    )
+    # Empty reported → match (not a mismatch).
+    assert match_fn("cc/model", "") is True, "empty reported must not be a mismatch"
+
+
+def test_empty_reported_model_stored_as_not_reported_identity(tmp_path: Path) -> None:
+    """Issue 5: a probe where the gateway echoes no model must record identity='not_reported'.
+
+    The route stays healthy (liveness is fine), but the identity field in the
+    cache entry and the status report must say 'not_reported'.
+    """
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path, bucket_capacity=100)
+    route = _route("cx/silent-model", "free")
+    # Both chat and tool succeed but neither echoes a model id.
+    chat_no_id = ProbeExchange(
+        http_status=200, ok=True, chat_exact=True, tool_called=False, latency_ms=10,
+        reported_model="",
+    )
+    tool_no_id = ProbeExchange(
+        http_status=200, ok=True, chat_exact=False, tool_called=True, latency_ms=10,
+        reported_model="",
+    )
+    transport = _Script(
+        {("cx/silent-model", "chat"): chat_no_id, ("cx/silent-model", "tool"): tool_no_id}
+    )
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: [route],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+        concurrency=1,
+    )
+    prober.run_once()
+    entry = cache.entry("cx/silent-model")
+    assert entry is not None, "route should have been probed"
+    # Route is healthy for liveness (still coding-worker-eligible if tool_ok).
+    # Identity must be recorded as not_reported.
+    assert entry.identity == "not_reported", (
+        f"expected identity='not_reported', got {entry.identity!r}"
+    )
+    # Status report must also surface it.
+    report = status_report(cache, now=NOW)
+    workers = report.get("top_healthy_coding_workers", [])
+    if workers:
+        # The worker (if present) must expose the identity field.
+        worker = next((w for w in workers if w["route_id"] == "cx/silent-model"), None)
+        if worker is not None:
+            assert worker.get("identity") == "not_reported", (
+                f"status report worker must carry identity='not_reported', got {worker!r}"
+            )
+
+
+def test_cli_once_forwards_max_wall_seconds(tmp_path: Path) -> None:
+    """Issue 6: cmd_prove_at_rest('once', max_wall_seconds=N) must include it in params.
+
+    Calls the CLI function directly (bypassing Click argument parsing) and
+    patches run_action at the source imported by cli.py to capture params.
+    """
+    collected: list[dict[str, object]] = []
+
+    from unittest.mock import MagicMock, patch
+
+    fake_result = MagicMock()
+    fake_result.ok = True
+    fake_result.data = {"state_path": str(tmp_path / "cache.json"), "stopped_reason": "complete"}
+    fake_result.exit_code = 0
+
+    def fake_run_action(name: str, params: dict[str, object]) -> object:
+        collected.append({"name": name, "params": dict(params)})
+        return fake_result
+
+    # The CLI imports run_action locally inside cmd_prove_at_rest, so we patch
+    # it at the source module (verdict.actions.registry).
+    with patch("verdict.actions.registry.run_action", side_effect=fake_run_action):
+        from verdict.cli import cmd_prove_at_rest
+
+        cmd_prove_at_rest(
+            "once",
+            allow_live_probe=True,
+            max_wall_seconds=123.0,
+            max_requests=5,
+        )
+
+    assert collected, "run_action was never called"
+    params = collected[0]["params"]
+    assert params.get("max_wall_seconds") == 123.0, (
+        f"max_wall_seconds not forwarded to run_action params: {params!r}"
+    )

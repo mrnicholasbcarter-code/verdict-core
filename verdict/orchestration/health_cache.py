@@ -239,6 +239,9 @@ class HealthEntry:
     capacity_evidence: str | None = None
     http_status: int | None = None
     healthy: bool = False
+    # Defect 5 fix: "not_reported" when the gateway did not echo the model id;
+    # "verified" when the reported id matched.  Empty string means unknown/legacy.
+    identity: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -272,6 +275,8 @@ class HealthEntry:
             payload["capacity_evidence"] = self.capacity_evidence
         if self.http_status is not None:
             payload["http_status"] = self.http_status
+        if self.identity:
+            payload["identity"] = self.identity
         return payload
 
     @classmethod
@@ -300,6 +305,7 @@ class HealthEntry:
             ),
             http_status=int(http_status) if isinstance(http_status, int) else None,
             healthy=value.get("healthy") is True,
+            identity=str(value.get("identity") or ""),
         )
 
 
@@ -329,6 +335,9 @@ class ProbeResult:
     retry_after_seconds: float | None = None
     pool: str | None = None
     capacity_evidence: str | None = None
+    # Defect 5 fix: "not_reported" when the gateway echoed no model id;
+    # "verified" when the reported id matched the requested route.
+    identity: str = ""
 
     @property
     def healthy(self) -> bool:
@@ -545,6 +554,7 @@ class HealthCache:
                 capacity_evidence=result.capacity_evidence,
                 http_status=result.http_status,
                 healthy=True,
+                identity=result.identity,
             )
         else:
             prior = previous.consecutive_failures if previous is not None else 0
@@ -580,6 +590,7 @@ class HealthCache:
                 capacity_evidence=result.capacity_evidence,
                 http_status=result.http_status,
                 healthy=False,
+                identity=result.identity,
             )
         self._routes[route] = entry
         return entry
@@ -592,6 +603,7 @@ class HealthCache:
         pool: str | None,
         capacity_evidence: str | None,
         now: datetime,
+        identity: str = "",
     ) -> HealthEntry:
         """Chat-only success for a non-FREE route.
 
@@ -615,6 +627,7 @@ class HealthCache:
             capacity_evidence=capacity_evidence,
             http_status=200,
             healthy=True,
+            identity=identity,
         )
         self._routes[route] = entry
         return entry
