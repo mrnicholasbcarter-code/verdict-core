@@ -1,6 +1,6 @@
 # ADR-037: Supervisor concurrency governor
 
-**Status:** Proposed  
+**Status:** Accepted (operator decisions recorded 2026-09-29; `VERDICT_MULTI_STORY` stays off by default)  
 **Date:** 2026-09-28  
 **Story:** BOD-157  
 **Authors:** verdict-core team
@@ -191,7 +191,23 @@ A 2-story concurrent run with disjoint footprints as the first live validation:
 - A `supervisor.json` status file records current running stories, governor
   caps, and pressure readings.
 
-## Open decisions for the operator
+## Operator decisions (2026-09-29)
+
+The operator resolved the open decisions below on 2026-09-29. The feature flag `VERDICT_MULTI_STORY` stays **off by default**. These decisions define what "on" means.
+
+| # | Decision | Resolution |
+|---|---|---|
+| 1 | Initial cap values | 2 stories / 3 coding workers / 1 integration slot (the "Initial" row above). The operator raises them explicitly. |
+| 2 | Footprint source of truth | (b) Inferred from the story branch's diff against `main`. Unknown or empty footprints SERIALIZE (fail-closed). |
+| 3 | Resource pressure inputs | Memory and swap. This host is memory-bound (8 GB). Pressure is the higher of used-RAM fraction and swap-use fraction; swap above 3 GB counts as pressure 0.8. CPU load is recorded but is not an input. |
+| 4 | Provider pool health | OmniRoute live inventory plus the most recent probe result per route. A pool with no probe result is unknown, so DEFER. |
+| 5 | Late collision policy | (a) Wait for the conflicting story to finish, then re-check before integration. |
+| 6 | Kill-switch drain | Graceful drain. In-flight stories finish, and no new stories are admitted. |
+| 7 | Base-drift after another story merges | Automatic rebase. The story re-runs its proof only when the rebase changed files in its footprint. |
+| 8 | Integration slots | Always 1 for the single-`main` workflow. |
+| 9 | Monitoring and alerting | Alert when pressure lowers the effective caps below the configured values, or when more than 50% of admissions are DEFER/SERIALIZE over 30 minutes. |
+
+## Open decisions for the operator (as originally proposed)
 
 These decisions are **intentionally left open** and must be resolved before
 the feature flag is turned on in production:
