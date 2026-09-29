@@ -3,5 +3,4 @@ VERDICT  /  Routing stats
 autonomous control plane  ·  plan · select · recover · verify · prove
 
   - log  WARNING
-    No log file found at 
-<FIXROOT>/no-such-log.jsonl
+    No log file found at no-such-log.jsonl

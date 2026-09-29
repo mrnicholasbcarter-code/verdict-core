@@ -366,6 +366,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             capability=getattr(args, "capability", None),
             limit=getattr(args, "limit", 0),
             show_all=getattr(args, "show_all", False),
+            inventory=getattr(args, "inventory", False),
         )
     elif args.command == "inspect":
         legacy.cmd_inspect(args.model_id, output_json=args.json)

@@ -2141,6 +2141,7 @@ def cmd_models(
     capability: str | None = None,
     limit: int = 0,
     show_all: bool = False,
+    inventory: bool = False,
 ) -> None:
     """List the authoritative model inventory from the live gateway."""
     from verdict.actions.registry import run_action
@@ -2173,6 +2174,30 @@ def cmd_models(
         params["limit"] = limit
     if show_all:
         params["show_all"] = True
+
+    if output_json and not inventory:
+        # Stable `models --json` contract (origin/main): a flat list of the
+        # configured catalog with the legacy keys; no gateway call.  The live
+        # inventory summary is opt-in via `--inventory` (BOD-277).
+        legacy_catalog = catalog if catalog is not None else default_model_catalog()
+        print(
+            json.dumps(
+                [
+                    {
+                        "id": m.id,
+                        "provider": m.provider,
+                        "tier": m.capability_tier,
+                        "context_window": m.context_window,
+                        "cost_per_1k": m.cost_per_1k,
+                        "availability_state": m.availability_state,
+                    }
+                    for m in legacy_catalog
+                ],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
 
     result = run_action("models.list", params or None)
     if output_json:

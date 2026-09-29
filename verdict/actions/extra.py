@@ -553,6 +553,12 @@ def _action_mcp_status(**kwargs: Any) -> ActionResult:
 
 def _action_hook_status(**kwargs: Any) -> ActionResult:
     db_path = kwargs.get("db_path") or str(Path.home() / ".verdict" / "memory.db")
+    # Parity with origin/main cmd_hook: the MemoryPlane is opened before any hook
+    # subcommand runs, which initializes the DB file; status then reports it present.
+    plane = _memory_plane(kwargs)
+    close = getattr(plane, "close", None)
+    if callable(close):
+        close()
     codex_agents = Path.home() / ".codex" / "AGENTS.md"
     claude_md = Path.cwd() / "CLAUDE.md"
     mcp_file = Path.cwd() / ".mcp.json"
@@ -676,7 +682,7 @@ def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
     allow_live_probe: bool = kwargs.get("allow_live_probe", False)
     if not allow_live_probe:
         return ActionResult(
-            data={"error": "live prove-at-rest requires explicit consent; pass allow_live_probe"},
+            data={"error": "live prove-at-rest requires explicit consent; pass --allow-live-probe"},
             ok=False,
             exit_code=2,
         )

@@ -59,6 +59,11 @@ def register(subparsers: Any) -> None:
     models_p.add_argument(
         "--all", action="store_true", dest="show_all", help="Show all models (no row limit)"
     )
+    models_p.add_argument(
+        "--inventory",
+        action="store_true",
+        help="With --json: emit the live inventory summary object instead of the catalog list",
+    )
 
     inspect_p = subparsers.add_parser("inspect", help="Inspect one model's catalog record")
     inspect_p.add_argument("model_id", help="Model ID to inspect")

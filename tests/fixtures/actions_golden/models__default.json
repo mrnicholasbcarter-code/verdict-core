@@ -1,5 +1,5 @@
 {
   "exit_code": 0,
   "stderr_empty": true,
-  "stdout": "{\n  \"freshness\": null,\n  \"inventory_error\": \"gateway unreachable: URLError: <urlopen error [Errno 111] Connection refused>\",\n  \"models\": [\n    {\n      \"capability_tier\": \"frontier\",\n      \"context_window\": null,\n      \"freshness\": null,\n      \"id\": \"anthropic/claude-opus-5\",\n      \"input_cost_per_million\": null,\n      \"output_cost_per_million\": null,\n      \"provider\": \"anthropic\",\n      \"source\": \"config\",\n      \"structured_output\": null,\n      \"tools_support\": null\n    }\n  ],\n  \"provider_counts\": {\n    \"anthropic\": 1\n  },\n  \"shown\": 1,\n  \"source\": \"config_only\",\n  \"total\": 1,\n  \"total_filtered\": 1\n}\n"
+  "stdout": "[\n  {\n    \"availability_state\": \"eligible\",\n    \"context_window\": 200000,\n    \"cost_per_1k\": 0.0,\n    \"id\": \"anthropic/claude-opus-5\",\n    \"provider\": \"anthropic\",\n    \"tier\": 0\n  }\n]\n"
 }

@@ -361,11 +361,20 @@ except SystemExit as exc:
     sys.exit(exc.code if isinstance(exc.code, int) else 0)
 """
 
+    # A directory with no executables at all: PATH is scoped to only this, so
+    # shutil.which() never resolves a real host-installed harness binary
+    # (installed=False/binary_path=None on every host, not just hosts without
+    # claude/cursor/prime/opencode on PATH). Fixtures below were regenerated
+    # under this same isolation so CI and any dev machine agree byte-for-byte.
+    _EMPTY_BIN_DIR: ClassVar[str] = "/tmp/v275db-empty-bin"
+
     def _hermetic_env(self, harness: str) -> dict[str, str]:
+        os.makedirs(self._EMPTY_BIN_DIR, exist_ok=True)
         env: dict[str, str] = {}
-        for key in ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL"):
+        for key in ("LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL"):
             if key in os.environ:
                 env[key] = os.environ[key]
+        env["PATH"] = self._EMPTY_BIN_DIR
         env["HOME"] = f"/tmp/v275db-h-{harness}"
         env["XDG_CONFIG_HOME"] = f"/tmp/v275db-h-{harness}/.config"
         env["LLMGATE_AUTH_TOKEN"] = "test-token-hermetic"
@@ -422,6 +431,19 @@ except SystemExit as exc:
         assert got_norm == exp_norm, (
             f"{harness} discover: stdout mismatch\nGOT:\n{got_norm!r}\nEXP:\n{exp_norm!r}"
         )
+
+    def test_fixtures_contain_no_host_paths(self) -> None:
+        """Fixtures must never embed a real installed-binary path from the
+        capture host (e.g. '/home/nick/.local/bin/prime'). PATH is scoped to
+        an empty directory during capture (see _hermetic_env) specifically so
+        shutil.which() cannot resolve a host binary; this guards against that
+        isolation silently regressing."""
+        for fixture_path in sorted(FIXTURE_DIR.glob("harness_*.json")):
+            text = fixture_path.read_text()
+            assert "/home/" not in text, (
+                f"{fixture_path.name} contains a host-specific '/home/' path; "
+                "regenerate under PATH-isolated capture"
+            )
 
 
 class TestSetupCredentials:

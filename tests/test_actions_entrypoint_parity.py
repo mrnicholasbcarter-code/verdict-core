@@ -352,7 +352,7 @@ class TestModelsListParity:
         spy = DomainSpy(return_value=(fake_rows, None))
 
         with patch("verdict.actions.helpers.inventory_model_catalog", spy):
-            _rc, _stdout = run_cli("models", "--json")
+            _rc, _stdout = run_cli("models", "--json", "--inventory")
             cli_count = spy.call_count
             assert cli_count >= 1, f"CLI did not call domain: count={cli_count}"
 

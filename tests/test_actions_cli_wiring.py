@@ -47,6 +47,12 @@ def _materialize_logs() -> None:
 
 LOG_JSONL = FIX / "decisions.jsonl"
 MISSING = FIX / "no-such-log.jsonl"
+# Relative form for byte-equal CLI invocations (cwd == FIX): keeps the rendered
+# "No log file found at ..." message short so Rich never soft-wraps it across a
+# narrow CI terminal width, which would otherwise split the path mid-string and
+# break the <FIXROOT> normalization (observed failure: CI's longer absolute
+# checkout path wrapped where this repo's shorter dev path did not).
+MISSING_REL = "no-such-log.jsonl"
 
 # Deterministic scrubs for values that vary between runs (timestamps, latency).
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)")
@@ -210,11 +216,11 @@ def test_orchestration_run_receipt_wired(tmp_path: Path) -> None:
 
 _BYTE_EQUAL_CASES = [
     # (baseline name, argv, cwd relative to FIX)
-    ("stats_missing", ["stats", "--log_path", str(MISSING)], "."),
+    ("stats_missing", ["stats", "--log_path", MISSING_REL], "."),
     ("stats_present", ["stats", "--log_path", str(LOG_JSONL)], "."),
     ("costreport_present", ["cost-report"], "cwd_costreport"),
     ("costreport_missing", ["cost-report"], "cwd_empty"),
-    ("suggest_missing", ["suggest", "--log_path", str(MISSING)], "."),
+    ("suggest_missing", ["suggest", "--log_path", MISSING_REL], "."),
     ("suggest_present", ["suggest", "--log_path", str(LOG_JSONL)], "."),
     ("replay_missing", ["replay", "unknown-session"], "."),
     ("replay_json", ["replay", "unknown-session", "--json"], "."),

@@ -1,5 +1,5 @@
 {
-  "stdout": "{\"error\": \"live prove-at-rest requires explicit consent; pass allow_live_probe\"}\n",
+  "stdout": "{\"error\": \"live prove-at-rest requires explicit consent; pass --allow-live-probe\"}\n",
   "stderr": "",
   "exit_code": 2,
   "command": "prove-at-rest once --json"
