@@ -53,5 +53,5 @@
 | `uninstall` | — | — | — | 🔧 machine-only: cmd_uninstall (uninstall_memory_bridge): removes memory bridge hooks, MCP registrations, and optionally purges the .verdict data directory globally; destructive global uninstall |
 | `watch` | — | Orchestration | launch | 🚀 launch: _watch (tui.follow): live-follows a running orchestration's events.jsonl and renders the TUI until the run terminates; long-running interactive view |
 
-**Summary:** 37 actions, 7 launch, 2 machine-only, 0 gaps
+**Summary:** 39 actions, 7 launch, 2 machine-only, 0 gaps
 
