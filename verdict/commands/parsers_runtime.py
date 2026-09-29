@@ -38,19 +38,19 @@ def register(subparsers: Any) -> None:
     runtime_reconcile_p.add_argument("--json", action="store_true", help="Output JSON")
 
     prove_p = subparsers.add_parser(
-        "prove-at-rest", help="Prove free-tier ∩ active OmniRoute models at rest (daemon or once)"
+        "prove-at-rest", help="Probe admitted routes into the health cache (daemon or once)"
     )
     prove_sub = prove_p.add_subparsers(dest="prove_command", required=True)
-    prove_once_p = prove_sub.add_parser("once", help="Run one prove-at-rest cycle and exit")
+    prove_once_p = prove_sub.add_parser("once", help="Run one bounded probe cycle and exit")
     prove_daemon_p = prove_sub.add_parser(
-        "daemon", help="Continuously prove free∩active identities at rest"
+        "daemon", help="Continuously probe admitted routes into the health cache"
     )
-    prove_status_p = prove_sub.add_parser("status", help="Show the latest persisted proof state")
+    prove_status_p = prove_sub.add_parser("status", help="Show the health cache")
     for _prove_p in (prove_once_p, prove_daemon_p, prove_status_p):
         _prove_p.add_argument(
             "--state-path",
             default=None,
-            help="Proof state JSON path (default: ~/.verdict/prove-at-rest/state.json)",
+            help="Health cache JSON path (default: ~/.verdict/health-cache.json)",
         )
         _prove_p.add_argument("--json", action="store_true", help="Output JSON")
     for _prove_live_p in (prove_once_p, prove_daemon_p):
@@ -70,6 +70,18 @@ def register(subparsers: Any) -> None:
             "--allow-live-probe",
             action="store_true",
             help="Explicit consent to network prove-at-rest probes",
+        )
+        _prove_live_p.add_argument(
+            "--max-requests",
+            type=int,
+            default=300,
+            help="Request cap for one cycle, counting chat and tool calls (default 300)",
+        )
+        _prove_live_p.add_argument(
+            "--max-wall-seconds",
+            type=float,
+            default=600.0,
+            help="Wall-time cap for one cycle in seconds (default 600)",
         )
     uninst_p = subparsers.add_parser(
         "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"

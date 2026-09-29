@@ -378,3 +378,29 @@ Edit `VERDICT_CHECKOUT` in the service if your checkout is not at
 unchanged, and keeps only the newest 5 `models.json.verdict-sync-*.bak` backups.
 Check the last run with `journalctl --user -u verdict-prime-sync`.
 
+
+
+### Health-cache prober
+
+`verdict prove-at-rest daemon` is the single prober. It probes every admitted
+route, spends most of its budget on FREE routes, and writes
+`~/.verdict/health-cache.json`. It does not write
+`~/.verdict/orchestration-health.json` (the selection ladder still owns that
+file). The older `~/.verdict/prove-at-rest/state.json` cycle document is
+ignored and left in place.
+
+Install it next to the Prime sync timer. Do not enable it until the unit has
+been reviewed:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/verdict-health-cache.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now verdict-health-cache.service
+```
+
+Edit `VERDICT_CHECKOUT` if the checkout is not at `~/dev/verdict-core`.
+The process probes, sleeps `--interval` seconds (10 minutes in the unit), and
+repeats. Each cycle stops at 300 requests or 10 minutes. Check it with
+`journalctl --user -u verdict-health-cache` and
+`verdict prove-at-rest status`.

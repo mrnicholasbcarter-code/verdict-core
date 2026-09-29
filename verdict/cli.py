@@ -4013,8 +4013,15 @@ def cmd_prove_at_rest(
     timeout: float = 15.0,
     allow_live_probe: bool = False,
     output_json: bool = False,
+    max_requests: int = 300,
+    max_wall_seconds: float = 600.0,
 ) -> None:
-    """Run or inspect the free∩active prove-at-rest daemon."""
+    """Run or inspect the health-cache prober.
+
+    ``status`` reads the cache. ``once`` and ``daemon`` probe admitted routes
+    and write the cache. Neither writes the ladder's orchestration-health
+    file. The legacy prove-at-rest cycle document is ignored.
+    """
     if prove_command == "status":
         from verdict.actions.registry import run_action
 
@@ -4029,7 +4036,7 @@ def cmd_prove_at_rest(
                 from verdict import present
 
                 present.header("Prove at rest")
-                present.warn("prove-at-rest", f"No prove-at-rest state at {data['state_path']}")
+                present.warn("prove-at-rest", f"No health cache at {data['state_path']}")
             return
         if output_json:
             print(json.dumps(data, indent=2, sort_keys=True))
@@ -4037,22 +4044,29 @@ def cmd_prove_at_rest(
         from verdict import present
 
         present.header("Prove at rest  /  status")
-        summary = {
-            k: v
-            for k, v in data.items()
-            if k not in {"results", "state_path", "cycle_id"} and not isinstance(v, list)
-        }
         present.kv(
-            {"cycle": data.get("cycle_id", ""), "state": data.get("state_path", ""), **summary}
+            {
+                "cache": data.get("cache_path", ""),
+                "fresh": data.get("counts_by_state", {}).get("fresh", 0),
+                "stale": data.get("counts_by_state", {}).get("stale", 0),
+                "negative": data.get("counts_by_state", {}).get("negative", 0),
+            }
         )
-        results = data.get("results", [])
         present.table(
-            ["Status", "Identity", "Reason"],
+            ["Route", "Latency ms", "Pool", "Capacity evidence"],
             [
-                (item.get("status", ""), item.get("identity_id", ""), item.get("reason") or "-")
-                for item in results
+                (
+                    item.get("route_id", ""),
+                    item.get("latency_ms", ""),
+                    item.get("pool") or "-",
+                    item.get("capacity_evidence") or "-",
+                )
+                for item in data.get("top_healthy_coding_workers", [])
             ],
         )
+        cold = data.get("cold_providers", [])
+        if cold:
+            present.note("cold providers: " + ", ".join(str(item) for item in cold))
         return
 
     if prove_command == "once":
@@ -4062,6 +4076,7 @@ def cmd_prove_at_rest(
             "allow_live_probe": allow_live_probe,
             "interval": interval,
             "timeout": timeout,
+            "max_requests": max_requests,
         }
         if base_url is not None:
             params["base_url"] = base_url
@@ -4097,17 +4112,17 @@ def cmd_prove_at_rest(
             present.header("Prove at rest  /  once")
             present.kv({"state": resolved_state, **summary})
             present.status(
-                "prove-at-rest", "failed" if data.get("summary", {}).get("failed", 0) else "ok"
+                "prove-at-rest",
+                "capped" if data.get("stopped_reason") not in {None, "", "complete"} else "ok",
             )
-        if data.get("summary", {}).get("failed", 0):
-            raise SystemExit(1)
         return
 
     if prove_command == "daemon":
         # Daemon stays MACHINE_ONLY — not routed through run_action
-        from verdict.prove_at_rest import ProveAtRestError, build_live_daemon, default_state_path
+        from verdict.orchestration.health_cache import default_cache_path
+        from verdict.prove_at_rest import ProveError, build_live_daemon
 
-        resolved_state = Path(state_path).expanduser() if state_path else default_state_path()
+        resolved_state = Path(state_path).expanduser() if state_path else default_cache_path()
 
         if not allow_live_probe:
             message = "live prove-at-rest requires explicit consent; pass --allow-live-probe"
@@ -4122,13 +4137,15 @@ def cmd_prove_at_rest(
 
         try:
             daemon = build_live_daemon(
-                state_path=resolved_state,
+                cache_path=resolved_state,
                 base_url=base_url,
                 interval_seconds=interval,
                 probe_timeout_seconds=timeout,
                 allow_live_probe=allow_live_probe,
+                max_requests=max_requests,
+                max_wall_seconds=max_wall_seconds,
             )
-        except ProveAtRestError as exc:
+        except ProveError as exc:
             message = str(exc)
             if output_json:
                 print(json.dumps({"error": message}, sort_keys=True))
@@ -4154,20 +4171,15 @@ def cmd_prove_at_rest(
                 f"code={code}: {exc}; retaining last complete state and retrying in {interval}s",
             )
 
-        daemon.on_cycle_error = report_cycle_error
+        daemon.prober.on_cycle_error = report_cycle_error
         try:
             daemon.run_forever()
         except KeyboardInterrupt:
             daemon.stop()
             if output_json:
-                cycle = daemon.status()
                 print(
                     json.dumps(
-                        {
-                            "status": "interrupted",
-                            "state_path": str(resolved_state),
-                            "last": None if cycle is None else cycle.to_dict(),
-                        },
+                        {"status": "interrupted", "cache_path": str(resolved_state)},
                         indent=2,
                         sort_keys=True,
                     )
