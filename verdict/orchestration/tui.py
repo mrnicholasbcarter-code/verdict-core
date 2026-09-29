@@ -1105,7 +1105,17 @@ def _run_interactive_cockpit(
     )
 
 
-_FIXTURE_PREFIXES = ("demo-", "demo-sub/", "demo-free", "alpha/", "beta/", "gamma/", "delta/", "fixture", "offline-")
+_FIXTURE_PREFIXES = (
+    "demo-",
+    "demo-sub/",
+    "demo-free",
+    "alpha/",
+    "beta/",
+    "gamma/",
+    "delta/",
+    "fixture",
+    "offline-",
+)
 
 
 def _replay_kind(events: list[Any]) -> str:
