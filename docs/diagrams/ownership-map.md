@@ -2,83 +2,153 @@
 
 Authority boundaries across Verdict subsystems. Each box names the module that implements it.
 
-```mermaid
-flowchart TB
-    subgraph Core ["Core — Routing / Admission / Context / Receipts Authority"]
-        INTEL["IntelligenceService — route()\n(verdict/intelligence.py)"]
-        EGATE["EligibilityGate — evaluate()\n(verdict/eligibility.py)"]
-        ROUTER["select_best_eligible_model()\n(verdict/router.py)"]
-        ADMISSION["AdmittedSet — admit()\n(verdict/admission.py)"]
-        EXEC_PATH["ExecutionPathDecision\n(verdict/execution_path.py)"]
-        CONTRACTS["TaskSpec / RoutingDecision\n(verdict/contracts.py)"]
-        CONTEXT_PACK["ContextPackCompiler\n(verdict/context_pack.py)"]
-        CONTEXT_HYDRATE["Context gather & hydrate\n(verdict/context_hydrate.py)"]
-        RECEIPT_STORE["ReceiptStore\n(verdict/receipt_store.py)"]
-        RECEIPT_VERIFY["IndependentReceiptVerifier\n(verdict/receipt_verifier.py)"]
-        ROUTING_RECEIPT["RoutingReceiptV1\n(verdict/routing_receipt.py)"]
-        PROOF["ProofReceipt\n(verdict/proof_receipts.py)"]
-        EVIDENCE["EvidenceReceipt\n(verdict/evidence_receipts.py)"]
-        ADVISORY["advisory — advise_order()\n(verdict/decision_signals/advisory.py)"]
-        OPENJEV["OpenJev — signal extraction\n(verdict/decision_signals/openjev.py)"]
-        CALIBRATION["Calibration — shadow/promote\n(verdict/decision_signals/calibration.py)"]
-        AVAIL["AvailabilityReport\n(verdict/availability.py)"]
-        AVAIL_CACHE["AvailabilityCache — TTL/SWR\n(verdict/availability_cache.py)"]
-        CATALOG["Model catalog & filters\n(verdict/catalog.py)"]
-        METADATA["Metadata store — models.dev + LiteLLM\n(verdict/metadata/store.py)"]
-        PROBES["ProbeRunner — 1-token liveness\n(verdict/probes.py)"]
-        FAILOVER_ENG["FailoverEngine\n(verdict/failover_engine.py)"]
-        BOUNDED_REC["Bounded recovery policy\n(verdict/bounded_recovery.py)"]
-        COST["CostLedger\n(verdict/cost_ledger.py)"]
-        CTRL_SEL["Controller selection\n(verdict/controller_selection.py)"]
-    end
-
-    subgraph Node ["Node — Envelope Enforcement Only"]
-        API["FastAPI server — /v1/route, /v1/chat/completions\n(verdict/api.py)"]
-        RELAY["build_attempts() — retry/idempotency\n(verdict/relay.py)"]
-        PROXY["UpstreamProxy — HTTP forwarding\n(verdict/proxy.py)"]
-        ENFORCEMENT["Enforcement\n(verdict/enforcement.py)"]
-    end
-
-    subgraph Cockpit ["Cockpit — Decision & Outcome Log Viewer"]
-        DASHBOARD["Streamlit dashboard\n(verdict/dashboard.py)"]
-        FIXTURES["Fixture paths\n(verdict/fixture_paths.py)"]
-        OUTCOME_LOG["Outcome log reader\n(verdict/outcome_log.py)"]
-    end
-
-    subgraph OmniRoute ["OmniRoute — Transport / Inventory Only"]
-        OMNI["OmniRouteHTTPTransport\n(verdict/omniroute.py)"]
-        OMNI_CAT["OmniRoute catalog stats\n(verdict/omniroute_catalog.py)"]
-    end
-
-    subgraph Prime ["Prime — Harness"]
-        HARNESS["Prime harness switching\n(verdict/harness_prime.py)"]
-        EXECUTORS["PrimeHeadlessExecutor\n(verdict/orchestration/executors.py)"]
-        ORCH_RUN["Orchestration run loop\n(verdict/orchestration/run.py)"]
-        ORCH_PLAN["Frontier planner\n(verdict/orchestration/planner.py)"]
-        ORCH_ELIG["Orchestration eligibility\n(verdict/orchestration/eligibility.py)"]
-        ORCH_RECV["Orchestration recovery\n(verdict/orchestration/recovery.py)"]
-        ORCH_REV["Independent OCR review\n(verdict/orchestration/review.py)"]
-        ORCH_RCPT["Orchestration receipt\n(verdict/orchestration/receipt.py)"]
-        ORCH_SUP["Supervisor\n(verdict/orchestration/supervisor.py)"]
-        OUTCOME_REC["Outcome records\n(verdict/outcome_records.py)"]
-        DISPATCHER["SwarmDispatcher\n(verdict/dispatcher.py)"]
-    end
-
-    API -->|"calls"| INTEL
-    INTEL -->|"evaluates"| EGATE
-    EGATE -->|"ranks"| ROUTER
-    ROUTER -->|"reads"| ADMISSION
-    API -->|"relays"| RELAY
-    RELAY -->|"forwards"| PROXY
-    PROXY -->|"transport"| OMNI
-    DASHBOARD -->|"reads"| OUTCOME_LOG
-    ORCH_RUN -->|"dispatches"| EXECUTORS
-    EXECUTORS -->|"uses harness"| HARNESS
-    ORCH_RUN -->|"eligibility"| ORCH_ELIG
-    ORCH_RUN -->|"recovery"| ORCH_RECV
-    ORCH_RUN -->|"review"| ORCH_REV
-    ORCH_RUN -->|"receipt"| ORCH_RCPT
-```
+Source: [`diagrams/ownership-map.mmd`](../../diagrams/ownership-map.mmd).
+The fenced block below is byte-identical to that file.
 
 OpenJev advises only within the admitted set. It never admits, revives drops,
-invents identities, or overrides live health/quota/cooldown.
+invents identities, or overrides live health, quota, or cooldown.
+
+```mermaid
+%% ownership-map.mmd -- authority boundaries across Verdict subsystems
+%% Source (verified against code at this commit):
+%%   verdict/intelligence.py (IntelligenceService.route)
+%%   verdict/eligibility.py (EligibilityGate.evaluate)
+%%   verdict/router.py (select_best_eligible_model)
+%%   verdict/admission.py (AdmittedSet.admit)
+%%   verdict/execution_path.py (ExecutionPathDecision)
+%%   verdict/contracts.py (TaskSpec, RoutingDecisionContract)
+%%   verdict/context_pack.py (ContextPackCompiler)
+%%   verdict/context_hydrate.py (Context gather and hydrate)
+%%   verdict/receipt_store.py (ReceiptStore)
+%%   verdict/receipt_verifier.py (IndependentReceiptVerifier)
+%%   verdict/routing_receipt.py (RoutingReceiptV1)
+%%   verdict/proof_receipts.py (ProofReceipt)
+%%   verdict/evidence_receipts.py (EvidenceReceipt)
+%%   verdict/decision_signals/advisory.py (advise_order)
+%%   verdict/decision_signals/openjev.py (OpenJev signal extraction)
+%%   verdict/decision_signals/calibration.py (evaluate, recommend)
+%%   verdict/availability.py (AvailabilityReport)
+%%   verdict/availability_cache.py (AvailabilityCache)
+%%   verdict/catalog.py (Model catalog and filters)
+%%   verdict/metadata/store.py (Metadata store, models.dev and LiteLLM)
+%%   verdict/probes.py (ProbeRunner)
+%%   verdict/failover_engine.py (FailoverEngine)
+%%   verdict/bounded_recovery.py (Bounded recovery policy)
+%%   verdict/cost_ledger.py (CostLedger)
+%%   verdict/controller_selection.py (Controller selection)
+%%   verdict/api.py (route_task)
+%%   verdict/relay.py (build_attempts)
+%%   verdict/proxy.py (UpstreamProxy)
+%%   verdict/enforcement.py (check_enforcement, EnforcementResult)
+%%   verdict/dashboard.py (Streamlit dashboard)
+%%   verdict/fixture_paths.py (Fixture paths)
+%%   verdict/outcome_log.py (Outcome log reader)
+%%   verdict/omniroute.py (OmniRouteHTTPTransport)
+%%   verdict/omniroute_catalog.py (OmniRoute catalog stats)
+%%   verdict/harness_prime.py (discover)
+%%   verdict/orchestration/executors.py (PrimeHeadlessExecutor)
+%%   verdict/orchestration/run.py (Orchestration run loop)
+%%   verdict/orchestration/planner.py (Frontier planner)
+%%   verdict/orchestration/eligibility.py (Orchestration eligibility)
+%%   verdict/orchestration/recovery.py (Orchestration recovery)
+%%   verdict/orchestration/review.py (Independent OCR review)
+%%   verdict/orchestration/receipt.py (Orchestration receipt)
+%%   verdict/orchestration/supervisor.py (ControllerSupervisor)
+%%   verdict/outcome_records.py (Outcome records)
+%%   verdict/dispatcher.py (SwarmDispatcher)
+%% OpenJev advises only inside the admitted set. It never admits, revives drops,
+%% invents identities, or overrides live health, quota, or cooldown.
+%% Verdict visual theme. Hex from verdict/design.py PALETTE:
+%% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
+%% purple #a78bfa  cyan #22b8eb  success #4ade80  amber #f5b00b  red #f87171  border #52525b
+%% Edges/lines use #7c7c88 (>=3:1 on #ffffff and #0d1117; measured 4.12:1 / 4.59:1).
+%% fontFamily omitted: Mermaid sanitizeDirective drops hyphenated themeVariable values.
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
+flowchart TB
+    subgraph Core ["Core: routing, admission, context, receipts"]
+        INTEL["IntelligenceService.route (verdict/intelligence.py)"]
+        EGATE["EligibilityGate.evaluate (verdict/eligibility.py)"]
+        ROUTER["select_best_eligible_model (verdict/router.py)"]
+        ADMISSION["AdmittedSet.admit (verdict/admission.py)"]
+        EXEC_PATH["ExecutionPathDecision (verdict/execution_path.py)"]
+        CONTRACTS["TaskSpec and RoutingDecision (verdict/contracts.py)"]
+        CONTEXT_PACK["ContextPackCompiler (verdict/context_pack.py)"]
+        CONTEXT_HYDRATE["Context gather and hydrate (verdict/context_hydrate.py)"]
+        RECEIPT_STORE["ReceiptStore (verdict/receipt_store.py)"]
+        RECEIPT_VERIFY["IndependentReceiptVerifier (verdict/receipt_verifier.py)"]
+        ROUTING_RECEIPT["RoutingReceiptV1 (verdict/routing_receipt.py)"]
+        PROOF["ProofReceipt (verdict/proof_receipts.py)"]
+        EVIDENCE["EvidenceReceipt (verdict/evidence_receipts.py)"]
+        ADVISORY["advisory.advise_order (verdict/decision_signals/advisory.py)"]
+        OPENJEV["OpenJev signal extraction (verdict/decision_signals/openjev.py)"]
+        CALIBRATION["Calibration, shadow then promote (verdict/decision_signals/calibration.py)"]
+        AVAIL["AvailabilityReport (verdict/availability.py)"]
+        AVAIL_CACHE["AvailabilityCache, TTL and SWR (verdict/availability_cache.py)"]
+        CATALOG["Model catalog and filters (verdict/catalog.py)"]
+        METADATA["Metadata store, models.dev and LiteLLM (verdict/metadata/store.py)"]
+        PROBES["ProbeRunner, 1-token liveness (verdict/probes.py)"]
+        FAILOVER_ENG["FailoverEngine (verdict/failover_engine.py)"]
+        BOUNDED_REC["Bounded recovery policy (verdict/bounded_recovery.py)"]
+        COST["CostLedger (verdict/cost_ledger.py)"]
+        CTRL_SEL["Controller selection (verdict/controller_selection.py)"]
+    end
+
+    subgraph Node ["Node: envelope enforcement only"]
+        API["FastAPI, /v1/route and /v1/chat/completions (verdict/api.py)"]
+        RELAY["build_attempts, retry and idempotency (verdict/relay.py)"]
+        PROXY["UpstreamProxy, HTTP forwarding (verdict/proxy.py)"]
+        ENFORCEMENT["Enforcement (verdict/enforcement.py)"]
+    end
+
+    subgraph Cockpit ["Cockpit: decision and outcome log viewer"]
+        DASHBOARD["Streamlit dashboard (verdict/dashboard.py)"]
+        FIXTURES["Fixture paths (verdict/fixture_paths.py)"]
+        OUTCOME_LOG["Outcome log reader (verdict/outcome_log.py)"]
+    end
+
+    subgraph OmniRoute ["OmniRoute: transport and inventory only"]
+        OMNI["OmniRouteHTTPTransport (verdict/omniroute.py)"]
+        OMNI_CAT["OmniRoute catalog stats (verdict/omniroute_catalog.py)"]
+    end
+
+    subgraph Prime ["Prime: harness"]
+        HARNESS["Prime harness switching (verdict/harness_prime.py)"]
+        EXECUTORS["PrimeHeadlessExecutor (verdict/orchestration/executors.py)"]
+        ORCH_RUN["Orchestration run loop (verdict/orchestration/run.py)"]
+        ORCH_PLAN["Frontier planner (verdict/orchestration/planner.py)"]
+        ORCH_ELIG["Orchestration eligibility (verdict/orchestration/eligibility.py)"]
+        ORCH_RECV["Orchestration recovery (verdict/orchestration/recovery.py)"]
+        ORCH_REV["Independent OCR review (verdict/orchestration/review.py)"]
+        ORCH_RCPT["Orchestration receipt (verdict/orchestration/receipt.py)"]
+        ORCH_SUP["Supervisor (verdict/orchestration/supervisor.py)"]
+        OUTCOME_REC["Outcome records (verdict/outcome_records.py)"]
+        DISPATCHER["SwarmDispatcher (verdict/dispatcher.py)"]
+    end
+
+    API -->|calls| INTEL
+    INTEL -->|evaluates| EGATE
+    EGATE -->|ranks| ROUTER
+    ROUTER -->|reads| ADMISSION
+    API -->|relays| RELAY
+    RELAY -->|forwards| PROXY
+    PROXY -->|transport| OMNI
+    DASHBOARD -->|reads| OUTCOME_LOG
+    ORCH_RUN -->|dispatches| EXECUTORS
+    EXECUTORS -->|uses harness| HARNESS
+    ORCH_RUN -->|eligibility| ORCH_ELIG
+    ORCH_RUN -->|recovery| ORCH_RECV
+    ORCH_RUN -->|review| ORCH_REV
+    ORCH_RUN -->|receipt| ORCH_RCPT
+
+classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
+classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
+classDef cooldown fill:#18181b,stroke:#f5b00b,color:#f4f4f5,stroke-width:2px
+classDef failed fill:#18181b,stroke:#f87171,color:#f4f4f5,stroke-width:2px
+classDef validated fill:#18181b,stroke:#4ade80,color:#f4f4f5,stroke-width:2px
+classDef muted fill:#18181b,stroke:#52525b,color:#a1a1aa,stroke-width:1px
+class INTEL,EGATE,API,RELAY,PROXY,ORCH_RUN active
+class ROUTER,ADMISSION,EXEC_PATH,EXECUTORS selected
+class FAILOVER_ENG,BOUNDED_REC,ORCH_RECV cooldown
+class ENFORCEMENT muted
+class RECEIPT_STORE,RECEIPT_VERIFY,ROUTING_RECEIPT,PROOF,EVIDENCE,ORCH_RCPT validated
+```

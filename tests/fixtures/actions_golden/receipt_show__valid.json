@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "stderr_empty": true,
+  "stdout": "{\n  \"attempt_id\": \"attempt-f3golden-001\",\n  \"candidate_pipeline\": [],\n  \"created_at\": \"2026-09-28T12:00:00Z\",\n  \"decision\": {\n    \"model\": \"kr/claude-sonnet-5-thinking\",\n    \"provider\": \"kr\",\n    \"tier\": 1\n  },\n  \"decision_digest\": \"sha256:c3945748d852d13ccff1b20ade5cfa058631b3a34cf542884ee2166da4ddc8cb\",\n  \"evidence_snapshot\": {},\n  \"execution\": {},\n  \"extensions\": {},\n  \"final\": {},\n  \"hydration\": {},\n  \"parent_receipt_id\": null,\n  \"receipt_id\": \"rcpt-f3test-golden-bod275\",\n  \"schema_version\": \"routing-receipt/v1\",\n  \"state\": \"finalized\",\n  \"story_id\": \"f3golden-story\",\n  \"task_profile\": {\n    \"criticality\": \"medium\",\n    \"task\": \"write unit tests\"\n  },\n  \"verification\": {},\n  \"work_unit_id\": \"unit-1\"\n}\n"
+}

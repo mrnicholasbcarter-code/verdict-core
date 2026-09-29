@@ -43,9 +43,27 @@ def register(subparsers: Any) -> None:
     )
 
     models_p = subparsers.add_parser(
-        "models", help="List the qualified model catalog used for routing and simulation"
+        "models", help="List the authoritative model inventory from the live gateway"
     )
     models_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    models_p.add_argument(
+        "--provider", default=None, help="Filter by provider prefix (e.g. kr, cc, gc)"
+    )
+    models_p.add_argument("--search", default=None, help="Filter model IDs by substring")
+    models_p.add_argument(
+        "--capability",
+        default=None,
+        help="Filter by capability tier or flag (frontier, tools, reasoning)",
+    )
+    models_p.add_argument("--limit", type=int, default=0, help="Max rows to show (default: 40)")
+    models_p.add_argument(
+        "--all", action="store_true", dest="show_all", help="Show all models (no row limit)"
+    )
+    models_p.add_argument(
+        "--inventory",
+        action="store_true",
+        help="With --json: emit the live inventory summary object instead of the catalog list",
+    )
 
     inspect_p = subparsers.add_parser("inspect", help="Inspect one model's catalog record")
     inspect_p.add_argument("model_id", help="Model ID to inspect")

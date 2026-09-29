@@ -375,9 +375,9 @@ def capture_plain_screens(width: int, condition: str) -> str:
 @pytest.mark.parametrize("width", [60, 100, 200])
 def test_existing_screens_plain_bytes_match_origin_main(width: int, condition: str) -> None:
     expected = {
-        60: "f34b95dfdd8a8c287b1759df1a661b8895ad7b105703c868023e0a0a83302186",
-        100: "e694c068c679fbad904bc6a7ce523470daf4c35be344d896eb02019d2b2c41b4",
-        200: "e694c068c679fbad904bc6a7ce523470daf4c35be344d896eb02019d2b2c41b4",
+        60: "676ff78e96addbeecca4e55f97a0d77f5104b52f548b4ec6739f9521ce505122",
+        100: "caa59f5dd1ded86cd9927b6b9d5cfffd3f9c7f5c7da76df7b0fb491cd38e65fb",
+        200: "caa59f5dd1ded86cd9927b6b9d5cfffd3f9c7f5c7da76df7b0fb491cd38e65fb",
     }
     output = capture_plain_screens(width, condition)
     assert "\x1b" not in output

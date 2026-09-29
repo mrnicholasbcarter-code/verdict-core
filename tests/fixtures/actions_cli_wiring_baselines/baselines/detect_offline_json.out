@@ -1,0 +1,11 @@
+{
+  "centralized_routers": [],
+  "cli_providers": [],
+  "cloud_apis": [],
+  "credentials_read": false,
+  "custom_endpoints": [],
+  "gateways": [],
+  "local_providers": [],
+  "mode": "offline",
+  "network_access": false
+}

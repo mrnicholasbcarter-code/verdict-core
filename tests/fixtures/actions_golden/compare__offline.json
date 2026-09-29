@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "stderr_empty": true,
+  "stdout": "{\n  \"comparison_report\": {\n    \"cost_delta\": 0.0,\n    \"direct_model\": \"anthropic/claude-opus-5\",\n    \"latency_delta\": 0.0,\n    \"quality_score\": 1.0,\n    \"task\": \"write a hello world\",\n    \"verdict_model\": \"anthropic/claude-opus-5\",\n    \"verdict_strategy\": \"SWARM_AUTODEV\"\n  }\n}\n"
+}

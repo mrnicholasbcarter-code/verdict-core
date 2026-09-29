@@ -1,0 +1,10 @@
+{
+  "args": [
+    "autodev",
+    "packet",
+    "--help"
+  ],
+  "exit_code": 0,
+  "stdout": "usage: __main__.py autodev packet [-h]\n                                  {create,inspect,validate,resume,execute,shadow,canary,compare} ...\n\npositional arguments:\n  {create,inspect,validate,resume,execute,shadow,canary,compare}\n    shadow              Dump advisory shadow-learning JSON without calling\n                        eligibility\n    canary              Dump explicit bounded canary choice or rollback\n                        without eligibility\n    compare             Compare two family-run JSON objects\n\noptions:\n  -h, --help            show this help message and exit\n",
+  "stderr": ""
+}

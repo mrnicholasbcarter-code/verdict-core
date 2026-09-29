@@ -1,0 +1,11 @@
+
+VERDICT  /  Cost and Usage Report
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+
+  Usage Summary
+Metric                        Value
+Total Routing Requests        4    
+T0 (Critical) Forwarded       2    
+Offloaded Tasks (T1-T3)       2    
+Estimated Savings vs T0 Only  $0.01
