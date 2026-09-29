@@ -23,15 +23,16 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 
 ## Try it with no keys
 
-Install, run the offline demo, and inspect the trace — no API key, no gateway, no network:
+Install, then run the offline demo and inspect the trace. The demo needs no API key, no
+gateway and no network (only the install downloads from PyPI):
 
 ```bash
-git clone https://github.com/mrnicholasbcarter-code/verdict-core && cd verdict-core
-pip install -e .
+pip install verdict-core
 verdict demo
 ```
 
-> `pip install verdict-core` gains `verdict demo` in the next release.
+`verdict demo` ships in `verdict-core` 0.4.0 on PyPI. From a source checkout, `pip install -e .`
+gives the same command.
 
 `verdict demo` is an **offline scenario** with scripted workers and injected faults. It runs
 the real orchestration pipeline (planner, admission, DAG runtime, failure intelligence,
@@ -172,7 +173,12 @@ uv run python -m verdict quickstart --non-interactive --dry-run
 
 The [`docs/proof/dogfood-bod-225-live-2026-09-29/`](docs/proof/dogfood-bod-225-live-2026-09-29)
 directory contains a live `verdict orchestrate` run for a real Linear story (BOD-225), with
-real providers reached through OmniRoute. It is **not** a fixture.
+real providers reached through [OmniRoute](#how-it-works) (a local OpenAI-compatible gateway that
+lists the available models and runs model calls). It is **not** a fixture.
+
+Routes are written `provider/model`: the prefix (`cx/`, `cc/`, `gc/`, `kr/` below) names the
+OmniRoute provider connection, and the rest names the model. So `cx/gpt-5.6-sol` is the model
+`gpt-5.6-sol` reached through the `cx` connection.
 
 **Chain summary** (from that proof's [README](docs/proof/dogfood-bod-225-live-2026-09-29/README.md)):
 
@@ -805,8 +811,10 @@ Optional Linux/macOS installer (review the script first):
 curl -fsSL https://raw.githubusercontent.com/mrnicholasbcarter-code/verdict-core/main/install.sh | bash
 ```
 
-The installer probes for a local gateway, runs setup, and verifies the installation. Live
-provider execution is separate from the credential-free proof path above.
+The installer downloads the pinned release, checks its SHA-256 against PyPI, probes for a local
+gateway, runs setup, and runs the offline `verdict demo` to prove the install works. It runs
+`verdict check` once a configuration file exists. Live provider execution is separate from the
+credential-free proof path above.
 
 ## Keys and Dependencies
 
@@ -1020,7 +1028,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
   step catches output problems; the receipt proves the run was not altered after the fact.
 - **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict[tracing]`).** See
   [How Verdict differs](#how-verdict-differs).
-- **Version 0.3.0, active development.** Contracts, schemas, and receipt formats are
+- **Version 0.4.0, active development.** Contracts, schemas, and receipt formats are
   versioned. Breaking changes require an ADR.
 
 ## License
