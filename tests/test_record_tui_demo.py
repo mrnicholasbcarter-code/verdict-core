@@ -124,3 +124,117 @@ def test_set_pty_size_uses_tiocswinsz(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen["fd"] == 7
     assert seen["op"] == termios.TIOCSWINSZ
     assert seen["arg"] == struct.pack("HHHH", 34, 110, 0, 0)
+
+
+def test_scenario_cast_discloses_source_and_speed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = rec.COMPLETION_MARKER.encode()
+    chunks = [
+        (1.0, b"VERDICT cooldown reassign " + b"frame " * 50),
+        (2.0, b"COMPLETE\n" + marker + b"\nevents_digest mismatch"),
+    ]
+    calls: list[tuple[list[str], dict[str, str], int, int]] = []
+
+    def fake_read(argv: list[str], env: dict[str, str], *, rows: int, cols: int):
+        calls.append((argv, env, rows, cols))
+        return chunks, 0
+
+    monkeypatch.setattr(rec, "read_pty_events", fake_read)
+    out = tmp_path / "scenario.cast"
+    rec.record_scenario(speed=0.1, output=out)
+    header = json.loads(out.read_text().splitlines()[0])
+    assert "offline scenario, scripted workers, injected faults" in header["title"]
+    assert "replay speed 0.1x" in header["title"]
+    assert "scripts/record_tui_demo.py --scenario" in header["title"]
+    assert calls[0][2:] == (header["height"], header["width"])
+    assert calls[0][1]["COLORTERM"] == "truecolor"
+    assert not Path(calls[0][1]["HOME"]).exists()
+
+
+def test_scenario_rejects_failure_without_overwriting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "existing.cast"
+    out.write_text("previous valid capture")
+    monkeypatch.setattr(rec, "read_pty_events", lambda *a, **kw: ([(0.0, b"failed")], 1))
+    with pytest.raises(rec.CaptureError, match="exited 1"):
+        rec.record_scenario(output=out)
+    assert out.read_text() == "previous valid capture"
+
+
+def test_scenario_rejects_nonpositive_speed(tmp_path: Path) -> None:
+    with pytest.raises(rec.CaptureError, match="positive"):
+        rec.record_scenario(speed=0, output=tmp_path / "scenario.cast")
+
+
+def test_tamper_changes_exactly_one_byte_and_preserves_json(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    original = b'{"goal":"flagship failover test"}\n'
+    path.write_bytes(original)
+    rec.tamper_events(path)
+    modified = path.read_bytes()
+    assert len(original) == len(modified)
+    assert sum(a != b for a, b in zip(original, modified, strict=True)) == 1
+    assert json.loads(modified)["goal"] == "Flagship failover test"
+
+
+def test_scenario_requires_real_worker_overlap() -> None:
+    sequential = [
+        {"type": "dispatch", "node_id": "a"},
+        {"type": "terminal", "node_id": "a"},
+        {"type": "dispatch", "node_id": "b"},
+        {"type": "failure"}, {"type": "cooldown"}, {"type": "reassign"},
+    ]
+    with pytest.raises(rec.CaptureError, match="two dispatched"):
+        rec.validate_scenario_events(sequential)
+    concurrent = [sequential[0], sequential[2], sequential[1], *sequential[3:]]
+    rec.validate_scenario_events(concurrent)
+    with pytest.raises(rec.CaptureError, match="ordered failure"):
+        rec.validate_scenario_events(concurrent[:3])
+
+
+def test_pty_idle_timeout_rejects_and_reaps_child(tmp_path: Path) -> None:
+    script = tmp_path / "silent.py"
+    script.write_text("import time; time.sleep(2)\n")
+    with pytest.raises(rec.CaptureError, match="PTY produced no output"):
+        rec.read_pty_events(
+            [__import__("sys").executable, str(script)],
+            {"PATH": os.environ.get("PATH", "")},
+            rows=34, cols=110, read_timeout=0.05,
+        )
+
+
+def test_scenario_height_rejects_oversized_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rec, "SCENARIO_HEIGHT", 10)
+    with pytest.raises(rec.CaptureError, match="home frame would be clipped"):
+        rec.validate_scenario_height([], include_home=True)
+
+
+def test_scenario_height_bounds_frame_count() -> None:
+    with pytest.raises(rec.CaptureError, match="2000-frame"):
+        rec.validate_scenario_height([{}] * 2001, include_home=False)
+
+
+def test_svg_renderer_uses_cast_dimensions_and_generic_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = importlib.util.spec_from_file_location("render_demo_svg", ROOT / "scripts/render_demo_svg.py")
+    assert spec is not None and spec.loader is not None
+    renderer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(renderer)
+    cast = tmp_path / "sample.cast"
+    cast.write_text(json.dumps({"width": 110, "height": 72}) + "\n")
+    out = tmp_path / "sample.svg"
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], *, check: bool) -> None:
+        assert check
+        commands.append(command)
+        out.write_text('<svg font-family="Monaco,\'Powerline Symbols\',monospace"/>')
+
+    monkeypatch.setattr(renderer.subprocess, "run", fake_run)
+    renderer._svg_term(cast, out, [])
+    command = commands[0]
+    assert command[command.index("--height") + 1] == "72"
+    assert command[command.index("--width") + 1] == "110"
+    assert "Powerline" not in out.read_text()
+    assert "monospace" in out.read_text()

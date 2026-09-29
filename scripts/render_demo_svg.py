@@ -36,6 +36,10 @@ def last_stamp_ms(cast: Path) -> int:
 
 
 def _svg_term(cast: Path, out: Path, extra: list[str]) -> None:
+    header = json.loads(cast.read_text(encoding="utf-8").splitlines()[0])
+    width, height = int(header["width"]), int(header["height"])
+    if not (1 <= width <= 300 and 1 <= height <= 150):
+        raise SystemExit("cast dimensions are outside the bounded rendering range")
     cmd = [
         "npx",
         "-y",
@@ -47,12 +51,16 @@ def _svg_term(cast: Path, out: Path, extra: list[str]) -> None:
         "--window",
         "--no-cursor",
         "--width",
-        str(WIDTH),
+        str(width),
         "--height",
-        str(HEIGHT),
+        str(height),
         *extra,
     ]
     subprocess.run(cmd, check=True)
+    # Recordings use standard Unicode, not icon fonts. Keep a portable fallback
+    # and do not suggest a locally installed Powerline/Nerd font is required.
+    svg = out.read_text(encoding="utf-8")
+    out.write_text(svg.replace(",'Powerline Symbols'", ""), encoding="utf-8")
 
 
 def render(cast: Path, animated: Path, poster: Path) -> None:
