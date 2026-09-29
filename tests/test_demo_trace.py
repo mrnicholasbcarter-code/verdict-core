@@ -446,6 +446,29 @@ def test_scripted_workers_overlap_when_duration_is_positive(
     ]
     assert kinds.index("failure") < kinds.index("cooldown") < kinds.index("reassign")
 
+    # duration_seconds from the delayed worker must flow through to the terminal event.
+    # ScriptedExecutor._delayed now measures with time.monotonic() and sets it.
+    # Fault-injected terminals (no delay) and integration merges (route_id="") are excluded.
+    assert {
+        e["data"].get("executor_kind")
+        for e in result.events
+        if e["type"] == "terminal" and e["data"].get("route_id")
+    } == {"scripted", "fault-injected"}
+    worker_ok_terminals = [
+        e
+        for e in result.events
+        if e["type"] == "terminal"
+        and e["data"].get("ok")
+        and e["data"].get("route_id")  # excludes integration merge (route_id="")
+        and not str(e["data"].get("session_ref", "")).startswith("fault-injected")
+    ]
+    assert worker_ok_terminals, "no successful worker terminal events"
+    durations = [e["data"].get("duration_seconds", 0.0) for e in worker_ok_terminals]
+    assert all(d >= 0.2 for d in durations), (
+        f"expected all successful worker terminal duration_seconds >= 0.2 "
+        f"(worker_seconds=0.2); got {durations}"
+    )
+
     claims = derive_claims(result.events, result.receipt, run_dir=result.run_dir)
     verified = {claim.id for claim in claims if claim.status == CLAIM_STATUS_VERIFIED}
     assert len(verified) == 12

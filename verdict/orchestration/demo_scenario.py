@@ -149,8 +149,13 @@ def _worker_script_for(
         return _worker_script
 
     async def _delayed(prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
+        import dataclasses
+        import time
+
+        t0 = time.monotonic()
         await asyncio.sleep(worker_seconds)
-        return _worker_script(prompt, route_id, cwd)
+        elapsed = time.monotonic() - t0
+        return dataclasses.replace(_worker_script(prompt, route_id, cwd), duration_seconds=elapsed)
 
     return _delayed
 
@@ -275,6 +280,9 @@ def run_flagship_scenario(
                 graph=GRAPH,
                 run_id=run_id,
                 policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
+                # Authoritative marker so replay classification identifies this as a
+                # scripted scenario and never shows 'real models' in cockpit replay.
+                mode="offline-scenario",
             )
         )
     finally:

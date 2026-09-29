@@ -10,6 +10,7 @@ The child PTY is sized to the cast header (TIOCSWINSZ plus COLUMNS/LINES).
 A capture that fails validation is not written. The process exits non-zero
 and prints the reason.
 
+    python scripts/record_tui_demo.py --scenario --speed 1
     python scripts/record_tui_demo.py docs/proof/live-controller-run
     python scripts/record_tui_demo.py --output docs/assets/demo-tui-direct.cast \
         docs/proof/harness-independence-2026-09-28/direct-gateway-run
@@ -28,6 +29,7 @@ import os
 import pty
 import re
 import select
+import signal
 import struct
 import sys
 import termios
@@ -91,7 +93,8 @@ def read_pty_events(
         while True:
             ready, _, _ = select.select([fd], [], [], read_timeout)
             if not ready:
-                break
+                os.kill(pid, signal.SIGKILL)
+                raise CaptureError(f"PTY produced no output for {read_timeout:g}s")
             try:
                 data = os.read(fd, 65536)
             except OSError:
@@ -276,16 +279,221 @@ def record_replay(
     print(f"wrote {output} ({len(atomic)} frames, {duration:.1f}s)", file=sys.stderr)
 
 
+SCENARIO_LABEL = "offline scenario, scripted workers, injected faults"
+SCENARIO_HEIGHT = 72  # Full home (65 rows) and cockpit; never rely on Live cropping.
+
+
+def validate_scenario_events(events: list[dict[str, object]]) -> None:
+    """Reject demos that cannot prove concurrent workers and ordered recovery."""
+    active: set[str] = set()
+    concurrent = False
+    milestones: list[str] = []
+    for event in events:
+        kind = event.get("type")
+        node = str(event.get("node_id") or "")
+        if kind == "dispatch":
+            active.add(node)
+            concurrent = concurrent or len(active) >= 2
+        elif kind == "terminal":
+            active.discard(node)
+        if kind in ("failure", "cooldown", "reassign"):
+            milestones.append(str(kind))
+    if not concurrent:
+        raise CaptureError("scenario never has two dispatched workers running together")
+    wanted = iter(("failure", "cooldown", "reassign"))
+    next_kind = next(wanted)
+    for kind in milestones:
+        if kind == next_kind:
+            next_kind = next(wanted, "")
+    if next_kind:
+        raise CaptureError("scenario lacks ordered failure -> cooldown -> reassign evidence")
+
+
+def validate_scenario_height(events: list[dict[str, object]], *, include_home: bool) -> None:
+    """Reject oversized source frames before Rich Live can crop their bottom border."""
+    import io
+
+    from rich.console import Console
+
+    from verdict.home import HomeState, render_home
+    from verdict.orchestration.tui import RunView, render
+
+    if len(events) > 2000:
+        raise CaptureError("scenario exceeds the bounded 2000-frame capture limit")
+    console = Console(
+        file=io.StringIO(), width=WIDTH, force_terminal=True, color_system="truecolor"
+    )
+    if include_home:
+        home_rows = len(console.render_lines(render_home(HomeState(), plain=False, width=WIDTH)))
+        if home_rows + 2 > SCENARIO_HEIGHT:
+            raise CaptureError(f"home frame would be clipped: {home_rows} rows")
+    view = RunView()
+    for event in events:
+        view.apply(event)
+        count = len(console.render_lines(render(view, width=WIDTH)))
+        # Replay integrity line and final newline also need terminal space.
+        if count + 2 > SCENARIO_HEIGHT:
+            raise CaptureError(
+                f"cockpit frame would be clipped: {count} rows at seq {event.get('seq')}"
+            )
+
+
+def scenario_session(speed: float, *, short: bool = False) -> None:
+    """Sequence the same entry points used by the CLI, inside the captured PTY.
+
+    Only this recording driver adds the home/receipt transitions. Scenario events,
+    cockpit timing and receipt text come from the production commands unchanged.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    from rich.console import Console
+
+    from verdict.home import HomeState, render_home
+    from verdict.orchestration.demo_scenario import run_flagship_scenario
+    from verdict.orchestration.tui import follow_replay
+
+    console = Console()
+    with tempfile.TemporaryDirectory(prefix="verdict-record-scenario-") as temporary:
+        root = Path(temporary)
+        if not short:
+            console.print(render_home(HomeState(), plain=False, width=console.width))
+            console.print(SCENARIO_LABEL, markup=False)
+            # A real, recorded reading pause; no cast timestamps are synthesized.
+            time.sleep(2)
+        scenario = run_flagship_scenario(
+            root / "runs", workspace_root=root / "workspace", worker_seconds=1.5
+        )
+        validate_scenario_events(scenario.events)
+        validate_scenario_height(scenario.events, include_home=not short)
+        console.clear()
+        follow_replay(scenario.run_dir / "events.jsonl", console=console, speed=speed)
+        time.sleep(2)
+        receipt = subprocess.run(
+            [sys.executable, "-m", "verdict", "run-receipt", str(scenario.run_dir)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        tampered = root / "tampered"
+        shutil.copytree(scenario.run_dir, tampered)
+        tamper_events(tampered / "events.jsonl")
+        rejected = subprocess.run(
+            [sys.executable, "-m", "verdict", "run-receipt", str(tampered)],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+        if rejected.returncode != 1 or b"events_digest mismatch" not in rejected.stdout:
+            raise CaptureError("tampered receipt was not rejected with digest mismatch")
+        console.clear()
+        console.print(SCENARIO_LABEL, markup=False)
+        # Print real CLI output with observed exit statuses (not speculative annotations).
+        ok_status = f"exit status: {receipt.returncode}\n".encode()
+        fail_status = f"exit status: {rejected.returncode}\n".encode()
+        sys.stdout.buffer.write(
+            b"$ verdict run-receipt <temporary offline run>\n"
+            + receipt.stdout
+            + ok_status
+            + b"\n$ verdict run-receipt <copy with one event byte changed>\n"
+            + rejected.stdout
+        )
+        sys.stdout.buffer.flush()
+        # Short pause then a sentinel line to ensure the PTY reader sees
+        # the full rejected output before the process exits.
+        time.sleep(0.05)
+        sys.stdout.buffer.write(fail_status)
+        sys.stdout.buffer.flush()
+        time.sleep(2)
+
+
+def tamper_events(path: Path) -> None:
+    """Change exactly one goal byte while keeping the copied event log valid JSON."""
+    raw = path.read_bytes()
+    if b"flagship" not in raw:
+        raise CaptureError("scenario event log has no flagship goal to tamper")
+    path.write_bytes(raw.replace(b"flagship", b"Flagship", 1))
+
+
+def record_scenario(speed: float = 1.0, output: Path | None = None, *, short: bool = False) -> None:
+    """Capture the real offline demo scenario; reject incomplete/failed runs."""
+    import tempfile
+
+    if speed <= 0:
+        raise CaptureError("speed must be positive")
+    output = output or ROOT / "docs" / "assets" / "demo-tui.cast"
+    with tempfile.TemporaryDirectory(prefix="verdict-record-home-") as home:
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": home,
+            "PYTHONPATH": str(ROOT),
+            "TERM": "xterm-256color",
+            "COLORTERM": "truecolor",
+            "COLUMNS": str(WIDTH),
+            "LINES": str(SCENARIO_HEIGHT),
+            "PYTHONUNBUFFERED": "1",
+        }
+        chunks, exit_code = read_pty_events(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--scenario-session",
+                "--speed",
+                str(speed),
+            ]
+            + (["--short"] if short else []),
+            env,
+            rows=SCENARIO_HEIGHT,
+            cols=WIDTH,
+        )
+    atomic = coalesce_atomic(chunks)
+    validate_capture(atomic, exit_code, marker="exit status: 1")
+    text = visible_text(b"".join(data for _, data in atomic))
+    for required in ("COMPLETE", "cooldown", "reassign", COMPLETION_MARKER):
+        if required.casefold() not in text.casefold():
+            raise CaptureError(f"scenario capture lacks {required!r}")
+    atomic, idle_trimmed = trim_leading_idle(atomic)
+    body = to_asciicast(
+        atomic,
+        width=WIDTH,
+        height=SCENARIO_HEIGHT,
+        title=(
+            f"Verdict: {SCENARIO_LABEL}; replay speed {speed:g}x; "
+            "recorded from scripts/record_tui_demo.py --scenario; "
+            "real PTY read times, replay gaps over 1.5s capped"
+        ),
+        idle_trimmed=idle_trimmed,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(body, encoding="utf-8")
+    print(f"wrote {output} ({len(atomic)} frames, {atomic[-1][0]:.1f}s)", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("run_dir", type=Path, help="Completed run directory to replay")
+    parser.add_argument("run_dir", type=Path, nargs="?", help="Completed run directory to replay")
+    parser.add_argument(
+        "--scenario", action="store_true", help="Record the offline verdict demo scenario"
+    )
+    parser.add_argument("--scenario-session", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--short", action="store_true", help="Omit home from the scenario recording"
+    )
     parser.add_argument("--speed", type=float, default=1.0, help="Replay speed (default 1)")
     parser.add_argument(
         "--output", type=Path, help="Output .cast (default docs/assets/demo-tui.cast)"
     )
     args = parser.parse_args(argv)
     try:
-        record_replay(args.run_dir, speed=args.speed, output=args.output)
+        if args.scenario_session:
+            scenario_session(args.speed, short=args.short)
+        elif args.scenario:
+            record_scenario(speed=args.speed, output=args.output, short=args.short)
+        elif args.run_dir is not None:
+            record_replay(args.run_dir, speed=args.speed, output=args.output)
+        else:
+            parser.error("provide a run directory or --scenario")
     except CaptureError as exc:
         print(f"capture rejected: {exc}", file=sys.stderr)
         return 1

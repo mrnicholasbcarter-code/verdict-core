@@ -123,6 +123,7 @@ seq   kind            node      detail
 ```
 
 Replay path: use `verdict watch --replay <run-id>` for an interactive TUI replay.
+Replay labels use executor provenance and reported terminal models, never selected routes. Adapters stamp each terminal with `live`, `scripted`, or `fault-injected`; custom adapters default to unknown. Explicit live terminal evidence takes precedence over legacy fixture-model names. Legacy runs without executor markers disclose `real models: inferred from reported terminal models; run predates executor markers`. Runs with both marked and unmarked terminals disclose `mixed executor provenance`, not that the run predates markers. Scripted/offline runs say `fixture run`, and runs without execution evidence make no real-model claim.
 
 ### `verdict demo` — Credential-free deterministic demo
 

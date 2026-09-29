@@ -23,6 +23,7 @@ import signal
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -268,8 +269,9 @@ class PrimeHeadlessExecutor:
         if policy_problems:
             launch_config.cleanup()
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=(
                     "prime retry policy not one-shot: "
                     + "; ".join(policy_problems)
@@ -289,8 +291,9 @@ class PrimeHeadlessExecutor:
         except OSError as exc:
             launch_config.cleanup()
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=f"spawn failed: {_sanitize(str(exc))}",
                 duration_seconds=time.monotonic() - started,
             )
@@ -300,8 +303,9 @@ class PrimeHeadlessExecutor:
             await self._kill_group(proc)
             launch_config.cleanup()
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error="timeout",
                 duration_seconds=time.monotonic() - started,
             )
@@ -447,19 +451,26 @@ class PrimeHeadlessExecutor:
             if returncode != 0:
                 tail = _sanitize(stderr) or f"exit {returncode} with no assistant message"
                 return WorkerTerminal(
-                    ok=False, model=route_id, error=tail, duration_seconds=duration, usage=usage
+                    executor_kind="live",
+                    ok=False,
+                    model="",
+                    error=tail,
+                    duration_seconds=duration,
+                    usage=usage,
                 )
             if not parsed_any:
                 return WorkerTerminal(
+                    executor_kind="live",
                     ok=False,
-                    model=route_id,
+                    model="",
                     error=f"malformed: {_sanitize(stdout, 200) or 'empty stdout'}",
                     duration_seconds=duration,
                     usage=usage,
                 )
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error="no_final_answer",
                 duration_seconds=duration,
                 usage=usage,
@@ -472,6 +483,7 @@ class PrimeHeadlessExecutor:
 
         if reported_provider != self.provider or reported_model != route_id:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -483,6 +495,7 @@ class PrimeHeadlessExecutor:
         if error_message:
             error_text = _sanitize(str(error_message))
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -493,6 +506,7 @@ class PrimeHeadlessExecutor:
             )
         if stop_reason not in {"stop", "end_turn"}:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -502,6 +516,7 @@ class PrimeHeadlessExecutor:
             )
         if not text.strip():
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -510,6 +525,7 @@ class PrimeHeadlessExecutor:
                 usage=usage,
             )
         return WorkerTerminal(
+            executor_kind="live",
             ok=True,
             output=text,
             model=reported_model,
@@ -547,10 +563,17 @@ def _fault_terminal(kind: str, route_id: str, session_ref: str) -> WorkerTermina
         "mismatch": "model_mismatch",
     }
     if kind == "empty":
-        return WorkerTerminal(ok=True, output="", model=route_id, session_ref=session_ref)
+        return WorkerTerminal(
+            executor_kind="fault-injected",
+            ok=True,
+            output="",
+            model=route_id,
+            session_ref=session_ref,
+        )
     if kind not in errors:
         raise ValueError(f"unknown fault kind {kind!r}")
     return WorkerTerminal(
+        executor_kind="fault-injected",
         ok=False,
         model=route_id,
         session_ref=session_ref,
@@ -631,9 +654,8 @@ class ScriptedExecutor:
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         result = self.script(prompt, route_id, cwd)
-        if isinstance(result, WorkerTerminal):
-            return result
-        return await result
+        terminal = result if isinstance(result, WorkerTerminal) else await result
+        return replace(terminal, executor_kind="scripted")
 
 
 # ---------------------------------------------------------------- direct gateway
@@ -978,15 +1000,17 @@ class DirectGatewayExecutor:
                 resp = await client.post(url, json=payload, headers=self._headers())
         except httpx.TimeoutException:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error="timeout",
                 duration_seconds=time.monotonic() - started,
             )
         except (httpx.TransportError, OSError) as exc:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=f"transport: {_sanitize(str(exc), 200)}",
                 duration_seconds=time.monotonic() - started,
             )
@@ -1003,6 +1027,7 @@ class DirectGatewayExecutor:
         diff_text = self._extract_diff(terminal.output)
         if diff_text is None:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
@@ -1016,6 +1041,7 @@ class DirectGatewayExecutor:
         security_error = await self._validate_diff_security(diff_text, owned_files, cwd)
         if security_error is not None:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
@@ -1031,6 +1057,7 @@ class DirectGatewayExecutor:
         path_error = self._validate_diff_paths(diff_text, owned_files)
         if path_error is not None:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
@@ -1044,6 +1071,7 @@ class DirectGatewayExecutor:
         applied, apply_error = await self._apply_diff(diff_text, cwd)
         if not applied:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
@@ -1066,8 +1094,9 @@ class DirectGatewayExecutor:
                 with contextlib.suppress(ValueError):
                     retry_after = float(raw_retry)
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=error_text,
                 status_code=resp.status_code,
                 retry_after_seconds=retry_after,
@@ -1077,15 +1106,20 @@ class DirectGatewayExecutor:
             body = resp.json()
         except (ValueError, TypeError):
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
-                model=route_id,
+                model="",
                 error=f"malformed: {_sanitize(resp.text, 200)}",
                 duration_seconds=duration,
             )
         choices = body.get("choices") or []
         if not choices:
             return WorkerTerminal(
-                ok=False, model=route_id, error="empty_output", duration_seconds=duration
+                executor_kind="live",
+                ok=False,
+                model="",
+                error="empty_output",
+                duration_seconds=duration,
             )
         choice = choices[0]
         message = choice.get("message", {})
@@ -1113,6 +1147,7 @@ class DirectGatewayExecutor:
 
         if stop_reason not in {"end_turn", "stop", ""}:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -1123,6 +1158,7 @@ class DirectGatewayExecutor:
 
         if not text.strip():
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 error="empty_output",
@@ -1131,6 +1167,7 @@ class DirectGatewayExecutor:
             )
 
         return WorkerTerminal(
+            executor_kind="live",
             ok=True,
             output=text,
             model=reported_model,

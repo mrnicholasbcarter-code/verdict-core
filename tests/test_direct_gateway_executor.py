@@ -124,7 +124,9 @@ async def _run_with_transport(
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_cls.return_value = mock_client
 
-        return await exe.run(prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout)
+        terminal = await exe.run(prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout)
+        assert terminal.executor_kind == "live"
+        return terminal
 
 
 # --------------------------------------------------------------------------- text node tests
