@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 from verdict.orchestration.receipt import (
     GRAPH_FILE,
     EventLog,
+    capture_producer,
     completion_verdict,
     write_run_receipt,
 )
@@ -510,6 +511,21 @@ async def run_golden_path(
         "FaultInjectingExecutor": "fault-injecting",
         "ScriptedExecutor": "scripted",
     }
+    # BOD-225: capture producer provenance once for a durable run. Resume
+    # reuses the first run_started snapshot so later package/git changes do
+    # not rewrite the original producer; legacy runs without producer stay
+    # without one.
+    prior_started = next((e for e in log.read() if e.type == "run_started"), None)
+    producer_kwargs: dict[str, Any] = {}
+    if prior_started is None:
+        producer_kwargs["producer"] = capture_producer(repo=repo)
+    elif isinstance(prior_started.data.get("producer"), Mapping):
+        raw_producer = prior_started.data["producer"]
+        producer_kwargs["producer"] = {
+            "verdict_version": raw_producer.get("verdict_version"),
+            "git_sha": raw_producer.get("git_sha"),
+            "dirty": raw_producer.get("dirty"),
+        }
     events.emit(
         "run_started",
         run_id=run_dir.name,
@@ -526,6 +542,7 @@ async def run_golden_path(
             "max_parallel": policy.max_parallel,
             "max_cooldown_wait_seconds": policy.max_cooldown_wait_seconds,
         },
+        **producer_kwargs,
     )
     if resumed:
         events.emit(

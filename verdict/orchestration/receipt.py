@@ -8,7 +8,9 @@ a run is COMPLETE only with validation, integration and review evidence.
 
 Event ``data`` conventions read by the receipt (extra keys are ignored):
 
-* ``run_started``: ``run_id``, ``goal``          * ``run_finished``: ``outcome``, ``reason``
+* ``run_started``: ``run_id``, ``goal``, optional ``producer``
+  ``{verdict_version, git_sha, dirty}`` (captured once; nulls explicit)
+* ``run_finished``: ``outcome``, ``reason``
 * ``dispatch``: ``attempt``, ``route_id``, ``provider``, ``capacity_class``, ``fault_injected``
 * ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``
 * ``failure``: ``attempt``, ``category``          * ``node_state``: ``state``
@@ -28,6 +30,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import tempfile
 import threading
 from collections.abc import Callable, Mapping
@@ -424,6 +427,83 @@ def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
     }
 
 
+def capture_producer(*, repo: Path | None = None) -> dict[str, Any]:
+    """Snapshot package and repository provenance for a newly started run.
+
+    Lookups use authoritative package metadata and git commands. Failures or
+    unavailable tools yield explicit ``None`` values; nothing is guessed.
+    The returned mapping always contains exactly ``verdict_version``,
+    ``git_sha``, and ``dirty``.
+    """
+    return {
+        "verdict_version": _producer_verdict_version(),
+        "git_sha": _producer_git_sha(repo),
+        "dirty": _producer_git_dirty(repo),
+    }
+
+
+def _producer_verdict_version() -> str | None:
+    try:
+        from importlib.metadata import version
+
+        return version("verdict-core")
+    except Exception:
+        return None
+
+
+def _producer_git_sha(repo: Path | None) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _producer_git_dirty(repo: Path | None) -> bool | None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return bool(result.stdout.strip())
+
+
+def producer_from_started(started: RunEvent | None) -> dict[str, Any] | None:
+    """Project the optional producer block from a ``run_started`` event.
+
+    Returns ``None`` when the event is missing or has no producer (legacy).
+    When present, always emits all three keys, preserving explicit nulls.
+    """
+    if started is None:
+        return None
+    raw = started.data.get("producer")
+    if not isinstance(raw, Mapping):
+        return None
+    return {
+        "verdict_version": raw.get("verdict_version"),
+        "git_sha": raw.get("git_sha"),
+        "dirty": raw.get("dirty"),
+    }
+
+
 def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     run_dir = Path(run_dir)
     events_path = run_dir / EVENTS_FILE
@@ -514,6 +594,11 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     }
     if started and isinstance(started.data.get("retry_budget"), Mapping):
         receipt["retry_budget"] = dict(started.data["retry_budget"])
+    # BOD-225: optional producer provenance from the first run_started only.
+    # Never recompute here — resume must keep the original snapshot.
+    producer = producer_from_started(started)
+    if producer is not None:
+        receipt["producer"] = producer
     # Derived, omitted when empty so committed proof receipts still verify.
     if no_change_nodes:
         receipt["no_change_nodes"] = no_change_nodes

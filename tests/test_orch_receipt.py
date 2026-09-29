@@ -15,6 +15,7 @@ from verdict.orchestration.receipt import (
     RECEIPT_SCHEMA,
     EventLog,
     build_run_receipt,
+    capture_producer,
     completion_verdict,
     verify_run_receipt,
     write_run_receipt,
@@ -550,3 +551,86 @@ def test_no_change_unvalidated_implement_is_excluded(tmp_path: Path) -> None:
     log.emit("run_finished", outcome="BLOCKED", reason="verify failed")
     receipt = build_run_receipt(run_dir)
     assert "no_change_nodes" not in receipt
+
+
+# ---------------------------------------------------------------- BOD-225 producer provenance
+
+
+def test_capture_producer_shape_and_authoritative_values(tmp_path: Path) -> None:
+    """capture_producer always emits exactly the three keys from real lookups."""
+    import subprocess
+
+    import verdict
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    producer = capture_producer(repo=repo)
+    assert set(producer) == {"verdict_version", "git_sha", "dirty"}
+    assert producer["verdict_version"] == verdict.__version__
+    assert producer["git_sha"] == head
+    assert producer["dirty"] is False
+
+    (repo / "dirty.txt").write_text("dirty\n")
+    dirty = capture_producer(repo=repo)
+    assert dirty["dirty"] is True
+    assert dirty["git_sha"] == head
+
+
+def test_capture_producer_nulls_when_lookups_unavailable(tmp_path: Path) -> None:
+    """Failed lookups yield explicit nulls; values are never guessed."""
+    missing = tmp_path / "not-a-git-repo"
+    missing.mkdir()
+    producer = capture_producer(repo=missing)
+    assert set(producer) == {"verdict_version", "git_sha", "dirty"}
+    assert producer["git_sha"] is None
+    assert producer["dirty"] is None
+    # Package version may still resolve from the installed distribution.
+    assert producer["verdict_version"] is None or isinstance(producer["verdict_version"], str)
+
+
+def test_build_run_receipt_copies_producer_from_first_run_started(tmp_path: Path) -> None:
+    """Receipt projects producer from the first run_started; never recomputes."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(_graph().to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    original = {"verdict_version": "0.3.0", "git_sha": "abc123deadbeef", "dirty": False}
+    log.emit("run_started", run_id="run-1", goal="add feature x", producer=original)
+    # A later run_started (resume) with different values must not replace the original.
+    log.emit(
+        "run_started",
+        run_id="run-1",
+        goal="add feature x",
+        producer={"verdict_version": "9.9.9", "git_sha": "ffffff", "dirty": True},
+    )
+    log.emit("run_finished", outcome="BLOCKED", reason="stop")
+    receipt = build_run_receipt(run_dir)
+    assert receipt["producer"] == original
+    # Explicit nulls are preserved when present.
+    run_dir2 = tmp_path / "run-nulls"
+    run_dir2.mkdir()
+    (run_dir2 / "graph.json").write_text(json.dumps(_graph().to_dict()))
+    log2 = EventLog(run_dir2 / "events.jsonl", clock=_clock)
+    nulls = {"verdict_version": None, "git_sha": None, "dirty": None}
+    log2.emit("run_started", run_id="run-2", goal="add feature x", producer=nulls)
+    assert build_run_receipt(run_dir2)["producer"] == nulls
+
+
+def test_build_run_receipt_omits_producer_for_legacy_events(tmp_path: Path) -> None:
+    """Legacy event logs without producer remain buildable and omit the field."""
+    receipt = build_run_receipt(_run(tmp_path, review=PASS))
+    assert "producer" not in receipt
+    assert receipt["schema"] == RECEIPT_SCHEMA
