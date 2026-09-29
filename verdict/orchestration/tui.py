@@ -491,16 +491,18 @@ class RunView:
                 self.review_independence += f"; reviewer {_t(data.get('reviewer_route'), 48)}"
             return
         route = _t(data.get("route_id", ""), 64)
-        if route:
+        if route and route != self.controller_route:
+            # New planner attempt on a different route: clear stale observed identity
+            self.planner_observed_model = ""
+            self.planner_session_ref = ""
+            self.controller_route = route
+        elif route:
             self.controller_route = route
         # BOD-276: planner observed identity (from the successful terminal)
         if state == "HEALTHY":
-            observed = _t(data.get("observed_model", ""), 64)
-            sess = _t(data.get("session_ref", ""), 64)
-            if observed:
-                self.planner_observed_model = observed
-            if sess:
-                self.planner_session_ref = sess
+            # Always replace observed fields unconditionally so no stale values survive
+            self.planner_observed_model = _t(data.get("observed_model", ""), 64)
+            self.planner_session_ref = _t(data.get("session_ref", ""), 64)
         self.controller_state = state or self.controller_state
         self.controller.append((state, detail + (f" [{route}]" if route else "")))
 

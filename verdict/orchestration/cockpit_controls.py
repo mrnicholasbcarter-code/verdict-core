@@ -28,6 +28,19 @@ from verdict.orchestration.routing_render import render_routing, routing_view_fr
 from verdict.orchestration.routing_view import RoutingView
 from verdict.orchestration.tui import RunView, read_events, render
 
+
+def _fmt_until(value: str) -> str:
+    """Return HH:MM:SS time slice for ISO timestamps, raw value otherwise."""
+    if not value:
+        return "-"
+    try:
+        from datetime import datetime
+
+        datetime.fromisoformat(value)
+        return value[11:19]
+    except ValueError:
+        return value
+
 PanelName = Literal["routing", "context", "receipt", "health"]
 KEY_CANCEL_RUN = "x"
 KEY_CANCEL_NODE = "X"
@@ -359,7 +372,7 @@ def render_health(
             for c in cooldowns:
                 lines.append(
                     Text(
-                        f"  {c.key} [{c.scope}] {c.category} until {c.until[11:19] if len(c.until) >= 19 and 'T' in c.until else c.until or '-'}",
+                        f"  {c.key} [{c.scope}] {c.category} until {_fmt_until(c.until)}",
                         style=_style("COOLDOWN", mode),
                     )
                 )

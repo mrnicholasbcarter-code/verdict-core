@@ -373,7 +373,14 @@ def capture_plain_screens(width: int, condition: str) -> str:
 
 @pytest.mark.parametrize("condition", ["plain", "no_color", "non_tty"])
 @pytest.mark.parametrize("width", [60, 100, 200])
-def test_existing_screens_plain_bytes_match_origin_main(width: int, condition: str) -> None:
+def test_existing_screens_plain_bytes_approved_snapshot(width: int, condition: str) -> None:
+    """Regression: plain-byte hashes match the approved snapshot as of feat/cockpit-roles.
+
+    These hashes differ from origin/main because feat/cockpit-roles intentionally
+    changed controller detail output (planner selected/observed identity lines,
+    BOD-276). The snapshot was approved in PR #745. To update: run
+    capture_plain_screens and replace the expected dict.
+    """
     expected = {
         60: "e74db75ec174d1d820c76bb04831bd6394aac18ea64eba9d67d16d51595bdd42",
         100: "f1a88556e7fb7717bacf2b1a73b00dea17b7dec8abce71575da5f6b868ff2f3b",

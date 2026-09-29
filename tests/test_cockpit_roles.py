@@ -544,23 +544,30 @@ def test_health_panel_never_calls_probe(monkeypatch: pytest.MonkeyPatch) -> None
     # Spy on every live-probe entry point used by the eligibility/routing system.
     # These raise RuntimeError so any accidental probe call causes the test to fail.
     probe_error = RuntimeError("live probe called from render_health — this must not happen")
+    mocks: list[MagicMock] = []
     for target in (
         "verdict.subagent_selection.openai_health_probe",
         "verdict.home.probe_gateway",
         "verdict.omniroute_catalog.probe_catalog",
         "verdict.provider_detection.probe_gateways",
     ):
-        monkeypatch.setattr(target, MagicMock(side_effect=probe_error), raising=False)
+        m = MagicMock(side_effect=probe_error)
+        monkeypatch.setattr(target, m, raising=True)
+        mocks.append(m)
 
     # Also block the low-level HTTP transport so no accidental network call passes through.
     import urllib.request
 
-    monkeypatch.setattr(
-        urllib.request, "urlopen", MagicMock(side_effect=probe_error), raising=False
-    )
+    url_mock = MagicMock(side_effect=probe_error)
+    monkeypatch.setattr(urllib.request, "urlopen", url_mock, raising=True)
+    mocks.append(url_mock)
 
     # Must complete without raising (no probe was triggered)
     cockpit.render_health(state, view, mode)
+
+    # All spies must be un-called: none of the probe entry points were invoked
+    for m in mocks:
+        assert m.call_count == 0, f"Live probe was called: {m}"
 
 
 # ---------------------------------------------------------------------------
@@ -709,3 +716,99 @@ def test_cli_panel_health_choice() -> None:
     add_parsers(sub)
     args = parser.parse_args(["watch", "--panel", "health", "dummy-run"])
     assert args.panel == "health"
+
+
+# ---------------------------------------------------------------------------
+# Planner observed identity staleness (HIGH fix, BOD-276)
+# ---------------------------------------------------------------------------
+
+
+def test_planner_observed_clears_on_route_change() -> None:
+    """Event 1: route A with observed A' -> Event 2: route B, no observed field.
+    The view must show 'not reported yet', not A'.
+    """
+    events = [
+        _event(1, "plan_started", route_id="cc/opus"),
+        _event(
+            2,
+            "controller",
+            state="HEALTHY",
+            route_id="cc/opus",
+            observed_model="cc/opus",
+            session_ref="sess-1",
+        ),
+        # New planner attempt on a different route, no observed identity fields
+        _event(3, "controller", state="HEALTHY", route_id="kr/haiku"),
+    ]
+    view = RunView.from_events(events)
+    console = _console(120)
+    text = _rich_to_text(console, render(view, width=120, plain=True))
+    assert "planner selected: kr/haiku" in text, f"Got: {text!r}"
+    assert "not reported yet" in text, f"Stale identity visible, should be gone: {text!r}"
+    observed_tail = text.split("planner observed:")[-1].split("\n")[0]
+    assert "cc/opus" not in observed_tail, (
+        f"Stale observed model leaked into planner observed line: {observed_tail!r}"
+    )
+
+
+def test_planner_observed_set_unconditionally_in_healthy() -> None:
+    """HEALTHY with observed_model always overwrites regardless of prior value."""
+    events = [
+        _event(1, "plan_started", route_id="cc/opus"),
+        _event(
+            2,
+            "controller",
+            state="HEALTHY",
+            route_id="cc/opus",
+            observed_model="cc/opus-old",
+            session_ref="sess-0",
+        ),
+        _event(
+            3,
+            "controller",
+            state="HEALTHY",
+            route_id="cc/opus",
+            observed_model="cc/opus-new",
+            session_ref="sess-1",
+        ),
+    ]
+    view = RunView.from_events(events)
+    console = _console(120)
+    text = _rich_to_text(console, render(view, width=120, plain=True))
+    assert "cc/opus-new" in text, f"New observed model missing: {text!r}"
+    assert "cc/opus-old" not in text, f"Old stale observed model leaked: {text!r}"
+
+
+# ---------------------------------------------------------------------------
+# _fmt_until ISO parse guard (LOW fix)
+# ---------------------------------------------------------------------------
+
+
+def test_fmt_until_valid_iso() -> None:
+    """Valid ISO timestamp returns HH:MM:SS slice."""
+    from verdict.orchestration.cockpit_controls import _fmt_until
+
+    assert _fmt_until("2026-01-01T00:05:00Z") == "00:05:00"
+
+
+def test_fmt_until_short_value() -> None:
+    """Short value (non-ISO) is returned as-is."""
+    from verdict.orchestration.cockpit_controls import _fmt_until
+
+    assert _fmt_until("soon") == "soon"
+
+
+def test_fmt_until_long_non_iso_with_t() -> None:
+    """Long non-ISO value containing 'T' is returned as-is, not sliced."""
+    from verdict.orchestration.cockpit_controls import _fmt_until
+
+    value = "TENTATIVE-2026-never-a-real-timestamp-but-long-enough"
+    result = _fmt_until(value)
+    assert result == value, f"Expected raw value back, got: {result!r}"
+
+
+def test_fmt_until_empty() -> None:
+    """Empty string returns '-'."""
+    from verdict.orchestration.cockpit_controls import _fmt_until
+
+    assert _fmt_until("") == "-"
