@@ -250,21 +250,29 @@ class TestAC6SecretLeak:
 
     @pytest.mark.parametrize("scope", ["route", "provider"])
     @pytest.mark.parametrize(
-        ("free_signal", "expected_evidence"),
+        ("free_signal", "auth_type", "expected_evidence"),
         [
             (
                 {"providerSpecificData": {"tier": "free user@secret.example.com"}},
+                "apikey",
                 "providerSpecificData.tier",
             ),
             (
                 {"providerSpecificData": {"plan": "free user@secret.example.com"}},
+                "apikey",
                 "providerSpecificData.plan",
             ),
-            ({"plan_label": "free user@secret.example.com"}, "plan_label"),
+            ({"plan_label": "free user@secret.example.com"}, "apikey", "plan_label"),
+            ({}, "user@secret.example.com", "no_pricing_data:auth=other"),
         ],
     )
     async def test_no_email_or_token_in_event_or_render(
-        self, tmp_path: Path, scope: str, free_signal: dict[str, object], expected_evidence: str
+        self,
+        tmp_path: Path,
+        scope: str,
+        free_signal: dict[str, object],
+        auth_type: str,
+        expected_evidence: str,
     ) -> None:
         """Real verdicts and the runtime's persisted evidence carry no account secrets."""
         from verdict.orchestration.contracts import (
@@ -292,7 +300,7 @@ class TestAC6SecretLeak:
             {
                 "provider": "secret-provider",
                 "isActive": True,
-                "authType": "apikey",
+                "authType": auth_type,
                 **free_signal,
                 "email": "user@secret.example.com",
                 "api_key": "sk-SECRET-TOKEN-1234567890abcdef",

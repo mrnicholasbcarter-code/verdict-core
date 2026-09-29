@@ -125,6 +125,14 @@ class TestEntitled:
         assert v.failed_stage is EligibilityStage.ENTITLED
         assert v.reason == "no_active_account"
 
+    def test_free_suffix_without_connection_stays_unknown(self, tmp_path: Path) -> None:
+        ladder, _ = make_ladder(tmp_path, [row("openrouter/model:free")], [])
+        v = ladder.evaluate(REQ, now=NOW)[0]
+        assert v.failed_stage is EligibilityStage.ENTITLED
+        assert v.reason == "no_active_account"
+        assert v.capacity_class is CapacityClass.UNKNOWN
+        assert v.capacity_evidence == "no_connection"
+
     def test_harness_visibility_gate(self, tmp_path: Path) -> None:
         visible: Callable[[str], bool] = lambda r: r != "cc/claude-sonnet-5"  # noqa: E731
         ladder, _ = make_ladder(

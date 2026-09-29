@@ -311,7 +311,10 @@ class EligibilityLadder:
         ``evidence_rule`` names the classification rule that fired.
 
         Priority order (design §B, plus origin/main signals restored):
-        (a) ``:free`` suffix → FREE (overrides oauth → subscription).
+        (0) Missing connection → UNKNOWN. A ``:free`` route still needs an
+            account connection before entitlement can be established.
+        (a) With a connection, ``:free`` suffix → FREE (overrides oauth →
+            subscription).
         (b) Connection free signals (``importFreeModelsOnly``,
             ``import_free_only``, free tier/plan, ``plan_label`` containing
             ``free`` for any auth type) → FREE.
@@ -323,7 +326,8 @@ class EligibilityLadder:
         if conn is None:
             return CapacityClass.UNKNOWN, "", "no_connection"
         plan_label = sanitized_plan_label(conn.get("plan_label", ""))
-        auth_type = str(conn.get("authType", "")).lower()
+        auth_type = str(conn.get("authType", "")).strip().lower()
+        auth_evidence = auth_type if auth_type in {"apikey", "oauth", "none"} else "other"
 
         # (a) :free suffix overrides oauth → subscription (fixes D5: 72
         # kilocode :free misclassed as SUBSCRIPTION).
@@ -357,8 +361,10 @@ class EligibilityLadder:
         if auth_type == "apikey" and positive:
             return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
 
-        # (f) UNKNOWN with a named reason.
-        reason = f"no_pricing_data:auth={auth_type}"
+        # (f) UNKNOWN with a named, bounded reason. Never persist the raw
+        # connection authType: inventory fields are untrusted and may contain
+        # account identifiers or credentials.
+        reason = f"no_pricing_data:auth={auth_evidence}"
         return CapacityClass.UNKNOWN, plan_label, reason
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
