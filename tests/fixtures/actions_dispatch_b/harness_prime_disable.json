@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "prime",
+    "disable"
+  ],
+  "exit_code": 1,
+  "stdout": "\nVERDICT  /  Prime Agent harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  ! Prime Agent harness  FAILED\n    Verdict Prime Agent harness is not enabled: no backup at \n/tmp/v275db-h-prime/.prime/agent/models.json.verdict.bak\n",
+  "stderr": ""
+}

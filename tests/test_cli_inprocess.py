@@ -10,7 +10,9 @@ from typing import Any, ClassVar
 import pytest
 import yaml
 
+import verdict.actions.helpers as _action_helpers
 from verdict import cli
+from verdict import doctor_diagnostics as dd
 from verdict.execution_packet import ExecutionPacket
 from verdict.models import RoutingDecision
 from verdict.provider_detection import DetectedProvider, DetectionResult
@@ -95,7 +97,9 @@ def test_cmd_route_and_run_send_configured_provider_completion(
             decision = self.route(task, criticality, context)
             return decision, strategy_from_decision(decision)
 
-    monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _LiveGate())
+    monkeypatch.setattr(
+        _action_helpers, "build_route_gate", lambda allow_offline=False: _LiveGate()
+    )
 
     cli.cmd_route("format a bullet list", "low", terse=False)
     out = capsys.readouterr().out
@@ -150,7 +154,9 @@ def test_cmd_route_identity_mismatch_fails_closed(
             decision = self.route(task, criticality, context)
             return decision, strategy_from_decision(decision)
 
-    monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _LiveGate())
+    monkeypatch.setattr(
+        _action_helpers, "build_route_gate", lambda allow_offline=False: _LiveGate()
+    )
     with pytest.raises(SystemExit) as exc:
         cli.cmd_route("format docs", "low")
     assert exc.value.code == 1
@@ -178,7 +184,7 @@ def test_cmd_route_offline_is_named_fail_closed(
             del task, criticality, context
             return selected
 
-    monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _Gate())
+    monkeypatch.setattr(_action_helpers, "build_route_gate", lambda allow_offline=False: _Gate())
     with pytest.raises(SystemExit) as exc:
         cli.cmd_route("format docs", "low", terse=True, allow_offline=True)
     assert exc.value.code == 1
@@ -216,7 +222,9 @@ def test_cmd_route_allow_offline_does_not_enable_legacy_selector(
                 decision="selected",
             )
 
-    monkeypatch.setattr(cli, "_build_route_gate", lambda allow_offline=False: _FakeGate())
+    monkeypatch.setattr(
+        _action_helpers, "build_route_gate", lambda allow_offline=False: _FakeGate()
+    )
     with pytest.raises(SystemExit) as exc:
         cli.cmd_route("ping", "low", terse=True, allow_offline=True)
     assert exc.value.code == 1
@@ -795,7 +803,7 @@ def test_cmd_setup_auto_and_sync_mock(
             return {"ok": True}
         return None
 
-    monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
+    monkeypatch.setattr(dd, "_omniroute_api_request", mock_api_request)
 
     cli.cmd_setup()
 
@@ -862,7 +870,7 @@ def test_cmd_setup_wires_detected_gateway_into_config_and_env(
         return kwargs.get("default", "")
 
     monkeypatch.setattr(cli.Prompt, "ask", mock_ask)
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    monkeypatch.setattr(dd, "_omniroute_api_request", lambda *a, **k: None)
 
     cli.cmd_setup()
 
@@ -914,7 +922,7 @@ def test_cmd_doctor_all_healthy(
             return [{"id": "node1", "name": "Ollama", "baseUrl": "http://127.0.0.1:11434/v1"}]
         return None
 
-    monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
+    monkeypatch.setattr(dd, "_omniroute_api_request", mock_api_request)
 
     # Mock gateway health probe (T015) so the configured gateway_url reports healthy.
     import urllib.request
@@ -966,8 +974,8 @@ def test_cli_documentation_json_surfaces_blocked_state(
 ) -> None:
     import sys
 
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_read_omniroute_token", lambda: None)
+    monkeypatch.setattr(dd, "_omniroute_api_request", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dd, "_read_omniroute_token", lambda: None)
     monkeypatch.setattr(cli, "console", cli.Console(quiet=True))
     monkeypatch.setattr(
         sys,
@@ -1101,7 +1109,7 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
             return [{"id": "node1", "name": "Ollama", "baseUrl": "http://127.0.0.1:11434/v1"}]
         return None
 
-    monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
+    monkeypatch.setattr(dd, "_omniroute_api_request", mock_api_request)
 
     import urllib.request
 
@@ -1380,7 +1388,7 @@ def test_cmd_doctor_issues_and_duplicates(
             return {"ok": True}
         return None
 
-    monkeypatch.setattr(cli, "_omniroute_api_request", mock_api_request)
+    monkeypatch.setattr(dd, "_omniroute_api_request", mock_api_request)
 
     # Mock user prompt answers "y"
     monkeypatch.setattr(cli.Prompt, "ask", lambda *args, **kwargs: "y")
@@ -1419,7 +1427,7 @@ def test_cmd_doctor_flags_legacy_config_filename_and_offers_fix(
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "config.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
 
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    monkeypatch.setattr(dd, "_omniroute_api_request", lambda *a, **k: None)
     # Keep --fix hermetic: no live local gateway may be discovered/persisted,
     # and the documentation preflight must not fetch live GitHub sources.
     from verdict import documentation_preflight, provider_detection
@@ -1454,7 +1462,7 @@ def test_cmd_doctor_flags_invalid_env_var_formats(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://localhost:20128/")
     monkeypatch.setenv("OPENAI_API_KEY", "not-a-valid-key")
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    monkeypatch.setattr(dd, "_omniroute_api_request", lambda *a, **k: None)
 
     import urllib.request
     from urllib.error import URLError
@@ -1486,7 +1494,7 @@ def test_cmd_doctor_flags_missing_schema_version_and_fixes_it(
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text("primary_model: gpt-4\nproviders: {}\n")
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    monkeypatch.setattr(dd, "_omniroute_api_request", lambda *a, **k: None)
     # Keep --fix hermetic: no live local gateway may be discovered/persisted,
     # and the documentation preflight must not fetch live GitHub sources.
     from verdict import documentation_preflight, provider_detection
@@ -1515,7 +1523,7 @@ def test_cmd_doctor_prints_env_example_pointer(
     """T024: doctor always points users at .env.example."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    monkeypatch.setattr(dd, "_omniroute_api_request", lambda *a, **k: None)
 
     # No config file / gateway / credentials in this fixture are real,
     # unresolved issues, so doctor exits non-zero even though the
@@ -2541,7 +2549,7 @@ def _old_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "verdict.yaml").write_text("primary_model: anthropic/claude-opus-5\nproviders: {}\n")
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    monkeypatch.setattr(dd, "_omniroute_api_request", lambda *a, **k: None)
 
     class _Resp:
         status = 200

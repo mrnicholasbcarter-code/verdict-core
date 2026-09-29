@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "claude",
+    "certify"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  Claude Code harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - Claude Code certification  UNSUPPORTED\n    not healthy\n  base URL               (none)\n  token environment set  yes   \n\n  Facets\nFacet                 Level      \nbefore_first_turn     partial    \ncompaction_yield      unsupported\nconfig_import         partial    \nedit_event            unsupported\nhooks                 unsupported\nmcp                   partial    \nmodel_selection       partial    \nmutation_capability   partial    \nresume                partial    \nsession_end           unsupported\nsession_start         partial    \nstructured_output     unsupported\nsubagents             unsupported\nsync_async_semantics  partial    \ntool_interception     unsupported\ntool_pre_post         unsupported\nverification_result   unsupported\n\n  Notes\n  OpenAI-compatible path via env.OPENAI_BASE_URL \u2192 Verdict :8000\n  Anthropic Messages (/v1/messages) via ANTHROPIC_BASE_URL is unsupported until \nBOD-102\n  SessionStart claude-gate provides fail-closed catalog admission\n  harness not enabled for Verdict-managed OpenAI path\n\n  Needs owner\n  live enable with secrets (token value never written; operator must export \ntoken_env)\n",
+  "stderr": ""
+}

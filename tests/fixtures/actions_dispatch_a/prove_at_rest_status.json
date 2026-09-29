@@ -1,0 +1,6 @@
+{
+  "stdout": "\nVERDICT  /  Prove at rest\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - prove-at-rest  WARNING\n    No prove-at-rest state at <HOME>/.verdict/prove-at-rest/state.json\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "prove-at-rest status"
+}
