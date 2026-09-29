@@ -9,7 +9,6 @@ Reuses the interleaving-insensitive comparison helpers from test_demo_trace.py.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -24,10 +23,7 @@ from rich.console import Console
 
 from tests.test_flagship_failover_scenario import _run_scenario
 from verdict.design import presentation_mode
-from verdict.orchestration.claims import (
-    CLAIM_STATUS_VERIFIED,
-    derive_claims,
-)
+from verdict.orchestration.claims import CLAIM_STATUS_VERIFIED, derive_claims
 from verdict.orchestration.demo_render import render_claims, render_claims_text
 from verdict.orchestration.trace_render import render_trace, render_trace_text
 from verdict.orchestration.trace_view import trace_view
@@ -66,7 +62,11 @@ def _normalize_seq(text: str) -> str:
         if stripped and stripped[0].isdigit():
             parts = stripped.split(None, 1)
             if parts and parts[0].isdigit():
-                line = line[: len(line) - len(stripped)] + "NNN  " + (parts[1] if len(parts) > 1 else "")
+                line = (
+                    line[: len(line) - len(stripped)]
+                    + "NNN  "
+                    + (parts[1] if len(parts) > 1 else "")
+                )
         if "until=" in line:
             line = re.sub(r"until=\S+", "until=<ts>", line)
         out.append(line)
@@ -205,15 +205,18 @@ class TestDemoTraceSnapshots:
     def test_trace_motion_disabled_renders(self, width: int) -> None:
         """render_trace succeeds with VERDICT_NO_ANIMATION=1 and output fits width."""
         with patch.dict(os.environ, {"VERDICT_NO_ANIMATION": "1"}, clear=True):
-            mode = replace(presentation_mode(), width=width, color=True, unicode=True,
-                           color_system="truecolor")
+            mode = replace(
+                presentation_mode(), width=width, color=True, unicode=True, color_system="truecolor"
+            )
         renderable = render_trace(self.tv, mode)
-        console = Console(width=width, force_terminal=True, color_system="truecolor",
-                          legacy_windows=False)
+        console = Console(
+            width=width, force_terminal=True, color_system="truecolor", legacy_windows=False
+        )
         console.size = (width, 80)
         with console.capture() as cap:
             console.print(renderable)
         from rich.text import Text
+
         for i, line in enumerate(cap.get().splitlines()):
             visible = Text.from_ansi(line).cell_len
             assert visible <= width, f"line {i} width {visible} > {width}: {line!r}"
@@ -223,15 +226,18 @@ class TestDemoTraceSnapshots:
         """render_claims succeeds with VERDICT_NO_ANIMATION=1 and output fits width."""
         label = f"{_DEMO_LABEL}: scripted workers, injected faults"
         with patch.dict(os.environ, {"VERDICT_NO_ANIMATION": "1"}, clear=True):
-            mode = replace(presentation_mode(), width=width, color=True, unicode=True,
-                           color_system="truecolor")
+            mode = replace(
+                presentation_mode(), width=width, color=True, unicode=True, color_system="truecolor"
+            )
         renderable = render_claims(self.claims, mode, label=label)
-        console = Console(width=width, force_terminal=True, color_system="truecolor",
-                          legacy_windows=False)
+        console = Console(
+            width=width, force_terminal=True, color_system="truecolor", legacy_windows=False
+        )
         console.size = (width, 80)
         with console.capture() as cap:
             console.print(renderable)
         from rich.text import Text
+
         for i, line in enumerate(cap.get().splitlines()):
             visible = Text.from_ansi(line).cell_len
             assert visible <= width, f"line {i} width {visible} > {width}: {line!r}"
@@ -251,9 +257,7 @@ class TestDemoTraceSnapshots:
     def test_trace_lines_fit_width(self, width: int) -> None:
         text = render_trace_text(self.tv, width=width)
         for i, line in enumerate(text.splitlines()):
-            assert len(line) <= width, (
-                f"line {i} at width={width} exceeds limit: {line!r}"
-            )
+            assert len(line) <= width, f"line {i} at width={width} exceeds limit: {line!r}"
 
     # -----------------------------------------------------------------------
     # Demo claims goldens at 60 / 100 / 200 (plain)
@@ -285,6 +289,4 @@ class TestDemoTraceSnapshots:
         label = f"{_DEMO_LABEL}: scripted workers, injected faults"
         text = render_claims_text(self.claims, label=label, width=width)
         for i, line in enumerate(text.splitlines()):
-            assert len(line) <= width, (
-                f"demo line {i} at width={width} exceeds limit: {line!r}"
-            )
+            assert len(line) <= width, f"demo line {i} at width={width} exceeds limit: {line!r}"

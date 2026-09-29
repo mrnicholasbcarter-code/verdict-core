@@ -52,12 +52,8 @@ def _cmd_trace(args: argparse.Namespace) -> None:
     node = getattr(args, "node", None)
     if panel == "context":
         from verdict.actions.views import _action_context_view
-        from verdict.orchestration.context_render import (
-            context_json,
-            render_context,
-            render_context_text,
-        )
         from verdict.design import presentation_mode
+        from verdict.orchestration.context_render import render_context, render_context_text
 
         result = _action_context_view(run=str(run_dir), runs_dir=args.runs_dir, node=node)
         if not result.ok:
@@ -70,6 +66,7 @@ def _cmd_trace(args: argparse.Namespace) -> None:
         mode = presentation_mode(stream=sys.stdout)
         if mode.color:
             from rich.console import Console
+
             width = shutil.get_terminal_size(fallback=(100, 24)).columns
             console = Console(width=width, force_terminal=True, color_system=mode.color_system)
             console.print(render_context(view, mode))

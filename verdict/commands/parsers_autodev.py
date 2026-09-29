@@ -212,9 +212,7 @@ def register(subparsers: Any) -> None:
         default=None,
         help="Open a named panel for --node (e.g. 'context' shows context assembly)",
     )
-    trace_p.add_argument(
-        "--node", default=None, help="Node id for --panel drill-down"
-    )
+    trace_p.add_argument("--node", default=None, help="Node id for --panel drill-down")
     trace_p.add_argument("--width", type=int, default=100, help="Output width (default: 100)")
 
     demo_p = subparsers.add_parser(

@@ -23,7 +23,6 @@ from verdict.orchestration.context_view import context_view
 from verdict.orchestration.trace_render import render_trace_text
 from verdict.orchestration.trace_view import trace_view
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -67,9 +66,7 @@ class TestTracePanelContext:
         assert node_id, "context step has no node_id"
 
         result = _action_context_view(
-            run=str(self.run_dir),
-            runs_dir=str(self.run_dir.parent),
-            node=node_id,
+            run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node=node_id
         )
         assert result.ok, f"context panel failed: {result.data.get('error')}"
         view = result.data["view"]
@@ -85,9 +82,7 @@ class TestTracePanelContext:
         node_id = context_steps[0].node_id
 
         result = _action_context_view(
-            run=str(self.run_dir),
-            runs_dir=str(self.run_dir.parent),
-            node=node_id,
+            run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node=node_id
         )
         assert result.ok
         text = render_context_text(result.data["view"], width=100)
@@ -100,18 +95,14 @@ class TestTracePanelContext:
 
         # Via panel path
         panel_result = _action_context_view(
-            run=str(self.run_dir),
-            runs_dir=str(self.run_dir.parent),
-            node=node_id,
+            run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node=node_id
         )
         assert panel_result.ok
         panel_payload = context_json(panel_result.data["view"])
 
         # Via direct context command path
         direct_result = _action_context_view(
-            run=str(self.run_dir),
-            runs_dir=str(self.run_dir.parent),
-            node=node_id,
+            run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node=node_id
         )
         assert direct_result.ok
         direct_payload = context_json(direct_result.data["view"])
@@ -127,9 +118,7 @@ class TestTracePanelContext:
         node_id = context_steps[0].node_id
 
         result = _action_context_view(
-            run=str(self.run_dir),
-            runs_dir=str(self.run_dir.parent),
-            node=node_id,
+            run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node=node_id
         )
         assert result.ok
         payload = context_json(result.data["view"])
@@ -143,9 +132,7 @@ class TestTracePanelContext:
         node_id = context_steps[0].node_id
 
         result = _action_context_view(
-            run=str(self.run_dir),
-            runs_dir=str(self.run_dir.parent),
-            node=node_id,
+            run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node=node_id
         )
         assert result.ok
         payload = context_json(result.data["view"])
@@ -169,9 +156,7 @@ class TestTracePanelNoContext:
 
     def test_unknown_node_fails_with_clear_message(self) -> None:
         result = _action_context_view(
-            run=str(self.run_dir),
-            runs_dir=str(self.run_dir.parent),
-            node="no-such-node-xyz",
+            run=str(self.run_dir), runs_dir=str(self.run_dir.parent), node="no-such-node-xyz"
         )
         assert not result.ok
         error = result.data.get("error", "")
@@ -181,8 +166,8 @@ class TestTracePanelNoContext:
 
     def test_render_context_text_for_empty_view_no_ansi(self) -> None:
         """render_context_text on an empty node set must not contain ANSI."""
-        from verdict.orchestration.context_view import ContextView
         from verdict.orchestration.context_render import render_context_text
+        from verdict.orchestration.context_view import ContextView
 
         empty = ContextView(schema_version="context-view-v1", run_id="test", nodes=[])
         text = render_context_text(empty, width=80)
@@ -238,8 +223,7 @@ class TestTraceContextStepHints:
     def test_no_hints_without_run_id(self) -> None:
         """If run_id is empty, no hint lines should appear (no command to show)."""
         from dataclasses import replace
+
         tv_no_id = replace(self.tv, run_id="")
         text = render_trace_text(tv_no_id, width=120)
-        assert "--panel context" not in text, (
-            "hint should not appear when run_id is empty"
-        )
+        assert "--panel context" not in text, "hint should not appear when run_id is empty"
