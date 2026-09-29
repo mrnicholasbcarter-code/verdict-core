@@ -2418,7 +2418,10 @@ def cmd_config_show(output_json: bool = False) -> None:
     present.kv(summary)
     if data.get("config"):
         present.note("Config (secrets redacted):")
-        present.kv([(k, str(v)) for k, v in data["config"].items()])
+        from verdict.contracts import redact_contract_secrets
+
+        safe_cfg: dict[str, Any] = redact_contract_secrets(data["config"])
+        present.kv([(k, str(v)) for k, v in safe_cfg.items()])
     if data.get("config_error"):
         present.warn("Config parse error", data["config_error"])
 
