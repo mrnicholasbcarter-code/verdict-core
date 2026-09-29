@@ -104,8 +104,10 @@ def _unknown_metrics_view() -> ContextView:
 class TestPressureAndBytes:
     def test_under_budget_band(self) -> None:
         assert pressure_band(0.5) == "ok"
+        assert pressure_band(0.69) == "ok"
 
     def test_elevated_band(self) -> None:
+        assert pressure_band(0.70) == "elevated"
         assert pressure_band(0.85) == "elevated"
 
     def test_over_band(self) -> None:
@@ -286,6 +288,23 @@ class TestPresentationAndGoldens:
                 path.write_text(got)
             assert got == path.read_text(), f"golden mismatch at width={width}"
 
+    def test_no_line_exceeds_width(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", "/home/nick")
+        view = _full_view()
+        for width in (60, 100, 200):
+            text = render_context_text(view, width=width)
+            for i, line in enumerate(text.splitlines()):
+                assert len(line) <= width, f"width={width} line {i} len={len(line)}: {line!r}"
+
+    def test_source_glyphs_are_width_one(self) -> None:
+        from rich.cells import cell_len
+
+        from verdict.orchestration.context_render import _SOURCE_STYLE
+
+        for state, (_label, glyph, ascii_glyph, _token) in _SOURCE_STYLE.items():
+            assert cell_len(glyph) == 1, f"{state} unicode glyph {glyph!r}"
+            assert cell_len(ascii_glyph) == 1, f"{state} ascii glyph {ascii_glyph!r}"
+
     def test_colour_uses_design_tokens_only(self) -> None:
         import re
 
@@ -304,6 +323,9 @@ class TestPresentationAndGoldens:
         assert "token_style(" in src
         assert "from verdict.design import" in src
         assert "budget" in plain_export.lower()
+        # State colouring only: row must not be a single whole-line coloured Text dump
+        assert "Table(" in src
+        assert "box=None" in src
 
 
 # ---------------------------------------------------------------------------

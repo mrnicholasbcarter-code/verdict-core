@@ -1,5 +1,5 @@
 context
-budget  run=run-abc  118.0 KB / 120.0 KB  pressure 98% (elevated)  [#########################]
+budget  run=run-abc  118.0 KB / 120.0 KB (98%)  elevated  [##############################]
 node alpha  used 48.0 KB / budget 60.0 KB  pressure 80% (elevated)
   * included          1.2 KB  file     README.md
   T trimmed           8.0 KB  file     verdict/orchestration/context_view.py  truncated_at=4000

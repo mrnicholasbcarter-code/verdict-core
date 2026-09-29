@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from rich.console import Group, RenderableType
+from rich.table import Table
 from rich.text import Text
 
 from verdict.design import PresentationMode, panel, presentation_mode, token_style
@@ -21,21 +22,22 @@ from verdict.security import redact_text
 
 # ---------------------------------------------------------------------------
 # Local presentation maps (design.py has no source-state / pressure styles yet)
-# Documented as missing tokens in the lane result file.
+# Glyphs are width-1 (rich.cells.cell_len == 1). Prefer design.py glyphs when
+# a meaning matches; otherwise pick candidates listed in the lane result file.
 # ---------------------------------------------------------------------------
 
 PressureBand = Literal["ok", "elevated", "over", "unknown"]
 
+# label, unicode glyph, ascii glyph, token — colour applies to state cell only
 _SOURCE_STYLE: dict[str, tuple[str, str, str, str]] = {
-    # label, unicode glyph, ascii glyph  -> token
     # Data-layer state is "truncated"; AC language / UI label is "trimmed".
-    "included": ("included", "●", "*", "SUCCESS"),
-    "excluded": ("excluded", "○", "o", "MUTED"),
-    "truncated": ("trimmed", "✂", "T", "WARNING"),
-    "trimmed": ("trimmed", "✂", "T", "WARNING"),  # alias
-    "deduplicated": ("deduplicated", "≡", "=", "INFO"),
-    "compressed": ("compressed", "▽", "v", "PRIMARY"),
-    "unknown": ("unknown", "?", "?", "UNKNOWN"),
+    "included": ("included", "●", "*", "SUCCESS"),  # design GLYPHS["running"]
+    "excluded": ("excluded", "○", "o", "MUTED"),  # design STATE_STYLES["admitted"]
+    "truncated": ("trimmed", "▾", "T", "WARNING"),  # candidate for design.py
+    "trimmed": ("trimmed", "▾", "T", "WARNING"),  # alias
+    "deduplicated": ("deduplicated", "≡", "=", "INFO"),  # candidate for design.py
+    "compressed": ("compressed", "◆", "v", "PRIMARY"),  # candidate for design.py
+    "unknown": ("unknown", "?", "?", "UNKNOWN"),  # design STATE_STYLES["unknown"]
 }
 
 _PRESSURE_STYLE: dict[PressureBand, tuple[str, str]] = {
@@ -48,6 +50,11 @@ _PRESSURE_STYLE: dict[PressureBand, tuple[str, str]] = {
 _SECRETISH = re.compile(
     r"(?i)(sk-[A-Za-z0-9_-]{8,}|OMNIROUTE_API_KEY\s*=\s*\S+|api[_-]?key\s*[=:]\s*\S+)"
 )
+
+# Fixed column widths for plain text; source column absorbs the remainder.
+_STATE_W = 15  # "▾ trimmed" / "* included"
+_SIZE_W = 10
+_KIND_W = 7
 
 
 @dataclass(frozen=True)
@@ -64,12 +71,15 @@ def _source_style(state: str) -> _SourceStyle:
 
 
 def pressure_band(pressure: float | None) -> PressureBand:
-    """Map observed budget_pressure to a presentation band. None -> unknown."""
+    """Map observed budget_pressure to a presentation band. None -> unknown.
+
+    SUCCESS/ok < 70%, WARNING/elevated 70-100%, ERROR/over > 100%.
+    """
     if pressure is None:
         return "unknown"
     if pressure > 1.0:
         return "over"
-    if pressure >= 0.8:
+    if pressure >= 0.7:
         return "elevated"
     return "ok"
 
@@ -128,16 +138,24 @@ def format_pressure(pressure: float | None) -> str:
     return f"{pressure * 100:.0f}%"
 
 
-def _bar(used: int | None, budget: int | None, width: int, *, unicode: bool) -> str:
-    """ASCII/unicode meter from observed used/budget. Unknown -> explicit label."""
+def _bar_chars(
+    used: int | None, budget: int | None, width: int, *, unicode: bool
+) -> tuple[str, str]:
+    """Return (filled, remainder) track characters. Unknown -> ('?'*width, '')."""
     width = max(4, min(width, 40))
     if used is None or budget is None or budget <= 0:
-        return "[" + ("?" * width) + "]"
+        return ("?" * width, "")
     ratio = max(0.0, min(used / budget, 1.0))
     filled = round(ratio * width)
     on = "█" if unicode else "#"
     off = "░" if unicode else "-"
-    return "[" + (on * filled) + (off * (width - filled)) + "]"
+    return (on * filled, off * (width - filled))
+
+
+def _bar(used: int | None, budget: int | None, width: int, *, unicode: bool) -> str:
+    """ASCII/unicode meter from observed used/budget. Unknown -> explicit label."""
+    filled, rem = _bar_chars(used, budget, width, unicode=unicode)
+    return "[" + filled + rem + "]"
 
 
 def _aggregate(view: ContextView) -> tuple[int | None, int | None, float | None]:
@@ -182,52 +200,151 @@ def _style(token: str, mode: PresentationMode) -> str:
     return token_style(token, mode.color_system)
 
 
+def _state_cell_style(token: str, mode: PresentationMode) -> str:
+    """Colour for glyph+label only; never bold (headers own bold)."""
+    style = _style(token, mode)
+    if style.startswith("bold "):
+        return style[len("bold ") :]
+    return style
+
+
+def _source_detail(src: SourceEntry) -> str:
+    parts: list[str] = []
+    if src.reason:
+        parts.append(f"reason={redact_text(src.reason)}")
+    if src.truncated_at is not None:
+        parts.append(f"truncated_at={src.truncated_at}")
+    return "  ".join(parts)
+
+
+def _ellipsis(text: str, max_width: int) -> str:
+    """Hard-cap a string to ``max_width`` cells with a trailing ellipsis."""
+    if max_width <= 0:
+        return ""
+    if len(text) <= max_width:
+        return text
+    if max_width == 1:
+        return "…"
+    return text[: max_width - 1] + "…"
+
+
+def _inner_width(width: int) -> int:
+    """Approximate panel content width (borders + horizontal padding)."""
+    return max(40, width - 6)
+
+
+def _budget_header_text(
+    *,
+    run: str,
+    used: int | None,
+    budget: int | None,
+    pressure: float | None,
+    width: int,
+    unicode: bool,
+    mode: PresentationMode | None = None,
+) -> Text:
+    """Labelled budget line: TEXT metrics + pressure-coloured bar track."""
+    band = pressure_band(pressure)
+    band_label, band_token = _PRESSURE_STYLE[band]
+    metrics = f"{format_bytes(used)} / {format_bytes(budget)} ({format_pressure(pressure)})"
+    # Fit bar into remaining width; drop band label before shrinking below 4.
+    prefix_len = len(f"budget  run={run}  {metrics}  {band_label}  ")
+    bar_width = min(30, max(4, width - prefix_len - 2))
+    show_band = True
+    if prefix_len + bar_width + 2 > width:
+        show_band = False
+        prefix_len = len(f"budget  run={run}  {metrics}  ")
+        bar_width = min(30, max(4, width - prefix_len - 2))
+    filled, rem = _bar_chars(used, budget, bar_width, unicode=unicode)
+    out = Text(no_wrap=True, overflow="ellipsis")
+    out.append("budget  ", style=_style("SECONDARY", mode) if mode else "")
+    out.append(f"run={run}  ", style=_style("TEXT", mode) if mode else "")
+    out.append(metrics, style=_style("TEXT", mode) if mode else "")
+    if show_band:
+        out.append(f"  {band_label}  ", style=_style("MUTED", mode) if mode else "")
+    else:
+        out.append("  ", style=_style("MUTED", mode) if mode else "")
+    out.append("[", style=_style("MUTED", mode) if mode else "")
+    # Pressure colour on the fill only; never bold (headers own bold).
+    out.append(filled, style=_state_cell_style(band_token, mode) if mode else "")
+    out.append(rem, style=_style("MUTED", mode) if mode else "")
+    out.append("]", style=_style("MUTED", mode) if mode else "")
+    return out
+
+
 def _node_header(node: NodeContextView, mode: PresentationMode) -> Text:
     band = pressure_band(node.budget_pressure)
     band_label, band_token = _PRESSURE_STYLE[band]
     used = format_bytes(node.prompt_bytes)
     budget = format_bytes(node.budget_bytes)
     press = format_pressure(node.budget_pressure)
-    line = f"node {node.node_id}  used {used} / budget {budget}  pressure {press} ({band_label})"
-    return Text(line, style=_style(band_token, mode))
+    # Bold TEXT for the node identity/metrics; only the pressure badge is coloured.
+    out = Text()
+    text_style = _style("TEXT", mode)
+    header_style = f"bold {text_style}".strip() if text_style else "bold"
+    out.append(
+        f"node {node.node_id}  used {used} / budget {budget}  pressure {press} ", style=header_style
+    )
+    out.append(f"({band_label})", style=_state_cell_style(band_token, mode))
+    return out
 
 
-def _source_line(src: SourceEntry, mode: PresentationMode, width: int) -> Text:
-    st = _source_style(src.state)
-    glyph = st.glyph if mode.unicode else st.ascii_glyph
-    path = safe_path(src.path)
-    kind = _source_kind(src.path)
-    size = format_bytes(src.bytes)
-    reason = ""
-    if src.reason:
-        reason = f"  reason={redact_text(src.reason)}"
-    trunc = ""
-    if src.truncated_at is not None:
-        trunc = f"  truncated_at={src.truncated_at}"
-    raw = f"  {glyph} {st.label:<13} {size:>10}  {kind:<7}  {path}{reason}{trunc}"
-    if len(raw) > width:
-        raw = raw[: max(0, width - 1)] + "…"
-    return Text(raw, style=_style(st.token, mode))
+def _sources_table(sources: list[SourceEntry], mode: PresentationMode, width: int) -> Table:
+    """Fixed-column source table; colour only the state glyph+label cell."""
+    # Leading columns are fixed; source/detail share the rest via ratio so Rich
+    # can shrink them under a tight console without dropping a column.
+    table = Table(
+        box=None,
+        padding=(0, 1),
+        pad_edge=False,
+        show_header=False,
+        show_edge=False,
+        collapse_padding=True,
+        expand=True,
+        width=width,
+    )
+    table.add_column("state", width=_STATE_W, no_wrap=True, overflow="ellipsis")
+    table.add_column("size", width=_SIZE_W, justify="right", no_wrap=True)
+    table.add_column("kind", width=_KIND_W, no_wrap=True, style=_style("SECONDARY", mode))
+    table.add_column(
+        "source", ratio=3, no_wrap=True, overflow="ellipsis", style=_style("TEXT", mode)
+    )
+    table.add_column(
+        "detail", ratio=2, no_wrap=True, overflow="ellipsis", style=_style("MUTED", mode)
+    )
+
+    for src in sources:
+        st = _source_style(src.state)
+        glyph = st.glyph if mode.unicode else st.ascii_glyph
+        state_cell = Text(f"{glyph} {st.label}", style=_state_cell_style(st.token, mode))
+        size_cell = Text(format_bytes(src.bytes), style=_style("SECONDARY", mode))
+        kind_cell = Text(_source_kind(src.path))
+        path_cell = Text(safe_path(src.path))
+        detail_cell = Text(_source_detail(src))
+        table.add_row(state_cell, size_cell, kind_cell, path_cell, detail_cell)
+    return table
 
 
 def render_context(view: ContextView, mode: PresentationMode | None = None) -> RenderableType:
     """Rich renderable: aggregate budget bar + per-node rows + source drill-down."""
     mode = presentation_mode() if mode is None else mode
     width = max(40, mode.width)
+    inner = _inner_width(width)
     blocks: list[RenderableType] = []
 
     used, budget, pressure = _aggregate(view)
-    band = pressure_band(pressure)
-    band_label, band_token = _PRESSURE_STYLE[band]
-    bar_width = min(30, max(8, width // 4))
-    bar = _bar(used, budget, bar_width, unicode=mode.unicode)
     run = view.run_id or "unknown"
-    header = (
-        f"context budget  run={run}  "
-        f"{format_bytes(used)} / {format_bytes(budget)}  "
-        f"pressure {format_pressure(pressure)} ({band_label})  {bar}"
+    blocks.append(
+        _budget_header_text(
+            run=run,
+            used=used,
+            budget=budget,
+            pressure=pressure,
+            width=inner,
+            unicode=mode.unicode,
+            mode=mode,
+        )
     )
-    blocks.append(Text(header, style=_style(band_token, mode)))
 
     if not view.nodes:
         blocks.append(Text("no hydrate events recorded", style=_style("MUTED", mode)))
@@ -242,11 +359,35 @@ def render_context(view: ContextView, mode: PresentationMode | None = None) -> R
             if not node.sources:
                 blocks.append(Text("  sources: (none)", style=_style("MUTED", mode)))
                 continue
-            for src in node.sources:
-                blocks.append(_source_line(src, mode, width))
+            blocks.append(_sources_table(node.sources, mode, inner))
 
     body = Group(*blocks)
     return panel(body, title="context", mode=mode, tone="BORDER", width=width)
+
+
+def _plain_source_line(src: SourceEntry, width: int) -> str:
+    """Aligned plain-text source row; path ellipsized so the line fits ``width``."""
+    st = _source_style(src.state)
+    glyph = st.ascii_glyph
+    state = f"{glyph} {st.label}"
+    size = format_bytes(src.bytes)
+    kind = _source_kind(src.path)
+    path = safe_path(src.path)
+    detail = _source_detail(src)
+
+    # Layout: "  " + state + " " + size + "  " + kind + "  " + path + optional detail
+    prefix = f"  {state:<{_STATE_W}} {size:>{_SIZE_W}}  {kind:<{_KIND_W}}  "
+    detail_part = f"  {detail}" if detail else ""
+    avail = width - len(prefix) - len(detail_part)
+    # Prefer a readable path over detail when the row is tight.
+    if avail < 12 and detail_part:
+        detail_part = ""
+        avail = width - len(prefix)
+    path_part = _ellipsis(path, max(1, avail))
+    line = prefix + path_part + detail_part
+    if len(line) > width:
+        line = _ellipsis(line, width)
+    return line
 
 
 def render_context_text(view: ContextView, width: int = 100) -> str:
@@ -255,15 +396,18 @@ def render_context_text(view: ContextView, width: int = 100) -> str:
     used, budget, pressure = _aggregate(view)
     band = pressure_band(pressure)
     band_label, _ = _PRESSURE_STYLE[band]
-    bar = _bar(used, budget, min(30, max(8, width // 4)), unicode=False)
     run = view.run_id or "unknown"
-    lines: list[str] = [
-        "context",
-        (
-            f"budget  run={run}  {format_bytes(used)} / {format_bytes(budget)}  "
-            f"pressure {format_pressure(pressure)} ({band_label})  {bar}"
-        ),
-    ]
+    metrics = f"{format_bytes(used)} / {format_bytes(budget)} ({format_pressure(pressure)})"
+    prefix = f"budget  run={run}  {metrics}  {band_label}  "
+    bar_w = min(30, max(4, width - len(prefix) - 2))
+    bar = _bar(used, budget, bar_w, unicode=False)
+    header = prefix + bar
+    if len(header) > width:
+        # Drop band label before truncating the bar
+        prefix = f"budget  run={run}  {metrics}  "
+        bar_w = min(30, max(4, width - len(prefix) - 2))
+        header = prefix + _bar(used, budget, bar_w, unicode=False)
+    lines: list[str] = ["context", header if len(header) <= width else _ellipsis(header, width)]
     if not view.nodes:
         lines.append("no hydrate events recorded")
         return "\n".join(lines) + "\n"
@@ -283,18 +427,11 @@ def render_context_text(view: ContextView, width: int = 100) -> str:
             lines.append("  sources: (none)")
             continue
         for src in node.sources:
-            st = _source_style(src.state)
-            glyph = st.ascii_glyph
-            path = safe_path(src.path)
-            kind = _source_kind(src.path)
-            size = format_bytes(src.bytes)
-            reason = f"  reason={redact_text(src.reason)}" if src.reason else ""
-            trunc = f"  truncated_at={src.truncated_at}" if src.truncated_at is not None else ""
-            row = f"  {glyph} {st.label:<13} {size:>10}  {kind:<7}  {path}{reason}{trunc}"
-            if len(row) > width:
-                row = row[: max(0, width - 1)] + "…"
-            lines.append(row)
-    return "\n".join(lines) + "\n"
+            lines.append(_plain_source_line(src, width))
+
+    # Final hard cap: never emit a line longer than width
+    capped = [_ellipsis(line, width) if len(line) > width else line for line in lines]
+    return "\n".join(capped) + "\n"
 
 
 def context_json(view: ContextView) -> dict[str, Any]:
