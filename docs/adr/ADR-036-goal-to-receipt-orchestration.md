@@ -75,7 +75,7 @@ harness. OmniRoute is only transport and inventory.
 
 - Quota, auth or transport loss on one worker or on the controller does not stop the run.
   Recovery is bounded and visible in the receipt.
-- Chaos is first-class: `--inject` keys (`route`, `cc/*`, `@node`, `#N`, `*`) and
+- Chaos is first-class: `--inject` keys (`route`, `cc/*`, `@node`, `#N`, `worker#N`, `*`) and
   `VERDICT_CHAOS_G<n>` inject faults. Injected failures are marked `fault_injected` in every
   artifact, and chaos runs use an isolated health-state file.
 - Harness visibility is part of `ENTITLED`: a route that Prime cannot spawn is not eligible.
