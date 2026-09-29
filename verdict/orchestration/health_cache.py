@@ -565,8 +565,10 @@ class HealthCache:
         # Track agentic timestamp independently from checked_at so that
         # repeated single-call PASSes cannot keep an old agentic PASS fresh.
         agentic_checked_at: datetime | None = None
-        if result.agentic_ok and result.probe_class == "agentic":
-            # This *is* a fresh agentic probe.
+        if result.probe_class == "agentic":
+            # This *is* a fresh agentic attempt, pass or fail. Recording the
+            # time on failures too keeps a failing route to one retry per
+            # interval.
             agentic_checked_at = current
         if previous is not None and previous.agentic_ok and probe_class == "single_call":
             agentic_ok = True
@@ -630,6 +632,11 @@ class HealthCache:
                 identity=result.identity,
                 probe_class=probe_class,
                 agentic_ok=False,  # failure resets agentic qualification
+                agentic_checked_at=(
+                    agentic_checked_at
+                    if agentic_checked_at is not None
+                    else (previous.agentic_checked_at if previous is not None else None)
+                ),
             )
         self._routes[route] = entry
         return entry

@@ -15,7 +15,9 @@ Planning, controller, and independent review tasks use:
 **SUBSCRIPTION** → **FREE** → **METERED** → **UNKNOWN**.
 
 A FREE route qualifies as an implementation worker **only** when a fresh
-AGENTIC probe PASS is in the health cache. A single-call tool PASS alone
+AGENTIC probe PASS is in the health cache. An agentic PASS also requires every
+turn to echo the route's own model; a different or missing echo is recorded as
+a failure. A failed agentic probe is retried once per interval, not every cycle. A single-call tool PASS alone
 qualifies it for chat or summary roles (frontier-worthy tasks).
 
 Without a health cache attached, FREE routes are **not** implementation-eligible

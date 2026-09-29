@@ -479,9 +479,9 @@ def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
     1. Turn 1 calls read_file with ``path`` == :data:`AGENTIC_PROBE_FILE`.
     2. Turn 2 calls edit_file with ``old_text`` == ``'line two'`` and
        ``new_text`` == ``'LINE TWO'``.
-    3. Turn 3 calls read_file with the same path **and** the fake tool result
-       contains the edited content (:data:`AGENTIC_PROBE_EXPECTED`).
-    All three turns must have HTTP 2xx.
+    3. Turn 3 calls read_file with the same path.
+    All three turns must have HTTP 2xx. The caller must also check that the
+    fake file ended in :data:`AGENTIC_PROBE_EXPECTED`.
     """
     if len(exchanges) < 3:
         return False
@@ -535,24 +535,12 @@ def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
     if t2_args.get("old_text") != "line two" or t2_args.get("new_text") != "LINE TWO":
         return False
 
-    # Turn 3: read_file with the same path AND the tool result contains the
-    # edited content (proving the fake file handler applied the edit).
+    # Turn 3: read_file with the same path. The edited content is produced by
+    # the simulated read that runs AFTER this response, so it can't be in the
+    # response body. The caller checks the fake file's final state
+    # (``AgenticFakeFile.content``) instead.
     t3_args = _tool_call_args(exchanges[2], AGENTIC_TOOL_READ)
-    if t3_args is None or t3_args.get("path") != AGENTIC_PROBE_FILE:
-        return False
-
-    # Check that the exchange carries the edited file content in any
-    # string value (message content or tool result).
-    def _body_contains(obj: Any, needle: str) -> bool:
-        if isinstance(obj, str):
-            return needle in obj
-        if isinstance(obj, Mapping):
-            return any(_body_contains(v, needle) for v in obj.values())
-        if isinstance(obj, (list, tuple)):
-            return any(_body_contains(v, needle) for v in obj)
-        return False
-
-    return _body_contains(exchanges[2].response_body, AGENTIC_PROBE_EXPECTED)
+    return t3_args is not None and t3_args.get("path") == AGENTIC_PROBE_FILE
 
 
 def _provider_of(route_id: str) -> str:
@@ -979,10 +967,12 @@ class Prober:
         entry = self.cache.entry(route.route_id)
         if entry is None:
             return True
-        if not entry.agentic_ok:
+        if entry.agentic_checked_at is None:
             return True
-        # Use the agentic-specific timestamp, not the general checked_at.
-        ref = entry.agentic_checked_at if entry.agentic_checked_at is not None else entry.checked_at
+        # Use the agentic-specific timestamp (set on every agentic attempt,
+        # pass or fail), so a failed route is retried once per interval
+        # instead of on every cycle.
+        ref = entry.agentic_checked_at
         age = now - ref
         return age.total_seconds() > self.agentic_interval_hours * 3600
 
@@ -1060,8 +1050,18 @@ class Prober:
             # Also verify the fake file reached the expected state.
             if passed:
                 passed = fake_file.content == AGENTIC_PROBE_EXPECTED
+            # An agentic PASS qualifies the selected route only when every turn
+            # echoed that route's model. An absent echo can't prove identity.
+            category = CATEGORY_OK if passed else "agentic_fail"
+            if passed and not all(
+                ex.reported_model
+                and self._model_identity_matches(route.route_id, ex.reported_model)
+                for ex in exchanges
+            ):
+                passed = False
+                category = CATEGORY_MODEL_MISMATCH
             result = ProbeResult(
-                category=CATEGORY_OK if passed else "agentic_fail",
+                category=category,
                 chat_ok=len(exchanges) >= 1 and exchanges[0].ok,
                 tool_ok=passed,
                 probe_class="agentic",
@@ -1239,11 +1239,13 @@ def live_agentic_transport(
                 raw = response.read(1_048_576)
                 elapsed = (time.monotonic() - started) * 1000.0
                 parsed = json.loads(raw) if raw else {}
+                body = parsed if isinstance(parsed, Mapping) else {}
                 return ProbeExchange(
                     http_status=response.status,
                     ok=200 <= response.status < 300,
                     latency_ms=elapsed,
-                    response_body=parsed if isinstance(parsed, Mapping) else {},
+                    response_body=body,
+                    reported_model=str(body.get("model") or ""),
                 )
         except urllib.error.HTTPError as exc:
             elapsed = (time.monotonic() - started) * 1000.0

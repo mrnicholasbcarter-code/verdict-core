@@ -259,3 +259,29 @@ def test_cli_and_palette_share_the_view_builder(monkeypatch: pytest.MonkeyPatch)
     assert ok
     assert data["payload"]["nodes"]
     assert len(context_calls) == 2
+
+
+def test_routing_view_node_filter_does_not_mutate_frozen_view() -> None:
+    """`verdict routing RUN --node N` narrows a frozen view by copying it (was a crash)."""
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    run = root / "docs" / "proof" / "demo-run"
+    env = {**os.environ, "NO_COLOR": "1", "PYTHONPATH": str(root)}
+    base = [sys.executable, "-m", "verdict", "routing", str(run)]
+    ok = subprocess.run(
+        [*base, "--node", "parser", "--json"], capture_output=True, text=True, env=env, timeout=120
+    )
+    assert ok.returncode == 0, ok.stderr
+    evaluations = json.loads(ok.stdout)["evaluations"]
+    assert evaluations and {e["node_id"] for e in evaluations} == {"parser"}
+    everything = subprocess.run(
+        [*base, "--json"], capture_output=True, text=True, env=env, timeout=120
+    )
+    assert len(json.loads(everything.stdout)["evaluations"]) > len(evaluations)
+    missing = subprocess.run(
+        [*base, "--node", "nope"], capture_output=True, text=True, env=env, timeout=120
+    )
+    assert missing.returncode != 0
+    assert "no node at nope" in (missing.stdout + missing.stderr)

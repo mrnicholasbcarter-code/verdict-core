@@ -511,33 +511,26 @@ class TestAgenticProbeScoring:
         t3 = self._perfect_exchanges()[2]
         assert score_agentic_probe([t1, t2, t3]) is False
 
-    def test_missing_edited_content_in_turn3_fails(self) -> None:
-        """Turn 3 response doesn't contain the edited content → FAIL."""
+    def test_turn3_text_is_not_required_final_file_state_is(self, tmp_path: Path) -> None:
+        """The edited text comes from the simulated read AFTER turn 3's reply.
+
+        So the scorer must not look for it in the reply body; the prober checks
+        the fake file's final state instead. A loop whose edit does not apply
+        (wrong old_text) must still fail on that final-state check.
+        """
         t1 = self._exchange("verdict_probe_read_file", {"path": AGENTIC_PROBE_FILE})
         t2 = self._exchange(
             "verdict_probe_edit_file",
             {"path": AGENTIC_PROBE_FILE, "old_text": "line two", "new_text": "LINE TWO"},
         )
-        # Turn 3: body does NOT contain AGENTIC_PROBE_EXPECTED
-        t3_body = {
-            "choices": [
-                {
-                    "message": {
-                        "content": "some other content",
-                        "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "verdict_probe_read_file",
-                                    "arguments": _json.dumps({"path": AGENTIC_PROBE_FILE}),
-                                }
-                            }
-                        ],
-                    }
-                }
-            ]
-        }
-        t3 = ProbeExchange(http_status=200, ok=True, response_body=t3_body)
-        assert score_agentic_probe([t1, t2, t3]) is False
+        t3 = self._exchange("verdict_probe_read_file", {"path": AGENTIC_PROBE_FILE})
+        assert score_agentic_probe([t1, t2, t3]) is True
+
+        from verdict.prove_at_rest import AgenticFakeFile
+
+        untouched = AgenticFakeFile()
+        assert untouched.edit(AGENTIC_PROBE_FILE, "line 2", "LINE TWO") is False
+        assert untouched.content != AGENTIC_PROBE_EXPECTED
 
 
 # ---- AC: ProbeClass enum -----
@@ -1185,3 +1178,131 @@ class TestIntegrationReceiptFromLadder:
         row = attempts[0]
         assert row.get("probe_class") == "agentic"
         assert row.get("cache_freshness") == STATE_FRESH
+
+
+# ---- Integration review (0.4.0): agentic scoring, identity, retry interval,
+# ---- receipt probe buffer, routing --node ----
+
+
+def _agentic_model(reported: str) -> Any:
+    """A scripted model that does a correct read -> edit -> read loop."""
+    turn = {"n": 0}
+
+    def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        turn["n"] += 1
+        return {
+            "model": reported,
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"c{turn['n']}",
+                                "type": "function",
+                                "function": {"name": name, "arguments": _json.dumps(args)},
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+
+    from verdict.prove_at_rest import AGENTIC_TOOL_EDIT, AGENTIC_TOOL_READ
+
+    script = [
+        (AGENTIC_TOOL_READ, {"path": AGENTIC_PROBE_FILE}),
+        (
+            AGENTIC_TOOL_EDIT,
+            {"path": AGENTIC_PROBE_FILE, "old_text": "line two", "new_text": "LINE TWO"},
+        ),
+        (AGENTIC_TOOL_READ, {"path": AGENTIC_PROBE_FILE}),
+    ]
+
+    def transport(route_id: str, payload: dict[str, Any], timeout: float) -> ProbeExchange:
+        name, args = script[min(turn["n"], 2)]
+        body = call(name, args)
+        return ProbeExchange(
+            http_status=200, ok=True, response_body=body, reported_model=str(body["model"])
+        )
+
+    return transport
+
+
+def _run_agentic(tmp_path: Path, reported: str) -> Any:
+    from verdict.prove_at_rest import AdmittedRoute, CycleStats, Prober
+
+    cache = HealthCache(tmp_path / "hc.json", bucket_capacity=100)
+    route = AdmittedRoute(route_id="nvidia/moonshotai/kimi-k3", provider="nvidia", capacity="free")
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: [route],
+        transport=lambda *a: ProbeExchange(http_status=200, ok=True),
+        agentic_transport=_agentic_model(reported),
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+    )
+    prober.run_agentic_probes(CycleStats(), started=0.0)
+    return cache.entry(route.route_id), prober, route, cache
+
+
+class TestAgenticIntegrationFixes:
+    def test_correct_read_edit_read_loop_passes(self, tmp_path: Path) -> None:
+        """A normal loop passes: the edited text is checked on the fake file, not the reply."""
+        entry, _, _, _ = _run_agentic(tmp_path, "moonshotai/kimi-k3")
+        assert entry is not None
+        assert entry.agentic_ok is True, entry
+        assert entry.agentic_checked_at == NOW
+
+    def test_other_model_echo_cannot_qualify_the_route(self, tmp_path: Path) -> None:
+        entry, _, _, _ = _run_agentic(tmp_path, "other/kimi-k3")
+        assert entry is not None
+        assert entry.agentic_ok is False
+        assert entry.category == "model_mismatch"
+
+    def test_absent_model_echo_cannot_qualify_the_route(self, tmp_path: Path) -> None:
+        entry, _, _, _ = _run_agentic(tmp_path, "")
+        assert entry is not None
+        assert entry.agentic_ok is False
+
+    def test_failed_agentic_probe_waits_for_the_interval(self, tmp_path: Path) -> None:
+        entry, prober, route, _ = _run_agentic(tmp_path, "other/kimi-k3")
+        assert entry is not None and entry.agentic_checked_at == NOW
+        assert prober._needs_agentic(route, NOW + timedelta(hours=1)) is False
+        assert prober._needs_agentic(route, NOW + timedelta(hours=25)) is True
+
+
+class TestReceiptProbeBuffer:
+    def test_replaced_selection_does_not_leak_probe_fields(self) -> None:
+        from verdict.orchestration.contracts import RunEvent
+        from verdict.orchestration.receipt import _node_record
+
+        def ev(seq: int, typ: str, **data: Any) -> RunEvent:
+            return RunEvent(seq=seq, at=NOW.isoformat(), type=typ, node_id="n1", data=data)
+
+        events = [
+            ev(1, "selection", route_id="free/a", probe_class="agentic", attempt=1),
+            ev(2, "selection", route_id="sub/b", attempt=1),
+            ev(3, "dispatch", route_id="sub/b", attempt=1),
+            ev(4, "terminal", route_id="sub/b", ok=True, attempt=1),
+        ]
+        rows = _node_record("n1", "implementation", events)["attempts"]
+        row = rows[0]
+        assert row["route_id"] == "sub/b"
+        assert "probe_class" not in row, f"free/a probe evidence leaked onto sub/b: {row}"
+
+    def test_selection_fields_apply_to_the_same_route(self) -> None:
+        from verdict.orchestration.contracts import RunEvent
+        from verdict.orchestration.receipt import _node_record
+
+        def ev(seq: int, typ: str, **data: Any) -> RunEvent:
+            return RunEvent(seq=seq, at=NOW.isoformat(), type=typ, node_id="n1", data=data)
+
+        events = [
+            ev(1, "selection", route_id="free/a", probe_class="agentic", attempt=1),
+            ev(2, "dispatch", route_id="free/a", attempt=1),
+            ev(3, "terminal", route_id="free/a", ok=True, attempt=1),
+        ]
+        rows = _node_record("n1", "implementation", events)["attempts"]
+        assert rows[0].get("probe_class") == "agentic"
