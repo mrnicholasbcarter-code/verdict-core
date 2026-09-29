@@ -1118,44 +1118,61 @@ def _run_interactive_cockpit(
     )
 
 
-# Route-id prefixes that identify fixture/scripted runs.  Only prefixes that
-# are authoritative (reserved by the Verdict scenario inventory) belong here.
-# Generic names like alpha/ or beta/ are NOT fixture markers because a real
-# provider could use those names; use the run-id/mode marker instead.
+# Reserved model prefixes identify legacy fixture terminals, not planned routes.
 _FIXTURE_ROUTE_PREFIXES = ("demo-", "demo-sub/", "demo-free", "fixture")
 
 
-def _replay_kind(events: list[Any]) -> str:
-    """Classify a recorded run from its own events: 'fixture', 'real' or 'unknown'.
+def _replay_evidence(events: list[Any]) -> tuple[str, bool]:
+    """Return (kind, inferred) from executor provenance and reported terminals.
 
-    Detection order:
-    1. run_started.data["mode"] == "offline-scenario"  (authoritative from demo_scenario.py)
-    2. run_started.data["run_id"].startswith("offline-")
-    3. Any executed route starts with a known fixture prefix.
-
-    'real' requires at least one executed route and no fixture signal.
-    A run with no executed routes makes no claim ('unknown').
+    Explicit executor markers take precedence over legacy model-name inference.
+    Selection/dispatch routes never establish that a model was called. Faults
+    and mechanical merges are not evidence of model execution.
     """
+    real = False
+    inferred = False
+    run_executor: str | None = None
     for event in events:
+        data = event.data
         if event.type == "run_started":
-            run_id = str(event.data.get("run_id") or "")
-            mode = str(event.data.get("mode") or "")
-            if mode == "offline-scenario" or run_id.startswith("offline-"):
-                return "fixture"
-            break
-    routes = [
-        str(event.data.get("route_id") or "")
-        for event in events
-        if event.type in ("selection", "dispatch")
-    ]
-    routes = [r for r in routes if r]
-    if any(r.startswith(_FIXTURE_ROUTE_PREFIXES) for r in routes):
-        return "fixture"
-    return "real" if routes else "unknown"
+            if (
+                data.get("mode") == "offline-scenario"
+                or str(data.get("run_id") or "").startswith("offline-")
+                or data.get("executor") == "scripted"
+                or data.get("executor_kind") == "scripted"
+            ):
+                return "fixture", False
+            run_executor = str(data["executor_kind"] or "") if "executor_kind" in data else None
+        elif event.type == "terminal":
+            kind = str(data["executor_kind"] or "") if "executor_kind" in data else run_executor
+            if kind == "scripted":
+                return "fixture", False
+            if (
+                kind == "fault-injected"
+                or data.get("fault_injected")
+                or str(data.get("session_ref") or "").startswith("fault-injected")
+            ):
+                continue
+            model = str(data.get("reported_model") or data.get("model") or "").strip()
+            if not model or model == "(mechanical merge)":
+                continue
+            if kind is not None:
+                # Unknown explicit markers must not fall back to inference.
+                real = real or kind == "live"
+            elif model.startswith(_FIXTURE_ROUTE_PREFIXES):
+                return "fixture", False
+            else:
+                inferred = True
+    return ("real", not real) if real or inferred else ("unknown", False)
+
+
+def _replay_kind(events: list[Any]) -> str:
+    """Classify a recorded run as 'fixture', 'real' or 'unknown'."""
+    return _replay_evidence(events)[0]
 
 
 def _is_fixture_run(events: list[Any]) -> bool:
-    """True when any executed route is a fixture/demo route."""
+    """True when recorded provenance identifies a fixture/scripted run."""
     return _replay_kind(events) == "fixture"
 
 
@@ -1234,8 +1251,7 @@ def follow_replay(
     # Get run_id from path
     run_id = events_path.parent.name
 
-    # Detect if this is a fixture run by examining routes
-    kind = _replay_kind(events)
+    kind, inferred = _replay_evidence(events)
 
     live = None if plain else Live(render(view, width=width), console=target, auto_refresh=False)
     if live is not None:
@@ -1247,13 +1263,19 @@ def follow_replay(
         for i, event in enumerate(events):
             view.apply(event)
 
-            # Inject replay marker into view after first event
-            if i == 0 and view.goal:
+            # A resumed run_started must not remove the replay provenance label.
+            if (i == 0 or event.type == "run_started") and view.goal:
                 label = {
                     "fixture": "fixture run {rid} (no model calls)",
                     "real": "recorded run {rid} (real models)",
                     "unknown": "recorded run {rid}",
                 }[kind].format(rid=run_id)
+                if inferred:
+                    label = label.replace(
+                        "(real models)",
+                        "(real models: inferred from reported terminal models; "
+                        "run predates executor markers)",
+                    )
                 view.goal = f"REPLAY of {label} - time x{speed}"
 
             if plain:

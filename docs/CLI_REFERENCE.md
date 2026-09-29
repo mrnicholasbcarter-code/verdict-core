@@ -123,6 +123,7 @@ seq   kind            node      detail
 ```
 
 Replay path: use `verdict watch --replay <run-id>` for an interactive TUI replay.
+Replay labels use executor provenance and reported terminal models, never selected routes; legacy runs without executor markers disclose `real models: inferred from reported terminal models; run predates executor markers`, scripted/offline runs say `fixture run`, and runs without execution evidence make no real-model claim.
 
 ### `verdict demo` — Credential-free deterministic demo
 

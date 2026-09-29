@@ -206,6 +206,8 @@ def _as_float(value: Any) -> float | None:
 class PrimeHeadlessExecutor:
     """Run one prompt on one exact route through the Prime headless CLI."""
 
+    executor_kind = "live"
+
     def __init__(
         self,
         prime_bin: str = "prime-agent",
@@ -572,6 +574,11 @@ class FaultInjectingExecutor:
         self._dispatches = 0  # executor calls seen (planning included), for "#N" keys
         self._worker_dispatches = 0  # attempt worktrees ``<node>-a<N>`` only, for "worker#N"
 
+    @property
+    def executor_kind(self) -> str:
+        """Delegated attempts keep the inner executor's provenance."""
+        return str(getattr(self.inner, "executor_kind", ""))
+
     @staticmethod
     def _is_worker_attempt(cwd: Path) -> bool:
         """True when ``cwd`` is a node attempt worktree named ``<node>-a<N>``."""
@@ -624,6 +631,8 @@ ScriptFn = Callable[[str, str, Path], "WorkerTerminal | Awaitable[WorkerTerminal
 class ScriptedExecutor:
     """Deterministic executor backed by a plain (sync or async) callable."""
 
+    executor_kind = "scripted"
+
     def __init__(self, script: ScriptFn) -> None:
         self.script = script
 
@@ -652,6 +661,8 @@ class DirectGatewayExecutor:
     fields compatible with the recovery classifier so that failover works
     unchanged.
     """
+
+    executor_kind = "live"
 
     _OWNED_FILES_RE = re.compile(r"^OWNED_FILES:\s*(.+)$", re.MULTILINE)
     _DIFF_FENCE_RE = re.compile(r"```(?:diff|patch)\n(.*?)```", re.DOTALL)

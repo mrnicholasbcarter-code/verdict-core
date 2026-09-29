@@ -255,6 +255,45 @@ async def test_independent_nodes_run_concurrently_and_complete(repo: Path) -> No
     )
     assert out.returncode == 0
     assert ev.of("run_finished")[0]["outcome"] == "COMPLETE"
+    # Custom adapters without a provenance marker fail closed, not as legacy live.
+    assert all(e["executor_kind"] == "" for e in ev.of("terminal"))
+
+
+@pytest.mark.parametrize("adapter", ["prime", "direct", "scripted", "fault-live", "fault-scripted"])
+async def test_terminal_records_actual_executor_kind(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, adapter: str
+) -> None:
+    from verdict.orchestration.contracts import WorkerExecutor
+    from verdict.orchestration.executors import (
+        DirectGatewayExecutor,
+        FaultInjectingExecutor,
+        PrimeHeadlessExecutor,
+        ScriptedExecutor,
+    )
+
+    worker = Executor({}, delay=0)
+
+    async def script(prompt: str, route: str, cwd: Path) -> WorkerTerminal:
+        return await worker.run(prompt, route_id=route, cwd=cwd, timeout_seconds=1)
+
+    executor: WorkerExecutor
+    if adapter in {"scripted", "fault-scripted"}:
+        executor = ScriptedExecutor(script)
+        expected = "scripted"
+    else:
+        executor = DirectGatewayExecutor() if adapter == "direct" else PrimeHeadlessExecutor()
+        # Exercise the adapter identity and real runtime path without model calls.
+        monkeypatch.setattr(executor, "run", worker.run)
+        expected = "live"
+    kinds = [expected]
+    if adapter.startswith("fault-"):
+        executor = FaultInjectingExecutor(executor, {"cc/s": ["rate_limit"]})
+        kinds.insert(0, "fault-injected")
+    runtime, events, _ = make(repo, WorkGraph("g", (node("a"),)), worker, ["cc/s", "cx/g"])
+    runtime.executor = executor
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert [e["executor_kind"] for e in events.of("terminal")] == kinds
 
 
 async def test_quota_failure_reassigns_same_node_to_other_provider(repo: Path) -> None:

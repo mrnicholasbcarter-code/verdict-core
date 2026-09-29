@@ -10,7 +10,8 @@ import pytest
 from verdict.orchestration.tui import follow_replay
 
 
-def test_follow_replay_shows_replay_header_real_models(tmp_path: Path) -> None:
+@pytest.mark.parametrize("model_field", ["model", "reported_model"])
+def test_follow_replay_shows_replay_header_real_models(tmp_path: Path, model_field: str) -> None:
     """Replay header identifies real-model run and shows speed."""
     events_file = tmp_path / "events.jsonl"
     events = [
@@ -29,8 +30,15 @@ def test_follow_replay_shows_replay_header_real_models(tmp_path: Path) -> None:
             "data": {"route_id": "kr/claude-haiku-4.5", "attempt": 1},
         },
         {
-            "at": "2026-01-01T00:00:01.000000Z",
+            "at": "2026-01-01T00:00:00.750000Z",
             "seq": 2,
+            "type": "terminal",
+            "node_id": "node-a",
+            "data": {model_field: "kr/claude-haiku-4.5", "executor_kind": "live", "ok": True},
+        },
+        {
+            "at": "2026-01-01T00:00:01.000000Z",
+            "seq": 3,
             "type": "run_finished",
             "node_id": "",
             "data": {"outcome": "COMPLETE"},
@@ -45,10 +53,11 @@ def test_follow_replay_shows_replay_header_real_models(tmp_path: Path) -> None:
     assert "test-run-123" in view.goal or tmp_path.name in view.goal
     assert "x2.0" in view.goal
     assert "real models" in view.goal
+    assert "inferred" not in view.goal
 
 
 def test_follow_replay_shows_fixture_label(tmp_path: Path) -> None:
-    """Replay header identifies fixture run when routes start with demo-/fixture."""
+    """Legacy fixture terminals identify a fixture, not merely selected routes."""
     events_file = tmp_path / "events.jsonl"
     events = [
         {
@@ -66,8 +75,15 @@ def test_follow_replay_shows_fixture_label(tmp_path: Path) -> None:
             "data": {"route_id": "demo-sub/atlas-coder", "attempt": 1},
         },
         {
-            "at": "2026-01-01T00:00:01.000000Z",
+            "at": "2026-01-01T00:00:00.750000Z",
             "seq": 2,
+            "type": "terminal",
+            "node_id": "node-a",
+            "data": {"reported_model": "demo-sub/atlas-coder", "ok": True},
+        },
+        {
+            "at": "2026-01-01T00:00:01.000000Z",
+            "seq": 3,
             "type": "run_finished",
             "node_id": "",
             "data": {"outcome": "COMPLETE"},
@@ -84,8 +100,9 @@ def test_follow_replay_shows_fixture_label(tmp_path: Path) -> None:
     assert "real models" not in view.goal
 
 
-def test_follow_replay_unknown_routes_no_real_models_claim(tmp_path: Path) -> None:
-    """Replay header does not claim 'real models' when routes are unknown."""
+@pytest.mark.parametrize("route", ["", "alpha/real-provider", "demo-sub/atlas-coder"])
+def test_follow_replay_unknown_routes_no_real_models_claim(tmp_path: Path, route: str) -> None:
+    """A selected route does not prove a live or scripted executor ran."""
     events_file = tmp_path / "events.jsonl"
     events = [
         {
@@ -96,8 +113,15 @@ def test_follow_replay_unknown_routes_no_real_models_claim(tmp_path: Path) -> No
             "data": {"goal": "test goal"},
         },
         {
-            "at": "2026-01-01T00:00:01.000000Z",
+            "at": "2026-01-01T00:00:00.500000Z",
             "seq": 1,
+            "type": "selection",
+            "node_id": "node-a",
+            "data": {"route_id": route, "attempt": 1},
+        },
+        {
+            "at": "2026-01-01T00:00:01.000000Z",
+            "seq": 2,
             "type": "run_finished",
             "node_id": "",
             "data": {"outcome": "COMPLETE"},
@@ -107,10 +131,9 @@ def test_follow_replay_unknown_routes_no_real_models_claim(tmp_path: Path) -> No
 
     view = follow_replay(events_file, speed=1.0, max_gap=0.1)
 
-    # Without selection events, should not claim "real models"
-    # Should show generic REPLAY label
+    # Without terminal evidence, show only the generic REPLAY label.
     assert "REPLAY" in view.goal
-    assert "real models" not in view.goal  # no executed routes -> no claim
+    assert "real models" not in view.goal
     assert "fixture" not in view.goal
 
 
@@ -237,7 +260,7 @@ def test_replay_from_fixture_events(tmp_path: Path) -> None:
     assert view.event_count > 0
     assert view.goal  # Should have a goal
     assert "REPLAY" in view.goal
-    assert "fixture run" in view.goal  # demo-run uses demo-sub/* routes
+    assert "fixture run" in view.goal  # demo-run reports reserved fixture terminal models
 
 
 def test_replay_kind_needs_evidence_for_real_models() -> None:
@@ -245,30 +268,32 @@ def test_replay_kind_needs_evidence_for_real_models() -> None:
 
     from verdict.orchestration.tui import _replay_kind
 
-    def ev(t: str, route: str) -> SimpleNamespace:
-        return SimpleNamespace(type=t, data={"route_id": route})
-
-    def run_started(run_id: str = "", mode: str = "") -> SimpleNamespace:
-        return SimpleNamespace(type="run_started", data={"run_id": run_id, "mode": mode})
+    def ev(t: str, **data: object) -> SimpleNamespace:
+        return SimpleNamespace(type=t, data=data)
 
     assert _replay_kind([]) == "unknown"
-    assert _replay_kind([ev("node_state", "")]) == "unknown"
-    # Real provider route with a generic name → still 'real'
-    assert _replay_kind([ev("selection", "alpha/real-provider")]) == "real"
-    assert _replay_kind([ev("selection", "kr/claude-haiku-4.5")]) == "real"
-    assert _replay_kind([ev("selection", "kr/x"), ev("dispatch", "demo-sub/atlas")]) == "fixture"
-    # mode marker from demo_scenario.py → 'fixture' regardless of route name
-    assert (
-        _replay_kind([run_started(mode="offline-scenario"), ev("selection", "alpha/real-looking")])
-        == "fixture"
-    )
-    # offline- run_id prefix → 'fixture'
-    assert (
-        _replay_kind([run_started(run_id="offline-flagship-failover"), ev("selection", "alpha/x")])
-        == "fixture"
-    )
-    # Real run with alpha/ route and no offline marker → 'real'
-    assert _replay_kind([run_started(run_id="live-run-001"), ev("selection", "alpha/x")]) == "real"
+    assert _replay_kind([ev("node_state")]) == "unknown"
+    for route in ("alpha/real-provider", "kr/claude-haiku-4.5", "demo-sub/atlas"):
+        for kind in ("selection", "dispatch"):
+            assert _replay_kind([ev(kind, route_id=route)]) == "unknown"
+    assert _replay_kind([ev("terminal", route_id="alpha/x")]) == "unknown"
+    assert _replay_kind([ev("terminal", reported_model="alpha/x")]) == "real"
+    assert _replay_kind([ev("terminal", reported_model="demo-sub/atlas")]) == "fixture"
+    for marker in (
+        {"mode": "offline-scenario"},
+        {"run_id": "offline-flagship-failover"},
+        {"executor": "scripted"},
+        {"executor_kind": "scripted"},
+    ):
+        assert (
+            _replay_kind(
+                [
+                    ev("run_started", **marker),
+                    ev("terminal", reported_model="alpha/x", executor_kind="live"),
+                ]
+            )
+            == "fixture"
+        )
     # Mode is passed explicitly; inspect only package Python sources, from any cwd.
     package = Path(__file__).resolve().parents[1] / "verdict"
     offenders = [
@@ -277,3 +302,76 @@ def test_replay_kind_needs_evidence_for_real_models() -> None:
         if "VERDICT_RUN_MODE" in path.read_text(encoding="utf-8")
     ]
     assert not offenders, f"VERDICT_RUN_MODE found in source; use explicit mode=: {offenders}"
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [
+        ({"executor_kind": "live", "reported_model": "alpha/x"}, "real"),
+        ({"executor_kind": "live", "model": "alpha/x"}, "real"),
+        ({"executor_kind": "live", "reported_model": "fixture/model"}, "real"),
+        ({"executor_kind": "live"}, "unknown"),
+        ({"executor_kind": "scripted", "reported_model": "alpha/x"}, "fixture"),
+        ({"executor_kind": "scripted"}, "fixture"),
+        ({"executor_kind": "fault-injected", "reported_model": "alpha/x"}, "unknown"),
+        ({"executor_kind": "", "reported_model": "alpha/x"}, "unknown"),
+        ({"executor_kind": None, "reported_model": "alpha/x"}, "unknown"),
+        ({"executor_kind": "unrecognized", "reported_model": "alpha/x"}, "unknown"),
+        ({"reported_model": "alpha/x", "fault_injected": True}, "unknown"),
+        ({"reported_model": "alpha/x", "session_ref": "fault-injected:quota"}, "unknown"),
+        ({"reported_model": "(mechanical merge)"}, "unknown"),
+        ({"reported_model": ""}, "unknown"),
+        ({"reported_model": "  "}, "unknown"),
+    ],
+)
+def test_terminal_executor_provenance(terminal: dict[str, object], expected: str) -> None:
+    from types import SimpleNamespace
+
+    from verdict.orchestration.tui import _replay_kind
+
+    assert _replay_kind([SimpleNamespace(type="terminal", data=terminal)]) == expected
+
+
+@pytest.mark.parametrize("marker_on", ["run_started", "terminal"])
+def test_explicit_executor_evidence_is_not_legacy_inference(marker_on: str) -> None:
+    from types import SimpleNamespace
+
+    from verdict.orchestration.tui import _replay_evidence
+
+    start = SimpleNamespace(type="run_started", data={})
+    terminal = SimpleNamespace(type="terminal", data={"reported_model": "alpha/x"})
+    (start if marker_on == "run_started" else terminal).data["executor_kind"] = "live"
+    assert _replay_evidence([start, terminal]) == ("real", False)
+
+
+def test_scripted_terminal_overrides_live_and_legacy_evidence() -> None:
+    from types import SimpleNamespace
+
+    from verdict.orchestration.tui import _replay_evidence
+
+    for live_marker in ({}, {"executor_kind": "live"}):
+        events = [
+            SimpleNamespace(type="terminal", data={"reported_model": "alpha/x", **live_marker}),
+            SimpleNamespace(type="terminal", data={"executor_kind": "scripted"}),
+        ]
+        assert _replay_evidence(events) == ("fixture", False)
+        assert _replay_evidence(list(reversed(events))) == ("fixture", False)
+
+
+@pytest.mark.parametrize("proof", ["live-controller-run", "dogfood-bod-225-live-2026-09-29"])
+def test_legacy_live_proofs_disclose_inferred_replay_header(proof: str) -> None:
+    from io import StringIO
+
+    from rich.console import Console
+
+    from verdict.orchestration.tui import _replay_evidence, read_events
+
+    events_file = Path(__file__).resolve().parents[1] / "docs" / "proof" / proof / "events.jsonl"
+    assert _replay_evidence(read_events(events_file)) == ("real", True)
+    view = follow_replay(
+        events_file, console=Console(file=StringIO(), width=110), speed=1000, max_gap=0
+    )
+    # Repeated run_started events in resumed proofs must retain the replay marker.
+    assert "REPLAY of recorded run" in view.goal
+    assert "real models: inferred from reported terminal models" in view.goal
+    assert "run predates executor markers" in view.goal

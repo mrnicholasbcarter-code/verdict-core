@@ -1013,6 +1013,12 @@ class DagRuntime:
                 ok=terminal.ok,
                 route_id=run.route_id,
                 reported_model=terminal.model,
+                # Empty is explicitly unknown for custom adapters; never legacy inference.
+                executor_kind=(
+                    "fault-injected"
+                    if terminal.session_ref.startswith("fault-injected")
+                    else str(getattr(self.executor, "executor_kind", ""))
+                ),
                 duration_seconds=round(terminal.duration_seconds, 2),
                 session_ref=terminal.session_ref,
                 stop_reason=terminal.stop_reason,

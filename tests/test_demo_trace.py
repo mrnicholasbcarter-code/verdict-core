@@ -448,11 +448,12 @@ def test_scripted_workers_overlap_when_duration_is_positive(
 
     # duration_seconds from the delayed worker must flow through to the terminal event.
     # ScriptedExecutor._delayed now measures with time.monotonic() and sets it.
-    # Fault-injected terminals return immediately (duration ~0); only the non-fault
-    # successful terminals go through the delayed wrapper and should be >= 0.2.
-    # duration_seconds from the delayed worker must flow through to the terminal event.
-    # ScriptedExecutor._delayed now measures with time.monotonic() and sets it.
     # Fault-injected terminals (no delay) and integration merges (route_id="") are excluded.
+    assert {
+        e["data"].get("executor_kind")
+        for e in result.events
+        if e["type"] == "terminal" and e["data"].get("route_id")
+    } == {"scripted", "fault-injected"}
     worker_ok_terminals = [
         e
         for e in result.events
