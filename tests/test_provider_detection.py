@@ -226,6 +226,55 @@ def test_detect_custom_endpoints_from_env_and_config(
     assert detected[1].api_key_configured is True
 
 
+def test_url_host_matches_rejects_substring_and_userinfo_tricks() -> None:
+    # Legitimate: exact host and subdomains of it.
+    assert pd._url_host_matches("https://api.openai.com", "api.openai.com") is True
+    assert pd._url_host_matches("https://api.openai.com/v1", "api.openai.com") is True
+    assert pd._url_host_matches("https://API.OpenAI.COM/v1", "api.openai.com") is True
+    assert pd._url_host_matches("https://eu.api.openai.com", "api.openai.com") is True
+
+    # Adversarial: the allowed host appears somewhere in the URL but is not the
+    # actual parsed host, so a naive `in`/`startswith` substring check would wrongly
+    # treat these as the real OpenAI API.
+    assert pd._url_host_matches("https://evil.com/?x=api.openai.com", "api.openai.com") is False
+    assert pd._url_host_matches("https://api.openai.com.evil.com", "api.openai.com") is False
+    assert pd._url_host_matches("https://api.openai.com@evil.com", "api.openai.com") is False
+    assert pd._url_host_matches("https://evil.com/api.openai.com", "api.openai.com") is False
+    assert pd._url_host_matches("http://localhost:9999/v1", "api.openai.com") is False
+    assert pd._url_host_matches("not a url", "api.openai.com") is False
+    assert pd._url_host_matches("", "api.openai.com") is False
+
+
+def test_detect_custom_endpoints_treats_lookalike_openai_host_as_custom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A URL that merely contains "api.openai.com" as a substring (evil.com is the
+    # real host) must still be detected as a *custom* endpoint, not silently
+    # skipped as if it were the official OpenAI API.
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.com/?x=api.openai.com")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-custom")
+    monkeypatch.setattr(pd, "_check_port_from_url", lambda url: False)
+    monkeypatch.setattr(pd, "_fetch_models_from_server", lambda *_args: [])
+
+    detected = pd.detect_custom_endpoints()
+
+    assert [p.id for p in detected] == ["custom"]
+    assert detected[0].base_url == "https://evil.com/?x=api.openai.com"
+
+
+def test_detect_custom_endpoints_skips_real_openai_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
+    monkeypatch.setattr(pd, "_check_port_from_url", lambda url: False)
+    monkeypatch.setattr(pd, "_fetch_models_from_server", lambda *_args: [])
+
+    detected = pd.detect_custom_endpoints()
+
+    assert detected == []
+
+
 def test_check_port_from_url_handles_default_ports_and_bad_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
