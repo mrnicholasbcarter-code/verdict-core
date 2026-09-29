@@ -395,6 +395,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     elif args.command == "inspect":
         legacy.cmd_inspect(args.model_id, output_json=args.json)
+    elif args.command == "config":
+        legacy.cmd_config_show(output_json=bool(getattr(args, "json", False)))
     elif args.command == "receipt":
         legacy.cmd_receipt(
             args.receipt_action,

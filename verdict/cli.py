@@ -2397,6 +2397,30 @@ def cmd_receipt(
     raise SystemExit(f"unknown receipt action: {action}")
 
 
+def cmd_config_show(output_json: bool = False) -> None:
+    """Show current Verdict configuration; secrets are redacted."""
+    from verdict.actions.registry import run_action
+
+    result = run_action("config.show", {})
+    data = result.data
+    if output_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    from verdict import present
+
+    present.header("Verdict configuration")
+    present.kv("Config file", data.get("config_file", ""))
+    present.kv("Exists", str(data.get("exists", False)))
+    present.kv("Gateway", data.get("gateway", ""))
+    present.kv("Profile", data.get("profile", ""))
+    if data.get("config"):
+        present.note("Config (secrets redacted):")
+        for k, v in data["config"].items():
+            present.kv(f"  {k}", str(v))
+    if data.get("config_error"):
+        present.warn("Config parse error", data["config_error"])
+
+
 def cmd_replay(session_id: str, output_json: bool = False) -> None:
     """Replay a recorded execution session from the shared MemoryPlane."""
     from verdict.actions.registry import run_action
@@ -3105,6 +3129,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     from verdict.commands import (
         parsers_autodev,
+        parsers_config,
         parsers_credentials,
         parsers_harness,
         parsers_models,
@@ -3116,6 +3141,7 @@ def main() -> None:
 
     for registrar in (
         parsers_setup,
+        parsers_config,
         parsers_credentials,
         parsers_routing,
         parsers_autodev,

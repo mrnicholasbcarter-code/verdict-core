@@ -731,13 +731,63 @@ class TestEligibilityParity:
 
 
 # ---------------------------------------------------------------------------
+# config.show: CLI and TUI reach the same action; output is secret-free
+# ---------------------------------------------------------------------------
+
+
+class TestConfigShowParity:
+    """config.show: thin CLI wrapper calls run_action; secrets are redacted."""
+
+    def test_cli_calls_run_action(self) -> None:
+        """CLI module source must contain run_action("config.show" (wiring proof)."""
+        import importlib
+        import inspect
+
+        src = inspect.getsource(importlib.import_module("verdict.cli"))
+        assert 'run_action("config.show"' in src, "CLI does not call run_action for config.show"
+
+    def test_tui_callable(self) -> None:
+        """TUI palette path executes config.show without error."""
+        ok, data = run_tui("config.show")
+        assert ok
+        assert "config_file" in data
+        assert "exists" in data
+
+    def test_redaction(self, tmp_path: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Config values that look like secrets are redacted in action output."""
+        import yaml
+
+        cfg_dir = tmp_path / ".config" / "verdict"
+        cfg_dir.mkdir(parents=True)
+        cfg_file = cfg_dir / "verdict.yaml"
+        cfg_file.write_text(
+            yaml.dump({"api_key": "sk-real-secret", "gateway_url": "http://127.0.0.1:20128"})
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+        ok, data = run_tui("config.show")
+        assert ok
+        assert data.get("exists") is True
+        cfg = data.get("config", {})
+        # Secret must be redacted — never the real value
+        assert cfg.get("api_key") != "sk-real-secret", "api_key was not redacted"
+        # Non-secret key must be preserved
+        assert cfg.get("gateway_url") == "http://127.0.0.1:20128"
+
+    def test_cli_json_output(self) -> None:
+        """CLI --json returns valid JSON with config_file key."""
+        rc, stdout = run_cli("config", "show", "--json")
+        assert rc == 0, f"CLI config show --json failed: {stdout[:200]}"
+        data = json.loads(stdout)
+        assert "config_file" in data
+
+
+# ---------------------------------------------------------------------------
 # xfail: actions whose CLI handler is NOT wired to run_action on this branch
 # ---------------------------------------------------------------------------
 
-XFAIL_NOT_WIRED: list[str] = [
-    # config.show has no CLI handler calling run_action (lane B2 wiring pending)
-    "config.show"
-]
+XFAIL_NOT_WIRED: list[str] = []
 
 
 @pytest.mark.parametrize("action", XFAIL_NOT_WIRED)
@@ -819,7 +869,7 @@ _PARITY_ACTIONS = [
     ("setup.plan", "setup_plan.build_setup_plan", "setup plan --json", True, None),
     ("receipt.show", "routing_receipt.load_routing_receipt", "receipt show --json", True, None),
     ("eligibility", "orchestration.cli.build_selector", "eligibility --json", True, None),
-    ("config.show", None, None, True, "handler not wired"),
+    ("config.show", None, "config show --json", True, None),
     (
         "credentials.list",
         "credentials_store.get_credential_source",
