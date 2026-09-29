@@ -38,7 +38,7 @@
 | `resume` | `resume` | Development | read | ✅ action |
 | `route` | `route` | Routing | read | ✅ action |
 | `routing` | `routing.view` | Routing | read | ✅ action |
-| `run` | `route` (alias) | — | alias | 🔗 alias: forwards to route |
+| `run` | `run.cancel` | Orchestration | mutation | ✅ action |
 | `run-receipt` | `run-receipt` | Traces | read | ✅ action |
 | `runtime` | `runtime.status` | Runtime | read | ✅ action |
 | `serve` | — | — | — | 🔧 machine-only: cmd_serve (verdict.api.start_server): runs the FastAPI /v1/route and /v1/chat/completions gateway under uvicorn until stopped; server lifecycle, not an interactive action |

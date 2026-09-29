@@ -122,3 +122,4 @@ contracts/*.tgz
 !docs/proof/live-controller-run/controller-g0.log
 !docs/proof/live-controller-run/controller-g1.log
 !tests/fixtures/openjev/calibration/replay_sample.jsonl
+!tests/fixtures/cockpit_controls/events.jsonl

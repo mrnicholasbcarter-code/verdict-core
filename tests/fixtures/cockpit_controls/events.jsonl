@@ -1,0 +1,9 @@
+{"seq": 1, "at": "2026-09-29T00:00:00Z", "type": "run_started", "node_id": "", "data": {"goal": "cockpit-demo", "run_id": "cockpit-demo"}}
+{"seq": 2, "at": "2026-09-29T00:00:01Z", "type": "eligibility", "node_id": "alpha", "data": {"selected": "kr/claude-opus", "rejections": {}, "candidates": [{"route_id": "kr/claude-opus", "provider": "kr", "reached": "SELECTED", "reason": null, "rank": 0, "capacity_class": "subscription"}], "candidates_omitted": 0}}
+{"seq": 3, "at": "2026-09-29T00:00:01Z", "type": "eligibility", "node_id": "beta", "data": {"selected": "cc/claude-sonnet"}}
+{"seq": 4, "at": "2026-09-29T00:00:02Z", "type": "node_state", "node_id": "alpha", "data": {"state": "RUNNING", "route_id": "kr/claude-opus", "attempt": 1}}
+{"seq": 5, "at": "2026-09-29T00:00:02Z", "type": "node_state", "node_id": "beta", "data": {"state": "RUNNING", "route_id": "cc/claude-sonnet", "attempt": 1}}
+{"seq": 6, "at": "2026-09-29T00:00:03Z", "type": "hydrate", "node_id": "alpha", "data": {"budget_bytes": 40000, "prompt_bytes": 12000, "truncated": false, "context_files": [], "sources": [{"path": "src/alpha.py", "bytes": 2000, "included": true, "truncated_at": null, "reason": null}, {"path": "tests/test_alpha.py", "bytes": 5000, "included": true, "truncated_at": 1500, "reason": "context_budget"}]}}
+{"seq": 7, "at": "2026-09-29T00:00:03Z", "type": "hydrate", "node_id": "beta", "data": {"budget_bytes": 40960, "prompt_bytes": 1024, "truncated": false, "context_files": [], "sources": [{"path": "src/beta.py", "bytes": 1024, "included": true}]}}
+{"seq": 8, "at": "2026-09-29T00:00:04Z", "type": "control", "node_id": "alpha", "data": {"kind": "retry_node", "accepted": false, "reason": "recovery budget exhausted"}}
+{"seq": 9, "at": "2026-09-29T00:00:05Z", "type": "understand", "node_id": "", "data": {"summary": "recorded demo"}}

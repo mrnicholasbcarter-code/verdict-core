@@ -493,7 +493,9 @@ class RecoveryBudget:
     max_same_route_retries: int = 0
     max_verification_repairs: int = 1
 
-    def decide(self, node_id: str, history: list[FailureClassification]) -> tuple[str, str]:
+    def decide(
+        self, node_id: str, history: list[FailureClassification], *, attempts: int | None = None
+    ) -> tuple[str, str]:
         """Decide recovery action: 'REASSIGN' | 'REPAIR' | 'FAIL_CLOSED'.
 
         Returns (action, reason) tuple.
@@ -505,16 +507,15 @@ class RecoveryBudget:
         - If verification repairs exhausted -> FAIL_CLOSED
         - Default to REASSIGN for other failures
         """
+        used = max(len(history), attempts or 0)
+        if used >= self.max_attempts_per_node:
+            return "FAIL_CLOSED", f"exhausted {self.max_attempts_per_node} attempts"
         if not history:
             return "REASSIGN", "first attempt"
 
         # Check if last action was BLOCK (explicit blocker)
         if history[-1].action == "BLOCK":
             return "FAIL_CLOSED", "last action was BLOCK"
-
-        # Check if we've exhausted attempts
-        if len(history) >= self.max_attempts_per_node:
-            return "FAIL_CLOSED", f"exhausted {self.max_attempts_per_node} attempts"
 
         # Count verification failures and how many repairs we've already attempted
         # Each verification_failed is a problem; if we see N failures, we've tried N-1 repairs

@@ -313,7 +313,11 @@ async def test_hung_worker_is_timed_out_and_reassigned(repo: Path) -> None:
     orig = mod.asyncio.wait_for
 
     async def fast_wait_for(aw: Any, timeout: float | None) -> Any:
-        return await orig(aw, 0.3 if timeout and timeout > 1 else timeout)
+        # Shrink only the attempt watchdog. The runtime also waits 0.1s to
+        # notice a cancel; shrinking that poll makes it return before the hang.
+        if timeout is not None and timeout > 1:
+            timeout = 0.3
+        return await orig(aw, timeout)
 
     mod.asyncio.wait_for = fast_wait_for  # type: ignore[assignment]
     try:
