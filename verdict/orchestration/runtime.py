@@ -1338,6 +1338,7 @@ class DagRuntime:
                 status=review.status,
                 reviewer=review.reviewer,
                 route_id=review.route_id,
+                observed_model=review.observed_model,
                 blocking=sum(f.blocking() for f in review.findings),
                 findings=len(review.findings),
                 detail=review.detail[:300],

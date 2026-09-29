@@ -303,6 +303,9 @@ class EligibilityLadder:
         ``evidence_rule`` names the classification rule that fired.
 
         Priority order (design §B, plus origin/main signals restored):
+        (0) conn is None → UNKNOWN (no connection data; checked before all
+            other rules, so even a ``:free``-suffixed route without a
+            connection returns UNKNOWN, not FREE).
         (a) ``:free`` suffix → FREE (overrides oauth → subscription).
         (b) Connection free signals (``importFreeModelsOnly``,
             ``import_free_only``, free tier/plan, ``plan_label`` containing
@@ -382,7 +385,7 @@ class EligibilityLadder:
             ):
                 self._state["cooldowns"][key] = entry
         raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
-        provider = resolve_provider(raw_provider, route_id) if raw_provider else raw_provider
+        provider = resolve_provider(raw_provider) if raw_provider else raw_provider
         provider = provider or route_id.split("/", 1)[0].lower()
         for key in (f"route:{route_id}", f"provider:{provider}"):
             if self._active_cooldown(key, now) is not None:
@@ -418,7 +421,7 @@ class EligibilityLadder:
     def _assess(self, route_id: str, requirements: TaskRequirements, now: datetime) -> _Assessment:
         row = self._rows[route_id]
         raw_provider = str(row.get("owned_by", "")).lower()
-        provider = resolve_provider(raw_provider, route_id) if raw_provider else raw_provider
+        provider = resolve_provider(raw_provider) if raw_provider else raw_provider
         if not provider:
             provider = route_id.split("/", 1)[0].lower()
         conn = self._connection_for(provider)
@@ -834,9 +837,8 @@ class EligibilityLadder:
         category = result.category
         if (
             not result.healthy
-            and hasattr(result, "status_code")
-            and category in ("bad_request", "unservable")
-            and is_catalog_stale_error(category)
+            and category in ("bad_request", "unservable", "unsupported")
+            and is_catalog_stale_error(result.error_message)
         ):
             category = "catalog_stale"
         self._state["health"][route_id] = {
@@ -875,7 +877,7 @@ class EligibilityLadder:
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
         if failure.scope == "provider":
             raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
-            provider = resolve_provider(raw_provider, route_id) if raw_provider else raw_provider
+            provider = resolve_provider(raw_provider) if raw_provider else raw_provider
             if not provider:
                 provider = route_id.split("/", 1)[0].lower()
             self._state["cooldowns"][f"provider:{provider}"] = dict(entry)

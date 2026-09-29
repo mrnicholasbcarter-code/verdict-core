@@ -701,7 +701,7 @@ def _judge(
     # Resolve owned_by aliases: the inventory may use a UI-internal name
     # (e.g. "devin-cli-agentic") that differs from the connection provider
     # string ("devin-cli").  The alias table bridges the gap.
-    resolved = resolve_provider(owned, route_id) if owned else owned
+    resolved = resolve_provider(owned) if owned else ""
     provider = resolved or owned or prefix
     stamp = _iso(now)
 
