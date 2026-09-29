@@ -65,6 +65,7 @@ CATEGORY_PERMISSION = "permission"
 CATEGORY_NOT_FOUND = "not_found"
 CATEGORY_GONE = "gone"
 CATEGORY_CATALOG_STALE = "catalog_stale"
+CATEGORY_MODEL_MISMATCH = "model_mismatch"
 
 # Status codes whose failure is about the account or the catalog, not a blip.
 _LONG_TTL_STATUSES = frozenset({401, 402, 403, 404, 410})

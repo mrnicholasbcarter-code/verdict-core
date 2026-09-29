@@ -711,6 +711,7 @@ def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
             probe_timeout_seconds=kwargs.get("timeout", 15.0),
             allow_live_probe=True,
             max_requests=int(kwargs.get("max_requests", 300)),
+            max_wall_seconds=float(kwargs.get("max_wall_seconds", 600.0)),
         )
         stats = daemon.run_once()
     except ProveError as exc:

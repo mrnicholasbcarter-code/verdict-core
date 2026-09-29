@@ -59,6 +59,7 @@ from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
     CATEGORY_GONE,
+    CATEGORY_MODEL_MISMATCH,
     CATEGORY_NOT_FOUND,
     CATEGORY_OK,
     CATEGORY_PAYMENT,
@@ -147,6 +148,7 @@ class ProbeExchange:
     latency_ms: float | None = None
     retry_after_seconds: float | None = None
     error_category: str | None = None
+    reported_model: str = ""
 
 
 # A transport probes one route for one phase ("chat" or "tool") and must not
@@ -438,10 +440,16 @@ class Prober:
             pending = pending[batch_size:]
             self._persist_cursor(index, open_cycle=True)
             self.cache.save()
-            self._run_batch(batch, stats, started)
-            index += len(batch)
+            processed = self._run_batch(batch, stats, started)
+            # Advance only by the routes actually started (defect 2 fix):
+            # a cap mid-batch leaves the rest of the batch unprobed.
+            index += processed
             self._persist_cursor(index, open_cycle=True)
             self.cache.save()
+            if stats.stopped_reason:
+                # Cap fired inside the batch: do not drain the remaining pending
+                # items (which would advance index or clear the cursor).
+                break
         else:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
@@ -453,24 +461,48 @@ class Prober:
 
     def _run_batch(
         self, batch: Sequence[tuple[AdmittedRoute, str]], stats: CycleStats, started: float
-    ) -> None:
-        # The batch width is ``concurrency`` (how many routes are reserved
-        # before the next cap check). Calls run one at a time so the cache
-        # file is only ever written by this thread. A crash between saves
-        # keeps every probe already saved.
+    ) -> int:
+        """Probe every route in *batch*; return the count actually started.
+
+        Returns fewer than ``len(batch)`` when a cap fires mid-batch so the
+        caller can advance the cursor to the exact position reached (defect 2
+        fix).  The batch width is ``concurrency`` (how many routes are reserved
+        before the next cap check).  Calls run one at a time so the cache file
+        is only ever written by this thread.  A crash between saves keeps every
+        probe already saved.
+        """
+        processed = 0
         for route, kind in batch:
             if stats.requests >= self.max_requests:
                 stats.stopped_reason = stats.stopped_reason or "request_cap"
-                return
+                return processed
             if self.monotonic() - started >= self.max_wall_seconds:
                 stats.stopped_reason = "wall_cap"
-                return
+                return processed
             before = stats.requests
-            self._probe_route(route, kind, stats)
+            self._probe_route(route, kind, stats, started=started)
+            processed += 1
             if stats.requests != before:
                 self.cache.save()
+        return processed
 
-    def _probe_route(self, route: AdmittedRoute, kind: str, stats: CycleStats) -> None:
+    @staticmethod
+    def _model_identity_matches(route_id: str, reported: str) -> bool:
+        """True when *reported* is the expected model, tolerating provider-prefix.
+
+        A gateway often strips the ``provider/`` prefix from the echo, e.g.
+        ``cc/claude-opus-4`` is requested but ``claude-opus-4`` is echoed back.
+        An empty *reported* means the gateway chose not to echo: not a mismatch.
+        """
+        if not reported:
+            return True
+
+        def _strip(m: str) -> str:
+            return m.split("/", 1)[-1] if "/" in m else m
+
+        return _strip(route_id) == _strip(reported)
+
+    def _probe_route(self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float) -> None:
         now = self.clock()
         if not self.cache.consume(route.provider, now, pool=route.pool):
             stats.skipped_bucket += 1
@@ -488,7 +520,22 @@ class Prober:
         category = category_for(chat)
         observed = chat
 
+        # Validate chat-phase model identity (defect 3 fix): check right after
+        # chat so we do not make the tool call if the gateway returned the wrong
+        # model.  An empty reported_model is treated as "matches" (provider
+        # chose not to echo).
+        if chat_ok and not self._model_identity_matches(route.route_id, chat.reported_model):
+            category = CATEGORY_MODEL_MISMATCH
+            status = chat.http_status
+            chat_ok = False
+
         if chat_ok and kind == "full" and stats.requests < self.max_requests:
+            # Check wall deadline before making the second HTTP call (defect 5).
+            if self.monotonic() - started >= self.max_wall_seconds:
+                # Wall cap hit between chat and tool: chat succeeded but tool was
+                # never tested. Leave the route unchanged (do not record a negative).
+                stats.stopped_reason = "wall_cap"
+                return
             now_tool = self.clock()
             if self.cache.consume(route.provider, now_tool, pool=route.pool):
                 stats.requests += 1
@@ -500,12 +547,24 @@ class Prober:
                 tool_ok = bool(tool.ok and tool.tool_called and tool.http_status == 200)
                 if tool.latency_ms is not None:
                     latency = (latency or 0.0) + tool.latency_ms
-                if not tool_ok:
+                # Validate tool-phase model identity too.
+                if tool_ok and not self._model_identity_matches(
+                    route.route_id, tool.reported_model
+                ):
+                    tool_ok = False
+                    category = CATEGORY_MODEL_MISMATCH
+                    status = tool.http_status
+                    observed = tool
+                elif not tool_ok:
                     status = tool.http_status
                     category = category_for(tool)
                     observed = tool
-            # No bucket token for the tool call: chat succeeded, tool did not
-            # run, so this is not a coding worker.
+            else:
+                # No bucket token for the tool call: chat succeeded but tool was
+                # never tested. Leave the route unchanged; do NOT record a
+                # negative (defect 1 fix).
+                stats.skipped_bucket += 1
+                return
         if chat_ok and (tool_ok or kind == "liveness"):
             category = CATEGORY_OK
             status = 200
@@ -648,6 +707,8 @@ def _exchange_from_body(
 ) -> ProbeExchange:
     if not isinstance(body, Mapping):
         body = {}
+    # Capture the reported model identity before deciding ok (defect 3 fix).
+    reported_model: str = str(body.get("model", "")) if isinstance(body, Mapping) else ""
     choices = body.get("choices")
     message: Mapping[str, Any] = {}
     if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
@@ -675,6 +736,7 @@ def _exchange_from_body(
         latency_ms=latency_ms,
         retry_after_seconds=retry_after,
         error_category=None,
+        reported_model=reported_model,
     )
 
 
