@@ -311,10 +311,10 @@ class EligibilityLadder:
         ``evidence_rule`` names the classification rule that fired.
 
         Priority order (design §B, plus origin/main signals restored):
-        (0) Missing connection → UNKNOWN. A ``:free`` route still needs an
-            account connection before entitlement can be established.
-        (a) With a connection, ``:free`` suffix → FREE (overrides oauth →
-            subscription).
+        (0) conn is None → UNKNOWN (no connection data; checked before all
+            other rules, so even a ``:free``-suffixed route without a
+            connection returns UNKNOWN, not FREE).
+        (a) ``:free`` suffix → FREE (overrides oauth → subscription).
         (b) Connection free signals (``importFreeModelsOnly``,
             ``import_free_only``, free tier/plan, ``plan_label`` containing
             ``free`` for any auth type) → FREE.
@@ -348,7 +348,7 @@ class EligibilityLadder:
         prices: list[float] = []
         if isinstance(pricing, Mapping):
             for value in pricing.values():
-                if isinstance(value, (int, float)):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
                     prices.append(float(value))
         all_zero = bool(prices) and all(p == 0 for p in prices)
         positive = any(p > 0 for p in prices)
@@ -396,7 +396,7 @@ class EligibilityLadder:
             ):
                 self._state["cooldowns"][key] = entry
         raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
-        provider = resolve_provider(raw_provider, route_id) if raw_provider else raw_provider
+        provider = resolve_provider(raw_provider) if raw_provider else raw_provider
         provider = provider or route_id.split("/", 1)[0].lower()
         for key in (f"route:{route_id}", f"provider:{provider}"):
             if self._active_cooldown(key, now) is not None:
@@ -432,7 +432,7 @@ class EligibilityLadder:
     def _assess(self, route_id: str, requirements: TaskRequirements, now: datetime) -> _Assessment:
         row = self._rows[route_id]
         raw_provider = str(row.get("owned_by", "")).lower()
-        provider = resolve_provider(raw_provider, route_id) if raw_provider else raw_provider
+        provider = resolve_provider(raw_provider) if raw_provider else raw_provider
         if not provider:
             provider = route_id.split("/", 1)[0].lower()
         conn = self._connection_for(provider)
@@ -855,9 +855,8 @@ class EligibilityLadder:
         category = result.category
         if (
             not result.healthy
-            and hasattr(result, "status_code")
-            and category in ("bad_request", "unservable")
-            and is_catalog_stale_error(category)
+            and category in ("bad_request", "unservable", "unsupported")
+            and is_catalog_stale_error(result.error_message)
         ):
             category = "catalog_stale"
         self._state["health"][route_id] = {
@@ -872,7 +871,7 @@ class EligibilityLadder:
             if provider and category in _PROVIDER_SCOPE_CATEGORIES:
                 self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
             # Live-evidence not-free override: mark the route and pool so
-            # FREE-tier ranking can exclude it (design §B, item 3).
+            # capacity classification reflects the override (design §B, item 3).
             if is_not_free_signal(
                 category=category, status_code=getattr(result, "status_code", None)
             ):
@@ -896,7 +895,7 @@ class EligibilityLadder:
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
         if failure.scope == "provider":
             raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
-            provider = resolve_provider(raw_provider, route_id) if raw_provider else raw_provider
+            provider = resolve_provider(raw_provider) if raw_provider else raw_provider
             if not provider:
                 provider = route_id.split("/", 1)[0].lower()
             self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
@@ -996,3 +995,37 @@ def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
             if value > 0:
                 total += float(value)
     return total, known
+
+
+def capacity_class_of(
+    conn: Mapping[str, Any] | None, row: Mapping[str, Any]
+) -> tuple[CapacityClass, str]:
+    """Classify a route's capacity without instantiating a ladder.
+
+    Applies the same rules as ``EligibilityLadder._capacity_class`` but
+    without the :free-suffix and connection-level-signal extensions added on
+    origin/main (which require provider_catalog helpers used only by the
+    ladder).  Used by ``prove_at_rest`` and any caller that must not touch the
+    ladder's state file.  ``True``/``False`` values in ``pricing`` are not
+    treated as prices.
+    """
+    if conn is None:
+        return CapacityClass.UNKNOWN, ""
+    plan_label = str(conn.get("plan_label", ""))
+    plan_lower = plan_label.lower()
+    auth_type = str(conn.get("authType", "")).lower()
+    pricing = row.get("pricing")
+    prices: list[float] = []
+    if isinstance(pricing, Mapping):
+        for value in pricing.values():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                prices.append(float(value))
+    all_zero = bool(prices) and all(p == 0 for p in prices)
+    positive = any(p > 0 for p in prices)
+    if auth_type == "oauth" and "free" not in plan_lower:
+        return CapacityClass.SUBSCRIPTION, plan_label
+    if bool(conn.get("import_free_only")) or "free" in plan_lower or all_zero:
+        return CapacityClass.FREE, plan_label
+    if auth_type == "apikey" and positive:
+        return CapacityClass.METERED, plan_label
+    return CapacityClass.UNKNOWN, plan_label

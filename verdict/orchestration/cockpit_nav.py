@@ -661,6 +661,13 @@ def _render_reviewer_detail(
             style=_style_token("TEXT" if ident.observed_route else "MUTED", plain),
         ),
     ]
+    if ident.mismatch:
+        lines.append(
+            Text(
+                "MISMATCH: selected route != observed reported_model",
+                style=_style_token("ERROR", plain),
+            )
+        )
     body: RenderableType = Group(*lines)
     if plain:
         return body

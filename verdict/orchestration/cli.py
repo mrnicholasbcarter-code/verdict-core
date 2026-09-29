@@ -85,7 +85,7 @@ def add_parsers(subparsers: Any) -> None:
     watch.add_argument(
         "--panel",
         choices=("routing", "context", "receipt", "health"),
-        help="Open a worker inspection panel",
+        help="Open an inspection panel",
     )
     watch.add_argument(
         "--replay",
