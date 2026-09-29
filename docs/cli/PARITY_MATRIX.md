@@ -13,6 +13,7 @@
 | `choose` | `choose` | Routing | read | ✅ action |
 | `compare` | `compare` | Routing | read | ✅ action |
 | `compat` | `compat.manifest` | Configuration | read | ✅ action |
+| `context` | `context.view` | Runs | read | ✅ action |
 | `cost-report` | `cost-report` | Overview | read | ✅ action |
 | `credentials` | `credentials.list` | Configuration | read | ✅ action |
 | `demo` | `demo.run` | Traces | read | ✅ action |
@@ -37,7 +38,8 @@
 | `replay` | `replay` | Traces | read | ✅ action |
 | `resume` | `resume` | Development | read | ✅ action |
 | `route` | `route` | Routing | read | ✅ action |
-| `run` | `route` (alias) | — | alias | 🔗 alias: forwards to route |
+| `routing` | `routing.view` | Routing | read | ✅ action |
+| `run` | `run.cancel` | Orchestration | mutation | ✅ action |
 | `run-receipt` | `run-receipt` | Traces | read | ✅ action |
 | `runtime` | `runtime.status` | Runtime | read | ✅ action |
 | `serve` | — | — | — | 🔧 machine-only: cmd_serve (verdict.api.start_server): runs the FastAPI /v1/route and /v1/chat/completions gateway under uvicorn until stopped; server lifecycle, not an interactive action |

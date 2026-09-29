@@ -1249,6 +1249,15 @@ def _action_demo_run(**kwargs: Any) -> ActionResult:
 
 def _register_builtins() -> None:
     """Register the built-in action set at import time."""
+    from verdict.actions.run_controls import cancel_node, cancel_run, retry_node
+
+    for name, summary, handler in (
+        ("run.cancel", "Cancel an active orchestration run", cancel_run),
+        ("run.cancel-node", "Cancel an active worker without replacement", cancel_node),
+        ("run.retry-node", "Retry failed work through the recovery budget", retry_node),
+    ):
+        register(ActionSpec(name, "orchestration", "mutation", summary, "Orchestration"), handler)
+
     from verdict.actions.extra import (
         _action_autodev_packet_canary,
         _action_autodev_packet_canary_rollback,
@@ -1303,6 +1312,7 @@ def _register_builtins() -> None:
         _action_setup_plan_scoped,
         _action_simulate,
     )
+    from verdict.actions.views import _action_context_view, _action_routing_view
 
     _specs: list[tuple[ActionSpec, Callable[..., ActionResult]]] = [
         (
@@ -2149,6 +2159,26 @@ def _register_builtins() -> None:
                 "Harness",
             ),
             _action_harness_prime_visibility,
+        ),
+        (
+            ActionSpec(
+                "routing.view",
+                "routing",
+                "read",
+                "Show the recorded routing explorer for a run",
+                "Routing",
+            ),
+            _action_routing_view,
+        ),
+        (
+            ActionSpec(
+                "context.view",
+                "orchestration",
+                "read",
+                "Show recorded context budget and provenance for a run",
+                "Runs",
+            ),
+            _action_context_view,
         ),
     ]
     for spec, fn in _specs:

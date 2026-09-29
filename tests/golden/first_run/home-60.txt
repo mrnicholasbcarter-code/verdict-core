@@ -1,0 +1,57 @@
+VERDICT  autonomous control plane
++------------------------- STATUS -------------------------+
+| gateway           http://localhost:20128  (reachable)    |
+|                   42 models discovered                   |
+| run ship-feature  COMPLETE  2m ago  Receipt verified     |
++----------------------------------------------------------+
++------------------------ COMMANDS ------------------------+
+|           command              what it does              |
+| Runs      verdict orchestrate  goal -> DAG -> parallel   |
+|                                workers -> review ->      |
+|                                receipt                   |
+|           verdict supervise    run orchestrate under a   |
+|                                stall/quota-aware         |
+|                                supervisor                |
+|           verdict watch        live view of a run (or    |
+|                                --once for a snapshot)    |
+| Traces    verdict run-receipt  verify an orchestration   |
+|                                receipt (proof surface)   |
+|           verdict receipt      inspect routing receipts  |
+|                                (RoutingReceiptV1)        |
+|           verdict replay       replay a routing decision |
+|                                session                   |
+| Health    verdict eligibility  DISCOVERED > ENTITLED >   |
+|                                HEALTHY > AVAILABLE >     |
+|                                ELIGIBLE                  |
+|           verdict probe        one-token liveness probes |
+|           verdict detect       detect reachable          |
+|                                providers                 |
+| Models    verdict models       local model catalog view  |
+|           verdict catalog      OmniRoute catalog dump    |
+| Routing   verdict route        route one task through    |
+|                                the gate                  |
+|           verdict routing      recorded routing explorer |
+|                                for a run                 |
+| Context   verdict context      recorded context budget   |
+|                                and provenance            |
+| Routing   verdict compare      compare dual-route        |
+|                                results                   |
+| Overview  verdict stats        statistics from routing   |
+|                                decision log              |
+|           verdict suggest      suggestions from routing  |
+|                                history                   |
+|           verdict cost-report  cost report from routing  |
+|                                decisions                 |
+| Config    verdict config       show resolved             |
+|                                configuration (secrets    |
+|                                redacted)                 |
+|           verdict credentials  manage stored credentials |
+| Setup     verdict doctor       health of gateways,       |
+|                                harnesses, memory, docs   |
+|           verdict setup        plan or apply capability  |
+|                                bootstrap                 |
+|           verdict quickstart   credential-free           |
+|                                deterministic demo        |
++----------------------------------------------------------+
+verdict --help lists every command · VERDICT_NO_ANIMATION=1 
+disables motion

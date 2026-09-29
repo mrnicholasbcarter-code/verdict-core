@@ -1,0 +1,20 @@
+{
+ "node_id": "rehearsal_guard",
+ "attempt": 2,
+ "route_id": "cx/gpt-5.6-sol",
+ "ok": false,
+ "reported_model": "cx/gpt-5.6-sol",
+ "stop_reason": "toolUse",
+ "status_code": null,
+ "error": "no_final_answer",
+ "output_tail": "",
+ "duration_seconds": 580.396909973002,
+ "session_ref": "",
+ "usage": {
+  "input_tokens": 44052,
+  "output_tokens": 7601,
+  "cost_usd": 0.0,
+  "tokens_source": "prime_stdout",
+  "turns": 14
+ }
+}

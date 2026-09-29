@@ -81,6 +81,10 @@ def add_parsers(subparsers: Any) -> None:
     watch.add_argument("run", help="Run id or run directory")
     watch.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     watch.add_argument("--once", action="store_true", help="Render the current state and exit")
+    watch.add_argument("--node", metavar="N", help="Select a recorded worker node")
+    watch.add_argument(
+        "--panel", choices=("routing", "context", "receipt"), help="Open a worker inspection panel"
+    )
     watch.add_argument(
         "--replay",
         action="store_true",
@@ -123,6 +127,28 @@ def add_parsers(subparsers: Any) -> None:
     elig.add_argument(
         "--no-pager", action="store_true", help="Never pipe human output through a pager"
     )
+
+    routing = subparsers.add_parser("routing", help="Show the recorded routing explorer for a run")
+    routing.add_argument("run", nargs="?", help="Run id or run directory")
+    routing.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
+    routing.add_argument("--node", default=None, help="Show one node id only")
+    routing.add_argument("--json", action="store_true")
+    routing.add_argument("--state", default=None, help="Candidate state filter")
+    routing.add_argument("--provider", default=None, help="Provider filter")
+    routing.add_argument("--search", default=None, help="Case-insensitive text filter")
+    routing.add_argument("--page", type=int, default=0)
+    routing.add_argument("--page-size", type=int, default=25)
+    routing.add_argument(
+        "--inventory", action="store_true", help="Read-only inventory view; never runs live probes"
+    )
+
+    context = subparsers.add_parser(
+        "context", help="Show recorded context budget and provenance for a run"
+    )
+    context.add_argument("run", nargs="?", help="Run id or run directory")
+    context.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
+    context.add_argument("--node", default=None, help="Show one node id only")
+    context.add_argument("--json", action="store_true")
 
     _add_prime_sync_models(subparsers)
 
@@ -187,6 +213,8 @@ def dispatch(args: argparse.Namespace) -> int | None:
         "watch": _watch,
         "run-receipt": _receipt,
         "eligibility": _eligibility,
+        "routing": _routing,
+        "context": _context,
     }
     if (
         getattr(args, "command", "") == "harness"
@@ -407,6 +435,111 @@ def _orchestrate(args: argparse.Namespace) -> int:
     return 0 if result.outcome == "COMPLETE" else 1
 
 
+def _print_view_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+def _routing(args: argparse.Namespace) -> int:
+    """CLI surface for the routing explorer. Rendering stays in routing_render."""
+    import shutil
+
+    from verdict.actions.registry import run_action
+    from verdict.design import presentation_mode
+    from verdict.orchestration.routing_render import render_routing, render_routing_text
+
+    if not args.run and not args.inventory:
+        print("routing requires a run id or --inventory", file=sys.stderr)
+        return 2
+    result = run_action(
+        "routing.view",
+        {
+            "run": args.run,
+            "runs_dir": args.runs_dir,
+            "node": args.node,
+            "state": args.state,
+            "provider": args.provider,
+            "search": args.search,
+            "page": args.page,
+            "page_size": args.page_size,
+            "inventory": args.inventory,
+        },
+    )
+    if not result.ok:
+        print(result.data.get("error", "routing failed"), file=sys.stderr)
+        return result.exit_code or 1
+    payload = result.data["payload"]
+    if args.json:
+        _print_view_json(payload)
+        return 0
+    view = result.data["view"]
+    filters = result.data["filters"]
+    mode = presentation_mode(stream=sys.stdout)
+    if mode.color:
+        from rich.console import Console
+
+        width = shutil.get_terminal_size(fallback=(100, 24)).columns
+        console = Console(width=width, force_terminal=True, color_system=mode.color_system)
+        console.print(
+            render_routing(
+                view,
+                mode,
+                page=filters["page"],
+                page_size=filters["page_size"],
+                state=filters["state"],
+                provider=filters["provider"],
+                text=filters["text"],
+            )
+        )
+        return 0
+    width = mode.width
+    print(
+        render_routing_text(
+            view,
+            width,
+            page=filters["page"],
+            page_size=filters["page_size"],
+            state=filters["state"],
+            provider=filters["provider"],
+            text=filters["text"],
+        ),
+        end="",
+    )
+    return 0
+
+
+def _context(args: argparse.Namespace) -> int:
+    """CLI surface for the context budget view. Rendering stays in context_render."""
+    import shutil
+
+    from verdict.actions.registry import run_action
+    from verdict.design import presentation_mode
+    from verdict.orchestration.context_render import render_context, render_context_text
+
+    if not args.run:
+        print("context requires a run id or run directory", file=sys.stderr)
+        return 2
+    result = run_action(
+        "context.view", {"run": args.run, "runs_dir": args.runs_dir, "node": args.node}
+    )
+    if not result.ok:
+        print(result.data.get("error", "context failed"), file=sys.stderr)
+        return result.exit_code or 1
+    if args.json:
+        _print_view_json(result.data["payload"])
+        return 0
+    view = result.data["view"]
+    mode = presentation_mode(stream=sys.stdout)
+    if mode.color:
+        from rich.console import Console
+
+        width = shutil.get_terminal_size(fallback=(100, 24)).columns
+        console = Console(width=width, force_terminal=True, color_system=mode.color_system)
+        console.print(render_context(view, mode))
+        return 0
+    print(render_context_text(view, mode.width), end="")
+    return 0
+
+
 def _watch(args: argparse.Namespace) -> int:
     from verdict.orchestration.tui import follow, follow_replay, render_text
 
@@ -415,19 +548,51 @@ def _watch(args: argparse.Namespace) -> int:
     if not events.exists():
         print(f"no run at {run_dir}", file=sys.stderr)
         return 2
+    from verdict.design import presentation_mode
+
+    mode = presentation_mode(stream=sys.stdout)
+    node_id = getattr(args, "node", None)
+    panel_name = getattr(args, "panel", None)
     if args.once:
-        rows = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
-        plain = not sys.stdout.isatty() or "NO_COLOR" in os.environ
-        print(render_text(rows, width=110, plain=plain))
+        if node_id is not None or panel_name is not None:
+            from verdict.orchestration.cockpit_controls import render_run_text
+
+            try:
+                output = render_run_text(run_dir, node_id=node_id, panel_name=panel_name, mode=mode)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            print(output, end="")
+        else:
+            rows = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
+            print(render_text(rows, width=mode.width, plain=not mode.color))
         return 0
     if args.replay:
         view = follow_replay(events, speed=args.speed)
         return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
-    from verdict.design import presentation_mode
+    interactive = sys.stdin.isatty() and sys.stdout.isatty() and mode.color
+    if (node_id is not None or panel_name is not None) and not interactive:
+        from verdict.orchestration.cockpit_controls import render_run_text
 
-    mode = presentation_mode(stream=sys.stdout)
-    interactive = sys.stdin.isatty() and sys.stdout.isatty() and mode.animate
-    view = follow(events, stop_when_final=True, interactive=interactive)
+        try:
+            print(
+                render_run_text(run_dir, node_id=node_id, panel_name=panel_name, mode=mode), end=""
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return 0
+    try:
+        view = follow(
+            events,
+            stop_when_final=True,
+            interactive=interactive,
+            node_id=node_id,
+            panel_name=panel_name,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
 
 

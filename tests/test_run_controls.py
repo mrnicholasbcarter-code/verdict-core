@@ -654,22 +654,33 @@ async def test_prime_headless_executor_kills_subprocess_on_cancel(
         await exe.run(prompt="", route_id="kr/test-model", cwd=tmp_path, timeout_seconds=60.0)
 
     task = asyncio.create_task(_launch())
-    # Give the subprocess time to spawn
-    await asyncio.sleep(0.5)
-
-    # Collect child PIDs of THIS process before cancel
+    # Wait until the sleep child exists. A fixed sleep races the spawn:
+    # cancelling before create_subprocess_exec returns looks like a leak
+    # because the child is reparented and the test never sees it die.
     my_pid = os.getpid()
+
+    def _children() -> list[int]:
+        found: list[int] = []
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text().split(") ")[-1].split()
+                ppid = int(stat[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            if ppid == my_pid:
+                found.append(int(entry.name))
+        return found
+
+    deadline = asyncio.get_event_loop().time() + 5.0
     child_pids: list[int] = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            stat = (entry / "stat").read_text().split(") ")[-1].split()
-            ppid = int(stat[1])
-        except (OSError, ValueError, IndexError):
-            continue
-        if ppid == my_pid:
-            child_pids.append(int(entry.name))
+    while asyncio.get_event_loop().time() < deadline:
+        child_pids = _children()
+        if child_pids:
+            break
+        await asyncio.sleep(0.05)
+    assert child_pids, "executor never spawned a subprocess to cancel"
 
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -685,7 +696,8 @@ async def test_prime_headless_executor_kills_subprocess_on_cancel(
                 pass
         return alive
 
-    deadline = asyncio.get_event_loop().time() + 5.0
+    # SIGTERM is ignored by sleep; the executor escalates after its 5s grace.
+    deadline = asyncio.get_event_loop().time() + 8.0
     alive: list[int] = list(child_pids)
     while asyncio.get_event_loop().time() < deadline:
         alive = await _still_alive()

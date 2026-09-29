@@ -1,0 +1,20 @@
+{
+ "node_id": "producer_receipt",
+ "attempt": 2,
+ "route_id": "gc/grok-4.5",
+ "ok": true,
+ "reported_model": "gc/grok-4.5",
+ "stop_reason": "stop",
+ "status_code": null,
+ "error": "",
+ "output_tail": "Producer provenance is in place for BOD-225.\n\n**What changed**\n- `capture_producer()` reads `verdict_version` from package metadata and `git_sha` / `dirty` from git; failures become explicit `null`.\n- `run_golden_path` records producer once on the first `run_started`; resume copies that snapshot and does not recompute it.\n- `build_run_receipt` projects producer from the first `run_started` only; legacy logs without producer still build and omit the field.\n\n**Verification:** `45 passed` for `tests/test_orch_receipt.py` and `tests/test_orch_resume.py`.\n\nRESULT: DONE",
+ "duration_seconds": 703.8771148339729,
+ "session_ref": "",
+ "usage": {
+  "input_tokens": 379,
+  "output_tokens": 807,
+  "cost_usd": 0.0,
+  "tokens_source": "prime_stdout",
+  "turns": 1
+ }
+}

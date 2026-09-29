@@ -181,6 +181,56 @@ Text output includes outcome, integrity, per-node attempts, and, when present,
 how many implement nodes changed no files (`no_change_nodes` on the receipt).
 That field is omitted when empty so committed receipts still verify.
 
+### `verdict routing` — Show the recorded routing explorer
+
+```bash
+verdict routing docs/proof/live-controller-run
+verdict routing docs/proof/live-controller-run --node alpha --json
+verdict routing --inventory --json
+```
+
+Loads the recorded `RoutingView` for a run and renders it. `--json` prints the
+same facts as the text view (`routing_json`) with sorted keys and secrets
+redacted. Text output follows `VERDICT_PLAIN`, `NO_COLOR`, and non-TTY: no
+colour and no box drawing unless the terminal can show them.
+
+| Flag | Description |
+|---|---|
+| `run` | Run ID or run directory (required unless `--inventory`) |
+| `--runs-dir RUNS_DIR` | Run directory root |
+| `--node NODE` | Show one node id only |
+| `--json` | Print the stable JSON projection |
+| `--state STATE` | Keep candidates in this recorded state |
+| `--provider PROVIDER` | Keep candidates from this provider |
+| `--search TEXT` | Case-insensitive text filter |
+| `--page N` | Page index, starting at 0 |
+| `--page-size K` | Rows per page (bounded, never above 200) |
+| `--inventory` | Read-only inventory view; never runs live probes |
+
+Exit `0` when the view is shown, `2` when the arguments are invalid, `3` when
+the run or node is not found.
+
+### `verdict context` — Show recorded context budget and provenance
+
+```bash
+verdict context docs/proof/live-controller-run
+verdict context docs/proof/live-controller-run --node alpha --json
+```
+
+Loads the recorded `ContextView` and renders it. `--json` prints the same facts
+as the text view (`context_json`) with sorted keys and secrets redacted. Text
+output follows `VERDICT_PLAIN`, `NO_COLOR`, and non-TTY.
+
+| Flag | Description |
+|---|---|
+| `run` | Run ID or run directory |
+| `--runs-dir RUNS_DIR` | Run directory root |
+| `--node NODE` | Show one node id only |
+| `--json` | Print the stable JSON projection |
+
+Exit `0` when the view is shown, `2` when the arguments are invalid, `3` when
+the run or node is not found.
+
 ### `verdict eligibility` — Show the eligibility ladder
 
 ```bash

@@ -460,6 +460,31 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     elif args.command == "hook":
         legacy.cmd_hook(args)
     elif args.command == "run":
+        if args.task in {"cancel", "retry"} and args.control_run_id is not None:
+            from verdict.actions import run_action
+
+            action = "run.cancel" if args.task == "cancel" else "run.retry-node"
+            if action == "run.retry-node" and not args.control_node_id:
+                parser.error("verdict run retry requires a node id")
+            if action == "run.cancel" and args.control_node_id:
+                parser.error("verdict run cancel accepts only a run id")
+            result = run_action(
+                action,
+                {
+                    "run_id": args.control_run_id,
+                    "runs_dir": args.runs_dir,
+                    "node_id": args.control_node_id if action == "run.retry-node" else None,
+                    "requested_by": "cli",
+                },
+            )
+            if result.ok:
+                request = result.data["request"]
+                print(f"{action} queued for {args.control_run_id} (request {request['id']})")
+            else:
+                print(f"{action} refused: {result.data.get('reason', 'unknown')}", file=sys.stderr)
+            raise SystemExit(result.exit_code)
+        if args.control_run_id is not None:
+            parser.error("verdict run <task> takes one task; use run cancel/retry for controls")
         legacy.cmd_run(args.task, args.criticality, args.terse)
     elif args.command == "plan":
         legacy.cmd_plan(output_json=args.json)

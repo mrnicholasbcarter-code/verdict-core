@@ -147,3 +147,90 @@ class ControlReader:
                 except json.JSONDecodeError:
                     continue
         return ids
+
+
+class RunControl:
+    """Domain admission for requests to an existing live run.
+
+    The durable log is a preflight, not a dispatch authority. The controller
+    rechecks the live recovery budget and routes every retry through selection,
+    admission and proof. Missing policy evidence fails closed.
+    """
+
+    def __init__(self, run_dir: Path) -> None:
+        self.run_dir = Path(run_dir)
+
+    def submit(
+        self, kind: str, *, node_id: str | None = None, requested_by: str = "operator"
+    ) -> ControlRequest:
+        from verdict.orchestration.contracts import FailureClassification
+        from verdict.orchestration.recovery import RecoveryBudget
+
+        graph_path = self.run_dir / "graph.json"
+        events_path = self.run_dir / "events.jsonl"
+        if not graph_path.exists() or not events_path.exists():
+            raise ControlError("run does not have a durable graph and event log")
+        raw = json.loads(graph_path.read_text())
+        graph = WorkGraph.from_dict({k: v for k, v in raw.items() if k != "run_id"})
+        if kind not in VALID_KINDS:
+            raise ControlError(f"unknown control kind: {kind!r}")
+        if kind in NODE_SCOPED_KINDS and node_id not in {n.node_id for n in graph.nodes}:
+            raise ControlError(f"unknown node_id: {node_id!r}")
+        if kind == "cancel_run" and node_id is not None:
+            raise ControlError("cancel_run does not accept a node_id")
+        from verdict.orchestration.receipt import EventLog
+
+        events = EventLog(events_path).read()
+        starts = [i for i, e in enumerate(events) if e.type == "run_started"]
+        if not starts:
+            raise ControlError("run has not started; no active controller evidence")
+        active = events[starts[-1] :]
+        if any(e.type == "run_finished" for e in active):
+            raise ControlError("run is terminal; start an explicit resume before sending controls")
+        node_events = [e for e in events if e.node_id == node_id]
+        states = [e for e in node_events if e.type == "node_state"]
+        state = str(states[-1].data.get("state", "PLANNED")) if states else "PLANNED"
+        if kind == "cancel_node" and state not in {"PLANNED", "ADMITTED", "DISPATCHED", "RUNNING"}:
+            raise ControlError(f"node {node_id} is {state}; only active work can be cancelled")
+        if kind == "retry_node":
+            if state not in {"TERMINAL_FAILURE", "BLOCKED"}:
+                raise ControlError(
+                    f"node {node_id} is {state}; retry only for TERMINAL_FAILURE/BLOCKED"
+                )
+            if states and "cancelled" in str(states[-1].data.get("reason", "")):
+                raise ControlError("node was cancelled; automatic replacement is prohibited")
+            budget_raw = active[0].data.get("retry_budget", {})
+            limit = (
+                budget_raw.get("max_attempts_per_node") if isinstance(budget_raw, dict) else None
+            )
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+                raise ControlError("recovery budget is unknown; retry refused")
+            failures = [
+                FailureClassification(
+                    category=str(e.data.get("category", "unknown")),
+                    action=str(e.data.get("action", "BLOCK")),
+                    cooldown_seconds=0,
+                    scope="none",
+                    evidence=str(e.data.get("evidence", "")),
+                )
+                for e in node_events
+                if e.type == "failure" and e.data.get("category") != "pool_exhausted"
+            ]
+            attempts = max(
+                (
+                    e.data["attempt"]
+                    for e in node_events
+                    if type(e.data.get("attempt")) is int and e.data["attempt"] >= 0
+                ),
+                default=0,
+            )
+            if not failures:
+                raise ControlError("no recoverable failure evidence recorded; retry refused")
+            action, reason = RecoveryBudget(max_attempts_per_node=limit).decide(
+                node_id or "", failures, attempts=attempts
+            )
+            if action == "FAIL_CLOSED":
+                raise ControlError(f"recovery budget refused: {reason}")
+        return request_control(
+            self.run_dir, kind, node_id=node_id, requested_by=requested_by, graph=graph
+        )
