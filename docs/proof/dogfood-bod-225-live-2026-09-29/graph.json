@@ -1,0 +1,146 @@
+{
+  "schema_version": "verdict.orchestration/v1",
+  "goal": "BOD-225: Record the producing Verdict version and git SHA in run receipts. build_run_receipt adds optional producer {verdict_version, git_sha, dirty} (backward compatible; null values explicit, never guessed). Record it once at run_started so resume keeps the original producer. certify_release.py step_rehearsals reports each rehearsal producer SHA and marks INCOMPLETE when it differs from the certified SHA AND verdict/ changed between them. Tests through the real receipt builder and the real step_rehearsals.",
+  "topology": "WORKER_CRITIC",
+  "rationale": [
+    "nodes=3 implement_nodes=2 risk_hint=medium risks=['high', 'medium']",
+    "layers=3 widest_layer=1",
+    "decision=WORKER_CRITIC: 3 nodes but no layer width>=2 (implement_nodes=2, widest_layer=1) -> sequential worker+critic"
+  ],
+  "max_parallel": 1,
+  "nodes": [
+    {
+      "node_id": "producer_receipt",
+      "objective": "Capture Verdict package and repository provenance once when an orchestration run starts, then project that original snapshot into run receipts without inferring missing values.",
+      "kind": "implement",
+      "story": "Add the optional producer receipt contract and preserve the first run's provenance across resume. Keep legacy event logs and receipts valid.",
+      "depends_on": [],
+      "owned_files": [
+        "verdict/orchestration/receipt.py",
+        "verdict/orchestration/run.py",
+        "tests/test_orch_receipt.py",
+        "tests/test_orch_resume.py"
+      ],
+      "required_context": [
+        "pyproject.toml",
+        "verdict/orchestration/contracts.py"
+      ],
+      "acceptance": [
+        "A newly started real orchestration run records a producer object containing exactly verdict_version, git_sha, and dirty.",
+        "Producer values come from authoritative package metadata and git commands; failed or unavailable lookups produce explicit null values and are never guessed.",
+        "Producer provenance is captured once for a durable run, and resuming after package, commit, or dirty-state changes preserves the original producer snapshot.",
+        "build_run_receipt copies the producer from the first run_started event and never recomputes provenance while building a receipt.",
+        "When producer is present, all three producer keys are emitted, including explicit null values.",
+        "Legacy event logs without producer remain buildable and omit the optional producer field for backward compatibility.",
+        "Tests exercise the real run path and the real build_run_receipt function, including resume and legacy behavior."
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_orch_receipt.py",
+        "tests/test_orch_resume.py"
+      ],
+      "barrier": "",
+      "risk": "medium",
+      "required_capabilities": [
+        "reasoning",
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": true,
+      "min_context_tokens": 64000
+    },
+    {
+      "node_id": "rehearsal_guard",
+      "objective": "Extend release rehearsal verification to report each receipt's producer SHA and detect stale rehearsals whose differing producer SHA spans changes under verdict/.",
+      "kind": "implement",
+      "story": "Bind rehearsal evidence to the certified source while allowing rehearsals from another SHA when no Verdict package code changed between the two revisions.",
+      "depends_on": [
+        "producer_receipt"
+      ],
+      "owned_files": [
+        "scripts/certify_release.py",
+        "tests/test_certify_release.py"
+      ],
+      "required_context": [
+        "verdict/orchestration/receipt.py",
+        "verdict/orchestration/contracts.py",
+        "pyproject.toml"
+      ],
+      "acceptance": [
+        "step_rehearsals reports every rehearsal name and its producer git_sha, using an explicit unknown or null representation rather than inventing a SHA.",
+        "run_certification supplies the manifest's certified git SHA to rehearsal verification while existing three-argument step_rehearsals callers remain supported.",
+        "A rehearsal remains PASS when its producer SHA equals the certified SHA.",
+        "A rehearsal from a different SHA remains PASS when git confirms there were no changes under verdict/ between the producer and certified revisions.",
+        "A rehearsal is INCOMPLETE when its producer SHA differs from the certified SHA and git confirms that verdict/ changed between those revisions.",
+        "Existing missing-file and events-digest failures remain FAIL and take precedence over provenance freshness.",
+        "Tests create receipts with the real build_run_receipt function and pass them through the real step_rehearsals function, covering equal SHA, differing SHA without verdict/ changes, and differing SHA with verdict/ changes."
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_certify_release.py"
+      ],
+      "barrier": "",
+      "risk": "high",
+      "required_capabilities": [
+        "reasoning",
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": true,
+      "min_context_tokens": 64000
+    },
+    {
+      "node_id": "integrate_provenance",
+      "objective": "Integrate the producer receipt and release rehearsal changes and validate their combined behavior.",
+      "kind": "integrate",
+      "story": "Resolve any contract mismatch between orchestration provenance capture, receipt projection, and certification freshness checks, then run the focused combined suite.",
+      "depends_on": [
+        "producer_receipt",
+        "rehearsal_guard"
+      ],
+      "owned_files": [
+        "verdict/orchestration/receipt.py",
+        "verdict/orchestration/run.py",
+        "scripts/certify_release.py",
+        "tests/test_orch_receipt.py",
+        "tests/test_orch_resume.py",
+        "tests/test_certify_release.py"
+      ],
+      "required_context": [
+        "pyproject.toml",
+        "verdict/orchestration/contracts.py"
+      ],
+      "acceptance": [
+        "The producer object has one consistent shape across run_started events, generated receipts, and certification checks.",
+        "Resume tests prove that certification sees the original run producer rather than current repository state.",
+        "Legacy receipts remain accepted and no test relies on hand-built producer receipt dictionaries where the real builder can be used.",
+        "All focused receipt, resume, and release certification tests pass together."
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_orch_receipt.py",
+        "tests/test_orch_resume.py",
+        "tests/test_certify_release.py"
+      ],
+      "barrier": "integration",
+      "risk": "medium",
+      "required_capabilities": [
+        "reasoning",
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": true,
+      "min_context_tokens": 64000
+    }
+  ],
+  "run_id": "20260929T024327Z"
+}
