@@ -152,7 +152,12 @@ class _RuntimeAdapter:
 async def test_provider_terminal_failure_rolls_to_next_provider_on_first_failure(
     tmp_path: Path,
 ) -> None:
-    rows = [_row("cc/a"), _row("cc/b"), _row("kr/c")]
+    # cc routes have non-zero pricing → subscription class (ranks first for this
+    # non-frontier task in the free-first order when cc is claude_subscription).
+    # kr/c has non-zero pricing → metered class (ranks after claude_subscription).
+    # This preserves the test intent: cc/a is tried first, fails (403), cc/b
+    # is skipped (same provider), then kr/c is tried and succeeds.
+    rows = [_row("cc/a"), _row("cc/b"), {**_row("kr/c"), "pricing": {"input": 1.0, "output": 2.0}}]
     visible = [_selector(str(row["id"])) for row in rows]
     adapter = _RuntimeAdapter()
     runtime = WorkerController(

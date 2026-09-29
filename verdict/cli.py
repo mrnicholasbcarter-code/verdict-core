@@ -3130,7 +3130,12 @@ def main() -> None:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
+    from verdict import __version__
+
     parser = argparse.ArgumentParser(description="Verdict: policy-gated LLM Router")
+    parser.add_argument(
+        "--version", action="version", version=f"verdict-core %(prog)s {__version__}"
+    )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     from verdict.commands import (
         parsers_autodev,
@@ -4077,6 +4082,7 @@ def cmd_prove_at_rest(
             "interval": interval,
             "timeout": timeout,
             "max_requests": max_requests,
+            "max_wall_seconds": max_wall_seconds,
         }
         if base_url is not None:
             params["base_url"] = base_url

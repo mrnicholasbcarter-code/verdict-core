@@ -110,12 +110,16 @@ def test_demo_cast_is_valid_asciinema_v2() -> None:
     output = "".join(e[2] for e in events if e[1] == "o")
     assert "integrity: OK (events digest verified)" in output
     assert "events_digest mismatch" in output
+    assert "reassign" in output.casefold()
+    assert "COMPLETE" in output
+    assert "offline scenario, scripted workers, injected faults" in header["title"]
+    assert "scripts/record_tui_demo.py --scenario" in header["title"]
     for secret_marker in ("API_KEY", "Bearer ", "sk-"):
         assert secret_marker not in output
 
 
 def test_demo_tui_cast_is_valid_asciinema_v2() -> None:
-    """TUI replay cast (from real-model live-controller-run) is valid asciinema v2."""
+    """The full offline scenario cast has truthful provenance and completion."""
     lines = (ASSETS / "demo-tui.cast").read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
     assert header["version"] == 2
@@ -129,9 +133,15 @@ def test_demo_tui_cast_is_valid_asciinema_v2() -> None:
         assert isinstance(at, (int, float)) and at >= last, event
         assert kind in {"o", "i", "m", "r"} and isinstance(data, str), event
         last = float(at)
-    # TUI replay output should contain the run outcome
+    # Full recording includes startup, real recovery, verification and tamper rejection.
     output = "".join(e[2] for e in events if e[1] == "o")
-    assert "COMPLETE" in output or "VALIDATED" in output
+    assert "offline scenario, scripted workers, injected faults" in header["title"]
+    assert "replay speed" in header["title"]
+    assert "scripts/record_tui_demo.py --scenario" in header["title"]
+    for marker in ("VERDICT", "COMPLETE", "cooldown", "reassign", "events_digest mismatch"):
+        assert marker.casefold() in output.casefold()
+    assert "real models" not in output
+    assert "integrity: OK (events digest verified)" in output
     # No secrets in the recording
     for secret_marker in ("API_KEY", "Bearer ", "sk-"):
         assert secret_marker not in output
@@ -157,6 +167,24 @@ def test_posters_are_static_and_readme_prefers_reduced_motion() -> None:
         assert first is not None
         assert f'(prefers-reduced-motion: reduce)" srcset="docs/assets/{poster_name}"' in readme
         assert f'src="docs/assets/{animated_name}"' in readme
+
+
+def test_posters_show_complete_cockpit_state() -> None:
+    """Posters are rendered from the COMPLETE cockpit frame: all nodes VALIDATED,
+    failure/reassign history visible, review PASS.
+    """
+    for poster_name in ("demo-poster.svg", "demo-tui-poster.svg"):
+        poster = (ASSETS / poster_name).read_text(encoding="utf-8")
+        text = _visible_svg_text(poster)
+        assert "VALIDATED" in text, f"{poster_name}: expected VALIDATED in poster text"
+        assert "REASSIGN" in text.upper(), f"{poster_name}: expected REASSIGN in poster text"
+        # svg-term uses a 1.67 font size and 1.3 line-height. The viewport should
+        # end after the final occupied row, not at the original 72-row PTY height.
+        viewbox = re.search(r'viewBox="0 0 110 ([0-9.]+)"', poster)
+        assert viewbox is not None
+        row_height = 1.67 * 1.3
+        content_bottom = max(float(y) for y in re.findall(r'<text[^>]* y="([0-9.]+)"', poster))
+        assert 0 < float(viewbox.group(1)) - content_bottom < row_height
 
 
 def test_animated_first_frame_is_not_blank() -> None:
@@ -203,3 +231,15 @@ def test_readme_demo_block_matches_committed_run_receipt() -> None:
             for a in node["attempts"]
         )
         assert f"{node['node_id']:<18} {node['final_state']:<16} {chain}" in text
+
+
+def test_recording_svgs_are_small_and_use_portable_fonts() -> None:
+    for name in ("demo.svg", "demo-tui.svg", "demo-poster.svg", "demo-tui-poster.svg"):
+        path = ASSETS / name
+        assert path.stat().st_size < 1024 * 1024, f"recording exceeds 1 MiB: {name}"
+        svg = path.read_text(encoding="utf-8")
+        families = re.findall(r'font-family="([^"]+)"', svg)
+        assert families
+        assert all(family.split(",")[-1].strip() == "monospace" for family in families)
+        assert "Powerline" not in svg and "Nerd" not in svg
+        assert not any(0xE000 <= ord(char) <= 0xF8FF for char in svg)

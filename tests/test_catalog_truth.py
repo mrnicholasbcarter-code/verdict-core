@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from verdict.orchestration.contracts import CapacityClass, TaskRequirements
 from verdict.orchestration.eligibility import (
     _CAPACITY_ORDER,
@@ -118,13 +120,18 @@ class TestBackendPool:
             "antigravity/claude-sonnet-4-6"
         )
 
-    def test_kilocode_openrouter_free_same_pool(self) -> None:
+    def test_kilocode_aliases_and_openrouter_free_share_pool(self) -> None:
         """Evidence: same upstream generation id in research-empirical.md."""
+        short = backend_pool("kc/cohere/north-mini-code:free")
         kilo = backend_pool("kilocode/cohere/north-mini-code:free")
         ortr = backend_pool("openrouter/cohere/north-mini-code:free")
-        assert kilo == "openrouter-free"
-        assert ortr == "openrouter-free"
-        assert kilo == ortr
+        assert short == kilo == ortr == "openrouter-free"
+
+    def test_kc_free_route_is_not_independent_from_openrouter_free(self) -> None:
+        worker = "kc/cohere/north-mini-code:free"
+        reviewer = "openrouter/cohere/north-mini-code:free"
+        assert routes_share_pool(worker, reviewer)
+        assert aliased_pools_for({worker}) == frozenset({"openrouter-free"})
 
     def test_non_free_kilocode_is_own_pool(self) -> None:
         assert backend_pool("kilocode/claude-sonnet-4-6") == "kilocode"
@@ -253,7 +260,7 @@ class TestCapacityClassification:
         conn = {"authType": "apikey", "plan_label": "free", "import_free_only": False}
         is_free, rule = connection_signals_free(conn)
         assert is_free
-        assert rule == "plan_label=free"
+        assert rule == "plan_label"
         row = {
             "id": "pay/model",
             "owned_by": "pay",
@@ -267,7 +274,7 @@ class TestCapacityClassification:
         )
         capacity, _plan, evidence = ladder._capacity_class(conn, row, route_id="pay/model")
         assert capacity is CapacityClass.FREE
-        assert evidence == "plan_label=free"
+        assert evidence == "plan_label"
         verdicts = ladder.evaluate(
             TaskRequirements(required_capabilities=frozenset({"tools"})), now=NOW
         )
@@ -308,6 +315,28 @@ class TestCapacityClassification:
         )
         assert is_free
         assert "tier" in rule
+
+    @pytest.mark.parametrize(
+        ("connection", "expected_rule"),
+        [
+            (
+                {"providerSpecificData": {"tier": "free user@secret.example.com"}},
+                "providerSpecificData.tier",
+            ),
+            (
+                {"providerSpecificData": {"plan": "free user@secret.example.com"}},
+                "providerSpecificData.plan",
+            ),
+            ({"plan_label": "free user@secret.example.com"}, "plan_label"),
+        ],
+    )
+    def test_free_signal_evidence_never_contains_source_value(
+        self, connection: dict[str, object], expected_rule: str
+    ) -> None:
+        is_free, rule = connection_signals_free(connection)
+        assert is_free
+        assert rule == expected_rule
+        assert "user@secret.example.com" not in rule
 
     def test_has_free_suffix(self) -> None:
         assert has_free_suffix("kilocode/model:free")

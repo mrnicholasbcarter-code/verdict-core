@@ -28,6 +28,7 @@ from verdict.orchestration.provider_catalog import (
     is_not_free_signal,
     record_not_free_override,
     resolve_provider,
+    sanitized_plan_label,
 )
 from verdict.subagent_selection import HealthResult
 
@@ -41,12 +42,21 @@ _PREPAID_CAPACITY = frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})
 _UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
 _CODING_MARKERS = ("code", "codex", "sonnet", "fable", "opus")
+# Planning / controller / review: subscription first (frontier for orchestration).
 _CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.SUBSCRIPTION: 0,
     CapacityClass.FREE: 1,
     CapacityClass.METERED: 2,
     CapacityClass.UNKNOWN: 3,
 }
+# Implementation workers: free first (free-first story 3).
+_WORKER_CAPACITY_ORDER: Mapping[CapacityClass, int] = {
+    CapacityClass.FREE: 0,
+    CapacityClass.SUBSCRIPTION: 1,
+    CapacityClass.METERED: 2,
+    CapacityClass.UNKNOWN: 3,
+}
+ENV_ALLOW_UNKNOWN = "VERDICT_ALLOW_UNKNOWN_CAPACITY"
 _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
     "rate_limited": 60.0,
     "quota_exhausted": 3600.0,
@@ -144,6 +154,9 @@ class _Assessment:
     # BOD-177: backend pool identity and capacity classification evidence.
     pool: str = ""
     capacity_evidence: str = ""
+    # AC6: the cooldown key under which this route is currently blocked
+    # (never an email, token, or account id).
+    cooldown_scope: str = ""
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -193,6 +206,10 @@ class _Assessment:
             supports_tools=self.supports_tools,
             supports_structured_output=self.supports_structured_output,
             price=self.price if self.price_known else None,
+            # AC6: non-secret provenance
+            pool=self.pool,
+            capacity_evidence=self.capacity_evidence,
+            cooldown_scope=self.cooldown_scope,
         )
 
 
@@ -212,6 +229,8 @@ class EligibilityLadder:
         max_probes_per_select: int = 8,
         admitted: AdmittedSet | None = None,
         admission_receipt: Path | None = None,
+        health_cache: Any | None = None,
+        allow_unknown_capacity: bool | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -231,6 +250,17 @@ class EligibilityLadder:
         self._admitted = admitted
         # Where the admitted set (with live confirmations) is persisted.
         self._admission_receipt = admission_receipt
+        # Health cache (from #742 prove-at-rest daemon). Read-only in selection.
+        self._health_cache = health_cache
+        # UNKNOWN capacity opt-in: env override if not set explicitly.
+        if allow_unknown_capacity is not None:
+            self._allow_unknown = allow_unknown_capacity
+        else:
+            self._allow_unknown = os.environ.get(ENV_ALLOW_UNKNOWN, "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
 
     @property
     def admitted(self) -> AdmittedSet | None:
@@ -284,15 +314,22 @@ class EligibilityLadder:
         os.replace(tmp, self._state_path)
 
     def _connection_for(self, provider: str) -> Mapping[str, Any] | None:
-        fallback: Mapping[str, Any] | None = None
-        for conn in self._connections:
-            if str(conn.get("provider", "")).lower() != provider.lower():
-                continue
-            if fallback is None:
-                fallback = conn
-            if conn.get("isActive"):
-                return conn
-        return fallback
+        # One pass over the connections per provider, not one per route: a
+        # large catalog has thousands of routes and a few dozen connections.
+        # Same rule as before: the first active connection for the provider,
+        # else its first connection.
+        key = provider.lower()
+        index = self.__dict__.get("_connection_index")
+        if index is None or index[0] is not self._connections:
+            table: dict[str, Mapping[str, Any] | None] = {}
+            for conn in self._connections:
+                name = str(conn.get("provider", "")).lower()
+                current = table.get(name)
+                if current is None or (not current.get("isActive") and conn.get("isActive")):
+                    table[name] = conn
+            index = (self._connections, table)
+            self.__dict__["_connection_index"] = index
+        return index[1].get(key)
 
     def _capacity_class(
         self, conn: Mapping[str, Any] | None, row: Mapping[str, Any], route_id: str = ""
@@ -317,8 +354,9 @@ class EligibilityLadder:
         """
         if conn is None:
             return CapacityClass.UNKNOWN, "", "no_connection"
-        plan_label = str(conn.get("plan_label", ""))
-        auth_type = str(conn.get("authType", "")).lower()
+        plan_label = sanitized_plan_label(conn.get("plan_label", ""))
+        auth_type = str(conn.get("authType", "")).strip().lower()
+        auth_evidence = auth_type if auth_type in {"apikey", "oauth", "none"} else "other"
 
         # (a) :free suffix overrides oauth → subscription (fixes D5: 72
         # kilocode :free misclassed as SUBSCRIPTION).
@@ -352,8 +390,10 @@ class EligibilityLadder:
         if auth_type == "apikey" and positive:
             return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
 
-        # (f) UNKNOWN with a named reason.
-        reason = f"no_pricing_data:auth={auth_type}"
+        # (f) UNKNOWN with a named, bounded reason. Never persist the raw
+        # connection authType: inventory fields are untrusted and may contain
+        # account identifiers or credentials.
+        reason = f"no_pricing_data:auth={auth_evidence}"
         return CapacityClass.UNKNOWN, plan_label, reason
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
@@ -463,9 +503,11 @@ class EligibilityLadder:
         a.health, a.health_category = self._health_status(route_id, now)
         if a.health == "unhealthy":
             a.failed_stage, a.reason = EligibilityStage.HEALTHY, a.health_category
-            until = self._active_cooldown(f"route:{route_id}", now)
+            _ck = f"route:{route_id}"
+            until = self._active_cooldown(_ck, now)
             if until is not None:
                 a.cooldown_until = _iso(until)
+                a.cooldown_scope = _ck  # AC6: non-secret scope key
             return a
 
         for key, label in (
@@ -476,6 +518,7 @@ class EligibilityLadder:
             if until is not None:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, label
                 a.cooldown_until = _iso(until)
+                a.cooldown_scope = key  # AC6: non-secret scope key
                 return a
         limited = self._rate_limited_until(conn, route_id, now)
         if limited is not None:
@@ -488,7 +531,7 @@ class EligibilityLadder:
         # unknown (rendered as UNKNOWN downstream); we never invent a value.
         a.context_window, a.supports_tools, a.supports_structured_output = _capability_facts(row)
 
-        reason = self._task_gate(row, route_id, requirements, a.capacity)
+        reason = self._task_gate(row, route_id, requirements, a.capacity, now=now)
         if reason:
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, reason
             return a
@@ -519,6 +562,7 @@ class EligibilityLadder:
         route_id: str,
         req: TaskRequirements,
         capacity: CapacityClass = CapacityClass.UNKNOWN,
+        now: datetime | None = None,
     ) -> str:
         caps = row.get("capabilities") or {}
         caps = caps if isinstance(caps, Mapping) else {}
@@ -534,7 +578,7 @@ class EligibilityLadder:
         if route_family(route_id) in req.exclude_families:
             return "excluded_family"
         # Pool-aware independence: aliased backend pools (agy≡antigravity,
-        # kilocode/openrouter :free) are excluded by pool id, not prefix.
+        # kc/kilocode/openrouter :free) are excluded by pool id, not prefix.
         if backend_pool(route_id) in req.exclude_families:
             return "excluded_family"
         if backend_pool(route_id) in aliased_pools_for(req.exclude_routes):
@@ -554,6 +598,35 @@ class EligibilityLadder:
         for suffix in _EFFORT_SUFFIXES:
             if lowered.endswith(suffix) and route_id[: -len(suffix)] in self._rows:
                 return "effort_duplicate"
+        # UNKNOWN capacity gate: never for implementation unless opted in.
+        if (
+            capacity == CapacityClass.UNKNOWN
+            and not req.frontier_worthy
+            and not getattr(self, "_allow_unknown", False)
+        ):
+            return "unknown_capacity_not_opted_in"
+        # Agentic gate: a FREE route qualifies as an implementation worker
+        # only when a FRESH AGENTIC probe PASS is in the health cache.
+        # A single-call PASS alone qualifies for chat/summary (frontier_worthy).
+        if capacity == CapacityClass.FREE and not req.frontier_worthy:
+            cache = getattr(self, "_health_cache", None)
+            if cache is None:
+                return "no_health_cache"
+            from verdict.orchestration.health_cache import FRESH_SECONDS
+
+            gate_now = now or datetime.now(timezone.utc)
+            lookup = cache.lookup(route_id, gate_now)
+            if lookup.entry is None or not lookup.entry.agentic_ok:
+                return "no_agentic_probe"
+            # The agentic gate uses agentic_checked_at (not the general
+            # checked_at that single-call probes refresh). Only FRESH is
+            # accepted: stale means the agentic qualification expired.
+            ack = lookup.entry.agentic_checked_at
+            if ack is None:
+                return "agentic_probe_stale"
+            age = (gate_now - ack).total_seconds()
+            if age > FRESH_SECONDS:
+                return "agentic_probe_stale"
         return ""
 
     def _fit(self, row: Mapping[str, Any], route_id: str, req: TaskRequirements) -> int:
@@ -598,8 +671,26 @@ class EligibilityLadder:
         load_value = int(load_fn(a.route_id)) if callable(load_fn) else 0
         price_known = bool(getattr(a, "price_known", False))
         price_value = getattr(a, "price", 0.0)
+        # Role-aware capacity ordering: implementation workers use free-first;
+        # planning/controller/review (frontier_worthy) use subscription-first.
+        req = getattr(self, "_current_requirements", None)
+        is_worker = req is not None and not req.frontier_worthy
+        order_map = _WORKER_CAPACITY_ORDER if is_worker else _CAPACITY_ORDER
+        cap_order = order_map.get(a.capacity, 3)
+        # Health cache freshness for the receipt (read-only, never written).
+        cache = getattr(self, "_health_cache", None)
+        probe_class = "none"
+        cache_checked_at: str | None = None
+        cache_freshness: str | None = None
+        if cache is not None:
+            rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
+            lookup = cache.lookup(a.route_id, rc_now)
+            if lookup.entry is not None:
+                probe_class = lookup.entry.probe_class
+                cache_checked_at = lookup.entry.checked_at.isoformat()
+                cache_freshness = lookup.state
         return {
-            "capacity_order": _CAPACITY_ORDER[a.capacity],
+            "capacity_order": cap_order,
             "slack": getattr(a, "slack", 0),
             "price_for_rank": price_value if price_known else 0.0,
             "provider_pref": pref,
@@ -607,6 +698,9 @@ class EligibilityLadder:
             "fit": getattr(a, "fit", 0),
             "route_id": a.route_id,
             "price_known": price_known,
+            "probe_class": probe_class,
+            "cache_checked_at": cache_checked_at,
+            "cache_freshness": cache_freshness,
         }
 
     def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
@@ -642,11 +736,16 @@ class EligibilityLadder:
             "load": components["load"],
             "fit": components["fit"],  # stays positive
             "route_id": components["route_id"],
+            "probe_class": components.get("probe_class", "none"),
+            "cache_checked_at": components.get("cache_checked_at"),
+            "cache_freshness": components.get("cache_freshness"),
         }
 
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
+        self._current_requirements = requirements
+        self._current_now = now
         assessments: list[_Assessment] = []
         for route_id in sorted(self._rows):
             row = self._rows[route_id]
@@ -774,6 +873,10 @@ class EligibilityLadder:
                     supports_tools=a.supports_tools,
                     supports_structured_output=a.supports_structured_output,
                     price=a.price if a.price_known else None,
+                    # AC6: non-secret provenance
+                    pool=a.pool,
+                    capacity_evidence=a.capacity_evidence,
+                    cooldown_scope=a.cooldown_scope,
                 )
                 verdicts.append(selected)
             else:
@@ -853,7 +956,7 @@ class EligibilityLadder:
             if provider and category in _PROVIDER_SCOPE_CATEGORIES:
                 self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
             # Live-evidence not-free override: mark the route and pool so
-            # FREE-tier ranking can exclude it (design §B, item 3).
+            # capacity classification reflects the override (design §B, item 3).
             if is_not_free_signal(
                 category=category, status_code=getattr(result, "status_code", None)
             ):

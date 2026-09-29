@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # Tier 0 = most capable (never used for cheap work)
 # Tier 3 = cheapest/fastest (only used for low-criticality)
@@ -65,9 +66,16 @@ def classify(model_id: str, overrides: dict[str, int] | None = None) -> int:
     """
     if overrides and model_id in overrides:
         return overrides[model_id]
-
     # Strip provider prefix for matching (e.g., "anthropic/claude-sonnet-4" → "claude-sonnet-4")
-    raw = model_id.split("/", 1)[-1].lower()
+    return _classify_raw(model_id.split("/", 1)[-1].lower())
+
+
+@lru_cache(maxsize=16384)
+def _classify_raw(raw: str) -> int:
+    """Pattern tier for a lower-cased model id without its provider prefix.
+
+    Pure and cached: a large catalog asks for the same ids many times.
+    """
 
     # Cheap-variant markers (mini / nano / flash / lite / haiku / …) take
     # precedence over frontier family names: "gpt-5.5-mini" or "o3-mini" is a
@@ -96,10 +104,23 @@ def classify_known(model_id: str, overrides: dict[str, int] | None = None) -> in
     if overrides and model_id in overrides:
         return overrides[model_id]
     raw = model_id.split("/", 1)[-1].lower()
-    if not any(_matches_any(raw, patterns) for patterns in CAPABILITY_PATTERNS.values()):
+    if not _known_raw(raw):
         return None
-    return classify(model_id, overrides)
+    return _classify_raw(raw)
+
+
+@lru_cache(maxsize=16384)
+def _known_raw(raw: str) -> bool:
+    return any(_matches_any(raw, patterns) for patterns in CAPABILITY_PATTERNS.values())
+
+
+_COMPILED: dict[tuple[str, ...], tuple[re.Pattern[str], ...]] = {}
 
 
 def _matches_any(raw: str, patterns: list[str]) -> bool:
-    return any(re.search(pattern, raw, re.IGNORECASE) for pattern in patterns)
+    key = tuple(patterns)
+    compiled = _COMPILED.get(key)
+    if compiled is None:
+        compiled = tuple(re.compile(p, re.IGNORECASE) for p in patterns)
+        _COMPILED[key] = compiled
+    return any(p.search(raw) for p in compiled)

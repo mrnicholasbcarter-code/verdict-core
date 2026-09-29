@@ -152,8 +152,15 @@ def _trunc(s: str, n: int) -> str:
     return s[:n] + "…" if len(s) > n else s
 
 
-def render_trace_text(view: TraceView, width: int = 100) -> str:
-    """Plain, NO_COLOR-safe text. No ANSI, no required box-drawing."""
+def render_trace_text(view: TraceView, width: int = 100, *, run_ref: str | None = None) -> str:
+    """Plain, NO_COLOR-safe text. No ANSI, no required box-drawing.
+
+    *run_ref* is the run reference exactly as the user typed it (plus any
+    ``--runs-dir`` option). When given, context steps show a command that
+    reopens that node's context and works when pasted in the same directory.
+    When omitted (for example, the offline demo, whose run directory is
+    temporary), no such command is printed.
+    """
     width = max(40, int(width))
     lines: list[str] = []
     lines.append(_trunc(f"trace  run={view.run_id or 'unknown'}", width))
@@ -177,12 +184,9 @@ def render_trace_text(view: TraceView, width: int = 100) -> str:
             line = line[: width - 1] + "…"
         lines.append(line)
         # Hint: show the exact command to open the context panel for context steps
-        if step.kind == "context" and step.node_id and view.run_id:
-            hint = f"      # verdict trace {view.run_id} --node {step.node_id} --panel context"
-            if len(hint) <= width:
-                lines.append(hint)
-            else:
-                lines.append(hint[: width - 1] + "…")
+        if step.kind == "context" and step.node_id and run_ref:
+            # Never truncate: a cut command can't be pasted.
+            lines.append(f"      # verdict trace {run_ref} --node {step.node_id} --panel context")
 
     lines.append("")
     if view.projection_errors:

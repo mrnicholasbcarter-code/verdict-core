@@ -7,33 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-29
+
 ### Added
-- Live cost check on real models (BOD-203): fifteen coding tasks graded by unit tests, observed token usage at published list prices; `scripts/live_savings_bench.py` (opt-in, `VERDICT_LIVE_SMOKE=1`); proof at `docs/proof/live-savings-2026-09-28/`. Result: the offline catalog router chose the baseline model for every task, so no routing saving was measured; README Cost comparison says so.
-- Optional OpenTelemetry tracing (`verdict[tracing]`, BOD-90): install with `pip install 'verdict-core[tracing]'` and enable with `VERDICT_TRACING=1`. Exports spans to OTLP endpoints; prompts and secrets are not attached. See `verdict/tracing.py` for implementation.
+- `verdict demo`: credential-free offline scenario that drives scripted workers through a full run and exits 0 with all routing and failover claims VERIFIED (#737)
+- `verdict trace`: display per-event execution trace for a recorded run, with optional routing and context detail (#737)
+- `verdict routing`: CLI view of the routing decision and candidate ranking for a run (#734)
+- `verdict context`: CLI view of context provenance and budget breakdown for a run (#734)
+- `verdict run-receipt`: verify and display the integrity-bound receipt for a completed run (#727)
+- `verdict --version`: prints the installed version and exits 0
+- Cockpit: interactive TUI navigation (`verdict watch`) with deep links to routing, context and run-controls views (#736, #718)
+- Cockpit: routing explorer TUI and text renderer showing eligibility, ranking and selection per node (#731, #716)
+- Cockpit: context budget provenance panel showing per-route context assembly (#728, #715)
+- Cockpit: run controls — cancel run/node, retry via RecoveryBudget (#713)
+- Cockpit: candidate panel follows each route through failover (#657, #656, #658)
+- Shared action layer with CLI/TUI parity matrix; all cockpit actions reachable from both surfaces (#708, #736)
+- Visual system: unified design tokens, glyph registry and motion policy for TUI and charts (#710, #724, #723, #735)
+- Charts redesign: new admission, recovery and cost chart renderers (#723)
+- Routing explorer projection: real rank components and selection explanation from recorded eligibility evidence (#714)
+- Per-run receipt: integrity verification, barrier and research-node commits recorded (#705, #727)
+- Trace evidence events: per-route eligibility verdicts, hydrated sources and attempt usage in run events (#711)
+- OpenTelemetry tracing (`verdict[tracing]`, opt-in via `VERDICT_TRACING=1`): spans exported to OTLP endpoints; prompts and secrets are not attached (#690)
+- Supervisor: failure-directed context rehydration before escalation (#647)
+- Supervisor: repack smaller context after overflow before retry (#644)
+- Supervisor: skip too-small context windows after overflow (#640)
+- Supervisor: suppress duplicate context units (#641)
+- Supervisor: context overflow classified distinctly from capability failures; relay threads upstream body into classification (#666, #671)
+- Supervisor: per-attempt token usage recorded in events and receipts (#669, #685)
+- Supervisor: per-story state isolation for multi-story supervisors (#691)
+- Supervisor: GlobalConcurrencyGovernor limits concurrent orchestration runs (#673)
+- Supervisor: merge-guard serialises concurrent merges (#680)
+- Supervisor: real cross-process concurrency for multi-story supervisor (#679)
+- Supervisor: concurrency governor flag (#678)
+- Supervisor: ready_gate READY/EXCLUDED/WAIT admission decision (#672)
+- Supervisor: story footprint with collision detection (#674)
+- Orchestration: reviewer idle/no-progress timeout (#648)
+- Orchestration: reviewer revalidation before OCR launch (#634)
+- Orchestration: controller capability floor; independent role assignment (#632)
+- Orchestration: cheapest sufficient model wins; insufficient candidates dropped (#629)
+- Orchestration: unknown model capability stays explicit rather than assumed (#630)
+- Orchestration: capability floor on Prime worker selection (#639)
+- Orchestration: frontier guard by capability tier, metered-only (#645)
+- Orchestration: failover survives real provider failures (#628, #626)
+- Orchestration: controller capability tier (#632)
+- Verdict harness prime visibility drift diagnostic (`verdict harness prime visibility`) (#651)
+- `verdict doctor` reports shared-memory auth failure with code `auth_failed` (#703)
+- OpenJev SHADOW collector for calibration, response self-consistency validation, and calibration harness (#642, #663, #637)
+- Calibration: role field, per-category cost tracking, per-role reports; real per-attempt token usage (#664, #685)
+- install.sh: SHA-256 pinned integrity check for wheel and sdist with PyPI API fallback for non-default versions (#696)
+- AI-memory experimental adapter (proof-of-concept, opt-in) (#709)
+- Catalog truth: capacity classification and backend pool identity (#741)
+- Cockpit shows every role's selected and observed identity, and links to health evidence (#745)
+- `verdict config show` calls the shared config action (#746)
+- `verdict trace RUN --node N --panel context` opens a node's context assembly; demo and trace snapshots (#748)
+- One health cache and a single prove-at-rest prober (#742)
+- Routing explorer shows capacity evidence, pools and cooldown scope, with filters (#755)
+- Final recordings and before/after gallery for the redesigned TUI (#747)
+- README roadmap states the open backlog is post-alpha (#753)
 
 ### Changed
-- `verdict prove-at-rest status --json` now reports the health cache; the old per-cycle keys (cycle_id/summary/results) are gone.
-- Provider/gateway bootstrap is now resolved by one offline contract (`verdict/provider_bootstrap.py`) shared by the CLI, `verdict serve`, the Prime supervisor and the library `Gate`. Intended behaviour changes to the resolved provider map and identity: CLI environment-only bootstrap (`OMNIROUTE_BASE_URL` set, no `providers` in `verdict.yaml`) no longer adds the implicit `public_ollama` provider, so the map is exactly the configured gateway; the library resolver `verdict.gate.resolve_default_providers` now honours `OMNIROUTE_BASE_URL`/`OMNIROUTE_API_KEY` (it previously ignored them and auto-detected, then fell back to localhost defaults with no `api_key_env`) and now honours `LLMGATE_PRIMARY` for `primary_model` when the config file sets none; a `providers` entry with no `base_url` is now a fatal named refusal everywhere (previously accepted with an empty base URL that failed later at request time). A defaulted provider set is refused with `default_providers_forbidden` under `profile: production` or when the caller requires authoritative execution, on the library `Gate()` path as well as the CLI, and the refusal is decided before any localhost port scan. `verdict serve` keeps its own environment-then-default precedence for `primary_model`, `profile` and `log_path` and reports a non-fatal `precedence_conflict` when `verdict.yaml` disagrees; a `profile: production` in the routing YAML does not flip the serve profile. A defaulted `primary_model` now emits a non-fatal `default_primary_model` note. URL userinfo (`user:password@`) is redacted to `***:***@` in every rendered diagnostic, serialized binding and stderr note, and `config_file_unparsable` reports the line and column instead of the offending YAML text. The Prime supervisor and both API bootstrap paths read the credential store through `load_credential_store_env()`, so a key held only in the store reports `source=credential_store` without being exported into `os.environ`. See docs/CONFIGURATION.md "Provider bootstrap contract".
-- Untracked committed agent-workspace scaffolding (`.codex/`, `.cursorrules`, `.hermes.md`, `.serena/`) from the public repo and added it to `.gitignore`; canonical agent instructions remain in root `AGENTS.md`. `.prime/agent/**` is kept tracked (it is tested infrastructure — see `tests/test_prime_workflow.py`, `tests/test_prime_context.mjs`, `tests/test_prime_terminal.mjs`, `scripts/check_prime_discovery.mjs`, ADR-031).
-- Retired `docs/archive/` (41 files); fixed inbound references in `docs/adr/README.md` and `SECURITY.md` to describe the retired content in prose instead of linking to it.
-- `scripts/check_doc_links.py` no longer excludes `docs/archive/` by default (removed, since the directory is gone) and now validates in-file heading anchors (`path.md#anchor`) against GitHub heading-slug rules, not just file existence.
-- Replaced internal `BOD-###` issue-tracker references across `docs/` and `tests/` with either the underlying ADR/concept they describe or plain prose; removed dead `linear.app` ticket links (kept the `BOD-###` id as plain text where useful). Renamed the 8 `tests/test_bod*.py` files to descriptive names (e.g. `test_bod196_intelligence_adapter_default_gate.py` -> `test_intelligence_adapter_default_gate.py`); no assertions changed. Three `issue_url` fixture values (`tests/test_delivery_controller.py`, `tests/test_prime_state.py`, `tests/test_prime_workflow.py`) moved from `linear.app` to `example.com`; no test asserts on them.
-- Replaced `llm-gate.dev` schema `$id`/`schema_id` URLs (4 files) with `raw.githubusercontent.com` links to the actual file in this repo.
-- Reworded recruiter/hiring-manager language under `specs/` to engineering-reviewer language; renamed `specs/455-recruiter-ready-readme/` to `specs/455-reader-ready-readme/`.
-- restricted and trusted_upstream tasks now require an explicit restricted_data_routes allowlist; fail closed
-- RoutingDecisionContract accepts an optional execution_envelope (validated with the ExecutionEnvelope rules; omitted when absent), matching the TypeScript contract.
-- The API server now fails closed by default: unknown/error/timeout availability states are no longer admitted in the development profile. Opt in with `VERDICT_ALLOW_UNVERIFIED_DEV=1` (development profile only; see docs/CONFIGURATION.md).
-- Startup now fails with `RuntimeError` when `OMNIROUTE_BASE_URL` (or the `LLMGATE_UPSTREAM_BASE_URL` OmniRoute fallback) is set to a value `OmniRouteHTTPTransport` rejects (bad scheme/path, non-loopback plain HTTP, non-allowlisted https host). `http://localhost:20128` is normalised to the loopback IP literal `http://127.0.0.1:20128` before validation, so the documented value still boots with the eligibility gate attached. A rejected `LLMGATE_UPSTREAM_BASE_URL` (used with no `OMNIROUTE_BASE_URL` set) is a direct-upstream proxy setting, not a misconfigured OmniRoute endpoint; it now logs a warning and boots without the availability cache instead of failing startup.
-- `/v1/route/explain` eligibility now matches the live router's `dev_mode` (profile-derived), instead of a literal `dev_mode=True`.
-- The in-memory receipts test literal (`PYTEST_CURRENT_TEST` sniff) was removed from production code. Tests must set `VERDICT_RECEIPTS_DB` explicitly (`tests/conftest.py` does this via an autouse fixture); authenticated mode with no `VERDICT_RECEIPTS_DB` configured now fails startup the same way in tests as in production.
-- `verdict doctor` text mode now exits 1 when issues are found (previously exited 0). `--json` mode now exits 0 when healthy (previously non-zero) and adds a `warnings` key alongside `issues`.
-- Documented (no behaviour change): `DEFAULT_PROFILE` stays `development` and fail-closed admission does not depend on it (see `LLMGATE_INTELLIGENCE_PROFILE` in docs/CONFIGURATION.md); `SubagentModelSelector` `dev_mode` never widens admission beyond the adapter's eligible set.
-- `verdict doctor` prints preflight progress on stderr in text mode (`--json` stdout stays one JSON document) and accepts `--preflight-timeout SECONDS` (default 120, `0` = unbounded); a timed-out documentation preflight is an issue that names the flag, never ready. Under `--fix`, an old config with no gateway gets `gateway_url` (and `OMNIROUTE_BASE_URL` in the 0600 credential store) only when exactly one healthy local gateway answers. A missing `~/.verdict/memory.db` is now a warning, not an issue; `--fix` still creates it.
-- `verdict harness prime sync-models` (and `enable`/`disable`) now always write `~/.prime/agent/models.json` and its backup with owner-only `0600` permissions; previously a write under a permissive umask could leave the file group/world-readable. A timed-out documentation preflight now serializes `state: "unknown"` instead of `"ready"`.
-- Remaining internal `BOD-###` ids were removed from `verdict/` comments and docstrings (no executable change; AST-verified). Ids inside runtime-visible strings, tests/fixtures and the byte-pinned vendored validator are unchanged.
-- README rewritten: credential-free quickstart first, "How Verdict differs" with stated non-goals (no static fallback chains, no OpenTelemetry yet, OmniRoute is transport/inventory only), and 6 Mermaid diagrams under `diagrams/` pinned by `tests/test_diagrams.py`.
-- `.gitignore`: `.prime/agent/**` source stays tracked; its runtime state, caches, logs and backups are ignored.
-- Career/job-search-oriented docs and doc paths were removed or renamed; the security contact moved from email to GitHub Security Advisories. External deep links into the removed/renamed docs will break.
+- `verdict prove-at-rest status --json` now reports the health cache; the old per-cycle keys (cycle_id/summary/results) are gone (#742)
+- Live cost benchmark with real models (opt-in, `VERDICT_LIVE_SMOKE=1`): the offline catalog router selected the baseline model for every task; no routing saving was measured. Bench script at `scripts/live_savings_bench.py`; proof at `docs/proof/live-savings-2026-09-28/` (#702)
+- Provider/gateway bootstrap unified in one offline contract shared by CLI, `verdict serve`, supervisor and library `Gate`; URL userinfo redacted in all diagnostics; `profile: production` refuses default provider sets (#pre-existing in [Unreleased])
+- OpenJev influence: context-length failure class; ranking receipts on InfluenceRecord (#670, #667) (single-route `verdict route` ADVISORY path only; `verdict orchestrate` records OpenJev decisions in SHADOW mode)
+- `verdict doctor` exits 1 when issues are found (text mode); `--json` mode exits 0 when healthy (#735)
+- `verdict harness prime sync-models` writes models.json with owner-only 0600 permissions (#646)
+- Parity matrix expanded with harness lifecycle facets (#689)
+- Prime supervisor sync no-op when models unchanged; backup pruning; optional timer (#646)
+- TUI replay mode for recorded demos (#701)
+- Orchestration outcome records from run receipts (#688)
+- Architecture diagrams added under `diagrams/`; visual documentation updated (#725, #693)
+
+### Fixed
+- Run receipts: worker-only fault keys and no-change nodes no longer appear on unrelated receipt entries (#727)
+- Orchestration: receipt integrity barrier, research node commits (#705)
+- Orchestration: catch verify-command FileNotFoundError; resolve Python interpreter (#692)
+- Orchestration: usage collection from message_end; persist in attempt JSON (#683)
+- Orchestration: sum usage over all assistant turns (#684)
+- Orchestration: accept Prime usage.cost dict in PrimeHeadlessExecutor (#681)
+- Orchestration: post-probe fields added to eligibility event (#682)
+- Orchestration: 403 is provider-scoped on worker path (#654)
+- Orchestration: `supervise` passes watched `--runs-dir` (#659)
+- Orchestration: unknown-health routes enter worker pre-probe pool (#636)
+- Scoped eligibility never shrinks the Prime registry (#635)
+- Prime: classify kiro context overflow so Prime compacts instead of retrying (#707)
+- `verdict route` / API relay: thread upstream body into context-length classification (#671)
+- Benchmarking: timing-flaky threshold assertions stabilised (#699, #661)
+- Probe budget timing flake fixed (#700)
+- CodeQL: clear-text-logging alert on provider env-var names resolved; provider detection logging redacted (#738, #733)
+- TUI recordings: pty size, timing and capture validation corrected (#726)
+- `follow()` is non-interactive unless the caller requests it (#719)
+- HYDRATE evidence records duplicates and states that compression is not performed (#743)
+- Replay honours reduced motion; setup errors show a repair step (#744)
+- Qualification timeout judges completion time, not observation time (#754)
+- Dependencies: pyjwt 2.13.0 -> 2.15.1 for CVE-2026-102274; the proof workflow installs semgrep as an isolated tool so it cannot downgrade locked packages (#756)
+- Catalog-ghost cooldown reads the probe error text (#751)
+- Prober: a probe stopped between chat and tool leaves the route unchanged and pending; resume by route id; probe kind follows the capacity class; model identity is verified only on a match, otherwise recorded as mismatch or not_reported (#757)
 
 ## [0.3.0] - 2026-09-25
 

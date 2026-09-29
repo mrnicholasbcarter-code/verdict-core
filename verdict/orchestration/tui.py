@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, TextIO, cast
 
 from rich import box
+from rich.cells import cell_len, set_cell_size
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
@@ -834,10 +835,23 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
     """
     checks_ok = [c for c in (*view.verifications, *view.barriers, *view.integrations) if c.ok]
     checks_bad = [c for c in (*view.verifications, *view.barriers, *view.integrations) if not c.ok]
+    wide = not plain and width >= 110
+    # Match _section's actual width: plain has no padding; panels reserve two
+    # border cells and two padding cells. Only wide, styled layouts split columns.
+    verify_width = width // 2 if wide else width
+    verify_col = max(1, verify_width - (0 if plain else 4))
+
+    def _vline(prefix: str, label: str, detail: str) -> str:
+        full = f"{prefix} {label} {detail}".strip()
+        if cell_len(full) <= verify_col:
+            return full
+        # Count terminal cells, not code points, so wide glyphs cannot wrap either.
+        return set_cell_size(full, verify_col - 1) + "…"
+
     verify_lines = (
         [f"{len(checks_ok)} passed, {len(checks_bad)} failed"]
-        + [f"FAIL {c.label} {c.detail}".strip() for c in checks_bad[-4:]]
-        + [f"PASS {c.label} {c.detail}".strip() for c in view.verifications if c.ok][-4:]
+        + [_vline("FAIL", c.label, c.detail) for c in checks_bad[-4:]]
+        + [_vline("PASS", c.label, c.detail) for c in view.verifications if c.ok][-4:]
     )
     dag = [f"L{i}: " + ", ".join(layer) for i, layer in enumerate(view.layers)]
     plan = [*_plan_lines(view)[:2], "", *dag] if dag else _plan_lines(view)
@@ -867,7 +881,6 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
         "REVIEW": _lines(_review_lines(view), "no review recorded"),
     }
     out: list[RenderableType] = [_header(view, plain, width)]
-    wide = not plain and width >= 110
     rows: list[tuple[str, ...]] = (
         [
             ("GOAL", "UNDERSTAND"),
@@ -1137,29 +1150,83 @@ def _run_interactive_cockpit(
     )
 
 
-_FIXTURE_PREFIXES = ("demo-", "demo-sub/", "fixture")
+# Reserved model prefixes identify legacy fixture terminals, not planned routes.
+_FIXTURE_ROUTE_PREFIXES = ("demo-", "demo-sub/", "demo-free", "fixture")
+
+
+def _replay_evidence(events: list[Any]) -> tuple[str, bool]:
+    """Return (kind, inferred) from executor provenance and reported terminals.
+
+    Explicit executor markers take precedence over legacy model-name inference.
+    Selection/dispatch routes never establish that a model was called. Faults
+    and mechanical merges are not evidence of model execution.
+
+    Precedence rules (total and symmetric):
+    - Any terminal with executor_kind='live' and a non-empty reported model
+      (i.e. a model that actually responded) → at least partly real.
+    - All non-fault terminals scripted → fixture.
+    - Mix of live (with reported model) and scripted terminals →
+      "mixed: live and scripted workers".
+    - Legacy (no explicit markers): infer from model names.
+    """
+    real = False
+    has_scripted = False
+    inferred = False
+    legacy_fixture = False
+    run_executor: str | None = None
+    for event in events:
+        data = event.data
+        if event.type == "run_started":
+            if (
+                data.get("mode") == "offline-scenario"
+                or str(data.get("run_id") or "").startswith("offline-")
+                or data.get("executor") == "scripted"
+                or data.get("executor_kind") == "scripted"
+            ):
+                return "fixture", False
+            run_executor = str(data["executor_kind"] or "") if "executor_kind" in data else None
+        elif event.type == "terminal":
+            kind = str(data["executor_kind"] or "") if "executor_kind" in data else run_executor
+            if kind == "scripted":
+                has_scripted = True
+                continue
+            if (
+                kind == "fault-injected"
+                or data.get("fault_injected")
+                or (
+                    kind is None and str(data.get("session_ref") or "").startswith("fault-injected")
+                )
+            ):
+                continue
+            model = str(data.get("reported_model") or data.get("model") or "").strip()
+            if not model or model == "(mechanical merge)":
+                continue
+            if kind is not None:
+                # Unknown explicit markers must not fall back to inference.
+                real = real or kind == "live"
+            elif model.startswith(_FIXTURE_ROUTE_PREFIXES):
+                # A later explicit live terminal can override legacy names.
+                legacy_fixture = True
+            else:
+                inferred = True
+    if real and has_scripted:
+        return "mixed: live and scripted workers", False
+    if real:
+        return "real", False
+    if has_scripted:
+        return "fixture", False
+    if legacy_fixture:
+        return "fixture", False
+    return ("real", True) if inferred else ("unknown", False)
 
 
 def _replay_kind(events: list[Any]) -> str:
-    """Classify a recorded run from its own events: 'fixture', 'real' or 'unknown'.
-
-    'real' requires at least one executed route and no fixture route. A run with
-    no executed routes makes no claim ('unknown'), so a label never says
-    'real models' without evidence.
-    """
-    routes = [
-        str(event.data.get("route_id") or "")
-        for event in events
-        if event.type in ("selection", "dispatch")
-    ]
-    routes = [r for r in routes if r]
-    if any(r.startswith(_FIXTURE_PREFIXES) for r in routes):
-        return "fixture"
-    return "real" if routes else "unknown"
+    """Classify a recorded run as 'fixture', 'real' or 'unknown'."""
+    return _replay_evidence(events)[0]
 
 
 def _is_fixture_run(events: list[Any]) -> bool:
-    """True when any executed route is a fixture/demo route."""
+    """True when recorded provenance identifies a fixture/scripted run."""
     return _replay_kind(events) == "fixture"
 
 
@@ -1233,8 +1300,10 @@ def follow_replay(
     # Get run_id from path
     run_id = events_path.parent.name
 
-    # Detect if this is a fixture run by examining routes
-    kind = _replay_kind(events)
+    kind, inferred = _replay_evidence(events)
+    terminal_markers = {
+        "executor_kind" in event.data for event in events if event.type == "terminal"
+    }
 
     # Only start Live when animation is enabled (honours VERDICT_NO_ANIMATION /
     # REDUCED_MOTION / non-TTY / CI etc.)
@@ -1251,13 +1320,24 @@ def follow_replay(
         for i, event in enumerate(events):
             view.apply(event)
 
-            # Inject replay marker into view after first event
-            if i == 0 and view.goal:
+            # A resumed run_started must not remove the replay provenance label.
+            if (i == 0 or event.type == "run_started") and view.goal:
                 label = {
                     "fixture": "fixture run {rid} (no model calls)",
                     "real": "recorded run {rid} (real models)",
+                    "mixed: live and scripted workers": "recorded run {rid} (mixed: live and scripted workers)",
                     "unknown": "recorded run {rid}",
                 }[kind].format(rid=run_id)
+                if inferred:
+                    legacy_note = (
+                        "; run predates executor markers" if terminal_markers == {False} else ""
+                    )
+                    label = label.replace(
+                        "(real models)",
+                        f"(real models: inferred from reported terminal models{legacy_note})",
+                    )
+                if terminal_markers == {False, True}:
+                    label += " (mixed executor provenance: marked and unmarked terminals)"
                 view.goal = f"REPLAY of {label} - time x{speed}"
 
             if plain or not mode.animate:

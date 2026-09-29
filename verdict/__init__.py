@@ -803,4 +803,4 @@ __all__ = [
     "verify_session_manifest",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

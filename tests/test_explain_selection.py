@@ -81,7 +81,7 @@ def _ladder(
 
 
 class TestRouteVerdictAdditive:
-    def test_bare_verdict_keeps_pre_bod277_keys(self) -> None:
+    def test_bare_verdict_keeps_base_keys_and_unknown_provenance(self) -> None:
         v = RouteVerdict(
             route_id="p/m",
             provider="p",
@@ -100,7 +100,11 @@ class TestRouteVerdictAdditive:
             "plan_label",
             "cooldown_until",
             "rank",
+            "pool",
+            "capacity_evidence",
+            "cooldown_scope",
         }
+        assert d["pool"] == d["capacity_evidence"] == d["cooldown_scope"] == ""
 
     def test_optional_keys_added_only_when_populated(self) -> None:
         v = RouteVerdict(
@@ -283,6 +287,9 @@ class TestBehaviourParityAcrossFixtures:
                 "load",
                 "fit",
                 "route_id",
+                "probe_class",
+                "cache_checked_at",
+                "cache_freshness",
             ]
 
     def test_no_regression_from_test_orch_eligibility_case(self, tmp_path: Path) -> None:

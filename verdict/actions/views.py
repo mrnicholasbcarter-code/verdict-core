@@ -20,8 +20,17 @@ _MAX_PAGE_SIZE = 200
 
 
 def _resolve_run(value: str, runs_dir: str) -> Path:
+    """An existing directory is used as given; otherwise join runs_dir/value once.
+
+    A value that already starts with runs_dir is not joined again.
+    """
     path = Path(value)
-    return path if path.is_dir() else Path(runs_dir) / value
+    if path.is_dir():
+        return path
+    base = Path(runs_dir)
+    if base.parts and path.parts[: len(base.parts)] == base.parts:
+        return path
+    return base / value
 
 
 def _missing(kind: str, where: str) -> ActionResult:
@@ -32,17 +41,28 @@ def _select_node(view: Any, node: str | None, *, attr: str) -> tuple[Any, Action
     """Narrow a view to one node. Returns (view, error)."""
     if not node:
         return view, None
+    # Views are frozen dataclasses: build a narrowed copy instead of mutating.
     if attr == "evaluations":
         kept = [item for item in view.evaluations if item.node_id == node]
         if not kept:
             return view, _missing("node", node)
-        view.evaluations = kept
-        return view, None
+        return _replace_field(view, "evaluations", kept), None
     kept_nodes = [item for item in view.nodes if item.node_id == node]
     if not kept_nodes:
         return view, _missing("node", node)
-    view.nodes = kept_nodes
-    return view, None
+    return _replace_field(view, "nodes", kept_nodes), None
+
+
+def _replace_field(view: Any, name: str, items: list[Any]) -> Any:
+    """Copy *view* with one sequence field replaced, keeping its container type."""
+    import dataclasses
+
+    current = getattr(view, name)
+    value: Any = tuple(items) if isinstance(current, tuple) else items
+    if dataclasses.is_dataclass(view) and not isinstance(view, type):
+        return dataclasses.replace(view, **{name: value})
+    setattr(view, name, value)
+    return view
 
 
 def _routing_filters(params: dict[str, Any]) -> dict[str, Any]:

@@ -59,8 +59,11 @@ KEY_DOWN = "DOWN"
 KEY_LEFT = "LEFT"
 KEY_RIGHT = "RIGHT"
 KEY_ENTER = "ENTER"
+KEY_BACKSPACE = "BACKSPACE"
 KEY_ESC = "ESC"
 KEY_QUIT = "q"
+KEY_ROUTING_STATE = "s"  # AC7: cycle state filter in routing panel
+KEY_ROUTING_SEARCH = "/"  # AC7: enter text search in the routing panel
 KEY_HELP = "?"
 KEY_DETAILS = "d"
 KEY_CONTEXT = "c"  # BOD-278 extension point
@@ -159,6 +162,8 @@ class _RealKeyReader:
             return self._ESCAPE_MAP.get(seq, KEY_ESC)
         if ch in ("\r", "\n"):
             return KEY_ENTER
+        if ch in ("\x08", "\x7f"):
+            return KEY_BACKSPACE
         if ch == "\x03":  # Ctrl-C
             raise KeyboardInterrupt
         if ch == "\x04":  # Ctrl-D
@@ -194,6 +199,11 @@ class CockpitState:
     routing_render: Any = None
     routing_render_text: Any = None
     routing_from_run: Any = None
+    # AC7: filter state for the routing panel
+    routing_state_filter: str = ""  # state filter (e.g. "rejected", "cooldown")
+    routing_text_filter: str = ""  # applied free-text search filter
+    routing_search_open: bool = False
+    routing_search_text: str = ""  # draft; Enter applies it to routing_text_filter
 
     def sync_order(self, node_ids: Sequence[str]) -> None:
         prev = self.selected_id
@@ -694,8 +704,45 @@ def render_footer(plain: bool = False) -> RenderableType:
 # ---------------------------------------------------------------------------
 
 
+_ROUTING_STATE_CYCLE = ["", "rejected", "cooldown", "admitted", "selected"]
+
+
+def _cycle_routing_state_filter(state: CockpitState) -> None:
+    """AC7: cycle through state filter values for the routing panel."""
+    current = state.routing_state_filter
+    try:
+        idx = _ROUTING_STATE_CYCLE.index(current)
+    except ValueError:
+        idx = 0
+    state.routing_state_filter = _ROUTING_STATE_CYCLE[(idx + 1) % len(_ROUTING_STATE_CYCLE)]
+
+
+def render_routing_search(state: CockpitState, plain: bool = False) -> RenderableType:
+    """Show the draft separately from the applied routing filter."""
+    return Text(
+        f"search: /{state.routing_search_text}_  Enter applies; Esc clears; Backspace deletes",
+        style=_style_token("MUTED", plain),
+    )
+
+
 def dispatch_key(key: str, state: CockpitState, view: Any) -> bool:
     """Apply ``key`` to ``state``.  Returns True when the state changed."""
+    # Text input owns keys before navigation and control shortcuts can use them.
+    if state.routing_open and state.routing_search_open:
+        if key == KEY_ENTER:
+            state.routing_text_filter = state.routing_search_text
+            state.routing_search_open = False
+        elif key == KEY_ESC:
+            state.routing_text_filter = ""
+            state.routing_search_text = ""
+            state.routing_search_open = False
+        elif key in (KEY_BACKSPACE, "\x08", "\x7f"):
+            state.routing_search_text = state.routing_search_text[:-1]
+        elif len(key) == 1 and key.isprintable():
+            state.routing_search_text += key
+        else:
+            return False
+        return True
     if key in (KEY_UP, "k"):
         state.move(-1)
         return True
@@ -706,6 +753,10 @@ def dispatch_key(key: str, state: CockpitState, view: Any) -> bool:
         state.detail_open = True
         return True
     if key == KEY_ESC:
+        if state.routing_open and state.routing_text_filter:
+            state.routing_text_filter = ""
+            state.routing_search_text = ""
+            return True
         if state.expanded:
             state.expanded = False
             return True
@@ -737,6 +788,15 @@ def dispatch_key(key: str, state: CockpitState, view: Any) -> bool:
     if key == KEY_ROUTING:
         open_routing_view(state, view)  # BOD-277 extension point
         return True
+    # AC7: routing panel filter keys (only when panel is open; never probe)
+    if state.routing_open:
+        if key == KEY_ROUTING_STATE:
+            _cycle_routing_state_filter(state)
+            return True
+        if key == KEY_ROUTING_SEARCH:
+            state.routing_search_text = state.routing_text_filter
+            state.routing_search_open = True
+            return True
     return False
 
 
@@ -778,6 +838,8 @@ def run_cockpit(
         if state.detail_open:
             blocks.append(render_detail_panel(view, seen, state, plain=plain, width=width))
         if state.routing_open:
+            if state.routing_search_open:
+                blocks.append(render_routing_search(state, plain=plain))
             # BOD-277 render call — projection prepared by open_routing_view
             rview = (
                 state.routing_from_run(view, seen)
@@ -792,12 +854,19 @@ def run_cockpit(
                         if getattr(ev, "node_id", "") == nid:
                             eval_idx = i
                             break
+                # AC7: pass filter state (never causes network probes)
+                _sf = state.routing_state_filter or None
+                _tf = state.routing_text_filter or None
                 if plain:
                     if state.routing_render_text is not None:
                         blocks.append(
                             Text(
                                 state.routing_render_text(
-                                    rview, width=width, evaluation_index=eval_idx
+                                    rview,
+                                    width=width,
+                                    evaluation_index=eval_idx,
+                                    state=_sf,
+                                    text=_tf,
                                 )
                             )
                         )
@@ -807,7 +876,11 @@ def run_cockpit(
                     if state.routing_render is not None:
                         blocks.append(
                             state.routing_render(
-                                rview, _pm(console, env=None), evaluation_index=eval_idx
+                                rview,
+                                _pm(console, env=None),
+                                evaluation_index=eval_idx,
+                                state=_sf,
+                                text=_tf,
                             )
                         )
         if getattr(state, "context_open", False):
@@ -886,6 +959,7 @@ def run_cockpit(
 
 
 __all__ = [
+    "KEY_BACKSPACE",
     "KEY_CONTEXT",
     "KEY_DETAILS",
     "KEY_DOWN",
@@ -897,6 +971,8 @@ __all__ = [
     "KEY_QUIT",
     "KEY_RIGHT",
     "KEY_ROUTING",
+    "KEY_ROUTING_SEARCH",
+    "KEY_ROUTING_STATE",
     "KEY_UP",
     "ROLE_CONTROLLER",
     "ROLE_REVIEWER",

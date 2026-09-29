@@ -239,6 +239,12 @@ class HealthEntry:
     capacity_evidence: str | None = None
     http_status: int | None = None
     healthy: bool = False
+    # Defect 5 fix: "not_reported" when the gateway did not echo the model id;
+    # "verified" when the reported id matched.  Empty string means unknown/legacy.
+    identity: str = ""
+    probe_class: str = "single_call"  # "agentic" | "single_call"
+    agentic_ok: bool = False  # True only when a 3-turn agentic probe passed
+    agentic_checked_at: datetime | None = None  # when the last agentic probe ran
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -247,6 +253,8 @@ class HealthEntry:
             raise HealthCacheError("consecutive_failures must be >= 0")
         _aware(self.checked_at, "checked_at")
         _aware(self.until, "until")
+        if self.agentic_checked_at is not None:
+            _aware(self.agentic_checked_at, "agentic_checked_at")
 
     def state_at(self, now: datetime) -> str:
         return classify_state(
@@ -272,6 +280,12 @@ class HealthEntry:
             payload["capacity_evidence"] = self.capacity_evidence
         if self.http_status is not None:
             payload["http_status"] = self.http_status
+        if self.identity:
+            payload["identity"] = self.identity
+        payload["probe_class"] = self.probe_class
+        payload["agentic_ok"] = self.agentic_ok
+        if self.agentic_checked_at is not None:
+            payload["agentic_checked_at"] = format_datetime(self.agentic_checked_at)
         return payload
 
     @classmethod
@@ -300,6 +314,14 @@ class HealthEntry:
             ),
             http_status=int(http_status) if isinstance(http_status, int) else None,
             healthy=value.get("healthy") is True,
+            identity=str(value.get("identity") or ""),
+            probe_class=str(value.get("probe_class") or "single_call"),
+            agentic_ok=value.get("agentic_ok") is True,
+            agentic_checked_at=(
+                parse_datetime(value["agentic_checked_at"], "agentic_checked_at")
+                if value.get("agentic_checked_at")
+                else None
+            ),
         )
 
 
@@ -329,6 +351,11 @@ class ProbeResult:
     retry_after_seconds: float | None = None
     pool: str | None = None
     capacity_evidence: str | None = None
+    # Defect 5 fix: "not_reported" when the gateway echoed no model id;
+    # "verified" when the reported id matched the requested route.
+    identity: str = ""
+    probe_class: str = "single_call"  # "agentic" | "single_call"
+    agentic_ok: bool = False
 
     @property
     def healthy(self) -> bool:
@@ -531,6 +558,24 @@ class HealthCache:
             raise HealthCacheError("route must be non-empty")
         current = _aware(now, "now")
         previous = self._routes.get(route)
+        # Preserve the best probe_class: an existing agentic pass is kept even
+        # when a subsequent single_call probe runs (agentic is rarer).
+        probe_class = result.probe_class
+        agentic_ok = result.agentic_ok
+        # Track agentic timestamp independently from checked_at so that
+        # repeated single-call PASSes cannot keep an old agentic PASS fresh.
+        agentic_checked_at: datetime | None = None
+        if result.probe_class == "agentic":
+            # This *is* a fresh agentic attempt, pass or fail. Recording the
+            # time on failures too keeps a failing route to one retry per
+            # interval.
+            agentic_checked_at = current
+        if previous is not None and previous.agentic_ok and probe_class == "single_call":
+            agentic_ok = True
+            probe_class = "agentic"
+            # Carry forward the *original* agentic timestamp, NOT the
+            # current single-call timestamp.
+            agentic_checked_at = previous.agentic_checked_at
         if result.healthy:
             entry = HealthEntry(
                 route_id=route,
@@ -545,6 +590,10 @@ class HealthCache:
                 capacity_evidence=result.capacity_evidence,
                 http_status=result.http_status,
                 healthy=True,
+                identity=result.identity,
+                probe_class=probe_class,
+                agentic_ok=agentic_ok,
+                agentic_checked_at=agentic_checked_at,
             )
         else:
             prior = previous.consecutive_failures if previous is not None else 0
@@ -580,6 +629,14 @@ class HealthCache:
                 capacity_evidence=result.capacity_evidence,
                 http_status=result.http_status,
                 healthy=False,
+                identity=result.identity,
+                probe_class=probe_class,
+                agentic_ok=False,  # failure resets agentic qualification
+                agentic_checked_at=(
+                    agentic_checked_at
+                    if agentic_checked_at is not None
+                    else (previous.agentic_checked_at if previous is not None else None)
+                ),
             )
         self._routes[route] = entry
         return entry
@@ -592,6 +649,7 @@ class HealthCache:
         pool: str | None,
         capacity_evidence: str | None,
         now: datetime,
+        identity: str = "",
     ) -> HealthEntry:
         """Chat-only success for a non-FREE route.
 
@@ -615,6 +673,7 @@ class HealthCache:
             capacity_evidence=capacity_evidence,
             http_status=200,
             healthy=True,
+            identity=identity,
         )
         self._routes[route] = entry
         return entry

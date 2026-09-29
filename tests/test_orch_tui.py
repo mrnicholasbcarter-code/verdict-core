@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
 from verdict.orchestration.contracts import NodeState, RunEvent
 from verdict.orchestration.tui import RunView, event_line, follow, render_text
@@ -240,6 +241,52 @@ def test_check_results_are_projected() -> None:
     )
     assert view.barriers[0].ok is False and view.verifications[0].detail.endswith("(exit 1)")
     assert view.integrations[0].detail == "2 commit(s)"
+
+
+@pytest.mark.parametrize("width", [60, 80, 110, 200])
+@pytest.mark.parametrize("plain", [False, True])
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("detail", ["sh -c test -f node-2.txt && ! grep -q FAIL ", "界 FAIL "])
+def test_verify_lines_truncate_so_pass_fail_prefix_never_wraps(
+    width: int, plain: bool, failed: bool, detail: str
+) -> None:
+    """Every check occupies exactly one row; FAIL prefixes need real failures."""
+    from rich.cells import cell_len
+
+    from verdict.orchestration.tui import CheckResult, render
+
+    view = RunView()
+    view.verifications.append(CheckResult("node-2", not failed, detail * 40))
+    buf = StringIO()
+    console = Console(file=buf, width=width, color_system=None, force_terminal=False)
+    console.print(render(view, width=width, plain=plain))
+    wide = not plain and width >= 110
+    verify_width = width // 2 if wide else width
+    verify_col = verify_width - (0 if plain else 4)
+    in_verify = False
+    verify_content: list[str] = []
+    for line in buf.getvalue().splitlines():
+        # Rich's two-column grid shares rows with REVIEW. Keep only VERIFY cells.
+        column = Text.from_ansi(line).copy()
+        column.truncate(verify_width, overflow="crop")
+        stripped = column.plain.strip()
+        if stripped == "VERIFY" or (stripped.startswith("╭") and "VERIFY" in stripped):
+            in_verify = True
+            continue
+        if in_verify:
+            if stripped == "REVIEW" or stripped.startswith("╰"):
+                break
+            content = stripped if plain else stripped.removeprefix("│").removesuffix("│").strip()
+            if content:
+                verify_content.append(content)
+
+    assert len(verify_content) == 2, f"VERIFY wrapped a check: {verify_content}"
+    assert verify_content[0] == ("0 passed, 1 failed" if failed else "1 passed, 0 failed")
+    check = verify_content[1]
+    assert check.startswith("FAIL node-2 " if failed else "PASS node-2 ")
+    assert sum(row.startswith("FAIL") for row in verify_content) == int(failed)
+    assert cell_len(check) == verify_col
+    assert check.endswith("…")
 
 
 def test_follow_skips_previous_controller_life(tmp_path) -> None:

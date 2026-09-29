@@ -1,0 +1,120 @@
+<svg class="rich-terminal" viewBox="0 0 1360 416.0" xmlns="http://www.w3.org/2000/svg">
+    <!-- Generated with Rich https://www.textualize.io -->
+    <style>
+
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Regular"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Regular.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Regular.woff") format("woff");
+        font-style: normal;
+        font-weight: 400;
+    }
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Bold"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Bold.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Bold.woff") format("woff");
+        font-style: bold;
+        font-weight: 700;
+    }
+
+    .routing-explorer-110-matrix {
+        font-family: Fira Code, monospace;
+        font-size: 20px;
+        line-height: 24.4px;
+        font-variant-east-asian: full-width;
+    }
+
+    .routing-explorer-110-title {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: arial;
+    }
+
+    .routing-explorer-110-r1 { fill: #f5b00b }
+.routing-explorer-110-r2 { fill: #c5c8c6 }
+.routing-explorer-110-r3 { fill: #92929e }
+.routing-explorer-110-r4 { fill: #52525b }
+.routing-explorer-110-r5 { fill: #a78bfa;font-weight: bold }
+.routing-explorer-110-r6 { fill: #f4f4f5 }
+.routing-explorer-110-r7 { fill: #a1a1aa }
+    </style>
+
+    <defs>
+    <clipPath id="routing-explorer-110-clip-terminal">
+      <rect x="0" y="0" width="1341.0" height="365.0" />
+    </clipPath>
+    <clipPath id="routing-explorer-110-line-0">
+    <rect x="0" y="1.5" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-1">
+    <rect x="0" y="25.9" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-2">
+    <rect x="0" y="50.3" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-3">
+    <rect x="0" y="74.7" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-4">
+    <rect x="0" y="99.1" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-5">
+    <rect x="0" y="123.5" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-6">
+    <rect x="0" y="147.9" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-7">
+    <rect x="0" y="172.3" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-8">
+    <rect x="0" y="196.7" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-9">
+    <rect x="0" y="221.1" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-10">
+    <rect x="0" y="245.5" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-11">
+    <rect x="0" y="269.9" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-12">
+    <rect x="0" y="294.3" width="1342" height="24.65"/>
+            </clipPath>
+<clipPath id="routing-explorer-110-line-13">
+    <rect x="0" y="318.7" width="1342" height="24.65"/>
+            </clipPath>
+    </defs>
+
+    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1358" height="414" rx="8"/><text class="routing-explorer-110-title" fill="#c5c8c6" text-anchor="middle" x="679" y="27">Verdict&#160;/&#160;routing-explorer</text>
+            <g transform="translate(26,22)">
+            <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+            <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+            <circle cx="44" cy="0" r="7" fill="#28c840"/>
+            </g>
+        
+    <g transform="translate(9, 41)" clip-path="url(#routing-explorer-110-clip-terminal)">
+    <rect fill="#18181b" x="0" y="50.3" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="24.4" y="50.3" width="109.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="134.2" y="50.3" width="1183.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1317.6" y="50.3" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="74.7" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="74.7" width="1317.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="74.7" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="99.1" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="99.1" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="99.1" width="195.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="231.8" y="99.1" width="902.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1134.6" y="99.1" width="170.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="99.1" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="99.1" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="123.5" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="123.5" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="123.5" width="134.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="170.8" y="123.5" width="109.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="280.6" y="123.5" width="439.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="719.8" y="123.5" width="585.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="123.5" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="123.5" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="147.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="147.9" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="147.9" width="134.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="170.8" y="147.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="183" y="147.9" width="36.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="219.6" y="147.9" width="109.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="329.4" y="147.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="341.6" y="147.9" width="36.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="378.2" y="147.9" width="97.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="475.8" y="147.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="488" y="147.9" width="36.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="524.6" y="147.9" width="122" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="646.6" y="147.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="658.8" y="147.9" width="36.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="695.4" y="147.9" width="170.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="866.2" y="147.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="878.4" y="147.9" width="36.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="915" y="147.9" width="109.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1024.8" y="147.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1037" y="147.9" width="268.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="147.9" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="147.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="172.3" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="172.3" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="172.3" width="1061.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1098" y="172.3" width="207.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="172.3" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="172.3" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="196.7" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="196.7" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="196.7" width="1244.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1281" y="196.7" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="196.7" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="196.7" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="221.1" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="221.1" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="221.1" width="207.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="244" y="221.1" width="463.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="707.6" y="221.1" width="597.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="221.1" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="221.1" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="245.5" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="245.5" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="245.5" width="732" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="768.6" y="245.5" width="536.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="245.5" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="245.5" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="269.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="269.9" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="269.9" width="292.8" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="329.4" y="269.9" width="976" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="269.9" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="269.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="294.3" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="294.3" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="36.6" y="294.3" width="439.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="475.8" y="294.3" width="829.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1305.4" y="294.3" width="24.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="294.3" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="318.7" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="12.2" y="318.7" width="1317.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="1329.8" y="318.7" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#18181b" x="0" y="343.1" width="1342" height="24.65" shape-rendering="crispEdges"/>
+    <g class="routing-explorer-110-matrix">
+    <text class="routing-explorer-110-r1" x="0" y="20" textLength="622.2" clip-path="url(#routing-explorer-110-line-0)">OFFLINE&#160;SCENARIO&#160;/&#160;scripted&#160;workers,&#160;injected&#160;fault</text><text class="routing-explorer-110-r2" x="1342" y="20" textLength="12.2" clip-path="url(#routing-explorer-110-line-0)">
+</text><text class="routing-explorer-110-r3" x="0" y="44.4" textLength="646.6" clip-path="url(#routing-explorer-110-line-1)">Recorded&#160;evaluation&#160;as&#160;of&#160;2026-09-27T06:21:32.568500Z</text><text class="routing-explorer-110-r2" x="1342" y="44.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-1)">
+</text><text class="routing-explorer-110-r4" x="0" y="68.8" textLength="24.4" clip-path="url(#routing-explorer-110-line-2)">╭─</text><text class="routing-explorer-110-r5" x="24.4" y="68.8" textLength="109.8" clip-path="url(#routing-explorer-110-line-2)">&#160;routing&#160;</text><text class="routing-explorer-110-r4" x="134.2" y="68.8" textLength="1183.4" clip-path="url(#routing-explorer-110-line-2)">─────────────────────────────────────────────────────────────────────────────────────────────────</text><text class="routing-explorer-110-r4" x="1317.6" y="68.8" textLength="24.4" clip-path="url(#routing-explorer-110-line-2)">─╮</text><text class="routing-explorer-110-r2" x="1342" y="68.8" textLength="12.2" clip-path="url(#routing-explorer-110-line-2)">
+</text><text class="routing-explorer-110-r4" x="0" y="93.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-3)">│</text><text class="routing-explorer-110-r4" x="1329.8" y="93.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-3)">│</text><text class="routing-explorer-110-r2" x="1342" y="93.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-3)">
+</text><text class="routing-explorer-110-r4" x="0" y="117.6" textLength="12.2" clip-path="url(#routing-explorer-110-line-4)">│</text><text class="routing-explorer-110-r5" x="36.6" y="117.6" textLength="195.2" clip-path="url(#routing-explorer-110-line-4)">routing&#160;explorer</text><text class="routing-explorer-110-r7" x="231.8" y="117.6" textLength="902.8" clip-path="url(#routing-explorer-110-line-4)">&#160;&#160;source=recorded&#160;&#160;evaluations=5&#160;&#160;generated_at=2026-09-29T21:38:09.436202Z</text><text class="routing-explorer-110-r4" x="1329.8" y="117.6" textLength="12.2" clip-path="url(#routing-explorer-110-line-4)">│</text><text class="routing-explorer-110-r2" x="1342" y="117.6" textLength="12.2" clip-path="url(#routing-explorer-110-line-4)">
+</text><text class="routing-explorer-110-r4" x="0" y="142" textLength="12.2" clip-path="url(#routing-explorer-110-line-5)">│</text><text class="routing-explorer-110-r6" x="36.6" y="142" textLength="134.2" clip-path="url(#routing-explorer-110-line-5)">node&#160;parser</text><text class="routing-explorer-110-r7" x="170.8" y="142" textLength="109.8" clip-path="url(#routing-explorer-110-line-5)">&#160;&#160;seq&#160;8&#160;&#160;</text><text class="routing-explorer-110-r7" x="280.6" y="142" textLength="439.2" clip-path="url(#routing-explorer-110-line-5)">9&#160;candidates,&#160;1&#160;admitted,&#160;1&#160;selected</text><text class="routing-explorer-110-r4" x="1329.8" y="142" textLength="12.2" clip-path="url(#routing-explorer-110-line-5)">│</text><text class="routing-explorer-110-r2" x="1342" y="142" textLength="12.2" clip-path="url(#routing-explorer-110-line-5)">
+</text><text class="routing-explorer-110-r4" x="0" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">│</text><text class="routing-explorer-110-r7" x="36.6" y="166.4" textLength="134.2" clip-path="url(#routing-explorer-110-line-6)">DISCOVERED&#160;</text><text class="routing-explorer-110-r7" x="170.8" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">9</text><text class="routing-explorer-110-r7" x="183" y="166.4" textLength="36.6" clip-path="url(#routing-explorer-110-line-6)">&#160;&gt;&#160;</text><text class="routing-explorer-110-r7" x="219.6" y="166.4" textLength="109.8" clip-path="url(#routing-explorer-110-line-6)">ENTITLED&#160;</text><text class="routing-explorer-110-r7" x="329.4" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">8</text><text class="routing-explorer-110-r7" x="341.6" y="166.4" textLength="36.6" clip-path="url(#routing-explorer-110-line-6)">&#160;&gt;&#160;</text><text class="routing-explorer-110-r7" x="378.2" y="166.4" textLength="97.6" clip-path="url(#routing-explorer-110-line-6)">HEALTHY&#160;</text><text class="routing-explorer-110-r7" x="475.8" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">1</text><text class="routing-explorer-110-r7" x="488" y="166.4" textLength="36.6" clip-path="url(#routing-explorer-110-line-6)">&#160;&gt;&#160;</text><text class="routing-explorer-110-r7" x="524.6" y="166.4" textLength="122" clip-path="url(#routing-explorer-110-line-6)">AVAILABLE&#160;</text><text class="routing-explorer-110-r7" x="646.6" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">1</text><text class="routing-explorer-110-r7" x="658.8" y="166.4" textLength="36.6" clip-path="url(#routing-explorer-110-line-6)">&#160;&gt;&#160;</text><text class="routing-explorer-110-r7" x="695.4" y="166.4" textLength="170.8" clip-path="url(#routing-explorer-110-line-6)">TASK_ELIGIBLE&#160;</text><text class="routing-explorer-110-r7" x="866.2" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">1</text><text class="routing-explorer-110-r7" x="878.4" y="166.4" textLength="36.6" clip-path="url(#routing-explorer-110-line-6)">&#160;&gt;&#160;</text><text class="routing-explorer-110-r7" x="915" y="166.4" textLength="109.8" clip-path="url(#routing-explorer-110-line-6)">SELECTED&#160;</text><text class="routing-explorer-110-r5" x="1024.8" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">1</text><text class="routing-explorer-110-r4" x="1329.8" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">│</text><text class="routing-explorer-110-r2" x="1342" y="166.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-6)">
+</text><text class="routing-explorer-110-r4" x="0" y="190.8" textLength="12.2" clip-path="url(#routing-explorer-110-line-7)">│</text><text class="routing-explorer-110-r3" x="36.6" y="190.8" textLength="1061.4" clip-path="url(#routing-explorer-110-line-7)">evaluated_at=2026-09-27T06:21:32.568500Z&#160;&#160;view_generated_at=2026-09-29T21:38:09.436202Z</text><text class="routing-explorer-110-r4" x="1329.8" y="190.8" textLength="12.2" clip-path="url(#routing-explorer-110-line-7)">│</text><text class="routing-explorer-110-r2" x="1342" y="190.8" textLength="12.2" clip-path="url(#routing-explorer-110-line-7)">
+</text><text class="routing-explorer-110-r4" x="0" y="215.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-8)">│</text><text class="routing-explorer-110-r6" x="36.6" y="215.2" textLength="1244.4" clip-path="url(#routing-explorer-110-line-8)">selected_route=demo-sub/atlas-coder&#160;&#160;observed_route=demo-sub/atlas-coder&#160;&#160;session=fault-injected:quota</text><text class="routing-explorer-110-r4" x="1329.8" y="215.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-8)">│</text><text class="routing-explorer-110-r2" x="1342" y="215.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-8)">
+</text><text class="routing-explorer-110-r4" x="0" y="239.6" textLength="12.2" clip-path="url(#routing-explorer-110-line-9)">│</text><text class="routing-explorer-110-r5" x="36.6" y="239.6" textLength="207.4" clip-path="url(#routing-explorer-110-line-9)">selected&#160;because:</text><text class="routing-explorer-110-r6" x="244" y="239.6" textLength="463.6" clip-path="url(#routing-explorer-110-line-9)">&#160;unknown&#160;(no&#160;rank&#160;components&#160;recorded)</text><text class="routing-explorer-110-r4" x="1329.8" y="239.6" textLength="12.2" clip-path="url(#routing-explorer-110-line-9)">│</text><text class="routing-explorer-110-r2" x="1342" y="239.6" textLength="12.2" clip-path="url(#routing-explorer-110-line-9)">
+</text><text class="routing-explorer-110-r4" x="0" y="264" textLength="12.2" clip-path="url(#routing-explorer-110-line-10)">│</text><text class="routing-explorer-110-r3" x="36.6" y="264" textLength="732" clip-path="url(#routing-explorer-110-line-10)">candidates:&#160;unknown&#160;(not&#160;recorded&#160;on&#160;this&#160;eligibility&#160;event)</text><text class="routing-explorer-110-r4" x="1329.8" y="264" textLength="12.2" clip-path="url(#routing-explorer-110-line-10)">│</text><text class="routing-explorer-110-r2" x="1342" y="264" textLength="12.2" clip-path="url(#routing-explorer-110-line-10)">
+</text><text class="routing-explorer-110-r4" x="0" y="288.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-11)">│</text><text class="routing-explorer-110-r3" x="36.6" y="288.4" textLength="292.8" clip-path="url(#routing-explorer-110-line-11)">cooldowns:&#160;none&#160;recorded</text><text class="routing-explorer-110-r4" x="1329.8" y="288.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-11)">│</text><text class="routing-explorer-110-r2" x="1342" y="288.4" textLength="12.2" clip-path="url(#routing-explorer-110-line-11)">
+</text><text class="routing-explorer-110-r4" x="0" y="312.8" textLength="12.2" clip-path="url(#routing-explorer-110-line-12)">│</text><text class="routing-explorer-110-r3" x="36.6" y="312.8" textLength="439.2" clip-path="url(#routing-explorer-110-line-12)">rejections:&#160;unknown&#160;or&#160;none&#160;recorded</text><text class="routing-explorer-110-r4" x="1329.8" y="312.8" textLength="12.2" clip-path="url(#routing-explorer-110-line-12)">│</text><text class="routing-explorer-110-r2" x="1342" y="312.8" textLength="12.2" clip-path="url(#routing-explorer-110-line-12)">
+</text><text class="routing-explorer-110-r4" x="0" y="337.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-13)">│</text><text class="routing-explorer-110-r4" x="1329.8" y="337.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-13)">│</text><text class="routing-explorer-110-r2" x="1342" y="337.2" textLength="12.2" clip-path="url(#routing-explorer-110-line-13)">
+</text><text class="routing-explorer-110-r4" x="0" y="361.6" textLength="1342" clip-path="url(#routing-explorer-110-line-14)">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text><text class="routing-explorer-110-r2" x="1342" y="361.6" textLength="12.2" clip-path="url(#routing-explorer-110-line-14)">
+</text>
+    </g>
+    </g>
+</svg>

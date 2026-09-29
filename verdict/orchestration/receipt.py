@@ -236,6 +236,8 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
     claimed_state = ""
     claimed_seq = -1
     commit: str | None = None
+    pending_probe_fields: dict[str, str] = {}
+    pending_route = ""
     for event in events:
         data = event.data
         if event.type == "dispatch":
@@ -259,6 +261,21 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             row["provider"] = str(data.get("provider") or row["provider"] or route_provider(route))
             if data.get("capacity_class"):
                 row["capacity_class"] = str(data["capacity_class"])
+            # Free-first story 3: probe class and cache freshness.
+            for field in ("probe_class", "cache_checked_at", "cache_freshness"):
+                if data.get(field):
+                    row[field] = str(data[field])
+            # Apply buffered selection-event probe fields only to an attempt on
+            # the route that selection chose. A dispatch to any other route
+            # drops them, so a replaced selection can't leak its evidence.
+            if pending_probe_fields:
+                if pending_route and pending_route == route:
+                    row.update(pending_probe_fields)
+                    pending_probe_fields = {}
+                    pending_route = ""
+                elif event.type == "dispatch":
+                    pending_probe_fields = {}
+                    pending_route = ""
             row["fault_injected"] = bool(row["fault_injected"] or data.get("fault_injected"))
             if event.type == "terminal":
                 ok = data.get("ok") is True
@@ -281,6 +298,20 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             elif event.type == "failure":
                 row["outcome"] = "failure"
                 row["failure_category"] = str(data.get("category") or "unknown")
+        elif event.type == "selection":
+            # Selection events carry probe-class fields but must not
+            # create new attempt rows. Buffer fields for the next
+            # dispatch that creates or touches a row.
+            # Every selection replaces the buffer: a selection that is replaced
+            # before dispatch must not leak its evidence to the next route.
+            pending_probe_fields = {}
+            pending_route = str(data.get("route_id") or "")
+            for field in ("probe_class", "cache_checked_at", "cache_freshness"):
+                if data.get(field):
+                    pending_probe_fields[field] = str(data[field])
+            # UNKNOWN capacity opt-in flag.
+            if data.get("unknown_capacity_opt_in"):
+                pending_probe_fields["unknown_capacity_opt_in"] = "true"
         elif event.type == "node_state":
             claimed_state = str(data.get("state", ""))
             claimed_seq = event.seq

@@ -53,9 +53,10 @@ class TestBuildRejections:
 
 class TestBuildCandidates:
     def test_empty(self) -> None:
-        cands, omitted = _build_candidates([], None)
+        cands, omitted, summary = _build_candidates([], None)
         assert cands == []
         assert omitted == 0
+        assert summary is None
 
     def test_selected_always_first(self) -> None:
         vs = [
@@ -64,34 +65,37 @@ class TestBuildCandidates:
             ),
             RouteVerdict("b/m1", "b", EligibilityStage.SELECTED, None, "ok", rank=1),
         ]
-        cands, omitted = _build_candidates(vs, "b/m1")
+        cands, omitted, summary = _build_candidates(vs, "b/m1")
         assert cands[0]["route_id"] == "b/m1"
         assert omitted == 0
+        assert summary is None
 
     def test_cap_at_max_candidates(self) -> None:
         vs = [
             RouteVerdict(
                 f"p/m{i}", "p", EligibilityStage.HEALTHY, EligibilityStage.AVAILABLE, "cooldown"
             )
-            for i in range(50)
+            for i in range(_MAX_CANDIDATES + 10)
         ]
-        cands, omitted = _build_candidates(vs, None)
+        cands, omitted, summary = _build_candidates(vs, None)
         assert len(cands) == _MAX_CANDIDATES
-        assert omitted == 50 - _MAX_CANDIDATES
+        assert omitted == 10
+        assert summary == {"cooldown": {"count": 10, "first_reason": "cooldown"}}
 
     def test_selected_included_when_over_cap(self) -> None:
         vs = [
             RouteVerdict(
                 f"p/m{i}", "p", EligibilityStage.HEALTHY, EligibilityStage.AVAILABLE, "cooldown"
             )
-            for i in range(50)
+            for i in range(_MAX_CANDIDATES + 10)
         ]
         sel = RouteVerdict("sel/best", "sel", EligibilityStage.SELECTED, None, "ok", rank=1)
         vs.append(sel)
-        cands, omitted = _build_candidates(vs, "sel/best")
+        cands, omitted, summary = _build_candidates(vs, "sel/best")
         assert len(cands) == _MAX_CANDIDATES
         assert cands[0]["route_id"] == "sel/best"
-        assert omitted == 51 - _MAX_CANDIDATES
+        assert omitted == 11
+        assert summary == {"cooldown": {"count": 11, "first_reason": "cooldown"}}
 
     def test_to_dict_fields_present(self) -> None:
         v = RouteVerdict(
@@ -104,7 +108,7 @@ class TestBuildCandidates:
             plan_label="pro",
             rank=1,
         )
-        cands, _ = _build_candidates([v], "a/m1")
+        cands, _, _ = _build_candidates([v], "a/m1")
         d = cands[0]
         assert d["route_id"] == "a/m1"
         assert d["provider"] == "a"
@@ -180,7 +184,7 @@ def test_eligibility_event_size_bound_7000_routes() -> None:
     ]
     counts = _ladder_counts(verdicts)
     rejections = _build_rejections(verdicts)
-    candidates, omitted = _build_candidates(verdicts, None)
+    candidates, omitted, summary = _build_candidates(verdicts, None)
 
     event_data: dict[str, Any] = {
         "type": "eligibility",
@@ -189,6 +193,7 @@ def test_eligibility_event_size_bound_7000_routes() -> None:
         "rejections": rejections,
         "candidates": candidates,
         "candidates_omitted": omitted,
+        "omitted_summary": summary,
         "selected": None,
     }
     blob = json.dumps(event_data, default=str)

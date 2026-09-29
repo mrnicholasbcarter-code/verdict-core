@@ -34,6 +34,7 @@ from verdict.orchestration.candidate_builder import build_candidates as _build_c
 from verdict.orchestration.candidate_builder import build_rejections as _build_rejections
 from verdict.orchestration.contracts import (
     TRANSITIONS,
+    CapacityClass,
     EligibilityStage,
     FailureClassification,
     FailureClassifier,
@@ -658,11 +659,14 @@ class DagRuntime:
             # BOD-277: per-route eligibility verdicts for trace drill-down.
             _rejections = _build_rejections(considered)
             _selected_route = choice.route_id if choice is not None else None
-            _cands, _cands_omitted = _build_candidates(considered, _selected_route)
+            _cands, _cands_omitted, _omitted_summary = _build_candidates(
+                considered, _selected_route
+            )
             _evidence: dict[str, Any] = {
                 "rejections": _rejections,
                 "candidates": _cands,
                 "candidates_omitted": _cands_omitted,
+                "omitted_summary": _omitted_summary,  # AC7: per-state detail for omitted
             }
             if choice is None:
                 # Check if we can wait for a short cooldown to expire
@@ -755,6 +759,17 @@ class DagRuntime:
                 capacity_class=choice.capacity_class.value,
                 rank=choice.rank,
             )
+            # Emit probe-class fields so receipts record qualifying probe info.
+            _probe_fields: dict[str, Any] = {}
+            if choice.rank_components:
+                for _pf in ("probe_class", "cache_checked_at", "cache_freshness"):
+                    if choice.rank_components.get(_pf) is not None:
+                        _probe_fields[_pf] = str(choice.rank_components[_pf])
+            # Record UNKNOWN capacity opt-in when an UNKNOWN route was selected.
+            if choice.capacity_class == CapacityClass.UNKNOWN and getattr(
+                self.selector, "_allow_unknown", False
+            ):
+                _probe_fields["unknown_capacity_opt_in"] = True
             self.events.emit(
                 "selection",
                 node_id,
@@ -764,6 +779,7 @@ class DagRuntime:
                 plan=choice.plan_label,
                 rank=choice.rank,
                 attempt=run.attempt,
+                **_probe_fields,
             )
             self._capacity[node_id] = choice.capacity_class.value
             self.inflight[node_id] = choice.route_id
@@ -1014,12 +1030,14 @@ class DagRuntime:
                 ok=terminal.ok,
                 route_id=run.route_id,
                 reported_model=terminal.model,
+                # Empty is explicitly unknown for custom adapters; never legacy inference.
+                executor_kind=terminal.executor_kind,
                 duration_seconds=round(terminal.duration_seconds, 2),
                 session_ref=terminal.session_ref,
                 stop_reason=terminal.stop_reason,
                 error=terminal.error,
                 attempt=run.attempt,
-                fault_injected=terminal.session_ref.startswith("fault-injected"),
+                fault_injected=terminal.executor_kind == "fault-injected",
                 **(
                     {
                         "usage": {
@@ -1042,6 +1060,7 @@ class DagRuntime:
                     model=terminal.model,
                     error="worker_blocked: " + terminal.output.strip()[:200],
                     session_ref=terminal.session_ref,
+                    executor_kind=terminal.executor_kind,
                 )
             if not terminal.ok or not terminal.output.strip():
                 return await self._fail(run, terminal, failures, worktree)
@@ -1141,7 +1160,7 @@ class DagRuntime:
             action=failure.action,
             route_id=run.route_id,
             evidence=failure.evidence[:300],
-            fault_injected=terminal.session_ref.startswith("fault-injected"),
+            fault_injected=terminal.executor_kind == "fault-injected",
             attempt=run.attempt,
         )
         if failure.scope != "none" and failure.cooldown_seconds > 0:
@@ -1163,7 +1182,7 @@ class DagRuntime:
                 "attempt": run.attempt,
                 "route_id": run.route_id,
                 "outcome": failure.category,
-                "fault_injected": terminal.session_ref.startswith("fault-injected"),
+                "fault_injected": terminal.executor_kind == "fault-injected",
             }
         )
         await self.git.remove_worktree(worktree)

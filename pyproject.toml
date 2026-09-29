@@ -15,7 +15,7 @@ artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json", "schemas
 
 [project]
 name = "verdict-core"
-version = "0.3.0"
+version = "0.4.0"
 description = "Fail-closed LLM routing control plane: cheapest qualified model, named drop reasons, receipts."
 readme = "README.md"
 license = {text = "MIT"}
@@ -123,11 +123,22 @@ strict = true
 # presentation layer tested via install smoke. Owner: @mrnicholasbcarter
 # Removal: defer until Streamlit 2.x ships strict-compatible stubs or dashboard
 # is rewritten against a type-complete UI library.
+mypy_path = ["."]
 exclude = [
     "^verdict/dashboard\\.py$",  # Streamlit stubs incomplete
     # Vendored byte-identical from verdict-ecosystem@fec5556; do not edit
     "^verdict/openspec_vendor/validate_openspec_change\\.py$",
 ]
+
+[[tool.mypy.overrides]]
+module = "verdict.openspec_vendor.validate_openspec_change"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# scripts/prime_workflow.py uses runtime sys.path manipulation to import prime_state;
+# mypy cannot follow the runtime insertion even with mypy_path set.
+module = "scripts.prime_workflow"
+ignore_errors = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

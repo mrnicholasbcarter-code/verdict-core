@@ -16,4 +16,5 @@ mystery/model      unknown    ? UNKNOWN         — unknown      unknown
 rank — not recorded
 cooldowns
   kr/claude-opus  until=2026-09-28T18:00:00Z  remaining=21600s  capacity=subscription
+  + 4 more not shown
 rejections  AVAILABLE:cooldown=1  HEALTHY:unhealthy=2  TASK_ELIGIBLE:context_too_small=1

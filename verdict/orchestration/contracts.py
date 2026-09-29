@@ -316,6 +316,21 @@ class CapacityClass(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ProbeClass(str, Enum):
+    """Which probe qualified a route for work.
+
+    ``AGENTIC``     — 3-turn tool task (read, edit, confirm). Required for
+                      implementation workers on FREE routes.
+    ``SINGLE_CALL`` — one tool-call ping. Qualifies for chat/summary only.
+    ``NONE``        — no probe in the cache (subscription/metered routes that
+                      bypass the agentic gate).
+    """
+
+    AGENTIC = "agentic"
+    SINGLE_CALL = "single_call"
+    NONE = "none"
+
+
 @dataclass(frozen=True)
 class RouteVerdict:
     """Why one route did or did not reach a given ladder stage.
@@ -347,6 +362,15 @@ class RouteVerdict:
     supports_tools: bool | None = None
     supports_structured_output: bool | None = None
     price: float | None = None  # marginal metered price per 1M tokens; None = unknown
+    # AC6: non-secret capacity/cooldown provenance.
+    # pool: backend pool id (e.g. "openrouter-free" for kilocode+openrouter:free)
+    pool: str = ""
+    # capacity_evidence: the named signal used by the classifier (e.g. "import_free_only",
+    # "plan_label", "zero_pricing", "positive_pricing") or "unknown:<reason>".
+    capacity_evidence: str = ""
+    # cooldown_scope: the key under which the cooldown was recorded
+    # ("route:<canonical_id>" or "provider:<name>"), never an email or token.
+    cooldown_scope: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -359,6 +383,10 @@ class RouteVerdict:
             "plan_label": self.plan_label,
             "cooldown_until": self.cooldown_until,
             "rank": self.rank,
+            # AC6: non-secret provenance always included (empty string = unknown).
+            "pool": self.pool,
+            "capacity_evidence": self.capacity_evidence,
+            "cooldown_scope": self.cooldown_scope,
         }
         # BOD-277 additive keys: emitted only when a value is known, so
         # existing consumers see the pre-BOD-277 shape when the ladder did
@@ -443,6 +471,7 @@ class WorkerTerminal:
     duration_seconds: float = 0.0
     session_ref: str = ""  # harness session/journal pointer for provenance
     usage: AttemptUsage | None = None  # per-attempt token/cost evidence (BOD-203)
+    executor_kind: str = ""  # adapter-attested provenance; empty means unknown
 
 
 @dataclass(frozen=True)

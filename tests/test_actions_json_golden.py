@@ -53,6 +53,10 @@ def _base_env() -> dict[str, str]:
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         "PYTHONPATH": str(ROOT),
+        # Pin terminal width so rendering is deterministic regardless of COLUMNS
+        # leaking from the test process (e.g., from in-process tests that mutate
+        # os.environ["COLUMNS"]).  80 is wide enough for all golden table layouts.
+        "COLUMNS": "80",
     }
 
 

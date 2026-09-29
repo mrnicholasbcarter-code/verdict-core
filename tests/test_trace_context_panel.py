@@ -196,14 +196,21 @@ class TestTracePanelNoContext:
 
 
 class TestTraceContextStepHints:
-    """Each context step in render_trace_text includes a hint for --panel context."""
+    """With a run reference, each context step shows a --panel context command.
+
+    Without one (e.g. the offline demo, whose run dir is deleted) no command is
+    printed; tests/test_pasteable_commands.py runs the printed command end to end.
+    """
+
+    def test_no_hint_without_a_run_reference(self) -> None:
+        assert "--panel context" not in render_trace_text(self.tv, width=120)
 
     @pytest.fixture(autouse=True)
     def setup(self, run_data: Any) -> None:
         self.run_dir, self.tv, self.cv = run_data
 
     def test_context_hint_present_in_trace_text(self) -> None:
-        text = render_trace_text(self.tv, width=120)
+        text = render_trace_text(self.tv, width=120, run_ref=str(self.run_dir))
         context_steps = self.tv.steps_by_kind("context")
         assert context_steps, "no context steps to verify"
         # At least one hint line must appear for a context step with a run_id and node_id
@@ -219,7 +226,7 @@ class TestTraceContextStepHints:
         if not context_steps or not self.tv.run_id:
             pytest.skip("no context steps with node_id/run_id")
         node_id = context_steps[0].node_id
-        text = render_trace_text(self.tv, width=120)
+        text = render_trace_text(self.tv, width=120, run_ref=str(self.run_dir))
         hint_lines = [ln for ln in text.splitlines() if "--panel context" in ln]
         assert any(node_id in ln for ln in hint_lines), (
             f"no hint line contains node_id {node_id!r}; hints: {hint_lines}"

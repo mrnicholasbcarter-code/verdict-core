@@ -681,16 +681,15 @@ def _action_credentials_unset(**kwargs: Any) -> ActionResult:
 def _action_run_receipt(**kwargs: Any) -> ActionResult:
     """Verify an orchestration receipt — the proof surface."""
     import json as _json
-    from pathlib import Path
 
     from verdict.orchestration.receipt import completion_verdict, verify_run_receipt
 
     run_dir_str: str = kwargs["run_dir"]
     runs_dir: str = kwargs.get("runs_dir", ".verdict/runs")
 
-    run_path = Path(run_dir_str)
-    if not run_path.is_absolute():
-        run_path = Path(runs_dir) / run_dir_str
+    from verdict.actions.views import _resolve_run
+
+    run_path = _resolve_run(run_dir_str, runs_dir)
     receipt_path = run_path / "receipt.json"
     if not receipt_path.exists():
         return ActionResult(data={"error": f"no receipt at {receipt_path}"}, ok=False, exit_code=2)
@@ -1152,7 +1151,9 @@ def _action_trace_view(**kwargs: Any) -> ActionResult:
             )
         return ActionResult(data={"error": f"no step with seq={step}"}, ok=False, exit_code=2)
 
-    text = render_trace_text(tv, width=kwargs.get("width", 100))
+    text = render_trace_text(
+        tv, width=kwargs.get("width", 100), run_ref=kwargs.get("run_ref") or None
+    )
     return ActionResult(data={"text": text})
 
 

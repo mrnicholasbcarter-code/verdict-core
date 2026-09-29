@@ -9,7 +9,7 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
 [![coverage gate 70%](https://img.shields.io/badge/coverage%20gate-70%25-blue.svg)](.github/workflows/ci.yml)
-[![version 0.3.0](https://img.shields.io/badge/version-0.3.0-blue.svg)](pyproject.toml)
+[![version 0.4.0](https://img.shields.io/badge/version-0.4.0-blue.svg)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -225,6 +225,13 @@ Give Verdict a goal and a git repository. It runs this loop:
 4. **Recover.** A quota, rate-limit, timeout or empty-answer failure cools down the route or the whole provider. The same node then goes to another admitted model. When no admitted model is left, or after 4 attempts, the node stops with a named `FAIL_CLOSED` and the run ends `BLOCKED`. It does not retry forever.
 5. **Verify and review.** Each node must pass its own check and an ownership check. The merged result must pass an integration check. Then a reviewer that did not write any of the code reviews it.
 6. **Receipt.** The run ends with a receipt that stores a SHA-256 digest of its event log. `verdict run-receipt` recomputes the digest and rebuilds the receipt, so any later edit to the log shows up.
+
+**Root-controller failover is supervisor-owned.** The external supervisor can restart a failed
+or stalled controller as a new generation, reselecting an eligible route after recording
+cooldowns. A bare controller launch has no automatic replacement
+([`verdict/orchestration/supervisor.py`](verdict/orchestration/supervisor.py),
+[`docs/guides/controller-routing.md`](docs/guides/controller-routing.md#root-controller-failover-generations),
+[`tests/test_root_controller_failover.py`](tests/test_root_controller_failover.py)).
 
 This repository is the control plane: planning, admission, assignment, recovery and proof. Three
 external tools do the execution, and Verdict only calls them:
@@ -745,11 +752,14 @@ The demo run records one `SHADOW` signal from a fixture provider in its receipt.
 
 These are not done at this commit. They are listed so nothing above is read as covering them.
 
+The items below and the rest of the open issue backlog are planned after the alpha.
+Open work is tracked in Linear under `phase:post-alpha`; alpha-blocking work is tracked
+under `phase:alpha-gate`.
+
 - **Cross-provider fencing on the first worker failure.** Today a failure cools down only the failed route or its own provider. Other providers stay eligible until they fail themselves.
-- **Root-controller failover.** Worker nodes are reassigned. A failing root controller is not yet replaced automatically.
 - **A single retry authority.** Node recovery, the relay and the reviewer each keep their own bounded retry loop today.
-- **Subscription headroom.** Quota rows are evidence only: exhausted means drop. Admission does not yet plan around the headroom left in a subscription window.
-- **Automatic gateway lifecycle.** Verdict does not start, restart or upgrade OmniRoute. The gateway must already be running for live runs.
+- **Subscription headroom-aware selection.** Admission uses fresh subscription pool evidence to drop exhausted routes and requires bounded confirmation for unknown headroom. Selection does not yet rank eligible routes by the headroom left in their subscription windows ([`verdict/subscription_headroom.py`](verdict/subscription_headroom.py), [`verdict/admission.py`](verdict/admission.py), [`tests/test_subscription_headroom.py`](tests/test_subscription_headroom.py)).
+- **Automatic gateway restart and upgrade.** Verdict can start a configured local gateway when explicitly opted in. It does not restart an unhealthy running gateway or upgrade OmniRoute automatically ([`verdict/gateway_lifecycle.py`](verdict/gateway_lifecycle.py), [gateway lifecycle config](docs/CONFIGURATION.md#gateway-lifecycle), [`tests/test_gateway_lifecycle.py`](tests/test_gateway_lifecycle.py)).
 
 ## Proof
 

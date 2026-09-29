@@ -45,6 +45,7 @@ One bucket per provider/pool, shared with real calls through
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -102,6 +103,160 @@ from verdict.prove_at_rest_legacy import (
 
 CHAT_PROBE_MESSAGE = "Reply with exactly: OK"
 TOOL_NAME = "verdict_probe_ping"
+
+# --- Agentic probe: 3-turn tool task (read, edit, confirm) -----------------
+AGENTIC_TOOL_READ = "verdict_probe_read_file"
+AGENTIC_TOOL_EDIT = "verdict_probe_edit_file"
+AGENTIC_PROBE_FILE = "/tmp/verdict_agentic_probe.txt"
+AGENTIC_PROBE_ORIGINAL = "line one\nline two\nline three\n"
+AGENTIC_PROBE_EXPECTED = "line one\nLINE TWO\nline three\n"
+DEFAULT_AGENTIC_INTERVAL_HOURS = 24
+AGENTIC_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": AGENTIC_TOOL_READ,
+            "description": "Read a file and return its contents.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": AGENTIC_TOOL_EDIT,
+            "description": "Replace old_text with new_text in a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+]
+
+
+class AgenticFakeFile:
+    """In-memory fake file for agentic probe tool simulation.
+
+    Starts with ``AGENTIC_PROBE_ORIGINAL`` content. ``read`` returns
+    the current content. ``edit`` applies ``old_text`` → ``new_text``
+    only when the path matches ``AGENTIC_PROBE_FILE`` and ``old_text``
+    is found; returns ``True`` on success, ``False`` on mismatch.
+    """
+
+    def __init__(self) -> None:
+        self.content: str = AGENTIC_PROBE_ORIGINAL
+
+    def read(self, path: str) -> str | None:
+        """Read the fake file content, or *None* if the path is wrong."""
+        if path != AGENTIC_PROBE_FILE:
+            return None
+        return self.content
+
+    def edit(self, path: str, old_text: str, new_text: str) -> bool:
+        """Apply an edit. Returns *True* iff the path and old_text match."""
+        if path != AGENTIC_PROBE_FILE:
+            return False
+        if old_text not in self.content:
+            return False
+        self.content = self.content.replace(old_text, new_text, 1)
+        return True
+
+
+def _extract_tool_calls(response_body: Any) -> list[dict[str, Any]]:
+    """Extract tool calls from an OpenAI-style response body.
+
+    Returns a list of ``{"id": ..., "name": ..., "arguments": {...}}`` dicts.
+    """
+    if not isinstance(response_body, Mapping):
+        return []
+    choices = response_body.get("choices", [])
+    if not choices:
+        return []
+    msg = choices[0]
+    if isinstance(msg, Mapping):
+        msg = msg.get("message", msg)
+    if not isinstance(msg, Mapping):
+        return []
+    calls = msg.get("tool_calls", [])
+    result: list[dict[str, Any]] = []
+    for tc in calls if isinstance(calls, list) else []:
+        if not isinstance(tc, Mapping):
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, Mapping):
+            continue
+        name = fn.get("name")
+        if not name:
+            continue
+        raw = fn.get("arguments", "{}")
+        if isinstance(raw, str):
+            try:
+                args = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+        elif isinstance(raw, dict):
+            args = raw
+        else:
+            args = {}
+        result.append({"id": tc.get("id", ""), "name": name, "arguments": args})
+    return result
+
+
+def _simulate_tool_calls(
+    fake_file: AgenticFakeFile, tool_calls: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Execute tool calls against the fake file and return tool-result messages."""
+    results: list[dict[str, Any]] = []
+    for tc in tool_calls:
+        name = tc["name"]
+        args = tc["arguments"]
+        if name == AGENTIC_TOOL_READ:
+            content = fake_file.read(args.get("path", ""))
+            if content is None:
+                output = json.dumps({"error": f"file not found: {args.get('path', '')}"})
+            else:
+                output = content
+        elif name == AGENTIC_TOOL_EDIT:
+            ok = fake_file.edit(
+                args.get("path", ""), args.get("old_text", ""), args.get("new_text", "")
+            )
+            output = json.dumps({"ok": ok})
+        else:
+            output = json.dumps({"error": f"unknown tool: {name}"})
+        results.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": output})
+    return results
+
+
+def _extract_assistant_message(response_body: Any) -> dict[str, Any]:
+    """Extract the assistant message from an OpenAI response for conversation continuity."""
+    if not isinstance(response_body, Mapping):
+        return {"role": "assistant", "content": ""}
+    choices = response_body.get("choices", [])
+    if not choices or not isinstance(choices[0], Mapping):
+        return {"role": "assistant", "content": ""}
+    msg = choices[0].get("message", {})
+    if not isinstance(msg, Mapping):
+        return {"role": "assistant", "content": ""}
+    # Return a minimal assistant message preserving tool_calls if present.
+    result: dict[str, Any] = {"role": "assistant"}
+    if msg.get("content") is not None:
+        result["content"] = msg["content"]
+    else:
+        result["content"] = None
+    if msg.get("tool_calls"):
+        result["tool_calls"] = msg["tool_calls"]
+    return result
+
+
 DEFAULT_MAX_REQUESTS = 300
 DEFAULT_MAX_WALL_SECONDS = 600.0
 DEFAULT_CONCURRENCY = 4
@@ -148,7 +303,9 @@ class ProbeExchange:
     latency_ms: float | None = None
     retry_after_seconds: float | None = None
     error_category: str | None = None
-    reported_model: str = ""
+    response_body: Mapping[str, Any] | None = None  # parsed JSON for agentic scoring
+    status_code: int | None = None  # alias for http_status (used by score_agentic_probe)
+    reported_model: str = ""  # model returned by the backend (for identity check)
 
 
 # A transport probes one route for one phase ("chat" or "tool") and must not
@@ -243,6 +400,149 @@ def tool_payload(route_id: str) -> dict[str, Any]:
     }
 
 
+def agentic_turn1_payload(
+    route_id: str, conversation: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Turn 1: ask the model to read the probe file."""
+    return {
+        "model": route_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    f"Read the file at {AGENTIC_PROBE_FILE} using the "
+                    f"{AGENTIC_TOOL_READ} tool and tell me its contents."
+                ),
+            }
+        ],
+        "tools": AGENTIC_TOOLS,
+        "max_tokens": 256,
+        "temperature": 0,
+        "stream": False,
+    }
+
+
+def agentic_turn2_payload(
+    route_id: str, conversation: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Turn 2: ask the model to edit a line (given previous conversation)."""
+    prior = list(conversation) if conversation else []
+    messages = [
+        *prior,
+        {
+            "role": "user",
+            "content": (
+                f"Now use {AGENTIC_TOOL_EDIT} to change 'line two' to 'LINE TWO' "
+                f"in {AGENTIC_PROBE_FILE}."
+            ),
+        },
+    ]
+    return {
+        "model": route_id,
+        "messages": messages,
+        "tools": AGENTIC_TOOLS,
+        "max_tokens": 256,
+        "temperature": 0,
+        "stream": False,
+    }
+
+
+def agentic_turn3_payload(
+    route_id: str, conversation: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Turn 3: ask the model to confirm the edit by reading again."""
+    prior = list(conversation) if conversation else []
+    messages = [
+        *prior,
+        {
+            "role": "user",
+            "content": (
+                f"Read {AGENTIC_PROBE_FILE} again with {AGENTIC_TOOL_READ} to "
+                f"confirm the edit was applied."
+            ),
+        },
+    ]
+    return {
+        "model": route_id,
+        "messages": messages,
+        "tools": AGENTIC_TOOLS,
+        "max_tokens": 256,
+        "temperature": 0,
+        "stream": False,
+    }
+
+
+def score_agentic_probe(exchanges: Sequence[ProbeExchange]) -> bool:
+    """Score a 3-turn agentic probe sequence as pass/fail.
+
+    Pass requires:
+    1. Turn 1 calls read_file with ``path`` == :data:`AGENTIC_PROBE_FILE`.
+    2. Turn 2 calls edit_file with ``old_text`` == ``'line two'`` and
+       ``new_text`` == ``'LINE TWO'``.
+    3. Turn 3 calls read_file with the same path.
+    All three turns must have HTTP 2xx. The caller must also check that the
+    fake file ended in :data:`AGENTIC_PROBE_EXPECTED`.
+    """
+    if len(exchanges) < 3:
+        return False
+    for ex in exchanges:
+        if not ex.ok:
+            return False
+        if ex.http_status is not None and ex.http_status >= 400:
+            return False
+
+    def _tool_call_args(ex: ProbeExchange, tool_name: str) -> dict[str, Any] | None:
+        """Return parsed arguments of the first matching tool call, or *None*."""
+        body = ex.response_body
+        if not isinstance(body, Mapping):
+            return None
+        choices = body.get("choices", [])
+        if not choices:
+            return None
+        message = choices[0].get("message", {}) if isinstance(choices[0], Mapping) else {}
+        calls = message.get("tool_calls", [])
+        for tc in calls if isinstance(calls, list) else []:
+            if not isinstance(tc, Mapping):
+                continue
+            fn = tc.get("function")
+            if not isinstance(fn, Mapping):
+                continue
+            if fn.get("name") != tool_name:
+                continue
+            raw = fn.get("arguments", "{}")
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    return None
+                return parsed if isinstance(parsed, dict) else None
+            if isinstance(raw, dict):
+                return raw
+            return None
+        return None
+
+    # Turn 1: read_file with the exact probe path.
+    t1_args = _tool_call_args(exchanges[0], AGENTIC_TOOL_READ)
+    if t1_args is None or t1_args.get("path") != AGENTIC_PROBE_FILE:
+        return False
+
+    # Turn 2: edit_file with correct path, old_text, and new_text.
+    t2_args = _tool_call_args(exchanges[1], AGENTIC_TOOL_EDIT)
+    if t2_args is None:
+        return False
+    if t2_args.get("path") != AGENTIC_PROBE_FILE:
+        return False
+    if t2_args.get("old_text") != "line two" or t2_args.get("new_text") != "LINE TWO":
+        return False
+
+    # Turn 3: read_file with the same path. The edited content is produced by
+    # the simulated read that runs AFTER this response, so it can't be in the
+    # response body. The caller checks the fake file's final state
+    # (``AgenticFakeFile.content``) instead.
+    t3_args = _tool_call_args(exchanges[2], AGENTIC_TOOL_READ)
+    return t3_args is not None and t3_args.get("path") == AGENTIC_PROBE_FILE
+
+
 def _provider_of(route_id: str) -> str:
     if "/" in route_id:
         return route_id.split("/", 1)[0]
@@ -302,8 +602,19 @@ def order_cycle(
     ]
 
     ordered: list[tuple[AdmittedRoute, str]] = []
-    ordered.extend((route, "full") for route in half_open)
-    ordered.extend((route, "full") for route in stale)
+
+    def _kind_for(route: AdmittedRoute) -> str:
+        """Derive probe kind from capacity class (defect 3 fix for half-open/stale)."""
+        if route.capacity in {
+            CapacityClass.SUBSCRIPTION.value,
+            CapacityClass.METERED.value,
+            CapacityClass.UNKNOWN.value,
+        }:
+            return "liveness"
+        return "full"
+
+    ordered.extend((route, _kind_for(route)) for route in half_open)
+    ordered.extend((route, _kind_for(route)) for route in stale)
     ordered.extend((route, "full") for route in _round_robin(free_new))
     ordered.extend((route, "liveness") for route in other_new)
     ordered.extend(
@@ -391,6 +702,8 @@ class Prober:
     monotonic: Callable[[], float] = field(default=time.monotonic)
     sleep: Callable[[float], None] = field(default=time.sleep)
     on_cycle_error: Callable[[Exception], None] | None = None
+    agentic_interval_hours: float = DEFAULT_AGENTIC_INTERVAL_HOURS
+    agentic_transport: Callable[[str, dict[str, Any], float], ProbeExchange] | None = None
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -413,12 +726,16 @@ class Prober:
         routes = list(self.routes_loader())
         ordered = order_cycle(routes, self.cache, now, epsilon=self.epsilon)
         stats = CycleStats()
+        # Defect 2 fix: resume by route_id set, not by index.
+        # If routes reorder or disappear between cycles the index-based cursor
+        # would skip unprobed routes; a probed-ids set is order-independent.
         cursor = self.cache.cursor
-        resume_at = int(cursor.get("next_index", 0)) if cursor.get("cycle_open") else 0
-        if resume_at > len(ordered):
-            resume_at = 0
-
-        pending = ordered[resume_at:]
+        probed_ids: set[str] = set()
+        if cursor.get("cycle_open"):
+            raw_ids = cursor.get("probed_ids") or []
+            if isinstance(raw_ids, list):
+                probed_ids = set(str(rid) for rid in raw_ids if isinstance(rid, str))
+        pending = [item for item in ordered if item[0].route_id not in probed_ids]
         batch_size = self.concurrency
 
         def over_budget(extra: int = 0) -> str:
@@ -428,87 +745,93 @@ class Prober:
                 return "wall_cap"
             return ""
 
-        index = resume_at
         while pending:
             reason = over_budget()
             if reason:
                 stats.stopped_reason = reason
-                self._persist_cursor(index, open_cycle=True)
+                self._persist_cursor(probed_ids, open_cycle=True)
                 self.cache.save()
                 break
             batch = pending[:batch_size]
             pending = pending[batch_size:]
-            self._persist_cursor(index, open_cycle=True)
+            self._persist_cursor(probed_ids, open_cycle=True)
             self.cache.save()
-            processed = self._run_batch(batch, stats, started)
-            # Advance only by the routes actually started (defect 2 fix):
-            # a cap mid-batch leaves the rest of the batch unprobed.
-            index += processed
-            self._persist_cursor(index, open_cycle=True)
+            newly_probed = self._run_batch(batch, stats, started)
+            probed_ids.update(newly_probed)
+            self._persist_cursor(probed_ids, open_cycle=True)
             self.cache.save()
             if stats.stopped_reason:
-                # Cap fired inside the batch: do not drain the remaining pending
-                # items (which would advance index or clear the cursor).
+                # Cap fired inside the batch: do not drain remaining pending.
                 break
         else:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
             self.cache.save()
+        # Run agentic probes for FREE routes after the main cycle.
+        if stats.requests < self.max_requests:
+            self.run_agentic_probes(stats, started=started)
         return stats
 
-    def _persist_cursor(self, index: int, *, open_cycle: bool) -> None:
-        self.cache.set_cursor({"cycle_open": open_cycle, "next_index": index})
+    def _persist_cursor(self, probed_ids: set[str], *, open_cycle: bool) -> None:
+        self.cache.set_cursor({"cycle_open": open_cycle, "probed_ids": sorted(probed_ids)})
 
     def _run_batch(
         self, batch: Sequence[tuple[AdmittedRoute, str]], stats: CycleStats, started: float
-    ) -> int:
-        """Probe every route in *batch*; return the count actually started.
+    ) -> set[str]:
+        """Probe every route in *batch*; return the set of route_ids started.
 
-        Returns fewer than ``len(batch)`` when a cap fires mid-batch so the
-        caller can advance the cursor to the exact position reached (defect 2
-        fix).  The batch width is ``concurrency`` (how many routes are reserved
-        before the next cap check).  Calls run one at a time so the cache file
-        is only ever written by this thread.  A crash between saves keeps every
-        probe already saved.
+        Returns only the route_ids actually dispatched.  When a cap fires
+        mid-batch the remaining routes are excluded so the caller can update
+        the probed-ids cursor correctly (defect 2 fix).
         """
-        processed = 0
+        probed: set[str] = set()
         for route, kind in batch:
             if stats.requests >= self.max_requests:
                 stats.stopped_reason = stats.stopped_reason or "request_cap"
-                return processed
+                return probed
             if self.monotonic() - started >= self.max_wall_seconds:
                 stats.stopped_reason = "wall_cap"
-                return processed
+                return probed
             before = stats.requests
-            self._probe_route(route, kind, stats, started=started)
-            processed += 1
+            completed = self._probe_route(route, kind, stats, started=started)
             if stats.requests != before:
                 self.cache.save()
-        return processed
+            if not completed:
+                # The probe stopped part-way (a cap or bucket fired between the
+                # chat and the tool call). The route was left unchanged, so it
+                # stays pending and the next cycle resumes with it.
+                return probed
+            probed.add(route.route_id)
+        return probed
 
     @staticmethod
     def _model_identity_matches(route_id: str, reported: str) -> bool:
         """True when *reported* is the expected model, tolerating provider-prefix.
 
-        A gateway often strips the ``provider/`` prefix from the echo, e.g.
-        ``cc/claude-opus-4`` is requested but ``claude-opus-4`` is echoed back.
-        An empty *reported* means the gateway chose not to echo: not a mismatch.
+        Rules (defect 4 fix):
+        - Empty reported: not a mismatch (gateway chose not to echo).
+        - Reported HAS a provider prefix: provider must equal the route's
+          provider (exact match); suffix alone is insufficient.
+        - Reported has NO provider prefix: suffix match is accepted (gateway
+          stripped the prefix).
         """
         if not reported:
             return True
-
-        def _strip(m: str) -> str:
-            return m.split("/", 1)[-1] if "/" in m else m
-
-        return _strip(route_id) == _strip(reported)
+        # Accepted echoes: the full route id, or the route id minus its gateway
+        # provider segment.  OmniRoute was observed (2026-09-29) echoing
+        # "cc/claude-x" as "claude-x" and "nvidia/moonshotai/kimi-k3" as
+        # "moonshotai/kimi-k3".  Anything else, including a different provider
+        # with the same model suffix, is a mismatch.
+        route_suffix = route_id.split("/", 1)[1] if "/" in route_id else route_id
+        return reported in (route_id, route_suffix)
 
     def _probe_route(
         self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float
-    ) -> None:
+    ) -> bool:
         now = self.clock()
         if not self.cache.consume(route.provider, now, pool=route.pool):
             stats.skipped_bucket += 1
-            return
+            return True  # no token: skipped this cycle, entry unchanged
         stats.requests += 1
         try:
             chat = self.transport(route.route_id, "chat", self.probe_timeout_seconds)
@@ -531,13 +854,19 @@ class Prober:
             status = chat.http_status
             chat_ok = False
 
-        if chat_ok and kind == "full" and stats.requests < self.max_requests:
+        if chat_ok and kind == "full" and stats.requests >= self.max_requests:
+            # Request cap hit between chat and tool: chat succeeded but tool was
+            # never tested. Leave the route unchanged; do NOT record a negative
+            # (defect 1 fix: request-cap path).
+            stats.stopped_reason = stats.stopped_reason or "request_cap"
+            return False
+        if chat_ok and kind == "full":
             # Check wall deadline before making the second HTTP call (defect 5).
             if self.monotonic() - started >= self.max_wall_seconds:
                 # Wall cap hit between chat and tool: chat succeeded but tool was
                 # never tested. Leave the route unchanged (do not record a negative).
                 stats.stopped_reason = "wall_cap"
-                return
+                return False
             now_tool = self.clock()
             if self.cache.consume(route.provider, now_tool, pool=route.pool):
                 stats.requests += 1
@@ -566,10 +895,21 @@ class Prober:
                 # never tested. Leave the route unchanged; do NOT record a
                 # negative (defect 1 fix).
                 stats.skipped_bucket += 1
-                return
+                return True  # no tool token: entry unchanged, retried next cycle
         if chat_ok and (tool_ok or kind == "liveness"):
             category = CATEGORY_OK
             status = 200
+        # Defect 5 fix: compute identity from the observed reported_model.
+        # An empty reported_model means the gateway did not echo the id back;
+        # record it as "not_reported" so status output can distinguish it from
+        # a route whose identity was actively verified.
+        _reported = observed.reported_model
+        if not _reported:
+            _identity = "not_reported"
+        elif self._model_identity_matches(route.route_id, _reported):
+            _identity = "verified"
+        else:
+            _identity = "mismatch"
         result = ProbeResult(
             category=category,
             chat_ok=chat_ok,
@@ -579,6 +919,7 @@ class Prober:
             retry_after_seconds=observed.retry_after_seconds,
             pool=route.pool,
             capacity_evidence=route.capacity_evidence,
+            identity=_identity,
         )
         # Liveness success is healthy for the cache state machine but not a
         # coding worker: tool_ok stays false. ``ProbeResult.healthy`` requires
@@ -593,6 +934,7 @@ class Prober:
             stats.fresh += 1
         elif entry is not None and not entry.healthy:
             stats.negative += 1
+        return True
 
     def _record_liveness(self, route: AdmittedRoute, result: ProbeResult, now: datetime) -> None:
         """Chat-only success: fresh for liveness, but not a coding worker."""
@@ -602,6 +944,7 @@ class Prober:
             pool=route.pool,
             capacity_evidence=route.capacity_evidence,
             now=now,
+            identity=result.identity,
         )
 
     def _note_rate_limit(
@@ -611,6 +954,129 @@ class Prober:
             return
         seconds = exchange.retry_after_seconds if exchange.retry_after_seconds else 60.0
         self.cache.zero_bucket(route.provider, now + timedelta(seconds=seconds), pool=route.pool)
+
+    def _needs_agentic(self, route: AdmittedRoute, now: datetime) -> bool:
+        """True when the route is FREE and its agentic probe is stale or missing.
+
+        Uses ``agentic_checked_at`` (not ``checked_at``) so that regular
+        single-call probes cannot keep an old agentic PASS from being
+        re-probed indefinitely.
+        """
+        if route.capacity != CapacityClass.FREE.value:
+            return False
+        entry = self.cache.entry(route.route_id)
+        if entry is None:
+            return True
+        if entry.agentic_checked_at is None:
+            return True
+        # Use the agentic-specific timestamp (set on every agentic attempt,
+        # pass or fail), so a failed route is retried once per interval
+        # instead of on every cycle.
+        ref = entry.agentic_checked_at
+        age = now - ref
+        return age.total_seconds() > self.agentic_interval_hours * 3600
+
+    def run_agentic_probes(self, stats: CycleStats, started: float | None = None) -> None:
+        """Run agentic probes for FREE routes that need them. Bounded.
+
+        Enforces the cycle's wall-time budget and the stop signal before
+        each probe and each turn.
+        """
+        if self.agentic_transport is None:
+            return
+        wall_start = started if started is not None else self.monotonic()
+        now = self.clock()
+        routes = [r for r in self.routes_loader() if self._needs_agentic(r, now)]
+        probed = 0
+        max_agentic = min(8, self.max_requests - stats.requests)
+        for route in routes[:max_agentic]:
+            # Check stop signal and wall-time before each probe.
+            if self._stop.is_set():
+                break
+            if self.monotonic() - wall_start >= self.max_wall_seconds:
+                stats.stopped_reason = stats.stopped_reason or "wall_cap"
+                break
+            if stats.requests + 3 > self.max_requests:
+                break
+            now = self.clock()
+            # Consume one bucket token before each turn, stop when empty.
+            if not self.cache.consume(route.provider, now, pool=route.pool):
+                continue
+            fake_file = AgenticFakeFile()
+            conversation: list[dict[str, Any]] = []
+            exchanges: list[ProbeExchange] = []
+            budget_exhausted = False
+            turn_payloads = [agentic_turn1_payload, agentic_turn2_payload, agentic_turn3_payload]
+            try:
+                for turn_idx, payload_fn in enumerate(turn_payloads):
+                    if turn_idx > 0:
+                        # Consume a bucket token before each subsequent turn.
+                        now = self.clock()
+                        if not self.cache.consume(route.provider, now, pool=route.pool):
+                            budget_exhausted = True
+                            break
+                        # Check stop/wall between turns.
+                        if (
+                            not exchanges[-1].ok
+                            or stats.requests >= self.max_requests
+                            or self._stop.is_set()
+                            or self.monotonic() - wall_start >= self.max_wall_seconds
+                        ):
+                            break
+                    payload = payload_fn(route.route_id, conversation)
+                    ex = self.agentic_transport(route.route_id, payload, self.probe_timeout_seconds)
+                    exchanges.append(ex)
+                    stats.requests += 1
+                    if not ex.ok:
+                        break
+                    # Simulate tool calls against the fake file and build
+                    # conversation history for the next turn.
+                    assistant_msg = _extract_assistant_message(ex.response_body)
+                    tool_calls = _extract_tool_calls(ex.response_body)
+                    tool_results = _simulate_tool_calls(fake_file, tool_calls)
+                    # Build cumulative conversation: user + assistant + tool results.
+                    conversation = list(payload.get("messages", []))
+                    conversation.append(assistant_msg)
+                    conversation.extend(tool_results)
+            except TimeoutError:
+                exchanges.append(
+                    ProbeExchange(http_status=None, ok=False, error_category="timeout")
+                )
+            if budget_exhausted:
+                # Record as "not tested" — the route is not failed, just untested.
+                stats.probed += 1
+                continue
+            passed = score_agentic_probe(exchanges)
+            # Also verify the fake file reached the expected state.
+            if passed:
+                passed = fake_file.content == AGENTIC_PROBE_EXPECTED
+            # An agentic PASS qualifies the selected route only when every turn
+            # echoed that route's model. An absent echo can't prove identity.
+            category = CATEGORY_OK if passed else "agentic_fail"
+            if passed and not all(
+                ex.reported_model
+                and self._model_identity_matches(route.route_id, ex.reported_model)
+                for ex in exchanges
+            ):
+                passed = False
+                category = CATEGORY_MODEL_MISMATCH
+            result = ProbeResult(
+                category=category,
+                chat_ok=len(exchanges) >= 1 and exchanges[0].ok,
+                tool_ok=passed,
+                probe_class="agentic",
+                agentic_ok=passed,
+                pool=route.pool,
+                capacity_evidence=route.capacity_evidence,
+            )
+            self.cache.record(route.route_id, result, now)
+            self.cache.save()
+            probed += 1
+            stats.probed += 1
+            if passed:
+                stats.fresh += 1
+            else:
+                stats.negative += 1
 
     def run_forever(self) -> CycleStats | None:
         """Loop ``run_once`` until ``stop``. A cycle error retries next interval."""
@@ -742,6 +1208,67 @@ def _exchange_from_body(
     )
 
 
+def live_agentic_transport(
+    base_url: str, *, api_key: str | None
+) -> Callable[[str, dict[str, Any], float], ProbeExchange]:
+    """OpenAI-compatible transport for agentic probes (arbitrary payloads).
+
+    Built only for a consented live daemon behind ``--allow-live-probe``.
+    """
+    import urllib.error
+    import urllib.request
+
+    endpoint = base_url.rstrip("/")
+    if endpoint.endswith("/v1"):
+        endpoint = endpoint[: -len("/v1")]
+    endpoint = endpoint + "/v1/chat/completions"
+
+    def transport(route_id: str, payload: dict[str, Any], timeout_seconds: float) -> ProbeExchange:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+                raw = response.read(1_048_576)
+                elapsed = (time.monotonic() - started) * 1000.0
+                parsed = json.loads(raw) if raw else {}
+                body = parsed if isinstance(parsed, Mapping) else {}
+                return ProbeExchange(
+                    http_status=response.status,
+                    ok=200 <= response.status < 300,
+                    latency_ms=elapsed,
+                    response_body=body,
+                    reported_model=str(body.get("model") or ""),
+                )
+        except urllib.error.HTTPError as exc:
+            elapsed = (time.monotonic() - started) * 1000.0
+            retry_after = None
+            header = exc.headers.get("Retry-After") if exc.headers else None
+            if header:
+                try:
+                    retry_after = float(header)
+                except ValueError:
+                    retry_after = None
+            return ProbeExchange(
+                http_status=exc.code,
+                ok=False,
+                latency_ms=elapsed,
+                retry_after_seconds=retry_after,
+                error_category=category_for(ProbeExchange(http_status=exc.code, ok=False)),
+            )
+        except TimeoutError:
+            return ProbeExchange(http_status=None, ok=False, error_category="timeout")
+
+    return transport
+
+
 def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
     """OpenAI-compatible transport. Built only for a consented live daemon."""
     import json
@@ -867,6 +1394,9 @@ def build_live_daemon(
 
     cache = HealthCache(cache_path or default_cache_path())
     chosen = transport if transport is not None else live_transport(origin, api_key=key)
+    # Wire the agentic transport (same OmniRoute client) behind the same
+    # --allow-live-probe opt-in the single-call probe uses.
+    agentic = live_agentic_transport(origin, api_key=key) if allow_live_probe else None
     prober = Prober(
         cache=cache,
         routes_loader=loader,
@@ -876,6 +1406,7 @@ def build_live_daemon(
         concurrency=concurrency,
         probe_timeout_seconds=probe_timeout_seconds,
         interval_seconds=interval_seconds,
+        agentic_transport=agentic,
     )
     return ProverDaemon(prober=prober, consented=allow_live_probe)
 
@@ -922,6 +1453,9 @@ def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[st
                 "pool": entry.pool,
                 "capacity_evidence": entry.capacity_evidence,
                 "checked_at": entry.checked_at.isoformat().replace("+00:00", "Z"),
+                # Defect 5 fix: surface identity so callers can filter out
+                # routes whose identity was never verified.
+                "identity": entry.identity or "unknown",
             }
             for entry in workers[:10]
         ],

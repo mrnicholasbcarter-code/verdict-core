@@ -123,6 +123,7 @@ seq   kind            node      detail
 ```
 
 Replay path: use `verdict watch --replay <run-id>` for an interactive TUI replay.
+Replay labels use executor provenance and reported terminal models, never selected routes. Adapters stamp each terminal with `live`, `scripted`, or `fault-injected`; custom adapters default to unknown. Explicit live terminal evidence takes precedence over legacy fixture-model names. Legacy runs without executor markers disclose `real models: inferred from reported terminal models; run predates executor markers`. Runs with both marked and unmarked terminals disclose `mixed executor provenance`, not that the run predates markers. Scripted/offline runs say `fixture run`, and runs without execution evidence make no real-model claim.
 
 ### `verdict demo` — Credential-free deterministic demo
 
@@ -211,6 +212,16 @@ colour and no box drawing unless the terminal can show them.
 
 Exit `0` when the view is shown, `2` when the arguments are invalid, `3` when
 the run or node is not found.
+
+In the cockpit routing panel, `s` cycles the state filter. `/` opens text
+entry. Printable characters append to the draft, Backspace deletes the last
+character, and Enter applies the search. Esc clears the draft or applied
+search without closing the panel. These controls only filter recorded
+candidates; they do not rank routes or run probes.
+
+In JSON output, `omitted_summary` contains per-state counts and the first
+reason when recorded. It is `null` for legacy events that only recorded a
+total. `candidates_omitted` still reports that total.
 
 ### `verdict context` — Show recorded context budget and provenance
 

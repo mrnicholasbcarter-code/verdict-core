@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-MAX_CANDIDATES = 25
+MAX_CANDIDATES = 100  # AC7: raised from 25; bounded to keep events small
 
 
 def build_rejections(verdicts: Sequence[Any]) -> dict[str, dict[str, int]]:
@@ -30,16 +30,29 @@ def build_rejections(verdicts: Sequence[Any]) -> dict[str, dict[str, int]]:
     return rejections
 
 
+def _candidate_state_key(d: dict[str, Any]) -> str:
+    """Derive a simple state label from a verdict dict for omitted_summary."""
+    failed = d.get("failed_stage")
+    if failed is None:
+        return "selected" if d.get("reached") == "SELECTED" else "admitted"
+    reason = d.get("reason") or ""
+    if "cooldown" in reason:
+        return "cooldown"
+    return "rejected"
+
+
 def build_candidates(
     verdicts: Sequence[Any], selected_route: str | None
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
     """Build at most MAX_CANDIDATES candidate dicts; selected route always included.
 
-    Returns ``(candidates_list, omitted_count)``.
+    Returns ``(candidates_list, omitted_count, omitted_summary)``.
+    omitted_summary is None when nothing was omitted; otherwise maps
+    state_name -> {"count": N, "first_reason": str}.
     """
     total = len(verdicts)
     if total == 0:
-        return [], 0
+        return [], 0, None
 
     selected_verdict: dict[str, Any] | None = None
     others: list[dict[str, Any]] = []
@@ -55,8 +68,22 @@ def build_candidates(
     budget = MAX_CANDIDATES - (1 if selected_verdict else 0)
     kept = others[:budget]
     result = [selected_verdict, *kept] if selected_verdict else kept[:MAX_CANDIDATES]
+    omitted_dicts = others[budget:] if len(others) > budget else []
+
     omitted = total - len(result)
-    return result, omitted
+
+    # AC7: build per-state summary for omitted routes
+    omitted_summary: dict[str, Any] | None = None
+    if omitted_dicts:
+        state_info: dict[str, dict[str, Any]] = {}
+        for d in omitted_dicts:
+            sk = _candidate_state_key(d)
+            if sk not in state_info:
+                state_info[sk] = {"count": 0, "first_reason": d.get("reason") or "unknown"}
+            state_info[sk]["count"] += 1
+        omitted_summary = state_info
+
+    return result, omitted, omitted_summary
 
 
 __all__ = ["MAX_CANDIDATES", "build_candidates", "build_rejections"]

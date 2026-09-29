@@ -36,6 +36,12 @@ CONTROLLER = "kr/ctrl"
 KIRO_CONTEXT_400 = "[kiro/claude-opus-5.5] [400]: Input is too long. (reset after 84h 5m 18s)"
 
 
+@pytest.fixture(autouse=True)
+def _uniform_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Normalise kr to the same capacity class as cc so ranking is stable."""
+    monkeypatch.setenv("VERDICT_CAPACITY_CLASSES", "kr=claude_subscription")
+
+
 def _row(model_id: str) -> dict[str, object]:
     return {
         "id": model_id,

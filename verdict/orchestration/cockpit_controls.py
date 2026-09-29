@@ -136,6 +136,8 @@ def select_panel(state: ControlCockpitState, view: RunView, name: PanelName) -> 
 
 def dispatch_key(key: str, state: ControlCockpitState, view: RunView) -> bool:
     """Confirmation is presentation only; the domain still decides policy."""
+    if state.routing_open and state.routing_search_open:
+        return nav.dispatch_key(key, state, view)
     if state.pending_action:
         if key == KEY_CANCEL_RUN and state.pending_action == "run.cancel":
             nav.submit_control(state, state.pending_action)
@@ -418,7 +420,16 @@ def render_cockpit(
             )
         )
     if state.routing_open:
-        blocks.append(render_routing(routing_for_selected(state, view), mode))
+        if state.routing_search_open:
+            blocks.append(nav.render_routing_search(state, plain=plain))
+        blocks.append(
+            render_routing(
+                routing_for_selected(state, view),
+                mode,
+                state=state.routing_state_filter or None,
+                text=state.routing_text_filter or None,
+            )
+        )
     if state.context_open:
         blocks.append(render_context(context_for_selected(state, view), mode))
     if state.receipt_open:
