@@ -304,8 +304,22 @@ def _freshness(evaluation: EligibilityEvaluation, generated_at: str) -> str:
 
 
 def _capacity_source(candidate: CandidateRecord) -> str:
-    """Capacity class is the recorded economic source; unknown stays unknown."""
-    return _fmt(candidate.capacity_class)
+    """Capacity class + evidence signal; unknown stays unknown."""
+    cls = _fmt(candidate.capacity_class)
+    ev = _safe_text(candidate.capacity_evidence) if candidate.capacity_evidence else ""
+    if ev:
+        return f"{cls} ({ev})"
+    return cls
+
+
+def _pool_label(candidate: CandidateRecord) -> str:
+    """Backend pool id; empty stays empty."""
+    return _safe_text(candidate.pool) if candidate.pool else ""
+
+
+def _cooldown_scope_label(candidate: CandidateRecord) -> str:
+    """Cooldown scope key; empty = no recorded cooldown scope."""
+    return _safe_text(candidate.cooldown_scope) if candidate.cooldown_scope else ""
 
 
 def _selected_because_lines(evaluation: EligibilityEvaluation) -> list[str]:
@@ -314,6 +328,32 @@ def _selected_because_lines(evaluation: EligibilityEvaluation) -> list[str]:
             return ["selected because: unknown (no rank components recorded)"]
         return ["selected because: (no selection)"]
     return [f"selected because: {_safe_text(item)}" for item in evaluation.selected_because]
+
+
+def _omitted_summary_line(evaluation: EligibilityEvaluation) -> str:
+    """AC7: human-readable summary of omitted candidate states."""
+    omitted = evaluation.candidates_omitted
+    if omitted <= 0:
+        return ""
+    summary = evaluation.omitted_summary
+    if not summary:
+        return f"  + {omitted} more not shown"
+    parts = []
+    for state in sorted(summary):
+        if state == "_total":
+            continue
+        entry = summary[state]
+        if not isinstance(entry, dict):
+            continue
+        count = entry.get("count", 0)
+        reason = _safe_text(str(entry.get("first_reason") or ""))
+        if reason:
+            parts.append(f"{count} {state} ({reason})")
+        else:
+            parts.append(f"{count} {state}")
+    if not parts:
+        return f"  + {omitted} more not shown"
+    return "  + " + ", ".join(parts) + f"  (total omitted: {omitted})"
 
 
 def _cooldown_rows(evaluation: EligibilityEvaluation) -> list[CandidateRecord]:
@@ -672,6 +712,10 @@ def _evaluation_blocks(
                 blocks.append(Text("rank \u2014 not recorded", style=_style("MUTED", mode)))
         else:
             blocks.append(Text("no candidates on this page", style=_style("MUTED", mode)))
+        # AC7: show per-state summary for omitted routes
+        omitted_line = _omitted_summary_line(evaluation)
+        if omitted_line:
+            blocks.append(Text(omitted_line, style=_style("MUTED", mode)))
 
     cooldowns = _cooldown_rows(evaluation)
     if cooldowns:
@@ -679,10 +723,16 @@ def _evaluation_blocks(
         for cand in cooldowns:
             remaining = _remaining_seconds(cand.cooldown_until, now)
             remaining_txt = _fmt_remaining(remaining)
+            scope_txt = _cooldown_scope_label(cand)
+            pool_txt = _pool_label(cand)
             line = (
                 f"  {_fmt(cand.route_id)}  until={_fmt(cand.cooldown_until)}  "
                 f"remaining={remaining_txt}  capacity={_capacity_source(cand)}"
             )
+            if scope_txt:
+                line += f"  scope={scope_txt}"
+            if pool_txt:
+                line += f"  pool={pool_txt}"
             blocks.append(Text(line, style=_style("COOLDOWN", mode)))
     else:
         blocks.append(Text("cooldowns: none recorded", style=_style("MUTED", mode)))
@@ -904,15 +954,24 @@ def render_routing_text(
             for cand in cooldowns:
                 remaining = _remaining_seconds(cand.cooldown_until, now)
                 remaining_txt = _fmt_remaining(remaining)
-                lines.extend(
-                    _wrap_plain(
-                        f"  {_fmt(cand.route_id)}  until={_fmt(cand.cooldown_until)}  "
-                        f"remaining={remaining_txt}  capacity={_capacity_source(cand)}",
-                        width,
-                    )
+                _line = (
+                    f"  {_fmt(cand.route_id)}  until={_fmt(cand.cooldown_until)}  "
+                    f"remaining={remaining_txt}  capacity={_capacity_source(cand)}"
                 )
+                scope_txt = _cooldown_scope_label(cand)
+                pool_txt = _pool_label(cand)
+                if scope_txt:
+                    _line += f"  scope={scope_txt}"
+                if pool_txt:
+                    _line += f"  pool={pool_txt}"
+                lines.extend(_wrap_plain(_line, width))
         else:
             lines.append("cooldowns: none recorded")
+
+        # AC7: omitted summary line in text render
+        _omitted_line = _omitted_summary_line(evaluation)
+        if _omitted_line:
+            lines.extend(_wrap_plain(_omitted_line, width))
 
         if evaluation.rejections:
             bits = []
@@ -946,6 +1005,9 @@ def routing_json(view: RoutingView) -> dict[str, Any]:
                     _safe_text(reason) if reason != "unknown" else reason
                 )
                 record["capacity_source"] = cand.capacity_class  # None stays None
+                record["capacity_evidence"] = cand.capacity_evidence or None  # AC6
+                record["pool"] = cand.pool or None  # AC6
+                record["cooldown_scope"] = cand.cooldown_scope or None  # AC6
                 record["freshness"] = evaluation.at or None
                 for key, value in list(record.items()):
                     if isinstance(value, str):
@@ -956,6 +1018,7 @@ def routing_json(view: RoutingView) -> dict[str, Any]:
                 "at": evaluation.at or None,
                 "candidates": candidates_out,
                 "candidates_omitted": evaluation.candidates_omitted,
+                "omitted_summary": evaluation.omitted_summary,  # AC7
                 "funnel": dict(evaluation.funnel),
                 "headline": _headline(evaluation),
                 "node_id": evaluation.node_id,

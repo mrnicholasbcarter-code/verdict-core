@@ -347,6 +347,15 @@ class RouteVerdict:
     supports_tools: bool | None = None
     supports_structured_output: bool | None = None
     price: float | None = None  # marginal metered price per 1M tokens; None = unknown
+    # AC6: non-secret capacity/cooldown provenance.
+    # pool: backend pool id (e.g. "openrouter-free" for kilocode+openrouter:free)
+    pool: str = ""
+    # capacity_evidence: the named signal used by the classifier (e.g. "import_free_only",
+    # "plan_label", "zero_pricing", "positive_pricing") or "unknown:<reason>".
+    capacity_evidence: str = ""
+    # cooldown_scope: the key under which the cooldown was recorded
+    # ("route:<canonical_id>" or "provider:<name>"), never an email or token.
+    cooldown_scope: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -359,6 +368,10 @@ class RouteVerdict:
             "plan_label": self.plan_label,
             "cooldown_until": self.cooldown_until,
             "rank": self.rank,
+            # AC6: non-secret provenance always included (empty string = unknown).
+            "pool": self.pool,
+            "capacity_evidence": self.capacity_evidence,
+            "cooldown_scope": self.cooldown_scope,
         }
         # BOD-277 additive keys: emitted only when a value is known, so
         # existing consumers see the pre-BOD-277 shape when the ladder did

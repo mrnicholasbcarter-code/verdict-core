@@ -144,6 +144,9 @@ class _Assessment:
     # BOD-177: backend pool identity and capacity classification evidence.
     pool: str = ""
     capacity_evidence: str = ""
+    # AC6: the cooldown key under which this route is currently blocked
+    # (never an email, token, or account id).
+    cooldown_scope: str = ""
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -193,6 +196,10 @@ class _Assessment:
             supports_tools=self.supports_tools,
             supports_structured_output=self.supports_structured_output,
             price=self.price if self.price_known else None,
+            # AC6: non-secret provenance
+            pool=self.pool,
+            capacity_evidence=self.capacity_evidence,
+            cooldown_scope=self.cooldown_scope,
         )
 
 
@@ -460,9 +467,11 @@ class EligibilityLadder:
         a.health, a.health_category = self._health_status(route_id, now)
         if a.health == "unhealthy":
             a.failed_stage, a.reason = EligibilityStage.HEALTHY, a.health_category
-            until = self._active_cooldown(f"route:{route_id}", now)
+            _ck = f"route:{route_id}"
+            until = self._active_cooldown(_ck, now)
             if until is not None:
                 a.cooldown_until = _iso(until)
+                a.cooldown_scope = _ck  # AC6: non-secret scope key
             return a
 
         for key, label in (
@@ -473,6 +482,7 @@ class EligibilityLadder:
             if until is not None:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, label
                 a.cooldown_until = _iso(until)
+                a.cooldown_scope = key  # AC6: non-secret scope key
                 return a
         limited = self._rate_limited_until(conn, route_id, now)
         if limited is not None:
@@ -771,6 +781,10 @@ class EligibilityLadder:
                     supports_tools=a.supports_tools,
                     supports_structured_output=a.supports_structured_output,
                     price=a.price if a.price_known else None,
+                    # AC6: non-secret provenance
+                    pool=a.pool,
+                    capacity_evidence=a.capacity_evidence,
+                    cooldown_scope=a.cooldown_scope,
                 )
                 verdicts.append(selected)
             else:

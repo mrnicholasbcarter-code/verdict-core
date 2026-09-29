@@ -61,6 +61,8 @@ KEY_RIGHT = "RIGHT"
 KEY_ENTER = "ENTER"
 KEY_ESC = "ESC"
 KEY_QUIT = "q"
+KEY_ROUTING_STATE = "s"  # AC7: cycle state filter in routing panel
+KEY_ROUTING_SEARCH = "/"  # AC7: toggle text search filter in routing panel
 KEY_HELP = "?"
 KEY_DETAILS = "d"
 KEY_CONTEXT = "c"  # BOD-278 extension point
@@ -194,6 +196,9 @@ class CockpitState:
     routing_render: Any = None
     routing_render_text: Any = None
     routing_from_run: Any = None
+    # AC7: filter state for the routing panel
+    routing_state_filter: str = ""  # state filter (e.g. "rejected", "cooldown")
+    routing_text_filter: str = ""  # free-text search filter
 
     def sync_order(self, node_ids: Sequence[str]) -> None:
         prev = self.selected_id
@@ -687,6 +692,19 @@ def render_footer(plain: bool = False) -> RenderableType:
 # ---------------------------------------------------------------------------
 
 
+_ROUTING_STATE_CYCLE = ["", "rejected", "cooldown", "admitted", "selected"]
+
+
+def _cycle_routing_state_filter(state: CockpitState) -> None:
+    """AC7: cycle through state filter values for the routing panel."""
+    current = state.routing_state_filter
+    try:
+        idx = _ROUTING_STATE_CYCLE.index(current)
+    except ValueError:
+        idx = 0
+    state.routing_state_filter = _ROUTING_STATE_CYCLE[(idx + 1) % len(_ROUTING_STATE_CYCLE)]
+
+
 def dispatch_key(key: str, state: CockpitState, view: Any) -> bool:
     """Apply ``key`` to ``state``.  Returns True when the state changed."""
     if key in (KEY_UP, "k"):
@@ -730,6 +748,15 @@ def dispatch_key(key: str, state: CockpitState, view: Any) -> bool:
     if key == KEY_ROUTING:
         open_routing_view(state, view)  # BOD-277 extension point
         return True
+    # AC7: routing panel filter keys (only when panel is open; never probe)
+    if state.routing_open:
+        if key == KEY_ROUTING_STATE:
+            _cycle_routing_state_filter(state)
+            return True
+        if key == KEY_ROUTING_SEARCH:
+            # Toggle: clear if set, otherwise mark ready for next char.
+            state.routing_text_filter = ""
+            return True
     return False
 
 
@@ -785,12 +812,19 @@ def run_cockpit(
                         if getattr(ev, "node_id", "") == nid:
                             eval_idx = i
                             break
+                # AC7: pass filter state (never causes network probes)
+                _sf = state.routing_state_filter or None
+                _tf = state.routing_text_filter or None
                 if plain:
                     if state.routing_render_text is not None:
                         blocks.append(
                             Text(
                                 state.routing_render_text(
-                                    rview, width=width, evaluation_index=eval_idx
+                                    rview,
+                                    width=width,
+                                    evaluation_index=eval_idx,
+                                    state=_sf,
+                                    text=_tf,
                                 )
                             )
                         )
@@ -800,7 +834,11 @@ def run_cockpit(
                     if state.routing_render is not None:
                         blocks.append(
                             state.routing_render(
-                                rview, _pm(console, env=None), evaluation_index=eval_idx
+                                rview,
+                                _pm(console, env=None),
+                                evaluation_index=eval_idx,
+                                state=_sf,
+                                text=_tf,
                             )
                         )
         if getattr(state, "context_open", False):
@@ -890,6 +928,8 @@ __all__ = [
     "KEY_QUIT",
     "KEY_RIGHT",
     "KEY_ROUTING",
+    "KEY_ROUTING_SEARCH",
+    "KEY_ROUTING_STATE",
     "KEY_UP",
     "ROLE_CONTROLLER",
     "ROLE_REVIEWER",
