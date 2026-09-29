@@ -9,18 +9,7 @@ from typing import Any
 
 import pytest
 
-from tests.test_flagship_failover_scenario import (
-    CONNECTIONS,
-    GRAPH,
-    INVENTORY,
-    ROUTE_A,
-    ROUTE_B,
-    OcrCli,
-    _init_repo,
-    _load_events,
-    _run_scenario,
-    _worker_script,
-)
+from tests.test_flagship_failover_scenario import _run_scenario
 from tests.test_orch_eligibility import FakeProbe
 from verdict.orchestration.claims import (
     CLAIM_STATUS_CONTRADICTED,
@@ -30,6 +19,17 @@ from verdict.orchestration.claims import (
     derive_claims,
 )
 from verdict.orchestration.contracts import RunOutcome
+from verdict.orchestration.demo_scenario import (
+    CONNECTIONS,
+    GRAPH,
+    INVENTORY,
+    ROUTE_A,
+    ROUTE_B,
+    _init_repo,
+    _load_events,
+    _PassingOcrRunner,
+    _worker_script,
+)
 from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.executors import ScriptedExecutor
 from verdict.orchestration.recovery import FailureIntelligence
@@ -179,7 +179,7 @@ def _clean_run(
     executor = ScriptedExecutor(_worker_script)  # No faults
     classifier = FailureIntelligence()
 
-    ocr = OcrCli()
+    ocr = _PassingOcrRunner()
     reviewer = OpenCodeReviewer(
         ladder, api_key_env="TEST_OCR_KEY", out_dir=tmp_path / "review", runner=ocr
     )
