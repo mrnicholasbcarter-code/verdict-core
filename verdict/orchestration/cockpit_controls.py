@@ -28,7 +28,7 @@ from verdict.orchestration.routing_render import render_routing, routing_view_fr
 from verdict.orchestration.routing_view import RoutingView
 from verdict.orchestration.tui import RunView, read_events, render
 
-PanelName = Literal["routing", "context", "receipt"]
+PanelName = Literal["routing", "context", "receipt", "health"]
 KEY_CANCEL_RUN = "x"
 KEY_CANCEL_NODE = "X"
 KEY_RETRY_NODE = "t"
@@ -52,6 +52,7 @@ class ControlCockpitState(nav.CockpitState):
     receipt_open: bool = False
     receipt_result: ActionResult | None = None
     context_open: bool = False
+    health_open: bool = False
     context_view: ContextView | None = None
     context_render: Any = None
     context_render_text: Any = None
@@ -107,10 +108,13 @@ def select_panel(state: ControlCockpitState, view: RunView, name: PanelName) -> 
     state.routing_open = False
     state.context_open = False
     state.receipt_open = False
+    state.health_open = False
     if name == "routing":
         nav.open_routing_view(state, view)
     elif name == "context":
         nav.open_context_view(state, view)
+    elif name == "health":
+        state.health_open = True
     else:
         open_receipt_view(state)
 
@@ -140,7 +144,17 @@ def dispatch_key(key: str, state: ControlCockpitState, view: RunView) -> bool:
     if key == KEY_RECEIPT:
         state.context_open = False
         state.routing_open = False
+        state.health_open = False
         open_receipt_view(state)
+        return True
+    if key == nav.KEY_HEALTH:
+        state.context_open = False
+        state.routing_open = False
+        state.receipt_open = False
+        state.health_open = not state.health_open
+        return True
+    if key == nav.KEY_ESC and state.health_open:
+        state.health_open = False
         return True
     if key == nav.KEY_ESC and state.receipt_open:
         state.receipt_open = False
@@ -148,9 +162,11 @@ def dispatch_key(key: str, state: ControlCockpitState, view: RunView) -> bool:
     if key == nav.KEY_CONTEXT:
         state.routing_open = False
         state.receipt_open = False
+        state.health_open = False
     elif key == nav.KEY_ROUTING:
         state.context_open = False
         state.receipt_open = False
+        state.health_open = False
     return nav.dispatch_key(key, state, view) or key in {nav.KEY_CONTEXT, nav.KEY_ROUTING}
 
 
@@ -275,6 +291,102 @@ def render_receipt(state: ControlCockpitState, mode: PresentationMode) -> Render
     return panel(Group(*lines), title="receipt summary", mode=mode)
 
 
+def _health_for_selected(
+    state: ControlCockpitState, view: RunView
+) -> tuple[list[Any], list[Any], list[Any]]:
+    """Extract recorded health evidence for the selected row.
+
+    Returns (cooldowns, failures, eligibility_events) from the event stream.
+    Never probes — reads only from the authoritative recorded events.
+    """
+    selected = state.selected_id or ""
+    # For role rows, find the role's route to match against cooldowns/failures.
+    if selected == nav.ROLE_CONTROLLER:
+        route = getattr(view, "controller_route", "") or ""
+    elif selected == nav.ROLE_REVIEWER:
+        review = getattr(view, "review", None)
+        route = getattr(review, "route_id", "") if review else ""
+    else:
+        node = view.nodes.get(selected)
+        route = getattr(node, "route_id", "") if node else ""
+
+    cooldowns = [
+        c
+        for c in view.cooldowns.values()
+        if c.key == route or (c.scope == "provider" and route.startswith(c.key + "/"))
+    ]
+    failures = [
+        f
+        for f in view.failures
+        if f.route_id == route or (not nav.is_role_row(selected) and f.node_id == selected)
+    ]
+    # eligibility events matching this route
+    elig_events = [
+        e
+        for e in state.events
+        if e.type == "eligibility"
+        and (
+            e.node_id == selected
+            or (e.data.get("selected") == route and route)
+            or (e.data.get("revoked") == route and route)
+        )
+    ]
+    return cooldowns, failures, elig_events
+
+
+def render_health(
+    state: ControlCockpitState, view: RunView, mode: PresentationMode
+) -> RenderableType:
+    """Health panel: recorded cooldown and failure evidence for the selected route.
+
+    Reads ONLY from the authoritative recorded events. Never live-probes.
+    """
+    cooldowns, failures, elig_events = _health_for_selected(state, view)
+    lines: list[RenderableType] = []
+
+    selected = state.selected_id or ""
+    if nav.is_role_row(selected):
+        label = "controller" if selected == nav.ROLE_CONTROLLER else "reviewer"
+    else:
+        label = selected
+    lines.append(Text(f"health evidence for: {label}", style=_style("PRIMARY", mode)))
+
+    if not cooldowns and not failures and not elig_events:
+        lines.append(Text("no recorded health issues", style=_style("INFO", mode)))
+    else:
+        if cooldowns:
+            lines.append(Text("cooldowns:", style=_style("ACCENT", mode)))
+            for c in cooldowns:
+                lines.append(
+                    Text(
+                        f"  {c.key} [{c.scope}] {c.category} until {c.until[11:19] or '-'}",
+                        style=_style("COOLDOWN", mode),
+                    )
+                )
+        if failures:
+            lines.append(Text("failures:", style=_style("ACCENT", mode)))
+            for f in failures[-5:]:
+                lines.append(
+                    Text(
+                        f"  {f.node_id or 'run'}: {f.category} -> {f.action}"
+                        f"{' on ' + f.route_id if f.route_id else ''}"
+                        f"{' [injected]' if f.fault_injected else ''}",
+                        style=_style("WARNING", mode),
+                    )
+                )
+        if elig_events:
+            lines.append(Text("eligibility:", style=_style("ACCENT", mode)))
+            for e in elig_events[-3:]:
+                revoked = e.data.get("revoked")
+                selected_route = e.data.get("selected")
+                if revoked:
+                    lines.append(Text(f"  revoked: {revoked}", style=_style("ERROR", mode)))
+                elif selected_route:
+                    lines.append(Text(f"  selected: {selected_route}", style=_style("INFO", mode)))
+
+    return panel(Group(*lines), title="health evidence", mode=mode)
+
+
 def render_cockpit(
     view: RunView, state: ControlCockpitState, mode: PresentationMode, *, dashboard: bool = True
 ) -> RenderableType:
@@ -295,6 +407,8 @@ def render_cockpit(
         blocks.append(render_context(context_for_selected(state, view), mode))
     if state.receipt_open:
         blocks.append(render_receipt(state, mode))
+    if state.health_open:
+        blocks.append(render_health(state, view, mode))
     blocks.append(render_controls(state, mode))
     if state.help_open:
         blocks.append(nav.render_help(plain=plain))
@@ -311,7 +425,7 @@ def initial_state(
     panel_name: PanelName | None = None,
 ) -> ControlCockpitState:
     state = ControlCockpitState(run_dir=run_dir, events=_records(events))
-    state.sync_order(list(view.nodes))
+    state.sync_order(nav.selectable_order_with_roles(view))
     if node_id is not None:
         if node_id not in view.nodes:
             raise ValueError(f"unknown node: {node_id}")
@@ -399,7 +513,7 @@ def run_cockpit(
                     view.apply(event)
                 seen = len(fresh)
                 state.events = fresh
-                state.sync_order(list(view.nodes))
+                state.sync_order(nav.selectable_order_with_roles(view))
                 if state.receipt_open and view.final:
                     state.receipt_open = False
                     open_receipt_view(state)

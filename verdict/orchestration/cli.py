@@ -83,7 +83,9 @@ def add_parsers(subparsers: Any) -> None:
     watch.add_argument("--once", action="store_true", help="Render the current state and exit")
     watch.add_argument("--node", metavar="N", help="Select a recorded worker node")
     watch.add_argument(
-        "--panel", choices=("routing", "context", "receipt"), help="Open a worker inspection panel"
+        "--panel",
+        choices=("routing", "context", "receipt", "health"),
+        help="Open a worker inspection panel",
     )
     watch.add_argument(
         "--replay",
