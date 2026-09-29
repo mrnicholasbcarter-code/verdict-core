@@ -61,9 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Live cost benchmark with real models (opt-in, `VERDICT_LIVE_SMOKE=1`): the offline catalog router selected the baseline model for every task; no routing saving was measured. Bench script at `scripts/live_savings_bench.py`; proof at `docs/proof/live-savings-2026-09-28/` (#702)
 - Provider/gateway bootstrap unified in one offline contract shared by CLI, `verdict serve`, supervisor and library `Gate`; URL userinfo redacted in all diagnostics; `profile: production` refuses default provider sets (#pre-existing in [Unreleased])
-- OpenJev influence: context-length failure class; ranking receipts on InfluenceRecord (#670, #667)
-- `verdict doctor` exits 1 when issues are found (text mode); `--json` mode exits 0 when healthy (#pre-existing)
-- `verdict harness prime sync-models` writes models.json with owner-only 0600 permissions (#pre-existing)
+- OpenJev influence: context-length failure class; ranking receipts on InfluenceRecord (#670, #667) (single-route `verdict route` ADVISORY path only; `verdict orchestrate` records OpenJev decisions in SHADOW mode)
+- `verdict doctor` exits 1 when issues are found (text mode); `--json` mode exits 0 when healthy (#735)
+- `verdict harness prime sync-models` writes models.json with owner-only 0600 permissions (#646)
 - Parity matrix expanded with harness lifecycle facets (#689)
 - Prime supervisor sync no-op when models unchanged; backup pruning; optional timer (#646)
 - TUI replay mode for recorded demos (#701)
