@@ -55,6 +55,23 @@ def _kind_token(kind: str) -> str:
     return _KIND_STATE.get(kind, ("unknown", "SECONDARY"))[1]
 
 
+def _step_state(step: TraceStep) -> tuple[str, str]:
+    """(state, token) for one step, from its observed outcome, not only its kind.
+
+    A terminal or verify step that failed must never render as validated.
+    """
+    state, token = _KIND_STATE.get(step.kind, ("unknown", "SECONDARY"))
+    if step.kind in ("terminal", "verify", "review"):
+        ev = step.evidence
+        ok = ev.get("ok", ev.get("passed", ev.get("valid")))
+        status = str(ev.get("status") or "").upper()
+        if ok is False or status in ("FAIL", "FAILED", "BLOCKED", "REJECTED"):
+            return "failed", "ERROR"
+        if step.kind == "review" and status == "PASS":
+            return "validated", "SUCCESS"
+    return state, token
+
+
 def _first(evidence: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = evidence.get(key)
@@ -203,9 +220,9 @@ def render_trace(
     table.add_column("detail", ratio=1, overflow="fold")
 
     for i, step in enumerate(view.steps):
-        token = _kind_token(step.kind)
+        state, token = _step_state(step)
         style = token_style(token, mode.color_system)
-        glyph = _kind_glyph(step.kind, unicode=mode.unicode)
+        glyph = state_style(state).glyph if mode.unicode else state_style(state).ascii_glyph
         arrow = "→" if mode.unicode else "->"
         detail = _evidence_summary(step).replace("→", arrow)
         highlight = step_index is not None and i == step_index

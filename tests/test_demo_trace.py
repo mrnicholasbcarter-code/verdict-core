@@ -313,3 +313,16 @@ class TestRichWidthAndGlyphs:
         text = render_claims_text(self.claims, width=100)
         if all(c.status != CLAIM_STATUS_NOT_OBSERVED for c in self.claims):
             assert "NOT SHOWN" not in text
+
+
+def test_failed_terminal_never_renders_as_validated() -> None:
+    """A failed attempt's terminal row uses the failure state, not the kind's success state."""
+    from verdict.orchestration.trace_render import _step_state
+    from verdict.orchestration.trace_view import TraceStep
+
+    ok = TraceStep(seq=1, at="", kind="terminal", node_id="n", evidence={"ok": True})
+    bad = TraceStep(seq=2, at="", kind="terminal", node_id="n", evidence={"ok": False})
+    rejected = TraceStep(seq=3, at="", kind="review", node_id="", evidence={"status": "FAIL"})
+    assert _step_state(ok) == ("validated", "SUCCESS")
+    assert _step_state(bad) == ("failed", "ERROR")
+    assert _step_state(rejected) == ("failed", "ERROR")
