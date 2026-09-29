@@ -14,10 +14,10 @@
 set -euo pipefail
 
 # ── Pinned version & expected hashes ────────────────────────────────
-VERDICT_VERSION="${VERDICT_VERSION:-0.3.0}"
-# SHA-256 digests from PyPI JSON API for verdict-core 0.3.0
-VERDICT_WHL_SHA256="66d3084cc20dd592c5705d63d3f5621c82610b28466129de1fbcc38089ba74a7"
-VERDICT_SDIST_SHA256="b26984788c925cc9d72fa6d86f86d27658b9f39a6926bd00718bdda91254751b"
+VERDICT_VERSION="${VERDICT_VERSION:-0.4.0}"
+# SHA-256 digests from PyPI JSON API for verdict-core 0.4.0
+VERDICT_WHL_SHA256="17197fc61cbb97199561956ad9189c7d4b05d3753c2403daa9a7842a13432453"
+VERDICT_SDIST_SHA256="ae248ca948aa361a847e5e61e6c87b2ff8b803b6a68710ea6f7082da36bcd73c"
 
 # ── Colours ─────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -56,7 +56,7 @@ sys.exit(1)
 # For an overridden version fetch the hash from PyPI first.
 resolve_expected_hash() {
   local ver="$1"
-  if [[ "$ver" == "0.3.0" ]]; then
+  if [[ "$ver" == "0.4.0" ]]; then
     EXPECTED_WHL_SHA256="$VERDICT_WHL_SHA256"
     EXPECTED_SDIST_SHA256="$VERDICT_SDIST_SHA256"
   else
@@ -101,7 +101,10 @@ install_verified() {
 
   local tmpdir
   tmpdir=$(mktemp -d)
-  trap 'rm -rf "$tmpdir"' EXIT
+  # Expand now: $tmpdir is local and no longer exists when the EXIT trap runs,
+  # which under `set -u` made every fresh install exit 1 after succeeding.
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmpdir'" EXIT
 
   # Download wheel only (no deps) for hash verification
   log_info "Downloading verdict-core==${ver} wheel for verification..."
@@ -184,14 +187,31 @@ else
 fi
 
 # ── 5. Verify the install ──────────────────────────────────────────
-log_info "Running: verdict check"
-if verdict check; then
-  log_success "verdict check passed."
+# The offline demo needs no key, gateway or config file, so it proves the
+# installed package works. `verdict setup --non-interactive` only plans (it
+# writes nothing without --apply/--allow), so a config file may not exist yet.
+log_info "Running: verdict demo --speed 0 (offline, no model calls)"
+if verdict demo --speed 0 >/dev/null; then
+  log_success "verdict demo completed."
 else
-  log_error "verdict check failed. Review the output above."
+  log_error "verdict demo failed. Review the output above."
   exit 1
+fi
+
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/verdict/verdict.yaml"
+if [[ -f "$CONFIG_FILE" ]]; then
+  log_info "Running: verdict check"
+  if verdict check; then
+    log_success "verdict check passed."
+  else
+    log_error "verdict check failed. Review the output above."
+    exit 1
+  fi
+else
+  log_warn "No configuration file yet ($CONFIG_FILE)."
+  echo "Create one with: verdict setup   (then run: verdict check)"
 fi
 
 # ── 6. Success ─────────────────────────────────────────────────────
 echo ""
-log_success "Verdict is ready. Try: verdict route 'your task here' --criticality medium"
+log_success "Verdict is ready. Try: verdict demo"

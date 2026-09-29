@@ -15,13 +15,13 @@ import pytest
 
 INSTALL_SH = Path(__file__).resolve().parent.parent / "install.sh"
 
-# Real hashes baked into install.sh for 0.3.0
-GOOD_WHL_SHA256 = "66d3084cc20dd592c5705d63d3f5621c82610b28466129de1fbcc38089ba74a7"
-GOOD_SDIST_SHA256 = "b26984788c925cc9d72fa6d86f86d27658b9f39a6926bd00718bdda91254751b"
+# Real hashes baked into install.sh for 0.4.0
+GOOD_WHL_SHA256 = "17197fc61cbb97199561956ad9189c7d4b05d3753c2403daa9a7842a13432453"
+GOOD_SDIST_SHA256 = "ae248ca948aa361a847e5e61e6c87b2ff8b803b6a68710ea6f7082da36bcd73c"
 
 
 def _fake_pypi_json(
-    version: str = "0.3.0", whl_sha256: str = GOOD_WHL_SHA256, sdist_sha256: str = GOOD_SDIST_SHA256
+    version: str = "0.4.0", whl_sha256: str = GOOD_WHL_SHA256, sdist_sha256: str = GOOD_SDIST_SHA256
 ) -> str:
     """Build a minimal PyPI JSON API response."""
     return json.dumps(
@@ -59,7 +59,7 @@ def _run_install_script(
     """Run install.sh with stubbed commands so it never hits the network."""
     env = os.environ.copy()
     env["VERDICT_VERSION"] = (
-        env_overrides.pop("VERDICT_VERSION", "0.3.0") if env_overrides else "0.3.0"
+        env_overrides.pop("VERDICT_VERSION", "0.4.0") if env_overrides else "0.4.0"
     )
 
     if env_overrides:
@@ -100,7 +100,7 @@ class TestInstallScriptContent:
         self.script = INSTALL_SH.read_text()
 
     def test_pinned_version_present(self) -> None:
-        assert 'VERDICT_VERSION="${VERDICT_VERSION:-0.3.0}"' in self.script
+        assert 'VERDICT_VERSION="${VERDICT_VERSION:-0.4.0}"' in self.script
 
     def test_version_overridable_via_env(self) -> None:
         assert "VERDICT_VERSION:-" in self.script
@@ -336,3 +336,51 @@ class TestPyPIHashExtraction:
         )
         assert result.returncode != 0
         assert "NOT_FOUND" in result.stdout
+
+
+class TestPostInstallVerification:
+    """After installing, the script proves the package works without a config file."""
+
+    def _stubs(self, tmp_path: Path, *, demo_exit: int = 0) -> tuple[Path, Path]:
+        d = tmp_path / "bin"
+        d.mkdir()
+        calls = tmp_path / "verdict_calls.log"
+        _write_stub(d, "verdict", f'echo "$@" >> {calls}; [[ "$1" == "demo" ]] && exit {demo_exit}')
+        _write_stub(d, "curl", "exit 1")  # no local gateway
+        return d, calls
+
+    def test_runs_demo_and_skips_check_without_config(self, tmp_path: Path) -> None:
+        d, calls = self._stubs(tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        r = _run_install_script(
+            env_overrides={"HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config")},
+            stub_bin_dir=d,
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        invoked = calls.read_text()
+        assert "demo --speed 0" in invoked
+        assert "check" not in invoked.split(), "check must not run without a config file"
+        assert "No configuration file yet" in r.stdout
+
+    def test_runs_check_when_config_exists(self, tmp_path: Path) -> None:
+        d, calls = self._stubs(tmp_path)
+        cfg = tmp_path / "cfg"
+        (cfg / "verdict").mkdir(parents=True)
+        (cfg / "verdict" / "verdict.yaml").write_text("{}\n")
+        r = _run_install_script(env_overrides={"XDG_CONFIG_HOME": str(cfg)}, stub_bin_dir=d)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "check" in calls.read_text().split()
+
+    def test_failed_demo_fails_the_install(self, tmp_path: Path) -> None:
+        d, _ = self._stubs(tmp_path, demo_exit=3)
+        r = _run_install_script(stub_bin_dir=d)
+        assert r.returncode != 0
+        assert "verdict demo failed" in r.stdout + r.stderr
+
+
+def test_cleanup_trap_does_not_reference_a_local_after_return() -> None:
+    """Under set -u, a trap that expands a function-local at exit fails the install."""
+    script = INSTALL_SH.read_text()
+    assert "trap 'rm -rf \"$tmpdir\"' EXIT" not in script
+    assert "trap \"rm -rf '$tmpdir'\" EXIT" in script
