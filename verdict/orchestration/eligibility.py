@@ -336,7 +336,7 @@ class EligibilityLadder:
         prices: list[float] = []
         if isinstance(pricing, Mapping):
             for value in pricing.values():
-                if isinstance(value, (int, float)):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
                     prices.append(float(value))
         all_zero = bool(prices) and all(p == 0 for p in prices)
         positive = any(p > 0 for p in prices)
@@ -975,3 +975,37 @@ def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
             if value > 0:
                 total += float(value)
     return total, known
+
+
+def capacity_class_of(
+    conn: Mapping[str, Any] | None, row: Mapping[str, Any]
+) -> tuple[CapacityClass, str]:
+    """Classify a route's capacity without instantiating a ladder.
+
+    Applies the same rules as ``EligibilityLadder._capacity_class`` but
+    without the :free-suffix and connection-level-signal extensions added on
+    origin/main (which require provider_catalog helpers used only by the
+    ladder).  Used by ``prove_at_rest`` and any caller that must not touch the
+    ladder's state file.  ``True``/``False`` values in ``pricing`` are not
+    treated as prices.
+    """
+    if conn is None:
+        return CapacityClass.UNKNOWN, ""
+    plan_label = str(conn.get("plan_label", ""))
+    plan_lower = plan_label.lower()
+    auth_type = str(conn.get("authType", "")).lower()
+    pricing = row.get("pricing")
+    prices: list[float] = []
+    if isinstance(pricing, Mapping):
+        for value in pricing.values():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                prices.append(float(value))
+    all_zero = bool(prices) and all(p == 0 for p in prices)
+    positive = any(p > 0 for p in prices)
+    if auth_type == "oauth" and "free" not in plan_lower:
+        return CapacityClass.SUBSCRIPTION, plan_label
+    if bool(conn.get("import_free_only")) or "free" in plan_lower or all_zero:
+        return CapacityClass.FREE, plan_label
+    if auth_type == "apikey" and positive:
+        return CapacityClass.METERED, plan_label
+    return CapacityClass.UNKNOWN, plan_label

@@ -52,8 +52,6 @@ from verdict.prove_at_rest import (
 )
 
 NOW = datetime(2026, 9, 29, 5, 0, tzinfo=timezone.utc)
-FIXTURE = Path(__file__).parent / "fixtures" / "health_cache_routes.json"
-
 
 def _at(seconds: float) -> datetime:
     return NOW + timedelta(seconds=seconds)
@@ -335,17 +333,25 @@ def _ok(tool: bool = False) -> ProbeExchange:
     )
 
 
-def test_cycle_never_exceeds_request_cap_on_large_inventory(tmp_path: Path) -> None:
-    raw = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    routes = [
-        AdmittedRoute(
-            route_id=item["route_id"],
-            provider=item["provider"],
-            capacity=item["capacity"],
-            capacity_evidence=item["capacity"],
-        )
-        for item in raw
+def _large_routes(n: int = 3100) -> list[AdmittedRoute]:
+    """Generate *n* synthetic routes over 10 providers (no disk I/O)."""
+    providers = [
+        "openrouter", "kilocode", "agy", "cx", "gc", "kr", "cc", "cu", "opencode", "deepseek"
     ]
+    capacities = ["free", "metered", "subscription"]
+    return [
+        AdmittedRoute(
+            route_id=f"{providers[i % len(providers)]}/model-{i:04d}",
+            provider=providers[i % len(providers)],
+            capacity=capacities[i % len(capacities)],
+            capacity_evidence=capacities[i % len(capacities)],
+        )
+        for i in range(n)
+    ]
+
+
+def test_cycle_never_exceeds_request_cap_on_large_inventory(tmp_path: Path) -> None:
+    routes = _large_routes(3100)
     assert len(routes) > 3000
 
     def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
@@ -527,26 +533,27 @@ def test_status_report_lists_workers_and_cold_providers(tmp_path: Path) -> None:
 
 
 def test_capacity_class_matches_the_ladder() -> None:
-    """The copied classifier and the ladder's method agree on every shape."""
-    shapes: list[tuple[dict[str, object] | None, dict[str, object]]] = [
-        (None, {}),
-        ({"authType": "oauth", "plan_label": "pro"}, {}),
-        ({"authType": "oauth", "plan_label": "free"}, {}),
-        ({"authType": "apikey", "import_free_only": True, "plan_label": ""}, {}),
-        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 1.0}}),
-        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 0}}),
-        ({"authType": "apikey", "plan_label": ""}, {}),
+    """The module-level classifier and the static method agree on every shape."""
+    from verdict.orchestration.eligibility import capacity_class_of as eligibility_capacity_class_of
+
+    shapes: list[tuple[dict[str, object] | None, dict[str, object], CapacityClass]] = [
+        (None, {}, CapacityClass.UNKNOWN),
+        ({"authType": "oauth", "plan_label": "pro"}, {}, CapacityClass.SUBSCRIPTION),
+        ({"authType": "oauth", "plan_label": "free"}, {}, CapacityClass.FREE),
+        ({"authType": "apikey", "import_free_only": True, "plan_label": ""}, {}, CapacityClass.FREE),
+        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 1.0}}, CapacityClass.METERED),
+        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 0}}, CapacityClass.FREE),
+        ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.UNKNOWN),
+        # Bool pricing values must NOT be treated as prices (True == 1 in Python).
+        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.UNKNOWN),
     ]
-    for conn, row in shapes:
+    for conn, row, expected_class in shapes:
         via_copy = capacity_class_of(conn, row)
-        via_ladder = EligibilityLadder._capacity_class(object(), conn, row)  # type: ignore[arg-type]
-        assert via_copy == via_ladder
-        assert via_copy[0] in {
-            CapacityClass.FREE,
-            CapacityClass.SUBSCRIPTION,
-            CapacityClass.METERED,
-            CapacityClass.UNKNOWN,
-        }
+        via_eligibility = eligibility_capacity_class_of(conn, row)
+        assert via_copy == via_eligibility, f"mismatch for conn={conn!r} row={row!r}"
+        assert via_copy[0] == expected_class, (
+            f"expected {expected_class} for conn={conn!r} row={row!r}, got {via_copy[0]}"
+        )
 
 
 def test_legacy_cycle_file_is_not_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

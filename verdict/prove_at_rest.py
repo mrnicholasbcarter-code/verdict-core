@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.orchestration.contracts import CapacityClass
+from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
@@ -615,37 +616,6 @@ def routes_from_evidence(
             )
         )
     return tuple(out)
-
-
-def capacity_class_of(
-    conn: Mapping[str, Any] | None, row: Mapping[str, Any]
-) -> tuple[CapacityClass, str]:
-    """Same rules as ``EligibilityLadder._capacity_class``.
-
-    Copied, not called through a ladder instance: building a ladder would
-    read and could rewrite ``orchestration-health.json``. The two copies are
-    checked against each other in tests. Selection order is not touched.
-    """
-    if conn is None:
-        return CapacityClass.UNKNOWN, ""
-    plan_label = str(conn.get("plan_label", ""))
-    plan_lower = plan_label.lower()
-    auth_type = str(conn.get("authType", "")).lower()
-    pricing = row.get("pricing")
-    prices: list[float] = []
-    if isinstance(pricing, Mapping):
-        for value in pricing.values():
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                prices.append(float(value))
-    all_zero = bool(prices) and all(price == 0 for price in prices)
-    positive = any(price > 0 for price in prices)
-    if auth_type == "oauth" and "free" not in plan_lower:
-        return CapacityClass.SUBSCRIPTION, plan_label
-    if bool(conn.get("import_free_only")) or "free" in plan_lower or all_zero:
-        return CapacityClass.FREE, plan_label
-    if auth_type == "apikey" and positive:
-        return CapacityClass.METERED, plan_label
-    return CapacityClass.UNKNOWN, plan_label
 
 
 def load_admitted_routes(
