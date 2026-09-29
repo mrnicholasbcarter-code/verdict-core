@@ -806,13 +806,13 @@ def render(view: RunView, *, width: int = 100, plain: bool = False) -> Renderabl
     # box + padding = 51 inner chars.  Truncating prevents a command detail
     # that contains a status word (e.g. "grep -q FAIL …") from wrapping onto
     # a new line that starts with that word, which would look like a status.
-    _VERIFY_COL = 51
+    _verify_col = 51  # inner width of the VERIFY panel at 110 cols
 
     def _vline(prefix: str, label: str, detail: str) -> str:
         full = f"{prefix} {label} {detail}".strip()
-        if len(full) <= _VERIFY_COL:
+        if len(full) <= _verify_col:
             return full
-        keep = _VERIFY_COL - 1  # reserve one char for "…"
+        keep = _verify_col - 1  # reserve one char for "…"
         return full[:keep] + "\u2026"
 
     verify_lines = (

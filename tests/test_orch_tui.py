@@ -251,7 +251,7 @@ def test_verify_lines_truncate_so_pass_fail_prefix_never_wraps() -> None:
 
     # Craft a verify command whose detail contains 'FAIL' past the wrap point:
     # "PASS node-2 sh -c test -f node-2.txt && ! grep -q FAIL node-2.txt (exit 0)"
-    # That is 72 chars – longer than the 51-char panel inner width.
+    # That is 72 chars - longer than the 51-char panel inner width.
     long_cmd = "sh -c test -f node-2.txt && ! grep -q FAIL node-2.txt"
     view = RunView.from_events(
         [event(1, "verify", "node-2", ok=True, command=long_cmd, exit_code=0)]
