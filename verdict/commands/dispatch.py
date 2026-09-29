@@ -41,10 +41,42 @@ def _resolve_run_dir(run: str, runs_dir: str) -> Path:
 def _cmd_trace(args: argparse.Namespace) -> None:
     """Handle ``verdict trace`` CLI command."""
     import json
+    import shutil
 
     from verdict.actions.registry import run_action
 
     run_dir = _resolve_run_dir(args.run, args.runs_dir)
+
+    # --panel context --node N: render the context assembly for one node
+    panel = getattr(args, "panel", None)
+    node = getattr(args, "node", None)
+    if panel == "context":
+        from verdict.actions.views import _action_context_view
+        from verdict.orchestration.context_render import (
+            context_json,
+            render_context,
+            render_context_text,
+        )
+        from verdict.design import presentation_mode
+
+        result = _action_context_view(run=str(run_dir), runs_dir=args.runs_dir, node=node)
+        if not result.ok:
+            print(result.data.get("error", "context failed"), file=sys.stderr)
+            sys.exit(result.exit_code or 1)
+        if args.json:
+            print(json.dumps(result.data.get("payload", result.data), indent=2, default=str))
+            return
+        view = result.data["view"]
+        mode = presentation_mode(stream=sys.stdout)
+        if mode.color:
+            from rich.console import Console
+            width = shutil.get_terminal_size(fallback=(100, 24)).columns
+            console = Console(width=width, force_terminal=True, color_system=mode.color_system)
+            console.print(render_context(view, mode))
+        else:
+            print(render_context_text(view, mode.width), end="")
+        return
+
     params: dict[str, object] = {"run_dir": str(run_dir), "json": args.json, "width": args.width}
     if args.step is not None:
         params["step"] = args.step

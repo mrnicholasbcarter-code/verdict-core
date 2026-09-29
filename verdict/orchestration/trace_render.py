@@ -176,6 +176,13 @@ def render_trace_text(view: TraceView, width: int = 100) -> str:
         if len(line) > width:
             line = line[: width - 1] + "…"
         lines.append(line)
+        # Hint: show the exact command to open the context panel for context steps
+        if step.kind == "context" and step.node_id and view.run_id:
+            hint = f"      # verdict trace {view.run_id} --node {step.node_id} --panel context"
+            if len(hint) <= width:
+                lines.append(hint)
+            else:
+                lines.append(hint[: width - 1] + "…")
 
     lines.append("")
     if view.projection_errors:
