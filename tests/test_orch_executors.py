@@ -8,6 +8,7 @@ import os
 import signal
 import stat
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from verdict.orchestration.executors import (
     FaultInjectingExecutor,
     PrimeHeadlessExecutor,
     ScriptedExecutor,
+    _fault_terminal,
 )
 from verdict.orchestration.prime_settings import (
     one_shot_prime_settings,
@@ -57,7 +59,10 @@ def success_payload(
 
 def run(executor: object, prompt: str, cwd: Path, timeout: float = 30.0) -> WorkerTerminal:
     assert isinstance(executor, (PrimeHeadlessExecutor, FaultInjectingExecutor, ScriptedExecutor))
-    return asyncio.run(executor.run(prompt, route_id=ROUTE, cwd=cwd, timeout_seconds=timeout))
+    terminal = asyncio.run(executor.run(prompt, route_id=ROUTE, cwd=cwd, timeout_seconds=timeout))
+    if isinstance(executor, PrimeHeadlessExecutor):
+        assert terminal.executor_kind == "live"
+    return terminal
 
 
 # ------------------------------------------------------------- PrimeHeadless
@@ -461,6 +466,7 @@ def test_fault_kinds(kind: str, ok: bool, status: int | None, error: str, tmp_pa
     assert result.error == error
     assert result.model == ROUTE
     assert result.session_ref == f"fault-injected:{kind}"
+    assert result.executor_kind == "fault-injected"
 
 
 def test_fault_rate_limit_retry_after(tmp_path: Path) -> None:
@@ -475,6 +481,7 @@ def test_fault_empty_is_ok_with_empty_output(tmp_path: Path) -> None:
     assert result.ok
     assert result.output == ""
     assert result.session_ref == "fault-injected:empty"
+    assert result.executor_kind == "fault-injected"
 
 
 def test_fault_hang_sleeps_then_times_out(tmp_path: Path) -> None:
@@ -485,6 +492,7 @@ def test_fault_hang_sleeps_then_times_out(tmp_path: Path) -> None:
     assert not result.ok
     assert result.error == "timeout"
     assert result.session_ref == "fault-injected:hang"
+    assert result.executor_kind == "fault-injected"
 
 
 def test_fault_queue_drains_then_delegates(tmp_path: Path) -> None:
@@ -493,6 +501,8 @@ def test_fault_queue_drains_then_delegates(tmp_path: Path) -> None:
     second = run(executor, "go", tmp_path)
     assert not first.ok and first.status_code == 503
     assert second.ok and second.output == "real"
+    assert first.executor_kind == "fault-injected"
+    assert second.executor_kind == "scripted"
 
 
 def test_fault_wildcard_key(tmp_path: Path) -> None:
@@ -521,6 +531,7 @@ def test_scripted_sync(tmp_path: Path) -> None:
     result = run(ScriptedExecutor(script), "hello", tmp_path)
     assert result.ok
     assert result.output == f"hello|{ROUTE}|{tmp_path.name}"
+    assert result.executor_kind == "scripted"
 
 
 def test_scripted_async(tmp_path: Path) -> None:
@@ -531,6 +542,7 @@ def test_scripted_async(tmp_path: Path) -> None:
     result = run(ScriptedExecutor(script), "hello", tmp_path)
     assert not result.ok
     assert result.error == "scripted failure"
+    assert result.executor_kind == "scripted"
 
 
 async def test_fault_keys_match_provider_prefix_and_node(tmp_path: Path) -> None:
@@ -618,3 +630,36 @@ def test_installed_prime_096_declares_config_directory_override() -> None:
     assert "Override config directory" in readme
     assert "PRIME_AGENT_CODING_AGENT_DIR" in usage
     assert "default is `~/.prime/agent`" in usage
+
+
+@pytest.mark.parametrize("kind", ["empty", "rate_limit", "server"])
+def test_fault_provenance_does_not_depend_on_session_ref(kind: str) -> None:
+    terminal = _fault_terminal(kind, ROUTE, "renamed-session")
+    assert terminal.executor_kind == "fault-injected"
+    assert terminal.session_ref == "renamed-session"
+
+
+@pytest.mark.parametrize("kind", ["live", "scripted", ""])
+def test_fault_delegation_preserves_terminal_provenance(tmp_path: Path, kind: str) -> None:
+    terminal = WorkerTerminal(
+        ok=True, output="done", model=ROUTE, session_ref="fault-injected:opaque", executor_kind=kind
+    )
+
+    class InnerExecutor:
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            return terminal
+
+    result = run(FaultInjectingExecutor(InnerExecutor(), {}), "go", tmp_path)
+    assert result is terminal
+    assert result.executor_kind == kind
+
+
+def test_scripted_executor_stamps_kind_without_mutating_script_result(tmp_path: Path) -> None:
+    terminal = WorkerTerminal(
+        ok=True, output="fixture", model=ROUTE, session_ref="script-session", executor_kind="live"
+    )
+    result = run(ScriptedExecutor(lambda p, r, c: terminal), "go", tmp_path)
+    assert result == replace(terminal, executor_kind="scripted")
+    assert terminal.executor_kind == "live"

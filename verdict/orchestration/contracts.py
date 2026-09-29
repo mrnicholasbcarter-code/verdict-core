@@ -443,6 +443,7 @@ class WorkerTerminal:
     duration_seconds: float = 0.0
     session_ref: str = ""  # harness session/journal pointer for provenance
     usage: AttemptUsage | None = None  # per-attempt token/cost evidence (BOD-203)
+    executor_kind: str = ""  # adapter-attested provenance; empty means unknown
 
 
 @dataclass(frozen=True)

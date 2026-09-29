@@ -1131,6 +1131,7 @@ def _replay_evidence(events: list[Any]) -> tuple[str, bool]:
     """
     real = False
     inferred = False
+    legacy_fixture = False
     run_executor: str | None = None
     for event in events:
         data = event.data
@@ -1150,7 +1151,9 @@ def _replay_evidence(events: list[Any]) -> tuple[str, bool]:
             if (
                 kind == "fault-injected"
                 or data.get("fault_injected")
-                or str(data.get("session_ref") or "").startswith("fault-injected")
+                or (
+                    kind is None and str(data.get("session_ref") or "").startswith("fault-injected")
+                )
             ):
                 continue
             model = str(data.get("reported_model") or data.get("model") or "").strip()
@@ -1160,10 +1163,15 @@ def _replay_evidence(events: list[Any]) -> tuple[str, bool]:
                 # Unknown explicit markers must not fall back to inference.
                 real = real or kind == "live"
             elif model.startswith(_FIXTURE_ROUTE_PREFIXES):
-                return "fixture", False
+                # A later explicit live terminal can override legacy names.
+                legacy_fixture = True
             else:
                 inferred = True
-    return ("real", not real) if real or inferred else ("unknown", False)
+    if real:
+        return "real", False
+    if legacy_fixture:
+        return "fixture", False
+    return ("real", True) if inferred else ("unknown", False)
 
 
 def _replay_kind(events: list[Any]) -> str:
@@ -1252,6 +1260,9 @@ def follow_replay(
     run_id = events_path.parent.name
 
     kind, inferred = _replay_evidence(events)
+    terminal_markers = {
+        "executor_kind" in event.data for event in events if event.type == "terminal"
+    }
 
     live = None if plain else Live(render(view, width=width), console=target, auto_refresh=False)
     if live is not None:
@@ -1271,11 +1282,15 @@ def follow_replay(
                     "unknown": "recorded run {rid}",
                 }[kind].format(rid=run_id)
                 if inferred:
+                    legacy_note = (
+                        "; run predates executor markers" if terminal_markers == {False} else ""
+                    )
                     label = label.replace(
                         "(real models)",
-                        "(real models: inferred from reported terminal models; "
-                        "run predates executor markers)",
+                        f"(real models: inferred from reported terminal models{legacy_note})",
                     )
+                if terminal_markers == {False, True}:
+                    label += " (mixed executor provenance: marked and unmarked terminals)"
                 view.goal = f"REPLAY of {label} - time x{speed}"
 
             if plain:

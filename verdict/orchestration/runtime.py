@@ -1014,17 +1014,13 @@ class DagRuntime:
                 route_id=run.route_id,
                 reported_model=terminal.model,
                 # Empty is explicitly unknown for custom adapters; never legacy inference.
-                executor_kind=(
-                    "fault-injected"
-                    if terminal.session_ref.startswith("fault-injected")
-                    else str(getattr(self.executor, "executor_kind", ""))
-                ),
+                executor_kind=terminal.executor_kind,
                 duration_seconds=round(terminal.duration_seconds, 2),
                 session_ref=terminal.session_ref,
                 stop_reason=terminal.stop_reason,
                 error=terminal.error,
                 attempt=run.attempt,
-                fault_injected=terminal.session_ref.startswith("fault-injected"),
+                fault_injected=terminal.executor_kind == "fault-injected",
                 **(
                     {
                         "usage": {
@@ -1047,6 +1043,7 @@ class DagRuntime:
                     model=terminal.model,
                     error="worker_blocked: " + terminal.output.strip()[:200],
                     session_ref=terminal.session_ref,
+                    executor_kind=terminal.executor_kind,
                 )
             if not terminal.ok or not terminal.output.strip():
                 return await self._fail(run, terminal, failures, worktree)
@@ -1146,7 +1143,7 @@ class DagRuntime:
             action=failure.action,
             route_id=run.route_id,
             evidence=failure.evidence[:300],
-            fault_injected=terminal.session_ref.startswith("fault-injected"),
+            fault_injected=terminal.executor_kind == "fault-injected",
             attempt=run.attempt,
         )
         if failure.scope != "none" and failure.cooldown_seconds > 0:
@@ -1168,7 +1165,7 @@ class DagRuntime:
                 "attempt": run.attempt,
                 "route_id": run.route_id,
                 "outcome": failure.category,
-                "fault_injected": terminal.session_ref.startswith("fault-injected"),
+                "fault_injected": terminal.executor_kind == "fault-injected",
             }
         )
         await self.git.remove_worktree(worktree)

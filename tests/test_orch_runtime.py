@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -259,41 +260,59 @@ async def test_independent_nodes_run_concurrently_and_complete(repo: Path) -> No
     assert all(e["executor_kind"] == "" for e in ev.of("terminal"))
 
 
-@pytest.mark.parametrize("adapter", ["prime", "direct", "scripted", "fault-live", "fault-scripted"])
+@pytest.mark.parametrize(
+    "adapter", ["live", "unknown", "scripted", "fault-live", "fault-scripted", "fault-unknown"]
+)
 async def test_terminal_records_actual_executor_kind(
     repo: Path, monkeypatch: pytest.MonkeyPatch, adapter: str
 ) -> None:
+    from verdict.orchestration import executors
     from verdict.orchestration.contracts import WorkerExecutor
-    from verdict.orchestration.executors import (
-        DirectGatewayExecutor,
-        FaultInjectingExecutor,
-        PrimeHeadlessExecutor,
-        ScriptedExecutor,
-    )
+    from verdict.orchestration.executors import FaultInjectingExecutor, ScriptedExecutor
 
     worker = Executor({}, delay=0)
+    expected = "" if "unknown" in adapter else "scripted" if "scripted" in adapter else "live"
 
     async def script(prompt: str, route: str, cwd: Path) -> WorkerTerminal:
         return await worker.run(prompt, route_id=route, cwd=cwd, timeout_seconds=1)
 
+    class TerminalExecutor:
+        # Runtime must read the terminal, never this executor-level attribute.
+        executor_kind = "misleading-adapter-marker"
+
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            terminal = await script(prompt, route_id, cwd)
+            terminal = replace(terminal, session_ref="fault-injected:opaque-session")
+            return replace(terminal, executor_kind=expected) if expected else terminal
+
     executor: WorkerExecutor
-    if adapter in {"scripted", "fault-scripted"}:
-        executor = ScriptedExecutor(script)
-        expected = "scripted"
-    else:
-        executor = DirectGatewayExecutor() if adapter == "direct" else PrimeHeadlessExecutor()
-        # Exercise the adapter identity and real runtime path without model calls.
-        monkeypatch.setattr(executor, "run", worker.run)
-        expected = "live"
+    executor = ScriptedExecutor(script) if "scripted" in adapter else TerminalExecutor()
     kinds = [expected]
+    fault_flags = [False]
     if adapter.startswith("fault-"):
+        fault_terminal = executors._fault_terminal
+
+        def renamed_fault(kind: str, route_id: str, session_ref: str) -> WorkerTerminal:
+            return replace(
+                fault_terminal(kind, route_id, session_ref), session_ref="renamed-session"
+            )
+
+        monkeypatch.setattr(executors, "_fault_terminal", renamed_fault)
         executor = FaultInjectingExecutor(executor, {"cc/s": ["rate_limit"]})
         kinds.insert(0, "fault-injected")
+        fault_flags.insert(0, True)
     runtime, events, _ = make(repo, WorkGraph("g", (node("a"),)), worker, ["cc/s", "cx/g"])
     runtime.executor = executor
     result = await runtime.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     assert [e["executor_kind"] for e in events.of("terminal")] == kinds
+    assert [e["fault_injected"] for e in events.of("terminal")] == fault_flags
+    if adapter.startswith("fault-"):
+        assert events.of("terminal")[0]["session_ref"] == "renamed-session"
+        assert events.of("failure")[0]["fault_injected"] is True
+        assert result.nodes["a"].history[0]["fault_injected"] is True
 
 
 async def test_quota_failure_reassigns_same_node_to_other_provider(repo: Path) -> None:

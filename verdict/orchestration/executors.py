@@ -23,6 +23,7 @@ import signal
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -206,8 +207,6 @@ def _as_float(value: Any) -> float | None:
 class PrimeHeadlessExecutor:
     """Run one prompt on one exact route through the Prime headless CLI."""
 
-    executor_kind = "live"
-
     def __init__(
         self,
         prime_bin: str = "prime-agent",
@@ -270,6 +269,7 @@ class PrimeHeadlessExecutor:
         if policy_problems:
             launch_config.cleanup()
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=route_id,
                 error=(
@@ -291,6 +291,7 @@ class PrimeHeadlessExecutor:
         except OSError as exc:
             launch_config.cleanup()
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=route_id,
                 error=f"spawn failed: {_sanitize(str(exc))}",
@@ -302,6 +303,7 @@ class PrimeHeadlessExecutor:
             await self._kill_group(proc)
             launch_config.cleanup()
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=route_id,
                 error="timeout",
@@ -449,10 +451,16 @@ class PrimeHeadlessExecutor:
             if returncode != 0:
                 tail = _sanitize(stderr) or f"exit {returncode} with no assistant message"
                 return WorkerTerminal(
-                    ok=False, model=route_id, error=tail, duration_seconds=duration, usage=usage
+                    executor_kind="live",
+                    ok=False,
+                    model=route_id,
+                    error=tail,
+                    duration_seconds=duration,
+                    usage=usage,
                 )
             if not parsed_any:
                 return WorkerTerminal(
+                    executor_kind="live",
                     ok=False,
                     model=route_id,
                     error=f"malformed: {_sanitize(stdout, 200) or 'empty stdout'}",
@@ -460,6 +468,7 @@ class PrimeHeadlessExecutor:
                     usage=usage,
                 )
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=route_id,
                 error="no_final_answer",
@@ -474,6 +483,7 @@ class PrimeHeadlessExecutor:
 
         if reported_provider != self.provider or reported_model != route_id:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -485,6 +495,7 @@ class PrimeHeadlessExecutor:
         if error_message:
             error_text = _sanitize(str(error_message))
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -495,6 +506,7 @@ class PrimeHeadlessExecutor:
             )
         if stop_reason not in {"stop", "end_turn"}:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -504,6 +516,7 @@ class PrimeHeadlessExecutor:
             )
         if not text.strip():
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -512,6 +525,7 @@ class PrimeHeadlessExecutor:
                 usage=usage,
             )
         return WorkerTerminal(
+            executor_kind="live",
             ok=True,
             output=text,
             model=reported_model,
@@ -549,10 +563,17 @@ def _fault_terminal(kind: str, route_id: str, session_ref: str) -> WorkerTermina
         "mismatch": "model_mismatch",
     }
     if kind == "empty":
-        return WorkerTerminal(ok=True, output="", model=route_id, session_ref=session_ref)
+        return WorkerTerminal(
+            executor_kind="fault-injected",
+            ok=True,
+            output="",
+            model=route_id,
+            session_ref=session_ref,
+        )
     if kind not in errors:
         raise ValueError(f"unknown fault kind {kind!r}")
     return WorkerTerminal(
+        executor_kind="fault-injected",
         ok=False,
         model=route_id,
         session_ref=session_ref,
@@ -573,11 +594,6 @@ class FaultInjectingExecutor:
         self._faults: dict[str, list[str]] = {k: list(v) for k, v in faults.items()}
         self._dispatches = 0  # executor calls seen (planning included), for "#N" keys
         self._worker_dispatches = 0  # attempt worktrees ``<node>-a<N>`` only, for "worker#N"
-
-    @property
-    def executor_kind(self) -> str:
-        """Delegated attempts keep the inner executor's provenance."""
-        return str(getattr(self.inner, "executor_kind", ""))
 
     @staticmethod
     def _is_worker_attempt(cwd: Path) -> bool:
@@ -631,8 +647,6 @@ ScriptFn = Callable[[str, str, Path], "WorkerTerminal | Awaitable[WorkerTerminal
 class ScriptedExecutor:
     """Deterministic executor backed by a plain (sync or async) callable."""
 
-    executor_kind = "scripted"
-
     def __init__(self, script: ScriptFn) -> None:
         self.script = script
 
@@ -640,9 +654,8 @@ class ScriptedExecutor:
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         result = self.script(prompt, route_id, cwd)
-        if isinstance(result, WorkerTerminal):
-            return result
-        return await result
+        terminal = result if isinstance(result, WorkerTerminal) else await result
+        return replace(terminal, executor_kind="scripted")
 
 
 # ---------------------------------------------------------------- direct gateway
@@ -661,8 +674,6 @@ class DirectGatewayExecutor:
     fields compatible with the recovery classifier so that failover works
     unchanged.
     """
-
-    executor_kind = "live"
 
     _OWNED_FILES_RE = re.compile(r"^OWNED_FILES:\s*(.+)$", re.MULTILINE)
     _DIFF_FENCE_RE = re.compile(r"```(?:diff|patch)\n(.*?)```", re.DOTALL)
@@ -989,6 +1000,7 @@ class DirectGatewayExecutor:
                 resp = await client.post(url, json=payload, headers=self._headers())
         except httpx.TimeoutException:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=route_id,
                 error="timeout",
@@ -996,6 +1008,7 @@ class DirectGatewayExecutor:
             )
         except (httpx.TransportError, OSError) as exc:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=route_id,
                 error=f"transport: {_sanitize(str(exc), 200)}",
@@ -1014,6 +1027,7 @@ class DirectGatewayExecutor:
         diff_text = self._extract_diff(terminal.output)
         if diff_text is None:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
@@ -1027,6 +1041,7 @@ class DirectGatewayExecutor:
         security_error = await self._validate_diff_security(diff_text, owned_files, cwd)
         if security_error is not None:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
@@ -1042,6 +1057,7 @@ class DirectGatewayExecutor:
         path_error = self._validate_diff_paths(diff_text, owned_files)
         if path_error is not None:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
@@ -1055,6 +1071,7 @@ class DirectGatewayExecutor:
         applied, apply_error = await self._apply_diff(diff_text, cwd)
         if not applied:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 output=terminal.output,
                 model=terminal.model,
@@ -1077,6 +1094,7 @@ class DirectGatewayExecutor:
                 with contextlib.suppress(ValueError):
                     retry_after = float(raw_retry)
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=route_id,
                 error=error_text,
@@ -1088,6 +1106,7 @@ class DirectGatewayExecutor:
             body = resp.json()
         except (ValueError, TypeError):
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=route_id,
                 error=f"malformed: {_sanitize(resp.text, 200)}",
@@ -1096,7 +1115,11 @@ class DirectGatewayExecutor:
         choices = body.get("choices") or []
         if not choices:
             return WorkerTerminal(
-                ok=False, model=route_id, error="empty_output", duration_seconds=duration
+                executor_kind="live",
+                ok=False,
+                model=route_id,
+                error="empty_output",
+                duration_seconds=duration,
             )
         choice = choices[0]
         message = choice.get("message", {})
@@ -1124,6 +1147,7 @@ class DirectGatewayExecutor:
 
         if stop_reason not in {"end_turn", "stop", ""}:
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 stop_reason=stop_reason,
@@ -1134,6 +1158,7 @@ class DirectGatewayExecutor:
 
         if not text.strip():
             return WorkerTerminal(
+                executor_kind="live",
                 ok=False,
                 model=reported_model,
                 error="empty_output",
@@ -1142,6 +1167,7 @@ class DirectGatewayExecutor:
             )
 
         return WorkerTerminal(
+            executor_kind="live",
             ok=True,
             output=text,
             model=reported_model,

@@ -310,6 +310,14 @@ def test_replay_kind_needs_evidence_for_real_models() -> None:
         ({"executor_kind": "live", "reported_model": "alpha/x"}, "real"),
         ({"executor_kind": "live", "model": "alpha/x"}, "real"),
         ({"executor_kind": "live", "reported_model": "fixture/model"}, "real"),
+        (
+            {
+                "executor_kind": "live",
+                "reported_model": "alpha/x",
+                "session_ref": "fault-injected:not-provenance",
+            },
+            "real",
+        ),
         ({"executor_kind": "live"}, "unknown"),
         ({"executor_kind": "scripted", "reported_model": "alpha/x"}, "fixture"),
         ({"executor_kind": "scripted"}, "fixture"),
@@ -356,6 +364,83 @@ def test_scripted_terminal_overrides_live_and_legacy_evidence() -> None:
         ]
         assert _replay_evidence(events) == ("fixture", False)
         assert _replay_evidence(list(reversed(events))) == ("fixture", False)
+
+
+@pytest.mark.parametrize("legacy_first", [False, True])
+@pytest.mark.parametrize("model_field", ["model", "reported_model"])
+def test_live_terminal_overrides_legacy_fixture_models(
+    legacy_first: bool, model_field: str
+) -> None:
+    from types import SimpleNamespace
+
+    from verdict.orchestration.tui import _replay_evidence
+
+    events = [
+        SimpleNamespace(type="terminal", data={"executor_kind": "live", model_field: "alpha/x"}),
+        SimpleNamespace(type="terminal", data={model_field: "fixture/model"}),
+    ]
+    if legacy_first:
+        events.reverse()
+    assert _replay_evidence(events) == ("real", False)
+
+
+@pytest.mark.parametrize("legacy_first", [False, True])
+@pytest.mark.parametrize(
+    ("executor_kind", "legacy_model", "inferred"),
+    [
+        ("live", "fixture/model", False),
+        ("live", "alpha/legacy", False),
+        ("unrecognized", "alpha/legacy", True),
+        ("", "alpha/legacy", True),
+        (None, "alpha/legacy", True),
+        ("fault-injected", "alpha/legacy", True),
+    ],
+)
+def test_mixed_terminal_provenance_does_not_predate_executor_markers(
+    tmp_path: Path, legacy_first: bool, executor_kind: str | None, legacy_model: str, inferred: bool
+) -> None:
+    from io import StringIO
+
+    from rich.console import Console
+
+    from verdict.orchestration.tui import _replay_evidence, read_events
+
+    terminals = [
+        {"executor_kind": executor_kind, "reported_model": "alpha/marked"},
+        {"reported_model": legacy_model},
+    ]
+    if legacy_first:
+        terminals.reverse()
+    event_data = [
+        ("run_started", {"goal": "mixed provenance", "run_id": "mixed-run"}),
+        *(("terminal", terminal) for terminal in terminals),
+        ("run_finished", {"outcome": "COMPLETE"}),
+    ]
+    events_file = tmp_path / "events.jsonl"
+    events_file.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "at": "2026-01-01T00:00:00.000000Z",
+                    "seq": seq,
+                    "type": event_type,
+                    "node_id": "node-a" if event_type == "terminal" else "",
+                    "data": data,
+                }
+            )
+            for seq, (event_type, data) in enumerate(event_data)
+        )
+    )
+
+    assert _replay_evidence(read_events(events_file)) == ("real", inferred)
+    view = follow_replay(
+        events_file, console=Console(file=StringIO(), width=110), speed=1000, max_gap=0
+    )
+    assert "real models" in view.goal
+    assert "mixed executor provenance: marked and unmarked terminals" in view.goal
+    assert "run predates executor markers" not in view.goal
+    assert ("inferred from reported terminal models" in view.goal) is inferred
+    assert "no model calls" not in view.goal
 
 
 @pytest.mark.parametrize("proof", ["live-controller-run", "dogfood-bod-225-live-2026-09-29"])
