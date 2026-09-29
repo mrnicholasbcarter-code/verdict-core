@@ -686,8 +686,9 @@ Planning, controller and review tasks use subscription, then free, then metered,
 Implementation workers use free, then subscription, then metered, then unknown, but a free route
 qualifies as a worker only with a fresh agentic probe PASS in the health cache, and unknown
 capacity needs an explicit opt-in ([`:596-625`](verdict/orchestration/eligibility.py#L596-L625);
-[health cache guide](docs/guides/health-cache.md)). `verdict orchestrate` does not attach a health
-cache yet, so in live runs no free route is admitted as a worker. Within a class the ladder ranks by
+[health cache guide](docs/guides/health-cache.md)). `verdict orchestrate` builds its ladder without a
+health cache ([`eligibility_report.py:158`](verdict/orchestration/eligibility_report.py#L158)), so
+`verdict orchestrate` admits no free route as a worker yet. Within a class the ladder ranks by
 headroom, price, provider preference, load and task fit
 ([`:706`](verdict/orchestration/eligibility.py#L706)). Capacity class comes from account evidence,
 never from a model name. Probes go round-robin across providers within a class, so one failing provider
