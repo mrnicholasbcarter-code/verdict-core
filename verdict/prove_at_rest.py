@@ -512,11 +512,11 @@ class Prober:
         """
         if not reported:
             return True
-        # The gateway either echoes the full route id or strips exactly the
-        # gateway provider segment ("cc/claude-x" -> "claude-x",
-        # "nvidia/moonshotai/kimi-k3" -> "moonshotai/kimi-k3").  Anything else,
-        # including a different provider with the same model suffix, is a
-        # mismatch.
+        # Accepted echoes: the full route id, or the route id minus its gateway
+        # provider segment.  OmniRoute was observed (2026-09-29) echoing
+        # "cc/claude-x" as "claude-x" and "nvidia/moonshotai/kimi-k3" as
+        # "moonshotai/kimi-k3".  Anything else, including a different provider
+        # with the same model suffix, is a mismatch.
         route_suffix = route_id.split("/", 1)[1] if "/" in route_id else route_id
         return reported in (route_id, route_suffix)
 
