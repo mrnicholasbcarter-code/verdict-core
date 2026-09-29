@@ -195,7 +195,7 @@ def step_test_clean_shell(repo_path: Path, venv_bin: Path) -> StepResult:
     os.close(junit_fd)  # Close the file descriptor, pytest will write to the path
     junit_path = Path(junit_path_str)
     result = run_command(
-        [str(venv_bin / "pytest"), f"--junitxml={junit_path}"],
+        [str(venv_bin / "python"), "-m", "pytest", f"--junitxml={junit_path}"],
         cwd=repo_path,
         env=clean_env,
         timeout=1800,  # 30 minutes max (suite takes ~8-9 minutes)
@@ -256,7 +256,7 @@ def step_test_dirty_shell(repo_path: Path, venv_bin: Path) -> StepResult:
     os.close(junit_fd)
     junit_path = Path(junit_path_str)
     result = run_command(
-        [str(venv_bin / "pytest"), f"--junitxml={junit_path}"],
+        [str(venv_bin / "python"), "-m", "pytest", f"--junitxml={junit_path}"],
         cwd=repo_path,
         env=dirty_env,
         timeout=1800,
@@ -812,6 +812,25 @@ def run_certification(
     venv_bin = repo_path / ".venv" / "bin"
     if not venv_bin.exists():
         print("ERROR: .venv/bin not found. Run 'uv sync' first.", file=sys.stderr)
+        sys.exit(1)
+
+    # Sanity-check: the venv's Python must import verdict from this checkout,
+    # not from a different editable install.  Using `python -m pytest` (instead
+    # of the shebang'd pytest script) ensures the interpreter is always the one
+    # in this venv, regardless of what shebang the script carries.
+    sanity = run_command(
+        [
+            str(venv_bin / "python"),
+            "-c",
+            "import verdict; import pathlib; "
+            "p = pathlib.Path(verdict.__file__).resolve().parents[1]; "
+            f"expected = pathlib.Path('{repo_path}').resolve(); "
+            "assert p == expected, f'verdict imported from {{p}}, expected {expected}'",
+        ],
+        cwd=repo_path,
+    )
+    if sanity.returncode != 0:
+        print(f"ERROR: venv sanity check failed:\n{sanity.stderr}", file=sys.stderr)
         sys.exit(1)
 
     # Run all steps
