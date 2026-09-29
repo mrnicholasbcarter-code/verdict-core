@@ -693,6 +693,19 @@ def test_review_missing_executed_identity_not_observed() -> None:
     assert _get("independent_review", evs).status == CLAIM_STATUS_NOT_OBSERVED
 
 
+def test_review_before_worker_terminal_not_verified() -> None:
+    """A review recorded before the work it judges finished cannot certify that work."""
+    review = _event(
+        1, "review", {"status": "PASS", "route_id": "kr/gpt-5.6-terra", "blocking": 0}, ""
+    )
+    evs = [
+        review,
+        _event(2, "dispatch", {"route_id": "kr/claude-sonnet-4", "attempt": 1}),
+        _event(3, "terminal", {"attempt": 1, "ok": True, "reported_model": "kr/claude-sonnet-4"}),
+    ]
+    assert _get("independent_review", evs).status == CLAIM_STATUS_NOT_OBSERVED
+
+
 def test_review_observed_independent_verified() -> None:
     evs = [
         _event(1, "dispatch", {"route_id": "kr/claude-sonnet-4", "attempt": 1}),

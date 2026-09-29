@@ -612,6 +612,15 @@ def _claim_independent_review(
     worker_ids.discard("")
     if not worker_ids:
         return _claim(cid, text, CLAIM_STATUS_NOT_OBSERVED)
+    # Chronology: the review must come after every worker terminal it could have judged.
+    review_seq = _int(review.get("seq"))
+    terminal_seqs = [
+        s for t in events if t.get("type") == "terminal" and (s := _int(t.get("seq"))) is not None
+    ]
+    if review_seq is None or (terminal_seqs and review_seq <= max(terminal_seqs)):
+        return _claim(
+            cid, text, CLAIM_STATUS_NOT_OBSERVED, [_ev(review, {"review_seq": review_seq})]
+        )
     shared = sorted(reviewer_ids & worker_ids)
     shared_families = sorted(
         {route_family(r) for r in reviewer_ids} & {route_family(r) for r in worker_ids}
