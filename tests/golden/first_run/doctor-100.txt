@@ -1,0 +1,24 @@
+
+VERDICT  /  Doctor
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+
+  Capability coverage
+Observed discovery and certification. Missing capabilities stay visible; installed does not mean 
+healthy.
+
+  Capabilities
+  + code.symbols  COVERED
+    native · healthy · local
+  - memory.search  MISSING
+    unknown
+    Repair: verdict setup --recommended
+
+  Doctor Report
+Doctor Report: 2 issues identified. 0 resolved.
+  ! ISSUE  FAILED
+    Missing configuration: verdict.yaml
+    Repair: verdict setup
+  ! ISSUE  FAILED
+    OmniRoute gateway unreachable
+    Repair: verdict detect

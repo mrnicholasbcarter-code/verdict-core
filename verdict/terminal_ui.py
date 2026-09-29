@@ -8,21 +8,23 @@ import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from time import monotonic
-from typing import Any
+from typing import Any, TextIO, cast
 
-from rich import box
-from rich.console import Console, Group
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
-from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
-from rich.spinner import Spinner
+from rich.segment import Segment
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from verdict.design import PALETTE, ColorSystem, PresentationMode
 from verdict.design import (
     TOKENS as TOKENS,  # re-export; keep `from verdict.terminal_ui import TOKENS` working
 )
+from verdict.design import panel as design_panel
+from verdict.motion import MotionClock, border_highlight, pulse, synchronized_output
 
 _CONTROLS = re.compile(
     r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))|[\x00-\x08\x0b-\x1f\x7f-\x9f]"
@@ -41,17 +43,60 @@ def rows(value: object) -> list[dict[str, Any]]:
 
 
 class _Elapsed:
-    def __init__(self, label: str) -> None:
+    """A light and border for an observed operation, never a progress estimate."""
+
+    def __init__(self, label: str, mode: PresentationMode) -> None:
         self.label = clean(label)
         self.started = monotonic()
-        self.spinner = Spinner("dots", style=TOKENS["PRIMARY"])
+        self.mode = mode
+        self.clock = MotionClock(mode)
 
-    def __rich__(self) -> Table:
-        table = Table.grid(padding=(0, 1))
-        table.add_column(width=2)
-        table.add_column(overflow="fold")
-        table.add_row(self.spinner, Text(f"{self.label} · {int(monotonic() - self.started)}s"))
-        return table
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        phase = self.clock.phase()
+        strength = pulse(phase, mode=self.mode, state="running")
+        rgb = tuple(round(channel * strength) for channel in PALETTE["PURPLE"].rgb)
+        light = Style(color="rgb({},{},{})".format(*rgb))
+        text = Text("● ", style=light)
+        text.append("RUNNING  ", style=TOKENS["PRIMARY"])
+        text.append(self.label, style=TOKENS["TEXT"])
+        text.append(f"  ·  {int(monotonic() - self.started)}s", style=TOKENS["MUTED"])
+        component = design_panel(text, mode=self.mode)
+        lines = console.render_lines(component, options, pad=False)
+        cell = border_highlight(
+            phase, max(0, options.max_width - 2), mode=self.mode, state="running"
+        )
+        for row, line in enumerate(lines):
+            position = 0
+            for segment in line:
+                if (
+                    row == 0
+                    and cell is not None
+                    and position <= cell + 1 < position + segment.cell_length
+                ):
+                    before, rest = segment.split_cells(cell + 1 - position)
+                    highlight, after = rest.split_cells(1)
+                    yield before
+                    yield Segment(
+                        highlight.text, (highlight.style or Style()) + Style(color=TOKENS["ACCENT"])
+                    )
+                    yield after
+                else:
+                    yield segment
+                position += segment.cell_length
+            if row < len(lines) - 1:
+                yield Segment.line()
+
+
+class _SynchronizedLive(Live):
+    """One short DEC-2026 frame; no input or work executes inside the marker."""
+
+    def __init__(self, content: _Elapsed, *, console: Console, mode: PresentationMode) -> None:
+        self.mode = mode
+        super().__init__(content, console=console, refresh_per_second=5, transient=True)
+
+    def refresh(self) -> None:
+        with synchronized_output(cast(TextIO, self.console.file), mode=self.mode):
+            super().refresh()
 
 
 class TerminalUI:
@@ -77,18 +122,22 @@ class TerminalUI:
                 return self._c.width
 
         _mode = _pm(_ConsoleStream(source))
-        self.plain = not _mode.color or os.getenv("VERDICT_PLAIN") == "1"
+        self.mode = _mode
+        self.plain = not _mode.color
         self.console = Console(
             file=source.file,
-            width=source.width,
+            # Preserve explicitly sized captures; real terminals measure each frame.
+            width=source._width,
+            height=source._height,
             force_terminal=not self.plain,
-            color_system=None if self.plain else "auto",
+            color_system=None if self.plain else cast(ColorSystem, source.color_system),
             no_color=self.plain,
             theme=Theme(TOKENS),
             markup=True,
             highlight=False,
         )
-        self.animate = not (machine or self.plain or os.getenv("VERDICT_NO_ANIMATION") == "1")
+        self.animate = not machine and _mode.animate
+        self._stages: dict[str, str] = {}
         self._live: Live | None = None
 
     @property
@@ -108,15 +157,7 @@ class TerminalUI:
             self.console.print(name)
             self.console.print(subtitle)
         else:
-            self.console.print(
-                Panel(
-                    Group(name, subtitle),
-                    box=box.ROUNDED,
-                    border_style="BORDER",
-                    padding=(1, 2),
-                    width=min(88, self.console.width),
-                )
-            )
+            self.console.print(design_panel(Group(name, subtitle), mode=self.mode, tone="PRIMARY"))
         self.console.print()
 
     def status(self, label: str, state: str, detail: str = "") -> None:
@@ -148,9 +189,18 @@ class TerminalUI:
         text = Text(f"  {marker} ", style=tone)
         text.append(clean(label))
         text.append(f"  {state.upper()}", style=tone)
-        self.console.print(text)
-        if detail:
-            self.console.print(Text(f"    {clean(detail)}", style="MUTED"))
+        if self.plain:
+            self.console.print(text)
+            if detail:
+                self.console.print(Text(f"    {clean(detail)}", style="MUTED"))
+        else:
+            status = Table.grid(padding=(0, 2), expand=True)
+            status.add_column(ratio=1, style="TEXT", overflow="fold")
+            status.add_column(justify="right", style=tone, no_wrap=True)
+            status.add_row(Text(clean(label)), Text(f"{marker} {state.upper()}", style=tone))
+            self.console.print(status)
+            if detail:
+                self.console.print(Text(clean(detail), style="SECONDARY"))
 
     def section(self, title: str) -> None:
         if not self.machine:
@@ -164,14 +214,7 @@ class TerminalUI:
             self.console.print(Text(clean(content)))
         else:
             self.console.print(
-                Panel(
-                    Text(clean(content)),
-                    title=Text(clean(title), style=tone),
-                    border_style=tone,
-                    box=box.ROUNDED,
-                    padding=(1, 2),
-                    width=min(100, self.console.width),
-                )
+                design_panel(Text(clean(content)), title=clean(title), mode=self.mode, tone=tone)
             )
 
     def stop(self) -> None:
@@ -184,8 +227,8 @@ class TerminalUI:
         if self.machine:
             return
         if self.animate:
-            self._live = Live(
-                _Elapsed(label), console=self.console, refresh_per_second=8, transient=True
+            self._live = _SynchronizedLive(
+                _Elapsed(label, self.mode), console=self.console, mode=self.mode
             )
             self._live.start(refresh=True)
         else:
@@ -215,8 +258,45 @@ class TerminalUI:
             yield
             self.stop()
 
+    def setup_journey(self) -> None:
+        """Show only observed bootstrap stages; external checks remain not run."""
+        if self.machine:
+            return
+        stages = (
+            ("discover", "DISCOVER"),
+            ("certify", "CERTIFY"),
+            ("plan", "PLAN"),
+            ("apply", "APPLY"),
+            ("doctor", "DOCTOR"),
+            ("proof", "FIRST RUN / PROOF"),
+        )
+        journey = Text()
+        for index, (key, label) in enumerate(stages):
+            state = self._stages.get(key, "not run")
+            tone = (
+                "SUCCESS"
+                if state in _GOOD
+                else "ERROR"
+                if state in _BAD
+                else "PRIMARY"
+                if state == "running"
+                else "MUTED"
+            )
+            if index:
+                journey.append("  /  ", style=TOKENS["BORDER"] if not self.plain else "")
+            journey.append(
+                f"{label} [{state.upper()}]", style=TOKENS[tone] if not self.plain else ""
+            )
+        if self.plain:
+            self.console.print(journey)
+        else:
+            self.console.print(
+                design_panel(journey, title="SETUP / OBSERVED STAGES", mode=self.mode)
+            )
+
     def event(self, stage: str, state: str, summary: str, data: Mapping[str, Any]) -> None:
         """Consume semantic notifications from the real bootstrap operation."""
+        self._stages[stage] = state
         if state == "running":
             self.start(summary)
             return
@@ -229,6 +309,8 @@ class TerminalUI:
             self.recommendations(rows(data.get("recommendations")))
         else:
             self.status(stage.title(), state, summary)
+        if not self.plain and stage in {"discover", "certify", "plan", "apply"}:
+            self.setup_journey()
 
     def capabilities(self, providers: Sequence[Mapping[str, Any]]) -> None:
         groups = sorted({str(p.get("provider_kind", "other")) for p in providers})
@@ -321,6 +403,11 @@ class TerminalUI:
 
     def bootstrap(self, report: Mapping[str, Any], *, rendered_events: bool = False) -> None:
         self.stop()
+        for stage in rows(report.get("stages")):
+            self._stages[str(stage["stage"])] = str(stage["status"])
+        if report.get("plan"):
+            self._stages.setdefault("plan", "available")
+        self.setup_journey()
         if not rendered_events:
             for stage in rows(report.get("stages")):
                 self.status(
@@ -373,7 +460,20 @@ class TerminalUI:
                 "Review certification above. Run verdict doctor to check the full installation.",
             )
 
+    def doctor_finding(self, label: str, state: str, detail: str = "") -> None:
+        """Keep the observed problem and its next action adjacent, in every mode."""
+        from verdict.doctor_presentation import PROBLEM_STATES, repair_command
+
+        self.status(label, state, detail)
+        if not self.machine and state.lower() in PROBLEM_STATES:
+            command = repair_command(f"{label} {state} {detail}")
+            self.console.print(Text(f"    Repair: {command}", style="ACCENT"))
+
     def doctor(self, report: Mapping[str, Any]) -> None:
+        self.panel(
+            "Capability coverage",
+            "Observed discovery and certification. Missing capabilities stay visible; installed does not mean healthy.",
+        )
         self.section("Capabilities")
         for item in rows(report.get("capabilities")):
             detail = " · ".join(
@@ -381,7 +481,7 @@ class TerminalUI:
                 for key in ("selected_provider_id", "health", "authority")
                 if item.get(key) is not None
             )
-            self.status(
+            self.doctor_finding(
                 str(item.get("capability_id", "Capability")),
                 str(item.get("status", "unknown")),
                 detail,
@@ -394,7 +494,9 @@ class TerminalUI:
         )
         for issue in issues:
             resolved = any(item.lower() in issue.lower() for item in fixed)
-            self.status("FIXED" if resolved else "ISSUE", "ok" if resolved else "failed", issue)
+            self.doctor_finding(
+                "FIXED" if resolved else "ISSUE", "ok" if resolved else "failed", issue
+            )
         if not issues:
             self.status(
                 "System is healthy! All checks passed.",
