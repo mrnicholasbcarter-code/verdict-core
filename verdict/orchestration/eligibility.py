@@ -28,6 +28,7 @@ from verdict.orchestration.provider_catalog import (
     is_not_free_signal,
     record_not_free_override,
     resolve_provider,
+    sanitized_plan_label,
 )
 from verdict.subagent_selection import HealthResult
 
@@ -144,6 +145,9 @@ class _Assessment:
     # BOD-177: backend pool identity and capacity classification evidence.
     pool: str = ""
     capacity_evidence: str = ""
+    # AC6: the cooldown key under which this route is currently blocked
+    # (never an email, token, or account id).
+    cooldown_scope: str = ""
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -193,6 +197,10 @@ class _Assessment:
             supports_tools=self.supports_tools,
             supports_structured_output=self.supports_structured_output,
             price=self.price if self.price_known else None,
+            # AC6: non-secret provenance
+            pool=self.pool,
+            capacity_evidence=self.capacity_evidence,
+            cooldown_scope=self.cooldown_scope,
         )
 
 
@@ -317,8 +325,9 @@ class EligibilityLadder:
         """
         if conn is None:
             return CapacityClass.UNKNOWN, "", "no_connection"
-        plan_label = str(conn.get("plan_label", ""))
-        auth_type = str(conn.get("authType", "")).lower()
+        plan_label = sanitized_plan_label(conn.get("plan_label", ""))
+        auth_type = str(conn.get("authType", "")).strip().lower()
+        auth_evidence = auth_type if auth_type in {"apikey", "oauth", "none"} else "other"
 
         # (a) :free suffix overrides oauth → subscription (fixes D5: 72
         # kilocode :free misclassed as SUBSCRIPTION).
@@ -352,8 +361,10 @@ class EligibilityLadder:
         if auth_type == "apikey" and positive:
             return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
 
-        # (f) UNKNOWN with a named reason.
-        reason = f"no_pricing_data:auth={auth_type}"
+        # (f) UNKNOWN with a named, bounded reason. Never persist the raw
+        # connection authType: inventory fields are untrusted and may contain
+        # account identifiers or credentials.
+        reason = f"no_pricing_data:auth={auth_evidence}"
         return CapacityClass.UNKNOWN, plan_label, reason
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
@@ -463,9 +474,11 @@ class EligibilityLadder:
         a.health, a.health_category = self._health_status(route_id, now)
         if a.health == "unhealthy":
             a.failed_stage, a.reason = EligibilityStage.HEALTHY, a.health_category
-            until = self._active_cooldown(f"route:{route_id}", now)
+            _ck = f"route:{route_id}"
+            until = self._active_cooldown(_ck, now)
             if until is not None:
                 a.cooldown_until = _iso(until)
+                a.cooldown_scope = _ck  # AC6: non-secret scope key
             return a
 
         for key, label in (
@@ -476,6 +489,7 @@ class EligibilityLadder:
             if until is not None:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, label
                 a.cooldown_until = _iso(until)
+                a.cooldown_scope = key  # AC6: non-secret scope key
                 return a
         limited = self._rate_limited_until(conn, route_id, now)
         if limited is not None:
@@ -534,7 +548,7 @@ class EligibilityLadder:
         if route_family(route_id) in req.exclude_families:
             return "excluded_family"
         # Pool-aware independence: aliased backend pools (agy≡antigravity,
-        # kilocode/openrouter :free) are excluded by pool id, not prefix.
+        # kc/kilocode/openrouter :free) are excluded by pool id, not prefix.
         if backend_pool(route_id) in req.exclude_families:
             return "excluded_family"
         if backend_pool(route_id) in aliased_pools_for(req.exclude_routes):
@@ -774,6 +788,10 @@ class EligibilityLadder:
                     supports_tools=a.supports_tools,
                     supports_structured_output=a.supports_structured_output,
                     price=a.price if a.price_known else None,
+                    # AC6: non-secret provenance
+                    pool=a.pool,
+                    capacity_evidence=a.capacity_evidence,
+                    cooldown_scope=a.cooldown_scope,
                 )
                 verdicts.append(selected)
             else:
@@ -853,7 +871,7 @@ class EligibilityLadder:
             if provider and category in _PROVIDER_SCOPE_CATEGORIES:
                 self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
             # Live-evidence not-free override: mark the route and pool so
-            # FREE-tier ranking can exclude it (design §B, item 3).
+            # capacity classification reflects the override (design §B, item 3).
             if is_not_free_signal(
                 category=category, status_code=getattr(result, "status_code", None)
             ):

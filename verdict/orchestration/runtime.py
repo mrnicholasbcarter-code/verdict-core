@@ -658,11 +658,14 @@ class DagRuntime:
             # BOD-277: per-route eligibility verdicts for trace drill-down.
             _rejections = _build_rejections(considered)
             _selected_route = choice.route_id if choice is not None else None
-            _cands, _cands_omitted = _build_candidates(considered, _selected_route)
+            _cands, _cands_omitted, _omitted_summary = _build_candidates(
+                considered, _selected_route
+            )
             _evidence: dict[str, Any] = {
                 "rejections": _rejections,
                 "candidates": _cands,
                 "candidates_omitted": _cands_omitted,
+                "omitted_summary": _omitted_summary,  # AC7: per-state detail for omitted
             }
             if choice is None:
                 # Check if we can wait for a short cooldown to expire

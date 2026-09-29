@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,6 +68,10 @@ class CandidateRecord:
     plan_label: str | None
     cooldown_until: str | None
     price: float | None  # metered price per 1M tokens; None = UNKNOWN
+    # AC6: non-secret capacity/cooldown provenance (empty = unknown)
+    pool: str = field(default="")
+    capacity_evidence: str = field(default="")
+    cooldown_scope: str = field(default="")
 
     @classmethod
     def from_verdict_dict(cls, d: Mapping[str, Any]) -> CandidateRecord:
@@ -91,6 +95,9 @@ class CandidateRecord:
             plan_label=d.get("plan_label") or None,
             cooldown_until=d.get("cooldown_until") or None,
             price=d.get("price"),
+            pool=str(d.get("pool") or ""),
+            capacity_evidence=str(d.get("capacity_evidence") or ""),
+            cooldown_scope=str(d.get("cooldown_scope") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -110,6 +117,9 @@ class CandidateRecord:
             "plan_label": self.plan_label,
             "cooldown_until": self.cooldown_until,
             "price": self.price,
+            "pool": self.pool,
+            "capacity_evidence": self.capacity_evidence,
+            "cooldown_scope": self.cooldown_scope,
         }
 
 
@@ -147,6 +157,10 @@ class EligibilityEvaluation:
     # Flag when selected != observed (and both are non-empty).
     selected_observed_mismatch: bool
 
+    # AC7: per-state count + first rejection reason for omitted routes.
+    # None when candidates_omitted == 0 or the event predates this field.
+    omitted_summary: dict[str, Any] | None = field(default=None)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "node_id": self.node_id,
@@ -162,6 +176,7 @@ class EligibilityEvaluation:
                 [c.to_dict() for c in self.candidates] if self.candidates is not None else None
             ),
             "candidates_omitted": self.candidates_omitted,
+            "omitted_summary": self.omitted_summary,
             "selected_because": self.selected_because,
             "observed_route": self.observed_route,
             "session_ref": self.session_ref,
@@ -238,17 +253,32 @@ def _rejections_from_event(data: Mapping[str, Any]) -> dict[str, dict[str, int]]
     return out
 
 
-def _candidates_from_event(data: Mapping[str, Any]) -> tuple[list[CandidateRecord] | None, int]:
-    """Return (candidates, omitted).  None means legacy event (no candidates key)."""
+def _candidates_from_event(
+    data: Mapping[str, Any],
+) -> tuple[list[CandidateRecord] | None, int, dict[str, Any] | None]:
+    """Return (candidates, omitted, omitted_summary).
+
+    None candidates means a legacy event (no candidates key).
+    omitted_summary is None when all candidates are recorded.
+    """
     if "candidates" not in data:
-        return None, 0
+        return None, 0, None
     raw = data["candidates"]
     if not isinstance(raw, list):
-        return None, 0
+        return None, 0, None
     records = [CandidateRecord.from_verdict_dict(d) for d in raw if isinstance(d, Mapping)]
     omitted = data.get("candidates_omitted")
     omitted_count = int(omitted) if isinstance(omitted, int) else 0
-    return records, omitted_count
+    # AC7: per-state summary for omitted routes
+    raw_summary = data.get("omitted_summary")
+    omitted_summary: dict[str, Any] | None = (
+        dict(raw_summary) if isinstance(raw_summary, Mapping) else None
+    )
+    # If the event has no omitted_summary but does have omitted_count,
+    # surface that so the renderer can say "N more (no detail)".
+    if omitted_summary is None and omitted_count > 0:
+        omitted_summary = {"_total": omitted_count}
+    return records, omitted_count, omitted_summary
 
 
 def _selected_because_from_candidates(candidates: list[CandidateRecord] | None) -> list[str]:
@@ -325,7 +355,7 @@ def _build_evaluations(events: Sequence[Mapping[str, Any]]) -> list[EligibilityE
         funnel = _funnel_from_event(data)
         rejections = _rejections_from_event(data)
         selected_route = str(data["selected"]) if data.get("selected") else None
-        candidates, omitted = _candidates_from_event(data)
+        candidates, omitted, omitted_summary = _candidates_from_event(data)
         selected_because = _selected_because_from_candidates(candidates)
 
         terminal = terminals.get(node_id) or {}
@@ -344,6 +374,7 @@ def _build_evaluations(events: Sequence[Mapping[str, Any]]) -> list[EligibilityE
                 selected_route=selected_route,
                 candidates=candidates,
                 candidates_omitted=omitted,
+                omitted_summary=omitted_summary,
                 selected_because=selected_because,
                 observed_route=observed if observed else None,
                 session_ref=session_ref if session_ref else None,
@@ -516,7 +547,9 @@ def routing_view_from_inventory(
         )
         selected_route = selected_v.route_id if selected_v is not None else None
 
-        cands_list, omitted = _build_candidates_from_verdicts(verdicts, selected_route)
+        cands_list, omitted, _inv_omitted_summary = _build_candidates_from_verdicts(
+            verdicts, selected_route
+        )
         rejections_raw = _build_rejections_from_verdicts(verdicts)
 
         # Compute funnel counts from verdicts directly.
@@ -530,9 +563,11 @@ def routing_view_from_inventory(
             for s in _order[: idx + 1]:
                 funnel_counts[s] += 1
 
-        candidates_records, _ = _candidates_from_event(
+        candidates_records, _, _event_summary = _candidates_from_event(
             {"candidates": cands_list, "candidates_omitted": omitted}
         )
+        # AC7: prefer the builder's omitted_summary (has state details)
+        omitted_summary = _inv_omitted_summary or _event_summary
         selected_because = _selected_because_from_candidates(candidates_records)
 
         # Normalize rejections to dict[str, dict[str, int]]
@@ -549,6 +584,7 @@ def routing_view_from_inventory(
             selected_route=selected_route,
             candidates=candidates_records,
             candidates_omitted=omitted,
+            omitted_summary=omitted_summary,
             selected_because=selected_because,
             observed_route=None,
             session_ref=None,

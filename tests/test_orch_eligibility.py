@@ -125,6 +125,14 @@ class TestEntitled:
         assert v.failed_stage is EligibilityStage.ENTITLED
         assert v.reason == "no_active_account"
 
+    def test_free_suffix_without_connection_stays_unknown(self, tmp_path: Path) -> None:
+        ladder, _ = make_ladder(tmp_path, [row("openrouter/model:free")], [])
+        v = ladder.evaluate(REQ, now=NOW)[0]
+        assert v.failed_stage is EligibilityStage.ENTITLED
+        assert v.reason == "no_active_account"
+        assert v.capacity_class is CapacityClass.UNKNOWN
+        assert v.capacity_evidence == "no_connection"
+
     def test_harness_visibility_gate(self, tmp_path: Path) -> None:
         visible: Callable[[str], bool] = lambda r: r != "cc/claude-sonnet-5"  # noqa: E731
         ladder, _ = make_ladder(
@@ -319,6 +327,17 @@ class TestTaskEligible:
         assert verdicts["cc/claude-sonnet-5"].reason == "excluded_family"
         assert verdicts["cc/claude-sonnet-5"].failed_stage is EligibilityStage.TASK_ELIGIBLE
         assert verdicts["cx/gpt-6-codex"].failed_stage is None
+
+    def test_kc_free_worker_excludes_openrouter_free_reviewer(self, tmp_path: Path) -> None:
+        rows = [
+            row("kc/cohere/north-mini-code:free", owned_by="kilocode"),
+            row("openrouter/cohere/north-mini-code:free", owned_by="openrouter"),
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("kilocode"), conn("openrouter")])
+        req = TaskRequirements(exclude_routes=frozenset({"kc/cohere/north-mini-code:free"}))
+        verdicts = by_route(ladder.evaluate(req, now=NOW))
+        assert verdicts["kc/cohere/north-mini-code:free"].reason == "excluded_route"
+        assert verdicts["openrouter/cohere/north-mini-code:free"].reason == "excluded_family"
 
     def test_exclude_routes(self, tmp_path: Path) -> None:
         ladder, _ = make_ladder(
