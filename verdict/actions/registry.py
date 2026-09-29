@@ -1069,6 +1069,185 @@ def _action_replay(**kwargs: Any) -> ActionResult:
 
 
 # ---------------------------------------------------------------------------
+# Trace + Demo actions (BOD-279)
+# ---------------------------------------------------------------------------
+
+
+def _action_trace_view(**kwargs: Any) -> ActionResult:
+    """Human-readable trace of a run from events.jsonl."""
+    import json as _json
+    from pathlib import Path
+
+    from verdict.orchestration.trace_render import render_trace_text
+    from verdict.orchestration.trace_view import trace_view
+
+    run_dir = Path(kwargs["run_dir"])
+    if not (run_dir / "events.jsonl").exists():
+        return ActionResult(data={"error": f"no events.jsonl in {run_dir}"}, ok=False, exit_code=2)
+
+    tv = trace_view(run_dir)
+
+    output_json: bool = kwargs.get("json", False)
+    step: int | None = kwargs.get("step")
+    kind_filter: str | None = kwargs.get("kind")
+
+    if output_json:
+        d = tv.to_dict()
+        return ActionResult(data=d)
+
+    # Drill-down: routing evidence
+    if kwargs.get("routing"):
+        from verdict.orchestration.routing_render import render_routing_text
+        from verdict.orchestration.routing_view import routing_view as _build_routing
+
+        events_raw = [
+            _json.loads(line)
+            for line in (run_dir / "events.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        try:
+            rv = _build_routing(events_raw)
+            text = render_routing_text(rv, width=kwargs.get("width", 100))
+        except Exception as exc:
+            text = f"routing evidence: {type(exc).__name__}: {exc}"
+        return ActionResult(data={"text": text})
+
+    # Drill-down: context evidence
+    if kwargs.get("context"):
+        from verdict.orchestration.context_render import render_context_text
+        from verdict.orchestration.context_view import context_view as _build_context
+        from verdict.orchestration.contracts import RunEvent
+
+        events_raw = [
+            _json.loads(line)
+            for line in (run_dir / "events.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        run_events = [RunEvent.from_dict(e) for e in events_raw]
+        try:
+            cv = _build_context(run_events)
+            text = render_context_text(cv, width=kwargs.get("width", 100))
+        except Exception as exc:
+            text = f"context evidence: {type(exc).__name__}: {exc}"
+        return ActionResult(data={"text": text})
+
+    # Filter by kind
+    steps = list(tv.steps)
+    if kind_filter:
+        steps = [s for s in steps if s.kind == kind_filter]
+
+    # Step detail
+    if step is not None:
+        matching = [s for s in steps if s.seq == step]
+        if matching:
+            s = matching[0]
+            return ActionResult(
+                data={
+                    "seq": s.seq,
+                    "kind": s.kind,
+                    "node_id": s.node_id,
+                    "at": s.at,
+                    "evidence": dict(s.evidence),
+                }
+            )
+        return ActionResult(data={"error": f"no step with seq={step}"}, ok=False, exit_code=2)
+
+    text = render_trace_text(tv, width=kwargs.get("width", 100))
+    return ActionResult(data={"text": text})
+
+
+def _action_demo_run(**kwargs: Any) -> ActionResult:
+    """Run the offline flagship scenario or launch live orchestration."""
+    import json as _json
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    live: bool = kwargs.get("live", False)
+    output_json: bool = kwargs.get("json", False)
+
+    if live:
+        # Refuse unless credentials are configured
+        from verdict.credentials_store import CredentialsStore
+
+        store = CredentialsStore()
+        if not store.list_credentials():
+            return ActionResult(
+                data={
+                    "error": (
+                        "No credentials configured. "
+                        "verdict demo --live uses the PRODUCTION routing path. "
+                        "Run: verdict credentials set"
+                    )
+                },
+                ok=False,
+                exit_code=1,
+            )
+        return ActionResult(
+            data={
+                "text": (
+                    "Live mode uses the production routing path. "
+                    'Run: verdict orchestrate "<goal>" --repo . '
+                    "for live orchestration with real providers."
+                ),
+                "mode": "live",
+            }
+        )
+
+    # Offline flagship scenario
+    from verdict.orchestration.claims import derive_claims
+    from verdict.orchestration.demo_render import render_claims_text
+    from verdict.orchestration.demo_scenario import run_flagship_scenario
+    from verdict.orchestration.trace_render import render_trace_text
+    from verdict.orchestration.trace_view import trace_view
+
+    workspace = Path(tempfile.mkdtemp(prefix="verdict-demo-"))
+    runs_dir = workspace / "runs"
+    try:
+        worker_seconds = float(kwargs.get("worker_seconds", 1.5))
+        result = run_flagship_scenario(
+            runs_dir, workspace_root=workspace, worker_seconds=worker_seconds
+        )
+        events_raw = [
+            _json.loads(line)
+            for line in (result.run_dir / "events.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        receipt = _json.loads((result.run_dir / "receipt.json").read_text())
+        claims = derive_claims(events_raw, receipt, run_dir=result.run_dir)
+        tv = trace_view(result.run_dir)
+
+        if output_json:
+            return ActionResult(
+                data={
+                    "trace": tv.to_dict(),
+                    "claims": [c.to_dict() for c in claims],
+                    "receipt": receipt,
+                    "mode": "offline",
+                }
+            )
+
+        trace_text = render_trace_text(tv, width=kwargs.get("width", 100))
+        claims_text = render_claims_text(
+            claims,
+            width=kwargs.get("width", 100),
+            label=(
+                f"OFFLINE SCENARIO: scripted workers ({worker_seconds:g} s each), injected faults"
+            ),
+        )
+        return ActionResult(
+            data={
+                "text": trace_text + "\n" + claims_text,
+                "mode": "offline",
+                "run_dir": str(result.run_dir),
+                "events_path": str(result.run_dir / "events.jsonl"),
+            }
+        )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -1237,6 +1416,26 @@ def _register_builtins() -> None:
                 "Traces",
             ),
             _action_run_receipt,
+        ),
+        (
+            ActionSpec(
+                "trace.view",
+                "traces",
+                "read",
+                "Human-readable trace of an orchestration run",
+                "Traces",
+            ),
+            _action_trace_view,
+        ),
+        (
+            ActionSpec(
+                "demo.run",
+                "traces",
+                "read",
+                "Credential-free deterministic demo or live orchestration",
+                "Traces",
+            ),
+            _action_demo_run,
         ),
         (
             ActionSpec(
