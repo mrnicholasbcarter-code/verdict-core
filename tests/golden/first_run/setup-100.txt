@@ -1,0 +1,28 @@
+
+VERDICT  /  Setup
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+DISCOVER [OK]  /  CERTIFY [NOT RUN]  /  PLAN [AVAILABLE]  /  APPLY [NOT RUN]  /  DOCTOR [NOT RUN]  /
+FIRST RUN / PROOF [NOT RUN]
+  + Discover  OK
+    3 providers discovered
+
+  Gateway
+  + gateway.local  HEALTHY
+
+  Recommendations
+  + code.symbols  COVERED
+    Local semantic navigation · native
+
+  Plan
+Preserve · Keep existing gateway configuration
+  No changes needed
+
+Plan: setup-preview
+
+  Certification
+  + gateway.local  CERTIFIED
+    Observed health check passed
+
+  Review complete
+No changes made. APPLY requires consent or an explicit allowlist.

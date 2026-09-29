@@ -722,6 +722,8 @@ def test_watch_non_tty_stdout_calls_follow_non_interactive(tmp_path: Path, monke
         replay=False,
         json=False,
         speed=1.0,
+        node=None,
+        panel=None,
     )
     orch_cli._watch(args)
 
@@ -766,6 +768,8 @@ def test_watch_ci_env_calls_follow_non_interactive(tmp_path: Path, monkeypatch) 
         replay=False,
         json=False,
         speed=1.0,
+        node=None,
+        panel=None,
     )
     orch_cli._watch(args)
 
@@ -809,6 +813,8 @@ def test_watch_no_color_env_calls_follow_non_interactive(tmp_path: Path, monkeyp
         replay=False,
         json=False,
         speed=1.0,
+        node=None,
+        panel=None,
     )
     orch_cli._watch(args)
 
@@ -853,6 +859,8 @@ def test_watch_tty_no_plain_signal_calls_follow_interactive(tmp_path: Path, monk
         replay=False,
         json=False,
         speed=1.0,
+        node=None,
+        panel=None,
     )
     orch_cli._watch(args)
 
@@ -934,6 +942,8 @@ def test_watch_term_dumb_calls_follow_non_interactive(tmp_path: Path, monkeypatc
         replay=False,
         json=False,
         speed=1.0,
+        node=None,
+        panel=None,
     )
     orch_cli._watch(args)
 
@@ -979,6 +989,8 @@ def test_watch_verdict_plain_calls_follow_non_interactive(tmp_path: Path, monkey
         replay=False,
         json=False,
         speed=1.0,
+        node=None,
+        panel=None,
     )
     orch_cli._watch(args)
 

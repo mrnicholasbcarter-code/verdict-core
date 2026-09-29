@@ -368,7 +368,7 @@ def cmd_setup(
             if len(healthy_gateways) > 1:
                 ui.section("Multiple gateways found")
                 ui.console.print(
-                    "[dim]Set OMNIROUTE_BASE_URL to one of the above to select a different one.[/dim]"
+                    "[MUTED]Set OMNIROUTE_BASE_URL to one of the above to select a different one.[/MUTED]"
                 )
     except Exception as e:
         ui.status("Gateway detection", "warn", str(e))
@@ -1999,6 +1999,8 @@ def cmd_doctor(
             raise SystemExit(1)
         return
 
+    from rich.text import Text
+
     ui = TerminalUI(console)
     ui.header("Doctor")
     # Interactive only for the optional duplicate-node removal prompt; the
@@ -2013,11 +2015,11 @@ def cmd_doctor(
         elif state == "section":
             ui.section(label)
             if detail:
-                ui.console.print(f"  [dim]{detail}[/dim]")
+                ui.console.print(Text(f"  {detail}", style="MUTED"))
         else:
-            ui.status(label, state, detail)
+            ui.doctor_finding(label, state, detail)
     for warning in diag.warnings:
-        ui.status("WARNING", "warning", warning)
+        ui.doctor_finding("WARNING", "warning", warning)
     ui.doctor_summary(diag.issues, diag.fixed)
     if diag.issues and not diag.config_loaded:
         ui.panel(
