@@ -21,12 +21,12 @@ from typing import Any
 
 from rich import box
 from rich.console import Console, Group, RenderableType
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from verdict.terminal_ui import TOKENS, TerminalUI, clean
+from verdict.design import TOKENS, PresentationMode, panel
+from verdict.terminal_ui import TerminalUI, clean
 
 WORDMARK = (
     "██╗   ██╗███████╗██████╗ ██████╗ ██╗ ██████╗████████╗",
@@ -61,12 +61,13 @@ PALETTE: tuple[tuple[str, str, str, str], ...] = (
     ("Models", "catalog", "OmniRoute catalog dump", "catalog"),
     ("Routing", "route", "route one task through the gate", "route"),
     ("Routing", "routing", "recorded routing explorer for a run", "routing.view"),
-    ("Runs", "context", "recorded context budget and provenance", "context.view"),
+    ("Context", "context", "recorded context budget and provenance", "context.view"),
     ("Routing", "compare", "compare dual-route results", "compare"),
     ("Overview", "stats", "statistics from routing decision log", "stats"),
     ("Overview", "suggest", "suggestions from routing history", "suggest"),
     ("Overview", "cost-report", "cost report from routing decisions", "cost-report"),
-    ("Configuration", "credentials", "manage stored credentials", "credentials.list"),
+    ("Config", "config", "show resolved configuration (secrets redacted)", "config.show"),
+    ("Config", "credentials", "manage stored credentials", "credentials.list"),
     ("Setup", "doctor", "health of gateways, harnesses, memory, docs", "doctor"),
     ("Setup", "setup", "plan or apply capability bootstrap", "setup.plan"),
     ("Setup", "quickstart", "credential-free deterministic demo", ""),
@@ -105,13 +106,7 @@ class HomeState:
 
 
 def _plain(console: Console) -> bool:
-    return (
-        not console.is_terminal
-        or "NO_COLOR" in os.environ
-        or os.getenv("TERM") == "dumb"
-        or bool(os.getenv("CI"))
-        or os.getenv("VERDICT_PLAIN") == "1"
-    )
+    return TerminalUI(console).plain
 
 
 def probe_gateway(url: str, *, timeout: float = 3.0) -> tuple[bool | None, int | None]:
@@ -138,7 +133,8 @@ def recent_runs(roots: Sequence[Path], *, limit: int = 5) -> list[dict[str, Any]
                     found.append((events.stat().st_mtime, run))
     rows: list[dict[str, Any]] = []
     for mtime, run in sorted(found, reverse=True)[:limit]:
-        outcome, reason = "RUNNING", ""
+        # Event-log existence is not evidence that a worker is still running.
+        outcome, reason = "NO RECEIPT", "Execution state not observed"
         receipt = run / "receipt.json"
         if receipt.is_file():
             try:
@@ -169,25 +165,14 @@ def _age(seconds: int) -> str:
 def render_home(
     state: HomeState, *, plain: bool, width: int, reveal: int | None = None
 ) -> RenderableType:
-    """Home screen. ``reveal`` animates the wordmark column-by-column (None = full)."""
+    """Render observed facts. ``reveal`` is retained for API compatibility only.
+
+    Branding is stable; only the real gateway probe may animate, in run_home.
+    """
+    if not plain:
+        return _styled_home(state, width=width)
     blocks: list[RenderableType] = []
-    if plain:
-        blocks.append(Text("VERDICT  autonomous control plane"))
-    else:
-        mark = Text()
-        for i, line in enumerate(WORDMARK):
-            shown = line if reveal is None else line[:reveal]
-            mark.append(shown + "\n", style=TOKENS["PRIMARY"] if i < 3 else TOKENS["SECONDARY"])
-        mark.append(TAGLINE, style=TOKENS["MUTED"])
-        blocks.append(
-            Panel(
-                mark,
-                box=box.HEAVY,
-                border_style=TOKENS["PRIMARY"],
-                padding=(0, 2),
-                width=min(width, 96),
-            )
-        )
+    blocks.append(Text("VERDICT  autonomous control plane"))
     gw = (
         "reachable"
         if state.gateway_ok
@@ -257,6 +242,72 @@ def render_home(
         )
     )
     return Group(*blocks)
+
+
+def _styled_home(state: HomeState, *, width: int) -> RenderableType:
+    """One stable hierarchy: identity, observed health, recent work, controls."""
+    mode = PresentationMode(True, True, False, width)
+    mark = Text()
+    if width >= 66:
+        for line in WORDMARK:
+            mark.append(line.rstrip() + "\n", style=TOKENS["PRIMARY"])
+    else:
+        mark.append("VERDICT\n", style=TOKENS["PRIMARY"])
+    mark.append("AUTONOMOUS CONTROL PLANE\n", style=TOKENS["TEXT"])
+    mark.append("plan · select · recover · verify · prove", style=TOKENS["SECONDARY"])
+    gateway = Text("GATEWAY  ", style=TOKENS["SECONDARY"])
+    gateway.append(
+        "REACHABLE"
+        if state.gateway_ok
+        else "UNREACHABLE"
+        if state.gateway_ok is False
+        else "NOT CHECKED",
+        style=TOKENS[
+            "SUCCESS" if state.gateway_ok else "ERROR" if state.gateway_ok is False else "MUTED"
+        ],
+    )
+    gateway.append("\n" + clean(state.gateway), style=TOKENS["TEXT"])
+    if state.gateway_models is not None:
+        gateway.append(f"\n{state.gateway_models} models discovered", style=TOKENS["ACCENT"])
+    gateway.append("\nInventory is not task eligibility.", style=TOKENS["MUTED"])
+    if state.gateway_ok is False:
+        gateway.append("\nRepair: verdict doctor", style=TOKENS["WARNING"])
+    work = Text()
+    if state.runs:
+        for row in state.runs:
+            outcome = str(row["outcome"])
+            tone = (
+                "SUCCESS"
+                if outcome == "COMPLETE"
+                else "MUTED"
+                if outcome in {"RUNNING", "NO RECEIPT"}
+                else "ERROR"
+            )
+            work.append(clean(row["run"]) + "  ", style=TOKENS["TEXT"])
+            work.append(clean(outcome) + f"  ·  {_age(row['age_s'])} ago\n", style=TOKENS[tone])
+            if row.get("reason"):
+                work.append(clean(row["reason"]) + "\n", style=TOKENS["SECONDARY"])
+    else:
+        work.append("No runs yet.\n", style=TOKENS["SECONDARY"])
+        work.append('Start: verdict orchestrate "<goal>" --repo .', style=TOKENS["ACCENT"])
+    controls = Table.grid(padding=(0, 2), expand=True)
+    controls.add_column(style=TOKENS["ACCENT"], no_wrap=True)
+    controls.add_column(style=TOKENS["SECONDARY"], overflow="fold")
+    last = ""
+    for group, command, purpose, _action in PALETTE:
+        if group != last:
+            controls.add_row(Text(group.upper(), style=TOKENS["PRIMARY"]), "")
+        controls.add_row(Text(f"verdict {command}", style=TOKENS["TEXT"]), Text(purpose))
+        last = group
+    footer = Text("↑/↓ select  ·  Enter run  ·  q quit", style=TOKENS["ACCENT"])
+    footer.append("\nverdict --help  ·  VERDICT_NO_ANIMATION=1", style=TOKENS["MUTED"])
+    controls_panel = panel(Group(controls, footer), title="03 / COMMANDS", mode=mode)
+    return Group(
+        panel(mark, mode=mode, tone="PRIMARY"),
+        panel(gateway, title="01 / CONNECTION", mode=mode),
+        panel(work, title="02 / RECENT WORK", mode=mode),
+        controls_panel,
+    )
 
 
 def palette_actions() -> list[tuple[str, str, str, str]]:
@@ -348,12 +399,11 @@ def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 
             console.print(f"ERROR: {err_msg}")
         else:
             console.print(
-                Panel(
+                panel(
                     Text(clean(err_msg), style=TOKENS["ERROR"]),
-                    title=Text("Error", style=TOKENS["ERROR"]),
-                    border_style=TOKENS["ERROR"],
-                    box=box.ROUNDED,
-                    width=min(effective_width, 96),
+                    title="Error",
+                    tone="ERROR",
+                    mode=tui.mode,
                 )
             )
         return
@@ -369,14 +419,7 @@ def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 
                 console.print(f"  {clean(str(item))}")
         else:
             lines = "\n".join(clean(str(item)) for item in data[:50])
-            console.print(
-                Panel(
-                    Text(lines),
-                    box=box.ROUNDED,
-                    border_style=TOKENS["BORDER"],
-                    width=min(effective_width, 96),
-                )
-            )
+            console.print(panel(Text(lines), mode=tui.mode))
     elif data is None:
         if tui.plain:
             console.print("ok (no data)")
@@ -434,9 +477,7 @@ def _render_kv_panel(console: Console, data: dict[str, Any], *, plain: bool, wid
     if plain:
         console.print(grid)
     else:
-        console.print(
-            Panel(grid, box=box.ROUNDED, border_style=TOKENS["BORDER"], width=effective_width)
-        )
+        console.print(panel(grid, mode=PresentationMode(True, True, False, width)))
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +581,8 @@ def _interactive_palette(
         old_settings = termios.tcgetattr(fd)
 
     def _render_selector() -> None:
+        nonlocal width
+        width = target.width
         target.print()
         target.print(Text("ACTION PALETTE", style=TOKENS["SECONDARY"]))
         target.print(
@@ -582,7 +625,7 @@ def _interactive_palette(
                 ch = _read_key()
             except (EOFError, KeyboardInterrupt):
                 return 0
-            if ch in ("q", "Q"):
+            if ch in ("", "q", "Q"):
                 target.print(Text("quit", style=TOKENS["MUTED"]))
                 return 0
             elif ch in ("\r", "\n"):
@@ -714,29 +757,16 @@ def run_home(
     )
     roots = list(runs_roots) if runs_roots is not None else [Path.cwd() / ".verdict" / "runs"]
     state.runs = recent_runs(roots)
+    ui = TerminalUI(target)
+    # An explicit True never overrides accessibility or terminal policy.
+    ui.animate = ui.animate and animate is not False
     if probe:
-        state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
+        if plain:
+            state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
+        else:
+            with ui.task("Checking gateway reachability"):
+                state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
     width = target.width or 100
-    motion = (
-        (
-            not plain
-            and target.is_terminal
-            and os.getenv("VERDICT_NO_ANIMATION") != "1"
-            and not os.getenv("SSH_CONNECTION")
-        )
-        if animate is None
-        else animate
-    )
-    if motion:
-        with Live(
-            render_home(state, plain=False, width=width, reveal=0),
-            console=target,
-            refresh_per_second=30,
-            transient=True,
-        ) as live:
-            for step in range(0, len(WORDMARK[0]) + 1, 3):
-                live.update(render_home(state, plain=False, width=width, reveal=step))
-                time.sleep(0.012)
     target.print(render_home(state, plain=plain, width=width))
     # F4: interactive palette — TTY only; non-TTY/NO_COLOR/CI unchanged.
     want_interactive = (
