@@ -4077,6 +4077,7 @@ def cmd_prove_at_rest(
             "interval": interval,
             "timeout": timeout,
             "max_requests": max_requests,
+            "max_wall_seconds": max_wall_seconds,
         }
         if base_url is not None:
             params["base_url"] = base_url
