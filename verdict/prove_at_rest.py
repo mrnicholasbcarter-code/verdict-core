@@ -302,8 +302,18 @@ def order_cycle(
     ]
 
     ordered: list[tuple[AdmittedRoute, str]] = []
-    ordered.extend((route, "full") for route in half_open)
-    ordered.extend((route, "full") for route in stale)
+    def _kind_for(route: AdmittedRoute) -> str:
+        """Derive probe kind from capacity class (defect 3 fix for half-open/stale)."""
+        if route.capacity in {
+            CapacityClass.SUBSCRIPTION.value,
+            CapacityClass.METERED.value,
+            CapacityClass.UNKNOWN.value,
+        }:
+            return "liveness"
+        return "full"
+
+    ordered.extend((route, _kind_for(route)) for route in half_open)
+    ordered.extend((route, _kind_for(route)) for route in stale)
     ordered.extend((route, "full") for route in _round_robin(free_new))
     ordered.extend((route, "liveness") for route in other_new)
     ordered.extend(
@@ -413,12 +423,16 @@ class Prober:
         routes = list(self.routes_loader())
         ordered = order_cycle(routes, self.cache, now, epsilon=self.epsilon)
         stats = CycleStats()
+        # Defect 2 fix: resume by route_id set, not by index.
+        # If routes reorder or disappear between cycles the index-based cursor
+        # would skip unprobed routes; a probed-ids set is order-independent.
         cursor = self.cache.cursor
-        resume_at = int(cursor.get("next_index", 0)) if cursor.get("cycle_open") else 0
-        if resume_at > len(ordered):
-            resume_at = 0
-
-        pending = ordered[resume_at:]
+        probed_ids: set[str] = set()
+        if cursor.get("cycle_open"):
+            raw_ids = cursor.get("probed_ids") or []
+            if isinstance(raw_ids, list):
+                probed_ids = set(str(rid) for rid in raw_ids if isinstance(rid, str))
+        pending = [item for item in ordered if item[0].route_id not in probed_ids]
         batch_size = self.concurrency
 
         def over_budget(extra: int = 0) -> str:
@@ -428,27 +442,23 @@ class Prober:
                 return "wall_cap"
             return ""
 
-        index = resume_at
         while pending:
             reason = over_budget()
             if reason:
                 stats.stopped_reason = reason
-                self._persist_cursor(index, open_cycle=True)
+                self._persist_cursor(probed_ids, open_cycle=True)
                 self.cache.save()
                 break
             batch = pending[:batch_size]
             pending = pending[batch_size:]
-            self._persist_cursor(index, open_cycle=True)
+            self._persist_cursor(probed_ids, open_cycle=True)
             self.cache.save()
-            processed = self._run_batch(batch, stats, started)
-            # Advance only by the routes actually started (defect 2 fix):
-            # a cap mid-batch leaves the rest of the batch unprobed.
-            index += processed
-            self._persist_cursor(index, open_cycle=True)
+            newly_probed = self._run_batch(batch, stats, started)
+            probed_ids.update(newly_probed)
+            self._persist_cursor(probed_ids, open_cycle=True)
             self.cache.save()
             if stats.stopped_reason:
-                # Cap fired inside the batch: do not drain the remaining pending
-                # items (which would advance index or clear the cursor).
+                # Cap fired inside the batch: do not drain remaining pending.
                 break
         else:
             stats.stopped_reason = stats.stopped_reason or "complete"
@@ -456,51 +466,55 @@ class Prober:
             self.cache.save()
         return stats
 
-    def _persist_cursor(self, index: int, *, open_cycle: bool) -> None:
-        self.cache.set_cursor({"cycle_open": open_cycle, "next_index": index})
+    def _persist_cursor(self, probed_ids: set[str], *, open_cycle: bool) -> None:
+        self.cache.set_cursor({"cycle_open": open_cycle, "probed_ids": sorted(probed_ids)})
 
     def _run_batch(
         self, batch: Sequence[tuple[AdmittedRoute, str]], stats: CycleStats, started: float
-    ) -> int:
-        """Probe every route in *batch*; return the count actually started.
+    ) -> set[str]:
+        """Probe every route in *batch*; return the set of route_ids started.
 
-        Returns fewer than ``len(batch)`` when a cap fires mid-batch so the
-        caller can advance the cursor to the exact position reached (defect 2
-        fix).  The batch width is ``concurrency`` (how many routes are reserved
-        before the next cap check).  Calls run one at a time so the cache file
-        is only ever written by this thread.  A crash between saves keeps every
-        probe already saved.
+        Returns only the route_ids actually dispatched.  When a cap fires
+        mid-batch the remaining routes are excluded so the caller can update
+        the probed-ids cursor correctly (defect 2 fix).
         """
-        processed = 0
+        probed: set[str] = set()
         for route, kind in batch:
             if stats.requests >= self.max_requests:
                 stats.stopped_reason = stats.stopped_reason or "request_cap"
-                return processed
+                return probed
             if self.monotonic() - started >= self.max_wall_seconds:
                 stats.stopped_reason = "wall_cap"
-                return processed
+                return probed
             before = stats.requests
             self._probe_route(route, kind, stats, started=started)
-            processed += 1
+            probed.add(route.route_id)
             if stats.requests != before:
                 self.cache.save()
-        return processed
+        return probed
 
     @staticmethod
     def _model_identity_matches(route_id: str, reported: str) -> bool:
         """True when *reported* is the expected model, tolerating provider-prefix.
 
-        A gateway often strips the ``provider/`` prefix from the echo, e.g.
-        ``cc/claude-opus-4`` is requested but ``claude-opus-4`` is echoed back.
-        An empty *reported* means the gateway chose not to echo: not a mismatch.
+        Rules (defect 4 fix):
+        - Empty reported: not a mismatch (gateway chose not to echo).
+        - Reported HAS a provider prefix: provider must equal the route's
+          provider (exact match); suffix alone is insufficient.
+        - Reported has NO provider prefix: suffix match is accepted (gateway
+          stripped the prefix).
         """
         if not reported:
             return True
-
-        def _strip(m: str) -> str:
-            return m.split("/", 1)[-1] if "/" in m else m
-
-        return _strip(route_id) == _strip(reported)
+        route_provider = route_id.split("/", 1)[0] if "/" in route_id else ""
+        route_suffix = route_id.split("/", 1)[-1] if "/" in route_id else route_id
+        if "/" in reported:
+            # Reported includes a provider — compare full route_id.
+            reported_provider = reported.split("/", 1)[0]
+            reported_suffix = reported.split("/", 1)[-1]
+            return reported_provider == route_provider and reported_suffix == route_suffix
+        # No prefix in reported: suffix match only.
+        return reported == route_suffix
 
     def _probe_route(
         self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float
@@ -531,6 +545,18 @@ class Prober:
             status = chat.http_status
             chat_ok = False
 
+        if chat_ok and kind == "full" and stats.requests >= self.max_requests:
+            # Request cap hit between chat and tool: chat succeeded but tool was
+            # never tested. Leave the route unchanged; do NOT record a negative
+            # (defect 1 fix: request-cap path).
+            stats.stopped_reason = stats.stopped_reason or "request_cap"
+            return
+        if chat_ok and kind == "full" and stats.requests >= self.max_requests:
+            # Request cap hit between chat and tool: chat succeeded but tool was
+            # never tested. Leave the route unchanged; do NOT record a negative
+            # (defect 1 fix: request-cap path).
+            stats.stopped_reason = stats.stopped_reason or "request_cap"
+            return
         if chat_ok and kind == "full" and stats.requests < self.max_requests:
             # Check wall deadline before making the second HTTP call (defect 5).
             if self.monotonic() - started >= self.max_wall_seconds:
@@ -570,6 +596,15 @@ class Prober:
         if chat_ok and (tool_ok or kind == "liveness"):
             category = CATEGORY_OK
             status = 200
+        # Defect 5 fix: compute identity from the observed reported_model.
+        # An empty reported_model means the gateway did not echo the id back;
+        # record it as "not_reported" so status output can distinguish it from
+        # a route whose identity was actively verified.
+        _reported = observed.reported_model
+        if not _reported:
+            _identity = "not_reported"
+        else:
+            _identity = "verified"
         result = ProbeResult(
             category=category,
             chat_ok=chat_ok,
@@ -579,6 +614,7 @@ class Prober:
             retry_after_seconds=observed.retry_after_seconds,
             pool=route.pool,
             capacity_evidence=route.capacity_evidence,
+            identity=_identity,
         )
         # Liveness success is healthy for the cache state machine but not a
         # coding worker: tool_ok stays false. ``ProbeResult.healthy`` requires
@@ -602,6 +638,7 @@ class Prober:
             pool=route.pool,
             capacity_evidence=route.capacity_evidence,
             now=now,
+            identity=result.identity,
         )
 
     def _note_rate_limit(
@@ -922,6 +959,9 @@ def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[st
                 "pool": entry.pool,
                 "capacity_evidence": entry.capacity_evidence,
                 "checked_at": entry.checked_at.isoformat().replace("+00:00", "Z"),
+                # Defect 5 fix: surface identity so callers can filter out
+                # routes whose identity was never verified.
+                "identity": entry.identity or "unknown",
             }
             for entry in workers[:10]
         ],
