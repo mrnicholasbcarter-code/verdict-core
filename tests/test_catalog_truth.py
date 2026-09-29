@@ -673,11 +673,9 @@ class TestCatalogGhostWiring:
         # Simulate the response the probe receives from OmniRoute.
         http_body = "Model 'x' is not available in the active live catalog for provider 'y'"
         health_result = classify_probe_status(400, body=http_body)
-        assert health_result.category in (
-            "unsupported",
-            "unservable",
-            "bad_request",
-        ), f"classifier changed: {health_result.category}"
+        assert health_result.category in ("unsupported", "unservable", "bad_request"), (
+            f"classifier changed: {health_result.category}"
+        )
 
         ladder._record_health("cx/ghost-model", health_result, NOW)
 
