@@ -314,15 +314,22 @@ class EligibilityLadder:
         os.replace(tmp, self._state_path)
 
     def _connection_for(self, provider: str) -> Mapping[str, Any] | None:
-        fallback: Mapping[str, Any] | None = None
-        for conn in self._connections:
-            if str(conn.get("provider", "")).lower() != provider.lower():
-                continue
-            if fallback is None:
-                fallback = conn
-            if conn.get("isActive"):
-                return conn
-        return fallback
+        # One pass over the connections per provider, not one per route: a
+        # large catalog has thousands of routes and a few dozen connections.
+        # Same rule as before: the first active connection for the provider,
+        # else its first connection.
+        key = provider.lower()
+        index = self.__dict__.get("_connection_index")
+        if index is None or index[0] is not self._connections:
+            table: dict[str, Mapping[str, Any] | None] = {}
+            for conn in self._connections:
+                name = str(conn.get("provider", "")).lower()
+                current = table.get(name)
+                if current is None or (not current.get("isActive") and conn.get("isActive")):
+                    table[name] = conn
+            index = (self._connections, table)
+            self.__dict__["_connection_index"] = index
+        return index[1].get(key)
 
     def _capacity_class(
         self, conn: Mapping[str, Any] | None, row: Mapping[str, Any], route_id: str = ""
