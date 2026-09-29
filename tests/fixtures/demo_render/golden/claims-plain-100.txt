@@ -1,0 +1,16 @@
+OFFLINE SCENARIO: scripted workers, injected faults
+
+CLAIMS VERIFIED
+------------------------------------------------------------
+  + VERIFIED  Task-aware model selection  (event:N, event:N, event:N)
+  + VERIFIED  Capability filtering reduced candidate pool  (event:N, event:N, event:N)
+  + VERIFIED  Provider/model health considered in routing  (event:N, event:N)
+  + VERIFIED  Explicit concrete worker assignment  (event:N, event:N, event:N)
+  + VERIFIED  Worker failure isolated from controller  (event:N, event:N, event:N)
+  + VERIFIED  Automatic bounded failover  (event:N)
+  + VERIFIED  Cooldown recorded  (event:N)
+  + VERIFIED  Context assembled within budget  (event:N, event:N, event:N)
+  + VERIFIED  Replacement completed successfully on alternate route  (event:N)
+  + VERIFIED  Validation passed  (event:N, event:N, event:N)
+  + VERIFIED  Independent review passed  (event:N)
+  + VERIFIED  Receipt integrity verified  (receipt:verify)
