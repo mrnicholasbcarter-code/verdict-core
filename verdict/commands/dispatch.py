@@ -92,7 +92,10 @@ def _cmd_demo(args: argparse.Namespace) -> None:
     workspace = Path(tempfile.mkdtemp(prefix="verdict-demo-"))
     runs_dir = workspace / "runs"
     try:
-        result_sc = run_flagship_scenario(runs_dir, workspace_root=workspace)
+        worker_seconds = float(getattr(args, "worker_seconds", 1.5))
+        result_sc = run_flagship_scenario(
+            runs_dir, workspace_root=workspace, worker_seconds=worker_seconds
+        )
         events_raw = [
             json.loads(line)
             for line in (result_sc.run_dir / "events.jsonl").read_text().splitlines()
@@ -124,7 +127,7 @@ def _cmd_demo(args: argparse.Namespace) -> None:
             follow_replay(result_sc.run_dir / "events.jsonl", speed=args.speed)
             print()
 
-        label = "OFFLINE SCENARIO: scripted workers, injected faults"
+        label = f"OFFLINE SCENARIO: scripted workers ({worker_seconds:g} s each), injected faults"
         trace_text = render_trace_text(tv, width=args.width)
         claims_text = render_claims_text(claims, width=args.width, label=label)
         print(trace_text)

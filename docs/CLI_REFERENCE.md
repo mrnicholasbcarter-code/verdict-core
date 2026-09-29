@@ -127,7 +127,7 @@ Replay path: use `verdict watch --replay <run-id>` for an interactive TUI replay
 ### `verdict demo` — Credential-free deterministic demo
 
 ```bash
-verdict demo [--live] [--json] [--speed X]
+verdict demo [--live] [--json] [--speed X] [--worker-seconds N]
 ```
 
 | Flag | Description |
@@ -135,13 +135,15 @@ verdict demo [--live] [--json] [--speed X]
 | `--live` | Use production routing path (requires configured credentials) |
 | `--json` | Output machine-readable JSON (trace + claims + receipt) |
 | `--speed X` | TUI replay speed multiplier (default: 1.0) |
+| `--worker-seconds N` | Seconds each scripted offline worker runs (default: 1.5; 0 is instant) |
 | `--width W` | Output width in columns (default: 100) |
 
-Default mode runs the OFFLINE flagship scenario: scripted workers, injected
-faults, no credentials or provider spend. On a TTY it shows the TUI replay
-followed by a trace and claims panel.
+Default mode runs the OFFLINE flagship scenario: scripted workers that each
+take 1.5 seconds, injected faults, no credentials or provider spend. The
+duration is what lets the recording show two workers running at once. On a
+TTY it shows the TUI replay followed by a trace and claims panel.
 
-Every screen is labelled `OFFLINE SCENARIO: scripted workers, injected faults`.
+Every screen is labelled `OFFLINE SCENARIO: scripted workers (1.5 s each), injected faults`.
 
 Claims panel (from `--json` or text output):
 

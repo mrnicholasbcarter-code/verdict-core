@@ -326,3 +326,114 @@ def test_failed_terminal_never_renders_as_validated() -> None:
     assert _step_state(ok) == ("validated", "SUCCESS")
     assert _step_state(bad) == ("failed", "ERROR")
     assert _step_state(rejected) == ("failed", "ERROR")
+
+
+def _intervals(events: list[dict[str, Any]], node_id: str) -> list[tuple[int, int]]:
+    """(dispatch seq, terminal seq) pairs for one node, in log order."""
+    open_seq: int | None = None
+    spans: list[tuple[int, int]] = []
+    for event in events:
+        if event.get("node_id") != node_id:
+            continue
+        if event.get("type") == "dispatch":
+            open_seq = int(event["seq"])
+        elif event.get("type") == "terminal" and open_seq is not None:
+            spans.append((open_seq, int(event["seq"])))
+            open_seq = None
+    return spans
+
+
+def test_scripted_workers_overlap_when_duration_is_positive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """node-1 and node-2 are both dispatched before either returns a terminal.
+
+    ``worker_seconds=0.2`` is long enough for the scheduler to admit the second
+    worker under max_parallel=2, and short enough that the run stays under ~3 s.
+    The default of 0 keeps the other tests instant, so overlap is asserted here.
+    """
+    import time
+
+    from verdict.orchestration.claims import derive_claims
+    from verdict.orchestration.demo_scenario import run_flagship_scenario
+
+    del monkeypatch
+    started = time.monotonic()
+    result = run_flagship_scenario(
+        tmp_path / "runs", workspace_root=tmp_path / "workspace", worker_seconds=0.2
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 3.0, f"overlap run took {elapsed:.2f}s"
+
+    node1 = _intervals(result.events, "node-1")
+    node2 = _intervals(result.events, "node-2")
+    assert node1 and node2
+    overlapped = any(a0 < b1 and b0 < a1 for a0, a1 in node1 for b0, b1 in node2)
+    assert overlapped, (
+        f"expected overlapping dispatch→terminal spans, node-1={node1} node-2={node2}"
+    )
+    # Same-node failover stays causal even while the sibling is in flight.
+    kinds = [
+        event["type"]
+        for event in result.events
+        if event.get("node_id") == "node-1" and event["type"] in {"failure", "cooldown", "reassign"}
+    ]
+    assert kinds.index("failure") < kinds.index("cooldown") < kinds.index("reassign")
+
+    claims = derive_claims(result.events, result.receipt, run_dir=result.run_dir)
+    verified = {claim.id for claim in claims if claim.status == CLAIM_STATUS_VERIFIED}
+    assert len(verified) == 12
+
+
+def test_demo_json_verifies_twelve_claims_at_zero_and_overlap(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``verdict demo --json`` stays VERIFIED at 0 s, at an overlap, and at 1.5 s.
+
+    Three scripted attempts run at 1.5 s, and the failed attempt returns at
+    once, so this one test is a few seconds. It is the duration the recording
+    uses, so the claim set is checked there rather than assumed.
+    """
+    from verdict.cli import main
+
+    for seconds in ("0", "0.2", "1.5"):
+        monkeypatch.setattr("sys.argv", ["verdict", "demo", "--json", "--worker-seconds", seconds])
+        main()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["mode"] == "offline"
+        claims = payload["claims"]
+        assert len(claims) == 12
+        assert {claim["status"] for claim in claims} == {CLAIM_STATUS_VERIFIED}
+
+
+def test_demo_worker_seconds_defaults_to_1_5() -> None:
+    """The recording default is 1.5 s. Tests pass 0 so they stay instant."""
+    import argparse
+
+    from verdict.commands.parsers_autodev import register
+
+    parser = argparse.ArgumentParser()
+    register(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["demo"])
+    assert args.worker_seconds == 1.5
+
+
+def test_demo_header_states_worker_duration(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The offline header names the scripted duration the command was given."""
+    from verdict.cli import main
+
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    monkeypatch.setattr("sys.argv", ["verdict", "demo", "--worker-seconds", "0"])
+    main()
+    assert (
+        "OFFLINE SCENARIO: scripted workers (0 s each), injected faults" in capsys.readouterr().out
+    )
+
+    # 0.2 keeps this test short. The parser default of 1.5 is what the
+    # recording uses, and the JSON test runs that duration.
+    monkeypatch.setattr("sys.argv", ["verdict", "demo", "--worker-seconds", "0.2"])
+    main()
+    text = capsys.readouterr().out
+    assert "OFFLINE SCENARIO: scripted workers (0.2 s each), injected faults" in text

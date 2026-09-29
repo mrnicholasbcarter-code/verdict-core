@@ -1204,7 +1204,10 @@ def _action_demo_run(**kwargs: Any) -> ActionResult:
     workspace = Path(tempfile.mkdtemp(prefix="verdict-demo-"))
     runs_dir = workspace / "runs"
     try:
-        result = run_flagship_scenario(runs_dir, workspace_root=workspace)
+        worker_seconds = float(kwargs.get("worker_seconds", 1.5))
+        result = run_flagship_scenario(
+            runs_dir, workspace_root=workspace, worker_seconds=worker_seconds
+        )
         events_raw = [
             _json.loads(line)
             for line in (result.run_dir / "events.jsonl").read_text().splitlines()
@@ -1228,7 +1231,9 @@ def _action_demo_run(**kwargs: Any) -> ActionResult:
         claims_text = render_claims_text(
             claims,
             width=kwargs.get("width", 100),
-            label="OFFLINE SCENARIO: scripted workers, injected faults",
+            label=(
+                f"OFFLINE SCENARIO: scripted workers ({worker_seconds:g} s each), injected faults"
+            ),
         )
         return ActionResult(
             data={

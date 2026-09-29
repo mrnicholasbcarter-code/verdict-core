@@ -218,6 +218,12 @@ def register(subparsers: Any) -> None:
     demo_p.add_argument(
         "--speed", type=float, default=1.0, help="TUI replay speed multiplier (default: 1.0)"
     )
+    demo_p.add_argument(
+        "--worker-seconds",
+        type=float,
+        default=1.5,
+        help="Seconds each scripted offline worker runs before returning (default: 1.5)",
+    )
     demo_p.add_argument("--width", type=int, default=100, help="Output width (default: 100)")
 
     doctor_p = subparsers.add_parser(
