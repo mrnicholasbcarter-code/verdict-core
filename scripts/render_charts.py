@@ -42,24 +42,28 @@ CHART_SOURCES = {
 
 STAGES = ("DISCOVERED", "ENTITLED", "HEALTHY", "AVAILABLE")
 
-# Verdict visual palette (24-bit hex). This mirrors the design-system tokens in
-# verdict/design.py (charcoal surfaces, bright text, purple/cyan accents). It is
-# hard-coded on purpose: this script must never import verdict/.
+# Values copied from verdict/design.py (PR #724) at
+# f8a337d (AMBER #f5b00b). Keep the script independent of verdict/;
+# tests/test_chart_svgs.py checks these tokens against the merged visual system.
 PALETTE = {
-    "background": "#131316",  # deep charcoal page / card
-    "surface": "#1c1c21",  # inner panel
-    "border": "#34343d",  # clean panel border
-    "grid": "#26262c",
-    "text": "#f4f4f5",  # bright primary text
+    "background": "#101014",
+    "surface": "#18181b",
+    "text": "#f4f4f5",
     "secondary": "#a1a1aa",
-    "muted": "#71717a",
-    "purple": "#7f5bd5",  # primary accent (Verdict arm, admitted)
-    "cyan": "#0ea5e9",  # secondary accent (stage flow)
-    "amber": "#f59e0b",  # cooldown / capacity pressure
-    "red": "#ef4444",  # failure
-    "success": "#22c55e",  # validated / success
-    "neutral": "#52525b",  # baseline / direct arm
+    "muted": "#92929e",
+    "purple": "#a78bfa",
+    "cyan": "#22b8eb",
+    "success": "#4ade80",
+    "amber": "#f5b00b",
+    "red": "#f87171",
+    "border": "#52525b",
 }
+
+# Chart-only roles not defined by #724: body-secondary needs >= 7:1, and
+# neutral bars / guides need >= 3:1 on SURFACE. Derive by adding to each sRGB
+# byte: SECONDARY + 2 -> #a3a3ac (7.08:1); BORDER + 25 -> #6b6b74 (3.36:1).
+# Keep these separate so the copied design tokens cannot silently diverge.
+CHART_PALETTE = {"secondary": "#a3a3ac", "neutral": "#6b6b74", "guide": "#6b6b74"}
 
 WIDTH_IN = 10.0  # ~830 px README width at 83 dpi; SVG scales cleanly
 PAD = 0.035  # consistent card padding (fraction of figure width)
@@ -71,8 +75,8 @@ plt.rcParams.update(
         "font.family": "DejaVu Sans",
         "font.size": 10,
         "text.color": PALETTE["text"],
-        "axes.labelcolor": PALETTE["secondary"],
-        "xtick.color": PALETTE["secondary"],
+        "axes.labelcolor": CHART_PALETTE["secondary"],
+        "xtick.color": CHART_PALETTE["secondary"],
         "ytick.color": PALETTE["text"],
     }
 )
@@ -90,7 +94,7 @@ def _card(height_in: float) -> plt.Figure:
             boxstyle=f"round,pad=0,rounding_size={0.018}",
             transform=fig.transFigure,
             facecolor=PALETTE["surface"],
-            edgecolor=PALETTE["border"],
+            edgecolor=CHART_PALETTE["guide"],
             linewidth=1.2,
             zorder=-10,
         )
@@ -103,7 +107,7 @@ def _header(fig: plt.Figure, height_in: float, eyebrow: str, headline: str, sub:
     fig.text(PAD, top, "VERDICT", fontsize=8.5, color=PALETTE["purple"], weight="bold")
     fig.text(PAD + 0.075, top, eyebrow, fontsize=8.5, color=PALETTE["muted"])
     fig.text(PAD, top - 0.36 / height_in, headline, fontsize=17, weight="bold")
-    fig.text(PAD, top - 0.62 / height_in, sub, fontsize=9.5, color=PALETTE["secondary"])
+    fig.text(PAD, top - 0.62 / height_in, sub, fontsize=9.5, color=CHART_PALETTE["secondary"])
 
 
 def _footer(fig: plt.Figure, height_in: float, source: str, note: str = "") -> None:
@@ -117,16 +121,16 @@ def _style_axes(ax: plt.Axes) -> None:
     ax.set_facecolor(PALETTE["surface"])
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
-    ax.spines["bottom"].set_color(PALETTE["border"])
+    ax.spines["bottom"].set_color(CHART_PALETTE["guide"])
     ax.tick_params(length=0)
-    ax.grid(axis="x", color=PALETTE["grid"], linewidth=0.8)
+    ax.grid(axis="x", color=CHART_PALETTE["guide"], linewidth=0.8)
     ax.set_axisbelow(True)
 
 
 def _legend(ax: plt.Axes) -> None:
     leg = ax.legend(loc="lower right", frameon=False, fontsize=8.5)
     for text in leg.get_texts():
-        text.set_color(PALETTE["secondary"])
+        text.set_color(CHART_PALETTE["secondary"])
 
 
 def _save(fig: plt.Figure, name: str, title: str, desc: str) -> None:
@@ -169,7 +173,16 @@ def admission_funnel() -> None:
     y = list(range(len(labels)))[::-1]
     for yi, label, count in zip(y, labels, counts, strict=True):
         final = label == "admitted"
-        ax.barh(yi, len(candidates), color=PALETTE["grid"], height=0.62)
+        # An unfilled capacity track keeps each bar on SURFACE, not on another
+        # mark colour. The track outline and the filled bar both meet 3:1.
+        ax.barh(
+            yi,
+            len(candidates),
+            facecolor=PALETTE["surface"],
+            edgecolor=CHART_PALETTE["guide"],
+            linewidth=0.8,
+            height=0.62,
+        )
         ax.barh(yi, count, color=PALETTE["purple" if final else "cyan"], height=0.62)
         ax.text(
             -0.4,
@@ -198,7 +211,7 @@ def admission_funnel() -> None:
             label,
             va="center",
             fontsize=9.5,
-            color=PALETTE["secondary"],
+            color=CHART_PALETTE["secondary"],
             transform=row_at,
         )
     col = 0.57
@@ -301,7 +314,11 @@ def recovery() -> None:
             ax.text(
                 x + 0.09, row - 0.03, label, va="center", fontsize=8.5, color=edge, weight="bold"
             )
-            cap = PALETTE["amber"] if attempt["capacity_class"] != "free" else PALETTE["secondary"]
+            cap = (
+                PALETTE["amber"]
+                if attempt["capacity_class"] != "free"
+                else CHART_PALETTE["secondary"]
+            )
             ax.text(
                 x + 0.09, row - 0.22, attempt["capacity_class"], va="center", fontsize=8, color=cap
             )
@@ -333,7 +350,7 @@ def _paired_bars(
     ax: plt.Axes, names: list[str], a: list[float], b: list[float], a_label: str, b_label: str
 ) -> list[int]:
     y = list(range(len(names)))[::-1]
-    ax.barh([i + 0.18 for i in y], a, height=0.34, color=PALETTE["neutral"], label=a_label)
+    ax.barh([i + 0.18 for i in y], a, height=0.34, color=CHART_PALETTE["neutral"], label=a_label)
     ax.barh([i - 0.18 for i in y], b, height=0.34, color=PALETTE["purple"], label=b_label)
     ax.set_yticks(y, names, fontsize=9.5)
     ax.xaxis.label.set_size(8.5)
@@ -431,7 +448,9 @@ def live_savings() -> None:
     _style_axes(ax)
     y = _paired_bars(ax, names, baseline_costs, verdict_costs, "baseline (opus-5)", "Verdict arm")
     for yi, vc, vm in zip(y, verdict_costs, verdict_models, strict=True):
-        ax.text(vc + 0.001, yi - 0.18, vm, va="center", fontsize=7.5, color=PALETTE["secondary"])
+        ax.text(
+            vc + 0.001, yi - 0.18, vm, va="center", fontsize=7.5, color=CHART_PALETTE["secondary"]
+        )
     ax.set_xlabel("list-price cost per task, USD (observed tokens x published list price)")
     ax.set_xlim(0, max(baseline_costs) * 1.5)
     _legend(ax)
