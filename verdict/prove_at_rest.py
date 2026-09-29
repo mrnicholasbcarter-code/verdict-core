@@ -555,7 +555,7 @@ class Prober:
             # (defect 1 fix: request-cap path).
             stats.stopped_reason = stats.stopped_reason or "request_cap"
             return False
-        if chat_ok and kind == "full" and stats.requests < self.max_requests:
+        if chat_ok and kind == "full":
             # Check wall deadline before making the second HTTP call (defect 5).
             if self.monotonic() - started >= self.max_wall_seconds:
                 # Wall cap hit between chat and tool: chat succeeded but tool was

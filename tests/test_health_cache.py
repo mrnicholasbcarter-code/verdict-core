@@ -704,6 +704,24 @@ def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> Non
         f"cx/r1 must not be in probed_ids (was never probed), got {probed_ids!r}"
     )
 
+    # Second cycle, after the fresh window: resume at r1 without repeating r0.
+    transport.calls.clear()
+    later = NOW + timedelta(seconds=FRESH_SECONDS + 1)
+    prober2 = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=transport,
+        clock=lambda: later,
+        monotonic=lambda: 0.0,
+        max_requests=2,
+        epsilon=0,
+        concurrency=1,
+    )
+    stats2 = prober2.run_once()
+    assert stats2.stopped_reason == "request_cap"
+    assert transport.calls == [("cx/r1", "chat"), ("cx/r1", "tool")], transport.calls
+    assert set(cache.cursor.get("probed_ids") or []) == {"cx/r0", "cx/r1"}
+
 
 def test_model_mismatch_is_not_recorded_healthy(tmp_path: Path) -> None:
     """Defect 3: a response reporting a different model must be recorded as model_mismatch."""
@@ -900,55 +918,60 @@ def test_request_cap_after_chat_does_not_record_negative(tmp_path: Path) -> None
 
 
 def test_cursor_resume_survives_route_reorder_and_removal(tmp_path: Path) -> None:
-    """Issue 2 (cursor by route_id): routes disappear/reorder → no unprobed route skipped.
+    """Issue 2 (cursor by route_id): routes disappear/reorder -> no unprobed route skipped.
 
-    Cycle 1: 4 routes, cap=2 → probes r0,r1; cursor stores their ids.
-    Between cycles, the route list reorders (r1,r0,r3,r2).
-    Cycle 2: r0 and r1 already probed; r3 and r2 are still unprobed and must
-    both be reached in the second cycle.
+    Cycle 1: 4 free routes, cap=4 -> exactly r0 and r1 get full probes (2 requests
+    each); the cycle stays open with probed_ids == {r0, r1}.
+    Between cycles the clock passes the fresh window (so r0/r1 are due again),
+    the list reorders, and r0 disappears.
+    Cycle 2 must resume the open cycle: probe r3 and r2, and not re-probe r1.
     """
-    # Create 4 routes with distinct names.
     r0, r1, r2, r3 = [_route(f"cx/rv{i}", "free") for i in range(4)]
-    cache_path = tmp_path / "cache.json"
-    cache = HealthCache(cache_path, bucket_capacity=100)
-    transcript: list[str] = []
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    transcript: list[tuple[str, str]] = []
+    now = {"t": NOW}
 
     def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
-        transcript.append(route_id)
+        transcript.append((route_id, phase))
         return _ok(tool=(phase == "tool"))
 
-    # First cycle: cap at 2 requests (one full probe = 2 requests for free routes).
     prober1 = Prober(
         cache=cache,
         routes_loader=lambda: [r0, r1, r2, r3],
         transport=transport,
-        clock=lambda: NOW,
+        clock=lambda: now["t"],
         monotonic=lambda: 0.0,
-        max_requests=2,
+        max_requests=4,
         epsilon=0,
         concurrency=1,
     )
     stats1 = prober1.run_once()
-    assert stats1.stopped_reason in {"request_cap", "complete"}
+    assert stats1.stopped_reason == "request_cap"
+    cycle1 = {rid for rid, _ in transcript}
+    assert cycle1 == {r0.route_id, r1.route_id}, f"cycle 1 probed {sorted(cycle1)}"
+    assert cache.cursor.get("cycle_open") is True
+    assert set(cache.cursor.get("probed_ids") or []) == {r0.route_id, r1.route_id}
 
-    # Second cycle with REORDERED routes (r1 before r0, r3 before r2).
-    # The resume should skip the already-probed ids, not skip by index.
+    transcript.clear()
+    now["t"] = NOW + timedelta(seconds=FRESH_SECONDS + 1)
     prober2 = Prober(
         cache=cache,
-        routes_loader=lambda: [r1, r0, r3, r2],
+        routes_loader=lambda: [r1, r3, r2],
         transport=transport,
-        clock=lambda: NOW,
+        clock=lambda: now["t"],
         monotonic=lambda: 0.0,
-        # large cap so the whole remaining list is processed
         max_requests=1000,
         epsilon=0,
         concurrency=1,
     )
     prober2.run_once()
-    # After two cycles every route must have been probed at least once.
-    for ri in [r0, r1, r2, r3]:
+    cycle2 = [rid for rid, phase in transcript if phase == "chat"]
+    assert r1.route_id not in cycle2, f"r1 was re-probed inside the open cycle: {cycle2}"
+    assert r3.route_id in cycle2 and r2.route_id in cycle2, f"cycle 2 skipped work: {cycle2}"
+    assert cycle2.index(r3.route_id) < cycle2.index(r2.route_id), "new order must be followed"
+    for ri in (r2, r3):
         entry = cache.entry(ri.route_id)
-        assert entry is not None, f"{ri.route_id!r} was never probed"
+        assert entry is not None and entry.healthy
 
 
 def test_half_open_and_stale_paid_routes_get_liveness_kind(tmp_path: Path) -> None:
