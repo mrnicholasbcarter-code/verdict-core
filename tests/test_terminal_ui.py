@@ -206,7 +206,9 @@ def test_bootstrap_failure_shows_repair_command(monkeypatch: pytest.MonkeyPatch)
 
     output = stream.getvalue()
     # Must show a repair / run command
-    assert "Run:" in output or "set VERDICT_GATEWAY_URL" in output or "verdict" in output
+    assert f"Run: {diag.remediation}" in output, (
+        f"expected repair line 'Run: {diag.remediation!r}' in output: {output!r}"
+    )
     # Must NOT show the raw Python exception repr
     assert "BootstrapError" not in output
     assert "Operation failed" not in output

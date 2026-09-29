@@ -430,6 +430,10 @@ def test_replay_render_exception_still_writes_sync_off(
         _tui.follow_replay(events_file, console=console, speed=100.0, max_gap=0.0)
 
     joined = "".join(written)
-    # If a sync-ON was written, a sync-OFF must follow
-    if "\x1b[?2026h" in joined:
-        assert "\x1b[?2026l" in joined, "sync-OFF missing after render exception"
+    # Sync-ON must have been emitted (xterm-kitty supports DEC 2026)
+    assert "\x1b[?2026h" in joined, (
+        "sync-ON was not written — check TERM=xterm-kitty is not overridden. "
+        "This assertion proves the sync path was exercised."
+    )
+    # Sync-OFF must follow sync-ON unconditionally, even when render raises
+    assert "\x1b[?2026l" in joined, "sync-OFF missing after render exception"
