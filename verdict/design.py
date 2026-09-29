@@ -110,9 +110,15 @@ class StateStyle:
     token: str
     active: bool = False
 
-    def text(self, *, unicode: bool = True, remaining_seconds: float | None = None) -> str:
+    def text(
+        self,
+        *,
+        unicode: bool = True,
+        remaining_seconds: float | None = None,
+        show_remaining: bool = True,
+    ) -> str:
         label = self.label
-        if self.label == "COOLDOWN":
+        if self.label == "COOLDOWN" and show_remaining:
             remaining = "?"
             if remaining_seconds is not None:
                 if not math.isfinite(remaining_seconds):
@@ -274,13 +280,23 @@ def color_capability(
 
 
 def render_state(
-    state: str, *, mode: PresentationMode | None = None, remaining_seconds: float | None = None
+    state: str,
+    *,
+    mode: PresentationMode | None = None,
+    remaining_seconds: float | None = None,
+    show_remaining: bool = True,
 ) -> Text:
-    """Glyph + explicit label, including caller-observed cooldown time if known."""
+    """Glyph + explicit label, including caller-observed cooldown time if known.
+
+    ``show_remaining=False`` keeps a cooldown cell to glyph + label. The
+    routing explorer puts the remaining time in its cooldowns section.
+    """
     mode = presentation_mode() if mode is None else mode
     style = state_style(state)
     return Text(
-        style.text(unicode=mode.unicode, remaining_seconds=remaining_seconds),
+        style.text(
+            unicode=mode.unicode, remaining_seconds=remaining_seconds, show_remaining=show_remaining
+        ),
         style=token_style(style.token, mode.color_system if mode.color else None),
     )
 
