@@ -3102,8 +3102,11 @@ def main() -> None:
         sys.exit(1)
 
     from verdict import __version__
+
     parser = argparse.ArgumentParser(description="Verdict: policy-gated LLM Router")
-    parser.add_argument("--version", action="version", version=f"verdict-core %(prog)s {__version__}")
+    parser.add_argument(
+        "--version", action="version", version=f"verdict-core %(prog)s {__version__}"
+    )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     from verdict.commands import (
         parsers_autodev,
