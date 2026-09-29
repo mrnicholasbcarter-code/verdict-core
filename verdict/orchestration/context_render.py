@@ -370,6 +370,10 @@ def render_context(view: ContextView, mode: PresentationMode | None = None) -> R
     else:
         for node in view.nodes:
             blocks.append(_node_header(node, mode))
+            if node.compression is not None:
+                blocks.append(
+                    Text(f"  compression: {node.compression}", style=_style("MUTED", mode))
+                )
             if node.sources is None:
                 blocks.append(
                     Text("  sources: unknown (not recorded)", style=_style("MUTED", mode))
@@ -439,6 +443,8 @@ def render_context_text(view: ContextView, width: int = 100) -> str:
             f"budget {format_bytes(node.budget_bytes)}  "
             f"pressure {format_pressure(node.budget_pressure)} ({band_label_n})"
         )
+        if node.compression is not None:
+            lines.append(f"  compression: {node.compression}")
         if node.sources is None:
             lines.append("  sources: unknown (not recorded)")
             continue
@@ -478,6 +484,7 @@ def context_json(view: ContextView) -> dict[str, Any]:
             {
                 "budget_bytes": node.budget_bytes,
                 "budget_pressure": node.budget_pressure,
+                "compression": node.compression,
                 "node_id": node.node_id,
                 "pressure_band": pressure_band(node.budget_pressure),
                 "prompt_bytes": node.prompt_bytes,
