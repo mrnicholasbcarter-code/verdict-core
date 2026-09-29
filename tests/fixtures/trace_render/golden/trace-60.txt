@@ -1,0 +1,74 @@
+trace  run=offline-flagship-failover
+goal: flagship failover test
+steps: 34  schema: trace-view-v1
+
+seq   kind            node      detail
+--------------------------------------
+NNN  request                   goal=flagship failover test
+
+NNN  classification            
+
+NNN  plan                      
+
+NNN  plan                      
+
+NNN  routing         node-1    
+
+NNN  selection       node-1    route=alpha/claude-a
+
+NNN  routing         node-2    
+
+NNN  selection       node-2    route=alpha/claude-a
+
+NNN  dispatch        node-1    
+
+NNN  context         node-1    
+
+NNN  terminal        node-1    model=alpha/claude-a  failed
+
+NNN  failure         node-1    category=rate_limited
+
+NNN  cooldown        node-1    key=alpha  until=<ts>
+
+NNN  dispatch        node-2    
+
+NNN  context         node-2    
+
+NNN  terminal        node-2    model=alpha/claude-a  ok
+
+NNN  routing         node-1    
+
+NNN  selection       node-1    route=beta/gpt-b
+
+NNN  reassign        node-1    alpha/claude-a -> beta/gpt-b
+
+NNN  barrier         node-2    
+
+NNN  verify          node-2    passed=True
+
+NNN  dispatch        node-1    
+
+NNN  context         node-1    
+
+NNN  terminal        node-1    model=beta/gpt-b  ok
+
+NNN  barrier         node-1    
+
+NNN  verify          node-1    passed=True
+
+NNN  terminal        integrate model=(mechanical merge)  ok
+
+NNN  verify          integrate passed=True
+
+NNN  barrier         integrate 
+
+NNN  integrate                 
+
+NNN  barrier                   
+
+NNN  review                    attempt 1  reviewer=gamma/g…
+
+NNN  review                    verdict  blocking=0  review…
+
+NNN  run_finished              outcome=COMPLETE
+

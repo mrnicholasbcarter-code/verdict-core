@@ -14,7 +14,12 @@ VERDICT  autonomous control plane
 |                                supervisor                |
 |           verdict watch        live view of a run (or    |
 |                                --once for a snapshot)    |
-| Traces    verdict run-receipt  verify an orchestration   |
+| Traces    verdict trace        human-readable trace of   |
+|                                an orchestration run      |
+|           verdict demo         credential-free           |
+|                                deterministic demo        |
+|                                (offline scenario)        |
+|           verdict run-receipt  verify an orchestration   |
 |                                receipt (proof surface)   |
 |           verdict receipt      inspect routing receipts  |
 |                                (RoutingReceiptV1)        |

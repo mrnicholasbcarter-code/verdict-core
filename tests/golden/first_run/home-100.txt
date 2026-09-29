@@ -8,7 +8,9 @@ VERDICT  autonomous control plane
 | Runs      verdict orchestrate  goal -> DAG -> parallel workers -> review -> receipt          |
 |           verdict supervise    run orchestrate under a stall/quota-aware supervisor          |
 |           verdict watch        live view of a run (or --once for a snapshot)                 |
-| Traces    verdict run-receipt  verify an orchestration receipt (proof surface)               |
+| Traces    verdict trace        human-readable trace of an orchestration run                  |
+|           verdict demo         credential-free deterministic demo (offline scenario)         |
+|           verdict run-receipt  verify an orchestration receipt (proof surface)               |
 |           verdict receipt      inspect routing receipts (RoutingReceiptV1)                   |
 |           verdict replay       replay a routing decision session                             |
 | Health    verdict eligibility  DISCOVERED > ENTITLED > HEALTHY > AVAILABLE > ELIGIBLE        |

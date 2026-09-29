@@ -1,0 +1,21 @@
+selected: alpha  state: RUNNING   (1/2)
+node: alpha  state: RUNNING  attempt: 1
+selected route: kr/claude-opus
+observed model: not reported yet
+transition: none (no failures recorded)
++- context --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+|                                                                                                                                                                                                      |
+|  budget  run=cockpit-demo  12.0 KB / 40.0 KB (30%)  ok  [######--------------]                                                                                                                       |
+|  node alpha  used 12.0 KB / budget 40.0 KB  pressure 30% (ok)                                                                                                                                        |
+|  * included          2.0 KB file    src/alpha.py                                                                                                                                                     |
+|  T trimmed           5.0 KB file    tests/test_alpha.py                                                                             reason=context_budget  truncated_at=1500                         |
+|                                                                                                                                                                                                      |
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
++- safe controls --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+|                                                                                                                                                                                                      |
+|  x cancel run (twice) | X cancel worker | t retry worker                                                                                                                                             |
+|  Controls use shared actions. Controller policy decides; proof stays required.                                                                                                                       |
+|  Observed retry_node: refused; recovery budget exhausted                                                                                                                                             |
+|                                                                                                                                                                                                      |
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+? help  c context  r routing  p receipt  q quit
