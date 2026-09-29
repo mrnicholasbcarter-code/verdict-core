@@ -184,7 +184,9 @@ def test_scenario_requires_real_worker_overlap() -> None:
         {"type": "dispatch", "node_id": "a"},
         {"type": "terminal", "node_id": "a"},
         {"type": "dispatch", "node_id": "b"},
-        {"type": "failure"}, {"type": "cooldown"}, {"type": "reassign"},
+        {"type": "failure"},
+        {"type": "cooldown"},
+        {"type": "reassign"},
     ]
     with pytest.raises(rec.CaptureError, match="two dispatched"):
         rec.validate_scenario_events(sequential)
@@ -201,7 +203,9 @@ def test_pty_idle_timeout_rejects_and_reaps_child(tmp_path: Path) -> None:
         rec.read_pty_events(
             [__import__("sys").executable, str(script)],
             {"PATH": os.environ.get("PATH", "")},
-            rows=34, cols=110, read_timeout=0.05,
+            rows=34,
+            cols=110,
+            read_timeout=0.05,
         )
 
 
@@ -216,8 +220,12 @@ def test_scenario_height_bounds_frame_count() -> None:
         rec.validate_scenario_height([{}] * 2001, include_home=False)
 
 
-def test_svg_renderer_uses_cast_dimensions_and_generic_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    spec = importlib.util.spec_from_file_location("render_demo_svg", ROOT / "scripts/render_demo_svg.py")
+def test_svg_renderer_uses_cast_dimensions_and_generic_font(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "render_demo_svg", ROOT / "scripts/render_demo_svg.py"
+    )
     assert spec is not None and spec.loader is not None
     renderer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(renderer)
@@ -229,7 +237,7 @@ def test_svg_renderer_uses_cast_dimensions_and_generic_font(tmp_path: Path, monk
     def fake_run(command: list[str], *, check: bool) -> None:
         assert check
         commands.append(command)
-        out.write_text('<svg font-family="Monaco,\'Powerline Symbols\',monospace"/>')
+        out.write_text("<svg font-family=\"Monaco,'Powerline Symbols',monospace\"/>")
 
     monkeypatch.setattr(renderer.subprocess, "run", fake_run)
     renderer._svg_term(cast, out, [])
