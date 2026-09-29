@@ -2409,14 +2409,16 @@ def cmd_config_show(output_json: bool = False) -> None:
     from verdict import present
 
     present.header("Verdict configuration")
-    present.kv("Config file", data.get("config_file", ""))
-    present.kv("Exists", str(data.get("exists", False)))
-    present.kv("Gateway", data.get("gateway", ""))
-    present.kv("Profile", data.get("profile", ""))
+    summary: list[tuple[str, Any]] = [
+        ("Config file", data.get("config_file", "")),
+        ("Exists", str(data.get("exists", False))),
+        ("Gateway", data.get("gateway", "")),
+        ("Profile", data.get("profile", "")),
+    ]
+    present.kv(summary)
     if data.get("config"):
         present.note("Config (secrets redacted):")
-        for k, v in data["config"].items():
-            present.kv(f"  {k}", str(v))
+        present.kv([(k, str(v)) for k, v in data["config"].items()])
     if data.get("config_error"):
         present.warn("Config parse error", data["config_error"])
 
