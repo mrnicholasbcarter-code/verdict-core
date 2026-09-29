@@ -268,15 +268,12 @@ def test_replay_kind_needs_evidence_for_real_models() -> None:
         == "fixture"
     )
     # Real run with alpha/ route and no offline marker → 'real'
-    assert (
-        _replay_kind([run_started(run_id="live-run-001"), ev("selection", "alpha/x")]) == "real"
-    )
+    assert _replay_kind([run_started(run_id="live-run-001"), ev("selection", "alpha/x")]) == "real"
     # Env var MUST NOT be used: mode is passed explicitly, never via os.environ
     import subprocess
+
     result = subprocess.run(
-        ["grep", "-r", "VERDICT_RUN_MODE", "verdict/", "scripts/"],
-        capture_output=True,
-        text=True,
+        ["grep", "-r", "VERDICT_RUN_MODE", "verdict/", "scripts/"], capture_output=True, text=True
     )
     assert result.returncode != 0, (
         "VERDICT_RUN_MODE env var found in source - use explicit mode= parameter instead:\n"

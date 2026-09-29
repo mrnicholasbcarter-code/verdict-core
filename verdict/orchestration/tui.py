@@ -1109,12 +1109,7 @@ def _run_interactive_cockpit(
 # are authoritative (reserved by the Verdict scenario inventory) belong here.
 # Generic names like alpha/ or beta/ are NOT fixture markers because a real
 # provider could use those names; use the run-id/mode marker instead.
-_FIXTURE_ROUTE_PREFIXES = (
-    "demo-",
-    "demo-sub/",
-    "demo-free",
-    "fixture",
-)
+_FIXTURE_ROUTE_PREFIXES = ("demo-", "demo-sub/", "demo-free", "fixture")
 
 
 def _replay_kind(events: list[Any]) -> str:
