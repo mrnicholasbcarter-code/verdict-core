@@ -73,20 +73,20 @@ def _make_ladder(
 
 class TestOwnedByAliases:
     def test_devin_cli_agentic_resolves(self) -> None:
-        assert resolve_provider("devin-cli-agentic", "dva/x") == "devin-cli"
+        assert resolve_provider("devin-cli-agentic") == "devin-cli"
 
     def test_codex_app_server_resolves(self) -> None:
-        assert resolve_provider("codex-app-server", "cxa/x") == "codex"
+        assert resolve_provider("codex-app-server") == "codex"
 
     def test_auggie_is_named_gap(self) -> None:
         # auggie maps to itself: a named gap, not silently dropped.
-        assert resolve_provider("auggie", "aug/x") == "auggie"
+        assert resolve_provider("auggie") == "auggie"
 
     def test_cloudflare_playground_is_named_gap(self) -> None:
-        assert resolve_provider("cloudflare-playground", "cfp/x") == "cloudflare-playground"
+        assert resolve_provider("cloudflare-playground") == "cloudflare-playground"
 
     def test_unknown_provider_passes_through(self) -> None:
-        assert resolve_provider("github", "gh/model") == "github"
+        assert resolve_provider("github") == "github"
 
     def test_all_gaps_in_audit_are_covered(self) -> None:
         """Every owned_by gap from research-audit.md §5 is in the table."""
@@ -628,6 +628,12 @@ _UNRELATED_MSG = "Your request was rejected due to content policy."
 
 
 class TestCatalogGhostWiring:
+    def test_health_result_truncates_long_error_message(self) -> None:
+        """HealthResult.__post_init__ caps error_message at 500 chars unconditionally."""
+        long_msg = "x" * 5000
+        result = HealthResult(healthy=False, category="unsupported", error_message=long_msg)
+        assert len(result.error_message) <= 500
+
     def test_catalog_stale_message_produces_catalog_stale_cooldown(self, tmp_path: Path) -> None:
         """_record_health with a catalog-stale error message → category catalog_stale."""
         ladder = _make_minimal_ladder(tmp_path / "state.json")
@@ -654,12 +660,62 @@ class TestCatalogGhostWiring:
         health = ladder._state["health"]["cx/some-model"]
         assert health["category"] == "unsupported", health
 
-    def test_mutation_check_passing_category_breaks_reclassification(self, tmp_path: Path) -> None:
-        """Regression guard: passing category instead of error_message must NOT reclassify."""
+    def test_e2e_http_response_to_persisted_state(self, tmp_path: Path) -> None:
+        """True end-to-end: fake HTTP 400 → classify_probe_status → _record_health →
+        save to disk → reload → assert catalog_stale category, correct cooldown window,
+        and raw error text absent from the saved file.
+        """
+        from verdict.subagent_selection import classify_probe_status
+
+        state_path = tmp_path / "state.json"
+        ladder = _make_minimal_ladder(state_path)
+
+        # Simulate the response the probe receives from OmniRoute.
+        http_body = "Model 'x' is not available in the active live catalog for provider 'y'"
+        health_result = classify_probe_status(400, body=http_body)
+        assert health_result.category in (
+            "unsupported",
+            "unservable",
+            "bad_request",
+        ), f"classifier changed: {health_result.category}"
+
+        ladder._record_health("cx/ghost-model", health_result, NOW)
+
+        # --- in-memory checks ---
+        assert ladder._state["health"]["cx/ghost-model"]["category"] == "catalog_stale"
+        cooldown = ladder._state["cooldowns"]["route:cx/ghost-model"]
+        until_dt = datetime.fromisoformat(cooldown["until"])
+        expected_min = NOW + timedelta(seconds=CATALOG_STALE_COOLDOWN_SECONDS - 5)
+        expected_max = NOW + timedelta(seconds=CATALOG_STALE_COOLDOWN_SECONDS + 5)
+        assert until_dt >= expected_min, f"cooldown too short: {until_dt}"
+        assert until_dt <= expected_max, f"cooldown too long: {until_dt}"
+
+        # --- reload from disk ---
+        assert state_path.exists(), "state file was not persisted"
+        raw_text = state_path.read_text(encoding="utf-8")
+        reloaded = json.loads(raw_text)
+        assert reloaded["health"]["cx/ghost-model"]["category"] == "catalog_stale"
+        reloaded_until = datetime.fromisoformat(
+            reloaded["cooldowns"]["route:cx/ghost-model"]["until"]
+        )
+        assert reloaded_until >= expected_min
+        assert reloaded_until <= expected_max
+
+        # error text must NOT appear anywhere in the saved file
+        assert "not available in the active live catalog" not in raw_text, (
+            "raw error text was persisted"
+        )
+        assert "error_message" not in raw_text, "error_message field was persisted"
+
+    def test_is_catalog_stale_rejects_category_strings(self) -> None:
+        """Negative predicate coverage: category strings do not trigger catalog_stale.
+
+        This guards the old wiring bug where ``category`` (e.g. "unsupported")
+        was passed instead of ``error_message``.  Those strings never contain the
+        catalog-stale phrase, so ``is_catalog_stale_error`` returns False for them.
+        """
         from verdict.orchestration.provider_catalog import is_catalog_stale_error
 
-        # If we accidentally pass the category string (the old bug), the phrase
-        # "not available in the active live catalog" is absent → returns False.
         assert not is_catalog_stale_error("unsupported")
         assert not is_catalog_stale_error("bad_request")
         assert not is_catalog_stale_error("unservable")

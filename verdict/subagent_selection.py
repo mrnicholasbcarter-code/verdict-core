@@ -76,13 +76,22 @@ class LaunchCandidate:
 
 @dataclass(frozen=True)
 class HealthResult:
-    """Sanitized result of a one-token inference check."""
+    """Sanitized result of a one-token inference check.
+
+    ``error_message`` is unconditionally capped at 500 characters: nothing
+    beyond that horizon is useful for reclassification, and it prevents
+    accidental persistence of raw provider payloads.
+    """
 
     healthy: bool
     category: str
     status_code: int | None = None
     retry_after_seconds: float | None = None
     error_message: str = ""
+
+    def __post_init__(self) -> None:
+        if len(self.error_message) > 500:
+            object.__setattr__(self, "error_message", self.error_message[:500])
 
 
 @dataclass(frozen=True)
