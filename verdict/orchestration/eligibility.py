@@ -437,7 +437,7 @@ class EligibilityLadder:
         # unknown (rendered as UNKNOWN downstream); we never invent a value.
         a.context_window, a.supports_tools, a.supports_structured_output = _capability_facts(row)
 
-        reason = self._task_gate(row, route_id, requirements, a.capacity)
+        reason = self._task_gate(row, route_id, requirements, a.capacity, now=now)
         if reason:
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, reason
             return a
@@ -468,6 +468,7 @@ class EligibilityLadder:
         route_id: str,
         req: TaskRequirements,
         capacity: CapacityClass = CapacityClass.UNKNOWN,
+        now: datetime | None = None,
     ) -> str:
         caps = row.get("capabilities") or {}
         caps = caps if isinstance(caps, Mapping) else {}
@@ -514,10 +515,9 @@ class EligibilityLadder:
             and cache is not None
         ):
             from verdict.orchestration.health_cache import STATE_FRESH, STATE_STALE
-            from datetime import datetime as _dt, timezone as _tz
 
-            now = _dt.now(_tz.utc)
-            lookup = cache.lookup(route_id, now)
+            gate_now = now or datetime.now(timezone.utc)
+            lookup = cache.lookup(route_id, gate_now)
             if lookup.entry is None or not lookup.entry.agentic_ok:
                 return "no_agentic_probe"
             if lookup.state not in (STATE_FRESH, STATE_STALE):
@@ -579,10 +579,10 @@ class EligibilityLadder:
         cache_freshness: str | None = None
         if cache is not None:
             from verdict.orchestration.health_cache import STATE_FRESH, STATE_STALE
-            from datetime import datetime as _dt, timezone as _tz
 
-            now = _dt.now(_tz.utc)
-            lookup = cache.lookup(a.route_id, now)
+            rc_req = getattr(self, "_current_requirements", None)
+            rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
+            lookup = cache.lookup(a.route_id, rc_now)
             if lookup.entry is not None:
                 probe_class = lookup.entry.probe_class
                 cache_checked_at = lookup.entry.checked_at.isoformat()
@@ -643,6 +643,7 @@ class EligibilityLadder:
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
         self._current_requirements = requirements
+        self._current_now = now
         assessments: list[_Assessment] = []
         for route_id in sorted(self._rows):
             row = self._rows[route_id]

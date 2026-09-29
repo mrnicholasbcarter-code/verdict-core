@@ -703,7 +703,7 @@ class Prober:
 
     def _needs_agentic(self, route: AdmittedRoute, now: datetime) -> bool:
         """True when the route is FREE and its agentic probe is stale or missing."""
-        if route.capacity_class != CapacityClass.FREE:
+        if route.capacity != CapacityClass.FREE.value:
             return False
         entry = self.cache.entry(route.route_id)
         if entry is None:
