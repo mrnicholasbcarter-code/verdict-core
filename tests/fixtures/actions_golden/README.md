@@ -41,7 +41,7 @@ the captured JSON when parsed.
 
 | Command | Reason |
 |---------|--------|
-| `doctor --json` | ~500 KB output embedding host-specific filesystem paths (`/home/nick/…`) and a 867-doc documentation inventory listing; not reproducible across hosts |
+| `doctor --json` | ~500 KB output embedding host-specific filesystem paths (`/home/<user>/…`) and a 867-doc documentation inventory listing; not reproducible across hosts |
 | `config` | No `config` command on `origin/main` (new in PR) |
 
 ## Normalised volatile fields
