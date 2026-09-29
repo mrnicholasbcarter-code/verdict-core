@@ -321,7 +321,9 @@ def validate_scenario_height(events: list[dict[str, object]], *, include_home: b
 
     if len(events) > 2000:
         raise CaptureError("scenario exceeds the bounded 2000-frame capture limit")
-    console = Console(file=io.StringIO(), width=WIDTH, force_terminal=True, color_system="truecolor")
+    console = Console(
+        file=io.StringIO(), width=WIDTH, force_terminal=True, color_system="truecolor"
+    )
     if include_home:
         home_rows = len(console.render_lines(render_home(HomeState(), plain=False, width=WIDTH)))
         if home_rows + 2 > SCENARIO_HEIGHT:
@@ -332,7 +334,9 @@ def validate_scenario_height(events: list[dict[str, object]], *, include_home: b
         count = len(console.render_lines(render(view, width=WIDTH)))
         # Replay integrity line and final newline also need terminal space.
         if count + 2 > SCENARIO_HEIGHT:
-            raise CaptureError(f"cockpit frame would be clipped: {count} rows at seq {event.get('seq')}")
+            raise CaptureError(
+                f"cockpit frame would be clipped: {count} rows at seq {event.get('seq')}"
+            )
 
 
 def scenario_session(speed: float, *, short: bool = False) -> None:
@@ -359,7 +363,9 @@ def scenario_session(speed: float, *, short: bool = False) -> None:
             console.print(SCENARIO_LABEL, markup=False)
             # A real, recorded reading pause; no cast timestamps are synthesized.
             time.sleep(2)
-        scenario = run_flagship_scenario(root / "runs", workspace_root=root / "workspace", worker_seconds=1.5)
+        scenario = run_flagship_scenario(
+            root / "runs", workspace_root=root / "workspace", worker_seconds=1.5
+        )
         validate_scenario_events(scenario.events)
         validate_scenario_height(scenario.events, include_home=not short)
         console.clear()
