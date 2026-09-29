@@ -81,6 +81,10 @@ def add_parsers(subparsers: Any) -> None:
     watch.add_argument("run", help="Run id or run directory")
     watch.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     watch.add_argument("--once", action="store_true", help="Render the current state and exit")
+    watch.add_argument("--node", metavar="N", help="Select a recorded worker node")
+    watch.add_argument(
+        "--panel", choices=("routing", "context", "receipt"), help="Open a worker inspection panel"
+    )
     watch.add_argument(
         "--replay",
         action="store_true",
@@ -544,19 +548,51 @@ def _watch(args: argparse.Namespace) -> int:
     if not events.exists():
         print(f"no run at {run_dir}", file=sys.stderr)
         return 2
+    from verdict.design import presentation_mode
+
+    mode = presentation_mode(stream=sys.stdout)
+    node_id = getattr(args, "node", None)
+    panel_name = getattr(args, "panel", None)
     if args.once:
-        rows = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
-        plain = not sys.stdout.isatty() or "NO_COLOR" in os.environ
-        print(render_text(rows, width=110, plain=plain))
+        if node_id is not None or panel_name is not None:
+            from verdict.orchestration.cockpit_controls import render_run_text
+
+            try:
+                output = render_run_text(run_dir, node_id=node_id, panel_name=panel_name, mode=mode)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            print(output, end="")
+        else:
+            rows = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
+            print(render_text(rows, width=mode.width, plain=not mode.color))
         return 0
     if args.replay:
         view = follow_replay(events, speed=args.speed)
         return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
-    from verdict.design import presentation_mode
+    interactive = sys.stdin.isatty() and sys.stdout.isatty() and mode.color
+    if (node_id is not None or panel_name is not None) and not interactive:
+        from verdict.orchestration.cockpit_controls import render_run_text
 
-    mode = presentation_mode(stream=sys.stdout)
-    interactive = sys.stdin.isatty() and sys.stdout.isatty() and mode.animate
-    view = follow(events, stop_when_final=True, interactive=interactive)
+        try:
+            print(
+                render_run_text(run_dir, node_id=node_id, panel_name=panel_name, mode=mode), end=""
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return 0
+    try:
+        view = follow(
+            events,
+            stop_when_final=True,
+            interactive=interactive,
+            node_id=node_id,
+            panel_name=panel_name,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
 
 
