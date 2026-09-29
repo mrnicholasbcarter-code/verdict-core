@@ -45,9 +45,9 @@ verdict eligibility --scope cc/,cx/ --probe --frontier
 verdict orchestrate "Add textkit/stats.py and textkit/case.py with tests; full suite must pass" \
   --repo /path/to/repo --scope cc/,cx/ --max-parallel 3
 
-# 3. Same, with chaos: planner quota, a worker quota, a worker that never answers:
+# 3. Same, with chaos: planner quota, first worker quota, second worker never answers:
 verdict orchestrate "<goal>" --repo /path/to/repo --scope cc/,cx/ \
-  --inject "#1=quota" --inject "#2=route_quota" --inject "#3=no_final"
+  --inject "#1=quota" --inject "worker#1=route_quota" --inject "worker#2=no_final"
 
 # 4. Controller survival: generation 0 hangs, the supervisor kills it and resumes:
 VERDICT_CHAOS_G0="#2=hang" verdict supervise --run-id demo --runs-dir /path/to/repo/.verdict/runs \
@@ -69,7 +69,8 @@ Keys:
 | `cc/claude-sonnet-5` | exact route |
 | `cc/*` | provider prefix |
 | `@node_id` | node id |
-| `#N` | N-th executor call; `#1` is planning |
+| `#N` | N-th executor call; `#1` is planning (includes plan-repair) |
+| `worker#N` | N-th worker dispatch (attempt worktree `<node>-a<N>`; planner calls do not count) |
 | `*` | any call |
 
 Faults:

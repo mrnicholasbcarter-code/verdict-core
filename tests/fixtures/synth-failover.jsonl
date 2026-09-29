@@ -1,0 +1,17 @@
+{"seq": 1, "at": "2026-09-28T20:00:00Z", "type": "run_started", "node_id": "", "data": {"goal": "failover demo", "controller_route": "cc/opus"}}
+{"seq": 2, "at": "2026-09-28T20:00:01Z", "type": "plan_ready", "node_id": "", "data": {"nodes": [{"node_id": "alpha", "objective": "do it"}], "layers": [["alpha"]], "topology": "SOLO", "rationale": []}}
+{"seq": 3, "at": "2026-09-28T20:00:02Z", "type": "eligibility", "node_id": "alpha", "data": {"discovered": 56, "entitled": 40, "healthy": 10, "available": 6, "eligible": 3}}
+{"seq": 4, "at": "2026-09-28T20:00:03Z", "type": "selection", "node_id": "alpha", "data": {"route_id": "cc/haiku-4.5", "provider": "cc", "attempt": 1, "capacity_class": "subscription", "rank": 0}}
+{"seq": 5, "at": "2026-09-28T20:00:04Z", "type": "node_state", "node_id": "alpha", "data": {"state": "ADMITTED", "route_id": "cc/haiku-4.5", "attempt": 1}}
+{"seq": 6, "at": "2026-09-28T20:00:05Z", "type": "dispatch", "node_id": "alpha", "data": {"route_id": "cc/haiku-4.5", "attempt": 1, "provider": "cc"}}
+{"seq": 7, "at": "2026-09-28T20:00:06Z", "type": "node_state", "node_id": "alpha", "data": {"state": "RUNNING", "route_id": "cc/haiku-4.5", "attempt": 1}}
+{"seq": 8, "at": "2026-09-28T20:00:07Z", "type": "failure", "node_id": "alpha", "data": {"category": "quota_exhausted", "action": "REROUTE", "route_id": "cc/haiku-4.5", "evidence": "429 quota exhausted, retry-after 3600"}}
+{"seq": 9, "at": "2026-09-28T20:00:07Z", "type": "cooldown", "node_id": "alpha", "data": {"key": "cc", "scope": "provider", "category": "quota_exhausted", "until": "2026-09-28T21:00:07Z"}}
+{"seq": 10, "at": "2026-09-28T20:00:08Z", "type": "reassign", "node_id": "alpha", "data": {"from_route": "cc/haiku-4.5", "to_route": "kr/haiku-4.5", "reason": "quota", "attempt": 2}}
+{"seq": 11, "at": "2026-09-28T20:00:09Z", "type": "selection", "node_id": "alpha", "data": {"route_id": "kr/haiku-4.5", "provider": "kr", "attempt": 2, "capacity_class": "subscription", "rank": 1}}
+{"seq": 12, "at": "2026-09-28T20:00:10Z", "type": "dispatch", "node_id": "alpha", "data": {"route_id": "kr/haiku-4.5", "attempt": 2, "provider": "kr"}}
+{"seq": 13, "at": "2026-09-28T20:00:11Z", "type": "node_state", "node_id": "alpha", "data": {"state": "RUNNING", "route_id": "kr/haiku-4.5", "attempt": 2}}
+{"seq": 14, "at": "2026-09-28T20:00:12Z", "type": "terminal", "node_id": "alpha", "data": {"route_id": "kr/haiku-4.5", "reported_model": "kr/haiku-4.5-20251001", "session_ref": "sess-9f", "ok": true, "duration_seconds": 3.4, "stop_reason": "stop"}}
+{"seq": 15, "at": "2026-09-28T20:00:13Z", "type": "node_state", "node_id": "alpha", "data": {"state": "VALIDATED", "route_id": "kr/haiku-4.5", "attempt": 2}}
+{"seq": 16, "at": "2026-09-28T20:00:14Z", "type": "verify", "node_id": "alpha", "data": {"command": "sh -c 'grep -qx ok alpha.txt'", "exit_code": 0, "ok": true}}
+{"seq": 17, "at": "2026-09-28T20:00:15Z", "type": "run_finished", "node_id": "", "data": {"outcome": "COMPLETE", "reason": "failover succeeded"}}

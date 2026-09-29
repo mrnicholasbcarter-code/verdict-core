@@ -58,7 +58,8 @@ def add_parsers(subparsers: Any) -> None:
         help="Chaos: inject faults for a route (quota, rate_limit, auth, payment, "
         "forbidden, server, timeout, transport, empty, no_final, malformed, "
         "hang, mismatch); ROUTE may be an exact route, a provider 'cc/*', "
-        "a node '@node_id', the N-th executor call '#N' (planning is #1), or '*'",
+        "a node '@node_id', the N-th executor call '#N' (planning is #1), "
+        "the N-th worker dispatch 'worker#N' (planner calls do not count), or '*'",
     )
     orch.add_argument(
         "--state-file",
@@ -520,7 +521,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
     viewer = None
     if not args.json:
         viewer = threading.Thread(
-            target=lambda: follow(events_path, stop_when_final=True, start_seq=prior_seq),
+            # Background progress view: never interactive (it must not read stdin
+            # or change terminal mode while the orchestration loop runs).
+            target=lambda: follow(
+                events_path, stop_when_final=True, start_seq=prior_seq, interactive=False
+            ),
             daemon=True,
         )
         viewer.start()
@@ -570,8 +575,27 @@ def _watch(args: argparse.Namespace) -> int:
     if args.replay:
         view = follow_replay(events, speed=args.speed)
         return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
-    view = follow(events, stop_when_final=True)
+    from verdict.design import presentation_mode
+
+    mode = presentation_mode(stream=sys.stdout)
+    interactive = sys.stdin.isatty() and sys.stdout.isatty() and mode.animate
+    view = follow(events, stop_when_final=True, interactive=interactive)
     return 0 if getattr(view, "outcome", "") == "COMPLETE" else 1
+
+
+def _derive_no_change_nodes(run_dir: Path, receipt: Mapping[str, Any]) -> list[str]:
+    """Prefer the stored field; rebuild from events for older receipts."""
+    stored = [str(n) for n in receipt.get("no_change_nodes", []) if str(n).strip()]
+    if stored:
+        return stored
+    from verdict.orchestration.contracts import OrchestrationError
+    from verdict.orchestration.receipt import build_run_receipt
+
+    try:
+        fresh = build_run_receipt(run_dir)
+    except (OrchestrationError, OSError, ValueError):
+        return []
+    return [str(n) for n in fresh.get("no_change_nodes", []) if str(n).strip()]
 
 
 def _receipt(args: argparse.Namespace) -> int:
@@ -607,6 +631,11 @@ def _receipt(args: argparse.Namespace) -> int:
                 for a in node.get("attempts", [])
             )
             print(f"  {node['node_id']:<18} {node['final_state']:<16} {attempts}")
+        no_change_nodes = _derive_no_change_nodes(run_dir, receipt)
+        if no_change_nodes:
+            n = len(no_change_nodes)
+            noun = "node" if n == 1 else "nodes"
+            print(f"  {n} implement {noun} changed no files")
         review = receipt.get("review", {})
         print(
             f"  review: {review.get('status')} by {review.get('reviewer')} on {review.get('route_id')}"
