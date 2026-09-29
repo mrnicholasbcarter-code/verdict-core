@@ -381,9 +381,9 @@ def test_existing_screens_plain_bytes_branch_snapshot(width: int, condition: str
     BOD-276). To update: run capture_plain_screens and replace the expected dict.
     """
     expected = {
-        60: "e74db75ec174d1d820c76bb04831bd6394aac18ea64eba9d67d16d51595bdd42",
-        100: "f1a88556e7fb7717bacf2b1a73b00dea17b7dec8abce71575da5f6b868ff2f3b",
-        200: "f1a88556e7fb7717bacf2b1a73b00dea17b7dec8abce71575da5f6b868ff2f3b",
+        60: "f9e2db941622be624f12b28046b11efff86cc560f96b1023cd8aa7c1f33dc3bb",
+        100: "f657cd4c2c7b2676457062a94427ee20bfef5b4b449b9df6654894478652b90b",
+        200: "f657cd4c2c7b2676457062a94427ee20bfef5b4b449b9df6654894478652b90b",
     }
     output = capture_plain_screens(width, condition)
     assert "\x1b" not in output

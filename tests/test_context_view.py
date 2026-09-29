@@ -392,6 +392,7 @@ class TestMachineReadable:
         assert set(node_d.keys()) == {
             "node_id",
             "budget_bytes",
+            "compression",
             "sources",
             "prompt_bytes",
             "totals_by_state",

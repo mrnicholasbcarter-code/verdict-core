@@ -135,11 +135,12 @@ class TestClaimsFlagshipFailover:
         assert c.status == CLAIM_STATUS_VERIFIED
 
     def test_expected_verified_set(self) -> None:
-        # Fixture routes share the "model" family and no route is rejected at
-        # TASK_ELIGIBLE, so those two claims are honestly not observed.
+        # The offline inventory uses distinct families and one capability-ineligible
+        # route, so independent review and capability filtering are observed.
         verified = {c.id for c in self.claims if c.status == CLAIM_STATUS_VERIFIED}
         assert verified == {
             "task_aware_selection",
+            "capability_filtering",
             "health_considered",
             "explicit_assignment",
             "failure_isolated",
@@ -148,10 +149,23 @@ class TestClaimsFlagshipFailover:
             "context_within_budget",
             "replacement_completed",
             "validation_passed",
+            "independent_review",
             "receipt_integrity",
         }
-        assert self.by_id["independent_review"].status == CLAIM_STATUS_NOT_OBSERVED
-        assert self.by_id["capability_filtering"].status == CLAIM_STATUS_NOT_OBSERVED
+
+    def test_offline_demo_verifies_independent_review(self) -> None:
+        claim = self.by_id["independent_review"]
+        assert claim.status == CLAIM_STATUS_VERIFIED
+        value = claim.evidence[-1].value
+        assert value["shared_identities"] == []
+        assert value["shared_families"] == []
+        assert "gamma/gemini-c" in value["reviewer_routes"]
+
+    def test_offline_demo_verifies_capability_filtering(self) -> None:
+        claim = self.by_id["capability_filtering"]
+        assert claim.status == CLAIM_STATUS_VERIFIED
+        reasons = claim.evidence[0].value["reasons"]
+        assert "missing_capability:tools" in reasons or "insufficient_context" in reasons
 
     def test_claims_serialise_round_trip(self) -> None:
         for claim in self.claims:
@@ -713,6 +727,21 @@ def test_review_observed_independent_verified() -> None:
         _review("kr/gpt-5.6-terra"),
     ]
     assert _get("independent_review", evs).status == CLAIM_STATUS_VERIFIED
+
+
+def test_review_antigravity_worker_agy_reviewer_not_independent() -> None:
+    """agy and antigravity share google-antigravity; review is not independent."""
+    evs = [
+        _event(1, "dispatch", {"route_id": "agy/claude-sonnet-4-6", "attempt": 1}),
+        _event(
+            2, "terminal", {"attempt": 1, "ok": True, "reported_model": "agy/claude-sonnet-4-6"}
+        ),
+        _review("antigravity/gpt-oss-120b-medium"),
+    ]
+    claim = _get("independent_review", evs)
+    assert claim.status in _BAD
+    evidence = claim.evidence[0].value
+    assert "google-antigravity" in evidence.get("shared_pools", [])
 
 
 def test_receipt_integrity_unrelated_run_directory() -> None:

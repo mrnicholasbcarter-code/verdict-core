@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO, cast
 
 from rich import box
 from rich.console import Console, Group, RenderableType
@@ -26,6 +26,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verdict.design import GLYPHS as GLYPHS  # re-export for local callers
+from verdict.design import PresentationMode
 from verdict.orchestration.contracts import NodeState, RunEvent
 from verdict.terminal_ui import TOKENS, clean
 
@@ -1110,7 +1111,6 @@ def _run_interactive_cockpit(
     ``seen`` is the number of events already applied to ``view`` (used to
     skip a previous controller life via ``start_seq``).
     """
-    from typing import cast
 
     from verdict.orchestration.cockpit_controls import PanelName, run_cockpit
     from verdict.orchestration.cockpit_nav import _RealKeyReader
@@ -1177,32 +1177,18 @@ def _print_integrity_check(run_dir: Path, console: Console, plain: bool) -> None
         console.print(msg, markup=False, highlight=False)
     else:
         # For rich mode, print on a new line after the live view stops
-        style = "red" if problems else "green"
-        console.print(f"[{style}]{msg}[/{style}]")
+        style = TOKENS["RED"] if problems else TOKENS["SUCCESS"]
+        console.print(Text(msg, style=style))
 
 
-_SYNC_ON = "\x1b[?2026h"
-_SYNC_OFF = "\x1b[?2026l"
+def _refresh_live(
+    live: Live, renderable: RenderableType, console: Console, mode: PresentationMode | None = None
+) -> None:
+    """Redraw inside one synchronized-output block when supported."""
+    import verdict.motion as _motion
 
-
-def _begin_synchronized_output(console: Console) -> None:
-    """Open a DEC 2026 synchronized-output block so one frame is one atomic write."""
-    if console.is_terminal:
-        console.file.write(_SYNC_ON)
-
-
-def _end_synchronized_output(console: Console) -> None:
-    """Close the synchronized-output block, which is the frame boundary."""
-    if console.is_terminal:
-        console.file.write(_SYNC_OFF)
-        console.file.flush()
-
-
-def _refresh_live(live: Live, renderable: RenderableType, console: Console) -> None:
-    """Redraw inside one synchronized-output block."""
-    _begin_synchronized_output(console)
-    live.update(renderable, refresh=True)
-    _end_synchronized_output(console)
+    with _motion.synchronized_output(cast(TextIO, console.file), mode=mode):
+        live.update(renderable, refresh=True)
 
 
 def follow_replay(
@@ -1226,8 +1212,17 @@ def follow_replay(
     """
     import time
 
+    import verdict.motion as _motion
+    from verdict.design import presentation_mode as _presentation_mode
+
     target = console or Console()
-    plain = plain_mode(console)
+
+    class _ConsoleStream:
+        def isatty(self) -> bool:
+            return target.is_terminal
+
+    mode = _presentation_mode(_ConsoleStream())
+    plain = not mode.color
     width = target.width or 100
     view = RunView()
     events = read_events(events_path)
@@ -1241,11 +1236,16 @@ def follow_replay(
     # Detect if this is a fixture run by examining routes
     kind = _replay_kind(events)
 
-    live = None if plain else Live(render(view, width=width), console=target, auto_refresh=False)
+    # Only start Live when animation is enabled (honours VERDICT_NO_ANIMATION /
+    # REDUCED_MOTION / non-TTY / CI etc.)
+    live = (
+        None
+        if (plain or not mode.animate)
+        else Live(render(view, width=width), console=target, auto_refresh=False)
+    )
     if live is not None:
-        _begin_synchronized_output(target)
-        live.start(refresh=True)
-        _end_synchronized_output(target)
+        with _motion.synchronized_output(cast(TextIO, target.file), mode=mode):
+            live.start(refresh=True)
 
     try:
         for i, event in enumerate(events):
@@ -1260,11 +1260,11 @@ def follow_replay(
                 }[kind].format(rid=run_id)
                 view.goal = f"REPLAY of {label} - time x{speed}"
 
-            if plain:
+            if plain or not mode.animate:
                 target.print(event_line(event), markup=False, highlight=False)
 
             if live is not None:
-                _refresh_live(live, render(view, width=width), target)
+                _refresh_live(live, render(view, width=width), target, mode=mode)
 
             # Calculate delay for next event
             if i < len(events) - 1:
@@ -1281,10 +1281,9 @@ def follow_replay(
 
     finally:
         if live is not None:
-            time.sleep(0.5 / speed)  # Brief pause to see final state
-            _begin_synchronized_output(target)
-            live.stop()
-            _end_synchronized_output(target)
+            # No decorative pause: stop immediately after the final event.
+            with _motion.synchronized_output(cast(TextIO, target.file), mode=mode):
+                live.stop()
 
         # Show integrity verification at the end
         _print_integrity_check(events_path.parent, target, plain)
