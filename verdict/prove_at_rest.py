@@ -507,15 +507,13 @@ class Prober:
         """
         if not reported:
             return True
-        route_provider = route_id.split("/", 1)[0] if "/" in route_id else ""
-        route_suffix = route_id.split("/", 1)[-1] if "/" in route_id else route_id
-        if "/" in reported:
-            # Reported includes a provider — compare full route_id.
-            reported_provider = reported.split("/", 1)[0]
-            reported_suffix = reported.split("/", 1)[-1]
-            return reported_provider == route_provider and reported_suffix == route_suffix
-        # No prefix in reported: suffix match only.
-        return reported == route_suffix
+        # The gateway either echoes the full route id or strips exactly the
+        # gateway provider segment ("cc/claude-x" -> "claude-x",
+        # "nvidia/moonshotai/kimi-k3" -> "moonshotai/kimi-k3").  Anything else,
+        # including a different provider with the same model suffix, is a
+        # mismatch.
+        route_suffix = route_id.split("/", 1)[1] if "/" in route_id else route_id
+        return reported in (route_id, route_suffix)
 
     def _probe_route(
         self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float

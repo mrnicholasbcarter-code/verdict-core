@@ -1009,6 +1009,16 @@ def test_model_identity_same_prefix_matches_different_prefix_does_not(tmp_path: 
     )
     # Empty reported → match (not a mismatch).
     assert match_fn("cc/model", "") is True, "empty reported must not be a mismatch"
+    # Nested model ids: the live gateway strips only the gateway provider
+    # segment, e.g. nvidia/moonshotai/kimi-k3 is echoed as moonshotai/kimi-k3.
+    assert match_fn("nvidia/moonshotai/kimi-k3", "moonshotai/kimi-k3") is True, (
+        "a nested model id echoed without the gateway prefix must match"
+    )
+    assert match_fn("nvidia/moonshotai/kimi-k3", "nvidia/moonshotai/kimi-k3") is True
+    assert match_fn("nvidia/moonshotai/kimi-k3", "other/moonshotai/kimi-k3") is False
+    assert match_fn("nvidia/moonshotai/kimi-k3", "kimi-k3") is False, (
+        "stripping more than the gateway segment is not the same identity"
+    )
 
 
 def test_empty_reported_model_stored_as_not_reported_identity(tmp_path: Path) -> None:
