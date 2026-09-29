@@ -459,8 +459,14 @@ def test_plan_started_new_route_clears_observed_identity() -> None:
     view = RunView.from_events(
         [
             event(1, "plan_started", route_id="cc/route-a"),
-            event(2, "controller", state="HEALTHY", route_id="cc/route-a",
-                  observed_model="cc/actual-a", session_ref="sess-a"),
+            event(
+                2,
+                "controller",
+                state="HEALTHY",
+                route_id="cc/route-a",
+                observed_model="cc/actual-a",
+                session_ref="sess-a",
+            ),
             # New attempt on route B — no HEALTHY event yet
             event(3, "plan_started", route_id="cc/route-b"),
         ]

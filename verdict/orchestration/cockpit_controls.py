@@ -332,7 +332,8 @@ def _health_for_selected(
     failures = [
         f
         for f in view.failures
-        if (route and f.route_id == route) or (not nav.is_role_row(selected) and f.node_id == selected)
+        if (route and f.route_id == route)
+        or (not nav.is_role_row(selected) and f.node_id == selected)
     ]
     # eligibility events matching this route
     elig_events = [

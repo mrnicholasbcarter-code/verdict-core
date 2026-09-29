@@ -19,7 +19,7 @@ from verdict.orchestration import cockpit_controls as cockpit
 from verdict.orchestration import cockpit_nav as nav
 from verdict.orchestration.cli import _watch, add_parsers
 from verdict.orchestration.contracts import RunEvent
-from verdict.orchestration.tui import RunView, follow, read_events
+from verdict.orchestration.tui import Failure, RunView, follow, read_events
 
 FIXTURE = Path(__file__).parent / "fixtures" / "cockpit_controls"
 GOLDEN = FIXTURE / "golden"
@@ -344,11 +344,6 @@ def test_empty_route_failures_not_leaked_across_nodes() -> None:
     When the selected role row also has no route, neither failure should appear
     because `route` is empty and the route-match branch requires `route` to be truthy.
     """
-    from pathlib import Path
-    from verdict.orchestration import cockpit_controls as cockpit
-    from verdict.orchestration import cockpit_nav as nav
-    from verdict.orchestration.tui import Failure, RunView
-
     view = RunView()
     view.failures = [
         Failure(node_id="N1", category="hard", action="generate", route_id=""),
