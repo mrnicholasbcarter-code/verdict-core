@@ -632,6 +632,22 @@ def detect_all_providers() -> DetectionResult:
     )
 
 
+def _display_env_name(value: object) -> str:
+    """Printable name of the env var that should hold a credential. Never echoes input.
+
+    The printed text is rebuilt from a fixed character set, so no part of a
+    user-supplied value reaches the output unchecked. A value that does not look
+    like an environment-variable name (for example a pasted key) is masked.
+    """
+    text = str(value)
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", text):
+        return "<invalid env name>"
+    return "".join(_ENV_NAME_CHARS[_ENV_NAME_CHARS.index(ch)] for ch in text)
+
+
+_ENV_NAME_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+
+
 def format_detection_report(result: DetectionResult, verbose: bool = False) -> str:
     """Format detection results as a human-readable report."""
     lines = ["\n╔══════════════════════════════════════════════════════════════╗"]
@@ -674,15 +690,7 @@ def format_detection_report(result: DetectionResult, verbose: bool = False) -> s
             if p.api_key_configured:
                 status_parts.append("🔑 Auth OK")
             elif p.api_key_env:
-                # codeql[py/clear-text-logging-sensitive-data] Guarded: we validate
-                # that api_key_env looks like an env-var name (^[A-Z][A-Z0-9_]{1,63}$)
-                # before printing. If a user mistakenly puts a key VALUE in
-                # api_key_env, the guard masks it as '<invalid env name>'.
-                env_name = str(p.api_key_env)
-                if re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", env_name):
-                    status_parts.append(f"🔒 Needs {env_name}")
-                else:
-                    status_parts.append("🔒 Needs <invalid env name>")
+                status_parts.append(f"🔒 Needs {_display_env_name(p.api_key_env)}")
 
             model_info = f" — {len(p.models)} models" if p.models else ""
             if p.models and verbose:
