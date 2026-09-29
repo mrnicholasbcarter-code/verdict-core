@@ -89,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CodeQL: clear-text-logging alert on provider env-var names resolved; provider detection logging redacted (#738, #733)
 - TUI recordings: pty size, timing and capture validation corrected (#726)
 - `follow()` is non-interactive unless the caller requests it (#719)
+- HYDRATE evidence records duplicates and states that compression is not performed (#743)
+- Replay honours reduced motion; setup errors show a repair step (#744)
+- Qualification timeout judges completion time, not observation time (#754)
 
 ## [0.3.0] - 2026-09-25
 
