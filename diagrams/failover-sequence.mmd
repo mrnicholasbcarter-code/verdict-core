@@ -1,14 +1,3 @@
-# Failover Sequence — Single Node
-
-What happens when a worker node fails during orchestration execution.
-The recovery loop is inline in `DagRuntime._drive()`
-(`verdict/orchestration/runtime.py`); there is no separate failover engine
-for worker nodes.
-
-Source: [`diagrams/failover-sequence.mmd`](../../diagrams/failover-sequence.mmd).
-The fenced block below is byte-identical to that file.
-
-```mermaid
 %% failover-sequence.mmd -- single-node failover inside DagRuntime._drive
 %% Source (verified against code at this commit):
 %%   verdict/orchestration/runtime.py (DagRuntime._drive)
@@ -77,4 +66,3 @@ sequenceDiagram
         end
     end
     end
-```

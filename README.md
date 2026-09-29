@@ -269,9 +269,12 @@ Four properties hold by construction, on both the orchestration and the single-r
 Orchestration is specified in [ADR-036](docs/adr/ADR-036-goal-to-receipt-orchestration.md).
 ADR-023 (governed swarm supervision) is superseded.
 
-Three of the six verified diagrams below; the other three
+Three of the nine verified diagrams are embedded below. The other six
 ([ecosystem](diagrams/ecosystem.mmd), [explain-flow](diagrams/explain-flow.mmd),
-[setup-detection-flow](diagrams/setup-detection-flow.mmd)) are linked rather than embedded.
+[setup-detection-flow](diagrams/setup-detection-flow.mmd),
+[failover-sequence](diagrams/failover-sequence.mmd),
+[goal-to-receipt](diagrams/goal-to-receipt.mmd),
+[ownership-map](diagrams/ownership-map.mmd)) are linked rather than embedded.
 Every diagram carries a header comment listing the exact source files it reflects, and
 [`tests/test_diagrams.py`](tests/test_diagrams.py) checks that every named source file and
 function actually exists.
@@ -288,6 +291,12 @@ function actually exists.
 %%   verdict/router.py (select_best_model, select_best_eligible_model)
 %%   verdict/proxy.py (UpstreamProxy.chat/.responses/._forward)
 %%   verdict/dispatcher.py (SwarmDispatcher.dispatch -- separate planning contract, not on this HTTP path)
+%% Verdict visual theme. Hex from verdict/design.py PALETTE:
+%% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
+%% purple #a78bfa  cyan #22b8eb  success #4ade80  amber #f5b00b  red #f87171  border #52525b
+%% Edges/lines use #7c7c88 (>=3:1 on #ffffff and #0d1117; measured 4.12:1 / 4.59:1).
+%% fontFamily omitted: Mermaid sanitizeDirective drops hyphenated themeVariable values.
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
 flowchart TD
     CLIENT["HTTP client"] --> POST["POST /v1/route -- route_task"]
     CLIENT --> RELAY["POST /v1/chat/completions or /v1/responses -- _relay_completion"]
@@ -360,6 +369,18 @@ flowchart TD
 %% evidence: verdict/dispatcher.py:135,147 class SwarmDispatcher, def dispatch
 %% evidence: verdict/dispatcher.py:181-195 missing_authorized_selected_route / "no eligible candidates"
 %% evidence: verdict/dispatcher.py:198-206 authorized_runtime_id mismatch -> raise ExecutionPathError
+
+classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
+classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
+classDef cooldown fill:#18181b,stroke:#f5b00b,color:#f4f4f5,stroke-width:2px
+classDef failed fill:#18181b,stroke:#f87171,color:#f4f4f5,stroke-width:2px
+classDef validated fill:#18181b,stroke:#4ade80,color:#f4f4f5,stroke-width:2px
+classDef muted fill:#18181b,stroke:#52525b,color:#a1a1aa,stroke-width:1px
+class POST,RELAY,ISVC,GATE,RANK,FWD,FORWARD active
+class DEC104,DECSEL,R200 selected
+class EPERR,H400,R503,DNOROUTE,DNOELIG,DMISMATCH failed
+class DECFB,DECPROT cooldown
+class EMBED,DISP,LOG muted
 ```
 
 </details>
@@ -372,6 +393,12 @@ flowchart TD
 %% Source (verified against code at this commit):
 %%   verdict/orchestration/contracts.py (EligibilityStage, RouteVerdict, TaskRequirements)
 %%   verdict/orchestration/eligibility.py (EligibilityLadder._assess, _task_gate, select, _rank_key, cooldown_seconds_for)
+%% Verdict visual theme. Hex from verdict/design.py PALETTE:
+%% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
+%% purple #a78bfa  cyan #22b8eb  success #4ade80  amber #f5b00b  red #f87171  border #52525b
+%% Edges/lines use #7c7c88 (>=3:1 on #ffffff and #0d1117; measured 4.12:1 / 4.59:1).
+%% fontFamily omitted: Mermaid sanitizeDirective drops hyphenated themeVariable values.
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
 stateDiagram-v2
     direction TB
     [*] --> DISCOVERED
@@ -443,6 +470,20 @@ stateDiagram-v2
 %% evidence: verdict/orchestration/eligibility.py:157,384-418 select(): max_probes_per_select=8, probe_order round-robin, probe_budget_exhausted
 %% evidence: verdict/orchestration/eligibility.py:427-433 chosen route emitted with reached=SELECTED, reason="selected"
 %% evidence: verdict/orchestration/eligibility.py:86-89,33-44 cooldown_seconds_for / _CATEGORY_COOLDOWN_SECONDS per failure category
+
+classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
+classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
+classDef cooldown fill:#18181b,stroke:#f5b00b,color:#f4f4f5,stroke-width:2px
+classDef failed fill:#18181b,stroke:#f87171,color:#f4f4f5,stroke-width:2px
+classDef validated fill:#18181b,stroke:#4ade80,color:#f4f4f5,stroke-width:2px
+classDef muted fill:#18181b,stroke:#52525b,color:#a1a1aa,stroke-width:1px
+class DISCOVERED,ENTITLED,HEALTHY,AVAILABLE,TASK_ELIGIBLE active
+class SELECTED selected
+class FailedAvailable,FailedAvailable2,FailedAvailable3 cooldown
+class FailedEntitled,FailedEntitled2,FailedHealthy,FailedTask,FailedTask2,FailedTask3,FailedTask4,FailedTask5,FailedSelected failed
+class ProbeBudgetExhausted muted
+class OpaqueSkipped muted
+
 ```
 
 </details>
@@ -458,9 +499,15 @@ stateDiagram-v2
 %%   verdict/orchestration/contracts.py (WorkGraph, NodeState)
 %%   verdict/orchestration/runtime.py (DagRuntime.run, _drive, _attempt, _validate, _integrate_node)
 %%   verdict/orchestration/recovery.py (FailureIntelligence.classify, RecoveryBudget)
-%%   NOTE: RecoveryBudget.decide is defined but NOT imported/used by runtime.py or run.py -- FailureIntelligence.classify is the wired classifier
+%%   NOTE: FailureIntelligence.classify drives live attempt failure/cooldown; RecoveryBudget.decide is used by DagRuntime._handle_retry_node (operator retry), not the inline attempt loop
 %%   verdict/orchestration/review.py (OpenCodeReviewer.review)
 %%   verdict/orchestration/receipt.py (build_run_receipt, write_run_receipt, verify_run_receipt, completion_verdict)
+%% Verdict visual theme. Hex from verdict/design.py PALETTE:
+%% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
+%% purple #a78bfa  cyan #22b8eb  success #4ade80  amber #f5b00b  red #f87171  border #52525b
+%% Edges/lines use #7c7c88 (>=3:1 on #ffffff and #0d1117; measured 4.12:1 / 4.59:1).
+%% fontFamily omitted: Mermaid sanitizeDirective drops hyphenated themeVariable values.
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
 flowchart TD
     GOAL["verdict orchestrate GOAL"] --> RUNDIR["load_or_create_run(root, run_id) -- creates/loads run dir, events.jsonl"]
     RUNDIR --> HASGRAPH{"graph.json already present (resume)?"}
@@ -544,16 +591,16 @@ flowchart TD
 %% evidence: verdict/orchestration/runtime.py:93,379-395 max_cooldown_wait_seconds=120.0; cooldown-wait retry-once loop; second None -> "no eligible model: " + _explain_exhaustion(considered)
 %% evidence: verdict/orchestration/runtime.py:524 async def _attempt(self, run, failures)
 %% evidence: verdict/orchestration/runtime.py:730,745,769 async def _validate(...); "ownership_violation: ..."; "verification_failed: exit <code>: ..."
-%% evidence: verdict/orchestration/runtime.py:658,675 self.classifier.classify(terminal, now=self.now()); self.selector.record_failure(run.route_id, failure, now=self.now())
-%% evidence: verdict/orchestration/runtime.py:432,442,451 "reassign" event; failures[-1].action == "RETRY_INFRA" -> same-route sleep+retry; NodeState.PLANNED with reassign=True
-%% evidence: verdict/orchestration/runtime.py:453,465-467 async def _integrate_node(run) -- merge validated dependency commits, "barrier" event name="integration"
-%% evidence: verdict/orchestration/runtime.py:799-803 self.policy.require_review; reviewer is None -> BLOCKED "review required but no reviewer configured"
-%% evidence: verdict/orchestration/runtime.py:809-820 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...)
+%% evidence: verdict/orchestration/runtime.py:1091,1108 self.classifier.classify(terminal, now=self.now()); self.selector.record_failure(run.route_id, failure, now=self.now())
+%% evidence: verdict/orchestration/runtime.py:764,806 "RETRY_INFRA" -> asyncio.sleep(min(cooldown, 60)) same-route retry (no tried.add); then NodeState.PLANNED with reassign=True
+%% evidence: verdict/orchestration/runtime.py:808 async def _integrate_node(run) -- merge validated dependency commits, "barrier" event name="integration"
+%% evidence: verdict/orchestration/runtime.py:1248-1252 self.policy.require_review; reviewer is None -> BLOCKED "review required but no reviewer configured"
+%% evidence: verdict/orchestration/runtime.py:1258-1283 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...); rejected review -> _finish(BLOCKED) at :1306-1311
 %% evidence: verdict/orchestration/review.py:118,149 class OpenCodeReviewer, async def review(...)
 %% evidence: verdict/orchestration/review.py:202 detail="no independent reviewer eligible" (fail-closed ERROR, never a false PASS)
 %% evidence: verdict/orchestration/contracts.py:570,581 class ReviewResult; def passed (status == PASS and not any(f.blocking() for f in findings))
 %% evidence: verdict/orchestration/recovery.py:133,141 class FailureIntelligence, def classify(terminal, now)
-%% evidence: verdict/orchestration/recovery.py:449,462 class RecoveryBudget, def decide(...) -> REASSIGN|REPAIR|FAIL_CLOSED IS DEFINED but grep confirms it is never imported/instantiated in verdict/orchestration/runtime.py or run.py -- the runtime's actual reassign/retry/block branching (diagrammed above) is the inline failures[-1].action check at runtime.py:442-451, not RecoveryBudget.decide(). Treat RecoveryBudget as unwired/dead code at this commit, not as the live recovery-decision path.
+%% evidence: verdict/orchestration/runtime.py:59 imports RecoveryBudget; :301 creates self._recovery_budget; :447 _handle_retry_node; :483 self._recovery_budget.decide(...); per-attempt path is classifier.classify at :1091
 %% evidence: verdict/orchestration/receipt.py:366 def build_run_receipt(run_dir)
 %% evidence: verdict/orchestration/receipt.py:428,444 "graph_digest": graph.digest(); "events_digest": _sha256_file(events_path)
 %% evidence: verdict/orchestration/receipt.py:173 def _sha256_file(path)
@@ -562,6 +609,19 @@ flowchart TD
 %% evidence: verdict/orchestration/receipt.py:511 def completion_verdict(receipt) -> (outcome, reason)
 %% evidence: verdict/orchestration/run.py:649,653 outcome != result.outcome.value -> events.emit("controller", state="VERDICT_OVERRIDE", ...)
 %% evidence: verdict/orchestration/contracts.py:460 def canonical_digest(value) -- sha256 over sorted-key JSON, used by WorkGraph.digest()
+
+classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
+classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
+classDef cooldown fill:#18181b,stroke:#f5b00b,color:#f4f4f5,stroke-width:2px
+classDef failed fill:#18181b,stroke:#f87171,color:#f4f4f5,stroke-width:2px
+classDef validated fill:#18181b,stroke:#4ade80,color:#f4f4f5,stroke-width:2px
+classDef muted fill:#18181b,stroke:#52525b,color:#a1a1aa,stroke-width:1px
+class PLAN,PSEL,PRUN,DRIVE,LADDER,ATTEMPT,EXEC,CLASS active
+class OKN,RPASS,GRAPH validated
+class PFAIL,PBLOCK,POOLX,POOLX2,BADV,BADT,NONREC,RFAIL,NOREV failed
+class PCOOL,COOLWAIT,COOL cooldown
+class RECEIPT,DIGEST,VERDICT,RESULT selected
+class OVERRIDE muted
 ```
 
 </details>
@@ -766,11 +826,14 @@ Component map, data flow and the orchestration layer:
 [docs/architecture.md](docs/architecture.md). Decisions: [ADR index](docs/adr/README.md),
 current orchestration in [ADR-036](docs/adr/ADR-036-goal-to-receipt-orchestration.md).
 
-Six verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embedded above
+Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embedded above
 ([route-flow](diagrams/route-flow.mmd), [eligibility-ladder](diagrams/eligibility-ladder.mmd),
-[orchestration-flow](diagrams/orchestration-flow.mmd)) and three are linked only
+[orchestration-flow](diagrams/orchestration-flow.mmd)) and six are linked only
 ([ecosystem](diagrams/ecosystem.mmd), [explain-flow](diagrams/explain-flow.mmd),
-[setup-detection-flow](diagrams/setup-detection-flow.mmd)).
+[setup-detection-flow](diagrams/setup-detection-flow.mmd),
+[failover-sequence](diagrams/failover-sequence.mmd),
+[goal-to-receipt](diagrams/goal-to-receipt.mmd),
+[ownership-map](diagrams/ownership-map.mmd)).
 
 ## Commands
 

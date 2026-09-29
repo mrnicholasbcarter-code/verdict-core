@@ -1,14 +1,3 @@
-# Ownership Map
-
-Authority boundaries across Verdict subsystems. Each box names the module that implements it.
-
-Source: [`diagrams/ownership-map.mmd`](../../diagrams/ownership-map.mmd).
-The fenced block below is byte-identical to that file.
-
-OpenJev advises only within the admitted set. It never admits, revives drops,
-invents identities, or overrides live health, quota, or cooldown.
-
-```mermaid
 %% ownership-map.mmd -- authority boundaries across Verdict subsystems
 %% Source (verified against code at this commit):
 %%   verdict/intelligence.py (IntelligenceService.route)
@@ -151,4 +140,3 @@ class ROUTER,ADMISSION,EXEC_PATH,EXECUTORS selected
 class FAILOVER_ENG,BOUNDED_REC,ORCH_RECV cooldown
 class ENFORCEMENT muted
 class RECEIPT_STORE,RECEIPT_VERIFY,ROUTING_RECEIPT,PROOF,EVIDENCE,ORCH_RCPT validated
-```
