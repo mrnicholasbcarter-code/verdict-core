@@ -135,11 +135,12 @@ class TestClaimsFlagshipFailover:
         assert c.status == CLAIM_STATUS_VERIFIED
 
     def test_expected_verified_set(self) -> None:
-        # Fixture routes share the "model" family and no route is rejected at
-        # TASK_ELIGIBLE, so those two claims are honestly not observed.
+        # The offline inventory uses distinct families and one capability-ineligible
+        # route, so independent review and capability filtering are observed.
         verified = {c.id for c in self.claims if c.status == CLAIM_STATUS_VERIFIED}
         assert verified == {
             "task_aware_selection",
+            "capability_filtering",
             "health_considered",
             "explicit_assignment",
             "failure_isolated",
@@ -148,10 +149,23 @@ class TestClaimsFlagshipFailover:
             "context_within_budget",
             "replacement_completed",
             "validation_passed",
+            "independent_review",
             "receipt_integrity",
         }
-        assert self.by_id["independent_review"].status == CLAIM_STATUS_NOT_OBSERVED
-        assert self.by_id["capability_filtering"].status == CLAIM_STATUS_NOT_OBSERVED
+
+    def test_offline_demo_verifies_independent_review(self) -> None:
+        claim = self.by_id["independent_review"]
+        assert claim.status == CLAIM_STATUS_VERIFIED
+        value = claim.evidence[-1].value
+        assert value["shared_identities"] == []
+        assert value["shared_families"] == []
+        assert "gamma/gemini-c" in value["reviewer_routes"]
+
+    def test_offline_demo_verifies_capability_filtering(self) -> None:
+        claim = self.by_id["capability_filtering"]
+        assert claim.status == CLAIM_STATUS_VERIFIED
+        reasons = claim.evidence[0].value["reasons"]
+        assert "missing_capability:tools" in reasons or "insufficient_context" in reasons
 
     def test_claims_serialise_round_trip(self) -> None:
         for claim in self.claims:

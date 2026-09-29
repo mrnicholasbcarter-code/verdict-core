@@ -1,0 +1,13 @@
+{
+ "node_id": "producer_receipt",
+ "attempt": 1,
+ "route_id": "cx/gpt-5.6-sol",
+ "ok": false,
+ "reported_model": "cx/gpt-5.6-sol",
+ "stop_reason": "",
+ "status_code": 429,
+ "error": "rate limited",
+ "output_tail": "",
+ "duration_seconds": 0.0,
+ "session_ref": "fault-injected:rate_limit"
+}

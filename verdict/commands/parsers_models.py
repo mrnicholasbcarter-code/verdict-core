@@ -6,8 +6,11 @@ from typing import Any
 
 
 def register(subparsers: Any) -> None:
-    run_p = subparsers.add_parser("run", help="Route a single prompt/task (alias of route)")
-    run_p.add_argument("task", help="Task description or prompt text")
+    run_p = subparsers.add_parser("run", help="Route a task or control an orchestration run")
+    run_p.add_argument("task", help="Task description, or cancel/retry for orchestration")
+    run_p.add_argument("control_run_id", nargs="?", help="Run id for cancel/retry")
+    run_p.add_argument("control_node_id", nargs="?", help="Node id for retry")
+    run_p.add_argument("--runs-dir", default=".verdict/runs", help="Orchestration runs directory")
     run_p.add_argument("--terse", action="store_true", help="Output ONLY the target model string")
     run_p.add_argument(
         "--criticality", default="medium", choices=["critical", "high", "medium", "low"]

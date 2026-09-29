@@ -1,0 +1,23 @@
+selected: alpha  state: RUNNING   (1/2)
+node: alpha  state: RUNNING  attempt: 1
+selected route: kr/claude-opus
+observed model: not reported yet
+transition: none (no failures recorded)
++- receipt summary ----------------------------------------+
+|                                                          |
+|  Receipt not available. Completion and proof are         |
+|  unknown.                                                |
+|  no receipt at .verdict/runs/recorded-run/receipt.json   |
+|                                                          |
++----------------------------------------------------------+
++- safe controls ------------------------------------------+
+|                                                          |
+|  x cancel run (twice) | X cancel worker | t retry        |
+|  worker                                                  |
+|  Controls use shared actions. Controller policy          |
+|  decides; proof stays required.                          |
+|  Observed retry_node: refused; recovery budget           |
+|  exhausted                                               |
+|                                                          |
++----------------------------------------------------------+
+? help  c context  r routing  p receipt  q quit
