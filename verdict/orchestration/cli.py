@@ -124,6 +124,28 @@ def add_parsers(subparsers: Any) -> None:
         "--no-pager", action="store_true", help="Never pipe human output through a pager"
     )
 
+    routing = subparsers.add_parser("routing", help="Show the recorded routing explorer for a run")
+    routing.add_argument("run", nargs="?", help="Run id or run directory")
+    routing.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
+    routing.add_argument("--node", default=None, help="Show one node id only")
+    routing.add_argument("--json", action="store_true")
+    routing.add_argument("--state", default=None, help="Candidate state filter")
+    routing.add_argument("--provider", default=None, help="Provider filter")
+    routing.add_argument("--search", default=None, help="Case-insensitive text filter")
+    routing.add_argument("--page", type=int, default=0)
+    routing.add_argument("--page-size", type=int, default=25)
+    routing.add_argument(
+        "--inventory", action="store_true", help="Read-only inventory view; never runs live probes"
+    )
+
+    context = subparsers.add_parser(
+        "context", help="Show recorded context budget and provenance for a run"
+    )
+    context.add_argument("run", nargs="?", help="Run id or run directory")
+    context.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
+    context.add_argument("--node", default=None, help="Show one node id only")
+    context.add_argument("--json", action="store_true")
+
     _add_prime_sync_models(subparsers)
 
 
@@ -187,6 +209,8 @@ def dispatch(args: argparse.Namespace) -> int | None:
         "watch": _watch,
         "run-receipt": _receipt,
         "eligibility": _eligibility,
+        "routing": _routing,
+        "context": _context,
     }
     if (
         getattr(args, "command", "") == "harness"
@@ -405,6 +429,111 @@ def _orchestrate(args: argparse.Namespace) -> int:
             f"receipt: {result.receipt_path}"
         )
     return 0 if result.outcome == "COMPLETE" else 1
+
+
+def _print_view_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+def _routing(args: argparse.Namespace) -> int:
+    """CLI surface for the routing explorer. Rendering stays in routing_render."""
+    import shutil
+
+    from verdict.actions.registry import run_action
+    from verdict.design import presentation_mode
+    from verdict.orchestration.routing_render import render_routing, render_routing_text
+
+    if not args.run and not args.inventory:
+        print("routing requires a run id or --inventory", file=sys.stderr)
+        return 2
+    result = run_action(
+        "routing.view",
+        {
+            "run": args.run,
+            "runs_dir": args.runs_dir,
+            "node": args.node,
+            "state": args.state,
+            "provider": args.provider,
+            "search": args.search,
+            "page": args.page,
+            "page_size": args.page_size,
+            "inventory": args.inventory,
+        },
+    )
+    if not result.ok:
+        print(result.data.get("error", "routing failed"), file=sys.stderr)
+        return result.exit_code or 1
+    payload = result.data["payload"]
+    if args.json:
+        _print_view_json(payload)
+        return 0
+    view = result.data["view"]
+    filters = result.data["filters"]
+    mode = presentation_mode(stream=sys.stdout)
+    if mode.color:
+        from rich.console import Console
+
+        width = shutil.get_terminal_size(fallback=(100, 24)).columns
+        console = Console(width=width, force_terminal=True, color_system=mode.color_system)
+        console.print(
+            render_routing(
+                view,
+                mode,
+                page=filters["page"],
+                page_size=filters["page_size"],
+                state=filters["state"],
+                provider=filters["provider"],
+                text=filters["text"],
+            )
+        )
+        return 0
+    width = mode.width
+    print(
+        render_routing_text(
+            view,
+            width,
+            page=filters["page"],
+            page_size=filters["page_size"],
+            state=filters["state"],
+            provider=filters["provider"],
+            text=filters["text"],
+        ),
+        end="",
+    )
+    return 0
+
+
+def _context(args: argparse.Namespace) -> int:
+    """CLI surface for the context budget view. Rendering stays in context_render."""
+    import shutil
+
+    from verdict.actions.registry import run_action
+    from verdict.design import presentation_mode
+    from verdict.orchestration.context_render import render_context, render_context_text
+
+    if not args.run:
+        print("context requires a run id or run directory", file=sys.stderr)
+        return 2
+    result = run_action(
+        "context.view", {"run": args.run, "runs_dir": args.runs_dir, "node": args.node}
+    )
+    if not result.ok:
+        print(result.data.get("error", "context failed"), file=sys.stderr)
+        return result.exit_code or 1
+    if args.json:
+        _print_view_json(result.data["payload"])
+        return 0
+    view = result.data["view"]
+    mode = presentation_mode(stream=sys.stdout)
+    if mode.color:
+        from rich.console import Console
+
+        width = shutil.get_terminal_size(fallback=(100, 24)).columns
+        console = Console(width=width, force_terminal=True, color_system=mode.color_system)
+        console.print(render_context(view, mode))
+        return 0
+    print(render_context_text(view, mode.width), end="")
+    return 0
 
 
 def _watch(args: argparse.Namespace) -> int:
