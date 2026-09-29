@@ -15,6 +15,7 @@ Controller survival (minimal demo-safe slice):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -205,6 +206,11 @@ class _Progress:
     def __init__(self, log: EventLog, path: Path, run_id: str) -> None:
         self.log, self.path, self.run_id = log, path, run_id
         self.pid = os.getpid()
+        self._trace_span: Any = None
+
+    def set_trace_span(self, span: Any) -> None:
+        """Attach the root OTel span so ``emit`` can record child spans."""
+        self._trace_span = span
 
     def emit(self, type: str, node_id: str = "", **data: Any) -> Any:
         event = self.log.emit(type, node_id=node_id, **data)
@@ -222,6 +228,13 @@ class _Progress:
             )
         )
         tmp.replace(self.path)
+        # BOD-90: optional OTel child span per event
+        if self._trace_span is not None:
+            from verdict.tracing import record_event
+
+            record_event(self._trace_span, type, node_id, data)
+            if type == "run_finished":
+                self._trace_span.end()
         return event
 
 
@@ -483,7 +496,20 @@ async def run_golden_path(
     run_dir = load_or_create_run(runs_root, run_id)
     log = EventLog(run_dir / "events.jsonl")
     events = _Progress(log, run_dir / PROGRESS_FILE, run_dir.name)
+    # BOD-90: optional OTel root span for this orchestration run
+    from verdict.tracing import start_run_span
+
+    _otel_root = start_run_span(run_dir.name, goal, str(repo))
+    events.set_trace_span(_otel_root)
     resumed = prior_validated(run_dir)
+    # BOD-188: record executor identity for harness-independence proof
+    _executor_identity = getattr(executor, "__class__", type(executor)).__name__
+    _executor_labels: dict[str, str] = {
+        "DirectGatewayExecutor": "direct-gateway",
+        "PrimeHeadlessExecutor": "prime-headless",
+        "FaultInjectingExecutor": "fault-injecting",
+        "ScriptedExecutor": "scripted",
+    }
     events.emit(
         "run_started",
         run_id=run_dir.name,
@@ -494,6 +520,7 @@ async def run_golden_path(
         controller_route=os.environ.get("VERDICT_ACTIVE_CONTROLLER_ROUTE", ""),
         controller_generation=os.environ.get("VERDICT_CONTROLLER_GENERATION", ""),
         resumed_nodes=sorted(resumed),
+        executor=_executor_labels.get(_executor_identity, _executor_identity),
         retry_budget={
             "max_attempts_per_node": policy.max_attempts_per_node,
             "max_parallel": policy.max_parallel,
@@ -785,6 +812,7 @@ async def run_golden_path(
         events.emit(
             "controller", state="RECEIPT_FAILED", detail=f"{type(exc).__name__}: {exc}"[:300]
         )
+        _otel_root.end()
         return GoldenRunResult(
             run_dir,
             RunOutcome.BLOCKED.value,
@@ -798,6 +826,10 @@ async def run_golden_path(
             state="VERDICT_OVERRIDE",
             detail=f"runtime={result.outcome.value} receipt={outcome}: {reason}",
         )
+        # Rewrite receipt so events_digest covers the VERDICT_OVERRIDE event.
+        with contextlib.suppress(Exception):
+            receipt_path = write_run_receipt(run_dir)
+    _otel_root.end()
     return GoldenRunResult(
         run_dir, outcome, reason if outcome != "COMPLETE" else result.reason, receipt_path
     )

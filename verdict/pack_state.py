@@ -54,6 +54,8 @@ def classify_pack_state(
     failed: bool = False,
     required: Sequence[str] = (),
     task_complete: bool = True,
+    required_facts: Sequence[str] = (),
+    satisfied_facts: Sequence[str] = (),
 ) -> PackState:
     """Classify a compiled cheap-path pack for admit/execute receipts.
 
@@ -63,6 +65,11 @@ def classify_pack_state(
     of them is ``partial`` even when the class-level thesis set landed.
     ``task_complete=False`` means the task instructions themselves did not
     survive compilation, which is ``failed`` — never hydrated, never partial.
+
+    ``required_facts`` names coverage obligations (acceptance criteria, proof
+    criteria, verification commands) that must appear in the compiled pack.
+    ``satisfied_facts`` lists those that were confirmed present. Any
+    unsatisfied fact forces ``partial`` — never ``hydrated``.
     """
     if failed or not task_complete:
         return "failed"
@@ -76,6 +83,11 @@ def classify_pack_state(
         return "partial"
     if any(uri.strip() and uri.strip() not in included_uris for uri in required):
         return "partial"
+    # Coverage contract: every required fact must be satisfied.
+    if required_facts:
+        satisfied_set = frozenset(satisfied_facts)
+        if not frozenset(required_facts) <= satisfied_set:
+            return "partial"
     return "hydrated"
 
 

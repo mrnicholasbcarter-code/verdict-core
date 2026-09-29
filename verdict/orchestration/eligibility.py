@@ -119,8 +119,14 @@ class _Assessment:
     health_category: str = ""
     fit: int = 0
     tier: int = 2  # capability tier (0 = frontier ... 3 = small)
+    tier_known: bool = False  # False means classifier/inventory could not tier this route
     slack: int = 0  # tiers of capability beyond the task's sufficiency floor
     price: float = 0.0  # marginal metered price per 1M tokens (in + out)
+    price_known: bool = False  # True only when explicit pricing was found on the row
+    # BOD-277: capability facts pulled from the inventory row (already read).
+    context_window: int | None = None
+    supports_tools: bool | None = None
+    supports_structured_output: bool | None = None
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -144,7 +150,9 @@ class _Assessment:
         """Passes every hard gate; health may still be pending a lazy probe."""
         return self.failed_stage is None and self.health != "unhealthy"
 
-    def verdict(self, rank: int | None = None) -> RouteVerdict:
+    def verdict(
+        self, rank: int | None = None, *, rank_components: Mapping[str, Any] | None = None
+    ) -> RouteVerdict:
         reason = self.reason
         if not reason:
             reason = "unprobed" if self.health != "healthy" else "ranked"
@@ -158,6 +166,16 @@ class _Assessment:
             plan_label=self.plan_label,
             cooldown_until=self.cooldown_until,
             rank=rank,
+            # BOD-277: expose the exact values the sort key used, plus the
+            # capability columns the assessment already has. Unknowns are
+            # None (never fabricated defaults); tier/price are hidden when
+            # the assessment never got that far (e.g. failed at HEALTHY).
+            rank_components=dict(rank_components) if rank_components is not None else None,
+            capability_tier=self.tier if self.tier_known else None,
+            context_window=self.context_window,
+            supports_tools=self.supports_tools,
+            supports_structured_output=self.supports_structured_output,
+            price=self.price if self.price_known else None,
         )
 
 
@@ -190,6 +208,7 @@ class EligibilityLadder:
         self._max_probes = max_probes_per_select
         self._state: dict[str, dict[str, dict[str, Any]]] = self._load_state()
         self._last_verdicts: tuple[RouteVerdict, ...] = ()
+        self._last_select_stats: dict[str, int] = {}
         # Canonical admitted set: a route it excludes fails before any ladder
         # stage, ranking or probe. The ladder can only narrow it further.
         self._admitted = admitted
@@ -392,6 +411,11 @@ class EligibilityLadder:
             a.cooldown_until = _iso(limited)
             return a
 
+        # BOD-277: pull the capability facts the assessment already has access
+        # to onto the assessment so RouteVerdict can expose them. None means
+        # unknown (rendered as UNKNOWN downstream); we never invent a value.
+        a.context_window, a.supports_tools, a.supports_structured_output = _capability_facts(row)
+
         reason = self._task_gate(row, route_id, requirements, a.capacity)
         if reason:
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, reason
@@ -404,16 +428,16 @@ class EligibilityLadder:
             if requirements.max_capability_tier < 3:
                 a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "unknown_capability"
                 return a
-            a.tier, a.slack = 3, _UNKNOWN_SLACK
+            a.tier, a.slack, a.tier_known = 3, _UNKNOWN_SLACK, False
         else:
-            a.tier = tier
+            a.tier, a.tier_known = tier, True
             if a.tier > requirements.max_capability_tier:
                 # Insufficient for this work: dropped before ranking, however cheap.
                 a.failed_stage = EligibilityStage.TASK_ELIGIBLE
                 a.reason = "insufficient_capability"
                 return a
             a.slack = requirements.max_capability_tier - a.tier
-        a.price = _marginal_price(row)
+        a.price, a.price_known = _marginal_price(row)
         a.fit = self._fit(row, route_id, requirements)
         return a
 
@@ -464,25 +488,83 @@ class EligibilityLadder:
             score += 1
         return score
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
+    def _rank_components(self, a: _Assessment) -> dict[str, Any]:
+        """Compute all ranking components used to sort candidates.
+
+        This is the single source of truth for ranking values. Returns an ordered
+        dict with these keys (in sort order):
+
+        - ``capacity_order``: int from _CAPACITY_ORDER mapping
+        - ``slack``: capability tiers beyond task floor
+        - ``price_for_rank``: float, always 0.0 when price_known is False
+        - ``provider_pref``: index in prefer_providers or len() if not listed
+        - ``load``: current assignment count for this route
+        - ``fit``: capability tiers from task floor to route tier (positive)
+        - ``route_id``: lexicographic tiebreaker
+        - ``price_known``: bool, whether inventory had explicit pricing
+
+        The sort tuple built by :meth:`_rank_key` negates ``fit`` so stronger
+        routes rank lower (smaller is better). Exposed ``rank_components`` in
+        :class:`RouteVerdict` shows ``price`` as ``None`` when ``price_known``
+        is False (display truth) and ``fit`` as positive (capability distance).
+
+        Uses ``getattr`` with defaults so partially-mocked ladders (BOD-203
+        post-probe tests that bypass ``__init__``) keep working.
+        """
+        preferred = getattr(self, "_prefer_providers", ())
         try:
-            pref = self._prefer_providers.index(a.provider)
+            pref = preferred.index(a.provider)
         except ValueError:
-            pref = len(self._prefer_providers)
-        # BOD-271: within a capacity class the cheapest SUFFICIENT route wins.
-        # Capability beyond the task's floor (slack) and metered price both cost
-        # something, so a stronger model never wins merely for being stronger.
-        # Load comes before task fit: spreading concurrent nodes across equally
-        # eligible routes of the preferred capacity beats piling onto one route.
+            pref = len(preferred)
+        load_fn = getattr(self, "_load", None)
+        load_value = int(load_fn(a.route_id)) if callable(load_fn) else 0
+        price_known = bool(getattr(a, "price_known", False))
+        price_value = getattr(a, "price", 0.0)
+        return {
+            "capacity_order": _CAPACITY_ORDER[a.capacity],
+            "slack": getattr(a, "slack", 0),
+            "price_for_rank": price_value if price_known else 0.0,
+            "provider_pref": pref,
+            "load": load_value,
+            "fit": getattr(a, "fit", 0),
+            "route_id": a.route_id,
+            "price_known": price_known,
+        }
+
+    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
+        """Build the sort tuple from :meth:`_rank_components`.
+
+        Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
+        """
+        c = self._rank_components(a)
         return (
-            _CAPACITY_ORDER[a.capacity],
-            a.slack,
-            a.price,
-            pref,
-            self._load(a.route_id),
-            -a.fit,
-            a.route_id,
+            c["capacity_order"],
+            c["slack"],
+            c["price_for_rank"],
+            c["provider_pref"],
+            c["load"],
+            -c["fit"],  # negate: stronger routes (higher fit) should rank lower
+            c["route_id"],
         )
+
+    def _rank_components_for_display(self, components: dict[str, Any]) -> dict[str, Any]:
+        """Transform internal rank_components to consumer-facing format.
+
+        Internal format has ``price_for_rank`` (always a float, 0.0 when unknown)
+        and ``price_known`` (bool). Consumer format replaces these with ``price``
+        (None when unknown, float otherwise) and omits ``price_known``.
+        """
+        price_known = components.get("price_known", False)
+        price_value = components.get("price_for_rank", 0.0)
+        return {
+            "capacity_order": components["capacity_order"],
+            "slack": components["slack"],
+            "price": price_value if price_known else None,
+            "provider_pref": components["provider_pref"],
+            "load": components["load"],
+            "fit": components["fit"],  # stays positive
+            "route_id": components["route_id"],
+        }
 
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
@@ -513,9 +595,30 @@ class EligibilityLadder:
     ) -> tuple[RouteVerdict, ...]:
         assessments, candidates = self._assess_all(requirements, now)
         ranks = {a.route_id: i for i, a in enumerate(candidates)}
-        verdicts = tuple(a.verdict(rank=ranks.get(a.route_id)) for a in assessments)
+        # BOD-277: candidates already carry the assessment fields we expose.
+        components = {a.route_id: self._rank_components(a) for a in candidates}
+        verdicts = tuple(
+            a.verdict(
+                rank=ranks.get(a.route_id),
+                rank_components=(
+                    self._rank_components_for_display(components[a.route_id])
+                    if a.route_id in components
+                    else None
+                ),
+            )
+            for a in assessments
+        )
         self._last_verdicts = verdicts
         return verdicts
+
+    @property
+    def last_select_stats(self) -> dict[str, int]:
+        """Post-probe statistics from the most recent :meth:`select` call.
+
+        Keys: ``probed``, ``stale``, ``healthy_after_probe``,
+        ``eligible_after_probe``.  Empty dict before the first call.
+        """
+        return dict(self._last_select_stats)
 
     def select(
         self, requirements: TaskRequirements, *, now: datetime
@@ -566,6 +669,9 @@ class EligibilityLadder:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
                 a.cooldown_until = blocked[a.provider]
         ranks = {c.route_id: i for i, c in enumerate(candidates)}
+        # BOD-277: same rank_components map the pre-probe evaluate() builds.
+        # Only candidates (routes that reached ranking) have components.
+        components = {a.route_id: self._rank_components(a) for a in candidates}
         verdicts: list[RouteVerdict] = []
         selected: RouteVerdict | None = None
         for a in assessments:
@@ -580,12 +686,52 @@ class EligibilityLadder:
                     plan_label=a.plan_label,
                     cooldown_until=None,
                     rank=chosen_rank,
+                    rank_components=(
+                        self._rank_components_for_display(components[a.route_id])
+                        if a.route_id in components
+                        else None
+                    ),
+                    capability_tier=a.tier if a.tier_known else None,
+                    context_window=a.context_window,
+                    supports_tools=a.supports_tools,
+                    supports_structured_output=a.supports_structured_output,
+                    price=a.price if a.price_known else None,
                 )
                 verdicts.append(selected)
             else:
-                verdicts.append(a.verdict(rank=ranks.get(a.route_id)))
+                verdicts.append(
+                    a.verdict(
+                        rank=ranks.get(a.route_id),
+                        rank_components=(
+                            self._rank_components_for_display(components[a.route_id])
+                            if a.route_id in components
+                            else None
+                        ),
+                    )
+                )
         self._last_verdicts = tuple(verdicts)
-        return selected, tuple(verdicts)
+        final_verdicts = tuple(verdicts)
+        # Compute post-probe stats for callers that need them (e.g. event emitters).
+        # Stale count comes from pre-probe assessments (RouteVerdict has no health field).
+        stale = sum(1 for a in assessments if a.health == "stale")
+        healthy_after = sum(
+            1
+            for v in final_verdicts
+            if v.reached is not None
+            and v.reached.value in ("HEALTHY", "AVAILABLE", "TASK_ELIGIBLE", "SELECTED")
+        )
+        eligible_after = sum(
+            1
+            for v in final_verdicts
+            if v.reached is not None and v.reached.value in ("TASK_ELIGIBLE", "SELECTED")
+        )
+        self._last_select_stats = {
+            "probed": probes_used,
+            "stale": stale,
+            "healthy_after_probe": healthy_after,
+            "eligible_after_probe": eligible_after,
+        }
+        return selected, final_verdicts
 
     def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
         """Rank order, but round-robin across providers within each capacity class.
@@ -673,13 +819,60 @@ def _capability_tier(row: Mapping[str, Any], route_id: str) -> int | None:
     return classify_known(route_id)
 
 
-def _marginal_price(row: Mapping[str, Any]) -> float:
+def _capability_facts(row: Mapping[str, Any]) -> tuple[int | None, bool | None, bool | None]:
+    """Read context window and capability booleans from an inventory row.
+
+    Returns ``(context_window, supports_tools, supports_structured_output)``.
+    Any value that is not present or not parseable becomes ``None`` so that
+    ``RouteVerdict`` can render UNKNOWN rather than a fabricated default.
+    ``context_length`` and ``max_input_tokens`` are the two inventory shapes
+    the task gate already reads (see ``_task_gate``); we mirror that here.
+    """
+    ctx_raw = row.get("max_input_tokens")
+    if ctx_raw is None:
+        ctx_raw = row.get("context_length")
+    context_window: int | None
+    if isinstance(ctx_raw, bool) or ctx_raw is None:
+        context_window = None
+    else:
+        try:
+            parsed = int(ctx_raw)
+        except (TypeError, ValueError):
+            context_window = None
+        else:
+            context_window = parsed if parsed > 0 else None
+    caps_raw = row.get("capabilities")
+    tools: bool | None = None
+    structured: bool | None = None
+    if isinstance(caps_raw, Mapping):
+        # ``_task_gate`` maps required capability "tools" -> catalog key
+        # "tool_calling"; that is the authoritative name for tool support.
+        if "tool_calling" in caps_raw:
+            tools = bool(caps_raw.get("tool_calling"))
+        if "structured_output" in caps_raw:
+            structured = bool(caps_raw.get("structured_output"))
+    return context_window, tools, structured
+
+
+def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
+    """Return ``(price_for_ranking, price_known)``.
+
+    Ranking treats an unknown price as zero (so unpriced capacity such as
+    subscription/free still ranks by capacity class and slack). BOD-277 also
+    needs to distinguish "known and free" from "no pricing metadata"; the
+    boolean flag captures whether any explicit non-negative numeric was found
+    on the inventory row (mirrors ``free_tier_admit._catalog_prices``).
+    """
     pricing = row.get("pricing")
-    if not isinstance(pricing, Mapping):
-        return 0.0
+    source = pricing if isinstance(pricing, Mapping) else None
+    if source is None:
+        return 0.0, False
+    known = False
     total = 0.0
     for key in ("input", "output", "prompt", "completion"):
-        value = pricing.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
-            total += float(value)
-    return total
+        value = source.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            known = True
+            if value > 0:
+                total += float(value)
+    return total, known

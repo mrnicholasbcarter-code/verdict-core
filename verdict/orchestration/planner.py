@@ -136,11 +136,19 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
         - kind is one of: implement, research, integrate, review.
         - depends_on, owned_files, required_context, acceptance, required_capabilities
           are lists of strings.
-        - verification_command is a list of strings (an argv list), for example
-          ["python3", "-m", "pytest", "-q", "tests/test_x.py"].
+        - verification_command is a list of strings (an argv list). Use "python"
+          as argv[0] for Python verification commands (e.g.
+          ["python", "-m", "pytest", "-q", "tests/test_x.py"]); the runtime
+          resolves it to the active interpreter when needed.
         - required_capabilities uses ONLY model features from: tools, reasoning,
           vision, structured_output (Verdict selects the model; describe work
           in "objective"/"acceptance", not here).
+        - barrier must be either "" (empty string) or one of the known runtime
+          barrier names: "integration", "ownership", "no_change". Do NOT put
+          prose descriptions in barrier; use acceptance or story for that.
+        - research nodes (kind="research") have owned_files=[] and produce
+          their output as answer text only, never files. Do NOT give a research
+          node any owned_files.
 
         RULES:
         1. Decompose into 2-8 nodes total.
@@ -153,6 +161,9 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
         5. Every node with kind="implement" MUST have a non-empty, runnable,
            scoped verification_command (for example a pytest invocation limited
            to the files/tests it touches).
+           Any test file referenced in verification_command MUST appear in
+           owned_files (the worker needs write access to run and fix the tests
+           it is verified by).
         6. Include exactly one final node with kind="integrate" that depends_on
            ALL implement nodes, whose verification_command runs the combined
            test suite.
@@ -227,6 +238,77 @@ def normalize_node_requirements(item: Mapping[str, Any]) -> dict[str, Any]:
     return data
 
 
+# ---------------------------------------------------------------- verification ownership
+
+
+_PYTEST_FILE_RE = re.compile(r"tests/\S+\.py")
+_PYTEST_K_FILE_RE = re.compile(r"tests/\S+\.py(?:::|\s)")
+
+
+def _test_files_from_argv(argv: Sequence[str]) -> list[str]:
+    """Extract test file paths from a verification command (pytest argv).
+
+    Recognises:
+      - bare positional ``tests/test_foo.py``
+      - ``tests/test_foo.py::TestClass::test_method``
+      - ``-k`` selectors are ignored (they name *tests*, not *files*);
+        the preceding positional file argument is already captured.
+    """
+    files: list[str] = []
+    for token in argv:
+        m = _PYTEST_FILE_RE.match(token)
+        if m:
+            # Strip ::selector if present
+            path = token.split("::")[0]
+            if path not in files:
+                files.append(path)
+    return files
+
+
+def ensure_verification_files_owned(nodes: list[WorkNode]) -> list[WorkNode]:
+    """Add test files from each node's verification_command to owned_files.
+
+    This is a deterministic post-planning fixup: the planner model often lists
+    only *source* files in ``owned_files`` but points ``verification_command``
+    at test files the worker must edit.  The runtime ownership barrier rejects
+    edits to files outside ``owned_files``, so the worker fails on a correct
+    edit — a plan defect, not a worker defect.
+
+    Returns a new list with corrected nodes (unchanged nodes are reused).
+    """
+    result: list[WorkNode] = []
+    for node in nodes:
+        if node.kind is not NodeKind.IMPLEMENT or not node.verification_command:
+            result.append(node)
+            continue
+        test_files = _test_files_from_argv(node.verification_command)
+        missing = [f for f in test_files if not node.owns(f)]
+        if not missing:
+            result.append(node)
+            continue
+        new_owned = list(node.owned_files) + missing
+        result.append(
+            WorkNode(
+                node_id=node.node_id,
+                objective=node.objective,
+                kind=node.kind,
+                story=node.story,
+                depends_on=node.depends_on,
+                owned_files=tuple(new_owned),
+                required_context=node.required_context,
+                acceptance=node.acceptance,
+                verification_command=node.verification_command,
+                barrier=node.barrier,
+                risk=node.risk,
+                required_capabilities=node.required_capabilities,
+                coding=node.coding,
+                reasoning=node.reasoning,
+                min_context_tokens=node.min_context_tokens,
+            )
+        )
+    return result
+
+
 def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
     """Parse frontier output (tolerant of fences/prose) into a validated, topologized WorkGraph."""
     raw = _extract_json_object(text)
@@ -249,6 +331,7 @@ def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
         except (OrchestrationError, TypeError) as exc:
             raise OrchestrationError(f"parse_plan: node[{i}]: {exc}") from exc
 
+    nodes = ensure_verification_files_owned(nodes)
     graph = WorkGraph(goal=goal, nodes=tuple(nodes), max_parallel=max_parallel)
     topology, chosen_max_parallel, rationale = choose_topology(
         graph.nodes, max_parallel=max_parallel
@@ -438,8 +521,13 @@ def hydrate_node_prompt(
         lines.append("")
 
     lines.append("RULES:")
-    lines.append("  - Only edit files listed in OWNED_FILES. Never touch any other file.")
-    lines.append("  - Run VERIFICATION_COMMAND yourself and ensure it passes before finishing.")
+    if node.owned_files:
+        lines.append("  - Only edit files listed in OWNED_FILES. Never touch any other file.")
+    else:
+        lines.append("  - You have NO owned files. Do NOT create, edit, or write any files.")
+        lines.append("  - Put all findings, summaries, and notes in your final answer text.")
+    if node.verification_command:
+        lines.append("  - Run VERIFICATION_COMMAND yourself and ensure it passes before finishing.")
     lines.append(
         "  - Finish your final message with exactly 'RESULT: DONE' on success, "
         "or 'RESULT: BLOCKED <reason>' if you cannot complete the objective."

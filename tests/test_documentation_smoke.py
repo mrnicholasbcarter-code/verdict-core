@@ -33,8 +33,8 @@ README_REQUIRED_ORDER = (
     "Receipt: fixture:issue-35 (deterministic_fixture)",
     "## Install",
     "## Cost comparison",
-    "$0.16 routed",
-    "$0.52 baseline",
+    "Baseline list-price cost",
+    "Verdict list-price cost",
     "## Architecture",
 )
 
@@ -110,11 +110,11 @@ def test_documented_commands_are_present_and_maturity_is_truthful() -> None:
     assert "3500+ models" not in readme
     assert "OMNIROUTE (Intelligent Model Router)" not in readme
     assert "Deterministic mock — no provider spend." in readme
-    assert "These are estimates, not observed invoices." in readme
+    assert "not billed amounts" in readme
     assert "Context packing — dated live observation, not offline proof." in readme
     assert "A blocked or skipped live run makes no lift claim." in readme
     assert "Deterministic mock — no provider spend." in readme
-    assert "These are estimates, not observed invoices." in readme
+    assert "not billed amounts" in readme
     assert "Context packing — dated live observation, not offline proof." in readme
     assert "A blocked or skipped live run makes no lift claim." in readme
 

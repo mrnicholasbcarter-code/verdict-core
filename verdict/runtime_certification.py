@@ -42,6 +42,15 @@ HARNESS_PARITY_FACETS: tuple[str, ...] = (
     "model_selection",
     "config_import",
     "structured_output",
+    "session_start",
+    "before_first_turn",
+    "tool_pre_post",
+    "edit_event",
+    "compaction_yield",
+    "verification_result",
+    "session_end",
+    "sync_async_semantics",
+    "mutation_capability",
 )
 
 # Canonical memory MCP wins; peers become redundant when it is present.
@@ -341,6 +350,15 @@ def harness_parity_from_evidence(
         "model_selection": ("model_selection",),
         "config_import": ("config_import",),
         "structured_output": ("structured_output",),
+        "session_start": ("session_start",),
+        "before_first_turn": ("before_first_turn",),
+        "tool_pre_post": ("tool_pre_post",),
+        "edit_event": ("edit_event",),
+        "compaction_yield": ("compaction_yield",),
+        "verification_result": ("verification_result",),
+        "session_end": ("session_end",),
+        "sync_async_semantics": ("sync_async_semantics",),
+        "mutation_capability": ("mutation_capability",),
     }
     for facet in HARNESS_PARITY_FACETS:
         keys = mapping[facet]
@@ -653,6 +671,82 @@ def _digest(value: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Shared-memory degraded surface (BOD-80 AC 8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SharedMemoryDiagnosis:
+    """Shared-memory store health assessment for the doctor surface."""
+
+    state: CertificationState
+    reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"state": self.state.value, "reason": self.reason}
+
+
+def diagnose_shared_memory(
+    *, health_fn: Callable[[], Mapping[str, Any]] | None = None
+) -> SharedMemoryDiagnosis:
+    """Return READY, DEGRADED (with named reason), or UNAVAILABLE.
+
+    Three degraded paths:
+    * **unreachable** — the store cannot be contacted at all.
+    * **unwritable** — the store responds but rejects writes.
+    * **schema_incompatible** — the store is reachable but its schema version
+      does not match the expected protocol.
+
+    When *health_fn* is ``None`` the diagnosis is READY (no provider to check).
+    """
+
+    if health_fn is None:
+        return SharedMemoryDiagnosis(
+            state=CertificationState.READY, reason="no shared-memory provider configured"
+        )
+
+    try:
+        report = health_fn()
+    except Exception as exc:
+        return SharedMemoryDiagnosis(
+            state=CertificationState.DEGRADED, reason=f"unreachable: {type(exc).__name__}"
+        )
+
+    status_raw = report.get("status", "")
+    state_raw = report.get("state", "")
+
+    # Unreachable
+    if status_raw in {"unavailable", "timeout"}:
+        return SharedMemoryDiagnosis(
+            state=CertificationState.DEGRADED,
+            reason=f"unreachable: {report.get('message', status_raw)}",
+        )
+
+    # Schema / protocol incompatible
+    if status_raw in {"incompatible", "malformed"} or state_raw == "incompatible":
+        return SharedMemoryDiagnosis(
+            state=CertificationState.DEGRADED,
+            reason=f"schema_incompatible: {report.get('message', status_raw)}",
+        )
+
+    # Auth failed — provider reports authentication failure
+    if status_raw == "auth_failed":
+        return SharedMemoryDiagnosis(
+            state=CertificationState.DEGRADED,
+            reason=f"auth_failed: {report.get('message', status_raw)}",
+        )
+
+    # Unwritable — provider reports degraded (permission/capacity issues)
+    if status_raw == "degraded":
+        return SharedMemoryDiagnosis(
+            state=CertificationState.DEGRADED,
+            reason=f"unwritable: {report.get('message', status_raw)}",
+        )
+
+    return SharedMemoryDiagnosis(state=CertificationState.READY, reason="ok")
+
+
 __all__ = [
     "CERTIFICATION_TTL_SECONDS",
     "HARNESS_PARITY_FACETS",
@@ -667,8 +761,10 @@ __all__ = [
     "ProbeBudget",
     "RuntimeCertificationError",
     "RuntimeCertificationReport",
+    "SharedMemoryDiagnosis",
     "certify_runtime",
     "classify_memory_mcps",
+    "diagnose_shared_memory",
     "harness_parity_from_evidence",
     "register_detector",
     "reset_detectors",

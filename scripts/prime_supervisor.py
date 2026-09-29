@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -166,6 +167,220 @@ CONTROLLER_SESSION_STATE: Any | None = None
 CONTROLLER_SELECTION_FACTORY: Any | None = None
 # Last production bundle used by resolve (compiled prompt artifacts).
 _LAST_PRODUCTION_SELECTION_BUNDLE: Any | None = None
+
+# ---------------------------------------------------------------------------
+# Multi-story admission flag (BOD-157 / ADR-037)
+# ---------------------------------------------------------------------------
+# Test injection point: override to supply a custom evaluator.
+# Signature: (story_id, labels, deps, main_sha, footprint, admission_state, config, pressure)
+#            -> AdmissionDecision
+ADMISSION_EVALUATOR: Any | None = None
+
+_MULTI_STORY_ENV = "VERDICT_MULTI_STORY"
+
+
+def _multi_story_enabled() -> bool:
+    """Return True only when VERDICT_MULTI_STORY is explicitly 'on'.
+
+    Unknown/invalid values are treated as OFF with a warning log line.
+    """
+    raw = os.environ.get(_MULTI_STORY_ENV, "").strip().lower()
+    if raw == "on":
+        return True
+    if raw and raw != "off":
+        print(
+            json.dumps(
+                {
+                    "warning": "VERDICT_MULTI_STORY has unrecognised value; treating as OFF",
+                    "value": os.environ.get(_MULTI_STORY_ENV, ""),
+                }
+            ),
+            flush=True,
+        )
+    return False
+
+
+_STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _safe_story_dirname(story_id: str) -> str:
+    """Validate *story_id* and return it as a directory name.
+
+    Rejects anything that is not 1-64 characters of letters, digits, ``.``,
+    ``_`` or ``-`` starting with a letter or digit. That excludes ``.``,
+    ``..``, empty strings, path separators, NUL and absolute paths, so a
+    story id can never escape ``<state>/stories/``. Invalid ids raise
+    ``ValueError`` instead of being rewritten into a different id.
+    """
+    if not isinstance(story_id, str) or not _STORY_ID_RE.fullmatch(story_id) or ".." in story_id:
+        raise ValueError(
+            f"invalid story id {story_id!r}: use 1-64 of [A-Za-z0-9._-], "
+            "starting with a letter or digit, with no '..'"
+        )
+    return story_id
+
+
+def _story_state_dir(state_dir: Path, story_id: str) -> Path:
+    """Per-story state subdirectory: ``<state_dir>/stories/<safe_id>/``."""
+    stories = (state_dir / "stories").resolve()
+    d = (stories / _safe_story_dirname(story_id)).resolve()
+    if d.parent != stories:
+        raise ValueError(f"story state dir {d} escapes {stories}")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _read_story_metadata(state: Path, *, story_id_override: str | None = None) -> dict[str, Any]:
+    """Read story metadata from the supervisor's existing state files.
+
+    Parameters
+    ----------
+    state : Path
+        State directory containing checkpoint.json etc.
+    story_id_override : str | None
+        When provided (``--story`` CLI arg), this is the authoritative story
+        identity.  If the checkpoint's ``issue`` field is present it **must**
+        match; a mismatch raises ``ValueError`` (fail-closed).
+
+    Sources (in priority order):
+    1. ``story_id_override`` from ``--story`` (when present)
+    2. checkpoint.json — contains issue id, write_paths (from OpenSpec), labels
+    3. Fall back to state directory name as story_id
+
+    Anything missing stays unknown, which fails closed (WAIT / SERIALIZE).
+    Never invents a footprint.
+    """
+    meta: dict[str, Any] = {
+        "story_id": story_id_override or f"supervisor-{state.name}",
+        "labels": frozenset(),
+        "deps": [],
+        "write_paths": frozenset(),
+        "authorities": frozenset(),
+    }
+
+    # Read checkpoint.json — the supervisor already writes/reads this.
+    checkpoint_path = state / "checkpoint.json"
+    if checkpoint_path.is_file():
+        try:
+            cp = json.loads(checkpoint_path.read_text())
+        except (ValueError, OSError):
+            cp = {}
+        # Story identity from checkpoint issue field.
+        if cp.get("issue"):
+            cp_issue = str(cp["issue"])
+            if story_id_override is not None and cp_issue != story_id_override:
+                raise ValueError(
+                    f"--story {story_id_override!r} does not match checkpoint "
+                    f"issue {cp_issue!r}; refusing to proceed (fail-closed)"
+                )
+            meta["story_id"] = story_id_override or cp_issue
+        # Write paths from OpenSpec change (written by workers into checkpoint).
+        if isinstance(cp.get("write_paths"), list):
+            meta["write_paths"] = frozenset(str(p) for p in cp["write_paths"] if p)
+        # Authorities from checkpoint.
+        if isinstance(cp.get("authorities"), list):
+            meta["authorities"] = frozenset(str(a) for a in cp["authorities"] if a)
+        # Labels from checkpoint (Linear labels forwarded by dispatch).
+        if isinstance(cp.get("labels"), list):
+            meta["labels"] = frozenset(str(lb) for lb in cp["labels"] if lb)
+        # Dependencies with MAIN_VERIFIED evidence.
+        if isinstance(cp.get("deps"), list):
+            from verdict.orchestration.ready_gate import DepEvidence
+
+            dep_list = []
+            for d in cp["deps"]:
+                if isinstance(d, dict) and d.get("identifier"):
+                    dep_list.append(
+                        DepEvidence(
+                            identifier=str(d["identifier"]),
+                            linear_done=d.get("linear_done"),
+                            merge_commit_on_main=d.get("merge_commit_on_main"),
+                            verification_record_present=d.get("verification_record_present"),
+                        )
+                    )
+            meta["deps"] = dep_list
+
+    return meta
+
+
+def _check_admission(
+    repo: Path, state: Path, *, story_id_override: str | None = None
+) -> tuple[dict[str, Any] | None, Any]:
+    """Run the BOD-157 admission pipeline when the multi-story flag is on.
+
+    Returns ``(None, None)`` when the flag is off (no-op — single-story flock).
+    Returns ``(decision_dict, story_lock_handle_or_None)`` when the flag is on.
+    The caller MUST hold the story_lock_handle for the duration of the story
+    and release it when the story completes.
+    """
+    if not _multi_story_enabled():
+        return None, None
+    # Import lazily so flag-off has zero import cost.
+    from verdict.orchestration.story_footprint import StoryFootprintV1
+    from verdict.orchestration.supervisor_admission import (
+        AdmissionState,
+        SupervisorGovernorConfig,
+        acquire_story_lock,
+        evaluate_admission,
+        write_story_metadata,
+    )
+
+    # If an external evaluator is injected (tests), delegate to it.
+    if ADMISSION_EVALUATOR is not None:
+        return ADMISSION_EVALUATOR(repo=repo, state=state), None
+
+    # Read real story metadata from existing supervisor state files.
+    meta = _read_story_metadata(state, story_id_override=story_id_override)
+    story_id: str = meta["story_id"]
+    labels: frozenset[str] = meta["labels"]
+    deps: list[Any] = meta["deps"]
+    write_paths: frozenset[str] = meta["write_paths"]
+    authorities: frozenset[str] = meta["authorities"]
+
+    # Cross-process admission state: reads running set from file locks.
+    config = SupervisorGovernorConfig()
+    admission_state = AdmissionState(state_dir=state)
+
+    main_sha = (
+        subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], timeout=10)
+        .decode()
+        .strip()
+    )
+
+    footprint = StoryFootprintV1(
+        story_id=story_id, write_paths=write_paths, authorities=authorities
+    )
+
+    result = evaluate_admission(
+        story_id=story_id,
+        labels=labels,
+        deps=deps,
+        main_sha=main_sha,
+        footprint=footprint,
+        admission_state=admission_state,
+        config=config,
+    )
+
+    if not result.admit:
+        return result.to_dict(), None
+
+    # Acquire per-story file lock (non-blocking).  If another process
+    # already holds this story, the admission was stale — reject.
+    handle = acquire_story_lock(state, story_id)
+    if handle is None:
+        return {
+            "admit": False,
+            "reason_code": "LOCK_HELD",
+            "reason": f"story {story_id!r} lock already held by another process",
+        }, None
+
+    # Write footprint metadata so other processes can read it for collision.
+    write_story_metadata(handle, footprint, labels)
+
+    return result.to_dict(), handle
+
+
+# Global admission state removed — cross-process state now lives in file locks.
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -754,13 +969,20 @@ def _prompt_sha256_digest(prompt: str) -> str:
 
 
 def _supervisor_instruction_unit(
-    *, token: str, state_dir: Path, session_dir: Path, max_issues: int, timeout: float
+    *,
+    token: str,
+    state_dir: Path,
+    session_dir: Path,
+    max_issues: int,
+    timeout: float,
+    story_id: str | None = None,
 ) -> Any:
     """ContextUnit carrying supervisor run instructions (compiled into prompt)."""
     from verdict.context_pack import ContextUnit
 
+    story_part = f" Story={story_id}; work ONLY on this story." if story_id else ""
     content = (
-        f"/skill:verdict-resume\nSupervisor run_id={token}; state_dir={state_dir}. "
+        f"/skill:verdict-resume\nSupervisor run_id={token}; state_dir={state_dir}.{story_part} "
         f"Budget {max_issues} issues across this supervisor run, {timeout}s per session. "
         "Read checkpoint.json and supervisor.json before any action. Reconcile authorities. "
         "This is a fresh context recovery, not permission to repeat completed work. "
@@ -908,6 +1130,7 @@ def _wrap_context_units_with_supervisor(
     session_dir: Path,
     max_issues: int,
     timeout: float,
+    story_id: str | None = None,
 ) -> Callable[..., Any]:
     """Prepend supervisor instruction ContextUnit before compile."""
 
@@ -919,6 +1142,7 @@ def _wrap_context_units_with_supervisor(
                 session_dir=session_dir,
                 max_issues=max_issues,
                 timeout=timeout,
+                story_id=story_id,
             )
         ]
         if base_factory is not None:
@@ -1151,6 +1375,7 @@ def build_production_controller_selection_bundle(
     timeout: float = 3600.0,
     intelligence_service: Any | None = None,
     certify_runtime_fn: Callable[..., Any] | None = None,
+    story_id: str | None = None,
     **factory_kwargs: Any,
 ) -> Any:
     """Build production selection bundle from real persisted inputs/env configs.
@@ -1196,6 +1421,7 @@ def build_production_controller_selection_bundle(
                 session_dir=session_dir,
                 max_issues=max_issues,
                 timeout=timeout,
+                story_id=story_id,
             )
 
         # BOD-119 session continuity factories (M5). Prefer caller injection;
@@ -1671,9 +1897,25 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=5, help="Watchdog poll interval")
     parser.add_argument("--max-restarts", type=int, default=2)
     parser.add_argument("--max-issues", type=int, default=5)
+    parser.add_argument(
+        "--story",
+        type=str,
+        default=None,
+        help=(
+            "Story identifier (required when VERDICT_MULTI_STORY=on). "
+            "Per-story state files live under <state_dir>/stories/<safe_id>/."
+        ),
+    )
     args = parser.parse_args()
     if args.skip_identity_verify and os.environ.get("VERDICT_TEST_MODE") != "1":
         parser.error("--skip-identity-verify is only allowed when VERDICT_TEST_MODE=1")
+    if _multi_story_enabled() and not args.story:
+        parser.error("--story is required when VERDICT_MULTI_STORY=on")
+    if _multi_story_enabled() and args.story:
+        try:
+            _safe_story_dirname(args.story)
+        except ValueError as exc:
+            parser.error(str(exc))
     if (
         args.idle_seconds <= 0
         or args.timeout <= 0
@@ -1691,6 +1933,12 @@ def main() -> int:
         )
         state = common / "verdict-prime"
     state.mkdir(parents=True, exist_ok=True)
+    # BOD-157: when multi-story is on, per-story files live under
+    # <state_dir>/stories/<safe_id>/.  Shared locks (supervisor.lock,
+    # story-locks/, integration.lock) stay at the root state_dir.
+    shared_state = state  # always the root for shared locks
+    if _multi_story_enabled() and args.story:
+        state = _story_state_dir(shared_state, args.story)
     run_id = str(uuid.uuid4())
     count = 0
 
@@ -1730,6 +1978,7 @@ def main() -> int:
                     token=token,
                     max_issues=args.max_issues,
                     timeout=args.timeout,
+                    story_id=args.story,
                 )
                 selection_hooks = production_bundle.hooks
             if session_state is None and selection_hooks is not None:
@@ -1813,9 +2062,12 @@ def main() -> int:
             else:
                 # Persisted-decision / injected-selector paths: no compiled artifact.
                 # Keep a deterministic supervisor prompt (tests / explicit file mode).
+                story_instruction = ""
+                if args.story:
+                    story_instruction = f" Story={args.story}; work ONLY on this story."
                 prompt = (
                     "/skill:verdict-resume\n"
-                    f"Supervisor run_id={token}; state_dir={state}. "
+                    f"Supervisor run_id={token}; state_dir={state}.{story_instruction} "
                     f"Budget {args.max_issues} issues across this supervisor run, "
                     f"{args.timeout}s per session. "
                     "Read checkpoint.json and supervisor.json before any action. "
@@ -1940,7 +2192,18 @@ def main() -> int:
         return result
 
     try:
-        with acquire_lock(state / "supervisor.lock"):
+        # ------------------------------------------------------------------
+        # BOD-157 lock strategy:
+        #   Flag ON  — supervisor.lock covers setup + admission only; released
+        #              before recover().  Per-story lock (acquired inside
+        #              _check_admission while supervisor.lock is held) protects
+        #              the story run.  Integration lock covers merge/rebase.
+        #   Flag OFF — supervisor.lock wraps the entire run including
+        #              recover(), identical to origin/main.
+        # ------------------------------------------------------------------
+        multi_story = _multi_story_enabled()
+        # Shared locks always at root state dir; per-story state may differ.
+        with acquire_lock(shared_state / "supervisor.lock"):
             try:
                 # Fence stale writers first: a four-hour-old lease must not survive a restart.
                 reaped = STATE.supersede_stale_leases(state, now=time.time())
@@ -1951,7 +2214,30 @@ def main() -> int:
                 for previous in sorted(sessions_root.glob("*")) if sessions_root.is_dir() else []:
                     if previous.is_dir() and not previous.is_symlink():
                         stop_owned_daemon(args.prime, previous)
-                return recover(attempt, state, args.max_restarts)
+                # BOD-157: multi-story admission gate (ADR-037).
+                # When VERDICT_MULTI_STORY=on, the 3-gate pipeline
+                # (ready → collide → governor) must ADMIT before the
+                # story starts.  Flag off (default) → single-story flock,
+                # identical to origin/main.
+                # Admission uses shared_state for cross-process locks.
+                admission_decision, story_lock = _check_admission(
+                    repo, shared_state, story_id_override=args.story
+                )
+                if admission_decision is not None and not admission_decision["admit"]:
+                    print(json.dumps({"admission": "rejected", **admission_decision}), flush=True)
+                    atomic_json(
+                        state / "supervisor.json",
+                        {
+                            "status": "DEFERRED",
+                            "reason": admission_decision["reason"],
+                            "reason_code": admission_decision["reason_code"],
+                            "observed_at": time.time(),
+                        },
+                    )
+                    return 0
+                # Flag OFF: recover() inside supervisor.lock (origin/main parity).
+                if not multi_story:
+                    return recover(attempt, state, args.max_restarts)
             except (
                 ControllerLaunchError,
                 ValueError,
@@ -1974,6 +2260,14 @@ def main() -> int:
                     },
                 )
                 raise
+        # supervisor.lock released here.
+        # Flag ON: recover() outside supervisor.lock; per-story lock held.
+        assert multi_story, "should only reach here with multi_story=True"
+        try:
+            return recover(attempt, state, args.max_restarts)
+        finally:
+            if story_lock is not None:
+                story_lock.release()
     except (
         ControllerLaunchError,
         ValueError,

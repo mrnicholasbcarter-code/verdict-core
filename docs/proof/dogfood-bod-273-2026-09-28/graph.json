@@ -1,0 +1,157 @@
+{
+  "schema_version": "verdict.orchestration/v1",
+  "goal": "BOD-273: `verdict doctor` must report a shared-memory auth failure as its own degraded reason. Today diagnose_shared_memory in verdict/runtime_certification.py maps provider status 'auth_failed' to reason 'unwritable'. Acceptance: diagnose_shared_memory returns a reason starting with 'auth_failed' when the provider status is auth_failed; 'unwritable' is still reported for real write-permission failures; an integration test runs the real doctor entry point (cmd_doctor in verdict/cli.py) in a tmp HOME and shows the new reason. Verify with: .venv/bin/python -m pytest -q tests/test_runtime_certification.py tests/test_doctor_shared_memory.py",
+  "topology": "WORKER_CRITIC",
+  "rationale": [
+    "nodes=4 implement_nodes=2 risk_hint=medium risks=['medium']",
+    "layers=4 widest_layer=1",
+    "decision=WORKER_CRITIC: 4 nodes but no layer width>=2 (implement_nodes=2, widest_layer=1) -> sequential worker+critic"
+  ],
+  "max_parallel": 1,
+  "nodes": [
+    {
+      "node_id": "research-diagnose-memory",
+      "objective": "Examine the current diagnose_shared_memory implementation in verdict/runtime_certification.py to understand how provider status values map to reason strings",
+      "kind": "research",
+      "story": "As a developer, I need to understand the current code structure before modifying diagnose_shared_memory to distinguish auth_failed from unwritable",
+      "depends_on": [],
+      "owned_files": [],
+      "required_context": [
+        "BOD-273: diagnose_shared_memory currently maps provider status 'auth_failed' to reason 'unwritable'",
+        "Goal: map 'auth_failed' provider status to a reason starting with 'auth_failed'",
+        "Must preserve: 'unwritable' for real write-permission failures"
+      ],
+      "acceptance": [
+        "Located diagnose_shared_memory function in verdict/runtime_certification.py",
+        "Understood the logic for mapping provider status to reason",
+        "Identified where auth_failed status currently maps to unwritable",
+        "Identified existing tests in test_runtime_certification.py"
+      ],
+      "verification_command": [],
+      "barrier": "",
+      "risk": "medium",
+      "required_capabilities": [
+        "reasoning",
+        "tools"
+      ],
+      "coding": false,
+      "reasoning": true,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "fix-diagnose-auth-failed",
+      "objective": "Modify diagnose_shared_memory in verdict/runtime_certification.py to return a reason starting with 'auth_failed' when provider status is 'auth_failed', while preserving 'unwritable' for permission failures",
+      "kind": "implement",
+      "story": "The doctor must report authentication failures separately from write-permission failures to help users diagnose shared-memory auth issues",
+      "depends_on": [
+        "research-diagnose-memory"
+      ],
+      "owned_files": [
+        "verdict/runtime_certification.py",
+        "tests/test_runtime_certification.py"
+      ],
+      "required_context": [
+        "diagnose_shared_memory currently maps all failures to 'unwritable'",
+        "Provider status 'auth_failed' should map to 'auth_failed' reason",
+        "Provider status for permission failures should still map to 'unwritable'"
+      ],
+      "acceptance": [
+        "diagnose_shared_memory returns reason starting with 'auth_failed' when provider status is 'auth_failed'",
+        "'unwritable' is still returned for real write-permission failures",
+        "All existing tests in test_runtime_certification.py still pass"
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_runtime_certification.py"
+      ],
+      "barrier": "",
+      "risk": "medium",
+      "required_capabilities": [
+        "reasoning",
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": true,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "add-doctor-integration-test",
+      "objective": "Add an integration test in tests/test_doctor_shared_memory.py that runs cmd_doctor from verdict/cli.py in a temporary HOME directory and verifies the new 'auth_failed' reason is reported",
+      "kind": "implement",
+      "story": "The integration test validates that the doctor command correctly reports auth_failed as a degraded reason when shared memory auth fails",
+      "depends_on": [
+        "fix-diagnose-auth-failed"
+      ],
+      "owned_files": [
+        "tests/test_doctor_shared_memory.py"
+      ],
+      "required_context": [
+        "cmd_doctor in verdict/cli.py is the main doctor entry point",
+        "Test must run in tmp HOME to isolate from system state",
+        "diagnose_shared_memory now returns 'auth_failed' for auth failures"
+      ],
+      "acceptance": [
+        "Integration test calls cmd_doctor with a simulated auth_failed provider status",
+        "Test verifies that the output/result contains the new 'auth_failed' reason",
+        "Test runs in a temporary HOME directory to avoid side effects",
+        "Test passes successfully"
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_doctor_shared_memory.py"
+      ],
+      "barrier": "",
+      "risk": "medium",
+      "required_capabilities": [
+        "reasoning",
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": true,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "verify-all",
+      "objective": "Run the full test suite for both test_runtime_certification.py and test_doctor_shared_memory.py to verify all changes work together",
+      "kind": "integrate",
+      "story": "As an integrator, I verify that all changes work together and don't break existing functionality",
+      "depends_on": [
+        "fix-diagnose-auth-failed",
+        "add-doctor-integration-test"
+      ],
+      "owned_files": [],
+      "required_context": [
+        "All unit tests for diagnose_shared_memory should pass",
+        "All integration tests for cmd_doctor should pass"
+      ],
+      "acceptance": [
+        "All tests in test_runtime_certification.py pass",
+        "All tests in test_doctor_shared_memory.py pass",
+        "No regressions in existing functionality"
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_runtime_certification.py",
+        "tests/test_doctor_shared_memory.py"
+      ],
+      "barrier": "",
+      "risk": "medium",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": false,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    }
+  ],
+  "run_id": "20260928T140655Z"
+}

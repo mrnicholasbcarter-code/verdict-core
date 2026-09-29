@@ -103,6 +103,65 @@ def _count_escalations(receipt: dict[str, Any]) -> int:
     return len(receipt.get("reassignments") or [])
 
 
+def _sum_attempt_usage(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum token usage across ALL attempts of every node.
+
+    Returns a dict with:
+      total_input_tokens, total_output_tokens  — int | None
+      total_cost_usd                           — float | None
+      attempts_with_usage, attempts_without_usage — int
+
+    Rules:
+    * An attempt with no ``usage`` key (or ``usage`` is None/empty) counts as
+      *without* usage — never treated as zero tokens.
+    * ``total_cost_usd`` is the sum of ``cost_usd`` ONLY when every attempt
+      that has usage also reported a numeric cost.  If any attempt with usage
+      is missing ``cost_usd`` or has ``cost_usd is None``, the total is None.
+      NOTE: kr/* subscription routes legitimately report ``cost_usd: 0.0``;
+      token counts are the real cost signal there.
+    * Token totals are None when no attempt carried usage.
+    """
+    with_usage = 0
+    without_usage = 0
+    input_sum = 0
+    output_sum = 0
+    cost_sum = 0.0
+    all_have_cost = True
+
+    for node in nodes:
+        for attempt in node.get("attempts", []):
+            usage = attempt.get("usage")
+            if not isinstance(usage, dict) or not usage:
+                without_usage += 1
+                continue
+
+            inp = usage.get("input_tokens")
+            out = usage.get("output_tokens")
+            if inp is None and out is None:
+                # usage dict present but no token fields → treat as missing
+                without_usage += 1
+                continue
+
+            with_usage += 1
+            input_sum += int(inp or 0)
+            output_sum += int(out or 0)
+
+            cost = usage.get("cost_usd")
+            if cost is None:
+                all_have_cost = False
+            else:
+                cost_sum += float(cost)
+
+    has_any = with_usage > 0
+    return {
+        "total_input_tokens": input_sum if has_any else None,
+        "total_output_tokens": output_sum if has_any else None,
+        "total_cost_usd": cost_sum if (has_any and all_have_cost) else None,
+        "attempts_with_usage": with_usage,
+        "attempts_without_usage": without_usage,
+    }
+
+
 def _time_span_seconds(receipt: dict[str, Any]) -> float | None:
     """Wall-clock seconds from started_at to finished_at, or None."""
     started = receipt.get("started_at")
@@ -214,6 +273,9 @@ def build_record(run_id: str, receipt: dict[str, Any]) -> tuple[dict[str, Any] |
             role = r
             break
 
+    # --- real per-attempt usage (BOD-203 AC6) ---
+    usage = _sum_attempt_usage(nodes)
+
     record: dict[str, Any] = {
         "task_id": run_id,
         "task_class": task_class,
@@ -227,9 +289,13 @@ def build_record(run_id: str, receipt: dict[str, Any]) -> tuple[dict[str, Any] |
         "first_pass": first_pass,
         "retries": retries,
         "escalations": escalations,
-        "total_cost_usd": 0.0,
+        "total_cost_usd": usage["total_cost_usd"],
         "time_to_green_s": time_to_green,
         "signal_latency_ms": signal_latency_ms,
+        "total_input_tokens": usage["total_input_tokens"],
+        "total_output_tokens": usage["total_output_tokens"],
+        "attempts_with_usage": usage["attempts_with_usage"],
+        "attempts_without_usage": usage["attempts_without_usage"],
     }
     if role is not None:
         record["role"] = role

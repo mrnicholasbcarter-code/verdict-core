@@ -10,7 +10,6 @@ non-TTY) is ASCII only and emits no colour.
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -26,6 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from verdict.design import GLYPHS as GLYPHS  # re-export for local callers
 from verdict.orchestration.contracts import NodeState, RunEvent
 from verdict.terminal_ui import TOKENS, clean
 
@@ -44,15 +44,7 @@ STAGES: tuple[str, ...] = (
     "REVIEW",
 )
 
-# glyph key -> (rich glyph, ascii glyph, design token)
-GLYPHS: Mapping[str, tuple[str, str, str]] = {
-    "running": ("\u25cf", "*", "PRIMARY"),
-    "validated": ("\u2713", "+", "SUCCESS"),
-    "failed": ("\u2717", "x", "ERROR"),
-    "reassigned": ("\u21bb", "~", "WARNING"),
-    "planned": ("\u25cc", "o", "MUTED"),
-    "blocked": ("\u25a0", "#", "ERROR"),
-}
+
 _STATE_GLYPH: Mapping[NodeState, str] = {
     NodeState.PLANNED: "planned",
     NodeState.ADMITTED: "planned",
@@ -65,6 +57,11 @@ _STATE_GLYPH: Mapping[NodeState, str] = {
     NodeState.BLOCKED: "blocked",
 }
 LADDER: tuple[str, ...] = ("discovered", "entitled", "healthy", "available", "eligible")
+
+# Hard cap for the non-interactive follow() loop when neither max_polls nor
+# stop_when_final provides a natural exit.  Keeps background callers safe even
+# when the caller passes stop_when_final=False and no max_polls.
+_NON_INTERACTIVE_MAX_POLLS: int = 2000
 
 
 def _t(value: object, limit: int = 120) -> str:
@@ -929,15 +926,20 @@ def render_text(
 
 
 def plain_mode(console: Console | None = None) -> bool:
-    """Same fallback rules as :class:`verdict.terminal_ui.TerminalUI`."""
+    """Same fallback rules as :class:`verdict.terminal_ui.TerminalUI`, via :mod:`verdict.design`.
+
+    The console's own terminal detection is authoritative (it honours force_terminal),
+    so the policy is asked about the console, not its underlying file.
+    """
+    from verdict.design import presentation_mode as _pm
+
     source = console or Console()
-    return (
-        not source.is_terminal
-        or "NO_COLOR" in os.environ
-        or os.getenv("TERM") == "dumb"
-        or bool(os.getenv("CI"))
-        or os.getenv("VERDICT_PLAIN") == "1"
-    )
+
+    class _ConsoleStream:
+        def isatty(self) -> bool:
+            return source.is_terminal
+
+    return not _pm(_ConsoleStream()).color
 
 
 def read_events(path: Path) -> list[RunEvent]:
@@ -975,18 +977,50 @@ def follow(
     poll_seconds: float = 0.25,
     max_polls: int | None = None,
     start_seq: int = 0,
+    interactive: bool = False,
+    key_reader: Any | None = None,
+    max_iterations: int = 2000,
 ) -> RunView:
     """Live-tail a JSONL events file; plain mode prints one narrative line per event.
 
     ``start_seq`` skips events from earlier controller lives of a resumed run, so
     a previous ``run_finished`` cannot end (or mislabel) the current live view.
+
+    When ``interactive`` is True the cockpit navigation layer from
+    :mod:`verdict.orchestration.cockpit_nav` takes over: arrow keys / j / k
+    move the selection, Enter opens the node detail panel, ``d`` expands
+    technical details, ``?`` toggles help, ``Esc`` navigates back and ``q``
+    quits.  Callers must opt in explicitly; ``follow()`` never auto-detects a
+    TTY and enters the cockpit on its own.  ``verdict watch`` on a real TTY
+    passes ``interactive=True``; background callers (supervise threads, tests)
+    keep the default ``False`` and always use the non-interactive path.
     """
     target = console or Console()
     plain = plain_mode(console)
     width = target.width or 100
-    view, seen, polls = RunView(), 0, 0
+    view: RunView = RunView()
+    seen, polls = 0, 0
     if start_seq:
         seen = sum(1 for e in read_events(events_path) if _event_seq(e) <= start_seq)
+
+    if interactive:
+        # Prime the view with any events already skipped by start_seq so the
+        # cockpit's first frame reflects the current state accurately.
+        if seen:
+            for evt in read_events(events_path)[:seen]:
+                view.apply(evt)
+        return _run_interactive_cockpit(
+            events_path,
+            view=view,
+            seen=seen,
+            console=target,
+            plain=plain,
+            key_reader=key_reader,
+            poll_seconds=max(0.0, poll_seconds),
+            max_iterations=max_iterations,
+            stop_when_final=stop_when_final,
+        )
+
     live = (
         None
         if plain
@@ -994,8 +1028,15 @@ def follow(
     )
     if live is not None:
         live.start(refresh=True)
+    # Apply a hard cap when stop_when_final=False and no explicit max_polls is
+    # given, so no caller can hang indefinitely in the non-interactive path.
+    _bound = (
+        max_polls
+        if max_polls is not None
+        else (None if stop_when_final else _NON_INTERACTIVE_MAX_POLLS)
+    )
     try:
-        while max_polls is None or polls < max_polls:
+        while _bound is None or polls < _bound:
             polls += 1
             events = read_events(events_path)
             for event in events[seen:]:
@@ -1011,4 +1052,189 @@ def follow(
     finally:
         if live is not None:
             live.stop()
+    return view
+
+
+def _run_interactive_cockpit(
+    events_path: Path,
+    *,
+    view: RunView,
+    seen: int,
+    console: Console,
+    plain: bool,
+    key_reader: Any | None,
+    poll_seconds: float,
+    max_iterations: int,
+    stop_when_final: bool,
+) -> RunView:
+    """Drive :func:`cockpit_nav.run_cockpit` against the live events file.
+
+    ``seen`` is the number of events already applied to ``view`` (used to
+    skip a previous controller life via ``start_seq``).
+    """
+    from verdict.orchestration.cockpit_nav import _RealKeyReader, run_cockpit
+    from verdict.orchestration.tui import render as _render
+
+    reader = key_reader
+    if reader is None:
+        # Real TTY reader; ScriptedKeyReader is chosen by tests explicitly.
+        reader = _RealKeyReader()
+
+    # ``events_source`` returns the tail after ``seen``; the cockpit applies
+    # the delta.  We recompute the full events list each poll from disk and
+    # only replay the events the cockpit has not seen yet.
+    already: list[RunEvent] = list(read_events(events_path))[:seen]
+
+    def _source() -> list[RunEvent]:
+        return already + list(read_events(events_path))[seen:]
+
+    def _render_dashboard(v: Any, width: int, plain_flag: bool) -> Any:
+        return _render(v, width=width, plain=plain_flag)
+
+    run_cockpit(
+        view=view,
+        events_source=_source,
+        render_dashboard=_render_dashboard,
+        console=console,
+        key_reader=reader,
+        plain=plain,
+        poll_seconds=poll_seconds,
+        max_iterations=max_iterations,
+        stop_when_final=stop_when_final,
+    )
+    return view
+
+
+_FIXTURE_PREFIXES = ("demo-", "demo-sub/", "fixture")
+
+
+def _replay_kind(events: list[Any]) -> str:
+    """Classify a recorded run from its own events: 'fixture', 'real' or 'unknown'.
+
+    'real' requires at least one executed route and no fixture route. A run with
+    no executed routes makes no claim ('unknown'), so a label never says
+    'real models' without evidence.
+    """
+    routes = [
+        str(event.data.get("route_id") or "")
+        for event in events
+        if event.type in ("selection", "dispatch")
+    ]
+    routes = [r for r in routes if r]
+    if any(r.startswith(_FIXTURE_PREFIXES) for r in routes):
+        return "fixture"
+    return "real" if routes else "unknown"
+
+
+def _is_fixture_run(events: list[Any]) -> bool:
+    """True when any executed route is a fixture/demo route."""
+    return _replay_kind(events) == "fixture"
+
+
+def _print_integrity_check(run_dir: Path, console: Console, plain: bool) -> None:
+    """Print receipt integrity check at the end of replay."""
+    from verdict.orchestration.receipt import verify_run_receipt
+
+    problems = verify_run_receipt(run_dir)
+    if problems:
+        msg = f"integrity: FAILED ({'; '.join(problems)})"
+    else:
+        msg = "integrity: OK (events digest verified)"
+
+    if plain:
+        console.print(msg, markup=False, highlight=False)
+    else:
+        # For rich mode, print on a new line after the live view stops
+        style = "red" if problems else "green"
+        console.print(f"[{style}]{msg}[/{style}]")
+
+
+def follow_replay(
+    events_path: Path,
+    *,
+    console: Console | None = None,
+    refresh_hz: int = 4,
+    speed: float = 1.0,
+    max_gap: float = 1.5,
+) -> RunView:
+    """Replay a completed run from events.jsonl with timing from timestamps.
+
+    Args:
+        events_path: Path to events.jsonl
+        console: Rich console (defaults to new Console)
+        refresh_hz: Display refresh rate in Hz
+        speed: Time multiplier (2.0 = twice as fast)
+        max_gap: Maximum delay between events in seconds (before speed scaling)
+
+    The header identifies whether routes were real models or fixture/scripted.
+    """
+    import time
+
+    target = console or Console()
+    plain = plain_mode(console)
+    width = target.width or 100
+    view = RunView()
+    events = read_events(events_path)
+
+    if not events:
+        return view
+
+    # Get run_id from path
+    run_id = events_path.parent.name
+
+    # Detect if this is a fixture run by examining routes
+    kind = _replay_kind(events)
+
+    live = (
+        None
+        if plain
+        else Live(
+            render(view, width=width),
+            console=target,
+            refresh_per_second=max(1, int(refresh_hz * speed)),
+        )
+    )
+    if live is not None:
+        live.start(refresh=True)
+
+    try:
+        for i, event in enumerate(events):
+            view.apply(event)
+
+            # Inject replay marker into view after first event
+            if i == 0 and view.goal:
+                label = {
+                    "fixture": "fixture run {rid} (no model calls)",
+                    "real": "recorded run {rid} (real models)",
+                    "unknown": "recorded run {rid}",
+                }[kind].format(rid=run_id)
+                view.goal = f"REPLAY of {label} - time x{speed}"
+
+            if plain:
+                target.print(event_line(event), markup=False, highlight=False)
+
+            if live is not None:
+                live.update(render(view, width=width), refresh=True)
+
+            # Calculate delay for next event
+            if i < len(events) - 1:
+                event_time = _moment(event.at)
+                next_time = _moment(events[i + 1].at)
+
+                if event_time is not None and next_time is not None:
+                    delay = next_time - event_time
+                    # Cap the delay and scale by speed
+                    delay = min(delay, max_gap) / speed
+
+                    if delay > 0:
+                        time.sleep(delay)
+
+    finally:
+        if live is not None:
+            time.sleep(0.5 / speed)  # Brief pause to see final state
+            live.stop()
+
+        # Show integrity verification at the end
+        _print_integrity_check(events_path.parent, target, plain)
+
     return view

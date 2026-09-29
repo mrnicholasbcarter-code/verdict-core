@@ -298,6 +298,16 @@ def certify(
         "resume": "partial",
         "tool_interception": "unsupported",
         "structured_output": "partial",
+        # Lifecycle matrix facets (BOD-80 parity)
+        "session_start": "partial",  # file:memory_bridge.MemoryHookController.on_session_start — local plane only
+        "before_first_turn": "partial",  # file:memory_bridge.MemoryHookController.on_prompt — local plane recall
+        "tool_pre_post": "unsupported",  # no native tool pre/post hooks in Prime adapter
+        "edit_event": "partial",  # file:memory_bridge.MemoryHookController.on_file_edit_start — capture only
+        "compaction_yield": "partial",  # file:memory_bridge.MemoryHookController.on_compaction — capture only
+        "verification_result": "partial",  # file:memory_bridge.MemoryHookController.on_verification — capture only
+        "session_end": "partial",  # file:memory_bridge.MemoryHookController.on_session_end — local persist
+        "sync_async_semantics": "partial",  # sync MemoryHookController; async outbox mirror
+        "mutation_capability": "partial",  # file:memory_bridge.MemoryGate.write — local plane write
     }
     notes: list[str] = [
         "OpenAI-compatible provider via ~/.prime/agent/models.json → Verdict :8000",

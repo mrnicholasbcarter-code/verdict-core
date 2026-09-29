@@ -50,3 +50,10 @@ def test_supervise_and_eligibility_are_dispatched(tmp_path: Path) -> None:
     elig = _run("eligibility", "--help", cwd=tmp_path)
     assert "--probe" in elig.stdout
     assert json  # keep import used
+
+
+def test_orchestrate_inject_help_mentions_worker_key(tmp_path: Path) -> None:
+    proc = _run("orchestrate", "--help", cwd=tmp_path)
+    assert proc.returncode == 0
+    assert "worker#N" in proc.stdout
+    assert "#N" in proc.stdout

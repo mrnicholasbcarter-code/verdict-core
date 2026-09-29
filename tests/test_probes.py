@@ -428,13 +428,14 @@ def test_response_byte_budget_stops_scheduling_after_observed_response() -> None
     assert run.observations[1].error == "budget_exhausted"
 
 
-def test_run_duration_is_total_budget_not_single_probe_timeout() -> None:
+def test_run_duration_is_total_budget_all_probes_complete_with_ample_budget() -> None:
+    """Cumulative probe time may exceed one probe timeout; only the total budget limits the run."""
     calls: list[str] = []
 
     def response(model_id, payload, timeout):
         del payload, timeout
         calls.append(model_id)
-        time.sleep(0.02)
+        time.sleep(0.04)  # each probe is under the per-probe timeout
         return {
             "status_code": 200,
             "body": {
@@ -443,18 +444,63 @@ def test_run_duration_is_total_budget_not_single_probe_timeout() -> None:
             },
         }
 
+    # 3 probes x 0.04s = 0.12s: more than one per-probe timeout (0.1s), far below the
+    # 5s total budget. All three must run: the run limit is the total budget.
     run = ProbeRunner(
-        ProbePolicy(timeout_seconds=0.03, max_duration_seconds=0.2, max_models_per_run=3)
+        ProbePolicy(timeout_seconds=0.1, max_duration_seconds=5.0, max_models_per_run=3)
     ).run_with_diagnostics(
         ["a", "b", "c"],
         response,
         provider="fixture",
-        budget=ProbeBudget("fixture", max_requests=3, max_tokens=6, max_duration_seconds=0.2),
+        budget=ProbeBudget("fixture", max_requests=3, max_tokens=6, max_duration_seconds=5.0),
     )
 
-    assert calls == ["a", "b", "c"]
+    assert calls == ["a", "b", "c"], f"Expected all 3 probes to run with ample budget, got {calls}"
     assert all(item.availability_state == "ready" for item in run.observations)
-    assert run.diagnostics.max_duration_seconds == 0.2
+    assert run.diagnostics.max_duration_seconds == 5.0
+
+
+def test_run_duration_budget_constrains_request_count() -> None:
+    """Verify that budget constraints (max_requests) limit how many probes run.
+
+    Intent: The run's duration limit is the TOTAL budget (not single-probe timeout).
+    When max_requests is limited in the budget, only that many probes are attempted.
+    """
+    calls: list[str] = []
+
+    def response(model_id, payload, timeout):
+        del payload, timeout
+        calls.append(model_id)
+        time.sleep(0.001)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        }
+
+    # ProbePolicy allows 3 models, but the budget limits to 2 requests
+    # This tests that budget constraints (not just policy) are enforced.
+    run = ProbeRunner(
+        ProbePolicy(timeout_seconds=1.0, max_duration_seconds=10.0, max_models_per_run=3)
+    ).run_with_diagnostics(
+        ["a", "b", "c"],
+        response,
+        provider="fixture",
+        budget=ProbeBudget("fixture", max_requests=2, max_tokens=4, max_duration_seconds=10.0),
+    )
+
+    # Only 2 probes should run due to max_requests=2 in the budget
+    assert len(calls) == 2, (
+        f"Expected 2 probes to run (budget max_requests=2), got {len(calls)}: {calls}"
+    )
+    assert calls == ["a", "b"], f"Expected ['a', 'b'], got {calls}"
+    # Third probe should be skipped
+    assert run.observations[2].status == "skipped", (
+        f"Expected third probe to be skipped, got {run.observations[2].status}"
+    )
+    assert run.diagnostics.budget_limited_models == 1, "Expected exactly one budget_limited model"
 
 
 def test_pre_cancelled_run_never_invokes_transport() -> None:

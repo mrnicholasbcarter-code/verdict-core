@@ -15,6 +15,10 @@ Event ``data`` conventions read by the receipt (extra keys are ignored):
 * ``verify``: ``ok``, ``command``, ``exit_code``   * ``barrier``: ``name``, ``ok``
 * ``integrate``: ``commit``                        * ``review``: ``status``, ``reviewer``,
   ``route_id``, ``blocking``                       * ``reassign``/``cooldown``/``controller``: free-form
+
+``no_change_nodes`` is a derived summary of implement nodes whose validated
+attempt emitted an ok ``no_change`` barrier (zero file changes). It is omitted
+when empty so existing committed receipts still verify.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     route_provider,
 )
+from verdict.outcome_records import write_outcome_records
 
 RECEIPT_SCHEMA = "verdict.run-receipt/v1"
 EVENTS_FILE = "events.jsonl"
@@ -333,6 +338,36 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
     return record
 
 
+def _no_change_implement_nodes(
+    graph: WorkGraph, events: list[RunEvent], nodes: list[dict[str, Any]]
+) -> list[str]:
+    """Implement node ids whose validated attempt changed no files.
+
+    The runtime emits an ok ``no_change`` barrier when an implement node's
+    validated attempt has an empty diff. Listed in graph order.
+    """
+    validated = {
+        n["node_id"]
+        for n in nodes
+        if n.get("kind") == NodeKind.IMPLEMENT.value
+        and n.get("final_state") == NodeState.VALIDATED.value
+    }
+    last_ownership: dict[str, int] = {}
+    last_no_change: dict[str, int] = {}
+    for event in events:
+        if event.type != "barrier" or event.node_id not in validated:
+            continue
+        name = event.data.get("name")
+        if name == "ownership":
+            last_ownership[event.node_id] = event.seq
+        elif name == "no_change" and event.data.get("ok") is True:
+            last_no_change[event.node_id] = event.seq
+    seen = {
+        node_id for node_id, seq in last_no_change.items() if seq > last_ownership.get(node_id, -1)
+    }
+    return [n.node_id for n in graph.nodes if n.node_id in seen]
+
+
 def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
     review_path = run_dir / REVIEW_FILE
     source: Mapping[str, Any] | None = None
@@ -442,6 +477,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "unattested": route_identity_counts["unattested"],
         "mechanical": route_identity_counts["mechanical"],
     }
+    no_change_nodes = _no_change_implement_nodes(graph, events, nodes)
 
     receipt: dict[str, Any] = {
         "schema": RECEIPT_SCHEMA,
@@ -478,6 +514,9 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     }
     if started and isinstance(started.data.get("retry_budget"), Mapping):
         receipt["retry_budget"] = dict(started.data["retry_budget"])
+    # Derived, omitted when empty so committed proof receipts still verify.
+    if no_change_nodes:
+        receipt["no_change_nodes"] = no_change_nodes
     # route identity tracking: add route_identity_warning if any successful attempt had a mismatch
     if has_successful_mismatch:
         receipt["route_identity_warning"] = (
@@ -507,6 +546,16 @@ def write_run_receipt(run_dir: Path) -> Path:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+    try:
+        write_outcome_records(run_dir, receipt)
+    except OSError as exc:
+        import sys
+
+        print(
+            f"warning: could not write outcome records to"
+            f" {run_dir / 'outcome-records.jsonl'}: {exc}",
+            file=sys.stderr,
+        )
     _fsync_dir(run_dir)
     return target
 
@@ -544,6 +593,9 @@ def verify_run_receipt(run_dir: Path) -> list[str]:
 def completion_verdict(receipt: Mapping[str, Any]) -> tuple[str, str]:
     """COMPLETE only with validated work, an ok integration barrier and a clean PASS review."""
     blocked = RunOutcome.BLOCKED.value
+    # Cancelled runs are never COMPLETE — preserve the operator's intent.
+    if receipt.get("claimed_outcome") == RunOutcome.CANCELLED.value:
+        return RunOutcome.CANCELLED.value, "run cancelled by operator"
     if receipt.get("schema") != RECEIPT_SCHEMA:
         return blocked, f"unknown receipt schema {receipt.get('schema')!r}"
     gated = {NodeKind.IMPLEMENT.value, NodeKind.INTEGRATE.value}

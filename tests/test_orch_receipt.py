@@ -259,6 +259,7 @@ def test_write_and_verify_receipt_roundtrip(tmp_path: Path) -> None:
     assert json.loads(path.read_text())["schema"] == RECEIPT_SCHEMA
     assert verify_run_receipt(run_dir) == []
     assert not list(run_dir.glob(".receipt-*"))
+    assert "no_change_nodes" not in json.loads(path.read_text())
 
 
 def test_tampered_events_detected(tmp_path: Path) -> None:
@@ -401,3 +402,151 @@ def test_receipt_review_without_attempts_is_unchanged(tmp_path: Path) -> None:
 
     review = build_run_receipt(_run(tmp_path, review=PASS))["review"]
     assert "attempts" not in review
+
+
+# ---- BOD-90: outcome-records sidecar write is guarded ----
+
+
+def test_sidecar_oserror_does_not_crash_receipt(tmp_path: Path) -> None:
+    """OSError writing outcome-records.jsonl must not prevent receipt creation."""
+    run_dir = _run(tmp_path, review=PASS)
+    # Place a directory at the sidecar path so the write raises OSError
+    sidecar = run_dir / "outcome-records.jsonl"
+    sidecar.mkdir()
+
+    import io
+    import sys
+
+    captured = io.StringIO()
+    old_stderr = sys.stderr
+    sys.stderr = captured
+    try:
+        path = write_run_receipt(run_dir)
+    finally:
+        sys.stderr = old_stderr
+
+    # Receipt was written and verifies cleanly
+    assert path.exists()
+    assert json.loads(path.read_text())["schema"] == RECEIPT_SCHEMA
+    assert verify_run_receipt(run_dir) == []
+
+    # Warning was emitted to stderr
+    warning = captured.getvalue()
+    assert "outcome-records.jsonl" in warning
+    assert "warning" in warning.lower()
+
+    # No outcome-records.jsonl file (the directory is still there)
+    assert sidecar.is_dir()
+
+
+def test_sidecar_builder_bug_still_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bug in build_outcome_records (non-OSError) must still propagate."""
+    import verdict.outcome_records as orm
+
+    run_dir = _run(tmp_path, review=PASS)
+
+    def _boom(*_a: Any, **_kw: Any) -> None:
+        raise ValueError("bug in record builder")
+
+    monkeypatch.setattr(orm, "build_outcome_records", _boom)
+
+    with pytest.raises(ValueError, match="bug in record builder"):
+        write_run_receipt(run_dir)
+
+
+def test_no_change_nodes_listed_on_receipt(tmp_path: Path) -> None:
+    """Validated implement nodes with an ok no_change barrier appear in the summary."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    graph = WorkGraph(
+        goal="already there",
+        nodes=(
+            WorkNode(
+                "parser",
+                "keep parser",
+                owned_files=("pkg/parser.py",),
+                verification_command=("true",),
+            ),
+            WorkNode(
+                "cli", "keep cli", owned_files=("pkg/cli.py",), verification_command=("true",)
+            ),
+            WorkNode("merge", "integrate", kind="integrate", depends_on=("parser", "cli")),
+        ),
+    )
+    (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit("run_started", run_id="run-nc", goal="already there")
+    for node_id in ("parser", "cli"):
+        log.emit("dispatch", node_id=node_id, attempt=1, route_id="cc/s")
+        log.emit("terminal", node_id=node_id, attempt=1, ok=True, route_id="cc/s")
+        log.emit("barrier", node_id=node_id, name="ownership", ok=True, detail="0 file(s)")
+        log.emit(
+            "barrier",
+            node_id=node_id,
+            name="no_change",
+            ok=True,
+            detail="no file changes; accepted only if verification passes",
+        )
+        log.emit("verify", node_id=node_id, ok=True, command=["true"], exit_code=0)
+        log.emit("node_state", node_id=node_id, state="VALIDATED")
+    log.emit("barrier", node_id="merge", name="integration", ok=True)
+    log.emit("integrate", node_id="merge", commit="abc")
+    log.emit("terminal", node_id="merge", attempt=1, ok=True, route_id="local/git")
+    log.emit("verify", node_id="merge", ok=True, command=["true"], exit_code=0)
+    log.emit("run_finished", outcome="COMPLETE", reason="done")
+    (run_dir / "review.json").write_text(json.dumps(PASS))
+    receipt = build_run_receipt(run_dir)
+    assert receipt["no_change_nodes"] == ["parser", "cli"]
+    path = write_run_receipt(run_dir)
+    stored = json.loads(path.read_text())
+    assert stored["no_change_nodes"] == ["parser", "cli"]
+    assert verify_run_receipt(run_dir) == []
+
+
+def test_no_change_nodes_omitted_when_empty(tmp_path: Path) -> None:
+    receipt = build_run_receipt(_run(tmp_path, review=PASS))
+    assert "no_change_nodes" not in receipt
+
+
+def test_run_receipt_text_reports_no_change_nodes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """verdict run-receipt text names how many implement nodes changed no files."""
+    from argparse import Namespace
+
+    from verdict.orchestration.cli import _receipt
+
+    test_no_change_nodes_listed_on_receipt(tmp_path)
+    run_dir = tmp_path / "run"
+    rc = _receipt(Namespace(run=str(run_dir), runs_dir=str(tmp_path), json=False))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "2 implement nodes changed no files" in out
+
+
+def test_no_change_unvalidated_implement_is_excluded(tmp_path: Path) -> None:
+    """A no_change barrier on a node that did not validate is not summarized."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    graph = WorkGraph(
+        goal="g",
+        nodes=(
+            WorkNode(
+                "parser",
+                "keep parser",
+                owned_files=("pkg/parser.py",),
+                verification_command=("true",),
+            ),
+        ),
+    )
+    (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit("run_started", run_id="run-nc", goal="g")
+    log.emit("dispatch", node_id="parser", attempt=1, route_id="cc/s")
+    log.emit("terminal", node_id="parser", attempt=1, ok=True, route_id="cc/s")
+    log.emit("barrier", node_id="parser", name="ownership", ok=True)
+    log.emit("barrier", node_id="parser", name="no_change", ok=True)
+    log.emit("verify", node_id="parser", ok=False, command=["true"], exit_code=1)
+    log.emit("run_finished", outcome="BLOCKED", reason="verify failed")
+    receipt = build_run_receipt(run_dir)
+    assert "no_change_nodes" not in receipt

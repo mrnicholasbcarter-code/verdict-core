@@ -1,0 +1,278 @@
+{
+  "claimed_outcome": "COMPLETE",
+  "controller_events": [
+    {
+      "at": "2026-09-28T14:09:08.580169Z",
+      "detail": "plan produced",
+      "node_id": "",
+      "route_id": "cc/claude-haiku-4-5-20251001",
+      "seq": 6,
+      "state": "HEALTHY"
+    },
+    {
+      "at": "2026-09-28T14:30:06.543999Z",
+      "excluded_families": [
+        "claude"
+      ],
+      "excluded_routes": [
+        "cc/claude-sonnet-4-5-20250929"
+      ],
+      "level": "family",
+      "node_id": "",
+      "reviewer_route": "codex/gpt-6-sol",
+      "seq": 56,
+      "state": "REVIEW_INDEPENDENCE"
+    }
+  ],
+  "cooldowns": [],
+  "decision_signals": [
+    {
+      "actual_decision": {
+        "capacity_class": "subscription",
+        "frontier_planner_invoked": true,
+        "provider": "claude",
+        "route_id": "cc/claude-haiku-4-5-20251001"
+      },
+      "at": "2026-09-28T14:09:08.581527Z",
+      "mode": "SHADOW",
+      "node_id": "",
+      "seq": 7,
+      "signals": {
+        "confidence": 0.8235531389255478,
+        "failure_class": null,
+        "input_digest": "17296ed702eb0ef63febdc4e0f9ef6bf7e5ec7290745c7c96290a05dc967d417",
+        "latency_ms": 1052,
+        "mode": "SHADOW",
+        "model": "openjev-0.1",
+        "observed_at": "2026-09-28T14:06:55.192384Z",
+        "provider": "openjev",
+        "purpose": "frontier_planning",
+        "request_id": "req_703d4aba65362daa76fe88a6393a0362",
+        "schema_version": "decision-signals/v1",
+        "signals": {
+          "ambiguity": 0.0013624174163055236,
+          "complexity": 0.41258163968960165,
+          "context_need": 0.493126023842098,
+          "decomposability": 0.9972842851776655,
+          "frontier_worthy": 0.00014537364811239618,
+          "security_sensitive": 0.9999968443524971,
+          "verification_strength": 0.7013224394078786
+        },
+        "usage": {
+          "input_tokens": 408,
+          "output_tokens": 0
+        },
+        "version": "openjev-0.1"
+      }
+    }
+  ],
+  "event_count": 59,
+  "events_digest": "sha256:53acd30ecf4a19e12ccd596a415cf06603d35a9dbc64064ad24a96456b105608",
+  "finished_at": "2026-09-28T14:30:06.546839Z",
+  "goal": "BOD-273: `verdict doctor` must report a shared-memory auth failure as its own degraded reason. Today diagnose_shared_memory in verdict/runtime_certification.py maps provider status 'auth_failed' to reason 'unwritable'. Acceptance: diagnose_shared_memory returns a reason starting with 'auth_failed' when the provider status is auth_failed; 'unwritable' is still reported for real write-permission failures; an integration test runs the real doctor entry point (cmd_doctor in verdict/cli.py) in a tmp HOME and shows the new reason. Verify with: .venv/bin/python -m pytest -q tests/test_runtime_certification.py tests/test_doctor_shared_memory.py",
+  "graph_digest": "sha256:4918e13206bb51818dfb12b397694c7a7248b88c3c25437fd9c7516f4b5b2b2b",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 55
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 43
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 192.73,
+          "executed_model": "cc/claude-sonnet-4-5-20250929",
+          "fault_injected": false,
+          "intended_route": "cc/claude-sonnet-4-5-20250929",
+          "outcome": "success",
+          "provider": "cc",
+          "route_id": "cc/claude-sonnet-4-5-20250929",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 407,
+            "output_tokens": 663,
+            "tokens_source": "prime_stdout",
+            "turns": 1
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "research",
+      "node_id": "research-diagnose-memory",
+      "validated_by": [
+        {
+          "command": "(none: non-code node)",
+          "exit_code": 0,
+          "seq": 20
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 353.03,
+          "executed_model": "cc/claude-sonnet-4-5-20250929",
+          "fault_injected": false,
+          "intended_route": "cc/claude-sonnet-4-5-20250929",
+          "outcome": "success",
+          "provider": "cc",
+          "route_id": "cc/claude-sonnet-4-5-20250929",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 340,
+            "output_tokens": 348,
+            "tokens_source": "prime_stdout",
+            "turns": 1
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "fix-diagnose-auth-failed",
+      "validated_by": [
+        {
+          "command": "python -m pytest -q tests/test_runtime_certification.py",
+          "exit_code": 0,
+          "seq": 32
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 655.97,
+          "executed_model": "cc/claude-sonnet-4-5-20250929",
+          "fault_injected": false,
+          "intended_route": "cc/claude-sonnet-4-5-20250929",
+          "outcome": "success",
+          "provider": "cc",
+          "route_id": "cc/claude-sonnet-4-5-20250929",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 499,
+            "output_tokens": 681,
+            "tokens_source": "prime_stdout",
+            "turns": 1
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "add-doctor-integration-test",
+      "validated_by": [
+        {
+          "command": "python -m pytest -q tests/test_doctor_shared_memory.py",
+          "exit_code": 0,
+          "seq": 44
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "unknown",
+          "duration_seconds": 0.0,
+          "executed_model": "(mechanical merge)",
+          "fault_injected": false,
+          "intended_route": "",
+          "outcome": "success",
+          "provider": "",
+          "route_id": "",
+          "route_identity": "mechanical"
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "integrate",
+      "node_id": "verify-all",
+      "validated_by": [
+        {
+          "command": "python -m pytest -q tests/test_runtime_certification.py tests/test_doctor_shared_memory.py",
+          "exit_code": 0,
+          "seq": 51
+        }
+      ]
+    }
+  ],
+  "outcome": "COMPLETE",
+  "planner_attempts": [
+    {
+      "at": "2026-09-28T14:07:06.722769Z",
+      "attempt": 1,
+      "capacity_class": "subscription",
+      "provider": "claude",
+      "route_id": "cc/claude-haiku-4-5-20251001",
+      "seq": 3
+    },
+    {
+      "at": "2026-09-28T14:08:07.480346Z",
+      "attempt": 2,
+      "budget": 7,
+      "reason": "parse_plan: node[0]: acceptance must be a list",
+      "route_id": "cc/claude-haiku-4-5-20251001",
+      "seq": 4
+    },
+    {
+      "at": "2026-09-28T14:09:08.573942Z",
+      "attempt": 2,
+      "budget": 7,
+      "error": "",
+      "ok": true,
+      "route_id": "cc/claude-haiku-4-5-20251001",
+      "seq": 5
+    }
+  ],
+  "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
+  "reassignments": [],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 2
+  },
+  "review": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "category": "",
+        "duration_seconds": 20.645,
+        "route_id": "codex/gpt-6-sol",
+        "status": "PASS"
+      }
+    ],
+    "blocking": 0,
+    "reviewer": "open-code-review v1.12.9",
+    "route_id": "codex/gpt-6-sol",
+    "status": "PASS"
+  },
+  "route_identity_summary": {
+    "attempts": 4,
+    "match": 3,
+    "mechanical": 1,
+    "mismatch": 0,
+    "unattested": 0
+  },
+  "run_id": "20260928T140655Z",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-09-28T14:06:55.188542Z",
+  "topology": "WORKER_CRITIC"
+}

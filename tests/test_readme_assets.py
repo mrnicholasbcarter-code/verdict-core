@@ -83,7 +83,12 @@ def test_each_chart_has_existing_source_data_and_a_labelled_caption() -> None:
         if f"docs/assets/{chart}" in text:
             caption = text.split(f"docs/assets/{chart})", 1)[1].split("</sub>", 1)[0]
             assert any(rel in caption for rel in data_files), f"{chart} caption omits its data"
-            assert "Fixture" in caption or "fixture" in caption, f"{chart} caption not labelled"
+            assert (
+                "Fixture" in caption
+                or "fixture" in caption
+                or "Observed" in caption
+                or "observed" in caption
+            ), f"{chart} caption not labelled"
     embedded = set(re.findall(r"docs/assets/(chart-[\w-]+\.svg)", text))
     assert embedded <= set(sources), f"README embeds charts with no declared source: {embedded}"
 
@@ -105,6 +110,29 @@ def test_demo_cast_is_valid_asciinema_v2() -> None:
     output = "".join(e[2] for e in events if e[1] == "o")
     assert "integrity: OK (events digest verified)" in output
     assert "events_digest mismatch" in output
+    for secret_marker in ("API_KEY", "Bearer ", "sk-"):
+        assert secret_marker not in output
+
+
+def test_demo_tui_cast_is_valid_asciinema_v2() -> None:
+    """TUI replay cast (from real-model live-controller-run) is valid asciinema v2."""
+    lines = (ASSETS / "demo-tui.cast").read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert header["version"] == 2
+    assert isinstance(header["width"], int) and isinstance(header["height"], int)
+    last = -1.0
+    events = [json.loads(line) for line in lines[1:] if line.strip()]
+    assert events, "cast has no events"
+    for event in events:
+        assert isinstance(event, list) and len(event) == 3, event
+        at, kind, data = event
+        assert isinstance(at, (int, float)) and at >= last, event
+        assert kind in {"o", "i", "m", "r"} and isinstance(data, str), event
+        last = float(at)
+    # TUI replay output should contain the run outcome
+    output = "".join(e[2] for e in events if e[1] == "o")
+    assert "COMPLETE" in output or "VALIDATED" in output
+    # No secrets in the recording
     for secret_marker in ("API_KEY", "Bearer ", "sk-"):
         assert secret_marker not in output
 

@@ -1,0 +1,83 @@
+{
+  "schema_version": "verdict.orchestration/v1",
+  "goal": "test",
+  "topology": "WORKER_CRITIC",
+  "rationale": [
+    "nodes=2 implement_nodes=1 risk_hint=medium risks=['medium']",
+    "layers=2 widest_layer=1",
+    "decision=WORKER_CRITIC: 2 nodes but no layer width>=2 (implement_nodes=1, widest_layer=1) -> sequential worker+critic"
+  ],
+  "max_parallel": 1,
+  "nodes": [
+    {
+      "node_id": "setup-test-framework",
+      "objective": "Initialize a testing framework and create the test infrastructure for the project",
+      "kind": "implement",
+      "story": "The repository has no tracked test files. Set up a test framework (pytest for Python or unittest), create a basic test directory structure, and add configuration files needed to run tests.",
+      "depends_on": [],
+      "owned_files": [
+        "tests/__init__.py",
+        "tests/test_placeholder.py",
+        "pytest.ini",
+        ".pytest_cache"
+      ],
+      "required_context": [
+        "Project language and available dependencies",
+        "Existing project structure if any"
+      ],
+      "acceptance": [
+        "Test framework is installed and configured",
+        "A basic test file exists that can be run",
+        "pytest runs without errors on the test suite"
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/",
+        "-v"
+      ],
+      "barrier": "",
+      "risk": "medium",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": "Before any tests can be written or run, the testing infrastructure must exist. This is a prerequisite for all testing work.",
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "integrate-tests",
+      "objective": "Verify that the complete test suite runs successfully",
+      "kind": "integrate",
+      "story": "Run the full test suite to ensure all test infrastructure is working correctly and all tests pass together.",
+      "depends_on": [
+        "setup-test-framework"
+      ],
+      "owned_files": [],
+      "required_context": [
+        "Test framework setup from setup-test-framework"
+      ],
+      "acceptance": [
+        "All tests in the test suite run successfully",
+        "Test output is clear and no tests are skipped"
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/",
+        "-v"
+      ],
+      "barrier": "",
+      "risk": "medium",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": false,
+      "reasoning": "Final integration step to confirm all test infrastructure works end-to-end",
+      "min_context_tokens": 32000
+    }
+  ],
+  "run_id": "20260928T191142Z"
+}

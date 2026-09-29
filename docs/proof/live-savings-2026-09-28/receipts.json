@@ -1,0 +1,1022 @@
+[
+  {
+    "task_id": "fizzbuzz",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 150,
+    "completion_tokens": 471,
+    "total_tokens": 621,
+    "latency_ms": 5180.2
+  },
+  {
+    "task_id": "fizzbuzz",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 151,
+    "completion_tokens": 621,
+    "total_tokens": 772,
+    "latency_ms": 7765.5,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "fizzbuzz",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 149,
+    "completion_tokens": 546,
+    "total_tokens": 695,
+    "latency_ms": 5894.2
+  },
+  {
+    "task_id": "fizzbuzz",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 150,
+    "completion_tokens": 593,
+    "total_tokens": 743,
+    "latency_ms": 6189.6,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "flatten",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 140,
+    "completion_tokens": 773,
+    "total_tokens": 913,
+    "latency_ms": 10733.0
+  },
+  {
+    "task_id": "flatten",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 141,
+    "completion_tokens": 848,
+    "total_tokens": 989,
+    "latency_ms": 10358.1,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "flatten",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 141,
+    "completion_tokens": 1254,
+    "total_tokens": 1395,
+    "latency_ms": 17040.1
+  },
+  {
+    "task_id": "flatten",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 140,
+    "completion_tokens": 1115,
+    "total_tokens": 1255,
+    "latency_ms": 14164.5,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "caesarcipher",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 146,
+    "completion_tokens": 892,
+    "total_tokens": 1038,
+    "latency_ms": 10270.6
+  },
+  {
+    "task_id": "caesarcipher",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 145,
+    "completion_tokens": 1214,
+    "total_tokens": 1359,
+    "latency_ms": 13865.1,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "caesarcipher",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 144,
+    "completion_tokens": 1238,
+    "total_tokens": 1382,
+    "latency_ms": 14437.8
+  },
+  {
+    "task_id": "caesarcipher",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 144,
+    "completion_tokens": 1164,
+    "total_tokens": 1308,
+    "latency_ms": 13817.4,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "wordcount",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 125,
+    "completion_tokens": 610,
+    "total_tokens": 735,
+    "latency_ms": 10116.3
+  },
+  {
+    "task_id": "wordcount",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 125,
+    "completion_tokens": 842,
+    "total_tokens": 967,
+    "latency_ms": 10728.2,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "wordcount",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 123,
+    "completion_tokens": 896,
+    "total_tokens": 1019,
+    "latency_ms": 11758.6
+  },
+  {
+    "task_id": "wordcount",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 123,
+    "completion_tokens": 1028,
+    "total_tokens": 1151,
+    "latency_ms": 12375.8,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "matrix_transpose",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 139,
+    "completion_tokens": 1012,
+    "total_tokens": 1151,
+    "latency_ms": 11699.1
+  },
+  {
+    "task_id": "matrix_transpose",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 140,
+    "completion_tokens": 713,
+    "total_tokens": 853,
+    "latency_ms": 8641.8,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "matrix_transpose",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 142,
+    "completion_tokens": 848,
+    "total_tokens": 990,
+    "latency_ms": 9503.8
+  },
+  {
+    "task_id": "matrix_transpose",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 138,
+    "completion_tokens": 1090,
+    "total_tokens": 1228,
+    "latency_ms": 12474.6,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "balanced_parens",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 138,
+    "completion_tokens": 538,
+    "total_tokens": 676,
+    "latency_ms": 6513.2
+  },
+  {
+    "task_id": "balanced_parens",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 137,
+    "completion_tokens": 573,
+    "total_tokens": 710,
+    "latency_ms": 7351.6,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "balanced_parens",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 138,
+    "completion_tokens": 553,
+    "total_tokens": 691,
+    "latency_ms": 7438.3
+  },
+  {
+    "task_id": "balanced_parens",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 136,
+    "completion_tokens": 525,
+    "total_tokens": 661,
+    "latency_ms": 6610.1,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "lru_cache",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 152,
+    "completion_tokens": 1905,
+    "total_tokens": 2057,
+    "latency_ms": 21607.7
+  },
+  {
+    "task_id": "lru_cache",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 150,
+    "completion_tokens": 2548,
+    "total_tokens": 2698,
+    "latency_ms": 25876.6,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "lru_cache",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 151,
+    "completion_tokens": 2220,
+    "total_tokens": 2371,
+    "latency_ms": 23543.9
+  },
+  {
+    "task_id": "lru_cache",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 151,
+    "completion_tokens": 2098,
+    "total_tokens": 2249,
+    "latency_ms": 23383.3,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "roman_numerals",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 118,
+    "completion_tokens": 1920,
+    "total_tokens": 2038,
+    "latency_ms": 51414.9
+  },
+  {
+    "task_id": "roman_numerals",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 120,
+    "completion_tokens": 2195,
+    "total_tokens": 2315,
+    "latency_ms": 22146.2,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "roman_numerals",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 120,
+    "completion_tokens": 2252,
+    "total_tokens": 2372,
+    "latency_ms": 23565.4
+  },
+  {
+    "task_id": "roman_numerals",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 120,
+    "completion_tokens": 2325,
+    "total_tokens": 2445,
+    "latency_ms": 24695.7,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "json_flatten",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 170,
+    "completion_tokens": 2616,
+    "total_tokens": 2786,
+    "latency_ms": 29835.1
+  },
+  {
+    "task_id": "json_flatten",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 171,
+    "completion_tokens": 2096,
+    "total_tokens": 2267,
+    "latency_ms": 23360.9,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "json_flatten",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 172,
+    "completion_tokens": 1937,
+    "total_tokens": 2109,
+    "latency_ms": 52105.3
+  },
+  {
+    "task_id": "json_flatten",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 171,
+    "completion_tokens": 2425,
+    "total_tokens": 2596,
+    "latency_ms": 27120.4,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "binary_search",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 104,
+    "completion_tokens": 925,
+    "total_tokens": 1029,
+    "latency_ms": 12041.4
+  },
+  {
+    "task_id": "binary_search",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 104,
+    "completion_tokens": 1519,
+    "total_tokens": 1623,
+    "latency_ms": 17601.6,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "binary_search",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 105,
+    "completion_tokens": 941,
+    "total_tokens": 1046,
+    "latency_ms": 12075.9
+  },
+  {
+    "task_id": "binary_search",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 106,
+    "completion_tokens": 938,
+    "total_tokens": 1044,
+    "latency_ms": 13255.7,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "drop_codes",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 336,
+    "completion_tokens": 667,
+    "total_tokens": 1003,
+    "latency_ms": 10745.1
+  },
+  {
+    "task_id": "drop_codes",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 337,
+    "completion_tokens": 841,
+    "total_tokens": 1178,
+    "latency_ms": 9792.2,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "drop_codes",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 335,
+    "completion_tokens": 647,
+    "total_tokens": 982,
+    "latency_ms": 7994.8
+  },
+  {
+    "task_id": "drop_codes",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 336,
+    "completion_tokens": 743,
+    "total_tokens": 1079,
+    "latency_ms": 10389.4,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "cooldown_sentinel",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": false,
+    "prompt_tokens": 354,
+    "completion_tokens": 150,
+    "total_tokens": 504,
+    "latency_ms": 5179.2
+  },
+  {
+    "task_id": "cooldown_sentinel",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 354,
+    "completion_tokens": 656,
+    "total_tokens": 1010,
+    "latency_ms": 9059.5,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "cooldown_sentinel",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": false,
+    "prompt_tokens": 352,
+    "completion_tokens": 137,
+    "total_tokens": 489,
+    "latency_ms": 4966.3
+  },
+  {
+    "task_id": "cooldown_sentinel",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 352,
+    "completion_tokens": 594,
+    "total_tokens": 946,
+    "latency_ms": 7759.9,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "receipt_digest",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 354,
+    "completion_tokens": 565,
+    "total_tokens": 919,
+    "latency_ms": 8103.6
+  },
+  {
+    "task_id": "receipt_digest",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 352,
+    "completion_tokens": 755,
+    "total_tokens": 1107,
+    "latency_ms": 9747.8,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "receipt_digest",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 354,
+    "completion_tokens": 627,
+    "total_tokens": 981,
+    "latency_ms": 8094.2
+  },
+  {
+    "task_id": "receipt_digest",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 353,
+    "completion_tokens": 785,
+    "total_tokens": 1138,
+    "latency_ms": 11426.6,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "ladder_stages",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": false,
+    "prompt_tokens": 350,
+    "completion_tokens": 119,
+    "total_tokens": 469,
+    "latency_ms": 5363.6
+  },
+  {
+    "task_id": "ladder_stages",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 352,
+    "completion_tokens": 585,
+    "total_tokens": 937,
+    "latency_ms": 10918.1,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "ladder_stages",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": false,
+    "prompt_tokens": 350,
+    "completion_tokens": 57,
+    "total_tokens": 407,
+    "latency_ms": 8515.0
+  },
+  {
+    "task_id": "ladder_stages",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 352,
+    "completion_tokens": 304,
+    "total_tokens": 656,
+    "latency_ms": 5303.2,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "validate_receipt",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 428,
+    "completion_tokens": 1336,
+    "total_tokens": 1764,
+    "latency_ms": 19181.4
+  },
+  {
+    "task_id": "validate_receipt",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 1,
+    "passed": true,
+    "prompt_tokens": 429,
+    "completion_tokens": 1396,
+    "total_tokens": 1825,
+    "latency_ms": 16793.3,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  },
+  {
+    "task_id": "validate_receipt",
+    "arm": "baseline",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 428,
+    "completion_tokens": 1483,
+    "total_tokens": 1911,
+    "latency_ms": 19886.4
+  },
+  {
+    "task_id": "validate_receipt",
+    "arm": "verdict",
+    "model": "cc/claude-opus-5",
+    "repeat": 2,
+    "passed": true,
+    "prompt_tokens": 429,
+    "completion_tokens": 1556,
+    "total_tokens": 1985,
+    "latency_ms": 20471.3,
+    "routing_receipt": {
+      "selected_model": "cc/claude-opus-5",
+      "provider": "primary",
+      "tier": 0,
+      "reason": "fallback \u2014 no offload match",
+      "decision": "fallback",
+      "alternatives": [],
+      "task_class": "unknown",
+      "safety_flags": [
+        "legacy_non_authority_selector"
+      ]
+    }
+  }
+]
