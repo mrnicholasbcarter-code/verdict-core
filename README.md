@@ -15,9 +15,9 @@ A model that fails a safety check cannot be scored back in.
 
 [Quick start](#quick-start) · [Demo](#demo-goal-to-receipt) · [What it does](#what-it-does) · [How it works](#how-it-works) · [How Verdict differs](#how-verdict-differs) · [Roadmap](#roadmap-in-progress) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
 
-<img src="docs/assets/demo.svg" alt="Terminal recording: a goal becomes a three-node DAG, workers fail on injected quota, rate-limit and no-final-answer faults, each node is reassigned to another admitted route, the review passes, run-receipt verifies the event-log digest, and a tampered copy fails verification" width="860">
+<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-poster.svg"><img src="docs/assets/demo.svg" alt="Terminal recording: a goal becomes a three-node DAG, workers fail on injected quota, rate-limit and no-final-answer faults, each node is reassigned to another admitted route, the review passes, run-receipt verifies the event-log digest, and a tampered copy fails verification" width="860"></picture>
 
-<sub>Fixture run, credential-free, no model calls. Recorded from <a href="scripts/demo_orchestrate.py"><code>scripts/demo_orchestrate.py</code></a>. Full cast: <a href="docs/assets/demo.cast"><code>docs/assets/demo.cast</code></a>.</sub>
+<sub>Fixture run, credential-free, no model calls, replayed at real time. Recorded from <a href="scripts/demo_orchestrate.py"><code>scripts/demo_orchestrate.py</code></a>. Full cast: <a href="docs/assets/demo.cast"><code>docs/assets/demo.cast</code></a>. Still frame: <a href="docs/assets/demo-poster.svg"><code>docs/assets/demo-poster.svg</code></a>.</sub>
 
 </div>
 
@@ -82,9 +82,9 @@ uv run python -m verdict quickstart --non-interactive --dry-run
 
 **Real-model run replay: visual TUI walkthrough** (kr/* workers, controller failover, independent review PASS)
 
-![TUI replay of live-controller-run](docs/assets/demo-tui.svg)
+<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"><img src="docs/assets/demo-tui.svg" alt="TUI replay of live-controller-run" width="860"></picture>
 
-<sub>Replay of the recorded real-model run [`docs/proof/live-controller-run`](docs/proof/live-controller-run), sped up; recorded with [`scripts/record_tui_demo.py`](scripts/record_tui_demo.py). You can run this yourself: `verdict watch docs/proof/live-controller-run --replay --speed 20`</sub>
+<sub>Replay of the recorded real-model run [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (about 91 s), replayed at 1x real time from the recorded run. Gaps longer than 1.5 s were shortened by the replay (three gaps, about 87 s of idle). Recorded with [`scripts/record_tui_demo.py`](scripts/record_tui_demo.py). You can run this yourself: `verdict watch docs/proof/live-controller-run --replay --speed 1`. Still frame: [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg).</sub>
 
 ---
 
@@ -682,10 +682,12 @@ All assets come from committed code and committed data. None of the tools below 
 | Asset | Size | Source data | Regenerate |
 |---|---|---|---|
 | [`docs/proof/demo-run/`](docs/proof/demo-run) | ~35 KB | fixture inventory in `scripts/demo_orchestrate.py` | `python scripts/demo_orchestrate.py --out docs/proof/demo-run` |
-| [`docs/assets/demo.cast`](docs/assets/demo.cast) | ~12 KB | the demo run above, recorded in a pty | `python scripts/record_demo.py` (stdlib only; also rewrites `docs/proof/demo-run/`) |
-| [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~500 KB | `demo.cast` | `npx -y svg-term-cli@2.1.1 --in docs/assets/demo.cast --out docs/assets/demo.svg --window --width 110 --height 34` |
-| [`docs/assets/demo-tui.cast`](docs/assets/demo-tui.cast) | ~1.2 MB | [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (real-model run) | `python scripts/record_tui_demo.py` |
-| [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~2 MB | `demo-tui.cast` | `npx -y svg-term-cli@2.1.1 --in docs/assets/demo-tui.cast --out docs/assets/demo-tui.svg --window --width 110 --height 34` |
+| [`docs/assets/demo.cast`](docs/assets/demo.cast) | ~12 KB | the demo run above, recorded in a pty at real time | `python scripts/record_demo.py` (stdlib only; also rewrites `docs/proof/demo-run/`) |
+| [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~450 KB | `demo.cast` | `python scripts/render_demo_svg.py docs/assets/demo.cast docs/assets/demo.svg docs/assets/demo-poster.svg` |
+| [`docs/assets/demo-poster.svg`](docs/assets/demo-poster.svg) | ~15 KB | last frame of `demo.cast` | same command as `demo.svg` |
+| [`docs/assets/demo-tui.cast`](docs/assets/demo-tui.cast) | ~700 KB | [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (real-model run), replayed at 1x; gaps over 1.5 s shortened | `python scripts/record_tui_demo.py --speed 1 docs/proof/live-controller-run` |
+| [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~110 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
+| [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~16 KB | last frame of `demo-tui.cast` | same command as `demo-tui.svg` |
 | `docs/assets/chart-*.svg` | ~65-95 KB each (text as paths) | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
 
 The recording's typing and line pacing are synthetic. Its text is the real output of each command.

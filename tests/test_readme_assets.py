@@ -137,6 +137,37 @@ def test_demo_tui_cast_is_valid_asciinema_v2() -> None:
         assert secret_marker not in output
 
 
+def _visible_svg_text(svg: str) -> str:
+    return "".join(re.findall(r"<text[^>]*>([^<]*)</text>", svg))
+
+
+def test_posters_are_static_and_readme_prefers_reduced_motion() -> None:
+    """Posters have no animation, and reduced-motion viewers get them."""
+    readme = _readme()
+    for animated_name, poster_name in (
+        ("demo.svg", "demo-poster.svg"),
+        ("demo-tui.svg", "demo-tui-poster.svg"),
+    ):
+        poster = (ASSETS / poster_name).read_text(encoding="utf-8")
+        animated = (ASSETS / animated_name).read_text(encoding="utf-8")
+        assert "<animate" not in poster and "@keyframes" not in poster
+        assert "@keyframes" in animated
+        assert _visible_svg_text(poster).strip()
+        first = re.search(r"@keyframes\s*\w+\{0%\{[^}]*\}", animated)
+        assert first is not None
+        assert f'(prefers-reduced-motion: reduce)" srcset="docs/assets/{poster_name}"' in readme
+        assert f'src="docs/assets/{animated_name}"' in readme
+
+
+def test_animated_first_frame_is_not_blank() -> None:
+    """Frame 0 of each recording shows text, not only a cursor."""
+    for name in ("demo.svg", "demo-tui.svg"):
+        svg = (ASSETS / name).read_text(encoding="utf-8")
+        first = re.search(r'<symbol id="1">(.*?)</symbol>', svg)
+        assert first is not None
+        assert _visible_svg_text(first.group(1)).strip()
+
+
 def test_committed_demo_run_verifies_and_shows_recovery() -> None:
     assert verify_run_receipt(DEMO_RUN) == []
     receipt = json.loads((DEMO_RUN / "receipt.json").read_text(encoding="utf-8"))
