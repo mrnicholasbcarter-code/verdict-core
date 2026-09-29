@@ -261,6 +261,21 @@ class TestMismatchFlag:
         view = routing_view(events)
         assert view.evaluations[0].selected_observed_mismatch is True
 
+    def test_retried_node_compares_each_evaluation_with_its_own_attempt(self) -> None:
+        """A node that failed over must not show a mismatch against a later attempt."""
+        events = [
+            _eligibility_event(seq=1, selected="kr/claude-opus"),
+            _terminal_event(seq=2, reported_model="kr/claude-opus"),
+            _eligibility_event(seq=3, selected="cc/claude-sonnet"),
+            _terminal_event(seq=4, reported_model="cc/claude-sonnet"),
+        ]
+        view = routing_view(events)
+        first, second = view.evaluations
+        assert first.observed_route == "kr/claude-opus"
+        assert not first.selected_observed_mismatch
+        assert second.observed_route == "cc/claude-sonnet"
+        assert not second.selected_observed_mismatch
+
     def test_no_mismatch_when_no_terminal(self) -> None:
         events = [_eligibility_event(selected="kr/claude-opus")]
         view = routing_view(events)

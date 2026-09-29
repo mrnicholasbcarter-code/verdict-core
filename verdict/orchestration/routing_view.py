@@ -333,15 +333,29 @@ def _selected_because_from_candidates(candidates: list[CandidateRecord] | None) 
 
 def _build_evaluations(events: Sequence[Mapping[str, Any]]) -> list[EligibilityEvaluation]:
     """Project eligibility + terminal events into EligibilityEvaluation records."""
-    # Collect terminal events: node_id -> latest terminal data
-    terminals: dict[str, dict[str, Any]] = {}
+    # Collect terminal events per node, in order. Each eligibility evaluation is
+    # compared with the FIRST terminal that follows it for the same node (the
+    # attempt it selected for), never with a later attempt's terminal: a
+    # retried node would otherwise show a false selected/observed mismatch.
+    terminals: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for ev in events:
         if ev.get("type") == "terminal":
             nid = str(ev.get("node_id") or "")
-            terminals[nid] = {
-                "reported_model": str(ev.get("data", {}).get("reported_model") or ""),
-                "session_ref": str(ev.get("data", {}).get("session_ref") or ""),
-            }
+            terminals.setdefault(nid, []).append(
+                (
+                    int(ev.get("seq") or 0),
+                    {
+                        "reported_model": str(ev.get("data", {}).get("reported_model") or ""),
+                        "session_ref": str(ev.get("data", {}).get("session_ref") or ""),
+                    },
+                )
+            )
+
+    def _terminal_after(node_id: str, seq: int) -> dict[str, Any]:
+        for t_seq, t_data in terminals.get(node_id, []):
+            if t_seq > seq:
+                return t_data
+        return {}
 
     evals: list[EligibilityEvaluation] = []
     for ev in events:
@@ -358,7 +372,7 @@ def _build_evaluations(events: Sequence[Mapping[str, Any]]) -> list[EligibilityE
         candidates, omitted, omitted_summary = _candidates_from_event(data)
         selected_because = _selected_because_from_candidates(candidates)
 
-        terminal = terminals.get(node_id) or {}
+        terminal = _terminal_after(node_id, seq)
         observed = terminal.get("reported_model") or None
         session_ref = terminal.get("session_ref") or None
 

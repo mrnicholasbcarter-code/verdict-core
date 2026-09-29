@@ -3,8 +3,8 @@ explorer  source=recorded  evaluations=5  generated_at={generated_at}
 node parser  seq 8  9 candidates, 1 admitted, 1 selected
 DISCOVERED 9 > ENTITLED 8 > HEALTHY 1 > AVAILABLE 1 > TASK_ELIGIBLE 1 > SELECTED 1
 evaluated_at=2026-09-27T06:21:32.568500Z  view_generated_at={generated_at}
-selected_route=demo-sub/atlas-coder  observed_route=demo-free2/elm-coder
-MISMATCH: selected route != observed reported_model
+selected_route=demo-sub/atlas-coder  observed_route=demo-sub/atlas-coder
+session=fault-injected:quota
 selected because: unknown (no rank components recorded)
 candidates: unknown (not recorded on this eligibility event)
 cooldowns: none recorded
@@ -13,8 +13,8 @@ rejections: unknown or none recorded
 node cli_flag  seq 11  9 candidates, 1 admitted, 1 selected
 DISCOVERED 9 > ENTITLED 8 > HEALTHY 1 > AVAILABLE 1 > TASK_ELIGIBLE 1 > SELECTED 1
 evaluated_at=2026-09-27T06:21:32.574499Z  view_generated_at={generated_at}
-selected_route=demo-sub/atlas-coder  observed_route=demo-free/cedar-coder
-MISMATCH: selected route != observed reported_model
+selected_route=demo-sub/atlas-coder  observed_route=demo-sub/atlas-coder
+session=fault-injected:no_final
 selected because: unknown (no rank components recorded)
 candidates: unknown (not recorded on this eligibility event)
 cooldowns: none recorded
@@ -23,8 +23,8 @@ rejections: unknown or none recorded
 node parser  seq 31  9 candidates, 1 admitted, 1 selected
 DISCOVERED 9 > ENTITLED 8 > HEALTHY 2 > AVAILABLE 1 > TASK_ELIGIBLE 1 > SELECTED 1
 evaluated_at=2026-09-27T06:21:32.618609Z  view_generated_at={generated_at}
-selected_route=demo-free/birch-coder  observed_route=demo-free2/elm-coder
-MISMATCH: selected route != observed reported_model
+selected_route=demo-free/birch-coder  observed_route=demo-free/birch-coder
+session=fault-injected:rate_limit
 selected because: unknown (no rank components recorded)
 candidates: unknown (not recorded on this eligibility event)
 cooldowns: none recorded
