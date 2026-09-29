@@ -93,7 +93,7 @@ test_provider_not_configured_raises      PASSED
 
 **Commands:**
 ```bash
-/tmp/vrun /home/nick/dev/verdict-core/.venv/bin/python -m pytest -x --maxfail=1 -q tests/test_ai_memory_experimental.py -p no:cacheprovider
+/tmp/vrun /path/to/verdict-core/.venv/bin/python -m pytest -x --maxfail=1 -q tests/test_ai_memory_experimental.py -p no:cacheprovider
 # Output: 8 passed, 1 warning in 0.48s
 ```
 
@@ -245,15 +245,15 @@ BOD-278 **cannot** show:
 
 ```bash
 # All 8 tests pass (fixtures updated to match live response shapes)
-/tmp/vrun /home/nick/dev/verdict-core/.venv/bin/python -m pytest -x --maxfail=1 -q tests/test_ai_memory_experimental.py -p no:cacheprovider
+/tmp/vrun /path/to/verdict-core/.venv/bin/python -m pytest -x --maxfail=1 -q tests/test_ai_memory_experimental.py -p no:cacheprovider
 # 8 passed, 1 warning in 0.43s
 
 # Linting clean
-/tmp/vrun /home/nick/dev/verdict-core/.venv/bin/ruff check verdict/memory_providers/ tests/test_ai_memory_experimental.py
+/tmp/vrun /path/to/verdict-core/.venv/bin/ruff check verdict/memory_providers/ tests/test_ai_memory_experimental.py
 # All checks passed!
 
 # Type checking strict
-/tmp/vrun /home/nick/dev/verdict-core/.venv/bin/mypy --strict verdict/memory_providers/ai_memory_experimental.py
+/tmp/vrun /path/to/verdict-core/.venv/bin/mypy --strict verdict/memory_providers/ai_memory_experimental.py
 # No errors in ai_memory_experimental.py (2 pre-existing errors in unrelated openspec_vendor file)
 ```
 
