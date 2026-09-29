@@ -202,7 +202,11 @@ def run_flagship_scenario(
     workspace_root.mkdir(parents=True, exist_ok=True)
     repo = _init_repo(workspace_root)
     ladder = EligibilityLadder(
-        INVENTORY, CONNECTIONS, _HealthyProbe(), workspace_root / "ladder-state.json"
+        INVENTORY,
+        CONNECTIONS,
+        _HealthyProbe(),
+        workspace_root / "ladder-state.json",
+        allow_unknown_capacity=True,
     )
     executor = FaultInjectingExecutor(ScriptedExecutor(_worker_script), {ROUTE_A: ["rate_limit"]})
     reviewer = OpenCodeReviewer(

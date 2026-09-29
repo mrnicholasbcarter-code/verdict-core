@@ -102,7 +102,9 @@ def _run(
     repo: Path, behaviour: dict[tuple[str, str], str]
 ) -> tuple[Any, Events, ScriptedExecutor, OcrCli, Path]:
     state = repo.parent / "ladder-state.json"
-    ladder = EligibilityLadder(INVENTORY, CONNECTIONS, FakeProbe(), state)
+    ladder = EligibilityLadder(
+        INVENTORY, CONNECTIONS, FakeProbe(), state, allow_unknown_capacity=True
+    )
     events, executor, ocr = Events(), ScriptedExecutor(behaviour), OcrCli()
     reviewer = OpenCodeReviewer(
         ladder, api_key_env="TEST_OCR_KEY", out_dir=repo.parent / "review", runner=ocr
