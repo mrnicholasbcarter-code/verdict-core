@@ -338,8 +338,17 @@ def _chaos_state(args: argparse.Namespace, runs_root: Path) -> Path | None:
 
 
 def _resolve_run(value: str, runs_dir: str) -> Path:
+    """An existing directory is used as given; otherwise join runs_dir/value once.
+
+    A value that already starts with runs_dir is not joined again.
+    """
     path = Path(value)
-    return path if path.is_dir() else Path(runs_dir) / value
+    if path.is_dir():
+        return path
+    base = Path(runs_dir)
+    if base.parts and path.parts[: len(base.parts)] == base.parts:
+        return path
+    return base / value
 
 
 def _orchestrate(args: argparse.Namespace) -> int:

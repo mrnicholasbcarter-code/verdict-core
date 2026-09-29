@@ -24,7 +24,6 @@ NNN  dispatch        node-1
 
 NNN  context         node-1    
 
-      # verdict trace offline-flagship-failover --node node-1 --panel context
 NNN  terminal        node-1    model=alpha/claude-a  failed
 
 NNN  failure         node-1    category=rate_limited
@@ -35,7 +34,6 @@ NNN  dispatch        node-2
 
 NNN  context         node-2    
 
-      # verdict trace offline-flagship-failover --node node-2 --panel context
 NNN  terminal        node-2    model=alpha/claude-a  ok
 
 NNN  routing         node-1    
@@ -52,7 +50,6 @@ NNN  dispatch        node-1
 
 NNN  context         node-1    
 
-      # verdict trace offline-flagship-failover --node node-1 --panel context
 NNN  terminal        node-1    model=beta/gpt-b  ok
 
 NNN  barrier         node-1    

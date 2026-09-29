@@ -38,6 +38,19 @@ def _resolve_run_dir(run: str, runs_dir: str) -> Path:
     return candidate
 
 
+def _run_ref(run: str, runs_dir: str) -> str:
+    """The run reference the user typed, so a printed command can be pasted back."""
+    import shlex
+
+    ref = shlex.quote(run)
+    if runs_dir != _DEFAULT_RUNS_DIR and not Path(run).is_dir():
+        ref += f" --runs-dir {shlex.quote(runs_dir)}"
+    return ref
+
+
+_DEFAULT_RUNS_DIR = ".verdict/runs"
+
+
 def _cmd_trace(args: argparse.Namespace) -> None:
     """Handle ``verdict trace`` CLI command."""
     import json
@@ -64,7 +77,8 @@ def _cmd_trace(args: argparse.Namespace) -> None:
             # but guard here too so the error is actionable
             print("error: --panel context requires --node", file=sys.stderr)
             sys.exit(2)
-        result = _action_context_view(run=str(run_dir), runs_dir=args.runs_dir, node=node)
+        # run_dir is already resolved; pass it as-is so it is not joined twice.
+        result = _action_context_view(run=str(run_dir), runs_dir=str(run_dir.parent), node=node)
         if not result.ok:
             print(result.data.get("error", "context failed"), file=sys.stderr)
             sys.exit(result.exit_code or 1)
@@ -83,7 +97,12 @@ def _cmd_trace(args: argparse.Namespace) -> None:
             print(render_context_text(view, mode.width), end="")
         return
 
-    params: dict[str, object] = {"run_dir": str(run_dir), "json": args.json, "width": args.width}
+    params: dict[str, object] = {
+        "run_dir": str(run_dir),
+        "json": args.json,
+        "width": args.width,
+        "run_ref": _run_ref(args.run, args.runs_dir),
+    }
     if args.step is not None:
         params["step"] = args.step
     if args.kind is not None:
