@@ -283,6 +283,9 @@ class TestBehaviourParityAcrossFixtures:
                 "load",
                 "fit",
                 "route_id",
+                "probe_class",
+                "cache_checked_at",
+                "cache_freshness",
             ]
 
     def test_no_regression_from_test_orch_eligibility_case(self, tmp_path: Path) -> None:
