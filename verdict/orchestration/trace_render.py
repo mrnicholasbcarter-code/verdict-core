@@ -126,6 +126,16 @@ def _evidence_summary(step: TraceStep) -> str:
     elif kind == "review":
         route = _first(ev, "route_id", "reviewer_route")
         status = _first(ev, "status", "outcome", "verdict")
+        # Two source events share this kind: the reviewer's run (review_attempt)
+        # and the review verdict (review). Label them so they never read as a duplicate.
+        if ev.get("type") == "review_attempt":
+            attempt = _first(ev, "attempt")
+            parts.append(f"attempt {attempt}" if attempt else "attempt")
+        else:
+            parts.append("verdict")
+            blocking = ev.get("blocking")
+            if blocking is not None:
+                parts.append(f"blocking={blocking}")
         if route:
             parts.append(f"reviewer={route}")
         if status:

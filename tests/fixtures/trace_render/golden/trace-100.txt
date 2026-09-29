@@ -66,9 +66,9 @@ NNN  integrate
 
 NNN  barrier                   
 
-NNN  review                    reviewer=gamma/gemini-c  PASS
+NNN  review                    attempt 1  reviewer=gamma/gemini-c  PASS
 
-NNN  review                    reviewer=gamma/gemini-c  PASS
+NNN  review                    verdict  blocking=0  reviewer=gamma/gemini-c  PASS
 
 NNN  run_finished              outcome=COMPLETE
 
