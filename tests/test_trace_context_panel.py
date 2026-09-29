@@ -255,6 +255,7 @@ class TestTracePanelRequiresNode:
 
     def test_panel_without_node_exits_2(self, tmp_path: Path) -> None:
         import argparse
+
         from verdict.commands.dispatch import _cmd_trace
 
         # Create a minimal run dir so we don't fail on run resolution

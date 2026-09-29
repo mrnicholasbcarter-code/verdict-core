@@ -114,9 +114,7 @@ def _assert_trace_golden(got: str, path: Path, *, width: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(got_norm)
     if not path.exists():
-        pytest.fail(
-            f"golden file missing: {path}  (run UPDATE_GOLDEN=1 pytest to create it)"
-        )
+        pytest.fail(f"golden file missing: {path}  (run UPDATE_GOLDEN=1 pytest to create it)")
     expected_norm = _normalize_seq(path.read_text())
 
     got_lines = [ln for ln in got_norm.splitlines() if ln.strip()]
@@ -282,9 +280,7 @@ class TestDemoTraceSnapshots:
         if os.environ.get("UPDATE_GOLDEN") == "1":
             path.write_text(norm)
         if not path.exists():
-            pytest.fail(
-                f"golden file missing: {path}  (run UPDATE_GOLDEN=1 pytest to create it)"
-            )
+            pytest.fail(f"golden file missing: {path}  (run UPDATE_GOLDEN=1 pytest to create it)")
         expected = path.read_text()
         assert norm == expected, (
             f"demo claims golden mismatch at width={width} (run UPDATE_GOLDEN=1 to regenerate)"
