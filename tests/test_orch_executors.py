@@ -708,6 +708,6 @@ def test_spawn_failure_terminal_replay_is_not_real(tmp_path: Path) -> None:
             for seq, (event_type, data) in enumerate(event_data)
         )
     )
-    kind, inferred = _replay_evidence(read_events(events_file))
+    kind, _ = _replay_evidence(read_events(events_file))
     assert kind != "real", f"expected not-real, got {kind!r}"
     assert kind != "mixed: live and scripted workers"

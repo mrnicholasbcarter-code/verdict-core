@@ -376,8 +376,7 @@ def test_live_and_scripted_terminals_produce_mixed_label() -> None:
 
     events = [
         SimpleNamespace(
-            type="terminal",
-            data={"executor_kind": "live", "reported_model": "alpha/x"},
+            type="terminal", data={"executor_kind": "live", "reported_model": "alpha/x"}
         ),
         SimpleNamespace(type="terminal", data={"executor_kind": "scripted"}),
     ]
@@ -482,7 +481,6 @@ def test_legacy_live_proofs_disclose_inferred_replay_header(proof: str) -> None:
     assert "run predates executor markers" in view.goal
 
 
-
 def test_follow_replay_mixed_live_scripted_shows_mixed_label(tmp_path: Path) -> None:
     """follow_replay labels a live+scripted run as 'mixed: live and scripted workers'."""
     import json
@@ -492,7 +490,7 @@ def test_follow_replay_mixed_live_scripted_shows_mixed_label(tmp_path: Path) -> 
 
     from verdict.orchestration.tui import _replay_evidence, follow_replay, read_events
 
-    def _write(path: "Path", live_first: bool, run_id: str) -> None:
+    def _write(path: Path, live_first: bool, run_id: str) -> None:
         terminals = [
             {"executor_kind": "live", "reported_model": "alpha/real", "ok": True},
             {"executor_kind": "scripted", "model": "demo-scripted", "ok": True},
@@ -507,8 +505,13 @@ def test_follow_replay_mixed_live_scripted_shows_mixed_label(tmp_path: Path) -> 
         path.write_text(
             "\n".join(
                 json.dumps(
-                    {"at": "2026-01-01T00:00:00.000000Z", "seq": i,
-                     "type": et, "node_id": "node-a" if et == "terminal" else "", "data": d}
+                    {
+                        "at": "2026-01-01T00:00:00.000000Z",
+                        "seq": i,
+                        "type": et,
+                        "node_id": "node-a" if et == "terminal" else "",
+                        "data": d,
+                    }
                 )
                 for i, (et, d) in enumerate(rows)
             )
@@ -517,8 +520,9 @@ def test_follow_replay_mixed_live_scripted_shows_mixed_label(tmp_path: Path) -> 
     for live_first, run_id in [(True, "mixed-ls-fwd"), (False, "mixed-ls-rev")]:
         ef = tmp_path / f"ev-{run_id}.jsonl"
         _write(ef, live_first, run_id)
-        assert _replay_evidence(read_events(ef)) == ("mixed: live and scripted workers", False), \
+        assert _replay_evidence(read_events(ef)) == ("mixed: live and scripted workers", False), (
             f"live_first={live_first}"
+        )
 
     ef0 = tmp_path / "ev-mixed-ls-fwd.jsonl"
     view = follow_replay(ef0, console=Console(file=StringIO(), width=110), speed=1000, max_gap=0)
@@ -535,9 +539,8 @@ def test_live_terminal_empty_model_is_not_real_evidence() -> None:
 
     events = [
         SimpleNamespace(
-            type="terminal",
-            data={"executor_kind": "live", "reported_model": "", "ok": False},
-        ),
+            type="terminal", data={"executor_kind": "live", "reported_model": "", "ok": False}
+        )
     ]
     kind, _ = _replay_evidence(events)
     assert kind not in {"real", "mixed: live and scripted workers"}
