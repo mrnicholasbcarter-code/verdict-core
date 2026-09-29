@@ -5,8 +5,10 @@ Tests use fake PyPI responses and script introspection (no network).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shlex
 import subprocess
 import textwrap
 from pathlib import Path
@@ -379,8 +381,60 @@ class TestPostInstallVerification:
         assert "verdict demo failed" in r.stdout + r.stderr
 
 
-def test_cleanup_trap_does_not_reference_a_local_after_return() -> None:
-    """Under set -u, a trap that expands a function-local at exit fails the install."""
-    script = INSTALL_SH.read_text()
-    assert "trap 'rm -rf \"$tmpdir\"' EXIT" not in script
-    assert "trap \"rm -rf '$tmpdir'\" EXIT" in script
+def test_successful_install_exits_zero_and_removes_its_temp_dir(tmp_path: Path) -> None:
+    """Under set -u the EXIT trap must still clean up, even for a path with a quote.
+
+    Runs the real script end to end with stubbed pip/curl: the stub serves a
+    PyPI JSON whose digest matches the stub wheel, so hash verification passes.
+    """
+    tmp_root = tmp_path / "it's tmp"
+    tmp_root.mkdir()
+    d = tmp_path / "bin"
+    d.mkdir()
+    wheel = tmp_path / "verdict_core-9.9.9-py3-none-any.whl"
+    wheel.write_text("fake-wheel-content\n")
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    pypi_json = tmp_path / "pypi.json"
+    pypi_json.write_text(
+        json.dumps(
+            {
+                "info": {"name": "verdict-core", "version": "9.9.9"},
+                "urls": [
+                    {"packagetype": "bdist_wheel", "digests": {"sha256": digest}},
+                    {"packagetype": "sdist", "digests": {"sha256": "0" * 64}},
+                ],
+            }
+        )
+    )
+    _write_stub(
+        d, "curl", f'case "$*" in *pypi.org*) cat {shlex.quote(str(pypi_json))};; *) exit 1;; esac'
+    )
+    _write_stub(
+        d,
+        "pip",
+        f"""if echo "$@" | grep -q download; then
+  dest=""; prev=""
+  for a in "$@"; do [ "$prev" = "--dest" ] && dest="$a"; prev="$a"; done
+  cp {shlex.quote(str(wheel))} "$dest/"
+fi
+if echo "$@" | grep -q -- "--user"; then
+  printf '#!/usr/bin/env bash\\nexit 0\\n' > {shlex.quote(str(d / "verdict"))}
+  chmod +x {shlex.quote(str(d / "verdict"))}
+fi""",
+    )
+    # The script prefers pipx when present; stub it the same way as pip --user.
+    _write_stub(
+        d,
+        "pipx",
+        f"""printf '#!/usr/bin/env bash\\nexit 0\\n' > {shlex.quote(str(d / "verdict"))}
+chmod +x {shlex.quote(str(d / "verdict"))}""",
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    r = _run_install_script(
+        env_overrides={"VERDICT_VERSION": "9.9.9", "TMPDIR": str(tmp_root), "HOME": str(home)},
+        stub_bin_dir=d,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "SHA-256 verified" in r.stdout
+    assert list(tmp_root.iterdir()) == [], "the installer left its temp dir behind"

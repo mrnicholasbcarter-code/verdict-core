@@ -101,10 +101,11 @@ install_verified() {
 
   local tmpdir
   tmpdir=$(mktemp -d)
-  # Expand now: $tmpdir is local and no longer exists when the EXIT trap runs,
-  # which under `set -u` made every fresh install exit 1 after succeeding.
-  # shellcheck disable=SC2064
-  trap "rm -rf '$tmpdir'" EXIT
+  # $tmpdir is local and gone when the EXIT trap runs; under `set -u` that made
+  # every fresh install exit 1 after succeeding. Keep the path in a global the
+  # trap can read, and quote it at run time so any path is safe.
+  VERDICT_INSTALL_TMPDIR="$tmpdir"
+  trap 'rm -rf -- "${VERDICT_INSTALL_TMPDIR:-}"' EXIT
 
   # Download wheel only (no deps) for hash verification
   log_info "Downloading verdict-core==${ver} wheel for verification..."
@@ -191,7 +192,7 @@ fi
 # installed package works. `verdict setup --non-interactive` only plans (it
 # writes nothing without --apply/--allow), so a config file may not exist yet.
 log_info "Running: verdict demo --speed 0 (offline, no model calls)"
-if verdict demo --speed 0 >/dev/null; then
+if verdict demo --speed 0; then
   log_success "verdict demo completed."
 else
   log_error "verdict demo failed. Review the output above."

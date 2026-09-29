@@ -23,7 +23,8 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 
 ## Try it with no keys
 
-Install, run the offline demo, and inspect the trace — no API key, no gateway, no network:
+Install, then run the offline demo and inspect the trace. The demo needs no API key, no
+gateway and no network (only the install downloads from PyPI):
 
 ```bash
 pip install verdict-core
