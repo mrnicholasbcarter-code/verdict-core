@@ -178,13 +178,36 @@ def validate_capture(
         raise CaptureError("last frame lacks the completion marker")
 
 
-def to_asciicast(chunks: list[tuple[float, bytes]], *, width: int, height: int, title: str) -> str:
-    """Asciicast v2 document. Timestamps are real read times, rounded to milliseconds."""
+def trim_leading_idle(chunks: list[tuple[float, bytes]]) -> tuple[list[tuple[float, bytes]], float]:
+    """Drop only the idle gap before the first output event.
+
+    Event order and the gaps between events stay as recorded. The first event
+    moves to time 0, and every later timestamp shifts by the same amount.
+    """
+    if not chunks:
+        return [], 0.0
+    offset = chunks[0][0]
+    return [(at - offset, data) for at, data in chunks], offset
+
+
+def to_asciicast(
+    chunks: list[tuple[float, bytes]],
+    *,
+    width: int,
+    height: int,
+    title: str,
+    idle_trimmed: float = 0.0,
+) -> str:
+    """Asciicast v2 document. Timestamps are real read times, rounded to milliseconds.
+
+    ``idle_time_limit`` records seconds removed before the first output event.
+    """
     header = {
         "version": 2,
         "width": width,
         "height": height,
         "title": title,
+        "idle_time_limit": round(idle_trimmed, 3),
         "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"},
     }
     lines = [json.dumps(header)]
@@ -236,9 +259,17 @@ def record_replay(
     chunks, exit_code = read_pty_events(argv, env, rows=rows, cols=cols)
     atomic = coalesce_atomic(chunks)
     validate_capture(atomic, exit_code, marker=marker)
+    atomic, idle_trimmed = trim_leading_idle(atomic)
     output.parent.mkdir(parents=True, exist_ok=True)
     body = to_asciicast(
-        atomic, width=cols, height=rows, title=f"Verdict Orchestration TUI Replay ({run_dir.name})"
+        atomic,
+        width=cols,
+        height=rows,
+        title=(
+            f"Verdict Orchestration TUI Replay ({run_dir.name}), "
+            f"replayed at {speed:g}x real time; idle gaps longer than 1.5s were shortened"
+        ),
+        idle_trimmed=idle_trimmed,
     )
     output.write_text(body, encoding="utf-8")
     duration = atomic[-1][0] if atomic else 0.0
@@ -248,7 +279,7 @@ def record_replay(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("run_dir", type=Path, help="Completed run directory to replay")
-    parser.add_argument("--speed", type=float, default=8.0, help="Replay speed (default 8)")
+    parser.add_argument("--speed", type=float, default=1.0, help="Replay speed (default 1)")
     parser.add_argument(
         "--output", type=Path, help="Output .cast (default docs/assets/demo-tui.cast)"
     )

@@ -95,7 +95,8 @@ def record(out: Path, python: str) -> int:
     """
     home = tempfile.mkdtemp(prefix="verdict-rec-home-")
     events: list[list[object]] = []
-    clock = 0.5
+    # No leading idle: the first prompt is written at time 0.
+    clock = 0.0
     capture = _capture()
     try:
         for shown, argv in _commands(python):
@@ -138,7 +139,8 @@ def record(out: Path, python: str) -> int:
         "version": 2,
         "width": WIDTH,
         "height": HEIGHT,
-        "title": "Verdict orchestration demo (fixture, credential-free)",
+        "title": "Verdict orchestration demo (fixture, credential-free, real time)",
+        "idle_time_limit": 0.5,
         "env": {"TERM": "xterm-256color", "SHELL": "/bin/sh"},
     }
     out.parent.mkdir(parents=True, exist_ok=True)
