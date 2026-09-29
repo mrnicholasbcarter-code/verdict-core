@@ -641,11 +641,19 @@ def run_cockpit(
             blocks.append(render_detail_panel(view, seen, state, plain=plain, width=width))
         if state.routing_open:
             # BOD-277 render call — projection prepared by open_routing_view
-            from verdict.orchestration.cockpit_controls import routing_for_selected
-
-            rview = routing_for_selected(state, view, seen)
+            rview = (
+                state.routing_from_run(view, seen)
+                if state.routing_from_run is not None
+                else state.routing_view
+            )
             if rview is not None:
-                eval_idx: int | None = None
+                nid = state.selected_id
+                eval_idx = None
+                if nid:
+                    for i, ev in enumerate(getattr(rview, "evaluations", ())):
+                        if getattr(ev, "node_id", "") == nid:
+                            eval_idx = i
+                            break
                 if plain:
                     if state.routing_render_text is not None:
                         blocks.append(
@@ -666,9 +674,7 @@ def run_cockpit(
                         )
         if getattr(state, "context_open", False):
             # BOD-278 render call — projection prepared by open_context_view
-            from verdict.orchestration.cockpit_controls import context_for_selected
-
-            cview = context_for_selected(state, view, seen)
+            cview = getattr(state, "context_view", None)
             if cview is not None:
                 if plain:
                     text_fn = getattr(state, "context_render_text", None)
