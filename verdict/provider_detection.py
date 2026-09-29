@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -673,15 +674,15 @@ def format_detection_report(result: DetectionResult, verbose: bool = False) -> s
             if p.api_key_configured:
                 status_parts.append("🔑 Auth OK")
             elif p.api_key_env:
-                # codeql[py/clear-text-logging-sensitive-data] False positive:
-                # `api_key_env` is the name of the environment variable that would
-                # hold a key (e.g. "OPENAI_API_KEY"), never the key's value. CodeQL's
-                # heuristic flags the attribute name because it matches the
-                # `api.?(key|tok)` sensitive-name pattern, but no secret value flows
-                # through this f-string. See DetectedProvider.api_key_env and
-                # docs/CONFIGURATION.md ("API keys are referenced by
-                # environment-variable name, never by value").
-                status_parts.append(f"🔒 Needs {p.api_key_env}")
+                # codeql[py/clear-text-logging-sensitive-data] Guarded: we validate
+                # that api_key_env looks like an env-var name (^[A-Z][A-Z0-9_]{1,63}$)
+                # before printing. If a user mistakenly puts a key VALUE in
+                # api_key_env, the guard masks it as '<invalid env name>'.
+                env_name = str(p.api_key_env)
+                if re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", env_name):
+                    status_parts.append(f"🔒 Needs {env_name}")
+                else:
+                    status_parts.append("🔒 Needs <invalid env name>")
 
             model_info = f" — {len(p.models)} models" if p.models else ""
             if p.models and verbose:

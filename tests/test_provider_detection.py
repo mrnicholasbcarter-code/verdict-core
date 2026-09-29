@@ -481,3 +481,40 @@ def test_probe_gateways_port_open_but_unhealthy(monkeypatch):
     assert len(candidates) == 1
     assert candidates[0].health_ok is False
     assert candidates[0].identity == "unknown"
+
+
+def test_api_key_env_secret_value_not_leaked_in_report() -> None:
+    """If a user puts an actual secret in api_key_env, the report must not print it."""
+    result = DetectionResult(
+        cloud_apis=[
+            pd.DetectedProvider(
+                id="custom",
+                name="custom-provider",
+                type="cloud_api",
+                api_key_env="sk-live-abc123",  # user mistakenly put the key VALUE
+                api_key_configured=False,
+            ),
+            pd.DetectedProvider(
+                id="another",
+                name="another-provider",
+                type="cloud_api",
+                api_key_env="bearer-tok-xyz789",
+                api_key_configured=False,
+            ),
+            pd.DetectedProvider(
+                id="valid",
+                name="valid-provider",
+                type="cloud_api",
+                api_key_env="OPENAI_API_KEY",  # legitimate env var name
+                api_key_configured=False,
+            ),
+        ]
+    )
+    report = pd.format_detection_report(result, verbose=False)
+    # The secret-looking values must NOT appear in the report
+    assert "sk-live-abc123" not in report
+    assert "bearer-tok-xyz789" not in report
+    # Instead they should be masked
+    assert "<invalid env name>" in report
+    # But the legitimate env var name should appear
+    assert "OPENAI_API_KEY" in report
