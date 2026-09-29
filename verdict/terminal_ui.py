@@ -246,7 +246,20 @@ class TerminalUI:
             raise
         except Exception as exc:
             self.stop()
-            self.panel("Operation failed", str(exc), tone="ERROR")
+            from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
+
+            if isinstance(exc, BootstrapError):
+                # Map to one semantic message + the first repair command.
+                # Full multi-diagnostic detail is on a 'details' line below.
+                repair = exc.diagnostics[0].remediation if exc.diagnostics else "verdict detect"
+                detail = describe_bootstrap_failure(exc)
+                self.panel(
+                    exc.reason_code.replace("_", " "),
+                    f"Run: {repair}\nDetails: {detail}",
+                    tone="ERROR",
+                )
+            else:
+                self.panel("Operation failed", str(exc), tone="ERROR")
             raise
         finally:
             self.stop()

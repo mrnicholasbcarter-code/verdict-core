@@ -729,6 +729,21 @@ def test_review_observed_independent_verified() -> None:
     assert _get("independent_review", evs).status == CLAIM_STATUS_VERIFIED
 
 
+def test_review_antigravity_worker_agy_reviewer_not_independent() -> None:
+    """agy and antigravity share google-antigravity; review is not independent."""
+    evs = [
+        _event(1, "dispatch", {"route_id": "agy/claude-sonnet-4-6", "attempt": 1}),
+        _event(
+            2, "terminal", {"attempt": 1, "ok": True, "reported_model": "agy/claude-sonnet-4-6"}
+        ),
+        _review("antigravity/gpt-oss-120b-medium"),
+    ]
+    claim = _get("independent_review", evs)
+    assert claim.status in _BAD
+    evidence = claim.evidence[0].value
+    assert "google-antigravity" in evidence.get("shared_pools", [])
+
+
 def test_receipt_integrity_unrelated_run_directory() -> None:
     demo = _REPO_ROOT / "docs/proof/demo-run"
     if not (demo / "events.jsonl").exists():

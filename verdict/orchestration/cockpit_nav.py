@@ -65,6 +65,11 @@ KEY_HELP = "?"
 KEY_DETAILS = "d"
 KEY_CONTEXT = "c"  # BOD-278 extension point
 KEY_ROUTING = "r"  # BOD-277 extension point
+KEY_HEALTH = "h"  # BOD-276 health panel
+
+# Synthetic selectable row IDs for non-worker roles.
+ROLE_CONTROLLER = "__controller__"
+ROLE_REVIEWER = "__reviewer__"
 
 
 class ScriptedKeyReader:
@@ -212,6 +217,26 @@ class CockpitState:
         if not self.node_order:
             return
         self.selected_index = (self.selected_index + delta) % len(self.node_order)
+
+
+def selectable_order_with_roles(view: Any) -> list[str]:
+    """Build selectable row order: controller, workers, reviewer.
+
+    Controller and reviewer entries appear only when the view has evidence
+    for those roles.  Workers come from ``view.nodes``.
+    """
+    order: list[str] = []
+    if getattr(view, "controller_route", "") or getattr(view, "controller_state", ""):
+        order.append(ROLE_CONTROLLER)
+    order.extend(nid for nid in getattr(view, "nodes", {}) if nid)
+    if getattr(view, "review", None) is not None:
+        order.append(ROLE_REVIEWER)
+    return order
+
+
+def is_role_row(row_id: str) -> bool:
+    """True when ``row_id`` is a synthetic role, not a worker node."""
+    return row_id in (ROLE_CONTROLLER, ROLE_REVIEWER)
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +437,7 @@ _HELP_LINES = (
     "  c                context view (toggle budget/provenance)",
     "  r                routing view (toggle explorer)",
     "  p                verified receipt summary",
+    "  h                health evidence (cooldowns, failures)",
     "  x (twice)        request run cancellation",
     "  X / t            cancel / retry selected worker (Enter confirms)",
     "  ?                toggle this help",
@@ -433,10 +459,19 @@ def render_help(plain: bool = False) -> RenderableType:
 def render_selected_row(view: Any, state: CockpitState, plain: bool) -> RenderableType:
     """Compact "who is selected" strip for the top of the cockpit."""
     nid = state.selected_id or "-"
-    node = getattr(view, "nodes", {}).get(state.selected_id)
-    st = getattr(node, "state", None)
-    st_txt = st.value if st is not None else "-"
-    body = f"selected: {nid}  state: {st_txt}   ({state.selected_index + 1}/{len(state.node_order) or 1})"
+    if nid == ROLE_CONTROLLER:
+        st_txt = getattr(view, "controller_state", "") or "-"
+        label = "controller"
+    elif nid == ROLE_REVIEWER:
+        review = getattr(view, "review", None)
+        st_txt = getattr(review, "status", "") if review else "-"
+        label = "reviewer"
+    else:
+        node = getattr(view, "nodes", {}).get(state.selected_id)
+        st = getattr(node, "state", None)
+        st_txt = st.value if st is not None else "-"
+        label = nid
+    body = f"selected: {label}  state: {st_txt}   ({state.selected_index + 1}/{len(state.node_order) or 1})"
     if plain:
         return Text(body)
     return Text(body, style=TOKENS["SECONDARY"])
@@ -471,6 +506,12 @@ def render_detail_panel(
         from verdict.design import panel
 
         return panel(text, title="detail", mode=mode)
+
+    # BOD-276: controller and reviewer are selectable role rows.
+    if nid == ROLE_CONTROLLER:
+        return _render_controller_detail(view, events, state, plain=plain, width=width, mode=mode)
+    if nid == ROLE_REVIEWER:
+        return _render_reviewer_detail(view, events, state, plain=plain, width=width, mode=mode)
 
     node = getattr(view, "nodes", {}).get(nid)
     state_value = node.state.value if node is not None else "-"
@@ -528,6 +569,103 @@ def render_detail_panel(
     return panel(body, title=f"detail: {nid}", mode=mode)
 
 
+def identity_for_controller(view: Any, events: Sequence[Any]) -> IdentityView:
+    """Selected vs observed identity for the planner role."""
+    selected = getattr(view, "controller_route", "") or ""
+    observed = getattr(view, "planner_observed_model", "") or ""
+    session_ref = getattr(view, "planner_session_ref", "") or ""
+    mismatch = bool(selected and observed and selected != observed)
+    return IdentityView(selected, observed, session_ref, mismatch)
+
+
+def identity_for_reviewer(view: Any, events: Sequence[Any]) -> IdentityView:
+    """Selected vs observed identity for the reviewer role."""
+    review = getattr(view, "review", None)
+    selected = getattr(review, "route_id", "") if review else ""
+    observed = getattr(review, "observed_model", "") if review else ""
+    mismatch = bool(selected and observed and selected != observed)
+    return IdentityView(selected, observed, "", mismatch)
+
+
+def _render_controller_detail(
+    view: Any,
+    events: Sequence[Any],
+    state: CockpitState,
+    *,
+    plain: bool = False,
+    width: int = 100,
+    mode: Any = None,
+) -> RenderableType:
+    """Detail panel for the controller (planner) role."""
+    ident = identity_for_controller(view, events)
+    ctrl_state = getattr(view, "controller_state", "") or "-"
+    lines: list[Text] = [
+        Text(f"role: controller  state: {ctrl_state}", style=_style_token("PRIMARY", plain)),
+        Text(
+            f"selected route: {ident.selected_route or 'not selected yet'}",
+            style=_style_token("TEXT" if ident.selected_route else "MUTED", plain),
+        ),
+    ]
+    obs_line = f"observed model: {ident.observed_route or 'not reported yet'}"
+    if ident.session_ref:
+        obs_line += f"  session: {ident.session_ref}"
+    lines.append(
+        Text(obs_line, style=_style_token("TEXT" if ident.observed_route else "MUTED", plain))
+    )
+    if ident.mismatch:
+        lines.append(
+            Text(
+                "MISMATCH: selected route != observed reported_model",
+                style=_style_token("ERROR", plain),
+            )
+        )
+    body: RenderableType = Group(*lines)
+    if plain:
+        return body
+    from verdict.design import panel as _panel
+
+    return _panel(body, title="detail: controller", mode=mode)
+
+
+def _render_reviewer_detail(
+    view: Any,
+    events: Sequence[Any],
+    state: CockpitState,
+    *,
+    plain: bool = False,
+    width: int = 100,
+    mode: Any = None,
+) -> RenderableType:
+    """Detail panel for the reviewer role."""
+    ident = identity_for_reviewer(view, events)
+    review = getattr(view, "review", None)
+    status = getattr(review, "status", "-") if review else "-"
+    lines: list[Text] = [
+        Text(f"role: reviewer  status: {status}", style=_style_token("PRIMARY", plain)),
+        Text(
+            f"selected route: {ident.selected_route or 'not selected yet'}",
+            style=_style_token("TEXT" if ident.selected_route else "MUTED", plain),
+        ),
+        Text(
+            f"observed model: {ident.observed_route or 'not reported yet'}",
+            style=_style_token("TEXT" if ident.observed_route else "MUTED", plain),
+        ),
+    ]
+    if ident.mismatch:
+        lines.append(
+            Text(
+                "MISMATCH: selected route != observed reported_model",
+                style=_style_token("ERROR", plain),
+            )
+        )
+    body: RenderableType = Group(*lines)
+    if plain:
+        return body
+    from verdict.design import panel as _panel
+
+    return _panel(body, title="detail: reviewer", mode=mode)
+
+
 def _classify_summary_token(summary: str) -> str:
     """Map an expected provider-error category into a semantic token."""
     lower = summary.lower()
@@ -545,7 +683,7 @@ def _classify_summary_token(summary: str) -> str:
 
 
 def render_footer(plain: bool = False) -> RenderableType:
-    hint = "? help  c context  r routing  p receipt  q quit"
+    hint = "? help  c context  r routing  p receipt  h health  q quit"
     if plain:
         return Text(hint)
     return Text(hint, style=TOKENS["MUTED"])
@@ -711,7 +849,7 @@ def run_cockpit(
                     view.apply(e)
                 seen = fresh
                 # Refresh node order (preserves selection identity).
-                state.sync_order(list(getattr(view, "nodes", {}).keys()))
+                state.sync_order(selectable_order_with_roles(view))
 
             # 2. Read one key with a short timeout.
             try:
@@ -753,12 +891,15 @@ __all__ = [
     "KEY_DOWN",
     "KEY_ENTER",
     "KEY_ESC",
+    "KEY_HEALTH",
     "KEY_HELP",
     "KEY_LEFT",
     "KEY_QUIT",
     "KEY_RIGHT",
     "KEY_ROUTING",
     "KEY_UP",
+    "ROLE_CONTROLLER",
+    "ROLE_REVIEWER",
     "CockpitState",
     "IdentityView",
     "KeyReader",
@@ -767,6 +908,9 @@ __all__ = [
     "_RealKeyReader",
     "dispatch_key",
     "identity_for",
+    "identity_for_controller",
+    "identity_for_reviewer",
+    "is_role_row",
     "open_context_view",
     "open_routing_view",
     "render_detail_panel",
@@ -774,6 +918,7 @@ __all__ = [
     "render_help",
     "render_selected_row",
     "run_cockpit",
+    "selectable_order_with_roles",
     "submit_control",
     "transition_chain_for",
 ]

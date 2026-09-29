@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.capacity_models import CapacitySnapshot
+from verdict.orchestration.provider_catalog import resolve_provider
 from verdict.subscription_headroom import (
     DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS,
     subscription_observations,
@@ -697,7 +698,11 @@ def _judge(
 ) -> AdmissionRecord:
     owned = str(row.get("owned_by", "") or "").lower()
     prefix = route_provider_prefix(route_id)
-    provider = owned or prefix
+    # Resolve owned_by aliases: the inventory may use a UI-internal name
+    # (e.g. "devin-cli-agentic") that differs from the connection provider
+    # string ("devin-cli").  The alias table bridges the gap.
+    resolved = resolve_provider(owned) if owned else ""
+    provider = resolved or owned or prefix
     stamp = _iso(now)
 
     def drop(stage: AdmissionStage, reason: str, source: str, **kw: Any) -> AdmissionRecord:
@@ -717,7 +722,7 @@ def _judge(
     if is_opaque(route_id) or owned == "combo":
         return drop(AdmissionStage.DISCOVERED, "opaque_route", "inventory")
 
-    conns = _connections_for(connections, (owned, prefix))
+    conns = _connections_for(connections, (resolved, owned, prefix))
     active = [c for c in conns if c.get("isActive") is True]
     if not active:
         reason = "no_connection_evidence" if not conns else "no_active_account"

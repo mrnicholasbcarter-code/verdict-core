@@ -663,21 +663,37 @@ def _action_runtime_reconcile(**kwargs: Any) -> ActionResult:
 
 
 def _action_prove_at_rest_status(**kwargs: Any) -> ActionResult:
-    from verdict.prove_at_rest import ProveAtRestStore, default_state_path
+    """Read the health cache: counts, coding workers, cold providers.
+
+    ``--state-path`` selects the cache file. A missing file is an empty
+    cache, not an error. The legacy cycle document is not read.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+    from verdict.prove_at_rest import status_report
 
     state_path = kwargs.get("state_path")
-    resolved = Path(state_path).expanduser() if state_path else default_state_path()
-    cycle = ProveAtRestStore(path=resolved).read()
-    if cycle is None:
-        return ActionResult(data={"status": "empty", "state_path": str(resolved)})
-    data = cycle.to_dict()
+    resolved = Path(state_path).expanduser() if state_path else default_cache_path()
+    if not resolved.exists():
+        return ActionResult(
+            data={
+                "status": "empty",
+                "state_path": str(resolved),
+                "cache_path": str(resolved),
+                "legacy_state": "ignored",
+            }
+        )
+    cache = HealthCache(resolved)
+    data = status_report(cache, now=datetime.now(timezone.utc))
     data["state_path"] = str(resolved)
+    data["status"] = "ok"
     return ActionResult(data=data)
 
 
 def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
-    """Run one prove-at-rest cycle."""
-    from verdict.prove_at_rest import ProveAtRestError, build_live_daemon, default_state_path
+    """Run one bounded prove-at-rest cycle into the health cache."""
+    from verdict.prove_at_rest import ProveError, build_live_daemon
 
     allow_live_probe: bool = kwargs.get("allow_live_probe", False)
     if not allow_live_probe:
@@ -687,21 +703,20 @@ def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
             exit_code=2,
         )
     state_path = kwargs.get("state_path")
-    resolved = Path(state_path).expanduser() if state_path else default_state_path()
     try:
         daemon = build_live_daemon(
-            state_path=resolved,
+            cache_path=Path(state_path).expanduser() if state_path else None,
             base_url=kwargs.get("base_url"),
             interval_seconds=kwargs.get("interval", 300.0),
             probe_timeout_seconds=kwargs.get("timeout", 15.0),
             allow_live_probe=True,
+            max_requests=int(kwargs.get("max_requests", 300)),
+            max_wall_seconds=float(kwargs.get("max_wall_seconds", 600.0)),
         )
-    except ProveAtRestError as exc:
+        stats = daemon.run_once()
+    except ProveError as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
-    cycle = daemon.run_once()
-    data = cycle.to_dict() if cycle is not None else {"status": "no_result"}
-    ok = bool(cycle) and cycle.summary.get("failed", 0) == 0
-    return ActionResult(data=data, ok=ok, exit_code=0 if ok else 1)
+    return ActionResult(data=stats.to_dict(), ok=True, exit_code=0)
 
 
 # ---------------------------------------------------------------------------

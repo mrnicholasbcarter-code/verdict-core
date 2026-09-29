@@ -1,0 +1,13 @@
+[Unit]
+Description=Notes for the Verdict health-cache prober (the service loops itself)
+
+[Timer]
+# The service is long-running and sleeps between cycles (--interval).
+# This timer only starts it at boot if it is not already running.
+OnBootSec=3min
+AccuracySec=1min
+Persistent=true
+Unit=verdict-health-cache.service
+
+[Install]
+WantedBy=timers.target

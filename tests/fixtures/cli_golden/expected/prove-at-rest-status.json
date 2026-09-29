@@ -1,4 +1,1 @@
-{
-  "state_path": "{IN}/no-proof.json",
-  "status": "empty"
-}
+{"cache_path":"{IN}/no-proof.json","legacy_state":"ignored","state_path":"{IN}/no-proof.json","status":"empty"}

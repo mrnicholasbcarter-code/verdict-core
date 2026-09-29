@@ -1003,6 +1003,7 @@ class DagRuntime:
                     truncated="[truncated" in prompt.lower(),
                     budget_bytes=budget,
                     sources=_hydrate_sources(node.required_context, worktree, budget),
+                    compression="not_performed",
                 )
                 terminal = await self._execute(prompt, run.route_id, worktree)
             finally:
@@ -1340,6 +1341,7 @@ class DagRuntime:
                 status=review.status,
                 reviewer=review.reviewer,
                 route_id=review.route_id,
+                observed_model=review.observed_model,
                 blocking=sum(f.blocking() for f in review.findings),
                 findings=len(review.findings),
                 detail=review.detail[:300],
@@ -1422,15 +1424,44 @@ def _ladder_counts(verdicts: Sequence[Any]) -> dict[str, int]:
     }
 
 
+def _normalize_context_path(rel: str) -> str:
+    """Normalise a required_context path to a canonical relative form.
+
+    Removes a leading ``./`` so that ``./a.py`` and ``a.py`` are treated as
+    the same file.  ``../`` traversal is left untouched — it is handled (or
+    rejected) upstream; we must not silently change its semantics here.
+    """
+    # Strip leading ./ only; never modify ../ paths.
+    if rel.startswith("./"):
+        return rel[2:]
+    return rel
+
+
 def _hydrate_sources(
     required_context: Sequence[str], worktree: Path, budget_bytes: int
 ) -> list[dict[str, Any]]:
-    """Build per-source entries from the same data hydrate_node_prompt uses."""
+    """Build per-source entries from the same data hydrate_node_prompt uses.
+
+    Normalises each path and de-duplicates: the *first* occurrence of a
+    canonical path is processed normally; subsequent occurrences get
+    ``included=False, reason="deduplicated", duplicate_of=<first_path>``.
+    """
     sources: list[dict[str, Any]] = []
     remaining = budget_bytes
+    seen: dict[str, str] = {}  # canonical path -> original path of first occurrence
     for rel in required_context:
+        canonical = _normalize_context_path(rel)
         entry: dict[str, Any] = {"path": str(rel)}
-        path = worktree / rel
+        if canonical in seen:
+            entry["bytes"] = None
+            entry["included"] = False
+            entry["truncated_at"] = None
+            entry["reason"] = "deduplicated"
+            entry["duplicate_of"] = seen[canonical]
+            sources.append(entry)
+            continue
+        seen[canonical] = str(rel)
+        path = worktree / canonical
         try:
             size = path.stat().st_size
         except OSError:

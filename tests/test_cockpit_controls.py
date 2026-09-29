@@ -19,7 +19,7 @@ from verdict.orchestration import cockpit_controls as cockpit
 from verdict.orchestration import cockpit_nav as nav
 from verdict.orchestration.cli import _watch, add_parsers
 from verdict.orchestration.contracts import RunEvent
-from verdict.orchestration.tui import RunView, follow, read_events
+from verdict.orchestration.tui import Failure, RunView, follow, read_events
 
 FIXTURE = Path(__file__).parent / "fixtures" / "cockpit_controls"
 GOLDEN = FIXTURE / "golden"
@@ -335,3 +335,27 @@ def test_single_x_is_confirmation_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not calls
     assert cockpit.dispatch_key("x", state, view)
     assert calls == ["run.cancel"]
+
+
+def test_empty_route_failures_not_leaked_across_nodes() -> None:
+    """Fix 2: route and f.route_id == route guard prevents cross-node failure leak.
+
+    Two nodes, each with an empty route_id failure.
+    When the selected role row also has no route, neither failure should appear
+    because `route` is empty and the route-match branch requires `route` to be truthy.
+    """
+    view = RunView()
+    view.failures = [
+        Failure(node_id="N1", category="hard", action="generate", route_id=""),
+        Failure(node_id="N2", category="hard", action="generate", route_id=""),
+    ]
+
+    state = cockpit.ControlCockpitState(run_dir=Path("."), events=[])
+    state.sync_order([nav.ROLE_CONTROLLER])
+    # Select the controller role row; its route is "" (no plan_started event)
+    state.selected_index = 0
+
+    _, failures, _ = cockpit._health_for_selected(state, view)
+    # Neither node's failure must appear: selected is a role row so node_id branch is
+    # also skipped; route is empty so the route-match branch is also skipped.
+    assert failures == [], f"expected no failures, got {failures}"

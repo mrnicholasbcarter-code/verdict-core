@@ -1,0 +1,352 @@
+[
+  {
+    "provider": "github",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "openrouter",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "kilocode",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "bai",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "cohere",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "ollama-cloud",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "openai-compatible-embeddings-374b67d0-04c1-4123-bf5c-8f6780540bae",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "cursor",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "unavailable"
+  },
+  {
+    "provider": "openference-api",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "command-code",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "bluesminds",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "bytez",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "cursor-api",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "api-airforce",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "codestral",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "mistral",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "charm-hyper",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "bazaarlink",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "freemodel-dev",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "opencode-zen",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "opencode",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "aihorde",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "grok-cli",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "codex",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "cerebras",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "claude",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "kiro",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "zenmux",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "agentrouter",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "nvidia",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": false
+    }
+  },
+  {
+    "provider": "jina-ai",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "github-models",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "ollama-local",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "openai-compatible-chat-348a0e73-57ef-4776-b0ad-880dbe79d5c4",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "agy",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "tier": "free-tier",
+      "plan": "Antigravity starter quota"
+    }
+  },
+  {
+    "provider": "antigravity",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "tier": "free-tier",
+      "plan": "Antigravity starter quota"
+    }
+  },
+  {
+    "provider": "huggingface",
+    "authType": "apikey",
+    "isActive": false,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "arcee-ai",
+    "authType": "apikey",
+    "isActive": false,
+    "testStatus": "active"
+  },
+  {
+    "provider": "openference",
+    "authType": "oauth",
+    "isActive": false,
+    "testStatus": "banned"
+  },
+  {
+    "provider": "devin-desktop",
+    "authType": "oauth",
+    "isActive": false,
+    "testStatus": "active"
+  },
+  {
+    "provider": "devin-cli",
+    "authType": "oauth",
+    "isActive": false,
+    "testStatus": "active"
+  },
+  {
+    "provider": "coze",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "clinepass",
+    "authType": "oauth",
+    "isActive": false,
+    "testStatus": "active"
+  },
+  {
+    "provider": "moonshot",
+    "authType": "apikey",
+    "isActive": false,
+    "testStatus": "active"
+  },
+  {
+    "provider": "openrouter",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active",
+    "providerSpecificData": {
+      "importFreeModelsOnly": true
+    }
+  },
+  {
+    "provider": "codex",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "kiro",
+    "authType": "oauth",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "nvidia",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  },
+  {
+    "provider": "nvidia",
+    "authType": "apikey",
+    "isActive": true,
+    "testStatus": "active"
+  }
+]

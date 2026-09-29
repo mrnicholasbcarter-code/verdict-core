@@ -1,0 +1,19 @@
+[Unit]
+Description=Probe admitted OmniRoute routes into the Verdict health cache
+After=network-online.target
+
+[Service]
+Type=simple
+# VERDICT_CHECKOUT must point at a verdict-core checkout with its .venv synced.
+Environment=VERDICT_CHECKOUT=%h/dev/verdict-core
+# Optional: OMNIROUTE_BASE_URL (default gateway http://127.0.0.1:20128).
+# Optional: VERDICT_HEALTH_CACHE (default ~/.verdict/health-cache.json).
+# --allow-live-probe is the explicit consent this unit is installed to give.
+# One cycle is capped at 300 requests and 10 minutes, then the process sleeps
+# for --interval. It writes only the health cache, never orchestration-health.json.
+ExecStart=/bin/sh -c 'exec "$VERDICT_CHECKOUT/.venv/bin/python" -m verdict.cli prove-at-rest daemon --allow-live-probe --interval 600 --max-requests 300 --max-wall-seconds 600'
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

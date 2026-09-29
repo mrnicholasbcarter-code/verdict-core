@@ -731,13 +731,109 @@ class TestEligibilityParity:
 
 
 # ---------------------------------------------------------------------------
+# config.show: CLI and TUI reach the same action; output is secret-free
+# ---------------------------------------------------------------------------
+
+
+class TestConfigShowParity:
+    """config.show: thin CLI wrapper calls run_action; secrets are redacted."""
+
+    def test_cli_calls_run_action(self) -> None:
+        """CLI calls run_action("config.show") when dispatching config show (behavioural spy).
+
+        Uses patch.object to avoid patching verdict.actions.* by string literal (guard
+        in TestNoActionPatching), while still proving end-to-end CLI → run_action wiring.
+        """
+        import importlib
+        from unittest.mock import MagicMock, patch
+
+        registry_mod = importlib.import_module("verdict.actions.registry")
+        fake_result = MagicMock()
+        fake_result.data = {
+            "config_file": "/tmp/test.yaml",
+            "exists": False,
+            "gateway": "http://127.0.0.1:20128",
+            "profile": "default",
+            "plain": "",
+            "no_animation": "",
+            "no_color": False,
+            "ci": False,
+        }
+        with patch.object(registry_mod, "run_action", return_value=fake_result) as spy:
+            rc, _stdout = run_cli("config", "show", "--json")
+            assert rc == 0
+            spy.assert_called_once_with("config.show", {})
+
+    def test_tui_callable(self) -> None:
+        """TUI palette path executes config.show without error."""
+        ok, data = run_tui("config.show")
+        assert ok
+        assert "config_file" in data
+        assert "exists" in data
+
+    def test_redaction(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Config values that look like secrets are redacted in action output."""
+        import yaml
+
+        cfg_dir = tmp_path / ".config" / "verdict"
+        cfg_dir.mkdir(parents=True)
+        cfg_file = cfg_dir / "verdict.yaml"
+        cfg_file.write_text(
+            yaml.dump({"api_key": "sk-real-secret", "gateway_url": "http://127.0.0.1:20128"})
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+        ok, data = run_tui("config.show")
+        assert ok
+        assert data.get("exists") is True
+        cfg = data.get("config", {})
+        # Secret key must be PRESENT and equal to the redaction marker
+        assert "api_key" in cfg, "api_key was dropped rather than redacted"
+        assert cfg["api_key"] == "[redacted]", (
+            f"api_key was not redacted to '[redacted]'; got {cfg['api_key']!r}"
+        )
+        # Raw secret must not appear anywhere in the action output
+        assert "sk-real-secret" not in str(data), "raw secret leaked into action output"
+        # Non-secret key must be preserved
+        assert cfg.get("gateway_url") == "http://127.0.0.1:20128"
+
+    def test_cli_json_output(self) -> None:
+        """CLI --json returns valid JSON with config_file key."""
+        rc, stdout = run_cli("config", "show", "--json")
+        assert rc == 0, f"CLI config show --json failed: {stdout[:200]}"
+        data = json.loads(stdout)
+        assert "config_file" in data
+
+    def test_cli_config_no_action_exits_2(self) -> None:
+        """'verdict config' with no subcommand must exit 2 (argparse prints usage to stderr)."""
+        import io
+        import sys
+
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            rc, _stdout = run_cli("config")
+            stderr_out = sys.stderr.getvalue()
+        finally:
+            sys.stderr = old_stderr
+        assert rc == 2, f"Expected exit 2 for bare 'verdict config', got {rc}"
+        # argparse writes usage or error to stderr
+        assert "usage" in stderr_out.lower() or "error" in stderr_out.lower(), (
+            f"Expected usage/error on stderr for bare 'verdict config', got: {stderr_out[:200]}"
+        )
+
+    def test_cli_config_show_exits_0(self) -> None:
+        """'verdict config show --json' must exit 0."""
+        rc, _stdout = run_cli("config", "show", "--json")
+        assert rc == 0, f"Expected exit 0 for 'verdict config show --json', got {rc}"
+
+
+# ---------------------------------------------------------------------------
 # xfail: actions whose CLI handler is NOT wired to run_action on this branch
 # ---------------------------------------------------------------------------
 
-XFAIL_NOT_WIRED: list[str] = [
-    # config.show has no CLI handler calling run_action (lane B2 wiring pending)
-    "config.show"
-]
+XFAIL_NOT_WIRED: list[str] = []
 
 
 @pytest.mark.parametrize("action", XFAIL_NOT_WIRED)
@@ -819,7 +915,7 @@ _PARITY_ACTIONS = [
     ("setup.plan", "setup_plan.build_setup_plan", "setup plan --json", True, None),
     ("receipt.show", "routing_receipt.load_routing_receipt", "receipt show --json", True, None),
     ("eligibility", "orchestration.cli.build_selector", "eligibility --json", True, None),
-    ("config.show", None, None, True, "handler not wired"),
+    ("config.show", None, "config show --json", True, None),
     (
         "credentials.list",
         "credentials_store.get_credential_source",
