@@ -1,14 +1,3 @@
-# Failover Sequence — Single Node
-
-What happens when a worker node fails during orchestration execution.
-The recovery loop is inline in `DagRuntime._drive()`
-(`verdict/orchestration/runtime.py`); there is no separate failover engine
-for worker nodes.
-
-Source: [`diagrams/failover-sequence.mmd`](../../diagrams/failover-sequence.mmd).
-The fenced block below is byte-identical to that file.
-
-```mermaid
 %% Verdict visual theme. Hex from origin/feat/visual-system-core:verdict/design.py PALETTE
 %% (PR #724). Mermaid base themeVariables cannot name classes, so classDef repeats them.
 %% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
@@ -67,4 +56,3 @@ sequenceDiagram
             Note over RT: node TERMINAL_SUCCESS, then review
         end
     end
-```

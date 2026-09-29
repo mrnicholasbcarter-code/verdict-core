@@ -4,6 +4,11 @@
 %%   verdict/availability_cache.py (CacheKey, _Entry, AvailabilityCache.get/.explain, explain_freshness, _confidence_for)
 %%   verdict/eligibility.py (EligibilityGate.evaluate, EligibilityRecord.to_dict)
 %%   verdict/evidence.py (AmbiguousEvidenceSelectorError)
+%% Verdict visual theme. Hex from origin/feat/visual-system-core:verdict/design.py PALETTE
+%% (PR #724). Mermaid base themeVariables cannot name classes, so classDef repeats them.
+%% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
+%% purple #a78bfa  cyan #22b8eb  success #4ade80  amber #f5b00b  red #f87171  border #52525b
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontFamily':'ui-sans-serif, system-ui, sans-serif','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#a1a1aa','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','signalColor':'#22b8eb','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
 flowchart TD
     GET["GET /v1/route/explain -- route_explain(model_id, evidence_id, request_id, correlation_id)"]
     GET --> MULTI{"more than one selector supplied?"}
@@ -69,3 +74,15 @@ flowchart TD
 %% evidence: verdict/availability_cache.py:75 def _confidence_for
 %% evidence: verdict/eligibility.py:59,70 class EligibilityRecord, def to_dict
 %% evidence: verdict/evidence.py:80 class AmbiguousEvidenceSelectorError(LookupError)
+
+classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
+classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
+classDef cooldown fill:#18181b,stroke:#f5b00b,color:#f4f4f5,stroke-width:2px
+classDef failed fill:#18181b,stroke:#f87171,color:#f4f4f5,stroke-width:2px
+classDef validated fill:#18181b,stroke:#4ade80,color:#f4f4f5,stroke-width:2px
+classDef muted fill:#18181b,stroke:#52525b,color:#a1a1aa,stroke-width:1px
+class GET,EVFIND,EXPLAIN,KEY,FREC active
+class EVOK,FRESH,REFOK,OUT200,ELIGBOOL validated
+class E400,EVAMB,EVNOSTORE,EVNONE,C503,REFERR failed
+class STALE,EXPIRED cooldown
+class SCOPEDOC,SCOPEOUT,FIELDS,CONF,ELIGREC muted

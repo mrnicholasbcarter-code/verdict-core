@@ -1,10 +1,15 @@
 %% setup-detection-flow.mmd -- verdict / verdict setup / verdict doctor / verdict detect
 %% Source (verified against code at this commit):
-%%   verdict/terminal_ui.py, verdict/home.py, verdict/orchestration/tui.py (three separate copies of the same plain-mode predicate)
+%%   verdict/terminal_ui.py (TerminalUI.plain via verdict.design.presentation_mode), verdict/home.py (_plain, its own copy), verdict/orchestration/tui.py (plain_mode delegates to verdict.design.presentation_mode)
 %%   verdict/provider_detection.py (detect_all_providers, probe_gateways, _check_port)
 %%   verdict/harness_claude.py, verdict/harness_prime.py, verdict/harness_codex.py (per-harness discover/status, no shared base)
 %%   verdict/credentials_store.py (get_credential_source), verdict/mcp_config_discovery.py (mcp_config_candidate_paths)
 %%   verdict/cli.py (cmd_detect, cmd_doctor)
+%% Verdict visual theme. Hex from origin/feat/visual-system-core:verdict/design.py PALETTE
+%% (PR #724). Mermaid base themeVariables cannot name classes, so classDef repeats them.
+%% background #101014  surface #18181b  text #f4f4f5  secondary #a1a1aa  muted #92929e
+%% purple #a78bfa  cyan #22b8eb  success #4ade80  amber #f5b00b  red #f87171  border #52525b
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontFamily':'ui-sans-serif, system-ui, sans-serif','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#a1a1aa','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','signalColor':'#22b8eb','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
 flowchart TD
     START["verdict (no subcommand) / verdict setup / verdict doctor / verdict detect"]
     START --> PLAIN{"is this a plain terminal? not a TTY, NO_COLOR set, TERM=dumb, CI set, or VERDICT_PLAIN=1"}
@@ -36,9 +41,9 @@ flowchart TD
 %% DetectionReport with a sha256 canonical-JSON digest, fed by six named groups through one
 %% detect.run() engine. No such module or shared type exists in verdict/ at this commit -- what
 %% exists is the scattered set of dataclasses shown above, called directly by cmd_detect/cmd_doctor.
-%% evidence: verdict/terminal_ui.py:71-77 TerminalUI.plain predicate (not TTY / NO_COLOR / TERM=dumb / CI / VERDICT_PLAIN=1)
+%% evidence: verdict/terminal_ui.py:80 TerminalUI.plain = not presentation_mode(...).color or VERDICT_PLAIN=1; verdict/design.py:118-122 plain = not TTY or NO_COLOR or CI or TERM=dumb or VERDICT_PLAIN=1
 %% evidence: verdict/home.py:65-72 def _plain(console) -- a SEPARATE copy of the identical predicate
-%% evidence: verdict/orchestration/tui.py:840-848 def plain_mode(console) -- a THIRD separate copy, docstring says "Same fallback rules as verdict.terminal_ui.TerminalUI"
+%% evidence: verdict/orchestration/tui.py:928 def plain_mode(console) -- delegates to verdict.design.presentation_mode (same rules: not a TTY, NO_COLOR, CI, TERM=dumb, VERDICT_PLAIN=1); no longer an inline copy
 %% evidence: verdict/home.py:30 WORDMARK = (...); home.py:255 for step in range(0, len(WORDMARK[0]) + 1, 3): -- the reveal loop (NOT lines 265-274 as an earlier draft claimed)
 %% evidence: verdict/cli.py:1119 def cmd_detect(...); cli.py:2602 def cmd_doctor(fix=False, output_json=False)
 %% evidence: verdict/provider_detection.py:602 def detect_all_providers() -> DetectionResult
@@ -52,3 +57,14 @@ flowchart TD
 %% evidence: verdict/mcp_config_discovery.py:136 def mcp_config_candidate_paths(...)
 %% evidence: verdict/cli.py -- verdict detect --json path dumps a dataclass via __dict__ (grep confirms no explicit field allowlist exists at this commit)
 %% NOTE (aspirational, not present in code): an earlier draft of this diagram described a unified `Finding(group, key, state, label, detail, evidence, remedy, blocking, elapsed_ms)` record and a `DetectionReport` with a sha256 canonical-JSON digest, fed by six named groups (environment/gateway/credentials/harnesses/integrations/config) through one `detect.run()` engine. Grepping `class Finding`, `DetectionReport`, and `detect.run(` across verdict/ found no such module or shared type. What exists today is the scattered set of dataclasses shown above (DetectionResult, GatewayCandidate, per-harness StatusReport), called directly and separately by cmd_detect/cmd_doctor. Treat the unified Finding/DetectionReport model as a design proposal, not current code.
+
+classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
+classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
+classDef cooldown fill:#18181b,stroke:#f5b00b,color:#f4f4f5,stroke-width:2px
+classDef failed fill:#18181b,stroke:#f87171,color:#f4f4f5,stroke-width:2px
+classDef validated fill:#18181b,stroke:#4ade80,color:#f4f4f5,stroke-width:2px
+classDef muted fill:#18181b,stroke:#52525b,color:#a1a1aa,stroke-width:1px
+class DETECT,PROV,GATE,HARN,MCP active
+class TEXT muted
+class SPLASH selected
+class OUT1,OUT2,OUT3 validated
