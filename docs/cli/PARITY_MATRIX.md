@@ -13,6 +13,7 @@
 | `choose` | `choose` | Routing | read | ✅ action |
 | `compare` | `compare` | Routing | read | ✅ action |
 | `compat` | `compat.manifest` | Configuration | read | ✅ action |
+| `context` | `context.view` | Runs | read | ✅ action |
 | `cost-report` | `cost-report` | Overview | read | ✅ action |
 | `credentials` | `credentials.list` | Configuration | read | ✅ action |
 | `detect` | `detect` | Health | read | ✅ action |
@@ -36,6 +37,7 @@
 | `replay` | `replay` | Traces | read | ✅ action |
 | `resume` | `resume` | Development | read | ✅ action |
 | `route` | `route` | Routing | read | ✅ action |
+| `routing` | `routing.view` | Routing | read | ✅ action |
 | `run` | `route` (alias) | — | alias | 🔗 alias: forwards to route |
 | `run-receipt` | `run-receipt` | Traces | read | ✅ action |
 | `runtime` | `runtime.status` | Runtime | read | ✅ action |
@@ -49,5 +51,5 @@
 | `uninstall` | — | — | — | 🔧 machine-only: cmd_uninstall (uninstall_memory_bridge): removes memory bridge hooks, MCP registrations, and optionally purges the .verdict data directory globally; destructive global uninstall |
 | `watch` | — | Orchestration | launch | 🚀 launch: _watch (tui.follow): live-follows a running orchestration's events.jsonl and renders the TUI until the run terminates; long-running interactive view |
 
-**Summary:** 35 actions, 7 launch, 2 machine-only, 0 gaps
+**Summary:** 37 actions, 7 launch, 2 machine-only, 0 gaps
 
