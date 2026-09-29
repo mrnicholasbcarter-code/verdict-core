@@ -1,0 +1,15 @@
+{"model": "kr/claude-opus-5", "effective_tier": 0, "latency_ms": 312.4, "task": "write unit tests"}
+{"model": "kr/claude-sonnet-5-thinking", "effective_tier": 1, "latency_ms": 218.7, "task": "analyze code"}
+{"model": "kr/claude-sonnet-5-thinking", "effective_tier": 1, "latency_ms": 231.2, "task": "summarize document"}
+{"model": "kr/claude-haiku-5", "effective_tier": 2, "latency_ms": 89.3, "task": "classify text"}
+{"model": "kr/claude-haiku-5", "effective_tier": 2, "latency_ms": 95.1, "task": "extract keywords"}
+{"model": "kr/claude-haiku-5", "effective_tier": 2, "latency_ms": 78.6, "task": "translate snippet"}
+{"model": "kr/claude-sonnet-5-thinking", "effective_tier": 1, "latency_ms": 245.0, "task": "review PR"}
+{"model": "kr/claude-haiku-5", "effective_tier": 2, "latency_ms": 82.9, "task": "lint check"}
+{"model": "kr/claude-opus-5", "effective_tier": 0, "latency_ms": 298.5, "task": "architect system"}
+{"model": "kr/claude-haiku-5", "effective_tier": 2, "latency_ms": 91.4, "task": "format output"}
+{"model": "kr/claude-sonnet-5-thinking", "effective_tier": 1, "latency_ms": 207.3, "task": "debug error"}
+{"model": "kr/claude-haiku-5", "effective_tier": 2, "latency_ms": 86.2, "task": "generate docstring"}
+{"model": "kr/claude-opus-5", "effective_tier": 0, "latency_ms": 325.1, "task": "plan sprint"}
+{"model": "kr/claude-haiku-5", "effective_tier": 2, "latency_ms": 77.8, "task": "parse json"}
+{"model": "kr/claude-sonnet-5-thinking", "effective_tier": 1, "latency_ms": 222.6, "task": "write changelog"}

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "stderr_empty": false,
+  "stdout": "{\"execute_preview\": \"offline routing does not execute a provider completion\", \"model\": \"anthropic/claude-opus-5\", \"provider\": \"primary\", \"reason\": \"offline routing does not execute a provider completion\", \"request_id\": \"\", \"transport_outcome\": \"error\"}\n"
+}

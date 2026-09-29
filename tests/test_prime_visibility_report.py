@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from verdict.orchestration.cli import prime_visibility_report
+from verdict.orchestration.eligibility_report import prime_visibility_report
 
 
 def _home(tmp_path: Path, visible: list[str]) -> Path:

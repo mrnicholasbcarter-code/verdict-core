@@ -1,0 +1,28 @@
+routing
+explorer  source=recorded  evaluations=3  generated_at={generated_at}
+node alpha  seq 5  56 candidates, 1 admitted, 1 selected
+DISCOVERED 56 > ENTITLED 56 > HEALTHY 1 > AVAILABLE 1 > TASK_ELIGIBLE 1 > SELECTED 1
+evaluated_at=2026-09-27T21:45:50.668528Z  view_generated_at={generated_at}
+selected_route=kr/claude-haiku-4.5  observed_route=kr/claude-haiku-4.5
+selected because: unknown (no rank components recorded)
+candidates: unknown (not recorded on this eligibility event)
+cooldowns: none recorded
+rejections: unknown or none recorded
+
+node beta  seq 17  56 candidates, 1 admitted, 1 selected
+DISCOVERED 56 > ENTITLED 56 > HEALTHY 1 > AVAILABLE 1 > TASK_ELIGIBLE 1 > SELECTED 1
+evaluated_at=2026-09-27T21:46:01.688046Z  view_generated_at={generated_at}
+selected_route=kr/claude-haiku-4.5  observed_route=kr/claude-haiku-4.5
+selected because: unknown (no rank components recorded)
+candidates: unknown (not recorded on this eligibility event)
+cooldowns: none recorded
+rejections: unknown or none recorded
+
+node beta  seq 32  56 candidates, 1 admitted, 1 selected
+DISCOVERED 56 > ENTITLED 56 > HEALTHY 1 > AVAILABLE 1 > TASK_ELIGIBLE 1 > SELECTED 1
+evaluated_at=2026-09-27T21:47:08.603272Z  view_generated_at={generated_at}
+selected_route=kr/claude-haiku-4.5  observed_route=kr/claude-haiku-4.5
+selected because: unknown (no rank components recorded)
+candidates: unknown (not recorded on this eligibility event)
+cooldowns: none recorded
+rejections: unknown or none recorded

@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "stderr_empty": true,
+  "stdout": "{\n  \"centralized_routers\": [],\n  \"cli_providers\": [],\n  \"cloud_apis\": [],\n  \"credentials_read\": false,\n  \"custom_endpoints\": [],\n  \"gateways\": [],\n  \"local_providers\": [],\n  \"mode\": \"offline\",\n  \"network_access\": false\n}\n"
+}

@@ -1149,6 +1149,30 @@ def _print_integrity_check(run_dir: Path, console: Console, plain: bool) -> None
         console.print(f"[{style}]{msg}[/{style}]")
 
 
+_SYNC_ON = "\x1b[?2026h"
+_SYNC_OFF = "\x1b[?2026l"
+
+
+def _begin_synchronized_output(console: Console) -> None:
+    """Open a DEC 2026 synchronized-output block so one frame is one atomic write."""
+    if console.is_terminal:
+        console.file.write(_SYNC_ON)
+
+
+def _end_synchronized_output(console: Console) -> None:
+    """Close the synchronized-output block, which is the frame boundary."""
+    if console.is_terminal:
+        console.file.write(_SYNC_OFF)
+        console.file.flush()
+
+
+def _refresh_live(live: Live, renderable: RenderableType, console: Console) -> None:
+    """Redraw inside one synchronized-output block."""
+    _begin_synchronized_output(console)
+    live.update(renderable, refresh=True)
+    _end_synchronized_output(console)
+
+
 def follow_replay(
     events_path: Path,
     *,
@@ -1185,17 +1209,11 @@ def follow_replay(
     # Detect if this is a fixture run by examining routes
     kind = _replay_kind(events)
 
-    live = (
-        None
-        if plain
-        else Live(
-            render(view, width=width),
-            console=target,
-            refresh_per_second=max(1, int(refresh_hz * speed)),
-        )
-    )
+    live = None if plain else Live(render(view, width=width), console=target, auto_refresh=False)
     if live is not None:
+        _begin_synchronized_output(target)
         live.start(refresh=True)
+        _end_synchronized_output(target)
 
     try:
         for i, event in enumerate(events):
@@ -1214,7 +1232,7 @@ def follow_replay(
                 target.print(event_line(event), markup=False, highlight=False)
 
             if live is not None:
-                live.update(render(view, width=width), refresh=True)
+                _refresh_live(live, render(view, width=width), target)
 
             # Calculate delay for next event
             if i < len(events) - 1:
@@ -1232,7 +1250,9 @@ def follow_replay(
     finally:
         if live is not None:
             time.sleep(0.5 / speed)  # Brief pause to see final state
+            _begin_synchronized_output(target)
             live.stop()
+            _end_synchronized_output(target)
 
         # Show integrity verification at the end
         _print_integrity_check(events_path.parent, target, plain)

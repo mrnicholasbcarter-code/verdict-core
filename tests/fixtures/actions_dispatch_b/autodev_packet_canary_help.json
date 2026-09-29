@@ -1,0 +1,11 @@
+{
+  "args": [
+    "autodev",
+    "packet",
+    "canary",
+    "--help"
+  ],
+  "exit_code": 0,
+  "stdout": "usage: __main__.py autodev packet canary [-h] [--episodes EPISODES]\n                                         [--admitted ADMITTED]\n                                         [--rollback ROLLBACK] [--json]\n\noptions:\n  -h, --help           show this help message and exit\n  --episodes EPISODES  JSON list of trusted episodes\n  --admitted ADMITTED  JSON list of already-admitted identities\n  --rollback ROLLBACK  JSON canary state to restore baseline\n  --json\n",
+  "stderr": ""
+}
