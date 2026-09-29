@@ -488,10 +488,15 @@ class Prober:
                 stats.stopped_reason = "wall_cap"
                 return probed
             before = stats.requests
-            self._probe_route(route, kind, stats, started=started)
-            probed.add(route.route_id)
+            completed = self._probe_route(route, kind, stats, started=started)
             if stats.requests != before:
                 self.cache.save()
+            if not completed:
+                # The probe stopped part-way (a cap or bucket fired between the
+                # chat and the tool call). The route was left unchanged, so it
+                # stays pending and the next cycle resumes with it.
+                return probed
+            probed.add(route.route_id)
         return probed
 
     @staticmethod
@@ -517,11 +522,11 @@ class Prober:
 
     def _probe_route(
         self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float
-    ) -> None:
+    ) -> bool:
         now = self.clock()
         if not self.cache.consume(route.provider, now, pool=route.pool):
             stats.skipped_bucket += 1
-            return
+            return True  # no token: skipped this cycle, entry unchanged
         stats.requests += 1
         try:
             chat = self.transport(route.route_id, "chat", self.probe_timeout_seconds)
@@ -549,20 +554,14 @@ class Prober:
             # never tested. Leave the route unchanged; do NOT record a negative
             # (defect 1 fix: request-cap path).
             stats.stopped_reason = stats.stopped_reason or "request_cap"
-            return
-        if chat_ok and kind == "full" and stats.requests >= self.max_requests:
-            # Request cap hit between chat and tool: chat succeeded but tool was
-            # never tested. Leave the route unchanged; do NOT record a negative
-            # (defect 1 fix: request-cap path).
-            stats.stopped_reason = stats.stopped_reason or "request_cap"
-            return
+            return False
         if chat_ok and kind == "full" and stats.requests < self.max_requests:
             # Check wall deadline before making the second HTTP call (defect 5).
             if self.monotonic() - started >= self.max_wall_seconds:
                 # Wall cap hit between chat and tool: chat succeeded but tool was
                 # never tested. Leave the route unchanged (do not record a negative).
                 stats.stopped_reason = "wall_cap"
-                return
+                return False
             now_tool = self.clock()
             if self.cache.consume(route.provider, now_tool, pool=route.pool):
                 stats.requests += 1
@@ -591,7 +590,7 @@ class Prober:
                 # never tested. Leave the route unchanged; do NOT record a
                 # negative (defect 1 fix).
                 stats.skipped_bucket += 1
-                return
+                return True  # no tool token: entry unchanged, retried next cycle
         if chat_ok and (tool_ok or kind == "liveness"):
             category = CATEGORY_OK
             status = 200
@@ -600,7 +599,12 @@ class Prober:
         # record it as "not_reported" so status output can distinguish it from
         # a route whose identity was actively verified.
         _reported = observed.reported_model
-        _identity = "not_reported" if not _reported else "verified"
+        if not _reported:
+            _identity = "not_reported"
+        elif self._model_identity_matches(route.route_id, _reported):
+            _identity = "verified"
+        else:
+            _identity = "mismatch"
         result = ProbeResult(
             category=category,
             chat_ok=chat_ok,
@@ -625,6 +629,7 @@ class Prober:
             stats.fresh += 1
         elif entry is not None and not entry.healthy:
             stats.negative += 1
+        return True
 
     def _record_liveness(self, route: AdmittedRoute, result: ProbeResult, now: datetime) -> None:
         """Chat-only success: fresh for liveness, but not a coding worker."""

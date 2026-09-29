@@ -670,9 +670,9 @@ def test_tool_skipped_no_bucket_does_not_record_negative(tmp_path: Path) -> None
 def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> None:
     """Defect 2: a request-cap hit mid-batch leaves the cursor at the first unprobed route.
 
-    With concurrency=1 and cap=1 on 3 routes, the prober should:
-    - Probe route 0 (uses the 1 allowed request).
-    - Stop: cursor next_index == 1.
+    With concurrency=1 and cap=2 on 3 full-probe routes, the prober should:
+    - Probe route 0 completely (chat + tool use the 2 allowed requests).
+    - Stop: route 0 is in probed_ids, route 1 is not.
     - Second cycle: resume at route 1 (not route 2 or back to 0).
     """
     routes = [_route(f"cx/r{i}", "free") for i in range(3)]
@@ -688,7 +688,7 @@ def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> Non
         transport=transport,
         clock=lambda: NOW,
         monotonic=lambda: 0.0,
-        max_requests=1,
+        max_requests=2,
         epsilon=0,
         concurrency=1,
     )
@@ -874,18 +874,28 @@ def test_request_cap_after_chat_does_not_record_negative(tmp_path: Path) -> None
         epsilon=0,
         concurrency=1,
     )
+    # Seed an existing healthy entry so "left unchanged" is observable.
+    seeded = cache.record(
+        "cx/rc-target",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, latency_ms=7.0),
+        NOW - timedelta(seconds=FRESH_SECONDS + 1),
+    )
+    before = seeded.to_dict()
     stats = prober.run_once()
-    assert stats.stopped_reason in {"request_cap", "complete"}, (
+    assert stats.stopped_reason == "request_cap", (
         f"unexpected stopped_reason: {stats.stopped_reason!r}"
     )
     entry = cache.entry("cx/rc-target")
-    if entry is not None:
-        assert entry.state_at(NOW) != STATE_NEGATIVE, (
-            "request-cap route between chat and tool must not be recorded as negative"
-        )
+    assert entry is not None
+    assert entry.to_dict() == before, "the seeded entry must be left exactly as it was"
     # Tool must never have been called.
     assert ("cx/rc-target", "tool") not in transport.calls, (
         "tool call must not be made when request cap reached after chat"
+    )
+    # The route was not completed, so the open cycle must still list it as pending.
+    assert cache.cursor.get("cycle_open") is True
+    assert "cx/rc-target" not in (cache.cursor.get("probed_ids") or []), (
+        "an incompletely probed route must not be marked as probed in the cursor"
     )
 
 
@@ -1070,13 +1080,58 @@ def test_empty_reported_model_stored_as_not_reported_identity(tmp_path: Path) ->
     # Status report must also surface it.
     report = status_report(cache, now=NOW)
     workers = report.get("top_healthy_coding_workers", [])
-    if workers:
-        # The worker (if present) must expose the identity field.
-        worker = next((w for w in workers if w["route_id"] == "cx/silent-model"), None)
-        if worker is not None:
-            assert worker.get("identity") == "not_reported", (
-                f"status report worker must carry identity='not_reported', got {worker!r}"
-            )
+    worker = next((w for w in workers if w["route_id"] == "cx/silent-model"), None)
+    assert worker is not None, f"probed route missing from status report: {workers!r}"
+    assert worker.get("identity") == "not_reported", (
+        f"status report worker must carry identity='not_reported', got {worker!r}"
+    )
+
+
+def test_identity_verified_only_after_a_successful_match(tmp_path: Path) -> None:
+    """A matching echo is 'verified'; a non-matching echo is a mismatch, never verified."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    good = _route("nvidia/moonshotai/kimi-k3", "free")
+    bad = _route("cx/expected", "free")
+
+    def ex(tool: bool, reported: str) -> ProbeExchange:
+        return ProbeExchange(
+            http_status=200,
+            ok=True,
+            chat_exact=not tool,
+            tool_called=tool,
+            latency_ms=10,
+            reported_model=reported,
+        )
+
+    transport = _Script(
+        {
+            (good.route_id, "chat"): ex(False, "moonshotai/kimi-k3"),
+            (good.route_id, "tool"): ex(True, "moonshotai/kimi-k3"),
+            (bad.route_id, "chat"): ex(False, "other/expected"),
+        }
+    )
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: [good, bad],
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+        concurrency=1,
+    )
+    prober.run_once()
+    good_entry = cache.entry(good.route_id)
+    bad_entry = cache.entry(bad.route_id)
+    assert good_entry is not None and good_entry.identity == "verified"
+    assert good_entry.healthy
+    assert bad_entry is not None
+    assert bad_entry.category == CATEGORY_MODEL_MISMATCH
+    assert bad_entry.identity != "verified", f"mismatch recorded as verified: {bad_entry!r}"
+    assert not bad_entry.healthy
+    report = status_report(cache, now=NOW)
+    shown = {w["route_id"]: w for w in report.get("top_healthy_coding_workers", [])}
+    assert shown[good.route_id]["identity"] == "verified"
+    assert bad.route_id not in shown, "a mismatched route must not be listed as a healthy worker"
 
 
 def test_cli_once_forwards_max_wall_seconds(tmp_path: Path) -> None:
