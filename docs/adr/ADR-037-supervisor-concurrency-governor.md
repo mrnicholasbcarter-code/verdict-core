@@ -8,8 +8,8 @@
 ## Context
 
 The supervisor (`scripts/prime_supervisor.py`) today runs one story at a time.
-A process-wide `fcntl.flock` on `supervisor.lock` (line 1943) is held for the
-entire run — from stale-lease reaping through controller launch, worker
+A process-wide `fcntl.flock` on `supervisor.lock` (`acquire_lock` at line ~398,
+acquired at line ~2206) is held for the entire run — from stale-lease reaping through controller launch, worker
 dispatch, and completion.  No second story can start until the first releases
 the lock.
 
@@ -26,7 +26,9 @@ multi-story concurrency without any I/O or network coupling:
 | `verdict/orchestration/story_footprint.py` | `StoryFootprintV1` + `collide()` — symmetric, case-insensitive, fail-closed path and authority collision detection (AC 2, 3). |
 | `verdict/orchestration/concurrency_governor.py` | `GlobalConcurrencyGovernor.admit()` — stateless gate over story, coding-worker, and integration-slot caps with resource-pressure scaling (AC 9, 10, 11). |
 
-None of these modules are called by the supervisor today.  This ADR describes
+When `VERDICT_MULTI_STORY=on`, the supervisor already wires `_check_admission`
+through `ready_gate`, `story_footprint`, and `concurrency_governor` (line ~2223).
+The flag defaults to off.  This ADR describes
 how the supervisor would integrate them to move from single-story to governed
 multi-story execution.
 
@@ -62,7 +64,7 @@ governor.admit(request, run_state, pressure)
 start story
 ```
 
-The supervisor iterates candidates in priority order (as today) and stops
+The supervisor evaluates one `--story` at a time (as today) and stops
 admitting once the governor returns SERIALIZE or all candidates are evaluated.
 
 ### Lock scope changes
@@ -207,47 +209,11 @@ The operator resolved the open decisions below on 2026-09-29. The feature flag `
 | 8 | Integration slots | Always 1 for the single-`main` workflow. |
 | 9 | Monitoring and alerting | Alert when pressure lowers the effective caps below the configured values, or when more than 50% of admissions are DEFER/SERIALIZE over 30 minutes. |
 
-## Open decisions for the operator (as originally proposed)
+## Superseded: original open decisions
 
-These decisions are **intentionally left open** and must be resolved before
-the feature flag is turned on in production:
-
-1. **Initial cap values.**  The staged caps above (2 stories / 3 workers / 1
-   integration slot) are a starting proposal.  The operator should set values
-   based on available provider pool capacity and host resources.
-
-2. **Footprint source of truth.**  Where do story footprints come from?
-   Options: (a) manually declared in Linear issue metadata, (b) inferred from
-   branch diff against `main`, (c) declared in a per-story config file, or
-   (d) a combination.  Unknown footprints fail to SERIALIZE, so this decision
-   controls how much parallelism is actually achievable.
-
-3. **Resource pressure thresholds.**  The governor scales caps linearly with
-   pressure (0.0–1.0).  The operator must decide what system metrics feed into
-   `ResourcePressure` and at what thresholds (e.g. 80% CPU → pressure 0.8).
-
-4. **Provider pool mapping.**  `AdmitRequest.provider_pool` names a pool whose
-   health must be known.  The operator must define which pools exist and how
-   their healthy capacity is measured (e.g. from OmniRoute inventory, from
-   probe results, or from a static allowlist).
-
-5. **Late collision policy.**  When a late collision is detected, should the
-   story (a) wait for the conflicting story to finish, (b) abort and
-   re-queue, or (c) enter a manual review hold?
-
-6. **Kill-switch drain behaviour.**  When the flag is turned off mid-run,
-   should in-flight stories be allowed to finish (graceful drain) or
-   interrupted (hard stop)?  The ADR proposes graceful drain.
-
-7. **Base-drift rebase strategy.**  After a concurrent story merges, should
-   waiting stories automatically rebase, or should they require re-proof
-   before attempting integration?  The answer may depend on the size of the
-   merge diff.
-
-8. **Integration slot count.**  Should integration ever allow >1 concurrent
-   merge (e.g. to different target branches), or is 1 always the right value
-   for a single-main-branch workflow?
-
-9. **Monitoring and alerting.**  What SERIALIZE/DEFER rate warrants an alert?
+All 9 decisions originally left open in this ADR were resolved by the operator
+on 2026-09-29.  The resolutions are recorded in the **Operator decisions** table
+above.  The live `SupervisorGovernorConfig` defaults (2/2/1) predate this ADR;
+the ADR initial caps (2/3/1) supersede them when enabled.
    Should the operator be notified when pressure reduces effective caps below
    the configured values?
