@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from verdict.orchestration.contracts import CapacityClass
-from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
@@ -52,6 +51,7 @@ from verdict.prove_at_rest import (
 )
 
 NOW = datetime(2026, 9, 29, 5, 0, tzinfo=timezone.utc)
+
 
 def _at(seconds: float) -> datetime:
     return NOW + timedelta(seconds=seconds)
@@ -336,7 +336,16 @@ def _ok(tool: bool = False) -> ProbeExchange:
 def _large_routes(n: int = 3100) -> list[AdmittedRoute]:
     """Generate *n* synthetic routes over 10 providers (no disk I/O)."""
     providers = [
-        "openrouter", "kilocode", "agy", "cx", "gc", "kr", "cc", "cu", "opencode", "deepseek"
+        "openrouter",
+        "kilocode",
+        "agy",
+        "cx",
+        "gc",
+        "kr",
+        "cc",
+        "cu",
+        "opencode",
+        "deepseek",
     ]
     capacities = ["free", "metered", "subscription"]
     return [
@@ -540,8 +549,16 @@ def test_capacity_class_matches_the_ladder() -> None:
         (None, {}, CapacityClass.UNKNOWN),
         ({"authType": "oauth", "plan_label": "pro"}, {}, CapacityClass.SUBSCRIPTION),
         ({"authType": "oauth", "plan_label": "free"}, {}, CapacityClass.FREE),
-        ({"authType": "apikey", "import_free_only": True, "plan_label": ""}, {}, CapacityClass.FREE),
-        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 1.0}}, CapacityClass.METERED),
+        (
+            {"authType": "apikey", "import_free_only": True, "plan_label": ""},
+            {},
+            CapacityClass.FREE,
+        ),
+        (
+            {"authType": "apikey", "plan_label": ""},
+            {"pricing": {"prompt": 1.0}},
+            CapacityClass.METERED,
+        ),
         ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 0}}, CapacityClass.FREE),
         ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.UNKNOWN),
         # Bool pricing values must NOT be treated as prices (True == 1 in Python).
